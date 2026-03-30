@@ -7,9 +7,23 @@
  * by the ollama/openrouter paths that don't reach completeModelSwitch, and by
  * the api_key_confirm path where no key is available.
  */
-import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as ollamaUtils from '../utils/ollama.js';
+import * as configModule from '../utils/config.js';
 import { ModelSelectionController } from './model-selection.js';
+
+// ---------------------------------------------------------------------------
+// Guard: prevent ANY test in this file from writing to .dexter/settings.json.
+// Tests that reach completeModelSwitch() call setSetting() which persists model
+// names to disk, corrupting the real settings for the running Dexter process.
+// ---------------------------------------------------------------------------
+let setSettingSpy: ReturnType<typeof spyOn>;
+beforeEach(() => {
+  setSettingSpy = spyOn(configModule, 'setSetting').mockImplementation(() => true);
+});
+afterEach(() => {
+  setSettingSpy.mockRestore();
+});
 
 // ---------------------------------------------------------------------------
 // Helper

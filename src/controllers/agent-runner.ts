@@ -85,6 +85,14 @@ export class AgentRunnerController {
     this.agentConfig = { ...this.agentConfig, thinkEnabled: value };
   }
 
+  /**
+   * Update the model and provider used for all subsequent queries.
+   * Must be called whenever the user switches models so agentConfig stays in sync.
+   */
+  setModel(model: string, provider: string): void {
+    this.agentConfig = { ...this.agentConfig, model, modelProvider: provider };
+  }
+
   get history(): HistoryItem[] {
     return this.historyValue;
   }

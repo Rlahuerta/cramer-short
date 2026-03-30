@@ -750,6 +750,7 @@ export async function runCli() {
     // or may not support thinking, so auto-detect is the correct default.
     thinkEnabled = null;
     agentRunner.setThinkEnabled(undefined);
+    agentRunner.setModel(modelSelection.model, modelSelection.provider);
     intro.setModel(modelSelection.model);
     renderSelectionOverlay();
     tui.requestRender();
