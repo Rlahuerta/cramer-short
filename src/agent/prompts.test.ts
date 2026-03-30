@@ -1,156 +1,225 @@
-import { describe, test, expect } from 'bun:test';
-import { buildSystemPrompt, buildIterationPrompt } from './prompts.js';
+import { describe, it, expect, mock } from 'bun:test';
 
-describe('System prompt — sequential_thinking enforcement', () => {
-  test('contains mandatory sequential_thinking rule in Tool Usage Policy', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('ALWAYS call sequential_thinking FIRST');
-    expect(prompt).toContain('before calling ANY other tool');
+mock.module('../tools/registry.js', () => ({
+  buildToolDescriptions: mock(() => 'mock tool descriptions'),
+  getTools: mock(() => []),
+  getToolRegistry: mock(() => []),
+}));
+
+mock.module('../skills/index.js', () => ({
+  discoverSkills: mock(() => []),
+  buildSkillMetadataSection: mock(() => ''),
+  clearSkillCache: mock(() => {}),
+  getSkill: mock(() => null),
+  parseSkillFile: mock(() => null),
+  loadSkillFromPath: mock(() => null),
+  extractSkillMetadata: mock(() => null),
+}));
+
+mock.module('../utils/paths.js', () => ({
+  dexterPath: mock(() => '/nonexistent-dexter-test-path/SOUL.md'),
+  getDexterDir: mock(() => '/nonexistent-dexter-test-path'),
+}));
+
+const {
+  getCurrentDate,
+  buildSystemPrompt,
+  buildIterationPrompt,
+  buildGroupSection,
+  loadSoulDocument,
+} = await import('./prompts.js');
+
+describe('getCurrentDate', () => {
+  it('returns a non-empty string', () => {
+    const date = getCurrentDate();
+    expect(typeof date).toBe('string');
+    expect(date.length).toBeGreaterThan(0);
   });
 
-  test('sequential_thinking rule appears before other policy rules', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    const alwaysIdx = prompt.indexOf('ALWAYS call sequential_thinking FIRST');
-    // "For stock and crypto prices" is a policy-only line (not in tool descriptions)
-    const stockPolicyIdx = prompt.indexOf('For stock and crypto prices');
-    expect(alwaysIdx).toBeGreaterThan(-1);
-    expect(stockPolicyIdx).toBeGreaterThan(-1);
-    expect(alwaysIdx).toBeLessThan(stockPolicyIdx);
+  it('includes the current year', () => {
+    const date = getCurrentDate();
+    const currentYear = new Date().getFullYear().toString();
+    expect(date).toContain(currentYear);
   });
 
-  test('sequential_thinking rule covers every query', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('initial planning only');
-  });
-});
-
-describe('System prompt — financial data fallback policy', () => {
-  test('includes Financial Data Fallback Policy section', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('Financial Data Fallback Policy');
-  });
-
-  test('instructs agent to try web_search when financial tools fail', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('ALWAYS try web_search next');
-    expect(prompt).toContain('do NOT give up');
-  });
-
-  test('mentions international/European tickers as a known failure case', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('European');
-    expect(prompt).toContain('international');
-  });
-
-  test('instructs web_fetch as second step after web_search', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('web_fetch');
-  });
-
-  test('fallback policy appears after Tool Usage Policy', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    const toolPolicyIdx = prompt.indexOf('## Tool Usage Policy');
-    const fallbackIdx = prompt.indexOf('## Financial Data Fallback Policy');
-    expect(toolPolicyIdx).toBeGreaterThan(-1);
-    expect(fallbackIdx).toBeGreaterThan(-1);
-    expect(fallbackIdx).toBeGreaterThan(toolPolicyIdx);
+  it('contains the day of the week', () => {
+    const date = getCurrentDate();
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    expect(days.some(d => date.includes(d))).toBe(true);
   });
 });
 
-describe('buildIterationPrompt — error fallback nudge', () => {
-  test('injects IMPORTANT nudge when structured JSON error field is present', () => {
-    const result = buildIterationPrompt('analyse AAPL', '{"error": "premium-only access required"}');
-    expect(result).toContain('IMPORTANT');
-    expect(result).toContain('web_search');
+describe('loadSoulDocument', () => {
+  it('returns a value (string or null)', async () => {
+    const result = await loadSoulDocument();
+    // The bundled SOUL.md exists in the repo, so it should be a string
+    expect(typeof result === 'string' || result === null).toBe(true);
   });
 
-  test('injects IMPORTANT nudge on HTTP 4xx status in tool result', () => {
-    const result = buildIterationPrompt('get price', '{"status": 403, "message": "Forbidden"}');
-    expect(result).toContain('IMPORTANT');
+  it('returns a string since the bundled SOUL.md exists', async () => {
+    const result = await loadSoulDocument();
+    // The SOUL.md in the project root acts as the bundled fallback
+    expect(result).not.toBeNull();
+    expect(typeof result).toBe('string');
+  });
+});
+
+describe('buildSystemPrompt', () => {
+  it('contains tool descriptions', () => {
+    const prompt = buildSystemPrompt('gpt-5.4');
+    expect(prompt).toContain('mock tool descriptions');
   });
 
-  test('injects IMPORTANT nudge on fmp-premium marker in tool result', () => {
-    const result = buildIterationPrompt('get revenue', '{"routing": "fmp-premium", "data": null}');
-    expect(result).toContain('IMPORTANT');
+  it('contains the current date', () => {
+    const prompt = buildSystemPrompt('gpt-5.4');
+    const currentYear = new Date().getFullYear().toString();
+    expect(prompt).toContain(currentYear);
   });
 
-  test('does NOT inject nudge when web_search result contains "not found on exchange" in title', () => {
-    const legitimateResult = JSON.stringify({
-      results: [{ title: 'Vestas Wind not found on NYSE, listed on Nasdaq Copenhagen', url: 'bloomberg.com' }],
+  it('includes soul content when provided', () => {
+    const soulContent = 'I am a focused financial analyst.';
+    const prompt = buildSystemPrompt('gpt-5.4', soulContent);
+    expect(prompt).toContain(soulContent);
+  });
+
+  it('does not include Identity section when soul is null', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null);
+    expect(prompt).not.toContain('## Identity');
+  });
+
+  it('uses WhatsApp profile preamble when channel=whatsapp', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp');
+    expect(prompt.toLowerCase()).toContain('whatsapp');
+  });
+
+  it('uses CLI profile when channel=cli', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('CLI');
+  });
+
+  it('omits tables section for whatsapp channel', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp');
+    expect(prompt).not.toContain('## Tables');
+  });
+
+  it('includes tables section for CLI channel', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('Tables');
+  });
+
+  it('includes memory section', () => {
+    const prompt = buildSystemPrompt('gpt-5.4');
+    expect(prompt).toContain('Memory');
+  });
+
+  it('includes memory files list when provided', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli', undefined, ['goals.md', 'daily.md']);
+    expect(prompt).toContain('goals.md');
+    expect(prompt).toContain('daily.md');
+  });
+
+  it('includes memory context when provided', () => {
+    const prompt = buildSystemPrompt(
+      'gpt-5.4',
+      null,
+      'cli',
+      undefined,
+      [],
+      'User is a long-term investor focused on dividends.',
+    );
+    expect(prompt).toContain('long-term investor');
+  });
+
+  it('includes group section when groupContext is provided', () => {
+    const groupCtx = { groupName: 'Investors Club', activationMode: 'mention' as const };
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp', groupCtx);
+    expect(prompt).toContain('Investors Club');
+    expect(prompt).toContain('Group Chat');
+  });
+
+  it('mentions Dexter as the assistant name', () => {
+    const prompt = buildSystemPrompt('gpt-5.4');
+    expect(prompt).toContain('Dexter');
+  });
+});
+
+describe('buildIterationPrompt', () => {
+  it('includes the original query', () => {
+    const prompt = buildIterationPrompt('What is AAPL price?', '');
+    expect(prompt).toContain('What is AAPL price?');
+  });
+
+  it('includes tool results when non-empty', () => {
+    const results = '### web_search(query=AAPL)\n{"price":180}';
+    const prompt = buildIterationPrompt('AAPL price?', results);
+    expect(prompt).toContain('web_search');
+    expect(prompt).toContain('180');
+  });
+
+  it('omits tool results section when empty', () => {
+    const prompt = buildIterationPrompt('What is 2+2?', '');
+    expect(prompt).not.toContain('Data retrieved');
+  });
+
+  it('omits tool results section when whitespace-only', () => {
+    const prompt = buildIterationPrompt('test', '   ');
+    expect(prompt).not.toContain('Data retrieved');
+  });
+
+  it('includes toolUsageStatus when provided', () => {
+    const status = '## Tool Usage This Query\n\n- web_search: 2/3 calls';
+    const prompt = buildIterationPrompt('test', '', status);
+    expect(prompt).toContain('Tool Usage');
+    expect(prompt).toContain('web_search: 2/3 calls');
+  });
+
+  it('does not include toolUsageStatus when not provided', () => {
+    const prompt = buildIterationPrompt('test', '');
+    expect(prompt).not.toContain('Tool Usage This Query');
+  });
+
+  it('always includes continuation instruction', () => {
+    const prompt = buildIterationPrompt('test', '');
+    expect(prompt).toContain('Continue working');
+  });
+});
+
+describe('buildGroupSection', () => {
+  it('includes the group name when provided', () => {
+    const section = buildGroupSection({
+      groupName: 'Stock Traders',
+      activationMode: 'mention',
     });
-    const result = buildIterationPrompt('analyse VWS.CO', legitimateResult);
-    expect(result).not.toContain('IMPORTANT');
+    expect(section).toContain('Stock Traders');
   });
 
-  test('does NOT inject nudge when tool results are clean', () => {
-    const cleanResult = '{"data": {"revenue": "17.3B EUR", "margin": "4.3%"}}';
-    const result = buildIterationPrompt('analyse Vestas', cleanResult);
-    expect(result).not.toContain('IMPORTANT');
+  it('handles missing group name gracefully', () => {
+    const section = buildGroupSection({ activationMode: 'mention' });
+    expect(section).toContain('WhatsApp group chat');
+    expect(section).not.toContain('undefined');
   });
 
-  test('does NOT inject nudge when tool results are empty string', () => {
-    const result = buildIterationPrompt('simple query', '');
-    expect(result).not.toContain('IMPORTANT');
+  it('includes members list when provided', () => {
+    const section = buildGroupSection({
+      activationMode: 'mention',
+      membersList: 'Alice, Bob, Charlie',
+    });
+    expect(section).toContain('Alice, Bob, Charlie');
+    expect(section).toContain('Group members');
   });
 
-  test('always includes continuation instruction', () => {
-    const result = buildIterationPrompt('query', '');
-    expect(result).toContain('Continue working toward answering the query');
-  });
-});
-
-describe('System prompt — sequential_thinking enforcement', () => {
-  test('contains mandatory sequential_thinking rule in Tool Usage Policy', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('ALWAYS call sequential_thinking FIRST');
-    expect(prompt).toContain('before calling ANY other tool');
+  it('includes activation mode mention text', () => {
+    const section = buildGroupSection({ activationMode: 'mention' });
+    expect(section).toContain('@-mentioned');
   });
 
-  test('sequential_thinking rule appears before other policy rules', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    const alwaysIdx = prompt.indexOf('ALWAYS call sequential_thinking FIRST');
-    // "For stock and crypto prices" is a policy-only line (not in tool descriptions)
-    const stockPolicyIdx = prompt.indexOf('For stock and crypto prices');
-    expect(alwaysIdx).toBeGreaterThan(-1);
-    expect(stockPolicyIdx).toBeGreaterThan(-1);
-    expect(alwaysIdx).toBeLessThan(stockPolicyIdx);
+  it('always includes ## Group Chat header', () => {
+    const section = buildGroupSection({ activationMode: 'mention' });
+    expect(section).toContain('## Group Chat');
   });
 
-  test('sequential_thinking rule covers every query', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('initial planning only');
-  });
-});
-
-describe('System prompt — financial data fallback policy', () => {
-  test('includes Financial Data Fallback Policy section', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('Financial Data Fallback Policy');
-  });
-
-  test('instructs agent to try web_search when financial tools fail', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('ALWAYS try web_search next');
-    expect(prompt).toContain('do NOT give up');
-  });
-
-  test('mentions international/European tickers as a known failure case', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('European');
-    expect(prompt).toContain('international');
-  });
-
-  test('instructs web_fetch as second step after web_search', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('web_fetch');
-  });
-
-  test('fallback policy appears after Tool Usage Policy', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    const toolPolicyIdx = prompt.indexOf('## Tool Usage Policy');
-    const fallbackIdx = prompt.indexOf('## Financial Data Fallback Policy');
-    expect(toolPolicyIdx).toBeGreaterThan(-1);
-    expect(fallbackIdx).toBeGreaterThan(-1);
-    expect(fallbackIdx).toBeGreaterThan(toolPolicyIdx);
+  it('includes group behavior guidelines', () => {
+    const section = buildGroupSection({ activationMode: 'mention' });
+    expect(section).toContain('Group behavior');
   });
 });

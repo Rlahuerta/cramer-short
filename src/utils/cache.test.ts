@@ -1,9 +1,19 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
-import { buildCacheKey, readCache, writeCache } from './cache.js';
+import { tmpdir } from 'os';
 
-const TEST_CACHE_DIR = '.dexter/cache';
+// Unique temp dir per worker run — prevents parallel worker contamination of the real .dexter/cache
+const TEST_CACHE_DIR = join(tmpdir(), `dexter-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+// Mock paths.js BEFORE cache.ts loads so the module-level CACHE_DIR = dexterPath('cache') resolves to our temp dir
+mock.module('./paths.js', () => ({
+  dexterPath: (first?: string, ...rest: string[]) =>
+    first === 'cache' ? TEST_CACHE_DIR : join(TEST_CACHE_DIR, ...(first ? [first, ...rest] : [])),
+  getDexterDir: () => TEST_CACHE_DIR,
+}));
+
+const { buildCacheKey, readCache, writeCache } = await import('./cache.js');
 
 // ---------------------------------------------------------------------------
 // buildCacheKey
@@ -45,6 +55,12 @@ describe('buildCacheKey', () => {
 // ---------------------------------------------------------------------------
 // readCache / writeCache round-trip
 // ---------------------------------------------------------------------------
+
+afterAll(() => {
+  if (existsSync(TEST_CACHE_DIR)) {
+    rmSync(TEST_CACHE_DIR, { recursive: true, force: true });
+  }
+});
 
 describe('readCache / writeCache', () => {
   beforeEach(() => {
