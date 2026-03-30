@@ -11,7 +11,12 @@ mock.module('../../utils/cache.js', () => ({
   describeRequest: mockDescribeRequest,
 }));
 
-const { api, stripFieldsDeep } = await import('./api.js');
+// Use a cache-busting query param to force Bun to re-evaluate api.ts with the mocked
+// cache.js above. Other finance test files statically import api.js (which loads cache.ts at
+// module init time before any mock is set), leaving spyOn(api, 'get') stacks that are never
+// restored. The ?t= suffix guarantees this file gets a fresh api module whose cache
+// bindings point at the mocks and whose .get method has never been spied on.
+const { api, stripFieldsDeep } = await import(`./api.js?t=${Date.now()}`) as typeof import('./api.js');
 const { logger } = await import('../../utils/logger.js');
 
 // ---------------------------------------------------------------------------

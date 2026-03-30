@@ -39,6 +39,14 @@ const mockState = {
   streamChunks: ['synthesis result'] as string[],
   /** When true, streamCallLlm throws immediately (simulates timeout). */
   streamShouldThrow: false,
+  /**
+   * Per-call response queue. When non-empty, callLlm shifts from the front
+   * instead of using the flag-based logic above. Enables multi-iteration tests
+   * (e.g. first call returns tool_calls, second returns text) without requiring
+   * a second mock.module() call — which would permanently contaminate the
+   * module registry for subsequent test files in the same Bun worker.
+   */
+  callLlmQueue: [] as Array<{ content: string; toolCalls: typeof ST_TOOL_CALL[] }>,
 };
 
 const ST_TOOL_CALL = {
@@ -61,6 +69,14 @@ const ST_TOOL_CALL = {
 mock.module('../model/llm.js', () => ({
   DEFAULT_MODEL: 'gpt-5.4',
   callLlm: async () => {
+    // Drain the per-call response queue first (used by multi-iteration tests).
+    if (mockState.callLlmQueue.length > 0) {
+      const next = mockState.callLlmQueue.shift()!;
+      return {
+        response: { content: next.content, tool_calls: next.toolCalls, additional_kwargs: {} },
+        usage: undefined,
+      };
+    }
     if (mockState.invokeReturnsToolCalls) {
       return {
         response: {
@@ -127,6 +143,7 @@ beforeEach(() => {
   mockState.invokeContent = 'The direct answer from callLlm';
   mockState.streamChunks = ['synthesis result'];
   mockState.streamShouldThrow = false;
+  mockState.callLlmQueue = [];
 
   tmpDir = join(tmpdir(), `agent-resp-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tmpDir, { recursive: true });
@@ -272,41 +289,17 @@ describe('Agent — synthesis timeout graceful fallback', () => {
 describe('Agent — thinking text truncation', () => {
   beforeEach(() => {
     // Two iterations: first with tool_calls + long thinking, second returns answer.
-    let callCount = 0;
     mockState.invokeThinkingText = 'T'.repeat(1000); // 1000-char "thinking" blob
 
-    // Override callLlm to return tool_calls on iteration 1, text on iteration 2
-    mock.module('../model/llm.js', () => ({
-      DEFAULT_MODEL: 'gpt-5.4',
-      callLlm: async () => {
-        callCount++;
-        if (callCount === 1) {
-          return {
-            response: {
-              content: mockState.invokeThinkingText,
-              tool_calls: [ST_TOOL_CALL],
-              additional_kwargs: {},
-            },
-            usage: undefined,
-          };
-        }
-        return {
-          response: {
-            content: 'Final answer',
-            tool_calls: [],
-            additional_kwargs: {},
-          },
-          usage: undefined,
-        };
-      },
-      streamCallLlm: async function* (_p: string) {
-        mockState.streamCallCount++;
-        yield 'stream answer';
-      },
-      resolveProvider: (model: string) => ({ id: 'openai', displayName: model }),
-      formatUserFacingError: (msg: string) => msg,
-      isContextOverflowError: () => false,
-    }));
+    // Prime the per-call queue: first callLlm → tool_calls, second → text answer.
+    // Using the queue avoids a second mock.module('../model/llm.js') call here, which
+    // would permanently override the module registry for subsequent test files in the
+    // same Bun worker and cause the Agent.run tests in agent.test.ts to receive
+    // "Final answer" instead of their own mockState.invokeContent.
+    mockState.callLlmQueue = [
+      { content: mockState.invokeThinkingText, toolCalls: [ST_TOOL_CALL] },
+      { content: 'Final answer', toolCalls: [] },
+    ];
   });
 
   it('thinking event message is at most 501 chars (500 + ellipsis)', async () => {

@@ -29,9 +29,15 @@ mock.module('@langchain/tavily', () => ({
   },
 }));
 
-// Dynamic imports after mocking
-const { exaSearch } = await import('./exa.js');
-const { tavilySearch } = await import('./tavily.js');
+// Dynamic imports after mocking.
+// Use cache-busting ?t= imports so that when fundamentals.test.ts / key-ratios.test.ts /
+// stock-price.test.ts mock '../search/tavily.js' directly (and thus override the module
+// registry entry for 'src/tools/search/tavily.js'), these imports resolve to a DIFFERENT
+// module cache key that bypasses the override and loads the real tavily.ts — which then
+// picks up our mock.module('@langchain/tavily') above.
+const t = Date.now();
+const { exaSearch } = await import(`./exa.js?t=${t}`) as typeof import('./exa.js');
+const { tavilySearch } = await import(`./tavily.js?t=${t}`) as typeof import('./tavily.js');
 
 // ---------------------------------------------------------------------------
 // exaSearch

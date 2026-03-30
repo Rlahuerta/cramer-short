@@ -58,3 +58,7 @@ references/*
 
 logs/
 coverage.json
+dexter-export-*.json
+dexter-export-*.md
+CODE_REVIEW_REPORT.md
+TEST_COVERAGE_VERIFICATION.md

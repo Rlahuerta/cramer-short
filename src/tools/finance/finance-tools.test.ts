@@ -10,17 +10,24 @@ mock.module('./api.js', () => ({
   callApi: mockGet,
 }));
 
-// Dynamic imports after mocking
-const { getEarnings } = await import('./earnings.js');
-const { getAnalystEstimates } = await import('./estimates.js');
-const { getCompanyNews } = await import('./news.js');
-const { getCryptoPriceSnapshot, getCryptoPrices, getCryptoTickers } = await import('./crypto.js');
-const { getInsiderTrades } = await import('./insider_trades.js');
-const { getSegmentedRevenues } = await import('./segments.js');
-const { getStockPrice, getStockPrices, getStockTickers } = await import('./stock-price.js');
-const { getKeyRatios, getHistoricalKeyRatios } = await import('./key-ratios.js');
-const { getIncomeStatements, getBalanceSheets, getCashFlowStatements, getAllFinancialStatements } = await import('./fundamentals.js');
-const { getFilings, get10KFilingItems, get10QFilingItems, get8KFilingItems, getFilingItemTypes } = await import('./filings.js');
+// Dynamic imports after mocking.
+// Cache-busting ?t= forces Bun to re-evaluate each module in a fresh context so it
+// picks up the mock.module('./api.js') above — rather than reusing a module instance
+// that was already loaded (with real api.js) by another test file in the same worker.
+const t = Date.now();
+const { getEarnings } = await import(`./earnings.js?t=${t}`) as typeof import('./earnings.js');
+const { getAnalystEstimates } = await import(`./estimates.js?t=${t}`) as typeof import('./estimates.js');
+const { getCompanyNews } = await import(`./news.js?t=${t}`) as typeof import('./news.js');
+const { getCryptoPriceSnapshot, getCryptoPrices, getCryptoTickers } = await import(`./crypto.js?t=${t}`) as typeof import('./crypto.js');
+const { getInsiderTrades } = await import(`./insider_trades.js?t=${t}`) as typeof import('./insider_trades.js');
+const { getSegmentedRevenues } = await import(`./segments.js?t=${t}`) as typeof import('./segments.js');
+const { getStockPrice, getStockPrices, getStockTickers } = await import(`./stock-price.js?t=${t}`) as typeof import('./stock-price.js');
+const { getKeyRatios, getHistoricalKeyRatios } = await import(`./key-ratios.js?t=${t}`) as typeof import('./key-ratios.js');
+const { getIncomeStatements, getBalanceSheets, getCashFlowStatements, getAllFinancialStatements } = await import(`./fundamentals.js?t=${t}`) as typeof import('./fundamentals.js');
+const { getFilings, get10KFilingItems, get10QFilingItems, get8KFilingItems } = await import(`./filings.js?t=${t}`) as typeof import('./filings.js');
+// getFilingItemTypes has a module-level cache (cachedItemTypes) — always import fresh so
+// prior test runs don't serve stale data from a different worker's fetch mock.
+const { getFilingItemTypes } = await import(`./filings.js?getFilingItemTypes=${t}`) as typeof import('./filings.js');
 
 // Rich mock data covering all tool response shapes
 const mockApiData: Record<string, unknown> = {

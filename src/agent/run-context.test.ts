@@ -4,13 +4,21 @@
  * File system isolation: chdir into a tmpdir before each test so that
  * Scratchpad JSONL files do not accumulate in the project tree.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createRunContext } from './run-context.js';
-import { Scratchpad } from './scratchpad.js';
-import { TokenCounter } from './token-counter.js';
+
+// Keep paths relative so chdir isolation works. Override any absolute-path
+// mock that parallel worker (agent.test.ts) might have registered.
+mock.module('../utils/paths.js', () => ({
+  dexterPath: mock((...segments: string[]) => join('.dexter', ...segments)),
+  getDexterDir: mock(() => '.dexter'),
+}));
+
+const { createRunContext } = await import('./run-context.js');
+const { Scratchpad } = await import('./scratchpad.js');
+const { TokenCounter } = await import('./token-counter.js');
 
 let tmpDir: string;
 let originalCwd: string;

@@ -1,4 +1,4 @@
-import { describe, test, expect, spyOn, beforeEach } from 'bun:test';
+import { describe, test, expect, spyOn, beforeEach, afterEach } from 'bun:test';
 import { api } from './api.js';
 import {
   getFilingItemTypes,
@@ -31,6 +31,10 @@ const MOCK_ITEM_TYPES = {
 };
 
 describe('getFilingItemTypes', () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
   test('fetches and returns item types from API', async () => {
     globalThis.fetch = (async () => ({
       ok: true,
@@ -72,8 +76,9 @@ describe('getFilingItemTypes', () => {
 });
 
 describe('getFilings', () => {
+  let apiGetSpy: ReturnType<typeof spyOn<typeof api, 'get'>>;
   beforeEach(() => {
-    spyOn(api, 'get').mockResolvedValue({
+    apiGetSpy = spyOn(api, 'get').mockResolvedValue({
       data: {
         filings: [
           {
@@ -87,6 +92,7 @@ describe('getFilings', () => {
       url: 'https://api.financialdatasets.ai/filings/',
     });
   });
+  afterEach(() => { apiGetSpy?.mockRestore(); });
 
   test('tool name is get_filings', () => {
     expect(getFilings.name).toBe('get_filings');
@@ -101,7 +107,7 @@ describe('getFilings', () => {
   });
 
   test('returns empty array when filings is missing', async () => {
-    spyOn(api, 'get').mockResolvedValue({
+    apiGetSpy = spyOn(api, 'get').mockResolvedValue({
       data: {},
       url: 'https://api.financialdatasets.ai/filings/',
     });
@@ -111,25 +117,28 @@ describe('getFilings', () => {
   });
 
   test('passes filing_type filter to API', async () => {
-    const spy = spyOn(api, 'get').mockResolvedValue({
+    apiGetSpy = spyOn(api, 'get').mockResolvedValue({
       data: { filings: [] },
       url: 'https://api.financialdatasets.ai/filings/',
     });
-    spy.mockClear();
+    apiGetSpy.mockClear();
     await getFilings.invoke({ ticker: 'AAPL', limit: 5, filing_type: ['10-K'] });
-    const params = spy.mock.calls[0][1] as Record<string, unknown>;
+    const params = apiGetSpy.mock.calls[0][1] as Record<string, unknown>;
     expect(params.filing_type).toEqual(['10-K']);
   });
 });
 
 describe('get10KFilingItems', () => {
+  let apiGetSpy: ReturnType<typeof spyOn<typeof api, 'get'>>;
+  afterEach(() => { apiGetSpy?.mockRestore(); });
+
   test('tool name is get_10K_filing_items', () => {
     expect(get10KFilingItems.name).toBe('get_10K_filing_items');
   });
 
   test('returns 10-K filing items', async () => {
     const mockData = { items: [{ name: 'Item-1', content: 'Apple Inc. designs...' }] };
-    spyOn(api, 'get').mockResolvedValue({
+    apiGetSpy = spyOn(api, 'get').mockResolvedValue({
       data: mockData,
       url: 'https://api.financialdatasets.ai/filings/items/',
     });
@@ -142,87 +151,93 @@ describe('get10KFilingItems', () => {
   });
 
   test('normalizes ticker to uppercase', async () => {
-    const spy = spyOn(api, 'get').mockResolvedValue({
+    apiGetSpy = spyOn(api, 'get').mockResolvedValue({
       data: {},
       url: 'https://api.financialdatasets.ai/filings/items/',
     });
-    spy.mockClear();
+    apiGetSpy.mockClear();
     await get10KFilingItems.invoke({
       ticker: 'aapl',
       accession_number: '0000320193-24-000123',
     });
-    const params = spy.mock.calls[0][1] as Record<string, string>;
+    const params = apiGetSpy.mock.calls[0][1] as Record<string, string>;
     expect(params.ticker).toBe('AAPL');
     expect(params.filing_type).toBe('10-K');
   });
 
   test('passes selected items to API', async () => {
-    const spy = spyOn(api, 'get').mockResolvedValue({
+    apiGetSpy = spyOn(api, 'get').mockResolvedValue({
       data: {},
       url: 'https://api.financialdatasets.ai/filings/items/',
     });
-    spy.mockClear();
+    apiGetSpy.mockClear();
     await get10KFilingItems.invoke({
       ticker: 'AAPL',
       accession_number: '0000320193-24-000123',
       items: ['Item-1', 'Item-7'],
     });
-    const params = spy.mock.calls[0][1] as Record<string, unknown>;
+    const params = apiGetSpy.mock.calls[0][1] as Record<string, unknown>;
     expect(params.item).toEqual(['Item-1', 'Item-7']);
   });
 
   test('uses cacheable=true (filings are immutable)', async () => {
-    const spy = spyOn(api, 'get').mockResolvedValue({
+    apiGetSpy = spyOn(api, 'get').mockResolvedValue({
       data: {},
       url: 'https://api.financialdatasets.ai/filings/items/',
     });
-    spy.mockClear();
+    apiGetSpy.mockClear();
     await get10KFilingItems.invoke({
       ticker: 'AAPL',
       accession_number: '0000320193-24-000123',
     });
-    const opts = spy.mock.calls[0][2] as { cacheable: boolean } | undefined;
+    const opts = apiGetSpy.mock.calls[0][2] as { cacheable: boolean } | undefined;
     expect(opts?.cacheable).toBe(true);
   });
 });
 
 describe('get10QFilingItems', () => {
+  let apiGetSpy: ReturnType<typeof spyOn<typeof api, 'get'>>;
+  afterEach(() => { apiGetSpy?.mockRestore(); });
+
   test('tool name is get_10Q_filing_items', () => {
     expect(get10QFilingItems.name).toBe('get_10Q_filing_items');
   });
 
   test('sets filing_type to 10-Q', async () => {
-    const spy = spyOn(api, 'get').mockResolvedValue({
+    apiGetSpy = spyOn(api, 'get').mockResolvedValue({
       data: {},
       url: 'https://api.financialdatasets.ai/filings/items/',
     });
-    spy.mockClear();
+    apiGetSpy.mockClear();
     await get10QFilingItems.invoke({
       ticker: 'AAPL',
       accession_number: '0000320193-24-000456',
     });
-    const params = spy.mock.calls[0][1] as Record<string, string>;
+    const params = apiGetSpy.mock.calls[0][1] as Record<string, string>;
     expect(params.filing_type).toBe('10-Q');
     expect(params.ticker).toBe('AAPL');
   });
 });
 
 describe('get8KFilingItems', () => {
+  let apiGetSpy: ReturnType<typeof spyOn<typeof api, 'get'>>;
+  afterEach(() => { apiGetSpy?.mockRestore(); });
+
   test('tool name is get_8K_filing_items', () => {
     expect(get8KFilingItems.name).toBe('get_8K_filing_items');
   });
 
   test('sets filing_type to 8-K', async () => {
-    const spy = spyOn(api, 'get').mockResolvedValue({
+    apiGetSpy = spyOn(api, 'get').mockResolvedValue({
       data: {},
       url: 'https://api.financialdatasets.ai/filings/items/',
     });
-    spy.mockClear();
+    apiGetSpy.mockClear();
     await get8KFilingItems.invoke({
       ticker: 'aapl',
       accession_number: '0000320193-24-000789',
     });
-    const params = spy.mock.calls[0][1] as Record<string, string>;
+    const params = apiGetSpy.mock.calls[0][1] as Record<string, string>;
     expect(params.filing_type).toBe('8-K');
     expect(params.ticker).toBe('AAPL');
   });

@@ -1,4 +1,8 @@
 import { describe, it, expect, mock } from 'bun:test';
+import { join } from 'path';
+import { tmpdir } from 'os';
+
+const testDir = join(tmpdir(), `dexter-prompts-test-${Date.now()}`);
 
 mock.module('../tools/registry.js', () => ({
   buildToolDescriptions: mock(() => 'mock tool descriptions'),
@@ -6,19 +10,16 @@ mock.module('../tools/registry.js', () => ({
   getToolRegistry: mock(() => []),
 }));
 
-mock.module('../skills/index.js', () => ({
-  discoverSkills: mock(() => []),
-  buildSkillMetadataSection: mock(() => ''),
-  clearSkillCache: mock(() => {}),
-  getSkill: mock(() => null),
-  parseSkillFile: mock(() => null),
-  loadSkillFromPath: mock(() => null),
-  extractSkillMetadata: mock(() => null),
-}));
+// skills/index.js intentionally NOT mocked here — it re-exports from registry.js
+// and loader.js via ESM live bindings. Any mock.module() call for index.js
+// propagates back through those bindings into registry.js/loader.js, breaking
+// skill.test.ts files that import directly from those sub-modules in the same
+// Bun worker. The real discoverSkills/buildSkillMetadataSection are safe to use
+// in tests because no assertion here checks for skill presence or absence.
 
 mock.module('../utils/paths.js', () => ({
-  dexterPath: mock(() => '/nonexistent-dexter-test-path/SOUL.md'),
-  getDexterDir: mock(() => '/nonexistent-dexter-test-path'),
+  dexterPath: mock((sub: string) => join(testDir, sub ?? 'SOUL.md')),
+  getDexterDir: mock(() => testDir),
 }));
 
 const {

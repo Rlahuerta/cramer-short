@@ -13,7 +13,12 @@ mock.module('./paths.js', () => ({
   getDexterDir: () => TEST_CACHE_DIR,
 }));
 
-const { buildCacheKey, readCache, writeCache } = await import('./cache.js');
+// Use a cache-busting query param to force Bun to re-evaluate cache.ts so that
+// the module-level CACHE_DIR = dexterPath('cache') is evaluated AFTER paths.js
+// is mocked above. Without the ?t= suffix, Bun returns a previously-cached
+// cache.ts instance (loaded by filings.test.ts → api.ts → cache.ts) that
+// already resolved CACHE_DIR against the real .dexter directory.
+const { buildCacheKey, readCache, writeCache } = await import(`./cache.js?t=${Date.now()}`) as typeof import('./cache.js');
 
 // ---------------------------------------------------------------------------
 // buildCacheKey

@@ -8,12 +8,20 @@
  * - Uncacheable tools (browser, skill, write_file, etc.) are never cached.
  * - Cache key is stable regardless of arg key ordering.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { AgentToolExecutor } from './tool-executor.js';
-import { createRunContext } from './run-context.js';
+
+// Keep paths relative so chdir isolation works. Override any absolute-path
+// mock that parallel worker (agent.test.ts) might have registered.
+mock.module('../utils/paths.js', () => ({
+  dexterPath: mock((...segments: string[]) => join('.dexter', ...segments)),
+  getDexterDir: mock(() => '.dexter'),
+}));
+
+const { AgentToolExecutor } = await import('./tool-executor.js');
+const { createRunContext } = await import('./run-context.js');
 import type { ToolEndEvent, ToolStartEvent } from './types.js';
 import type { RunContext } from './run-context.js';
 import { AIMessage } from '@langchain/core/messages';
