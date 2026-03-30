@@ -15,7 +15,7 @@ import { describe, expect } from 'bun:test';
 import { integrationIt } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
 import { resolveProvider } from '@/providers.js';
-import { isThinkingModel } from '@/model/llm.js';
+import { isThinkingModel, getFastModel } from '@/model/llm.js';
 
 // ---------------------------------------------------------------------------
 // Provider routing
@@ -86,5 +86,22 @@ describe('Ollama model discovery', () => {
     const models = await getOllamaModels();
     process.env.OLLAMA_BASE_URL = original;
     expect(models).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFastModel — Ollama has no fastModel, falls back to the model itself
+// ---------------------------------------------------------------------------
+
+describe('getFastModel — Ollama provider', () => {
+  integrationIt('returns the fallback model for ollama (no fastModel defined)', () => {
+    const model = 'ollama:deepseek-v3.2:cloud';
+    const fast = getFastModel('ollama', model);
+    expect(fast).toBe(model);
+  });
+
+  integrationIt('returns fastModel for openai provider', () => {
+    const fast = getFastModel('openai', 'gpt-5.4');
+    expect(fast).toBe('gpt-4.1');
   });
 });

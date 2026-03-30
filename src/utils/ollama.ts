@@ -16,7 +16,7 @@ interface OllamaTagsResponse {
  * Fetches locally downloaded models from the Ollama API
  */
 export async function getOllamaModels(): Promise<string[]> {
-  const baseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+  const baseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
   
   try {
     const response = await fetch(`${baseUrl}/api/tags`);

@@ -335,3 +335,95 @@ describe('ModelSelectionController — handleApiKeySubmit', () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// handleModelInputSubmit — Ollama model validation
+// ---------------------------------------------------------------------------
+
+describe('ModelSelectionController — handleModelInputSubmit (Ollama validation)', () => {
+  it('valid Ollama model name → completes switch when model exists', async () => {
+    const spy = spyOn(ollamaUtils, 'getOllamaModels').mockResolvedValue([
+      'qwen3.5:cloud',
+      'deepseek-v3.2:cloud',
+    ]);
+    try {
+      const { ctrl } = makeController();
+      ctrl.startSelection();
+      (ctrl as unknown as { pendingProviderValue: string }).pendingProviderValue = 'ollama';
+      await ctrl.handleModelInputSubmit('qwen3.5:cloud');
+      expect(ctrl.state.appState).toBe('idle');
+      expect(ctrl.model).toBe('ollama:qwen3.5:cloud');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('invalid Ollama model name → calls onError with helpful message', async () => {
+    const spy = spyOn(ollamaUtils, 'getOllamaModels').mockResolvedValue([
+      'qwen3.5:cloud',
+      'deepseek-v3.2:cloud',
+    ]);
+    try {
+      const { ctrl, errors } = makeController();
+      ctrl.startSelection();
+      (ctrl as unknown as { pendingProviderValue: string }).pendingProviderValue = 'ollama';
+      await ctrl.handleModelInputSubmit('llama2');
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0]).toContain("'llama2' not found");
+      expect(errors[0]).toContain('qwen3.5:cloud');
+      // State should NOT have changed to idle (validation failed)
+      expect(ctrl.state.appState).not.toBe('idle');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('when Ollama is unreachable (empty list) → accepts the model anyway', async () => {
+    const spy = spyOn(ollamaUtils, 'getOllamaModels').mockResolvedValue([]);
+    try {
+      const { ctrl } = makeController();
+      ctrl.startSelection();
+      (ctrl as unknown as { pendingProviderValue: string }).pendingProviderValue = 'ollama';
+      await ctrl.handleModelInputSubmit('some-custom-model');
+      // When list is empty (Ollama down), we do NOT block the user
+      expect(ctrl.state.appState).toBe('idle');
+      expect(ctrl.model).toBe('ollama:some-custom-model');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('typed model name is prefixed with ollama: before storing', async () => {
+    const spy = spyOn(ollamaUtils, 'getOllamaModels').mockResolvedValue(['mymodel:tag']);
+    try {
+      const { ctrl } = makeController();
+      ctrl.startSelection();
+      (ctrl as unknown as { pendingProviderValue: string }).pendingProviderValue = 'ollama';
+      await ctrl.handleModelInputSubmit('mymodel:tag');
+      expect(ctrl.model).toBe('ollama:mymodel:tag');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('error message lists available models up to 3', async () => {
+    const spy = spyOn(ollamaUtils, 'getOllamaModels').mockResolvedValue([
+      'model-a:latest',
+      'model-b:latest',
+      'model-c:latest',
+      'model-d:latest',
+    ]);
+    try {
+      const { ctrl, errors } = makeController();
+      ctrl.startSelection();
+      (ctrl as unknown as { pendingProviderValue: string }).pendingProviderValue = 'ollama';
+      await ctrl.handleModelInputSubmit('nonexistent:model');
+      expect(errors.length).toBeGreaterThan(0);
+      // Should mention first 3 models and indicate more exist
+      expect(errors[0]).toContain('model-a:latest');
+      expect(errors[0]).toContain('4 total');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

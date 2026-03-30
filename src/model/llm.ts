@@ -321,7 +321,8 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
  * Stateful filter that strips <think>…</think> blocks from a character stream.
  * Yields only the non-thinking content as chunks arrive.
  */
-class StreamingThinkFilter {
+/** Exported for testing — not part of the public API. */
+export class StreamingThinkFilter {
   private buf = '';
   private thinking = false;
   private readonly OPEN = '<think>';
@@ -364,9 +365,9 @@ class StreamingThinkFilter {
   }
 
   flush(): string {
-    if (this.thinking) { this.buf = ''; return ''; }
-    const remaining = this.buf;
+    const remaining = this.thinking ? '' : this.buf;
     this.buf = '';
+    this.thinking = false;
     return remaining;
   }
 }
@@ -391,7 +392,10 @@ export async function* streamCallLlm(
       : [new SystemMessage(finalSystemPrompt), new HumanMessage(prompt)];
 
   const filter = new StreamingThinkFilter();
-  const stream = await llm.stream(messages, signal ? { signal } : {});
+  const stream = await withRetry(
+    () => llm.stream(messages, signal ? { signal } : {}),
+    provider.displayName,
+  );
 
   // Buffer tokens until we reach a word boundary so the TUI receives
   // meaningful chunks rather than single characters or random 6-byte slices.

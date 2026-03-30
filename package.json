@@ -16,7 +16,7 @@
     "test": "bun test --path-ignore-patterns='*.integration.test.ts' --path-ignore-patterns='*.e2e.test.ts'",
     "test:unit": "bun test --path-ignore-patterns='*.integration.test.ts' --path-ignore-patterns='*.e2e.test.ts'",
     "test:integration": "RUN_INTEGRATION=1 bun test --filter integration",
-    "test:e2e": "RUN_E2E=1 bun test src/agent/agent.e2e.test.ts --timeout 360000 && RUN_E2E=1 bun test src/skills/dcf/skill.e2e.test.ts --timeout 360000 && RUN_E2E=1 bun test src/skills/probability-assessment/skill.e2e.test.ts --timeout 360000",
+    "test:e2e": "RUN_E2E=1 bun test src/agent/agent.e2e.test.ts --timeout 360000 && RUN_E2E=1 bun test src/skills/dcf/skill.e2e.test.ts --timeout 360000 && RUN_E2E=1 bun test src/skills/probability-assessment/skill.e2e.test.ts --timeout 360000 && RUN_E2E=1 bun test src/model/llm.e2e.test.ts --timeout 360000 && RUN_E2E=1 bun test src/model/llm-streaming.e2e.test.ts --timeout 360000 && RUN_E2E=1 bun test src/memory/embeddings.e2e.test.ts --timeout 60000",
     "test:all": "bun run test:unit && bun run test:integration && bun run test:e2e",
     "test:watch": "bun test --watch",
     "postinstall": "playwright install chromium"

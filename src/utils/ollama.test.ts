@@ -39,7 +39,7 @@ describe('getOllamaModels', () => {
     }) as unknown as typeof fetch;
 
     await getOllamaModels();
-    expect(capturedUrl).toBe('http://localhost:11434/api/tags');
+    expect(capturedUrl).toBe('http://127.0.0.1:11434/api/tags');
   });
 
   test('uses OLLAMA_BASE_URL env var when set', async () => {

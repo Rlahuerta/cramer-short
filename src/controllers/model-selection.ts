@@ -147,7 +147,7 @@ export class ModelSelectionController {
     this.emitChange();
   }
 
-  handleModelInputSubmit(modelName: string | null) {
+  async handleModelInputSubmit(modelName: string | null) {
     if (!modelName || !this.pendingProviderValue) {
       this.pendingProviderValue = null;
       this.pendingModelsValue = [];
@@ -155,6 +155,21 @@ export class ModelSelectionController {
       this.appStateValue = 'provider_select';
       this.emitChange();
       return;
+    }
+
+    // Validate Ollama model exists before completing the switch.
+    // Only validate when Ollama is reachable (non-empty list); if Ollama is
+    // down we still allow the entry so users aren't blocked.
+    if (this.pendingProviderValue === 'ollama') {
+      const available = await getOllamaModels();
+      if (available.length > 0 && !available.includes(modelName)) {
+        const preview = available.slice(0, 3).join(', ');
+        const suffix = available.length > 3 ? `, … (${available.length} total)` : '';
+        this.onError(
+          `Model '${modelName}' not found in Ollama. Available: ${preview}${suffix}`,
+        );
+        return;
+      }
     }
 
     const fullModelId = `${this.pendingProviderValue}:${modelName}`;

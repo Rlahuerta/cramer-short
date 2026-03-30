@@ -88,7 +88,7 @@ export function createEmbeddingClient(params: {
 
   const model = params.model || DEFAULT_OLLAMA_MODEL;
   const embeddings = new OllamaEmbeddings({
-    baseUrl: process.env.OLLAMA_BASE_URL,
+    baseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
     model,
   });
   return {
