@@ -20,7 +20,7 @@
  * Timeout: E2E_TIMEOUT_MS (default 300 s) for the single beforeAll call
  */
 import { describe, expect, beforeAll } from 'bun:test';
-import { e2eIt } from '@/utils/test-guards.js';
+import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
 import { runAgentE2E, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { E2EResult } from '@/utils/e2e-helpers.js';
 import type { AgentEvent } from '@/agent/types.js';
@@ -38,7 +38,7 @@ let answer: string;
 
 describe('probability_assessment skill E2E', () => {
   beforeAll(async () => {
-    if (process.env.RUN_E2E !== '1') return; // guard — tests will be skipped
+    if (!RUN_E2E) return; // guard — tests will be skipped via e2eIt when RUN_E2E is false
     result = await runAgentE2E(PROBABILITY_QUERY);
     tools = result.toolsCalled;
     answer = result.answer;
