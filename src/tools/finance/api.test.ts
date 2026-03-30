@@ -130,15 +130,11 @@ describe('api.get', () => {
     await expect(api.get('/earnings', { ticker: 'AAPL' })).rejects.toThrow(/invalid JSON|invalid json/i);
   });
 
-  it('logs warn when API key is missing', async () => {
+  it('throws when API key is missing', async () => {
     delete process.env.FINANCIAL_DATASETS_API_KEY;
-    const warnSpy = spyOn(logger, 'warn');
-    try {
-      await api.get('/earnings', { ticker: 'AAPL' });
-      expect(warnSpy).toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+    await expect(api.get('/earnings', { ticker: 'AAPL' })).rejects.toThrow(
+      /FINANCIAL_DATASETS_API_KEY is not set/,
+    );
   });
 
   it('returns cached data on cache hit when cacheable=true', async () => {
