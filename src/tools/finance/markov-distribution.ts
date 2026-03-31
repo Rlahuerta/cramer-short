@@ -1373,6 +1373,7 @@ export function calibrateProbabilities(
     hmmConverged?: boolean;       // whether HMM converged (adds confidence)
     baseRate?: number;            // empirical P(up) from recent history (default 0.5)
     kappaMultiplier?: number;     // asset-profile kappa scaling (Idea N). >1 = more shrinkage.
+    currentRegime?: string;       // Idea O: regime-gated kappa adjustment
   },
 ): MarkovDistributionPoint[] {
   const consensus = options?.ensembleConsensus ?? 0;
@@ -1404,6 +1405,17 @@ export function calibrateProbabilities(
   // Asset-profile scaling (Idea N): multiply kappa by profile factor
   // ETFs: 0.85× (less shrinkage), Crypto: 1.3× (more shrinkage)
   kappa *= kappaScale;
+
+  // Regime-gated adjustment (Idea O): trending regimes get less shrinkage
+  // because directional persistence means the model's signal is more reliable.
+  // Sideways regimes get more shrinkage (no directional edge, revert to center).
+  // Conservative magnitudes to avoid amplifying wrong-direction signals.
+  const regime = options?.currentRegime;
+  if (regime === 'bull' || regime === 'bear') {
+    kappa -= 0.03; // trending: slightly trust model's directional signal
+  } else if (regime === 'sideways') {
+    kappa += 0.03; // choppy: be cautious, pull toward center
+  }
 
   // Clamp to valid range
   kappa = Math.max(0.15, Math.min(0.55, kappa));
@@ -1884,6 +1896,7 @@ export async function computeMarkovDistribution(params: {
     hmmConverged: hmmMeta?.converged ?? false,
     baseRate,
     kappaMultiplier: assetProfile.kappaMultiplier,
+    currentRegime,
   });
 
   // --- Regime run length: consecutive days ending in the current regime ---
@@ -1893,12 +1906,17 @@ export async function computeMarkovDistribution(params: {
     else break;
   }
 
-  // --- P(up) from calibrated distribution for confidence scoring ---
-  const pUp = interpolateSurvival(distribution, currentPrice);
+  // --- P(up) from both raw and calibrated distributions for confidence scoring ---
+  // Raw P(up) reflects model's actual signal strength BEFORE calibration compresses it.
+  // This gives a much more discriminative decisiveness score.
+  const rawPUp = interpolateSurvival(rawDistribution, currentPrice);
+  const calPUp = interpolateSurvival(distribution, currentPrice);
 
   // --- Prediction confidence (Idea M: selective prediction) ---
+  // Use raw P(up) for decisiveness (how far from coin flip) since calibrated P(up)
+  // is often compressed to 0.45-0.55, making decisiveness uniformly low.
   const predictionConfidence = computePredictionConfidence({
-    pUp,
+    pUp: rawPUp,
     ensembleConsensus: ensemble.consensus,
     hmmConverged: hmmMeta?.converged ?? false,
     regimeRunLength,

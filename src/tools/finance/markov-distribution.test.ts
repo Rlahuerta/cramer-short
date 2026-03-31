@@ -588,6 +588,37 @@ describe('calibrateProbabilities', () => {
     // Should NOT be pulled all the way to 0.90
     expect(extreme[0].probability).toBeLessThan(0.70);
   });
+
+  it('bull regime reduces shrinkage (Idea O)', () => {
+    const dist = [
+      { price: 90,  probability: 0.80, lowerBound: 0.70, upperBound: 0.90, source: 'markov' as const },
+      { price: 110, probability: 0.20, lowerBound: 0.10, upperBound: 0.30, source: 'markov' as const },
+    ];
+    const sideways = calibrateProbabilities(dist, { currentRegime: 'sideways' });
+    const bull     = calibrateProbabilities(dist, { currentRegime: 'bull' });
+    // Bull → less shrinkage → predictions stay further from 0.5
+    expect(bull[0].probability).toBeGreaterThan(sideways[0].probability);
+    expect(bull[1].probability).toBeLessThan(sideways[1].probability);
+  });
+
+  it('bear regime reduces shrinkage like bull (Idea O)', () => {
+    const dist = [
+      { price: 90,  probability: 0.80, lowerBound: 0.70, upperBound: 0.90, source: 'markov' as const },
+    ];
+    const sideways = calibrateProbabilities(dist, { currentRegime: 'sideways' });
+    const bear     = calibrateProbabilities(dist, { currentRegime: 'bear' });
+    expect(bear[0].probability).toBeGreaterThan(sideways[0].probability);
+  });
+
+  it('sideways regime increases shrinkage (Idea O)', () => {
+    const dist = [
+      { price: 100, probability: 0.75, lowerBound: 0.65, upperBound: 0.85, source: 'markov' as const },
+    ];
+    const noRegime = calibrateProbabilities(dist);
+    const sideways = calibrateProbabilities(dist, { currentRegime: 'sideways' });
+    // Sideways adds +0.04 kappa → more shrinkage toward center
+    expect(sideways[0].probability).toBeLessThan(noRegime[0].probability);
+  });
 });
 
 // ---------------------------------------------------------------------------
