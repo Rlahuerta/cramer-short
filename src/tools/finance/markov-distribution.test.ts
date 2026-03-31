@@ -37,11 +37,13 @@ import {
   matPow,
   matMul,
   normalCDF,
+  transitionGoodnessOfFit,
   markovDistributionTool,
   NUM_STATES,
   STATE_INDEX,
   REGIME_STATES,
 } from './markov-distribution.js';
+import type { RegimeState } from './markov-distribution.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1263,19 +1265,18 @@ describe('interpolateDistribution anchor grid merging', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalCDF', () => {
-  // NOTE: normalCDF implements 0.5*(1+erf(x)), the CDF of N(0, 0.5),
-  // NOT the standard normal Φ(x). Values differ from standard normal tables.
+  // normalCDF now computes the true standard normal CDF: Φ(x) = 0.5*(1+erf(x/√2))
 
-  it('normalCDF(0) ≈ 0.5', () => {
+  it('Φ(0) ≈ 0.5', () => {
     expect(normalCDF(0)).toBeCloseTo(0.5, 6);
   });
 
-  it('normalCDF(1) ≈ 0.9214 (erf-based)', () => {
-    expect(normalCDF(1)).toBeCloseTo(0.9214, 3);
+  it('Φ(1) ≈ 0.8413', () => {
+    expect(normalCDF(1)).toBeCloseTo(0.8413, 3);
   });
 
-  it('normalCDF(-1) ≈ 0.0786 (erf-based symmetry)', () => {
-    expect(normalCDF(-1)).toBeCloseTo(0.0786, 3);
+  it('Φ(-1) ≈ 0.1587', () => {
+    expect(normalCDF(-1)).toBeCloseTo(0.1587, 3);
   });
 
   it('normalCDF(x) + normalCDF(-x) = 1 (symmetry property)', () => {
@@ -1284,18 +1285,16 @@ describe('normalCDF', () => {
     }
   });
 
-  it('normalCDF(1.96) ≈ 0.9953 (erf-based)', () => {
-    // erf(1.96) ≈ 0.9953 → normalCDF(1.96) = 0.5*(1+0.9953) ≈ 0.9972 — but
-    // the A&S approximation yields ~0.9972
-    expect(normalCDF(1.96)).toBeCloseTo(0.9972, 3);
+  it('Φ(1.96) ≈ 0.975 (95% critical value)', () => {
+    expect(normalCDF(1.96)).toBeCloseTo(0.975, 2);
   });
 
-  it('normalCDF(3) ≈ 0.99999 (deep right tail)', () => {
-    expect(normalCDF(3)).toBeCloseTo(0.99999, 4);
+  it('Φ(3) ≈ 0.99865 (deep right tail)', () => {
+    expect(normalCDF(3)).toBeCloseTo(0.99865, 3);
   });
 
-  it('normalCDF(-3) ≈ 0.00001 (deep left tail)', () => {
-    expect(normalCDF(-3)).toBeCloseTo(0.00001, 4);
+  it('Φ(-3) ≈ 0.00135 (deep left tail)', () => {
+    expect(normalCDF(-3)).toBeCloseTo(0.00135, 3);
   });
 
   it('is monotonically non-decreasing', () => {
@@ -1373,13 +1372,13 @@ describe('normalizeRows', () => {
     expect(result[0][1]).toBeCloseTo(0.7);
   });
 
-  it('handles zero-sum row gracefully', () => {
-    // 0/0 → NaN; verify the non-zero row normalizes correctly
+  it('handles zero-sum row by distributing uniformly', () => {
     const result = normalizeRows([[0, 0], [1, 1]]);
     expect(result[1][0]).toBeCloseTo(0.5);
     expect(result[1][1]).toBeCloseTo(0.5);
-    // zero row produces NaN — that's the current behavior
-    expect(Number.isNaN(result[0][0])).toBe(true);
+    // zero row now becomes uniform [0.5, 0.5] instead of NaN
+    expect(result[0][0]).toBeCloseTo(0.5);
+    expect(result[0][1]).toBeCloseTo(0.5);
   });
 });
 
@@ -1857,5 +1856,81 @@ describe('markovDistributionTool output format', () => {
       polymarketMarkets: [],
     });
     expect(output).toContain('No trusted');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// transitionGoodnessOfFit — chi-squared test for Markov property
+// ---------------------------------------------------------------------------
+
+describe('transitionGoodnessOfFit', () => {
+  // Generate a synthetic state sequence from a known transition matrix
+  function generateMarkovChain(P: number[][], n: number, startState: number): RegimeState[] {
+    const states = REGIME_STATES;
+    const seq: RegimeState[] = [states[startState]];
+    let current = startState;
+    for (let i = 1; i < n; i++) {
+      const r = Math.random();
+      let cumul = 0;
+      for (let j = 0; j < P[current].length; j++) {
+        cumul += P[current][j];
+        if (r < cumul) { current = j; break; }
+      }
+      seq.push(states[current]);
+    }
+    return seq;
+  }
+
+  it('returns null for short sequences (< 50)', () => {
+    const shortSeq: RegimeState[] = Array(30).fill('sideways');
+    const P = buildDefaultMatrix();
+    expect(transitionGoodnessOfFit(shortSeq, P)).toBeNull();
+  });
+
+  it('passes for data generated from the same matrix', () => {
+    // Build a known 5x5 transition matrix and generate data from it
+    const P = buildDefaultMatrix(); // diagonal-dominant
+    const seq = generateMarkovChain(P, 500, 2); // start from sideways
+    const estimatedP = estimateTransitionMatrix(seq);
+    const result = transitionGoodnessOfFit(seq, estimatedP);
+
+    // With enough data and correctly estimated P, the test should pass
+    expect(result).not.toBeNull();
+    expect(result!.passes).toBe(true);
+    expect(result!.pValue).toBeGreaterThan(0.05);
+    expect(result!.chiSquared).toBeGreaterThanOrEqual(0);
+    expect(result!.degreesOfFreedom).toBeGreaterThan(0);
+  });
+
+  it('fails for data generated from a very different matrix', () => {
+    // Generate data from a uniform-transition matrix
+    const uniformP = Array.from({ length: NUM_STATES }, () =>
+      Array(NUM_STATES).fill(1 / NUM_STATES),
+    );
+    const seq = generateMarkovChain(uniformP, 500, 0);
+    // But test it against a strongly diagonal matrix
+    const diagonalP = Array.from({ length: NUM_STATES }, (_, i) =>
+      Array.from({ length: NUM_STATES }, (_, j) => i === j ? 0.95 : 0.05 / (NUM_STATES - 1)),
+    );
+    const result = transitionGoodnessOfFit(seq, diagonalP);
+    expect(result).not.toBeNull();
+    // Mismatch should produce a low p-value (test fails)
+    expect(result!.passes).toBe(false);
+    expect(result!.pValue).toBeLessThan(0.05);
+  });
+
+  it('result is surfaced in computeMarkovDistribution metadata', async () => {
+    const prices = Array.from({ length: 100 }, (_, i) => 100 + Math.sin(i / 5) * 3 + i * 0.02);
+    const result = await computeMarkovDistribution({
+      ticker: 'GOF_TEST',
+      horizon: 20,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    // With 100 data points, GOF should be computed (not null)
+    expect(result.metadata.goodnessOfFit).not.toBeNull();
+    expect(typeof result.metadata.goodnessOfFit!.pValue).toBe('number');
+    expect(typeof result.metadata.goodnessOfFit!.passes).toBe('boolean');
   });
 });

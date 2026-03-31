@@ -119,7 +119,22 @@ export interface MarkovDistributionResult {
     }>;
     /** Anchor coverage diagnostic — how well Polymarket anchors cover the price range */
     anchorCoverage: AnchorCoverageDiagnostic;
+    /** Goodness-of-fit: chi-squared p-value comparing observed vs expected transitions.
+     *  Low p-value (< 0.05) means the Markov assumption is a poor fit. null if insufficient data. */
+    goodnessOfFit: GoodnessOfFitResult | null;
   };
+}
+
+/** Result of chi-squared goodness-of-fit test for the transition matrix. */
+export interface GoodnessOfFitResult {
+  /** Chi-squared statistic */
+  chiSquared: number;
+  /** Degrees of freedom */
+  degreesOfFreedom: number;
+  /** Approximate p-value (higher = better fit; < 0.05 suggests poor Markov fit) */
+  pValue: number;
+  /** Whether the model passes the test at α=0.05 */
+  passes: boolean;
 }
 
 /** Actionable Buy / Hold / Sell summary derived from the Markov distribution. */
@@ -326,12 +341,79 @@ export function buildDefaultMatrix(): TransitionMatrix {
   );
 }
 
-/** Normalize each row of a matrix to sum to 1. */
+/** Normalize each row of a matrix to sum to 1. Zero-sum rows become uniform. */
 export function normalizeRows(matrix: number[][]): TransitionMatrix {
   return matrix.map(row => {
     const sum = row.reduce((a, b) => a + b, 0);
+    if (sum < 1e-12) {
+      // Degenerate row: distribute uniformly to avoid NaN
+      const uniform = 1 / row.length;
+      return row.map(() => uniform);
+    }
     return row.map(v => v / sum);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Goodness-of-fit: Chi-squared test for Markov transition matrix
+// ---------------------------------------------------------------------------
+
+/**
+ * Chi-squared goodness-of-fit test comparing observed transition counts
+ * against expected counts from the estimated transition matrix.
+ *
+ * Tests H₀: the observed transitions are consistent with the estimated P.
+ * A low p-value (< 0.05) means the Markov assumption is a poor fit.
+ *
+ * Uses the Wilson–Hilferty approximation for the chi-squared CDF.
+ */
+export function transitionGoodnessOfFit(
+  states: RegimeState[],
+  P: TransitionMatrix,
+  alpha = 0.1,  // same Dirichlet prior used during estimation
+): GoodnessOfFitResult | null {
+  if (states.length < 50) return null; // not enough data for reliable test
+
+  // Build observed count matrix
+  const observed: number[][] = Array.from({ length: NUM_STATES }, () =>
+    Array(NUM_STATES).fill(0),
+  );
+  for (let i = 0; i < states.length - 1; i++) {
+    observed[STATE_INDEX[states[i]]][STATE_INDEX[states[i + 1]]] += 1;
+  }
+
+  // Row totals for expected counts
+  const rowTotals = observed.map(row => row.reduce((a, b) => a + b, 0));
+
+  let chiSq = 0;
+  let df = 0;
+
+  for (let i = 0; i < NUM_STATES; i++) {
+    if (rowTotals[i] < 5) continue; // skip rows with too few observations
+    for (let j = 0; j < NUM_STATES; j++) {
+      const expected = rowTotals[i] * P[i][j];
+      if (expected < 1) continue; // skip tiny expected counts (chi-sq unreliable)
+      chiSq += (observed[i][j] - expected) ** 2 / expected;
+      df += 1;
+    }
+  }
+
+  // df correction: subtract estimated parameters
+  // For each active row we estimated (NUM_STATES-1) free params from that row
+  const activeRows = rowTotals.filter(t => t >= 5).length;
+  df = Math.max(1, df - activeRows * (NUM_STATES - 1));
+
+  // Wilson–Hilferty normal approximation for chi-squared CDF
+  const z = Math.cbrt(chiSq / df) - (1 - 2 / (9 * df));
+  const zNorm = z / Math.sqrt(2 / (9 * df));
+  const pValue = 1 - normalCDF(zNorm);
+
+  return {
+    chiSquared: chiSq,
+    degreesOfFreedom: df,
+    pValue,
+    passes: pValue >= 0.05,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -625,13 +707,19 @@ export function secondLargestEigenvalue(P: TransitionMatrix, iterations = 100): 
   return Math.min(1, Math.max(0, Math.abs(lambda2)));
 }
 
-/** Standard normal CDF via rational approximation (Abramowitz & Stegun). */
+/**
+ * Standard normal CDF Φ(x) via Abramowitz & Stegun erf approximation (eq 7.1.26).
+ * The A&S formula computes erf(t) which equals Φ(t√2)*2−1, so we
+ * rescale the input by 1/√2 to obtain the true standard normal CDF.
+ */
 export function normalCDF(x: number): number {
+  // Rescale: Φ(x) = 0.5*(1 + erf(x/√2))
+  const z = x / Math.SQRT2;
   const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
   const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
-  const sign = x < 0 ? -1 : 1;
-  const t = 1 / (1 + p * Math.abs(x));
-  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+  const sign = z < 0 ? -1 : 1;
+  const t = 1 / (1 + p * Math.abs(z));
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-z * z);
   return 0.5 * (1 + sign * y);
 }
 
@@ -1117,6 +1205,9 @@ export async function computeMarkovDistribution(params: {
     ? buildDefaultMatrix()
     : estimateTransitionMatrix(regimeSeq);
 
+  // --- Goodness-of-fit test (before sentiment adjustment, which is intentional) ---
+  const gofResult = breakResult.detected ? null : transitionGoodnessOfFit(regimeSeq, P);
+
   // --- Sentiment adjustment ---
   const sentimentSignal = sentiment ?? { bullish: 0.5, bearish: 0.5 };
   const sentimentShift = sentimentSignal.bullish - sentimentSignal.bearish;
@@ -1194,6 +1285,7 @@ export async function computeMarkovDistribution(params: {
       ciWidened: breakResult.detected,
       anchorDivergenceWarnings,
       anchorCoverage: assessAnchorCoverage(polymarketAnchors, currentPrice),
+      goodnessOfFit: gofResult,
     },
   };
 }
@@ -1342,6 +1434,10 @@ Requires: ticker symbol, horizon in trading days (1–90), and access to recent 
       warnings.push(`⚠️ Cross-platform divergence: ${m.anchorDivergenceWarnings.map(w => `$${w.price} (${w.divergencePp.toFixed(1)}pp)`).join(', ')}`);
     if (m.outOfSampleR2 !== null)
       warnings.push(`R²_OS: ${m.outOfSampleR2.toFixed(3)} (>0 = Markov adds value over mean)`);
+    if (m.goodnessOfFit && !m.goodnessOfFit.passes)
+      warnings.push(`⚠️ Markov fit test failed (χ²=${m.goodnessOfFit.chiSquared.toFixed(1)}, p=${m.goodnessOfFit.pValue.toFixed(3)}) — transitions may not follow Markov property`);
+    if (m.goodnessOfFit?.passes)
+      warnings.push(`✓ Markov fit test passed (p=${m.goodnessOfFit.pValue.toFixed(3)})`);
 
     // --- Section 5: Full distribution table ---
     const table = [
