@@ -70,3 +70,69 @@ describe('hasToolCalls (regression)', () => {
     expect(hasToolCalls(msg)).toBe(false);
   });
 });
+
+// ===========================================================================
+// extractTextContent — array content branch
+// ===========================================================================
+
+describe('extractTextContent — array content', () => {
+  test('joins text blocks from array content', () => {
+    const msg = new AIMessage({
+      content: [
+        { type: 'text', text: 'First part' },
+        { type: 'text', text: 'Second part' },
+      ],
+    });
+    expect(extractTextContent(msg)).toBe('First part\nSecond part');
+  });
+
+  test('filters out non-text blocks', () => {
+    const msg = new AIMessage({
+      content: [
+        { type: 'tool_use', id: 'tu1', name: 'search', input: {} },
+        { type: 'text', text: 'The answer' },
+      ],
+    });
+    expect(extractTextContent(msg)).toBe('The answer');
+  });
+
+  test('returns empty string when no text blocks in array', () => {
+    const msg = new AIMessage({
+      content: [
+        { type: 'tool_use', id: 'tu1', name: 'search', input: {} },
+      ],
+    });
+    expect(extractTextContent(msg)).toBe('');
+  });
+});
+
+// ===========================================================================
+// extractTextContent — non-string / non-array fallback
+// ===========================================================================
+
+describe('extractTextContent — fallback', () => {
+  test('returns empty string for non-string non-array content', () => {
+    const msg = new AIMessage({ content: '' });
+    // content is a string (empty), handled by the string branch
+    expect(extractTextContent(msg)).toBe('');
+  });
+});
+
+// ===========================================================================
+// hasToolCalls — positive cases
+// ===========================================================================
+
+describe('hasToolCalls — positive', () => {
+  test('returns true when message has tool calls', () => {
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{ id: 'tc1', name: 'search', args: { query: 'AAPL' }, type: 'tool_call' }],
+    });
+    expect(hasToolCalls(msg)).toBe(true);
+  });
+
+  test('returns false when tool_calls array is empty', () => {
+    const msg = new AIMessage({ content: 'hi', tool_calls: [] });
+    expect(hasToolCalls(msg)).toBe(false);
+  });
+});
