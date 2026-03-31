@@ -235,3 +235,65 @@ export function generateReport(
     gofPassRate: gofPassRate(steps),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Threshold Optimization (development-time calibration tool)
+// ---------------------------------------------------------------------------
+
+export interface ThresholdOptResult {
+  bestBuyThreshold: number;
+  bestSellThreshold: number;
+  bestAccuracy: number;
+  /** Accuracy at each grid point for analysis */
+  grid: Array<{ buy: number; sell: number; accuracy: number }>;
+}
+
+/**
+ * Grid search for optimal BUY/SELL thresholds that maximize directional accuracy.
+ * Recomputes recommendations from each step's `predictedReturn` with different
+ * thresholds and finds the pair that maximizes accuracy.
+ *
+ * This is a development-time calibration tool — NOT used at runtime.
+ */
+export function optimizeThresholds(
+  steps: BacktestStep[],
+  buyRange = [0.005, 0.01, 0.015, 0.02, 0.03, 0.05, 0.07],
+  sellRange = [0.005, 0.01, 0.015, 0.02, 0.03],
+  holdBand = 0.03,
+): ThresholdOptResult {
+  let bestAccuracy = 0;
+  let bestBuy = 0.03;
+  let bestSell = 0.02;
+  const grid: ThresholdOptResult['grid'] = [];
+
+  for (const buyThr of buyRange) {
+    for (const sellThr of sellRange) {
+      let correct = 0;
+      for (const step of steps) {
+        let rec: 'BUY' | 'HOLD' | 'SELL';
+        if (step.predictedReturn > buyThr) {
+          rec = 'BUY';
+        } else if (step.predictedReturn < -sellThr) {
+          rec = 'SELL';
+        } else {
+          rec = 'HOLD';
+        }
+
+        if (rec === 'BUY' && step.actualReturn > 0) correct++;
+        else if (rec === 'SELL' && step.actualReturn < 0) correct++;
+        else if (rec === 'HOLD' && Math.abs(step.actualReturn) < holdBand) correct++;
+      }
+
+      const accuracy = steps.length > 0 ? correct / steps.length : 0;
+      grid.push({ buy: buyThr, sell: sellThr, accuracy });
+
+      if (accuracy > bestAccuracy) {
+        bestAccuracy = accuracy;
+        bestBuy = buyThr;
+        bestSell = sellThr;
+      }
+    }
+  }
+
+  return { bestBuyThreshold: bestBuy, bestSellThreshold: bestSell, bestAccuracy, grid };
+}

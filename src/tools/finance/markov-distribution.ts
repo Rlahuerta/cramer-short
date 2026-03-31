@@ -278,30 +278,114 @@ export function extractPriceThresholds(
  *
  * @param dailyReturn - Return for the day (e.g. 0.012 = +1.2%)
  * @param dailyVolatility - Intraday vol proxy (e.g. (high - low) / open)
+ * @param returnThreshold - Adaptive threshold for bull/bear classification (default 0.01)
+ * @param volThreshold - Adaptive threshold for high-vol classification (default 0.02)
  */
 export function classifyRegimeState(
   dailyReturn: number,
   dailyVolatility: number,
+  returnThreshold = 0.01,
+  volThreshold = 0.02,
 ): RegimeState {
-  const highVol = dailyVolatility > 0.02;
+  const highVol = dailyVolatility > volThreshold;
   if (highVol) {
     return dailyReturn > 0 ? 'high_vol_bull' : 'high_vol_bear';
   }
-  if (dailyReturn > 0.01)  return 'bull';
-  if (dailyReturn < -0.01) return 'bear';
+  if (dailyReturn > returnThreshold)  return 'bull';
+  if (dailyReturn < -returnThreshold) return 'bear';
   return 'sideways';
 }
 
+/**
+ * Compute per-asset adaptive thresholds from the return series.
+ * Uses half-median of absolute returns for regime classification and
+ * 2× median for high-volatility detection. This ensures ~30-40% of days
+ * are bull, ~30-40% bear, ~20-30% sideways regardless of asset volatility.
+ */
+export function computeAdaptiveThresholds(returns: number[]): {
+  returnThreshold: number;
+  volThreshold: number;
+} {
+  if (returns.length === 0) return { returnThreshold: 0.01, volThreshold: 0.02 };
+  const absReturns = returns.map(r => Math.abs(r)).sort((a, b) => a - b);
+  const medianAbsReturn = absReturns[Math.floor(absReturns.length / 2)];
+  return {
+    returnThreshold: Math.max(0.001, 0.5 * medianAbsReturn),
+    volThreshold: Math.max(0.005, 2.0 * medianAbsReturn),
+  };
+}
+
 // ---------------------------------------------------------------------------
-// 3. estimateTransitionMatrix
+// 2b. Momentum signal
 // ---------------------------------------------------------------------------
+
+export interface MomentumSignal {
+  /** Annualized return over lookback window */
+  velocity: number;
+  /** Change in velocity (recent half vs older half): >0 = accelerating */
+  acceleration: number;
+  /** R² of OLS regression on log(prices) — measures trend linearity (0–1) */
+  trendStrength: number;
+  /** Daily drift adjustment to add to regime-weighted mu (clamped ±0.003) */
+  adjustment: number;
+}
+
+/**
+ * Compute a momentum signal from recent prices.
+ * Returns a small drift adjustment that tilts the Markov distribution in the
+ * direction of the recent trend, weighted by trend linearity (R²).
+ *
+ * @param prices  Historical prices (at least lookback+1 entries)
+ * @param lookback  Number of days to look back (default 20)
+ */
+export function computeMomentumSignal(prices: number[], lookback = 20): MomentumSignal {
+  const nil: MomentumSignal = { velocity: 0, acceleration: 0, trendStrength: 0, adjustment: 0 };
+  if (prices.length < lookback + 1) return nil;
+
+  const window = prices.slice(-lookback - 1);
+
+  // Velocity: annualized return over lookback
+  const totalReturn = window[window.length - 1] / window[0] - 1;
+  const velocity = Math.sign(totalReturn) * (Math.pow(1 + Math.abs(totalReturn), 252 / lookback) - 1);
+
+  // Acceleration: velocity of recent half minus velocity of older half
+  const half = Math.floor(lookback / 2);
+  const recentRet = window[window.length - 1] / window[window.length - 1 - half] - 1;
+  const olderRet  = window[window.length - 1 - half] / window[0] - 1;
+  const recentVel = Math.sign(recentRet) * (Math.pow(1 + Math.abs(recentRet), 252 / half) - 1);
+  const olderVel  = Math.sign(olderRet) * (Math.pow(1 + Math.abs(olderRet), 252 / half) - 1);
+  const acceleration = recentVel - olderVel;
+
+  // Trend strength: R² of OLS on log(prices)
+  const logPrices = window.map(p => Math.log(p));
+  const n = logPrices.length;
+  const xMean = (n - 1) / 2;
+  const yMean = logPrices.reduce((s, v) => s + v, 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = i - xMean;
+    const dy = logPrices[i] - yMean;
+    sxy += dx * dy;
+    sxx += dx * dx;
+    syy += dy * dy;
+  }
+  const trendStrength = syy > 0 ? (sxy * sxy) / (sxx * syy) : 0;
+
+  // Adjustment: daily drift tilt = velocity/252 × trendStrength × scaling factor
+  // Clamped to ±0.003 per day (~±0.75 annualized) to prevent extreme adjustments
+  const rawAdj = (velocity / 252) * trendStrength * 0.25;
+  const adjustment = Math.max(-0.003, Math.min(0.003, rawAdj));
+
+  return { velocity, acceleration, trendStrength, adjustment };
+}
 
 /**
  * Estimate a 5×5 Markov transition matrix from a sequence of regime states.
  *
- * Smoothing: Dirichlet α = 0.1 added to all transition counts before normalization.
- * This is the flat prior from Welton & Ades (2005) and provides meaningful
- * regularization when counts are sparse (e.g. 60-day window with rare transitions).
+ * Smoothing: Dirichlet α scales inversely with sample size (default: max(0.01, 5/N)).
+ * Converges to ~0.1 (Jeffreys prior) at N=50, and shrinks for larger samples to let
+ * data dominate. Welton & Ades (2005) recommends α=0.1 for sparse counts; the adaptive
+ * formula reduces over-smoothing for longer windows while still regularizing short ones.
  *
  * Default matrix (insufficient data): 0.6 diagonal, uniform off-diagonal.
  * offDiag = (1 − 0.6) / (NUM_STATES − 1) = 0.4 / 4 = 0.1 per cell (rows sum to 1.0).
@@ -311,16 +395,19 @@ export function classifyRegimeState(
  */
 export function estimateTransitionMatrix(
   states: RegimeState[],
-  alpha = 0.1,     // Dirichlet smoothing constant
+  alpha?: number,     // Dirichlet smoothing constant (auto-tuned if omitted)
   minObservations = 30,
 ): TransitionMatrix {
   if (states.length < minObservations) {
     return buildDefaultMatrix();
   }
 
+  // Auto-tune: scale inversely with sample size
+  const effectiveAlpha = alpha ?? Math.max(0.01, 5.0 / states.length);
+
   // Initialise count matrix with Dirichlet prior
   const counts: number[][] = Array.from({ length: NUM_STATES }, () =>
-    Array(NUM_STATES).fill(alpha),
+    Array(NUM_STATES).fill(effectiveAlpha),
   );
 
   for (let i = 0; i < states.length - 1; i++) {
@@ -826,6 +913,7 @@ export function interpolateDistribution(
   numLevels = 20,
   monteCarloSamples = 1000,
   ciWidthMultiplier = 1.0,
+  momentumAdjustment = 0,
 ): MarkovDistributionPoint[] {
   const stepPct  = 0.015;
   let minPrice = currentPrice * Math.pow(1 - stepPct, numLevels / 2);
@@ -867,7 +955,7 @@ export function interpolateDistribution(
       (s, state, i) => s + stateWeights[i] * regimeStats[state].stdReturn ** 2, 0,
     ),
   );
-  const mu_n    = horizon * mu_eff;
+  const mu_n    = horizon * (mu_eff + momentumAdjustment);
   const sigma_n = sigma_eff * Math.sqrt(horizon);
 
   // Nearest anchor lookup helper
@@ -1001,12 +1089,14 @@ export function interpolateSurvival(
  * @param currentPrice   Current price (serves as the 50% reference)
  * @param buyThreshold   Min upside for BUY zone (default 0.05 = +5%)
  * @param sellThreshold  Min downside for SELL zone (default 0.03 = −3%)
+ * @param horizon        Forecast horizon in trading days (used to scale action thresholds)
  */
 export function computeActionSignal(
   distribution: MarkovDistributionPoint[],
   currentPrice: number,
   buyThreshold = 0.05,
   sellThreshold = 0.03,
+  horizon = 30,
 ): ActionSignal {
   const pAboveBuy  = interpolateSurvival(distribution, currentPrice * (1 + buyThreshold));
   const pAboveSell = interpolateSurvival(distribution, currentPrice * (1 - sellThreshold));
@@ -1044,16 +1134,25 @@ export function computeActionSignal(
 
   const riskRewardRatio = eDownside > 0 ? eUpside / eDownside : 1.0;
 
-  // Recommendation: whichever zone has the highest probability
-  const scores: Array<['BUY' | 'HOLD' | 'SELL', number]> = [
-    ['BUY',  pAboveBuy],
-    ['HOLD', pHold],
-    ['SELL', pBelowSell],
-  ];
-  scores.sort((a, b) => b[1] - a[1]);
-  const recommendation = scores[0][0];
-  const gap = scores[0][1] - scores[1][1];
-  const confidence: 'HIGH' | 'MEDIUM' | 'LOW' = gap >= 0.15 ? 'HIGH' : gap >= 0.07 ? 'MEDIUM' : 'LOW';
+  // Horizon-scaled action thresholds for recommendation (calibrated via backtest grid search)
+  const actionBuyThr  = horizon <= 7 ? 0.01 : horizon <= 30 ? 0.02 : 0.03;
+  const actionSellThr = horizon <= 7 ? 0.008 : horizon <= 30 ? 0.015 : 0.02;
+
+  // Recommendation derived from expectedReturn (not zone argmax)
+  let recommendation: 'BUY' | 'HOLD' | 'SELL';
+  if (expectedReturn > actionBuyThr) {
+    recommendation = 'BUY';
+  } else if (expectedReturn < -actionSellThr) {
+    recommendation = 'SELL';
+  } else {
+    recommendation = 'HOLD';
+  }
+
+  // Confidence from conviction strength relative to threshold
+  const activeThr = recommendation === 'BUY' ? actionBuyThr : actionSellThr;
+  const conviction = Math.abs(expectedReturn);
+  const confidence: 'HIGH' | 'MEDIUM' | 'LOW' =
+    conviction >= 2 * activeThr ? 'HIGH' : conviction >= activeThr ? 'MEDIUM' : 'LOW';
 
   return {
     buyProbability:  pAboveBuy,
@@ -1187,8 +1286,11 @@ export async function computeMarkovDistribution(params: {
     vols.push(Math.abs(ret));
   }
 
-  // --- Classify regime states ---
-  const regimeSeq: RegimeState[] = returns.map((r, i) => classifyRegimeState(r, vols[i]));
+  // --- Classify regime states with adaptive thresholds ---
+  const { returnThreshold, volThreshold } = computeAdaptiveThresholds(returns);
+  const regimeSeq: RegimeState[] = returns.map((r, i) =>
+    classifyRegimeState(r, vols[i], returnThreshold, volThreshold),
+  );
   const currentRegime = regimeSeq.length > 0 ? regimeSeq[regimeSeq.length - 1] : 'sideways';
 
   // --- Tier 1a: State observation counts and sparse state detection ---
@@ -1234,10 +1336,15 @@ export async function computeMarkovDistribution(params: {
   // --- Tier 1b: Widen CI when structural break detected ---
   const ciWidthMultiplier = breakResult.detected ? 1.5 : 1.0;
 
+  // --- Momentum signal ---
+  const momentum = computeMomentumSignal(historicalPrices);
+  // Halve momentum weight when structural break detected (trend may have broken)
+  const momentumAdj = breakResult.detected ? momentum.adjustment * 0.5 : momentum.adjustment;
+
   // --- Distribution ---
   const distribution = interpolateDistribution(
     currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
-    20, 1000, ciWidthMultiplier,
+    20, 1000, ciWidthMultiplier, momentumAdj,
   );
 
   // --- Optional R²_OS (leave-one-out on training tail) ---
@@ -1269,7 +1376,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice,
     horizon,
     distribution,
-    actionSignal: computeActionSignal(distribution, currentPrice),
+    actionSignal: computeActionSignal(distribution, currentPrice, undefined, undefined, horizon),
     metadata: {
       polymarketAnchors: polymarketAnchors.filter(a => a.trustScore === 'high').length,
       regimeState: currentRegime,

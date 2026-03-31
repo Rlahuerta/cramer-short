@@ -14,6 +14,7 @@ import {
   sharpness,
   gofPassRate,
   generateReport,
+  optimizeThresholds,
   type BacktestStep,
 } from './metrics.js';
 
@@ -289,5 +290,43 @@ describe('generateReport', () => {
     expect(typeof report.expectedReturnCorrelation).toBe('number');
     expect(typeof report.sharpness).toBe('number');
     expect(report.reliabilityBins).toHaveLength(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// optimizeThresholds
+// ---------------------------------------------------------------------------
+
+describe('optimizeThresholds', () => {
+  it('finds optimal thresholds for strongly directional data', () => {
+    // All steps have large positive predicted return and positive actual return
+    // Best threshold should be low (to capture them as BUY)
+    const steps = Array.from({ length: 20 }, () =>
+      makeStep({ predictedReturn: 0.08, actualReturn: 0.05, recommendation: 'BUY' }),
+    );
+    const result = optimizeThresholds(steps);
+    expect(result.bestAccuracy).toBeGreaterThan(0.9);
+    expect(result.bestBuyThreshold).toBeLessThanOrEqual(0.07);
+  });
+
+  it('returns grid with all combinations', () => {
+    const steps = [makeStep()];
+    const result = optimizeThresholds(steps, [0.01, 0.02], [0.01, 0.02]);
+    expect(result.grid).toHaveLength(4); // 2 × 2
+  });
+
+  it('handles empty steps array', () => {
+    const result = optimizeThresholds([]);
+    expect(result.bestAccuracy).toBe(0);
+  });
+
+  it('prefers HOLD when returns are near zero', () => {
+    const steps = Array.from({ length: 20 }, () =>
+      makeStep({ predictedReturn: 0.001, actualReturn: 0.005, recommendation: 'HOLD' }),
+    );
+    const result = optimizeThresholds(steps);
+    // With near-zero predicted returns, best strategy is HOLD with tight buy threshold
+    // actualReturn=0.005 < holdBand=0.03 so HOLD is correct
+    expect(result.bestAccuracy).toBeGreaterThan(0.5);
   });
 });
