@@ -117,6 +117,8 @@ export interface MarkovDistributionResult {
       kalshiProb: number;
       divergencePp: number;
     }>;
+    /** Anchor coverage diagnostic — how well Polymarket anchors cover the price range */
+    anchorCoverage: AnchorCoverageDiagnostic;
   };
 }
 
@@ -140,6 +142,34 @@ export interface ActionSignal {
   buyThreshold: number;
   /** Downside threshold used (default 0.03 = −3%) */
   sellThreshold: number;
+  /** Key price levels for trade execution */
+  actionLevels: ActionLevels;
+}
+
+/** Concrete price levels derived from the probability distribution for trade execution. */
+export interface ActionLevels {
+  /** Price where P(>price) ≈ 30% — profit-taking level (upside target) */
+  targetPrice: number;
+  /** Price where P(>price) ≈ 90% — strong support / stop-loss level */
+  stopLoss: number;
+  /** Price where P(>price) ≈ 50% — expected median price at horizon */
+  medianPrice: number;
+  /** 80th-percentile upside — optimistic but plausible target */
+  bullCase: number;
+  /** 20th-percentile downside — pessimistic but plausible outcome */
+  bearCase: number;
+}
+
+/** Diagnostic for Polymarket anchor quality and coverage. */
+export interface AnchorCoverageDiagnostic {
+  totalAnchors: number;
+  trustedAnchors: number;
+  /** Largest gap between adjacent anchors as % of current price */
+  maxGapPct: number;
+  /** Whether anchor coverage is adequate for reliable blending */
+  quality: 'good' | 'sparse' | 'none';
+  /** Human-readable warning (empty if quality is 'good') */
+  warning: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +181,11 @@ const PRICE_PATTERNS = [
   /(?:below|under|drop\s*(?:below|to))\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
   /(?:reach|hit)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
   /\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)\s*(?:or\s*(?:higher|above|more))/i,
+  // Commodity-specific patterns (per barrel, per ounce, etc.)
+  /\$(\d[\d,]*(?:\.\d+)?)\s*(?:per\s*(?:barrel|bbl|ounce|oz|gallon|gal))/i,
+  /(?:at|to|past)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
+  // Plain price reference: "oil $150" or "gold $3000"
+  /(?:oil|crude|gold|silver|bitcoin|btc|eth)\s+\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
 ];
 
 /** Parse a price string like "$70K" or "$1,234.56" into a number. */
@@ -705,12 +740,28 @@ export function interpolateDistribution(
   ciWidthMultiplier = 1.0,
 ): MarkovDistributionPoint[] {
   const stepPct  = 0.015;
-  const minPrice = currentPrice * Math.pow(1 - stepPct, numLevels / 2);
-  const maxPrice = currentPrice * Math.pow(1 + stepPct, numLevels / 2);
+  let minPrice = currentPrice * Math.pow(1 - stepPct, numLevels / 2);
+  let maxPrice = currentPrice * Math.pow(1 + stepPct, numLevels / 2);
+
+  // Extend grid range to include all Polymarket anchors (fixes sparse-anchor bug)
+  for (const a of anchors) {
+    if (a.price < minPrice) minPrice = a.price * 0.95;
+    if (a.price > maxPrice) maxPrice = a.price * 1.05;
+  }
+
   const prices: number[] = [];
   for (let i = 0; i <= numLevels; i++) {
     prices.push(minPrice * Math.pow(maxPrice / minPrice, i / numLevels));
   }
+
+  // Merge anchor prices into the grid so they are never missed
+  for (const a of anchors) {
+    const closestDist = prices.reduce(
+      (best, p) => Math.min(best, Math.abs(p - a.price) / a.price), Infinity,
+    );
+    if (closestDist > 0.005) prices.push(a.price);
+  }
+  prices.sort((a, b) => a - b);
 
   const mixWeight = computeMixingWeight(secondEigenvalue, horizon);
   const initialIdx = STATE_INDEX[initialState];
@@ -926,7 +977,91 @@ export function computeActionSignal(
     riskRewardRatio,
     buyThreshold,
     sellThreshold,
+    actionLevels: computeActionLevels(distribution, currentPrice),
   };
+}
+
+/**
+ * Extract key price levels from the probability distribution for trade execution.
+ * Uses linear interpolation on the survival curve to find specific percentiles.
+ */
+export function computeActionLevels(
+  distribution: MarkovDistributionPoint[],
+  currentPrice: number,
+): ActionLevels {
+  // Helper: find the price where P(>price) ≈ targetProb via linear interpolation
+  const findPriceAtProb = (targetProb: number): number => {
+    if (distribution.length === 0) return currentPrice;
+    // P(>price) is non-increasing; find the bracket
+    for (let i = 0; i < distribution.length - 1; i++) {
+      const hi = distribution[i];     // higher probability (lower price)
+      const lo = distribution[i + 1]; // lower probability (higher price)
+      if (hi.probability >= targetProb && lo.probability <= targetProb) {
+        if (Math.abs(hi.probability - lo.probability) < 1e-10) return hi.price;
+        const t = (hi.probability - targetProb) / (hi.probability - lo.probability);
+        return hi.price + t * (lo.price - hi.price);
+      }
+    }
+    // Edge: targetProb above all points → return lowest price
+    if (targetProb >= distribution[0].probability) return distribution[0].price;
+    // Edge: targetProb below all points → return highest price
+    return distribution[distribution.length - 1].price;
+  };
+
+  return {
+    medianPrice: findPriceAtProb(0.50),
+    targetPrice: findPriceAtProb(0.30),
+    stopLoss:    findPriceAtProb(0.90),
+    bullCase:    findPriceAtProb(0.20),
+    bearCase:    findPriceAtProb(0.80),
+  };
+}
+
+/**
+ * Assess Polymarket anchor quality: how well do anchors cover the relevant price range?
+ * Sparse anchors = large gaps = less reliable blending.
+ */
+export function assessAnchorCoverage(
+  anchors: PriceThreshold[],
+  currentPrice: number,
+): AnchorCoverageDiagnostic {
+  const trusted = anchors.filter(a => a.trustScore === 'high');
+  if (trusted.length === 0) {
+    return {
+      totalAnchors: anchors.length,
+      trustedAnchors: 0,
+      maxGapPct: 100,
+      quality: 'none',
+      warning: 'No trusted Polymarket anchors — distribution is 100% Markov-model driven',
+    };
+  }
+
+  // Sort by price and find largest gap (including gap from current price to first anchor)
+  const sorted = [...trusted].sort((a, b) => a.price - b.price);
+  let maxGap = 0;
+  // Gap from current price to nearest anchor
+  const nearestDist = sorted.reduce(
+    (best, a) => Math.min(best, Math.abs(a.price - currentPrice) / currentPrice), Infinity,
+  );
+  maxGap = nearestDist;
+  // Gaps between adjacent anchors
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const gap = (sorted[i + 1].price - sorted[i].price) / sorted[i].price;
+    if (gap > maxGap) maxGap = gap;
+  }
+
+  const maxGapPct = maxGap * 100;
+  const quality: 'good' | 'sparse' | 'none' =
+    trusted.length >= 3 && maxGapPct < 15 ? 'good'
+    : trusted.length >= 1 ? 'sparse'
+    : 'none';
+
+  const warning = quality === 'good' ? ''
+    : quality === 'sparse'
+      ? `Sparse anchors (${trusted.length} trusted, max gap ${maxGapPct.toFixed(0)}%) — interpolation between anchors is model-driven`
+      : 'No trusted anchors';
+
+  return { totalAnchors: anchors.length, trustedAnchors: trusted.length, maxGapPct, quality, warning };
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1193,7 @@ export async function computeMarkovDistribution(params: {
       structuralBreakDivergence: breakResult.divergence,
       ciWidened: breakResult.detected,
       anchorDivergenceWarnings,
+      anchorCoverage: assessAnchorCoverage(polymarketAnchors, currentPrice),
     },
   };
 }
@@ -1135,45 +1271,80 @@ Requires: ticker symbol, horizon in trading days (1–90), and access to recent 
     });
 
     const { metadata: m, actionSignal: sig } = result;
+    const lvl = sig.actionLevels;
 
-    // Decision Summary section
-    const buyPct  = (sig.buyProbability  * 100).toFixed(1);
-    const holdPct = (sig.holdProbability * 100).toFixed(1);
-    const sellPct = (sig.sellProbability * 100).toFixed(1);
+    // Format helpers
+    const fmt = (n: number) => n.toFixed(2);
+    const pct = (n: number) => (n * 100).toFixed(1);
+    const buyPct  = pct(sig.buyProbability);
+    const holdPct = pct(sig.holdProbability);
+    const sellPct = pct(sig.sellProbability);
     const buyThr  = (sig.buyThreshold  * 100).toFixed(0);
     const sellThr = (sig.sellThreshold * 100).toFixed(0);
     const retSign = sig.expectedReturn >= 0 ? '+' : '';
-    const retPct  = (sig.expectedReturn * 100).toFixed(1);
+    const retPct  = pct(sig.expectedReturn);
     const rrLabel = sig.riskRewardRatio.toFixed(2);
-
     const recEmoji = sig.recommendation === 'BUY' ? '📈' : sig.recommendation === 'SELL' ? '📉' : '➡️ ';
 
-    const lines = [
-      `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
-      `Current: $${result.currentPrice.toFixed(2)} | Regime: ${m.regimeState}`,
-      `Anchors: ${m.polymarketAnchors} (trusted) | Sentiment shift: ${(m.sentimentAdjustment * 100).toFixed(0)}%`,
-      `Mixing weight: ${(m.mixingTimeWeight * 100).toFixed(0)}% Markov / ${((1 - m.mixingTimeWeight) * 100).toFixed(0)}% Anchors`,
-      m.outOfSampleR2 !== null
-        ? `R²_OS: ${m.outOfSampleR2.toFixed(3)} (>0 = Markov adds value over mean)`
-        : '',
-      m.structuralBreakDetected
-        ? `⚠️ Structural break detected (divergence=${m.structuralBreakDivergence.toFixed(3)}); CI widened 50%, using default matrix`
-        : '',
-      m.sparseStates.length > 0
-        ? `⚠️ Sparse states (<5 obs): ${m.sparseStates.join(', ')} — transitions prior-dominated`
-        : '',
-      m.anchorDivergenceWarnings.length > 0
-        ? `⚠️ Cross-platform divergence: ${m.anchorDivergenceWarnings.map(w => `$${w.price} (${w.divergencePp.toFixed(1)}pp)`).join(', ')}`
-        : '',
+    // --- Section 1: Decision Card (FIRST — most important) ---
+    const decisionCard = [
+      `${recEmoji} ${sig.recommendation}  [${sig.confidence} confidence]  |  Expected return: ${retSign}${retPct}%  |  Risk/reward: ${rrLabel}×`,
       '',
-      '📋 Decision Summary',
+      '┌─ Your Options ─────────────────────────────────────────┐',
+      `│  📈 BUY   ${buyPct.padStart(5)}% chance price rises  >${buyThr}% above current   │`,
+      `│  ➡️  HOLD  ${holdPct.padStart(5)}% chance price stays within ±${sellThr}%-${buyThr}%    │`,
+      `│  📉 SELL  ${sellPct.padStart(5)}% chance price falls >${sellThr}% below current   │`,
+      '└────────────────────────────────────────────────────────┘',
+    ];
+
+    // --- Section 2: Action Plan with price levels ---
+    const actionPlan = [
+      '',
+      '🎯 Action Plan',
       '─'.repeat(60),
-      `📈 BUY    (>+${buyThr}%)       ${buyPct.padStart(5)}%   P(price exceeds current +${buyThr}% by horizon)`,
-      `➡️  HOLD   (±${sellThr}%..+${buyThr}%)   ${holdPct.padStart(5)}%   P(price stays range-bound)`,
-      `📉 SELL   (<−${sellThr}%)       ${sellPct.padStart(5)}%   P(price falls more than −${sellThr}% by horizon)`,
+      `   Bull case (20% prob):  $${fmt(lvl.bullCase)}   (+${pct((lvl.bullCase - result.currentPrice) / result.currentPrice)}%)`,
+      `   Target (30% prob):     $${fmt(lvl.targetPrice)}   (+${pct((lvl.targetPrice - result.currentPrice) / result.currentPrice)}%)`,
+      `   Median forecast:       $${fmt(lvl.medianPrice)}   (${(lvl.medianPrice >= result.currentPrice ? '+' : '')}${pct((lvl.medianPrice - result.currentPrice) / result.currentPrice)}%)`,
+      `   Bear case (80% prob):  $${fmt(lvl.bearCase)}   (${(lvl.bearCase >= result.currentPrice ? '+' : '')}${pct((lvl.bearCase - result.currentPrice) / result.currentPrice)}%)`,
+      `   Stop-loss (90% prob):  $${fmt(lvl.stopLoss)}   (${(lvl.stopLoss >= result.currentPrice ? '+' : '')}${pct((lvl.stopLoss - result.currentPrice) / result.currentPrice)}%)`,
+    ];
+
+    // Generate contextual "what to do" based on recommendation
+    const whatToDo: string[] = [''];
+    if (sig.recommendation === 'BUY') {
+      whatToDo.push(`💡 If buying: Enter near $${fmt(result.currentPrice)}, target $${fmt(lvl.targetPrice)}, stop-loss at $${fmt(lvl.stopLoss)}`);
+      whatToDo.push(`   Max gain: +${pct((lvl.bullCase - result.currentPrice) / result.currentPrice)}%  |  Max loss to stop: ${pct((lvl.stopLoss - result.currentPrice) / result.currentPrice)}%`);
+    } else if (sig.recommendation === 'SELL') {
+      whatToDo.push(`💡 If selling/shorting: Exit at $${fmt(result.currentPrice)}, re-enter below $${fmt(lvl.bearCase)}`);
+      whatToDo.push(`   Expected downside: ${pct((lvl.medianPrice - result.currentPrice) / result.currentPrice)}% to median`);
+    } else {
+      whatToDo.push(`💡 Range-bound: No strong edge. Wait for $${fmt(lvl.targetPrice)} (bullish break) or $${fmt(lvl.stopLoss)} (bearish break)`);
+      whatToDo.push(`   Consider selling puts at $${fmt(lvl.stopLoss)} or calls at $${fmt(lvl.targetPrice)} to capture premium`);
+    }
+
+    // --- Section 3: Header and metadata ---
+    const header = [
       '',
-      `${recEmoji} Recommendation: ${sig.recommendation}  [${sig.confidence} confidence]`,
-      `   Expected return: ${retSign}${retPct}%  |  Risk/reward: ${rrLabel}×  (>1 = upside larger than downside)`,
+      `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
+      `Current: $${fmt(result.currentPrice)} | Regime: ${m.regimeState}`,
+      `Anchors: ${m.polymarketAnchors} trusted | Anchor quality: ${m.anchorCoverage.quality.toUpperCase()}`,
+      `Mixing: ${pct(m.mixingTimeWeight)}% Markov / ${pct(1 - m.mixingTimeWeight)}% Anchors`,
+    ];
+
+    // --- Section 4: Warnings ---
+    const warnings: string[] = [];
+    if (m.anchorCoverage.warning) warnings.push(`⚠️ ${m.anchorCoverage.warning}`);
+    if (m.structuralBreakDetected)
+      warnings.push(`⚠️ Structural break detected (divergence=${m.structuralBreakDivergence.toFixed(3)}); CI widened 50%`);
+    if (m.sparseStates.length > 0)
+      warnings.push(`⚠️ Sparse states (<5 obs): ${m.sparseStates.join(', ')} — transitions prior-dominated`);
+    if (m.anchorDivergenceWarnings.length > 0)
+      warnings.push(`⚠️ Cross-platform divergence: ${m.anchorDivergenceWarnings.map(w => `$${w.price} (${w.divergencePp.toFixed(1)}pp)`).join(', ')}`);
+    if (m.outOfSampleR2 !== null)
+      warnings.push(`R²_OS: ${m.outOfSampleR2.toFixed(3)} (>0 = Markov adds value over mean)`);
+
+    // --- Section 5: Full distribution table ---
+    const table = [
       '',
       'Price         P(>price)    90% CI                 Source',
       '─'.repeat(60),
@@ -1181,8 +1352,15 @@ Requires: ticker symbol, horizon in trading days (1–90), and access to recent 
         `$${d.price.toFixed(2).padStart(9)}   ${(d.probability * 100).toFixed(1).padStart(5)}%   `
         + `[${(d.lowerBound * 100).toFixed(1)}%–${(d.upperBound * 100).toFixed(1)}%]   ${d.source}`,
       ),
-    ].filter(Boolean);
+    ];
 
-    return lines.join('\n');
+    return [
+      ...decisionCard,
+      ...actionPlan,
+      ...whatToDo,
+      ...header,
+      ...(warnings.length > 0 ? ['', ...warnings] : []),
+      ...table,
+    ].filter(l => l !== undefined).join('\n');
   },
 });

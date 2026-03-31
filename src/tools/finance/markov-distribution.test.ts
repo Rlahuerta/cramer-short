@@ -1073,4 +1073,180 @@ describe('computeActionSignal', () => {
     const { buyProbability: b, holdProbability: h, sellProbability: s } = result.actionSignal;
     expect(b + h + s).toBeCloseTo(1.0, 4);
   });
+
+  it('actionSignal includes actionLevels with valid price targets', async () => {
+    const prices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.5);
+    const result = await computeMarkovDistribution({
+      ticker: 'LVLTEST',
+      horizon: 10,
+      currentPrice: 119.5,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    const lvl = result.actionSignal.actionLevels;
+    expect(lvl).toBeDefined();
+    expect(lvl.medianPrice).toBeGreaterThan(0);
+    expect(lvl.targetPrice).toBeGreaterThan(0);
+    expect(lvl.stopLoss).toBeGreaterThan(0);
+    expect(lvl.bullCase).toBeGreaterThan(0);
+    expect(lvl.bearCase).toBeGreaterThan(0);
+    // targetPrice > medianPrice (target is the optimistic case)
+    expect(lvl.targetPrice).toBeGreaterThanOrEqual(lvl.medianPrice);
+    // stopLoss < medianPrice (stop-loss is below expected)
+    expect(lvl.stopLoss).toBeLessThanOrEqual(lvl.medianPrice);
+    // bullCase > bearCase
+    expect(lvl.bullCase).toBeGreaterThan(lvl.bearCase);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeActionLevels
+// ---------------------------------------------------------------------------
+
+import { computeActionLevels } from './markov-distribution.js';
+
+describe('computeActionLevels', () => {
+  it('median is at 50th percentile of linear distribution', () => {
+    const dist = makeLinearDist(80, 120);
+    const lvl = computeActionLevels(dist, 100);
+    expect(lvl.medianPrice).toBeCloseTo(100, 0);
+  });
+
+  it('target > median > stopLoss for any distribution', () => {
+    const dist = makeLinearDist(80, 120);
+    const lvl = computeActionLevels(dist, 100);
+    expect(lvl.targetPrice).toBeGreaterThanOrEqual(lvl.medianPrice);
+    expect(lvl.medianPrice).toBeGreaterThanOrEqual(lvl.stopLoss);
+  });
+
+  it('bullCase > bearCase for any distribution', () => {
+    const dist = makeLinearDist(80, 120);
+    const lvl = computeActionLevels(dist, 100);
+    expect(lvl.bullCase).toBeGreaterThan(lvl.bearCase);
+  });
+
+  it('handles bullish distribution (all prices above current)', () => {
+    const dist = makeLinearDist(102, 150);
+    const lvl = computeActionLevels(dist, 100);
+    expect(lvl.stopLoss).toBeGreaterThan(100);
+    expect(lvl.targetPrice).toBeGreaterThan(100);
+  });
+
+  it('handles bearish distribution (all prices below current)', () => {
+    const dist = makeLinearDist(50, 98);
+    const lvl = computeActionLevels(dist, 100);
+    expect(lvl.targetPrice).toBeLessThan(100);
+    expect(lvl.medianPrice).toBeLessThan(100);
+  });
+
+  it('returns currentPrice for empty distribution', () => {
+    const lvl = computeActionLevels([], 100);
+    expect(lvl.medianPrice).toBe(100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// assessAnchorCoverage
+// ---------------------------------------------------------------------------
+
+import { assessAnchorCoverage } from './markov-distribution.js';
+
+describe('assessAnchorCoverage', () => {
+  it('returns quality=none with zero anchors', () => {
+    const result = assessAnchorCoverage([], 100);
+    expect(result.quality).toBe('none');
+    expect(result.trustedAnchors).toBe(0);
+    expect(result.warning).toContain('No trusted');
+  });
+
+  it('returns quality=sparse with few far-apart anchors', () => {
+    const anchors = [
+      { price: 105, rawProbability: 0.9, probability: 0.85, trustScore: 'high' as const, source: 'polymarket' as const },
+      { price: 200, rawProbability: 0.1, probability: 0.09, trustScore: 'high' as const, source: 'polymarket' as const },
+    ];
+    const result = assessAnchorCoverage(anchors, 100);
+    expect(result.quality).toBe('sparse');
+    expect(result.maxGapPct).toBeGreaterThan(15);
+    expect(result.warning).toContain('Sparse');
+  });
+
+  it('returns quality=good with ≥3 closely-spaced anchors', () => {
+    const anchors = [
+      { price: 95,  rawProbability: 0.8, probability: 0.76, trustScore: 'high' as const, source: 'polymarket' as const },
+      { price: 100, rawProbability: 0.5, probability: 0.47, trustScore: 'high' as const, source: 'polymarket' as const },
+      { price: 105, rawProbability: 0.3, probability: 0.28, trustScore: 'high' as const, source: 'polymarket' as const },
+    ];
+    const result = assessAnchorCoverage(anchors, 100);
+    expect(result.quality).toBe('good');
+    expect(result.warning).toBe('');
+  });
+
+  it('ignores low-trust anchors', () => {
+    const anchors = [
+      { price: 95,  rawProbability: 0.8, probability: 0.76, trustScore: 'low' as const, source: 'polymarket' as const },
+      { price: 100, rawProbability: 0.5, probability: 0.47, trustScore: 'low' as const, source: 'polymarket' as const },
+    ];
+    const result = assessAnchorCoverage(anchors, 100);
+    expect(result.quality).toBe('none');
+    expect(result.totalAnchors).toBe(2);
+    expect(result.trustedAnchors).toBe(0);
+  });
+
+  it('anchorCoverage is included in computeMarkovDistribution result', async () => {
+    const prices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.5);
+    const result = await computeMarkovDistribution({
+      ticker: 'COVTEST',
+      horizon: 10,
+      currentPrice: 119.5,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(result.metadata.anchorCoverage).toBeDefined();
+    expect(result.metadata.anchorCoverage.quality).toBe('none');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// interpolateDistribution — anchor grid merging
+// ---------------------------------------------------------------------------
+
+describe('interpolateDistribution anchor grid merging', () => {
+  it('includes far-away anchors in distribution grid', () => {
+    // Oil scenario: current price $100, anchor at $200 (100% away)
+    const P = buildDefaultMatrix();
+    const regimeStats = estimateRegimeStats(
+      Array.from({ length: 30 }, () => 0.001),
+      Array.from({ length: 30 }, () => 'sideways' as const),
+    );
+    const farAnchor = {
+      price: 200,
+      rawProbability: 0.15,
+      probability: 0.14,
+      trustScore: 'high' as const,
+      source: 'polymarket' as const,
+    };
+    const dist = interpolateDistribution(100, 30, P, regimeStats, 'sideways', [farAnchor], 0.5);
+
+    // The $200 anchor should now be included in the grid
+    const hasNearAnchor = dist.some(d => Math.abs(d.price - 200) / 200 < 0.06);
+    expect(hasNearAnchor).toBe(true);
+  });
+
+  it('grid extends below when anchor is below default range', () => {
+    const P = buildDefaultMatrix();
+    const regimeStats = estimateRegimeStats(
+      Array.from({ length: 30 }, () => 0.001),
+      Array.from({ length: 30 }, () => 'sideways' as const),
+    );
+    const lowAnchor = {
+      price: 50,
+      rawProbability: 0.95,
+      probability: 0.90,
+      trustScore: 'high' as const,
+      source: 'polymarket' as const,
+    };
+    const dist = interpolateDistribution(100, 30, P, regimeStats, 'sideways', [lowAnchor], 0.5);
+    const minPrice = Math.min(...dist.map(d => d.price));
+    expect(minPrice).toBeLessThan(55);
+  });
 });
