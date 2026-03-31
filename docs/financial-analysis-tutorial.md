@@ -20,20 +20,21 @@
 10. [Stock Screening](#10-stock-screening)
 11. [SEC Filings Analysis](#11-sec-filings-analysis)
 12. [DCF Valuation](#12-dcf-valuation)
-13. [Watchlist & Portfolio Tracker](#13-watchlist--portfolio-tracker)
-14. [Earnings Calendar](#14-earnings-calendar)
-15. [Peer Comparison](#15-peer-comparison)
-16. [Analysis Templates](#16-analysis-templates)
-17. [Web Research](#17-web-research)
-18. [X/Twitter Sentiment Research](#18-xtwitter-sentiment-research)
-19. [Persistent Memory](#19-persistent-memory)
-20. [Heartbeat Monitoring](#20-heartbeat-monitoring)
-21. [Debugging with the Scratchpad](#21-debugging-with-the-scratchpad)
-22. [WhatsApp Gateway](#22-whatsapp-gateway)
-23. [Evaluations](#23-evaluations)
-24. [Example Prompts Reference](#24-example-prompts-reference)
-25. [Tips & Best Practices](#25-tips--best-practices)
-26. [Troubleshooting](#26-troubleshooting)
+13. [Markov Price Distribution](#13-markov-price-distribution)
+14. [Watchlist & Portfolio Tracker](#14-watchlist--portfolio-tracker)
+15. [Earnings Calendar](#15-earnings-calendar)
+16. [Peer Comparison](#16-peer-comparison)
+17. [Analysis Templates](#17-analysis-templates)
+18. [Web Research](#18-web-research)
+19. [X/Twitter Sentiment Research](#19-xtwitter-sentiment-research)
+20. [Persistent Memory](#20-persistent-memory)
+21. [Heartbeat Monitoring](#21-heartbeat-monitoring)
+22. [Debugging with the Scratchpad](#22-debugging-with-the-scratchpad)
+23. [WhatsApp Gateway](#23-whatsapp-gateway)
+24. [Evaluations](#24-evaluations)
+25. [Example Prompts Reference](#25-example-prompts-reference)
+26. [Tips & Best Practices](#26-tips--best-practices)
+27. [Troubleshooting](#27-troubleshooting)
 
 ---
 
@@ -639,7 +640,116 @@ Caveats
 
 ---
 
-## 13. Watchlist & Portfolio Tracker
+## 13. Markov Price Distribution
+
+Dexter can produce a **full probability distribution** for a stock or crypto price at a specified horizon, combining real-money Polymarket crowd odds with historical regime transitions.
+
+> **When to use:** Ask for "probability distribution", "full distribution", or "price probabilities" rather than a single point estimate. The feature is most informative when Polymarket has active markets on the asset.
+
+---
+
+### What it does
+
+Behind the scenes, three signals are combined:
+
+| Signal | Source | Role |
+|--------|--------|------|
+| Polymarket anchors | Real-money YES/NO markets | Pin the distribution at specific price levels |
+| Markov regime model | 60–90 days of daily close prices | Interpolate between anchors using regime dynamics |
+| Sentiment adjustment | `social_sentiment` tool | Small tilt (+/−7%) to transition probabilities |
+
+The output is a table of **P(price > X)** for ~20 price levels with **90% confidence intervals** (Monte Carlo, 5th/95th percentile).
+
+---
+
+### Example prompts
+
+```
+What is the probability distribution for NVDA in 30 trading days?
+```
+
+```
+Use the probability_assessment skill. Give me a full Markov-enhanced price distribution for BTC over the next 21 days. Include confidence intervals.
+```
+
+```
+Show me the probability that SPY exceeds $600 in the next 45 days based on Polymarket and historical regimes.
+```
+
+```
+--deep What is the probability distribution for gold (GLD) in 30 days? Use Polymarket and Markov chain analysis.
+```
+
+> **Tip:** Prefixing with `--deep` enables extended thinking on supported models, which produces better formulation of the inputs to the Markov tool.
+
+---
+
+### Reading the output
+
+```
+📊 Markov Distribution: NVDA | Horizon: 21d
+Current: $875.40 | Regime: bull
+Anchors: 3 (trusted) | Sentiment shift: +42%
+Mixing weight: 67% Markov / 33% Anchors
+
+Price         P(>price)    90% CI                 Source
+────────────────────────────────────────────────────────────
+$   822.18    81.4%   [76.2%–86.1%]   markov
+$   835.01    74.9%   [69.3%–80.2%]   markov
+$   847.60    67.3%   [61.1%–73.4%]   blend
+$   860.36    58.1%   [51.9%–64.0%]   polymarket
+$   873.29    48.2%   [41.6%–54.5%]   blend
+$   886.40    38.4%   [31.8%–44.7%]   markov
+...
+```
+
+**Columns explained:**
+
+| Column | Meaning |
+|--------|---------|
+| `Price` | A price level |
+| `P(>price)` | Probability the asset closes **above** this level at the horizon |
+| `90% CI` | Uncertainty range: 5th–95th percentile from 1 000 Monte Carlo walks |
+| `Source` | `polymarket` = real-money anchor; `markov` = model-only; `blend` = both combined |
+
+**Metadata block:**
+- **Regime** — current market state (`bull`, `bear`, `sideways`, `high_vol_bull`, `high_vol_bear`)
+- **Mixing weight** — how much the Markov model vs. Polymarket anchors drive the estimate. At short horizons (≤10 days) Markov dominates; at long horizons anchors dominate.
+- **R²_OS** — out-of-sample R² vs. naive mean baseline. Positive = Markov adds predictive value.
+
+---
+
+### Reliability warnings
+
+The tool automatically flags data-quality issues in the metadata:
+
+| Warning | Meaning | Action |
+|---------|---------|--------|
+| `⚠️ Structural break detected` | The first and second half of the training window describe different dynamics (e.g. earnings shock mid-window) | CI widened 50%; default matrix used. Use longer history or adjust window. |
+| `⚠️ Sparse states (<5 obs)` | Some regime states (e.g. `high_vol_bear`) have too few observations for reliable transition estimation | Treat those transitions as prior-only estimates. |
+| `⚠️ Cross-platform divergence` | Polymarket and Kalshi disagree by >5 percentage points on a price level | Averaged. Implies genuine uncertainty — widen your own view. |
+
+---
+
+### Cross-platform validation with Kalshi
+
+If you have Kalshi market data, you can pass it alongside Polymarket anchors for cross-platform validation. When both exchanges price the same price level within 5pp, the probabilities are averaged. When they disagree by more than 5pp, the tool emits a divergence warning — a signal that market participants genuinely disagree and uncertainty is higher than either platform alone shows.
+
+---
+
+### How the Markov model works (brief)
+
+1. **Regime classification** — each historical day is labelled as one of 5 joint states:
+   `bull` (+1%+ return, low vol), `bear` (−1%+ loss, low vol), `sideways` (flat, low vol),
+   `high_vol_bull` (volatile + positive), `high_vol_bear` (volatile + negative).
+2. **Transition matrix** — a 5×5 probability matrix is estimated from the sequence of daily states using Dirichlet smoothing (α=0.1).
+3. **n-step projection** — matrix exponentiation to horizon `n` gives the probability of being in each regime at expiry.
+4. **Log-normal survival** — regime-weighted drift and volatility are plugged into `P(price > X) = 1 − Φ((ln(X/S₀) − μₙ) / σₙ)`.
+5. **Blending** — Polymarket anchors are blended with the Markov estimate using a mixing weight that decays exponentially with horizon (longer horizon → anchors dominate).
+
+---
+
+## 14. Watchlist & Portfolio Tracker
 
 Dexter includes a built-in watchlist so you can track your positions and get a morning briefing with a single command.
 
@@ -749,7 +859,7 @@ Injects your full position list into the agent and triggers the **watchlist-brie
 
 ---
 
-## 14. Earnings Calendar
+## 15. Earnings Calendar
 
 Ask Dexter for a structured earnings calendar for any set of tickers.
 
@@ -780,7 +890,7 @@ The skill fires automatically when your query contains phrases like "earnings th
 
 ---
 
-## 15. Peer Comparison
+## 16. Peer Comparison
 
 Get a structured side-by-side comparison of a company against its sector peers.
 
@@ -810,7 +920,7 @@ The **peer-comparison** skill:
 
 ---
 
-## 16. Analysis Templates
+## 17. Analysis Templates
 
 Dexter ships four structured research templates that can be triggered naturally or by name.
 
@@ -860,7 +970,7 @@ Run an earnings preview for AAPL and save it to ~/reports/
 
 ---
 
-## 17. Web Research
+## 18. Web Research
 
 Dexter can research the open web to complement structured financial data.
 
@@ -913,7 +1023,7 @@ Navigate to Yahoo Finance and read AAPL's analyst ratings
 
 ---
 
-## 18. X/Twitter Sentiment Research
+## 19. X/Twitter Sentiment Research
 
 If you have an `X_BEARER_TOKEN`, Dexter can research public sentiment on X/Twitter through the **X Research skill**.
 
@@ -969,7 +1079,7 @@ Caveats
 
 ---
 
-## 19. Persistent Memory
+## 20. Persistent Memory
 
 Dexter has a **persistent memory system** that stores information across sessions as Markdown files backed by a SQLite vector database.
 
@@ -1094,7 +1204,7 @@ Memory embeddings use your existing LLM keys with this priority:
 
 ---
 
-## 20. Heartbeat Monitoring
+## 21. Heartbeat Monitoring
 
 The **heartbeat** feature lets Dexter periodically check things you care about on a schedule. This is especially useful when running Dexter through the WhatsApp gateway.
 
@@ -1124,7 +1234,7 @@ Your checklist lives in `.dexter/HEARTBEAT.md`. The gateway reads this file on e
 
 ---
 
-## 21. Debugging with the Scratchpad
+## 22. Debugging with the Scratchpad
 
 Every query creates a **JSONL scratchpad file** in `.dexter/scratchpad/`. This is your audit trail.
 
@@ -1177,7 +1287,7 @@ cat .dexter/scratchpad/2026-03-25-142300_9a8f10723f79.jsonl | \
 
 ---
 
-## 22. WhatsApp Gateway
+## 23. WhatsApp Gateway
 
 Run Dexter through WhatsApp to get financial research delivered to your phone.
 
@@ -1218,7 +1328,7 @@ For full setup instructions, see [`src/gateway/channels/whatsapp/README.md`](../
 
 ---
 
-## 23. Evaluations
+## 24. Evaluations
 
 Dexter includes a built-in evaluation suite to test answer quality against a dataset of financial questions.
 
@@ -1247,7 +1357,7 @@ Uses an **LLM-as-judge** approach: the evaluating LLM checks each answer against
 
 ---
 
-## 24. Example Prompts Reference
+## 25. Example Prompts Reference
 
 Below is a curated library of prompts organized by analysis type.
 
@@ -1319,6 +1429,28 @@ Have any Apple executives sold stock in the last 6 months?
 What material events did Amazon file in 8-K disclosures this year?
 ```
 
+### Probability distributions & Markov analysis
+
+```
+What is the probability distribution for NVDA in 30 trading days?
+```
+
+```
+Use the probability_assessment skill. Give me a full Markov-enhanced price distribution for BTC over 21 days with 90% confidence intervals.
+```
+
+```
+What's the probability that SPY exceeds $600 in the next 45 days based on Polymarket and historical regimes?
+```
+
+```
+--deep Show me a full Markov distribution for gold (GLD) in 30 days using Polymarket anchors and regime analysis.
+```
+
+```
+Is the BTC Polymarket price distribution consistent with the Kalshi markets? Show me any divergence warnings.
+```
+
 ### Market and macro
 
 ```
@@ -1363,7 +1495,7 @@ What are institutional investors saying about AI capex on X/Twitter?
 
 ---
 
-## 25. Tips & Best Practices
+## 26. Tips & Best Practices
 
 ### Writing better queries
 
@@ -1422,7 +1554,7 @@ The free tier of the Financial Datasets API covers **AAPL, NVDA, and MSFT**. To 
 
 ---
 
-## 26. Troubleshooting
+## 27. Troubleshooting
 
 ### "No tools available. Please check your API key configuration."
 
@@ -1542,7 +1674,12 @@ This catches stale or misaligned data (e.g. different fiscal-year end assumption
 | `memory_get` | Read specific memory file sections | None |
 | `memory_update` | Add / edit / delete memories | None |
 | `heartbeat` | View / update heartbeat checklist | None |
-| `skill` | DCF valuation, earnings calendar, peer comparison, earnings preview, short thesis, sector overview, watchlist briefing | Depends on skill |
+| `skill` | DCF valuation, earnings calendar, peer comparison, earnings preview, short thesis, sector overview, watchlist briefing, probability assessment | Depends on skill |
+| `polymarket_search` | Polymarket prediction markets (questions + probabilities) | None |
+| `polymarket_forecast` | Polymarket aggregated forecasts | None |
+| `social_sentiment` | Bullish/bearish social sentiment scores | None |
+| `price_distribution_chart` | ASCII chart of P(price > X) from Polymarket thresholds | None |
+| `markov_distribution` | Full probability distribution with 90% CI, Markov regime model, bias correction, structural break detection | None |
 | `read_file` | Local workspace files | None |
 | `write_file` | Create new local files | None |
 | `edit_file` | Modify existing local files | None |

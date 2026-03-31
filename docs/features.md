@@ -681,3 +681,66 @@ Is crypto market sentiment bullish or bearish?
 | `global` | Total market cap, BTC/ETH dominance, 24h volume, market cap change % |
 
 Supports BTC, ETH, SOL, BNB, XRP, ADA, DOGE, AVAX, MATIC, LINK, and any CoinGecko coin ID.
+
+---
+
+## 📈 Markov Price Distribution (Feature 21)
+
+Generate a **full probability distribution** for any stock, ETF, or crypto at a specified horizon (1–90 trading days), combining Polymarket real-money odds with historical Markov regime transitions.
+
+### Example prompts
+
+```
+What is the probability distribution for NVDA in 30 trading days?
+```
+
+```
+Use the probability_assessment skill. Full Markov-enhanced BTC distribution over 21 days with confidence intervals.
+```
+
+```
+--deep Show me a Markov distribution for gold (GLD) over 30 days using Polymarket anchors.
+```
+
+### What it produces
+
+A table of **P(price > X)** for ~20 price levels with **90% Monte Carlo confidence intervals**:
+
+```
+📊 Markov Distribution: NVDA | Horizon: 21d
+Current: $875.40 | Regime: bull
+Mixing weight: 67% Markov / 33% Anchors
+
+Price         P(>price)    90% CI                 Source
+────────────────────────────────────────────────────────────
+$   847.60    67.3%   [61.1%–73.4%]   blend
+$   860.36    58.1%   [51.9%–64.0%]   polymarket
+$   873.29    48.2%   [41.6%–54.5%]   blend
+...
+```
+
+### Key features
+
+| Feature | Details |
+|---------|---------|
+| **5-state regime model** | `bull`, `bear`, `sideways`, `high_vol_bull`, `high_vol_bear` (joint states preserve both direction and volatility) |
+| **YES-bias correction** | Polymarket raw probabilities are multiplied by 0.95 (Reichenbach & Walther 2025, 124M trades) |
+| **Eigenvalue mixing weight** | `exp(−ρ×n)`: Markov-dominant at short horizons, anchor-dominant at long horizons |
+| **90% CI via Monte Carlo** | 1 000 perturbation walks, 5th/95th percentile bounds |
+| **Structural break detection** | Detects regime shifts mid-window; falls back to default matrix, widens CI by 50% |
+| **Sparse state guard** | Flags states with <5 observations — transitions are prior-dominated, not empirical |
+| **Cross-platform validation** | Pass Kalshi anchors alongside Polymarket; divergence >5pp emits a warning and uses the average |
+| **R²_OS diagnostic** | Out-of-sample R² vs. naive mean baseline (positive = model adds value) |
+
+### Integration with probability_assessment skill
+
+The `markov_distribution` tool is automatically invoked in **Step 2c** of the `probability_assessment` skill whenever the query is about an asset price and ≥2 Polymarket price thresholds are available. No manual configuration required — just ask for a price distribution and the skill handles the rest.
+
+### Academic grounding
+
+The model is grounded in peer-reviewed research:
+- Nguyen (2018, *IJFS*): 4-state HMM for S&P 500; AIC/BIC model selection
+- Mettle et al. (2014, *SpringerPlus*): Markov chain methodology for share prices
+- Welton & Ades (2005, *Med Decis Making*): Dirichlet priors for transition matrices
+- Reichenbach & Walther (2025): YES-bias in Polymarket (124M trades)
+- Davidovic & McCleary (2025, *JRFM*): Sentiment alpha calibration
