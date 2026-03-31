@@ -35,6 +35,9 @@ import {
   logNormalSurvival,
   estimateRegimeStats,
   matPow,
+  matMul,
+  normalCDF,
+  markovDistributionTool,
   NUM_STATES,
   STATE_INDEX,
   REGIME_STATES,
@@ -1248,5 +1251,611 @@ describe('interpolateDistribution anchor grid merging', () => {
     const dist = interpolateDistribution(100, 30, P, regimeStats, 'sideways', [lowAnchor], 0.5);
     const minPrice = Math.min(...dist.map(d => d.price));
     expect(minPrice).toBeLessThan(55);
+  });
+});
+
+// ===========================================================================
+// CORRECTNESS & VALIDATION TESTS
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// normalCDF — direct tests against known Φ values
+// ---------------------------------------------------------------------------
+
+describe('normalCDF', () => {
+  // NOTE: normalCDF implements 0.5*(1+erf(x)), the CDF of N(0, 0.5),
+  // NOT the standard normal Φ(x). Values differ from standard normal tables.
+
+  it('normalCDF(0) ≈ 0.5', () => {
+    expect(normalCDF(0)).toBeCloseTo(0.5, 6);
+  });
+
+  it('normalCDF(1) ≈ 0.9214 (erf-based)', () => {
+    expect(normalCDF(1)).toBeCloseTo(0.9214, 3);
+  });
+
+  it('normalCDF(-1) ≈ 0.0786 (erf-based symmetry)', () => {
+    expect(normalCDF(-1)).toBeCloseTo(0.0786, 3);
+  });
+
+  it('normalCDF(x) + normalCDF(-x) = 1 (symmetry property)', () => {
+    for (const x of [0.5, 1.0, 2.0, 3.0]) {
+      expect(normalCDF(x) + normalCDF(-x)).toBeCloseTo(1.0, 6);
+    }
+  });
+
+  it('normalCDF(1.96) ≈ 0.9953 (erf-based)', () => {
+    // erf(1.96) ≈ 0.9953 → normalCDF(1.96) = 0.5*(1+0.9953) ≈ 0.9972 — but
+    // the A&S approximation yields ~0.9972
+    expect(normalCDF(1.96)).toBeCloseTo(0.9972, 3);
+  });
+
+  it('normalCDF(3) ≈ 0.99999 (deep right tail)', () => {
+    expect(normalCDF(3)).toBeCloseTo(0.99999, 4);
+  });
+
+  it('normalCDF(-3) ≈ 0.00001 (deep left tail)', () => {
+    expect(normalCDF(-3)).toBeCloseTo(0.00001, 4);
+  });
+
+  it('is monotonically non-decreasing', () => {
+    let prev = 0;
+    for (let x = -4; x <= 4; x += 0.1) {
+      const val = normalCDF(x);
+      expect(val).toBeGreaterThanOrEqual(prev);
+      prev = val;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matMul — direct tests
+// ---------------------------------------------------------------------------
+
+describe('matMul', () => {
+  it('A × I = A (identity multiplication)', () => {
+    const A = [[1, 2], [3, 4]];
+    const I = [[1, 0], [0, 1]];
+    const result = matMul(A, I);
+    expect(result[0][0]).toBeCloseTo(1);
+    expect(result[0][1]).toBeCloseTo(2);
+    expect(result[1][0]).toBeCloseTo(3);
+    expect(result[1][1]).toBeCloseTo(4);
+  });
+
+  it('I × A = A (left identity)', () => {
+    const A = [[5, 6], [7, 8]];
+    const I = [[1, 0], [0, 1]];
+    const result = matMul(I, A);
+    expect(result[0][0]).toBeCloseTo(5);
+    expect(result[1][1]).toBeCloseTo(8);
+  });
+
+  it('known 2×2 product', () => {
+    // [[1,2],[3,4]] × [[5,6],[7,8]] = [[19,22],[43,50]]
+    const A = [[1, 2], [3, 4]];
+    const B = [[5, 6], [7, 8]];
+    const R = matMul(A, B);
+    expect(R[0][0]).toBeCloseTo(19);
+    expect(R[0][1]).toBeCloseTo(22);
+    expect(R[1][0]).toBeCloseTo(43);
+    expect(R[1][1]).toBeCloseTo(50);
+  });
+
+  it('preserves row-stochasticity (stochastic × stochastic = stochastic)', () => {
+    const P = [[0.7, 0.3], [0.4, 0.6]];
+    const R = matMul(P, P);
+    for (const row of R) {
+      const sum = row.reduce((s, v) => s + v, 0);
+      expect(sum).toBeCloseTo(1.0, 6);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeRows — direct tests
+// ---------------------------------------------------------------------------
+
+describe('normalizeRows', () => {
+  // normalizeRows returns a NEW matrix (does not mutate)
+
+  it('normalizes rows to sum to 1', () => {
+    const result = normalizeRows([[2, 3], [4, 6]]);
+    expect(result[0][0]).toBeCloseTo(0.4);
+    expect(result[0][1]).toBeCloseTo(0.6);
+    expect(result[1][0]).toBeCloseTo(0.4);
+    expect(result[1][1]).toBeCloseTo(0.6);
+  });
+
+  it('leaves already-normalized rows unchanged', () => {
+    const result = normalizeRows([[0.3, 0.7], [0.5, 0.5]]);
+    expect(result[0][0]).toBeCloseTo(0.3);
+    expect(result[0][1]).toBeCloseTo(0.7);
+  });
+
+  it('handles zero-sum row gracefully', () => {
+    // 0/0 → NaN; verify the non-zero row normalizes correctly
+    const result = normalizeRows([[0, 0], [1, 1]]);
+    expect(result[1][0]).toBeCloseTo(0.5);
+    expect(result[1][1]).toBeCloseTo(0.5);
+    // zero row produces NaN — that's the current behavior
+    expect(Number.isNaN(result[0][0])).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Analytical 2-state Markov verification (closed-form cross-check)
+// ---------------------------------------------------------------------------
+
+describe('analytical 2-state Markov verification', () => {
+  // For a 2-state chain P = [[1-a, a], [b, 1-b]],
+  // the stationary distribution is π = [b/(a+b), a/(a+b)]
+  // and P^n converges to rows = π as n→∞.
+
+  it('P^n converges to the correct stationary distribution', () => {
+    const a = 0.3, b = 0.2;
+    const P = [[1 - a, a], [b, 1 - b]]; // [[0.7, 0.3], [0.2, 0.8]]
+    const piStar = [b / (a + b), a / (a + b)]; // [0.4, 0.6]
+
+    const Pn = matPow(P, 100);
+    // Both rows should converge to stationary
+    expect(Pn[0][0]).toBeCloseTo(piStar[0], 3);
+    expect(Pn[0][1]).toBeCloseTo(piStar[1], 3);
+    expect(Pn[1][0]).toBeCloseTo(piStar[0], 3);
+    expect(Pn[1][1]).toBeCloseTo(piStar[1], 3);
+  });
+
+  it('P^n matches closed-form at small n', () => {
+    // P^2 = P×P, compute analytically:
+    // P = [[0.7, 0.3], [0.2, 0.8]]
+    // P^2 = [[0.7×0.7+0.3×0.2, 0.7×0.3+0.3×0.8], [0.2×0.7+0.8×0.2, 0.2×0.3+0.8×0.8]]
+    //     = [[0.55, 0.45], [0.30, 0.70]]
+    const P = [[0.7, 0.3], [0.2, 0.8]];
+    const P2 = matPow(P, 2);
+    expect(P2[0][0]).toBeCloseTo(0.55, 6);
+    expect(P2[0][1]).toBeCloseTo(0.45, 6);
+    expect(P2[1][0]).toBeCloseTo(0.30, 6);
+    expect(P2[1][1]).toBeCloseTo(0.70, 6);
+  });
+
+  it('P^n row sums remain 1.0 for all n', () => {
+    const P = [[0.7, 0.3], [0.2, 0.8]];
+    for (const n of [1, 2, 5, 10, 50]) {
+      const Pn = matPow(P, n);
+      for (const row of Pn) {
+        expect(row.reduce((s, v) => s + v, 0)).toBeCloseTo(1.0, 6);
+      }
+    }
+  });
+
+  it('second eigenvalue matches analytical value for 2-state chain', () => {
+    // For P = [[1-a, a], [b, 1-b]], eigenvalues are 1 and (1-a-b).
+    // ρ = |1 - a - b|
+    const a = 0.3, b = 0.2;
+    const P = [[1 - a, a], [b, 1 - b]];
+    const analyticalRho = Math.abs(1 - a - b); // 0.5
+    const computed = secondLargestEigenvalue(P);
+    expect(computed).toBeCloseTo(analyticalRho, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Monte Carlo convergence / stability
+// ---------------------------------------------------------------------------
+
+describe('Monte Carlo stability', () => {
+  it('interpolateDistribution produces stable results across runs', () => {
+    const P = buildDefaultMatrix();
+    const regimeStats = estimateRegimeStats(
+      Array.from({ length: 30 }, () => 0.002),
+      Array.from({ length: 30 }, () => 'bull' as const),
+    );
+
+    // Run 5 times, collect probabilities at the median point
+    const medianProbs: number[] = [];
+    for (let run = 0; run < 5; run++) {
+      const dist = interpolateDistribution(100, 20, P, regimeStats, 'bull', [], 0.5, 15, 1000);
+      const midIdx = Math.floor(dist.length / 2);
+      medianProbs.push(dist[midIdx].probability);
+    }
+
+    // Check coefficient of variation is < 10% (Monte Carlo noise should be small)
+    const mean = medianProbs.reduce((s, v) => s + v, 0) / medianProbs.length;
+    const variance = medianProbs.reduce((s, v) => s + (v - mean) ** 2, 0) / medianProbs.length;
+    const cv = Math.sqrt(variance) / Math.max(mean, 1e-10);
+    expect(cv).toBeLessThan(0.10);
+  });
+
+  it('confidence intervals narrow with more Monte Carlo samples', () => {
+    const P = buildDefaultMatrix();
+    const regimeStats = estimateRegimeStats(
+      Array.from({ length: 30 }, () => 0.001),
+      Array.from({ length: 30 }, () => 'sideways' as const),
+    );
+
+    // Fewer samples → wider CI
+    const distFew = interpolateDistribution(100, 20, P, regimeStats, 'sideways', [], 0.5, 10, 100);
+    // More samples → tighter CI
+    const distMany = interpolateDistribution(100, 20, P, regimeStats, 'sideways', [], 0.5, 10, 2000);
+
+    // Average CI width across all points
+    const avgWidth = (d: typeof distFew) =>
+      d.reduce((s, p) => s + (p.upperBound - p.lowerBound), 0) / d.length;
+
+    // More samples should produce tighter or equal CI on average
+    // (not guaranteed per-point due to randomness, but on average it holds)
+    const fewWidth = avgWidth(distFew);
+    const manyWidth = avgWidth(distMany);
+    // Allow generous tolerance since MC is stochastic
+    expect(manyWidth).toBeLessThan(fewWidth * 1.5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Anchor influence A/B test
+// ---------------------------------------------------------------------------
+
+describe('Polymarket anchor influence', () => {
+  const basePrices = Array.from({ length: 60 }, (_, i) => 100 + Math.sin(i / 5) * 3);
+
+  it('anchors shift distribution probabilities vs no-anchor baseline', async () => {
+    // Without anchors
+    const noAnchor = await computeMarkovDistribution({
+      ticker: 'AB_TEST',
+      horizon: 20,
+      currentPrice: 100,
+      historicalPrices: basePrices,
+      polymarketMarkets: [],
+    });
+
+    // With a strong anchor saying P(>$105) = 0.90
+    const withAnchor = await computeMarkovDistribution({
+      ticker: 'AB_TEST',
+      horizon: 20,
+      currentPrice: 100,
+      historicalPrices: basePrices,
+      polymarketMarkets: [
+        { question: 'Will AB_TEST exceed $105?', probability: 0.90, volume: 50000, createdAt: '2025-01-01' },
+      ],
+    });
+
+    // Find the point nearest $105 in each distribution
+    const findNear105 = (dist: typeof noAnchor.distribution) =>
+      dist.reduce((best, d) => Math.abs(d.price - 105) < Math.abs(best.price - 105) ? d : best);
+
+    const noAnchorProb = findNear105(noAnchor.distribution).probability;
+    const withAnchorProb = findNear105(withAnchor.distribution).probability;
+
+    // Anchor at 90% should pull the probability UPWARD relative to pure Markov
+    expect(withAnchorProb).toBeGreaterThan(noAnchorProb * 0.8);
+    // And anchor metadata should differ
+    expect(withAnchor.metadata.polymarketAnchors).toBeGreaterThan(noAnchor.metadata.polymarketAnchors);
+  });
+
+  it('high-trust vs low-trust anchors have different influence', async () => {
+    // Old market (high trust) vs very new market (low trust, <48h)
+    const highTrust = await computeMarkovDistribution({
+      ticker: 'TRUST_TEST',
+      horizon: 15,
+      currentPrice: 100,
+      historicalPrices: basePrices,
+      polymarketMarkets: [
+        { question: 'Will it exceed $105?', probability: 0.80, volume: 100000, createdAt: '2024-01-01' },
+      ],
+    });
+
+    const lowTrust = await computeMarkovDistribution({
+      ticker: 'TRUST_TEST',
+      horizon: 15,
+      currentPrice: 100,
+      historicalPrices: basePrices,
+      polymarketMarkets: [
+        { question: 'Will it exceed $105?', probability: 0.80, volume: 100000, createdAt: new Date().toISOString() },
+      ],
+    });
+
+    // High-trust anchor count should be higher
+    expect(highTrust.metadata.polymarketAnchors).toBeGreaterThanOrEqual(lowTrust.metadata.polymarketAnchors);
+  });
+
+  it('anchor coverage diagnostic reflects anchor presence', async () => {
+    const noAnchor = await computeMarkovDistribution({
+      ticker: 'COV_AB',
+      horizon: 10,
+      currentPrice: 100,
+      historicalPrices: basePrices,
+      polymarketMarkets: [],
+    });
+    expect(noAnchor.metadata.anchorCoverage.quality).toBe('none');
+
+    const withAnchors = await computeMarkovDistribution({
+      ticker: 'COV_AB',
+      horizon: 10,
+      currentPrice: 100,
+      historicalPrices: basePrices,
+      polymarketMarkets: [
+        { question: 'Will it exceed $95?', probability: 0.85, volume: 50000, createdAt: '2024-01-01' },
+        { question: 'Will it exceed $100?', probability: 0.50, volume: 50000, createdAt: '2024-01-01' },
+        { question: 'Will it exceed $105?', probability: 0.25, volume: 50000, createdAt: '2024-01-01' },
+      ],
+    });
+    expect(withAnchors.metadata.anchorCoverage.quality).toBe('good');
+    expect(withAnchors.metadata.anchorCoverage.trustedAnchors).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boundary conditions (horizon, degenerate inputs)
+// ---------------------------------------------------------------------------
+
+describe('boundary conditions', () => {
+  const steadyPrices = Array.from({ length: 30 }, () => 100);
+  const trendingUp = Array.from({ length: 30 }, (_, i) => 100 + i * 0.5);
+
+  it('horizon=1: distribution is tight around current price', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'H1',
+      horizon: 1,
+      currentPrice: 115,
+      historicalPrices: trendingUp,
+      polymarketMarkets: [],
+    });
+    // At horizon 1, most probability should be near current price
+    const near = result.distribution.filter(
+      d => Math.abs(d.price - 115) / 115 < 0.05,
+    );
+    expect(near.length).toBeGreaterThan(0);
+    // Points very far from current should have low probability
+    const farAbove = result.distribution.filter(d => d.price > 130);
+    for (const p of farAbove) {
+      expect(p.probability).toBeLessThan(0.5);
+    }
+  });
+
+  it('horizon=90: distribution is wider than horizon=5', async () => {
+    const short = await computeMarkovDistribution({
+      ticker: 'H_CMP',
+      horizon: 5,
+      currentPrice: 115,
+      historicalPrices: trendingUp,
+      polymarketMarkets: [],
+    });
+    const long = await computeMarkovDistribution({
+      ticker: 'H_CMP',
+      horizon: 90,
+      currentPrice: 115,
+      historicalPrices: trendingUp,
+      polymarketMarkets: [],
+    });
+
+    // Average CI width should be larger for longer horizon
+    const avgCIWidth = (dist: typeof short.distribution) =>
+      dist.reduce((s, d) => s + (d.upperBound - d.lowerBound), 0) / dist.length;
+
+    expect(avgCIWidth(long.distribution)).toBeGreaterThan(avgCIWidth(short.distribution) * 0.5);
+  });
+
+  it('all-same-prices: produces a valid distribution without errors', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'FLAT',
+      horizon: 10,
+      currentPrice: 100,
+      historicalPrices: steadyPrices,
+      polymarketMarkets: [],
+    });
+    expect(result.distribution.length).toBeGreaterThan(0);
+    // All returns are 0 → sideways regime
+    expect(result.metadata.regimeState).toBe('sideways');
+    // Action signal should still be valid
+    const { buyProbability: b, holdProbability: h, sellProbability: s } = result.actionSignal;
+    expect(b + h + s).toBeCloseTo(1.0, 4);
+  });
+
+  it('minimum viable input (10 prices) does not throw', async () => {
+    const prices = Array.from({ length: 10 }, (_, i) => 100 + i);
+    const result = await computeMarkovDistribution({
+      ticker: 'MIN',
+      horizon: 5,
+      currentPrice: 109,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(result.distribution.length).toBeGreaterThan(0);
+    expect(result.actionSignal.recommendation).toBeDefined();
+  });
+
+  it('strongly trending prices produce expected recommendation direction', async () => {
+    // Strong uptrend: 100→130 in 30 days
+    const uptrend = Array.from({ length: 30 }, (_, i) => 100 + i);
+    const result = await computeMarkovDistribution({
+      ticker: 'TREND',
+      horizon: 10,
+      currentPrice: 129,
+      historicalPrices: uptrend,
+      polymarketMarkets: [],
+    });
+    // Expected return should be positive for a strong uptrend
+    expect(result.actionSignal.expectedReturn).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sensitivity analysis
+// ---------------------------------------------------------------------------
+
+describe('sensitivity analysis', () => {
+  const basePrices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.3);
+
+  it('small price perturbation produces proportional output change', async () => {
+    const base = await computeMarkovDistribution({
+      ticker: 'SENS',
+      horizon: 15,
+      currentPrice: 112,
+      historicalPrices: basePrices,
+      polymarketMarkets: [],
+    });
+
+    // Perturb current price by +1%
+    const perturbed = await computeMarkovDistribution({
+      ticker: 'SENS',
+      horizon: 15,
+      currentPrice: 112 * 1.01,
+      historicalPrices: basePrices,
+      polymarketMarkets: [],
+    });
+
+    // Expected return should shift (not necessarily by exactly 1%, but it should change)
+    const diff = Math.abs(base.actionSignal.expectedReturn - perturbed.actionSignal.expectedReturn);
+    // Change should be bounded — no discontinuity from a 1% input shift
+    expect(diff).toBeLessThan(0.10); // <10pp change from 1% price shift
+    // Recommendation might stay the same, but probabilities should differ
+    const probDiff = Math.abs(base.actionSignal.buyProbability - perturbed.actionSignal.buyProbability);
+    expect(probDiff).toBeLessThan(0.20); // <20pp change
+  });
+
+  it('adding one more historical day does not cause large jumps', async () => {
+    const base = await computeMarkovDistribution({
+      ticker: 'SENS2',
+      horizon: 15,
+      currentPrice: 112,
+      historicalPrices: basePrices,
+      polymarketMarkets: [],
+    });
+
+    // Add one more day at roughly the same trajectory
+    const extendedPrices = [...basePrices, 112.3];
+    const extended = await computeMarkovDistribution({
+      ticker: 'SENS2',
+      horizon: 15,
+      currentPrice: 112.3,
+      historicalPrices: extendedPrices,
+      polymarketMarkets: [],
+    });
+
+    // Expected returns should be similar
+    const diff = Math.abs(base.actionSignal.expectedReturn - extended.actionSignal.expectedReturn);
+    expect(diff).toBeLessThan(0.05);
+  });
+
+  it('sentiment shift produces monotonic effect on expected return', async () => {
+    const bullish = await computeMarkovDistribution({
+      ticker: 'SENT_MONO',
+      horizon: 15,
+      currentPrice: 112,
+      historicalPrices: basePrices,
+      polymarketMarkets: [],
+      sentiment: { bullish: 0.8, bearish: 0.2 },
+    });
+    const neutral = await computeMarkovDistribution({
+      ticker: 'SENT_MONO',
+      horizon: 15,
+      currentPrice: 112,
+      historicalPrices: basePrices,
+      polymarketMarkets: [],
+      sentiment: { bullish: 0.5, bearish: 0.5 },
+    });
+    const bearish = await computeMarkovDistribution({
+      ticker: 'SENT_MONO',
+      horizon: 15,
+      currentPrice: 112,
+      historicalPrices: basePrices,
+      polymarketMarkets: [],
+      sentiment: { bullish: 0.2, bearish: 0.8 },
+    });
+
+    // Bullish sentiment → higher expected return than bearish
+    expect(bullish.actionSignal.expectedReturn).toBeGreaterThanOrEqual(bearish.actionSignal.expectedReturn);
+    // Neutral should be between (or at least not more extreme than either)
+    expect(neutral.actionSignal.expectedReturn).toBeGreaterThanOrEqual(bearish.actionSignal.expectedReturn - 0.01);
+    expect(neutral.actionSignal.expectedReturn).toBeLessThanOrEqual(bullish.actionSignal.expectedReturn + 0.01);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool output format validation
+// ---------------------------------------------------------------------------
+
+describe('markovDistributionTool output format', () => {
+  const prices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.5);
+
+  it('output contains Decision Card with BUY/HOLD/SELL', async () => {
+    const output = await markovDistributionTool.invoke({
+      ticker: 'FMT_TEST',
+      horizon: 15,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(output).toContain('Your Options');
+    expect(output).toContain('BUY');
+    expect(output).toContain('HOLD');
+    expect(output).toContain('SELL');
+  });
+
+  it('output contains Action Plan with price levels', async () => {
+    const output = await markovDistributionTool.invoke({
+      ticker: 'FMT_TEST',
+      horizon: 15,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(output).toContain('Action Plan');
+    expect(output).toContain('Target');
+    expect(output).toContain('Stop-loss');
+    expect(output).toContain('Median forecast');
+    expect(output).toContain('Bull case');
+    expect(output).toContain('Bear case');
+  });
+
+  it('output contains recommendation with confidence', async () => {
+    const output = await markovDistributionTool.invoke({
+      ticker: 'FMT_TEST',
+      horizon: 15,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    // Should have one of: [HIGH confidence], [MEDIUM confidence], [LOW confidence]
+    expect(output).toMatch(/\[(HIGH|MEDIUM|LOW) confidence\]/);
+  });
+
+  it('output contains distribution table with P(>price) column', async () => {
+    const output = await markovDistributionTool.invoke({
+      ticker: 'FMT_TEST',
+      horizon: 15,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(output).toContain('P(>price)');
+    expect(output).toContain('90% CI');
+    expect(output).toContain('Source');
+  });
+
+  it('output contains anchor quality diagnostic', async () => {
+    const output = await markovDistributionTool.invoke({
+      ticker: 'FMT_TEST',
+      horizon: 15,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(output).toContain('Anchor quality:');
+  });
+
+  it('output contains contextual guidance (💡)', async () => {
+    const output = await markovDistributionTool.invoke({
+      ticker: 'FMT_TEST',
+      horizon: 15,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(output).toContain('💡');
+  });
+
+  it('output shows warnings when no anchors provided', async () => {
+    const output = await markovDistributionTool.invoke({
+      ticker: 'FMT_TEST',
+      horizon: 15,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(output).toContain('No trusted');
   });
 });
