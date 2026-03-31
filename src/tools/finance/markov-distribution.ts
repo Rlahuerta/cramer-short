@@ -1288,16 +1288,21 @@ export function calibrateProbabilities(
     ensembleConsensus?: number;   // 0-3: how many ensemble signals agree
     historicalDays?: number;      // number of daily returns available
     hmmConverged?: boolean;       // whether HMM converged (adds confidence)
+    baseRate?: number;            // empirical P(up) from recent history (default 0.5)
   },
 ): MarkovDistributionPoint[] {
   const consensus = options?.ensembleConsensus ?? 0;
   const nDays = options?.historicalDays ?? 60;
   const hmmOk = options?.hmmConverged ?? false;
+  // Adaptive center: shrink toward empirical base rate, not 0.5.
+  // If the last 120 days had 65% up days, shrink toward 0.65, preserving
+  // the directional bias while still compressing overconfident extremes.
+  const center = Math.max(0.35, Math.min(0.65, options?.baseRate ?? 0.5));
 
   // Base shrinkage coefficient κ ∈ [0.15, 0.55]
-  // κ=0.55 means "pull 55% toward 0.5" (very uncertain)
-  // κ=0.15 means "pull 15% toward 0.5" (reasonably calibrated)
-  let kappa = 0.45; // start conservative — pull heavily toward 0.5
+  // κ=0.55 means "pull 55% toward center" (very uncertain)
+  // κ=0.15 means "pull 15% toward center" (reasonably calibrated)
+  let kappa = 0.45; // start conservative — pull heavily toward center
 
   // Less shrinkage when ensemble signals agree (each consensus point → -0.07)
   kappa -= consensus * 0.07;
@@ -1316,7 +1321,7 @@ export function calibrateProbabilities(
 
   const calibrated = distribution.map(point => ({
     ...point,
-    probability: kappa * 0.5 + (1 - kappa) * point.probability,
+    probability: kappa * center + (1 - kappa) * point.probability,
   }));
 
   // Re-enforce monotonicity after shrinkage (P(>X) non-increasing in X)
@@ -1717,11 +1722,17 @@ export async function computeMarkovDistribution(params: {
     20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride,
   );
 
-  // --- Bayesian calibration (Idea I): shrink extreme probabilities toward 0.5 ---
+  // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
+  // Compute empirical base rate: P(up) from recent returns (Idea L: adaptive center)
+  const recentReturns = returns.slice(-Math.min(120, returns.length));
+  const baseRate = recentReturns.length > 0
+    ? recentReturns.filter(r => r > 0).length / recentReturns.length
+    : 0.5;
   const distribution = calibrateProbabilities(rawDistribution, {
     ensembleConsensus: ensemble.consensus,
     historicalDays: returns.length,
     hmmConverged: hmmMeta?.converged ?? false,
+    baseRate,
   });
 
   // --- Optional R²_OS (leave-one-out on training tail) ---

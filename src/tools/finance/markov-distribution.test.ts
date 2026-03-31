@@ -563,6 +563,29 @@ describe('calibrateProbabilities', () => {
       expect(p.probability).toBeLessThanOrEqual(1);
     }
   });
+
+  it('adaptive baseRate shifts shrinkage center (Idea L)', () => {
+    const dist = [
+      { price: 90,  probability: 0.80, lowerBound: 0.70, upperBound: 0.90, source: 'markov' as const },
+      { price: 110, probability: 0.20, lowerBound: 0.10, upperBound: 0.30, source: 'markov' as const },
+    ];
+    const neutral  = calibrateProbabilities(dist, { baseRate: 0.50 });
+    const bullish  = calibrateProbabilities(dist, { baseRate: 0.60 });
+    // Bullish base rate pulls probabilities upward compared to neutral center
+    expect(bullish[0].probability).toBeGreaterThan(neutral[0].probability);
+    expect(bullish[1].probability).toBeGreaterThan(neutral[1].probability);
+  });
+
+  it('baseRate is clamped to [0.35, 0.65]', () => {
+    const dist = [
+      { price: 100, probability: 0.50, lowerBound: 0.40, upperBound: 0.60, source: 'markov' as const },
+    ];
+    const extreme = calibrateProbabilities(dist, { baseRate: 0.90 });
+    // With kappa=0.45 and center clamped to 0.65:
+    // calibrated = 0.45 * 0.65 + 0.55 * 0.50 = 0.2925 + 0.275 = 0.5675
+    // Should NOT be pulled all the way to 0.90
+    expect(extreme[0].probability).toBeLessThan(0.70);
+  });
 });
 
 // ---------------------------------------------------------------------------
