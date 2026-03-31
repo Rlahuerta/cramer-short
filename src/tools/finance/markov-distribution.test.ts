@@ -35,6 +35,7 @@ import {
   calibrateProbabilities,
   computePredictionConfidence,
   getAssetProfile,
+  computeRegimeUpRates,
   logNormalSurvival,
   estimateRegimeStats,
   matPow,
@@ -578,15 +579,29 @@ describe('calibrateProbabilities', () => {
     expect(bullish[1].probability).toBeGreaterThan(neutral[1].probability);
   });
 
-  it('baseRate is clamped to [0.35, 0.65]', () => {
+  it('baseRate is clamped to [0.25, 0.80] (Idea S widened range)', () => {
     const dist = [
       { price: 100, probability: 0.50, lowerBound: 0.40, upperBound: 0.60, source: 'markov' as const },
     ];
     const extreme = calibrateProbabilities(dist, { baseRate: 0.90 });
-    // With kappa=0.45 and center clamped to 0.65:
-    // calibrated = 0.45 * 0.65 + 0.55 * 0.50 = 0.2925 + 0.275 = 0.5675
-    // Should NOT be pulled all the way to 0.90
-    expect(extreme[0].probability).toBeLessThan(0.70);
+    // With kappa=0.45 and center clamped to 0.80:
+    // calibrated = 0.45 * 0.80 + 0.55 * 0.50 = 0.36 + 0.275 = 0.635
+    // Should NOT be pulled all the way to 0.90 (capped at 0.80)
+    expect(extreme[0].probability).toBeLessThan(0.80);
+    // But should be higher than old 0.65 cap result
+    expect(extreme[0].probability).toBeGreaterThan(0.60);
+  });
+
+  it('high baseRate (0.75) raises center toward bullish level (Idea S)', () => {
+    const dist = [
+      { price: 100, probability: 0.45, lowerBound: 0.35, upperBound: 0.55, source: 'markov' as const },
+    ];
+    const neutral = calibrateProbabilities(dist, { baseRate: 0.50 });
+    const bullish = calibrateProbabilities(dist, { baseRate: 0.75 });
+    // With 75% base rate, calibration should pull 0.45 much higher than with 0.50
+    expect(bullish[0].probability).toBeGreaterThan(neutral[0].probability);
+    // Specifically: center=0.75 → 0.45*0.75 + 0.55*0.45 = 0.3375+0.2475 = 0.585
+    expect(bullish[0].probability).toBeGreaterThan(0.55);
   });
 
   it('bull regime reduces shrinkage (Idea O)', () => {
@@ -2392,5 +2407,73 @@ describe('getAssetProfile', () => {
 
   it('unknown ticker defaults to equity', () => {
     expect(getAssetProfile('UNKNOWN_TICKER').type).toBe('equity');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeRegimeUpRates — Regime-conditional P(up) (Idea T, Round 4)
+// ---------------------------------------------------------------------------
+
+describe('computeRegimeUpRates', () => {
+  it('returns P(up|regime) for each regime state', () => {
+    // Simple sequence: bull, bull, bear, sideways, bull
+    const regimeSeq: RegimeState[] = ['bull', 'bull', 'bear', 'sideways', 'bull'];
+    // Returns: +1%, +2%, -1%, +0.5%, +3%
+    const returns = [0.01, 0.02, -0.01, 0.005, 0.03];
+    const horizon = 1;
+    const rates = computeRegimeUpRates(regimeSeq, returns, horizon);
+    expect(rates.bull).toBeDefined();
+    expect(rates.bear).toBeDefined();
+    expect(rates.sideways).toBeDefined();
+  });
+
+  it('computes correct P(up|bull) from synthetic data', () => {
+    // 10 days, all bull regime, alternating returns: +, -, +, -, +, -, +, -, +, -
+    const regimeSeq: RegimeState[] = Array(10).fill('bull');
+    const returns = [0.01, -0.01, 0.01, -0.01, 0.01, -0.01, 0.01, -0.01, 0.01, -0.01];
+    const rates = computeRegimeUpRates(regimeSeq, returns, 1);
+    // horizon=1: i goes 0..8, cumReturn = returns[i]
+    // Up: i=0,2,4,6,8 (returns > 0) → 5 up out of 9 → 5/9 ≈ 0.556
+    expect(rates.bull).toBeCloseTo(5 / 9, 2);
+  });
+
+  it('handles multi-day horizon correctly', () => {
+    // 6 days, bull regime, returns: +1%, +1%, +1%, -5%, +1%, +1%
+    const regimeSeq: RegimeState[] = Array(6).fill('bull');
+    const returns = [0.01, 0.01, 0.01, -0.05, 0.01, 0.01];
+    const rates = computeRegimeUpRates(regimeSeq, returns, 3);
+    // horizon=3: can start from day 0,1,2 (need 3 forward days)
+    // Day 0: cum = 0.01+0.01+0.01 = 0.03 → UP
+    // Day 1: cum = 0.01+0.01-0.05 = -0.03 → DOWN
+    // Day 2: cum = 0.01-0.05+0.01 = -0.03 → DOWN
+    expect(rates.bull).toBeCloseTo(1 / 3, 2);
+  });
+
+  it('returns 0.5 for regimes with no observations', () => {
+    const regimeSeq: RegimeState[] = Array(10).fill('bull');
+    const returns = Array(10).fill(0.01);
+    const rates = computeRegimeUpRates(regimeSeq, returns, 1);
+    // No bear or sideways observations → should return 0.5 (uninformative)
+    expect(rates.bear).toBe(0.5);
+    expect(rates.sideways).toBe(0.5);
+  });
+
+  it('distinguishes regime-specific up rates', () => {
+    // Bull days have positive returns, bear days have negative
+    const regimeSeq: RegimeState[] = ['bull', 'bull', 'bull', 'bear', 'bear', 'bear'];
+    const returns = [0.02, 0.01, 0.03, -0.02, -0.01, -0.03];
+    const rates = computeRegimeUpRates(regimeSeq, returns, 1);
+    // Bull: days 0,1 look forward to +0.01, +0.03 → 2 up out of 2 (day 2 → bear return)
+    // Actually: day 0→returns[0]=0.02 is cumReturn starting at i=0, sum returns[0..0]=0.02 (up)
+    // Wait, let me re-check the implementation:
+    // for i=0: cumReturn = returns[0] = 0.02 > 0 → up
+    // for i=1: cumReturn = returns[1] = 0.01 > 0 → up
+    // for i=2: cumReturn = returns[2] = 0.03 > 0 → up (but regime=bull)
+    // for i=3: cumReturn = returns[3] = -0.02 < 0 → down (regime=bear)
+    // for i=4: cumReturn = returns[4] = -0.01 < 0 → down (regime=bear)
+    // maxStart = 6 - 1 = 5, so i goes 0..4
+    // bull: 3 up / 3 total = 1.0, bear: 0 up / 2 total = 0.0
+    expect(rates.bull).toBeGreaterThan(0.8);
+    expect(rates.bear).toBeLessThan(0.2);
   });
 });

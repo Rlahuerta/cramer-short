@@ -620,6 +620,55 @@ export function normalizeRows(matrix: number[][]): TransitionMatrix {
 }
 
 // ---------------------------------------------------------------------------
+// Regime-conditional up-rate (Idea T, Round 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute empirical P(up | regime) for each regime state from historical data.
+ *
+ * For each day where regime=R, look forward `horizon` days and check if the
+ * cumulative return was positive. This gives the ACTUAL frequency of "up"
+ * outcomes following each regime — much more accurate than the lossy
+ * regime → mean return → Student-t survival mapping.
+ *
+ * Returns a map from regime state to P(up|regime). When combined with the
+ * n-step transition probabilities, this yields:
+ *   P(up) = Σ P(regime_i at horizon) × P(up | regime_i)
+ */
+export function computeRegimeUpRates(
+  regimeSeq: RegimeState[],
+  returns: number[],
+  horizon: number,
+): Record<RegimeState, number> {
+  const counts: Record<RegimeState, { up: number; total: number }> = {
+    bull: { up: 0, total: 0 },
+    bear: { up: 0, total: 0 },
+    sideways: { up: 0, total: 0 },
+  };
+
+  // regimeSeq[i] corresponds to returns[i]. Look forward `horizon` days.
+  const maxStart = Math.min(regimeSeq.length, returns.length) - horizon;
+  for (let i = 0; i < maxStart; i++) {
+    const regime = regimeSeq[i];
+    // Cumulative return over next `horizon` days
+    let cumReturn = 0;
+    for (let j = i; j < i + horizon; j++) {
+      cumReturn += returns[j];
+    }
+    counts[regime].total++;
+    if (cumReturn > 0) counts[regime].up++;
+  }
+
+  const result = {} as Record<RegimeState, number>;
+  for (const state of REGIME_STATES) {
+    result[state] = counts[state].total > 0
+      ? counts[state].up / counts[state].total
+      : 0.5; // no data → uninformative
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Goodness-of-fit: Chi-squared test for Markov transition matrix
 // ---------------------------------------------------------------------------
 
@@ -1381,9 +1430,11 @@ export function calibrateProbabilities(
   const hmmOk = options?.hmmConverged ?? false;
   const kappaScale = options?.kappaMultiplier ?? 1.0;
   // Adaptive center: shrink toward empirical base rate, not 0.5.
-  // If the last 120 days had 65% up days, shrink toward 0.65, preserving
-  // the directional bias while still compressing overconfident extremes.
-  const center = Math.max(0.35, Math.min(0.65, options?.baseRate ?? 0.5));
+  // Idea S (Round 4): Raised center cap from [0.35, 0.65] to [0.25, 0.80].
+  // The old 0.65 cap destroyed directional signal in bullish markets where
+  // the actual 14d up-rate was 70-82%. With higher cap, the calibration
+  // pulls predictions toward the ACTUAL base rate instead of a clipped one.
+  const center = Math.max(0.25, Math.min(0.80, options?.baseRate ?? 0.5));
 
   // Base shrinkage coefficient κ ∈ [0.15, 0.55]
   // κ=0.55 means "pull 55% toward center" (very uncertain)
@@ -1929,14 +1980,43 @@ export async function computeMarkovDistribution(params: {
   const baseRate = recentReturns.length > 0
     ? recentReturns.filter(r => r > 0).length / recentReturns.length
     : 0.5;
+
+  // --- Regime-conditional P(up) (Idea T, Round 4) ---
+  // Instead of using the unconditional baseRate as calibration center, compute
+  // P(up) = Σ P(regime_i at horizon) × P(up | regime_i) from the training data.
+  // This is strictly more informative because it conditions on the CURRENT regime.
+  const regimeUpRates = computeRegimeUpRates(regimeSeq, returns, horizon);
+  const Pn = matPow(P, horizon);
+  const initialIdx = STATE_INDEX[currentRegime];
+  const stateWeightsForUp = Pn[initialIdx];
+  const conditionalPUp = REGIME_STATES.reduce(
+    (s, state, i) => s + stateWeightsForUp[i] * regimeUpRates[state], 0,
+  );
+  // Blend: 70% regime-conditional, 30% unconditional base rate (hedge against noise)
+  const calibrationCenter = 0.7 * conditionalPUp + 0.3 * baseRate;
+
   const distribution = calibrateProbabilities(rawDistribution, {
     ensembleConsensus: ensemble.consensus,
     historicalDays: returns.length,
     hmmConverged: hmmMeta?.converged ?? false,
-    baseRate,
+    baseRate: calibrationCenter,
     kappaMultiplier: assetProfile.kappaMultiplier,
     currentRegime,
   });
+
+  // --- Base-rate floor (Idea S, Round 4) ---
+  // Use the regime-conditional center (not raw baseRate) for the floor.
+  // This prevents the model from predicting DOWN when the regime-aware
+  // empirical frequency of UP is much higher.
+  const calPUpPreFloor = interpolateSurvival(distribution, currentPrice);
+  const bearMargin = 0.15;
+  const pUpFloor = Math.max(0.30, calibrationCenter - bearMargin);
+  if (calPUpPreFloor < pUpFloor) {
+    const deficit = pUpFloor - calPUpPreFloor;
+    for (const pt of distribution) {
+      pt.probability = Math.min(1.0, pt.probability + deficit);
+    }
+  }
 
   // --- Regime run length: consecutive days ending in the current regime ---
   let regimeRunLength = 1;
