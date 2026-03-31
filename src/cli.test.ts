@@ -13,7 +13,10 @@ import {
   buildShowPanel,
   buildSnapshotPanel,
   flushExchangeToScrollback,
+  resolveMaxIterations,
+  DEEP_MAX_ITERATIONS,
 } from './cli.js';
+import { DEFAULT_MAX_ITERATIONS } from './agent/index.js';
 import type { PriceSnapshot } from './controllers/watchlist-display.js';
 import type { WatchlistEntry } from './controllers/watchlist-controller.js';
 import type { HistoryItem } from './types.js';
@@ -541,5 +544,40 @@ describe('flushExchangeToScrollback', () => {
       .join('');
     // formatExchangeForScrollback should include the query and answer
     expect(written).toMatch(/test query|my answer/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// --deep flag / resolveMaxIterations
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('resolveMaxIterations', () => {
+  it('returns DEFAULT_MAX_ITERATIONS when --deep is absent', () => {
+    expect(resolveMaxIterations(['bun', 'src/index.tsx'])).toBe(DEFAULT_MAX_ITERATIONS);
+  });
+
+  it('returns DEEP_MAX_ITERATIONS (40) when --deep is present', () => {
+    expect(resolveMaxIterations(['bun', 'src/index.tsx', '--deep'])).toBe(DEEP_MAX_ITERATIONS);
+    expect(DEEP_MAX_ITERATIONS).toBe(40);
+  });
+
+  it('returns DEEP_MAX_ITERATIONS when --deep appears among other flags', () => {
+    expect(resolveMaxIterations(['bun', 'src/index.tsx', '--export', 'out.md', '--deep'])).toBe(DEEP_MAX_ITERATIONS);
+  });
+
+  it('is case-sensitive — --DEEP does not trigger deep mode', () => {
+    expect(resolveMaxIterations(['bun', 'src/index.tsx', '--DEEP'])).toBe(DEFAULT_MAX_ITERATIONS);
+  });
+
+  it('returns DEFAULT_MAX_ITERATIONS for an empty argv', () => {
+    expect(resolveMaxIterations([])).toBe(DEFAULT_MAX_ITERATIONS);
+  });
+
+  it('returns DEEP_MAX_ITERATIONS when --deep is the only argv entry', () => {
+    expect(resolveMaxIterations(['--deep'])).toBe(DEEP_MAX_ITERATIONS);
+  });
+
+  it('DEEP_MAX_ITERATIONS is strictly greater than DEFAULT_MAX_ITERATIONS', () => {
+    expect(DEEP_MAX_ITERATIONS).toBeGreaterThan(DEFAULT_MAX_ITERATIONS);
   });
 });

@@ -692,10 +692,20 @@ export function flushExchangeToScrollback(
   tui.requestRender(); // non-force: uses manual state above, hits "first render" path
 }
 
+/** Max agent iterations when `--deep` flag is active. */
+export const DEEP_MAX_ITERATIONS = 40;
+
+/**
+ * Returns the max agent iterations to use, based on whether `--deep` is present in argv.
+ * Accepts an explicit argv array so it can be unit-tested without touching process.argv.
+ */
+export function resolveMaxIterations(argv: string[] = process.argv): number {
+  return argv.includes('--deep') ? DEEP_MAX_ITERATIONS : DEFAULT_MAX_ITERATIONS;
+}
+
 export async function runCli() {
-  // --deep flag: raises max agent iterations to 40 for complex multi-skill queries
-  const isDeepMode = process.argv.includes('--deep');
-  const maxIterations = isDeepMode ? 40 : DEFAULT_MAX_ITERATIONS;
+  // --deep flag: raises max agent iterations for complex multi-skill queries
+  const maxIterations = resolveMaxIterations();
 
   // --export [path] flag: auto-export the session as Markdown on exit.
   // undefined = flag not present (no export); null = flag present, auto-generate filename; string = explicit path.
