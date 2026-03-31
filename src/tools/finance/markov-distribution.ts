@@ -1361,28 +1361,63 @@ export async function computeMarkovDistribution(params: {
   // Halve momentum weight when structural break detected (trend may have broken)
   const momentumAdj = breakResult.detected ? momentum.adjustment * 0.5 : momentum.adjustment;
 
-  // --- HMM forecast (Idea B: Hidden Markov Model) ---
+  // --- HMM forecast (Idea B: Hidden Markov Model + Idea C: Multi-feature) ---
   // Fit a Gaussian HMM on daily returns when we have enough data.
-  // Blend its drift/vol forecast with the observable Markov estimate.
+  // Also fit a volatility HMM on rolling vol for an independent vol-regime signal.
   let hmmOverride: { drift: number; vol: number; weight: number } | undefined;
-  let hmmMeta: { converged: boolean; iterations: number; states: number; logLikelihood: number } | undefined;
+  let hmmMeta: { converged: boolean; iterations: number; states: number; logLikelihood: number; volRegimeConverged?: boolean } | undefined;
   const HMM_MIN_OBS = 60; // need at least 60 returns for stable HMM
   if (returns.length >= HMM_MIN_OBS) {
     try {
+      // Primary: return HMM (directional signal)
       const hmmResult = baumWelch(returns, 3, 50, 1e-3);
       const hmmForecast = hmmPredict(returns, hmmResult.params, horizon);
+
+      // Secondary: volatility regime HMM (Idea C — orthogonal vol signal)
+      // 5-day rolling realized volatility as independent feature
+      const rollingVol: number[] = [];
+      const VOL_WINDOW = 5;
+      for (let i = VOL_WINDOW; i < returns.length; i++) {
+        const window = returns.slice(i - VOL_WINDOW, i);
+        const mean = window.reduce((s, v) => s + v, 0) / VOL_WINDOW;
+        const variance = window.reduce((s, v) => s + (v - mean) ** 2, 0) / VOL_WINDOW;
+        rollingVol.push(Math.sqrt(variance));
+      }
+
+      let volRegimeConverged = false;
+      let volScaleFactor = 1.0; // neutral default
+      if (rollingVol.length >= HMM_MIN_OBS) {
+        try {
+          const volHmm = baumWelch(rollingVol, 2, 30, 1e-3);
+          if (volHmm.converged) {
+            volRegimeConverged = true;
+            const volForecast = hmmPredict(rollingVol, volHmm.params, Math.min(horizon, 20));
+            // Current vol regime: high-vol state → widen uncertainty, low-vol → narrow it
+            const avgVol = rollingVol.reduce((s, v) => s + v, 0) / rollingVol.length;
+            if (avgVol > 0) {
+              // Scale factor: >1 means currently in high-vol regime, <1 means low-vol
+              volScaleFactor = volForecast.expectedReturn / avgVol;
+              volScaleFactor = Math.max(0.5, Math.min(2.0, volScaleFactor)); // clamp
+            }
+          }
+        } catch {
+          // Vol HMM failed — use neutral factor
+        }
+      }
+
       hmmMeta = {
         converged: hmmResult.converged,
         iterations: hmmResult.iterations,
         states: hmmResult.params.nStates,
         logLikelihood: hmmResult.logLikelihood,
+        volRegimeConverged,
       };
       if (hmmResult.converged && Number.isFinite(hmmForecast.expectedReturn)) {
         // Weight HMM at 0.5 when converged; reduce to 0.25 for short series
         const hmmWeight = returns.length >= 120 ? 0.5 : 0.25;
         hmmOverride = {
           drift: hmmForecast.expectedReturn,
-          vol: hmmForecast.expectedVolatility,
+          vol: hmmForecast.expectedVolatility * volScaleFactor,
           weight: hmmWeight,
         };
       }
