@@ -92,6 +92,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         realizedPrice,
         recommendation: result.actionSignal.recommendation,
         gofPasses: result.metadata.goodnessOfFit?.passes ?? null,
+        confidence: result.predictionConfidence,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });

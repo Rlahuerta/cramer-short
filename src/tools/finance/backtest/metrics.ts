@@ -31,6 +31,8 @@ export interface BacktestStep {
   recommendation: 'BUY' | 'HOLD' | 'SELL';
   /** Whether the GOF test passed for this window (null if not computed) */
   gofPasses: boolean | null;
+  /** Prediction confidence score (0–1) for selective prediction filtering */
+  confidence: number;
 }
 
 export interface ReliabilityBin {
@@ -154,6 +156,56 @@ export function directionalAccuracy(steps: BacktestStep[], holdThreshold = 0.03)
     return Math.abs(s.actualReturn) < holdThreshold;
   });
   return correct.length / steps.length;
+}
+
+// ---------------------------------------------------------------------------
+// Selective Directional Accuracy (Idea M — sHMM)
+// ---------------------------------------------------------------------------
+
+/**
+ * Selective directional accuracy: only count predictions above a confidence threshold.
+ * Returns both accuracy (on selected predictions) and coverage (fraction selected).
+ *
+ * Inspired by El-Yaniv & Pidan (NeurIPS 2011): selective prediction achieves
+ * lower error by abstaining on uncertain predictions. The RC (risk-coverage)
+ * trade-off curve shows monotonically decreasing error with decreasing coverage.
+ */
+export function selectiveDirectionalAccuracy(
+  steps: BacktestStep[],
+  minConfidence: number,
+  holdThreshold = 0.03,
+): { accuracy: number; coverage: number; selected: number; total: number } {
+  if (steps.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: 0 };
+
+  const selected = steps.filter(s => s.confidence >= minConfidence);
+  if (selected.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: steps.length };
+
+  const correct = selected.filter(s => {
+    if (s.recommendation === 'BUY')  return s.actualReturn > 0;
+    if (s.recommendation === 'SELL') return s.actualReturn < 0;
+    return Math.abs(s.actualReturn) < holdThreshold;
+  });
+
+  return {
+    accuracy: correct.length / selected.length,
+    coverage: selected.length / steps.length,
+    selected: selected.length,
+    total: steps.length,
+  };
+}
+
+/**
+ * Compute the full Risk-Coverage (RC) curve: accuracy at various confidence thresholds.
+ * Returns points sorted by decreasing coverage (increasing threshold).
+ */
+export function computeRCCurve(
+  steps: BacktestStep[],
+  thresholds = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+): Array<{ threshold: number; accuracy: number; coverage: number; n: number }> {
+  return thresholds.map(t => {
+    const result = selectiveDirectionalAccuracy(steps, t);
+    return { threshold: t, accuracy: result.accuracy, coverage: result.coverage, n: result.selected };
+  });
 }
 
 // ---------------------------------------------------------------------------

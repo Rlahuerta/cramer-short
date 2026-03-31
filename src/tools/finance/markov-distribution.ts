@@ -91,6 +91,18 @@ export interface MarkovDistributionResult {
   distribution: MarkovDistributionPoint[];
   /** Actionable Buy / Hold / Sell signal derived from the distribution. */
   actionSignal: ActionSignal;
+  /**
+   * Prediction confidence score (0–1). Higher values indicate the model is more
+   * decisive and historically more accurate. Combines:
+   *  - Directional decisiveness: |P(up) − 0.5| (how far from coin-flip)
+   *  - Ensemble consensus: agreement among momentum, mean-reversion, crossover signals
+   *  - HMM convergence: whether the Gaussian HMM converged
+   *  - Regime stability: consecutive days in the same regime state
+   *
+   * Use for selective prediction (sHMM — El-Yaniv & Pidan, NeurIPS 2011):
+   * filter out predictions with confidence below a threshold to trade coverage for accuracy.
+   */
+  predictionConfidence: number;
   metadata: {
     polymarketAnchors: number;
     regimeState: RegimeState;
@@ -1335,6 +1347,63 @@ export function calibrateProbabilities(
 }
 
 // ---------------------------------------------------------------------------
+// 7c. Prediction confidence scoring (Idea M — sHMM selective prediction)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute a 0–1 confidence score for a Markov prediction. Higher = more reliable.
+ *
+ * Combines four orthogonal signals:
+ *   1. **Decisiveness** (40%): |P(up) − 0.5| × 2 — how far from a coin flip.
+ *      When P(up)≈0.5, the model has no directional edge; ≈1.0 = very decisive.
+ *   2. **Ensemble consensus** (25%): fraction of signals (momentum, mean-reversion,
+ *      crossover) that agree. consensus=3 → all agree → max contribution.
+ *   3. **HMM convergence** (15%): Baum-Welch converged = +0.15 confidence.
+ *   4. **Regime stability** (20%): consecutive days in the same regime / 20.
+ *      Longer streaks → more predictable environment.
+ *
+ * Inspired by El-Yaniv & Pidan (NeurIPS 2011): selective prediction trades
+ * coverage for accuracy by abstaining when confidence is low.
+ */
+export function computePredictionConfidence(options: {
+  /** P(price > currentPrice at horizon) after calibration */
+  pUp: number;
+  /** Ensemble consensus count (0–3) */
+  ensembleConsensus: number;
+  /** Whether the HMM converged */
+  hmmConverged: boolean;
+  /** Consecutive days in the current regime state */
+  regimeRunLength: number;
+  /** Whether a structural break was detected */
+  structuralBreak: boolean;
+}): number {
+  const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
+
+  // 1. Decisiveness: |P(up) - 0.5| scaled to [0, 1]
+  const decisiveness = Math.min(1.0, Math.abs(pUp - 0.5) * 2);
+
+  // 2. Ensemble consensus: 0/3 = 0, 1/3 = 0.33, 2/3 = 0.67, 3/3 = 1
+  const consensusScore = ensembleConsensus / 3;
+
+  // 3. HMM convergence: binary
+  const hmmScore = hmmConverged ? 1.0 : 0.0;
+
+  // 4. Regime stability: saturates at 20 consecutive days
+  const stabilityScore = Math.min(1.0, regimeRunLength / 20);
+
+  // Weighted combination
+  let confidence = 0.40 * decisiveness
+                 + 0.25 * consensusScore
+                 + 0.15 * hmmScore
+                 + 0.20 * stabilityScore;
+
+  // Penalty for structural break (regime change mid-window → unreliable)
+  if (structuralBreak) confidence *= 0.6;
+
+  return Math.max(0, Math.min(1, confidence));
+}
+
+// ---------------------------------------------------------------------------
 // 8a. interpolateSurvival + computeActionSignal — Buy/Hold/Sell signal
 // ---------------------------------------------------------------------------
 
@@ -1735,6 +1804,25 @@ export async function computeMarkovDistribution(params: {
     baseRate,
   });
 
+  // --- Regime run length: consecutive days ending in the current regime ---
+  let regimeRunLength = 1;
+  for (let i = regimeSeq.length - 2; i >= 0; i--) {
+    if (regimeSeq[i] === currentRegime) regimeRunLength++;
+    else break;
+  }
+
+  // --- P(up) from calibrated distribution for confidence scoring ---
+  const pUp = interpolateSurvival(distribution, currentPrice);
+
+  // --- Prediction confidence (Idea M: selective prediction) ---
+  const predictionConfidence = computePredictionConfidence({
+    pUp,
+    ensembleConsensus: ensemble.consensus,
+    hmmConverged: hmmMeta?.converged ?? false,
+    regimeRunLength,
+    structuralBreak: breakResult.detected,
+  });
+
   // --- Optional R²_OS (leave-one-out on training tail) ---
   let r2os: number | null = null;
   const minHeldOut = 20;
@@ -1770,6 +1858,7 @@ export async function computeMarkovDistribution(params: {
         ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
         : undefined,
     ),
+    predictionConfidence,
     metadata: {
       polymarketAnchors: polymarketAnchors.filter(a => a.trustScore === 'high').length,
       regimeState: currentRegime,

@@ -10,6 +10,8 @@ import {
   maxReliabilityDeviation,
   ciCoverage,
   directionalAccuracy,
+  selectiveDirectionalAccuracy,
+  computeRCCurve,
   expectedReturnCorrelation,
   sharpness,
   gofPassRate,
@@ -34,6 +36,7 @@ function makeStep(overrides: Partial<BacktestStep> = {}): BacktestStep {
     realizedPrice: 100,
     recommendation: 'BUY',
     gofPasses: null,
+    confidence: 0.5,
     ...overrides,
   };
 }
@@ -328,5 +331,107 @@ describe('optimizeThresholds', () => {
     // With near-zero predicted returns, best strategy is HOLD with tight buy threshold
     // actualReturn=0.005 < holdBand=0.03 so HOLD is correct
     expect(result.bestAccuracy).toBeGreaterThan(0.5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selectiveDirectionalAccuracy (Idea M)
+// ---------------------------------------------------------------------------
+
+describe('selectiveDirectionalAccuracy', () => {
+  it('returns full coverage at threshold 0', () => {
+    const steps = [
+      makeStep({ confidence: 0.8, recommendation: 'BUY', actualReturn: 0.05 }),
+      makeStep({ confidence: 0.2, recommendation: 'BUY', actualReturn: -0.03 }),
+    ];
+    const result = selectiveDirectionalAccuracy(steps, 0);
+    expect(result.coverage).toBe(1.0);
+    expect(result.selected).toBe(2);
+    expect(result.accuracy).toBe(0.5); // 1 correct out of 2
+  });
+
+  it('filters low-confidence predictions', () => {
+    const steps = [
+      makeStep({ confidence: 0.8, recommendation: 'BUY', actualReturn: 0.05 }),  // correct, included
+      makeStep({ confidence: 0.2, recommendation: 'BUY', actualReturn: -0.03 }), // wrong, excluded
+      makeStep({ confidence: 0.9, recommendation: 'SELL', actualReturn: -0.02 }), // correct, included
+    ];
+    const result = selectiveDirectionalAccuracy(steps, 0.5);
+    expect(result.selected).toBe(2);
+    expect(result.coverage).toBeCloseTo(2 / 3, 5);
+    expect(result.accuracy).toBe(1.0); // 2/2 correct
+  });
+
+  it('returns 0 coverage when all below threshold', () => {
+    const steps = [
+      makeStep({ confidence: 0.1 }),
+      makeStep({ confidence: 0.2 }),
+    ];
+    const result = selectiveDirectionalAccuracy(steps, 0.5);
+    expect(result.selected).toBe(0);
+    expect(result.coverage).toBe(0);
+    expect(result.accuracy).toBe(0);
+  });
+
+  it('handles empty steps', () => {
+    const result = selectiveDirectionalAccuracy([], 0.5);
+    expect(result.total).toBe(0);
+    expect(result.accuracy).toBe(0);
+  });
+
+  it('accuracy improves when low-confidence wrong predictions are filtered', () => {
+    // Simulate a model that is accurate when confident, wrong when not
+    const steps = [
+      // High confidence, all correct
+      makeStep({ confidence: 0.9, recommendation: 'BUY', actualReturn: 0.04 }),
+      makeStep({ confidence: 0.8, recommendation: 'SELL', actualReturn: -0.03 }),
+      makeStep({ confidence: 0.85, recommendation: 'BUY', actualReturn: 0.02 }),
+      // Low confidence, all wrong
+      makeStep({ confidence: 0.1, recommendation: 'BUY', actualReturn: -0.05 }),
+      makeStep({ confidence: 0.15, recommendation: 'SELL', actualReturn: 0.03 }),
+    ];
+    const all = selectiveDirectionalAccuracy(steps, 0);
+    const selective = selectiveDirectionalAccuracy(steps, 0.5);
+    expect(all.accuracy).toBe(3 / 5); // 60%
+    expect(selective.accuracy).toBe(1.0); // 100% — filtered out the wrong ones
+    expect(selective.coverage).toBe(3 / 5); // 60% coverage
+  });
+
+  it('HOLD is correct when |actualReturn| < holdThreshold', () => {
+    const steps = [
+      makeStep({ confidence: 0.7, recommendation: 'HOLD', actualReturn: 0.01 }),
+    ];
+    const result = selectiveDirectionalAccuracy(steps, 0.5, 0.03);
+    expect(result.accuracy).toBe(1.0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeRCCurve
+// ---------------------------------------------------------------------------
+
+describe('computeRCCurve', () => {
+  it('returns decreasing coverage with increasing threshold', () => {
+    const steps = Array.from({ length: 10 }, (_, i) =>
+      makeStep({ confidence: i / 10, recommendation: 'BUY', actualReturn: 0.05 }),
+    );
+    const curve = computeRCCurve(steps);
+    // Coverage should be non-increasing
+    for (let i = 1; i < curve.length; i++) {
+      expect(curve[i].coverage).toBeLessThanOrEqual(curve[i - 1].coverage);
+    }
+  });
+
+  it('returns 100% coverage at threshold 0', () => {
+    const steps = [makeStep({ confidence: 0.5 })];
+    const curve = computeRCCurve(steps);
+    expect(curve[0].threshold).toBe(0);
+    expect(curve[0].coverage).toBe(1.0);
+  });
+
+  it('returns correct number of points', () => {
+    const steps = [makeStep()];
+    const curve = computeRCCurve(steps, [0, 0.25, 0.5, 0.75]);
+    expect(curve).toHaveLength(4);
   });
 });

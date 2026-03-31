@@ -33,6 +33,7 @@ import {
   computeMixingWeight,
   computeR2OS,
   calibrateProbabilities,
+  computePredictionConfidence,
   logNormalSurvival,
   estimateRegimeStats,
   matPow,
@@ -2149,5 +2150,107 @@ describe('studentTSurvival', () => {
 
   it('returns 0 when target > current and vol=0', () => {
     expect(studentTSurvival(100, 110, 0, 0)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computePredictionConfidence — Idea M: selective prediction
+// ---------------------------------------------------------------------------
+
+describe('computePredictionConfidence', () => {
+  it('returns high confidence when all signals are strong', () => {
+    const c = computePredictionConfidence({
+      pUp: 0.85, // very decisive
+      ensembleConsensus: 3, // all signals agree
+      hmmConverged: true,
+      regimeRunLength: 25, // stable regime
+      structuralBreak: false,
+    });
+    expect(c).toBeGreaterThan(0.8);
+    expect(c).toBeLessThanOrEqual(1.0);
+  });
+
+  it('returns low confidence when P(up) ≈ 0.5 (indecisive)', () => {
+    const c = computePredictionConfidence({
+      pUp: 0.51, // near coin flip
+      ensembleConsensus: 0,
+      hmmConverged: false,
+      regimeRunLength: 1,
+      structuralBreak: false,
+    });
+    expect(c).toBeLessThan(0.15);
+  });
+
+  it('structural break reduces confidence by 40%', () => {
+    const base = computePredictionConfidence({
+      pUp: 0.75,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 10,
+      structuralBreak: false,
+    });
+    const broken = computePredictionConfidence({
+      pUp: 0.75,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 10,
+      structuralBreak: true,
+    });
+    expect(broken).toBeCloseTo(base * 0.6, 2);
+  });
+
+  it('more ensemble consensus increases confidence', () => {
+    const low = computePredictionConfidence({
+      pUp: 0.7, ensembleConsensus: 0, hmmConverged: false, regimeRunLength: 5, structuralBreak: false,
+    });
+    const high = computePredictionConfidence({
+      pUp: 0.7, ensembleConsensus: 3, hmmConverged: false, regimeRunLength: 5, structuralBreak: false,
+    });
+    expect(high).toBeGreaterThan(low);
+  });
+
+  it('longer regime run increases confidence', () => {
+    const short = computePredictionConfidence({
+      pUp: 0.7, ensembleConsensus: 1, hmmConverged: true, regimeRunLength: 1, structuralBreak: false,
+    });
+    const long = computePredictionConfidence({
+      pUp: 0.7, ensembleConsensus: 1, hmmConverged: true, regimeRunLength: 20, structuralBreak: false,
+    });
+    expect(long).toBeGreaterThan(short);
+  });
+
+  it('HMM convergence adds confidence', () => {
+    const noHmm = computePredictionConfidence({
+      pUp: 0.7, ensembleConsensus: 1, hmmConverged: false, regimeRunLength: 5, structuralBreak: false,
+    });
+    const withHmm = computePredictionConfidence({
+      pUp: 0.7, ensembleConsensus: 1, hmmConverged: true, regimeRunLength: 5, structuralBreak: false,
+    });
+    expect(withHmm).toBeGreaterThan(noHmm);
+    expect(withHmm - noHmm).toBeCloseTo(0.15, 1); // HMM adds 15% weight
+  });
+
+  it('always returns value in [0, 1]', () => {
+    // Edge cases
+    const extremes = [
+      { pUp: 0.0, ensembleConsensus: 3, hmmConverged: true, regimeRunLength: 100, structuralBreak: false },
+      { pUp: 1.0, ensembleConsensus: 0, hmmConverged: false, regimeRunLength: 0, structuralBreak: true },
+      { pUp: 0.5, ensembleConsensus: 0, hmmConverged: false, regimeRunLength: 0, structuralBreak: false },
+    ];
+    for (const opts of extremes) {
+      const c = computePredictionConfidence(opts);
+      expect(c).toBeGreaterThanOrEqual(0);
+      expect(c).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('symmetric around 0.5 — P(up)=0.3 and P(up)=0.7 give same decisiveness', () => {
+    const low = computePredictionConfidence({
+      pUp: 0.3, ensembleConsensus: 1, hmmConverged: true, regimeRunLength: 10, structuralBreak: false,
+    });
+    const high = computePredictionConfidence({
+      pUp: 0.7, ensembleConsensus: 1, hmmConverged: true, regimeRunLength: 10, structuralBreak: false,
+    });
+    expect(low).toBeCloseTo(high, 5);
   });
 });

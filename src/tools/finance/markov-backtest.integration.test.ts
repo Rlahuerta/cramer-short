@@ -21,6 +21,8 @@ import {
   brierScore,
   ciCoverage,
   directionalAccuracy,
+  selectiveDirectionalAccuracy,
+  computeRCCurve,
   expectedReturnCorrelation,
   sharpness,
   reliabilityBins,
@@ -210,6 +212,30 @@ describe('Markov distribution walk-forward backtest', () => {
         `  OPTIMAL THRESHOLDS: buy=${opt.bestBuyThreshold} sell=${opt.bestSellThreshold} `
         + `→ accuracy=${(opt.bestAccuracy * 100).toFixed(1)}%`,
       );
+
+      // Selective accuracy (RC curve — Idea M)
+      const rcCurve = computeRCCurve(allSteps);
+      lines.push('  RC Curve (selective prediction — coverage→accuracy):');
+      for (const pt of rcCurve) {
+        if (pt.n === 0) continue;
+        const bar = '▓'.repeat(Math.round(pt.accuracy * 20));
+        lines.push(
+          `    conf≥${pt.threshold.toFixed(1)}: `
+          + `acc=${(pt.accuracy * 100).toFixed(0).padStart(3)}% `
+          + `cov=${(pt.coverage * 100).toFixed(0).padStart(3)}% `
+          + `n=${String(pt.n).padStart(4)} ${bar}`,
+        );
+      }
+
+      // Per-ticker selective accuracy at best threshold
+      const bestSelective = rcCurve.find(pt => pt.accuracy >= 0.70 && pt.coverage >= 0.30);
+      if (bestSelective) {
+        lines.push(
+          `  ★ SELECTIVE TARGET MET: ${(bestSelective.accuracy * 100).toFixed(0)}% accuracy `
+          + `at ${(bestSelective.coverage * 100).toFixed(0)}% coverage `
+          + `(threshold=${bestSelective.threshold})`,
+        );
+      }
 
       // Reliability breakdown
       lines.push('  Reliability bins (predicted→actual):');
