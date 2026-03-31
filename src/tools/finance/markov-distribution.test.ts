@@ -946,3 +946,131 @@ describe('Tier 1c — mergeAnchorsWithCrossPlatformValidation', () => {
     expect(result.metadata.anchorDivergenceWarnings).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Action signal: interpolateSurvival + computeActionSignal
+// ---------------------------------------------------------------------------
+
+import {
+  interpolateSurvival,
+  computeActionSignal,
+  type MarkovDistributionPoint,
+} from './markov-distribution.js';
+
+/** Build a synthetic linear distribution: P(>price) = 1 − (price − lo) / (hi − lo) */
+function makeLinearDist(lo: number, hi: number, n = 21): MarkovDistributionPoint[] {
+  return Array.from({ length: n }, (_, i) => {
+    const price = lo + (hi - lo) * (i / (n - 1));
+    const prob  = 1 - i / (n - 1);
+    return { price, probability: prob, lowerBound: prob - 0.05, upperBound: prob + 0.05, source: 'markov' as const };
+  });
+}
+
+describe('interpolateSurvival', () => {
+  const dist = makeLinearDist(80, 120);
+
+  it('returns 1.0 for price below the distribution minimum', () => {
+    expect(interpolateSurvival(dist, 50)).toBe(1.0);
+  });
+
+  it('returns 0.0 for price above the distribution maximum', () => {
+    expect(interpolateSurvival(dist, 200)).toBe(0.0);
+  });
+
+  it('returns 0.5 for the exact midpoint', () => {
+    // midpoint = 100, which is the exact center of [80, 120]
+    const p = interpolateSurvival(dist, 100);
+    expect(p).toBeCloseTo(0.5, 1);
+  });
+
+  it('returns 0.5 for empty distribution', () => {
+    expect(interpolateSurvival([], 100)).toBe(0.5);
+  });
+
+  it('interpolates correctly between two known points', () => {
+    // At price 90 (25% along [80, 120]) → P ≈ 0.75
+    const p = interpolateSurvival(dist, 90);
+    expect(p).toBeGreaterThan(0.7);
+    expect(p).toBeLessThan(0.8);
+  });
+});
+
+describe('computeActionSignal', () => {
+  it('returns probabilities that sum to 1 (within floating-point tolerance)', () => {
+    const dist = makeLinearDist(90, 110); // currentPrice = 100
+    const sig = computeActionSignal(dist, 100);
+    const total = sig.buyProbability + sig.holdProbability + sig.sellProbability;
+    expect(total).toBeCloseTo(1.0, 5);
+  });
+
+  it('recommends SELL when distribution is heavily skewed downward', () => {
+    // All prices below current → distribution skewed down
+    const dist = makeLinearDist(50, 98); // max < current price of 100
+    const sig = computeActionSignal(dist, 100);
+    expect(sig.sellProbability).toBeGreaterThan(sig.buyProbability);
+    expect(sig.recommendation).toBe('SELL');
+  });
+
+  it('recommends BUY when distribution is heavily skewed upward', () => {
+    // All prices above current → distribution skewed up
+    const dist = makeLinearDist(102, 150); // min > current price of 100
+    const sig = computeActionSignal(dist, 100);
+    expect(sig.buyProbability).toBeGreaterThan(sig.sellProbability);
+    expect(sig.recommendation).toBe('BUY');
+  });
+
+  it('recommends HOLD for a symmetric distribution centred at current price', () => {
+    const dist = makeLinearDist(90, 110);
+    const sig = computeActionSignal(dist, 100);
+    expect(sig.recommendation).toBe('HOLD');
+    expect(sig.holdProbability).toBeGreaterThan(0);
+  });
+
+  it('respects custom thresholds', () => {
+    const dist = makeLinearDist(90, 110);
+    // With very tight thresholds most mass sits in HOLD zone
+    const sig = computeActionSignal(dist, 100, 0.01, 0.01);
+    expect(sig.buyThreshold).toBe(0.01);
+    expect(sig.sellThreshold).toBe(0.01);
+  });
+
+  it('riskRewardRatio > 1 when distribution is bullish', () => {
+    const dist = makeLinearDist(95, 120); // skewed upward
+    const sig = computeActionSignal(dist, 100);
+    expect(sig.riskRewardRatio).toBeGreaterThan(1);
+  });
+
+  it('riskRewardRatio < 1 when distribution is bearish', () => {
+    const dist = makeLinearDist(80, 105); // skewed downward
+    const sig = computeActionSignal(dist, 100);
+    expect(sig.riskRewardRatio).toBeLessThan(1);
+  });
+
+  it('expectedReturn is positive for an upward-skewed distribution', () => {
+    const dist = makeLinearDist(95, 120);
+    const sig = computeActionSignal(dist, 100);
+    expect(sig.expectedReturn).toBeGreaterThan(0);
+  });
+
+  it('expectedReturn is negative for a downward-skewed distribution', () => {
+    const dist = makeLinearDist(80, 105);
+    const sig = computeActionSignal(dist, 100);
+    expect(sig.expectedReturn).toBeLessThan(0);
+  });
+
+  it('computeMarkovDistribution result includes actionSignal field', async () => {
+    const prices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.5);
+    const result = await computeMarkovDistribution({
+      ticker: 'SIGTEST',
+      horizon: 10,
+      currentPrice: 119.5,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(result.actionSignal).toBeDefined();
+    expect(['BUY', 'HOLD', 'SELL']).toContain(result.actionSignal.recommendation);
+    expect(['HIGH', 'MEDIUM', 'LOW']).toContain(result.actionSignal.confidence);
+    const { buyProbability: b, holdProbability: h, sellProbability: s } = result.actionSignal;
+    expect(b + h + s).toBeCloseTo(1.0, 4);
+  });
+});

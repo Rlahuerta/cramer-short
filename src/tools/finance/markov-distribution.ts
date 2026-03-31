@@ -85,6 +85,8 @@ export interface MarkovDistributionResult {
   currentPrice: number;
   horizon: number;
   distribution: MarkovDistributionPoint[];
+  /** Actionable Buy / Hold / Sell signal derived from the distribution. */
+  actionSignal: ActionSignal;
   metadata: {
     polymarketAnchors: number;
     regimeState: RegimeState;
@@ -114,6 +116,28 @@ export interface MarkovDistributionResult {
       divergencePp: number;
     }>;
   };
+}
+
+/** Actionable Buy / Hold / Sell summary derived from the Markov distribution. */
+export interface ActionSignal {
+  /** P(price rises ≥ buyThreshold above current price by horizon) */
+  buyProbability: number;
+  /** P(price stays within −sellThreshold..+buyThreshold of current price) */
+  holdProbability: number;
+  /** P(price falls ≥ sellThreshold below current price by horizon) */
+  sellProbability: number;
+  /** Primary recommendation based on distribution shape */
+  recommendation: 'BUY' | 'HOLD' | 'SELL';
+  /** Confidence level based on margin between leading and second probability */
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  /** Expected return over the horizon (e.g. 0.03 = +3%) */
+  expectedReturn: number;
+  /** Unconditional expected upside / expected downside (> 1 = favours upside) */
+  riskRewardRatio: number;
+  /** Upside threshold used (default 0.05 = +5%) */
+  buyThreshold: number;
+  /** Downside threshold used (default 0.03 = −3%) */
+  sellThreshold: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -796,7 +820,115 @@ export function computeR2OS(
 }
 
 // ---------------------------------------------------------------------------
-// 8. markovDistribution — main orchestration function
+// 8a. interpolateSurvival + computeActionSignal — Buy/Hold/Sell signal
+// ---------------------------------------------------------------------------
+
+/**
+ * Linearly interpolate P(price > targetPrice) from a monotone survival distribution.
+ * Distribution must be sorted ascending by price (P(>price) non-increasing).
+ */
+export function interpolateSurvival(
+  distribution: MarkovDistributionPoint[],
+  targetPrice: number,
+): number {
+  if (distribution.length === 0) return 0.5;
+  if (targetPrice <= distribution[0].price) return 1.0;
+  if (targetPrice >= distribution[distribution.length - 1].price) return 0.0;
+  for (let i = 0; i < distribution.length - 1; i++) {
+    const lo = distribution[i];
+    const hi = distribution[i + 1];
+    if (targetPrice >= lo.price && targetPrice <= hi.price) {
+      const t = (targetPrice - lo.price) / (hi.price - lo.price);
+      return lo.probability + t * (hi.probability - lo.probability);
+    }
+  }
+  return 0.0;
+}
+
+/**
+ * Derive a Buy / Hold / Sell action signal from the probability distribution.
+ *
+ * Zones (relative to currentPrice):
+ *   BUY  — P(price >  currentPrice × (1 + buyThreshold))   default: P(>+5%)
+ *   SELL — P(price <  currentPrice × (1 − sellThreshold))  default: P(<−3%)
+ *   HOLD — remainder
+ *
+ * Expected return via discrete integration of the survival function:
+ *   E[price] ≈ Σᵢ (S(xᵢ) − S(xᵢ₊₁)) × midᵢ  +  tail corrections
+ *
+ * @param distribution   Output of interpolateDistribution (ascending price, P non-increasing)
+ * @param currentPrice   Current price (serves as the 50% reference)
+ * @param buyThreshold   Min upside for BUY zone (default 0.05 = +5%)
+ * @param sellThreshold  Min downside for SELL zone (default 0.03 = −3%)
+ */
+export function computeActionSignal(
+  distribution: MarkovDistributionPoint[],
+  currentPrice: number,
+  buyThreshold = 0.05,
+  sellThreshold = 0.03,
+): ActionSignal {
+  const pAboveBuy  = interpolateSurvival(distribution, currentPrice * (1 + buyThreshold));
+  const pAboveSell = interpolateSurvival(distribution, currentPrice * (1 - sellThreshold));
+  const pBelowSell = 1 - pAboveSell;
+  const pHold      = Math.max(0, 1 - pAboveBuy - pBelowSell);
+
+  // E[price] via integration: Σ mass_i × midprice_i  (trapezoid rule)
+  let ePrice = 0;
+  for (let i = 0; i < distribution.length - 1; i++) {
+    const mass = distribution[i].probability - distribution[i + 1].probability;
+    const mid  = (distribution[i].price + distribution[i + 1].price) / 2;
+    ePrice += mass * mid;
+  }
+  // Bottom tail: P(price ≤ minPrice) × minPrice
+  ePrice += (1 - distribution[0].probability) * distribution[0].price;
+  // Top tail: P(price > maxPrice) × maxPrice
+  ePrice += distribution[distribution.length - 1].probability
+          * distribution[distribution.length - 1].price;
+
+  const expectedReturn = (ePrice - currentPrice) / currentPrice;
+
+  // Unconditional expected upside and downside (dollar terms, then ratio)
+  let eUpside = 0, eDownside = 0;
+  for (let i = 0; i < distribution.length - 1; i++) {
+    const mass = distribution[i].probability - distribution[i + 1].probability;
+    const mid  = (distribution[i].price + distribution[i + 1].price) / 2;
+    eUpside   += mass * Math.max(0, mid - currentPrice);
+    eDownside += mass * Math.max(0, currentPrice - mid);
+  }
+  // Tail contributions
+  eDownside += (1 - distribution[0].probability)
+             * Math.max(0, currentPrice - distribution[0].price);
+  eUpside   += distribution[distribution.length - 1].probability
+             * Math.max(0, distribution[distribution.length - 1].price - currentPrice);
+
+  const riskRewardRatio = eDownside > 0 ? eUpside / eDownside : 1.0;
+
+  // Recommendation: whichever zone has the highest probability
+  const scores: Array<['BUY' | 'HOLD' | 'SELL', number]> = [
+    ['BUY',  pAboveBuy],
+    ['HOLD', pHold],
+    ['SELL', pBelowSell],
+  ];
+  scores.sort((a, b) => b[1] - a[1]);
+  const recommendation = scores[0][0];
+  const gap = scores[0][1] - scores[1][1];
+  const confidence: 'HIGH' | 'MEDIUM' | 'LOW' = gap >= 0.15 ? 'HIGH' : gap >= 0.07 ? 'MEDIUM' : 'LOW';
+
+  return {
+    buyProbability:  pAboveBuy,
+    holdProbability: pHold,
+    sellProbability: pBelowSell,
+    recommendation,
+    confidence,
+    expectedReturn,
+    riskRewardRatio,
+    buyThreshold,
+    sellThreshold,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 8b. markovDistribution — main orchestration function
 // ---------------------------------------------------------------------------
 
 /**
@@ -909,6 +1041,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice,
     horizon,
     distribution,
+    actionSignal: computeActionSignal(distribution, currentPrice),
     metadata: {
       polymarketAnchors: polymarketAnchors.filter(a => a.trustScore === 'high').length,
       regimeState: currentRegime,
@@ -999,7 +1132,20 @@ Requires: ticker symbol, horizon in trading days (1–90), and access to recent 
       kalshiAnchors:     input.kalshiAnchors,
     });
 
-    const { metadata: m } = result;
+    const { metadata: m, actionSignal: sig } = result;
+
+    // Decision Summary section
+    const buyPct  = (sig.buyProbability  * 100).toFixed(1);
+    const holdPct = (sig.holdProbability * 100).toFixed(1);
+    const sellPct = (sig.sellProbability * 100).toFixed(1);
+    const buyThr  = (sig.buyThreshold  * 100).toFixed(0);
+    const sellThr = (sig.sellThreshold * 100).toFixed(0);
+    const retSign = sig.expectedReturn >= 0 ? '+' : '';
+    const retPct  = (sig.expectedReturn * 100).toFixed(1);
+    const rrLabel = sig.riskRewardRatio.toFixed(2);
+
+    const recEmoji = sig.recommendation === 'BUY' ? '📈' : sig.recommendation === 'SELL' ? '📉' : '➡️ ';
+
     const lines = [
       `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
       `Current: $${result.currentPrice.toFixed(2)} | Regime: ${m.regimeState}`,
@@ -1017,6 +1163,15 @@ Requires: ticker symbol, horizon in trading days (1–90), and access to recent 
       m.anchorDivergenceWarnings.length > 0
         ? `⚠️ Cross-platform divergence: ${m.anchorDivergenceWarnings.map(w => `$${w.price} (${w.divergencePp.toFixed(1)}pp)`).join(', ')}`
         : '',
+      '',
+      '📋 Decision Summary',
+      '─'.repeat(60),
+      `📈 BUY    (>+${buyThr}%)       ${buyPct.padStart(5)}%   P(price exceeds current +${buyThr}% by horizon)`,
+      `➡️  HOLD   (±${sellThr}%..+${buyThr}%)   ${holdPct.padStart(5)}%   P(price stays range-bound)`,
+      `📉 SELL   (<−${sellThr}%)       ${sellPct.padStart(5)}%   P(price falls more than −${sellThr}% by horizon)`,
+      '',
+      `${recEmoji} Recommendation: ${sig.recommendation}  [${sig.confidence} confidence]`,
+      `   Expected return: ${retSign}${retPct}%  |  Risk/reward: ${rrLabel}×  (>1 = upside larger than downside)`,
       '',
       'Price         P(>price)    90% CI                 Source',
       '─'.repeat(60),
