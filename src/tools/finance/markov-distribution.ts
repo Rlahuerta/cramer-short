@@ -380,6 +380,94 @@ export function computeMomentumSignal(prices: number[], lookback = 20): Momentum
   return { velocity, acceleration, trendStrength, adjustment };
 }
 
+// ---------------------------------------------------------------------------
+// 5b. Ensemble signal (Idea D)
+// ---------------------------------------------------------------------------
+
+export interface EnsembleSignal {
+  /** Mean-reversion z-score: negative = overbought, positive = oversold */
+  meanReversionZ: number;
+  /** Momentum crossover: SMA5/SMA20 ratio minus 1 */
+  momentumCrossover: number;
+  /** Volatility compression ratio: vol_5d / vol_20d. <1 = compressed, >1 = expanding */
+  volCompression: number;
+  /** Combined drift adjustment (daily), clamped to ±0.004 */
+  adjustment: number;
+  /** Number of signals agreeing on direction (0-3, higher = more consensus) */
+  consensus: number;
+}
+
+/**
+ * Compute ensemble signal from 3 orthogonal indicators:
+ * 1. Mean-reversion z-score — contrarian (overbought/oversold)
+ * 2. Momentum crossover — trend-following (SMA5 vs SMA20)
+ * 3. Volatility compression — breakout anticipation
+ *
+ * Only applies adjustment when ≥2 of 3 signals agree on direction.
+ */
+export function computeEnsembleSignal(prices: number[]): EnsembleSignal {
+  const nil: EnsembleSignal = { meanReversionZ: 0, momentumCrossover: 0, volCompression: 1, adjustment: 0, consensus: 0 };
+  if (prices.length < 25) return nil;
+
+  const returns: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    returns.push((prices[i] - prices[i - 1]) / prices[i - 1]);
+  }
+
+  // --- Mean-reversion z-score: (price - SMA20) / σ20 ---
+  const last20 = prices.slice(-20);
+  const sma20 = last20.reduce((s, v) => s + v, 0) / 20;
+  const std20 = Math.sqrt(last20.reduce((s, v) => s + (v - sma20) ** 2, 0) / 20);
+  const meanReversionZ = std20 > 0 ? (prices[prices.length - 1] - sma20) / std20 : 0;
+  // Negative z → price below mean → oversold → bullish signal
+  const mrSignal = -meanReversionZ;
+
+  // --- Momentum crossover: SMA5 / SMA20 - 1 ---
+  const last5 = prices.slice(-5);
+  const sma5 = last5.reduce((s, v) => s + v, 0) / 5;
+  const momentumCrossover = sma20 > 0 ? sma5 / sma20 - 1 : 0;
+  // Positive crossover → SMA5 above SMA20 → bullish
+  const momSignal = momentumCrossover;
+
+  // --- Volatility compression: vol5 / vol20 ---
+  const ret5 = returns.slice(-5);
+  const ret20 = returns.slice(-20);
+  const mean5 = ret5.reduce((s, v) => s + v, 0) / ret5.length;
+  const mean20 = ret20.reduce((s, v) => s + v, 0) / ret20.length;
+  const vol5 = Math.sqrt(ret5.reduce((s, v) => s + (v - mean5) ** 2, 0) / ret5.length);
+  const vol20 = Math.sqrt(ret20.reduce((s, v) => s + (v - mean20) ** 2, 0) / ret20.length);
+  const volCompression = vol20 > 0 ? vol5 / vol20 : 1;
+  // Low vol compression (<0.7) + trending = breakout imminent → amplify directional signal
+  const volAmplifier = volCompression < 0.7 ? 1.5 : volCompression > 1.5 ? 0.5 : 1.0;
+
+  // --- Consensus: count how many signals agree on direction ---
+  const bullSignals = [
+    mrSignal > 0.3 ? 1 : mrSignal < -0.3 ? -1 : 0,
+    momSignal > 0.005 ? 1 : momSignal < -0.005 ? -1 : 0,
+    // Vol compression direction: use recent 5d return direction
+    ret5.reduce((s, v) => s + v, 0) > 0 ? 1 : -1,
+  ] as const;
+
+  const bullCount = bullSignals.filter(s => s > 0).length;
+  const bearCount = bullSignals.filter(s => s < 0).length;
+  const consensus = Math.max(bullCount, bearCount);
+
+  // --- Combined adjustment: weighted average, only when ≥2 agree ---
+  let adjustment = 0;
+  if (consensus >= 2) {
+    const direction = bullCount >= bearCount ? 1 : -1;
+    // Weight: MR 0.4, Momentum 0.4, Vol 0.2
+    const rawAdj = direction * (
+      0.4 * Math.min(Math.abs(mrSignal), 2) * 0.001 +
+      0.4 * Math.min(Math.abs(momSignal), 0.05) * 0.04 +
+      0.2 * 0.001
+    ) * volAmplifier;
+    adjustment = Math.max(-0.004, Math.min(0.004, rawAdj));
+  }
+
+  return { meanReversionZ, momentumCrossover, volCompression, adjustment, consensus };
+}
+
 /**
  * Estimate a 5×5 Markov transition matrix from a sequence of regime states.
  *
@@ -1361,6 +1449,13 @@ export async function computeMarkovDistribution(params: {
   // Halve momentum weight when structural break detected (trend may have broken)
   const momentumAdj = breakResult.detected ? momentum.adjustment * 0.5 : momentum.adjustment;
 
+  // --- Ensemble signal (Idea D: combine mean-reversion + crossover + vol compression) ---
+  const ensemble = computeEnsembleSignal(historicalPrices);
+  // Only apply ensemble adjustment when consensus is high (≥2 of 3 signals agree)
+  const ensembleAdj = ensemble.consensus >= 2 ? ensemble.adjustment : 0;
+  // Combine momentum + ensemble into a single drift modifier
+  const combinedDriftAdj = momentumAdj + ensembleAdj;
+
   // --- HMM forecast (Idea B: Hidden Markov Model + Idea C: Multi-feature) ---
   // Fit a Gaussian HMM on daily returns when we have enough data.
   // Also fit a volatility HMM on rolling vol for an independent vol-regime signal.
@@ -1429,7 +1524,7 @@ export async function computeMarkovDistribution(params: {
   // --- Distribution ---
   const distribution = interpolateDistribution(
     currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
-    20, 1000, ciWidthMultiplier, momentumAdj, hmmOverride,
+    20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride,
   );
 
   // --- Optional R²_OS (leave-one-out on training tail) ---
@@ -1479,6 +1574,7 @@ export async function computeMarkovDistribution(params: {
       anchorCoverage: assessAnchorCoverage(polymarketAnchors, currentPrice),
       goodnessOfFit: gofResult,
       hmm: hmmMeta ?? null,
+      ensemble: { consensus: ensemble.consensus, adjustment: ensembleAdj },
     },
   };
 }

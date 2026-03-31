@@ -39,6 +39,7 @@ import {
   normalCDF,
   transitionGoodnessOfFit,
   markovDistributionTool,
+  computeEnsembleSignal,
   NUM_STATES,
   STATE_INDEX,
   REGIME_STATES,
@@ -1938,5 +1939,55 @@ describe('transitionGoodnessOfFit', () => {
       expect(typeof result.metadata.goodnessOfFit!.pValue).toBe('number');
       expect(typeof result.metadata.goodnessOfFit!.passes).toBe('boolean');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeEnsembleSignal
+// ---------------------------------------------------------------------------
+
+describe('computeEnsembleSignal', () => {
+  it('returns neutral for short price series', () => {
+    const result = computeEnsembleSignal([100, 101, 102]);
+    expect(result.adjustment).toBe(0);
+    expect(result.consensus).toBe(0);
+  });
+
+  it('returns valid fields for 30-day price series', () => {
+    const prices = Array.from({ length: 30 }, (_, i) => 100 + i * 0.5);
+    const result = computeEnsembleSignal(prices);
+    expect(typeof result.meanReversionZ).toBe('number');
+    expect(typeof result.momentumCrossover).toBe('number');
+    expect(typeof result.volCompression).toBe('number');
+    expect(typeof result.adjustment).toBe('number');
+    expect(result.consensus).toBeGreaterThanOrEqual(0);
+    expect(result.consensus).toBeLessThanOrEqual(3);
+  });
+
+  it('detects bullish momentum on strongly trending up data', () => {
+    const prices = Array.from({ length: 30 }, (_, i) => 100 * Math.pow(1.01, i));
+    const result = computeEnsembleSignal(prices);
+    expect(result.momentumCrossover).toBeGreaterThan(0);
+  });
+
+  it('detects bearish momentum on strongly trending down data', () => {
+    const prices = Array.from({ length: 30 }, (_, i) => 100 * Math.pow(0.99, i));
+    const result = computeEnsembleSignal(prices);
+    expect(result.momentumCrossover).toBeLessThan(0);
+  });
+
+  it('adjustment is clamped to ±0.004', () => {
+    const prices = Array.from({ length: 30 }, (_, i) => 100 * Math.pow(1.05, i));
+    const result = computeEnsembleSignal(prices);
+    expect(result.adjustment).toBeLessThanOrEqual(0.004);
+    expect(result.adjustment).toBeGreaterThanOrEqual(-0.004);
+  });
+
+  it('vol compression < 1 when recent vol is lower than historical', () => {
+    const prices: number[] = [];
+    for (let i = 0; i < 20; i++) prices.push(100 + (i % 2 === 0 ? 3 : -3));
+    for (let i = 0; i < 10; i++) prices.push(100 + i * 0.1);
+    const result = computeEnsembleSignal(prices);
+    expect(result.volCompression).toBeLessThan(1.5);
   });
 });
