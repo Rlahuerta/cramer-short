@@ -397,6 +397,7 @@ export function estimateTransitionMatrix(
   states: RegimeState[],
   alpha?: number,     // Dirichlet smoothing constant (auto-tuned if omitted)
   minObservations = 30,
+  decayRate = 0.97,   // Exponential decay: recent transitions weighted more (1.0 = no decay)
 ): TransitionMatrix {
   if (states.length < minObservations) {
     return buildDefaultMatrix();
@@ -410,10 +411,14 @@ export function estimateTransitionMatrix(
     Array(NUM_STATES).fill(effectiveAlpha),
   );
 
-  for (let i = 0; i < states.length - 1; i++) {
+  // Exponentially-weighted transition counts: recent transitions matter more.
+  // weight = decayRate^(distance_from_end). Last transition gets weight=1.
+  const n = states.length - 1;
+  for (let i = 0; i < n; i++) {
     const from = STATE_INDEX[states[i]];
     const to   = STATE_INDEX[states[i + 1]];
-    counts[from][to] += 1;
+    const age  = n - 1 - i; // 0 = most recent, n-1 = oldest
+    counts[from][to] += Math.pow(decayRate, age);
   }
 
   return normalizeRows(counts);
