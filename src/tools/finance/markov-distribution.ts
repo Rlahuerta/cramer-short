@@ -89,6 +89,8 @@ export interface MarkovDistributionResult {
   currentPrice: number;
   horizon: number;
   distribution: MarkovDistributionPoint[];
+  /** Raw (pre-calibration) distribution — wider spread, used for CI extraction */
+  rawDistribution: MarkovDistributionPoint[];
   /** Actionable Buy / Hold / Sell signal derived from the distribution. */
   actionSignal: ActionSignal;
   /**
@@ -1206,10 +1208,15 @@ export function studentTSurvival(
   nu = 5,
 ): number {
   if (volN <= 0) return targetPrice < currentPrice ? 1 : 0;
+  if (targetPrice <= 0) return 1; // price can't go below 0; survival = 1
   // Scale vol to match t-distribution variance: Var(t_ν) = ν/(ν-2) for ν>2
   const scaledVol = nu > 2 ? volN * Math.sqrt((nu - 2) / nu) : volN;
   const z = (Math.log(targetPrice / currentPrice) - driftN) / scaledVol;
-  return 1 - studentTCDF(z, nu);
+  // Guard extreme z-scores: regularizedBeta can diverge beyond |z|~50
+  if (!Number.isFinite(z)) return z > 0 ? 0 : 1;
+  const clamped = Math.max(-50, Math.min(50, z));
+  const cdf = studentTCDF(clamped, nu);
+  return Number.isFinite(cdf) ? 1 - cdf : (clamped > 0 ? 0 : 1);
 }
 
 /**
@@ -1246,10 +1253,17 @@ export function interpolateDistribution(
   ciWidthMultiplier = 1.0,
   momentumAdjustment = 0,
   hmmOverride?: { drift: number; vol: number; weight: number },
+  dailyVol?: number,
 ): MarkovDistributionPoint[] {
-  const stepPct  = 0.015;
-  let minPrice = currentPrice * Math.pow(1 - stepPct, numLevels / 2);
-  let maxPrice = currentPrice * Math.pow(1 + stepPct, numLevels / 2);
+  // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
+  // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
+  // too narrow for TSLA (~3%/day) or BTC (~4%/day) where a 14-day 2σ move is 22-30%.
+  const vol = dailyVol ?? 0.015;
+  const volRange = 3.5 * vol * Math.sqrt(horizon);
+  // Clamp to [0.15, 0.90] — minPrice must remain positive (>10% of currentPrice)
+  const halfRange = Math.max(0.15, Math.min(0.90, volRange));
+  let minPrice = currentPrice * (1 - halfRange);
+  let maxPrice = currentPrice * (1 + halfRange);
 
   // Extend grid range to include all Polymarket anchors (fixes sparse-anchor bug)
   for (const a of anchors) {
@@ -1642,7 +1656,9 @@ export function computeActionSignal(
   ePrice += distribution[distribution.length - 1].probability
           * distribution[distribution.length - 1].price;
 
-  const expectedReturn = (ePrice - currentPrice) / currentPrice;
+  const expectedReturn = Number.isFinite(ePrice) && currentPrice > 0
+    ? (ePrice - currentPrice) / currentPrice
+    : 0;
 
   // Unconditional expected upside and downside (dollar terms, then ratio)
   let eUpside = 0, eDownside = 0;
@@ -1658,7 +1674,8 @@ export function computeActionSignal(
   eUpside   += distribution[distribution.length - 1].probability
              * Math.max(0, distribution[distribution.length - 1].price - currentPrice);
 
-  const riskRewardRatio = eDownside > 0 ? eUpside / eDownside : 1.0;
+  const rawRRR = eDownside > 0 ? eUpside / eDownside : 1.0;
+  const riskRewardRatio = Number.isFinite(rawRRR) ? rawRRR : 1.0;
 
   // Dynamic action thresholds (Idea H): scale with asset volatility instead of fixed values.
   // Previous fixed thresholds (±2% for 14-30d) were wider than the model's signal range
@@ -1969,9 +1986,13 @@ export async function computeMarkovDistribution(params: {
   }
 
   // --- Distribution ---
+  // Compute daily volatility for adaptive grid sizing
+  const gridDailyVol = returns.length >= 20
+    ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
+    : undefined;
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
-    20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride,
+    20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -2086,6 +2107,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice,
     horizon,
     distribution,
+    rawDistribution,
     actionSignal: computeActionSignal(distribution, currentPrice, undefined, undefined, horizon,
       recentDailyVol,
     ),
