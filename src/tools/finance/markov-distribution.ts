@@ -976,6 +976,112 @@ export function logNormalSurvival(
 }
 
 /**
+ * Regularized incomplete beta function I_x(a, b) via continued fraction.
+ * Used to compute Student-t CDF. Lentz's method for convergence.
+ */
+function regularizedBeta(x: number, a: number, b: number): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+
+  // Use symmetry relation when x > (a+1)/(a+b+2) for better convergence
+  if (x > (a + 1) / (a + b + 2)) {
+    return 1 - regularizedBeta(1 - x, b, a);
+  }
+
+  const lnBeta = lgamma(a) + lgamma(b) - lgamma(a + b);
+  const front = Math.exp(Math.log(x) * a + Math.log(1 - x) * b - lnBeta) / a;
+
+  // Lentz's continued fraction
+  let f = 1, c = 1, d = 1 - (a + b) * x / (a + 1);
+  if (Math.abs(d) < 1e-30) d = 1e-30;
+  d = 1 / d;
+  f = d;
+
+  for (let m = 1; m <= 200; m++) {
+    // Even step
+    let numerator = m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m));
+    d = 1 + numerator * d;
+    if (Math.abs(d) < 1e-30) d = 1e-30;
+    c = 1 + numerator / c;
+    if (Math.abs(c) < 1e-30) c = 1e-30;
+    d = 1 / d;
+    f *= c * d;
+
+    // Odd step
+    numerator = -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1));
+    d = 1 + numerator * d;
+    if (Math.abs(d) < 1e-30) d = 1e-30;
+    c = 1 + numerator / c;
+    if (Math.abs(c) < 1e-30) c = 1e-30;
+    d = 1 / d;
+    const delta = c * d;
+    f *= delta;
+
+    if (Math.abs(delta - 1) < 1e-10) break;
+  }
+
+  return front * f;
+}
+
+/** Log-gamma via Stirling's approximation (Lanczos coefficients). */
+function lgamma(x: number): number {
+  const g = 7;
+  const coef = [
+    0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+    771.32342877765313, -176.61502916214059, 12.507343278686905,
+    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
+  ];
+  if (x < 0.5) {
+    return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x);
+  }
+  x -= 1;
+  let a = coef[0];
+  for (let i = 1; i < g + 2; i++) {
+    a += coef[i] / (x + i);
+  }
+  const t = x + g + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
+}
+
+/**
+ * Student-t CDF: P(T ≤ x) for T ~ t(ν degrees of freedom).
+ * Uses regularized incomplete beta function.
+ */
+export function studentTCDF(x: number, nu: number): number {
+  if (nu <= 0) return normalCDF(x); // degenerate: fall back to normal
+  const t2 = x * x;
+  const betaArg = nu / (nu + t2);
+  const ibeta = regularizedBeta(betaArg, nu / 2, 0.5);
+  if (x >= 0) {
+    return 1 - 0.5 * ibeta;
+  } else {
+    return 0.5 * ibeta;
+  }
+}
+
+/**
+ * Fat-tailed survival function: P(price > X) using Student-t distribution.
+ * Same interface as logNormalSurvival but uses Student-t with `nu` degrees
+ * of freedom (default 5, typical for daily equity returns).
+ *
+ * The scaling adjusts the t-distribution standard deviation to match
+ * the Gaussian vol parameter: σ_t = σ_n × sqrt((ν-2)/ν) for ν>2.
+ */
+export function studentTSurvival(
+  currentPrice: number,
+  targetPrice: number,
+  driftN: number,
+  volN: number,
+  nu = 5,
+): number {
+  if (volN <= 0) return targetPrice < currentPrice ? 1 : 0;
+  // Scale vol to match t-distribution variance: Var(t_ν) = ν/(ν-2) for ν>2
+  const scaledVol = nu > 2 ? volN * Math.sqrt((nu - 2) / nu) : volN;
+  const z = (Math.log(targetPrice / currentPrice) - driftN) / scaledVol;
+  return 1 - studentTCDF(z, nu);
+}
+
+/**
  * Run a single Monte Carlo random walk through the transition matrix for n steps,
  * starting from `initialStateIdx`. Returns the final n-step regime weight vector.
  */
@@ -1081,7 +1187,7 @@ export function interpolateDistribution(
     const perturbedMu  = mu_n    + (rng() - 0.5) * sigma_n * 0.2;
     const perturbedVol = sigma_n * (0.9 + rng() * 0.2);
     for (const price of prices) {
-      const p = logNormalSurvival(currentPrice, price, perturbedMu, perturbedVol);
+      const p = studentTSurvival(currentPrice, price, perturbedMu, perturbedVol);
       ciSamples.get(price)!.push(p);
     }
   }
@@ -1089,7 +1195,7 @@ export function interpolateDistribution(
   // Build distribution points
   const rawPoints = prices.map(price => {
     const anchor = findAnchor(price);
-    const markovEst = logNormalSurvival(currentPrice, price, mu_n, sigma_n);
+    const markovEst = studentTSurvival(currentPrice, price, mu_n, sigma_n);
 
     let probability: number;
     let source: 'polymarket' | 'markov' | 'blend';
