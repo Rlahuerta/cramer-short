@@ -34,6 +34,7 @@ import {
   computeR2OS,
   calibrateProbabilities,
   computePredictionConfidence,
+  getAssetProfile,
   logNormalSurvival,
   estimateRegimeStats,
   matPow,
@@ -2252,5 +2253,66 @@ describe('computePredictionConfidence', () => {
       pUp: 0.7, ensembleConsensus: 1, hmmConverged: true, regimeRunLength: 10, structuralBreak: false,
     });
     expect(low).toBeCloseTo(high, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getAssetProfile — Idea N: per-asset parameter profiles
+// ---------------------------------------------------------------------------
+
+describe('getAssetProfile', () => {
+  it('classifies SPY as ETF', () => {
+    expect(getAssetProfile('SPY').type).toBe('etf');
+  });
+
+  it('classifies QQQ as ETF', () => {
+    expect(getAssetProfile('QQQ').type).toBe('etf');
+  });
+
+  it('classifies GLD as ETF', () => {
+    expect(getAssetProfile('GLD').type).toBe('etf');
+  });
+
+  it('classifies AAPL as equity', () => {
+    expect(getAssetProfile('AAPL').type).toBe('equity');
+  });
+
+  it('classifies TSLA as equity', () => {
+    expect(getAssetProfile('TSLA').type).toBe('equity');
+  });
+
+  it('classifies BTC-USD as crypto', () => {
+    expect(getAssetProfile('BTC-USD').type).toBe('crypto');
+  });
+
+  it('classifies ETH-USD as crypto', () => {
+    expect(getAssetProfile('ETH-USD').type).toBe('crypto');
+  });
+
+  it('case insensitive', () => {
+    expect(getAssetProfile('spy').type).toBe('etf');
+    expect(getAssetProfile('btc-usd').type).toBe('crypto');
+  });
+
+  it('ETFs have lower kappa multiplier (more trust)', () => {
+    const etf = getAssetProfile('SPY');
+    const crypto = getAssetProfile('BTC-USD');
+    expect(etf.kappaMultiplier).toBeLessThan(crypto.kappaMultiplier);
+  });
+
+  it('crypto has lower HMM weight multiplier', () => {
+    const etf = getAssetProfile('SPY');
+    const crypto = getAssetProfile('BTC-USD');
+    expect(crypto.hmmWeightMultiplier).toBeLessThan(etf.hmmWeightMultiplier);
+  });
+
+  it('crypto has fatter tails (lower Student-t nu)', () => {
+    const etf = getAssetProfile('SPY');
+    const crypto = getAssetProfile('BTC-USD');
+    expect(crypto.studentTNu).toBeLessThan(etf.studentTNu);
+  });
+
+  it('unknown ticker defaults to equity', () => {
+    expect(getAssetProfile('UNKNOWN_TICKER').type).toBe('equity');
   });
 });
