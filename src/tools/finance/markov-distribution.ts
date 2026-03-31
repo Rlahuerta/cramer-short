@@ -57,7 +57,7 @@ export interface PriceThreshold {
   probability: number;
   /** Whether this anchor is trusted based on liquidity/age heuristics */
   trustScore: 'high' | 'low';
-  source: 'polymarket';
+  source: 'polymarket' | 'kalshi' | 'averaged';
 }
 
 export interface SentimentSignal {
@@ -96,6 +96,23 @@ export interface MarkovDistributionResult {
     secondEigenvalue: number;
     /** R²_OS vs. historical-average baseline; null if no held-out data */
     outOfSampleR2: number | null;
+    /** Tier 1: Observations per regime state in the training window */
+    stateObservationCounts: Record<RegimeState, number>;
+    /** Tier 1: States with < 5 observations — transitions dominated by Dirichlet prior */
+    sparseStates: RegimeState[];
+    /** Tier 1: Whether a structural break was detected between the two half-windows */
+    structuralBreakDetected: boolean;
+    /** Tier 1: Chi-square divergence statistic between first/second half matrices */
+    structuralBreakDivergence: number;
+    /** Tier 1: CI was widened by 50% due to structural break */
+    ciWidened: boolean;
+    /** Tier 1: Cross-platform divergence warnings (price levels where anchors disagree >5pp) */
+    anchorDivergenceWarnings: Array<{
+      price: number;
+      polymarketProb: number;
+      kalshiProb: number;
+      divergencePp: number;
+    }>;
   };
 }
 
@@ -257,8 +274,173 @@ export function normalizeRows(matrix: number[][]): TransitionMatrix {
 }
 
 // ---------------------------------------------------------------------------
-// 4. adjustTransitionMatrix
+// Tier 1a: countStateObservations + sparseStates
 // ---------------------------------------------------------------------------
+
+/**
+ * Count how many times each regime state appears in the sequence.
+ * Used to identify states with too few observations for reliable transition estimation.
+ */
+export function countStateObservations(states: RegimeState[]): Record<RegimeState, number> {
+  const counts = Object.fromEntries(REGIME_STATES.map(s => [s, 0])) as Record<RegimeState, number>;
+  for (const s of states) counts[s]++;
+  return counts;
+}
+
+/**
+ * Return states with fewer than `minObs` observations.
+ * These states have outgoing transitions dominated by the Dirichlet prior,
+ * not by empirical data. Callers should treat their transition rows with lower confidence.
+ */
+export function findSparseStates(
+  observationCounts: Record<RegimeState, number>,
+  minObs = 5,
+): RegimeState[] {
+  return REGIME_STATES.filter(s => observationCounts[s] < minObs);
+}
+
+// ---------------------------------------------------------------------------
+// Tier 1b: detectStructuralBreak
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect a structural break in the transition matrix between the first and second
+ * halves of the state sequence.
+ *
+ * Uses a chi-square-like divergence statistic on the empirical transition counts:
+ *   D = Σᵢⱼ |P_first[i][j] − P_second[i][j]|²  (Frobenius-style element divergence)
+ *
+ * When D > threshold (default 0.05 per cell = 0.05 × N² total), the two halves of
+ * the training window describe meaningfully different dynamics. In that case:
+ *   1. Fall back to the default (identity-like) transition matrix — the full-window
+ *      estimate mixes two different regimes and is unreliable.
+ *   2. Widen all CI bounds by 50% to reflect increased model uncertainty.
+ *
+ * This addresses the non-stationarity limitation noted in Mettle et al. (2014)
+ * and Welton & Ades (2005): time-homogeneous Markov assumption is violated when
+ * the market regime changes mid-window.
+ */
+export interface StructuralBreakResult {
+  detected: boolean;
+  /** Sum of squared element-wise differences between first/second half matrices */
+  divergence: number;
+  firstHalfMatrix: TransitionMatrix;
+  secondHalfMatrix: TransitionMatrix;
+}
+
+export function detectStructuralBreak(
+  states: RegimeState[],
+  divergenceThreshold = 0.05,
+  alpha = 0.1,
+): StructuralBreakResult {
+  const mid = Math.floor(states.length / 2);
+  const firstHalf  = states.slice(0, mid);
+  const secondHalf = states.slice(mid);
+
+  const firstHalfMatrix  = estimateTransitionMatrix(firstHalf,  alpha, 10);
+  const secondHalfMatrix = estimateTransitionMatrix(secondHalf, alpha, 10);
+
+  let divergence = 0;
+  for (let i = 0; i < NUM_STATES; i++) {
+    for (let j = 0; j < NUM_STATES; j++) {
+      divergence += (firstHalfMatrix[i][j] - secondHalfMatrix[i][j]) ** 2;
+    }
+  }
+
+  return {
+    detected: divergence > divergenceThreshold,
+    divergence,
+    firstHalfMatrix,
+    secondHalfMatrix,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tier 1c: mergeAnchorsWithCrossPlatformValidation
+// ---------------------------------------------------------------------------
+
+export interface KalshiAnchor {
+  price: number;
+  probability: number;  // raw probability from Kalshi (no YES-bias correction needed; Kalshi is better calibrated)
+  volume?: number;
+}
+
+export interface AnchorDivergenceWarning {
+  price: number;
+  polymarketProb: number;
+  kalshiProb: number;
+  divergencePp: number;  // absolute difference in percentage points
+}
+
+/**
+ * Merge Polymarket anchors with Kalshi anchors for the same price levels.
+ *
+ * Strategy (from DISTILLATION and Saguillo et al. 2025, $40M arbitrage paper):
+ * - When both platforms price the same level within 5pp: use the average (both agree)
+ * - When divergence > 5pp: use the average AND flag a warning — divergence of this
+ *   magnitude is a manipulation or liquidity signal
+ * - Kalshi anchors without a Polymarket counterpart: included directly (well-regulated,
+ *   better calibrated per Clinton & Huang 2025)
+ * - Polymarket-only anchors: retained with their trustScore
+ *
+ * Note: Kalshi does NOT exhibit the same YES-bias as Polymarket (regulated exchange,
+ * professional market-makers), so no 0.95 correction is applied to Kalshi probabilities.
+ */
+export function mergeAnchorsWithCrossPlatformValidation(
+  polymarketAnchors: PriceThreshold[],
+  kalshiAnchors: KalshiAnchor[],
+  divergenceThresholdPp = 0.05,
+): { anchors: PriceThreshold[]; warnings: AnchorDivergenceWarning[] } {
+  const warnings: AnchorDivergenceWarning[] = [];
+  const PRICE_TOLERANCE = 0.02; // 2% price tolerance for matching levels
+
+  // Build a working copy of Polymarket anchors
+  const merged: PriceThreshold[] = polymarketAnchors.map(a => ({ ...a }));
+
+  for (const kalshi of kalshiAnchors) {
+    const matchIdx = merged.findIndex(
+      a => Math.abs(a.price - kalshi.price) / kalshi.price < PRICE_TOLERANCE,
+    );
+
+    if (matchIdx === -1) {
+      // Kalshi-only anchor: add directly (Kalshi is well-calibrated, high trust)
+      merged.push({
+        price: kalshi.price,
+        rawProbability: kalshi.probability,
+        probability: kalshi.probability,  // no YES-bias correction for Kalshi
+        trustScore: (kalshi.volume ?? 0) > 0 ? 'high' : 'low',
+        source: 'kalshi',
+      });
+    } else {
+      const poly = merged[matchIdx];
+      const divergence = Math.abs(poly.rawProbability - kalshi.probability);
+
+      if (divergence > divergenceThresholdPp) {
+        warnings.push({
+          price: kalshi.price,
+          polymarketProb: poly.rawProbability,
+          kalshiProb: kalshi.probability,
+          divergencePp: Math.round(divergence * 10000) / 100, // to 2dp
+        });
+      }
+
+      // Average both platforms' raw probabilities, then apply bias correction
+      const averaged = (poly.rawProbability + kalshi.probability) / 2;
+      merged[matchIdx] = {
+        ...poly,
+        rawProbability: averaged,
+        probability: averaged * 0.95, // apply bias correction to blended probability
+        source: 'averaged',
+        // Upgrade to high trust if either source qualifies
+        trustScore: poly.trustScore === 'high' || (kalshi.volume ?? 0) > 0 ? 'high' : 'low',
+      };
+    }
+  }
+
+  // Sort by price ascending
+  merged.sort((a, b) => a.price - b.price);
+  return { anchors: merged, warnings };
+}
 
 /**
  * Apply sentiment-based adjustments to the baseline transition matrix.
@@ -494,6 +676,7 @@ export function interpolateDistribution(
   secondEigenvalue: number,
   numLevels = 20,
   monteCarloSamples = 1000,
+  ciWidthMultiplier = 1.0,
 ): MarkovDistributionPoint[] {
   const stepPct  = 0.015;
   const minPrice = currentPrice * Math.pow(1 - stepPct, numLevels / 2);
@@ -567,7 +750,13 @@ export function interpolateDistribution(
     const lo = samples[Math.floor(0.05 * samples.length)];
     const hi = samples[Math.floor(0.95 * samples.length)];
 
-    return { price, probability, lowerBound: lo, upperBound: hi, source };
+    // Apply CI widening multiplier (used when structural break detected)
+    const halfWidth = (hi - lo) / 2;
+    const center = (hi + lo) / 2;
+    const widenedLo = Math.max(0, center - halfWidth * ciWidthMultiplier);
+    const widenedHi = Math.min(1, center + halfWidth * ciWidthMultiplier);
+
+    return { price, probability, lowerBound: widenedLo, upperBound: widenedHi, source };
   });
 
   // Enforce monotonicity: P(price > X) must be non-increasing in X
@@ -626,6 +815,8 @@ export async function computeMarkovDistribution(params: {
     createdAt?: string | number;
   }>;
   sentiment?: SentimentSignal;
+  /** Optional Kalshi anchors for cross-platform validation (Tier 1c) */
+  kalshiAnchors?: KalshiAnchor[];
 }): Promise<MarkovDistributionResult> {
   const { ticker, horizon, currentPrice, historicalPrices, polymarketMarkets, sentiment } = params;
 
@@ -643,8 +834,19 @@ export async function computeMarkovDistribution(params: {
   const regimeSeq: RegimeState[] = returns.map((r, i) => classifyRegimeState(r, vols[i]));
   const currentRegime = regimeSeq.length > 0 ? regimeSeq[regimeSeq.length - 1] : 'sideways';
 
-  // --- Estimate transition matrix ---
-  let P = estimateTransitionMatrix(regimeSeq);
+  // --- Tier 1a: State observation counts and sparse state detection ---
+  const stateObservationCounts = countStateObservations(regimeSeq);
+  const sparseStates = findSparseStates(stateObservationCounts);
+
+  // --- Tier 1b: Structural break detection ---
+  const breakResult = regimeSeq.length >= 20
+    ? detectStructuralBreak(regimeSeq)
+    : { detected: false, divergence: 0, firstHalfMatrix: buildDefaultMatrix(), secondHalfMatrix: buildDefaultMatrix() };
+
+  // --- Estimate transition matrix (fall back to default when break detected) ---
+  let P = breakResult.detected
+    ? buildDefaultMatrix()
+    : estimateTransitionMatrix(regimeSeq);
 
   // --- Sentiment adjustment ---
   const sentimentSignal = sentiment ?? { bullish: 0.5, bearish: 0.5 };
@@ -655,16 +857,27 @@ export async function computeMarkovDistribution(params: {
   const logReturns = returns.map(r => Math.log(1 + r));
   const regimeStats = estimateRegimeStats(logReturns, regimeSeq);
 
-  // --- Polymarket anchors ---
-  const anchors = extractPriceThresholds(polymarketMarkets);
+  // --- Tier 1c: Polymarket anchors with optional cross-platform validation ---
+  let polymarketAnchors = extractPriceThresholds(polymarketMarkets);
+  let anchorDivergenceWarnings: AnchorDivergenceWarning[] = [];
+
+  if (params.kalshiAnchors && params.kalshiAnchors.length > 0) {
+    const merged = mergeAnchorsWithCrossPlatformValidation(polymarketAnchors, params.kalshiAnchors);
+    polymarketAnchors = merged.anchors;
+    anchorDivergenceWarnings = merged.warnings;
+  }
 
   // --- Spectral gap ---
   const rho = secondLargestEigenvalue(P);
   const mixWeight = computeMixingWeight(rho, horizon);
 
+  // --- Tier 1b: Widen CI when structural break detected ---
+  const ciWidthMultiplier = breakResult.detected ? 1.5 : 1.0;
+
   // --- Distribution ---
   const distribution = interpolateDistribution(
-    currentPrice, horizon, P, regimeStats, currentRegime, anchors, rho,
+    currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
+    20, 1000, ciWidthMultiplier,
   );
 
   // --- Optional R²_OS (leave-one-out on training tail) ---
@@ -697,13 +910,19 @@ export async function computeMarkovDistribution(params: {
     horizon,
     distribution,
     metadata: {
-      polymarketAnchors: anchors.filter(a => a.trustScore === 'high').length,
+      polymarketAnchors: polymarketAnchors.filter(a => a.trustScore === 'high').length,
       regimeState: currentRegime,
       sentimentAdjustment: sentimentShift,
       historicalDays: returns.length,
       mixingTimeWeight: mixWeight,
       secondEigenvalue: rho,
       outOfSampleR2: r2os,
+      stateObservationCounts,
+      sparseStates,
+      structuralBreakDetected: breakResult.detected,
+      structuralBreakDivergence: breakResult.divergence,
+      ciWidened: breakResult.detected,
+      anchorDivergenceWarnings,
     },
   };
 }
@@ -739,6 +958,11 @@ Requires: ticker symbol, horizon in trading days (1–90), and access to recent 
       bullish: z.number().min(0).max(1),
       bearish: z.number().min(0).max(1),
     }).optional().describe('Sentiment signal from social_sentiment tool (optional)'),
+    kalshiAnchors: z.array(z.object({
+      price: z.number(),
+      probability: z.number().min(0).max(1),
+      volume: z.number().optional(),
+    })).optional().describe('Kalshi prediction market anchors for cross-platform validation (optional)'),
   }),
   func: async (input) => {
     const price = input.currentPrice
@@ -751,15 +975,26 @@ Requires: ticker symbol, horizon in trading days (1–90), and access to recent 
       historicalPrices:  input.historicalPrices,
       polymarketMarkets: input.polymarketMarkets,
       sentiment:         input.sentiment,
+      kalshiAnchors:     input.kalshiAnchors,
     });
 
+    const { metadata: m } = result;
     const lines = [
       `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
-      `Current: $${result.currentPrice.toFixed(2)} | Regime: ${result.metadata.regimeState}`,
-      `Anchors: ${result.metadata.polymarketAnchors} (trusted) | Sentiment shift: ${(result.metadata.sentimentAdjustment * 100).toFixed(0)}%`,
-      `Mixing weight: ${(result.metadata.mixingTimeWeight * 100).toFixed(0)}% Markov / ${((1 - result.metadata.mixingTimeWeight) * 100).toFixed(0)}% Anchors`,
-      result.metadata.outOfSampleR2 !== null
-        ? `R²_OS: ${result.metadata.outOfSampleR2.toFixed(3)} (>0 = Markov adds value over mean)`
+      `Current: $${result.currentPrice.toFixed(2)} | Regime: ${m.regimeState}`,
+      `Anchors: ${m.polymarketAnchors} (trusted) | Sentiment shift: ${(m.sentimentAdjustment * 100).toFixed(0)}%`,
+      `Mixing weight: ${(m.mixingTimeWeight * 100).toFixed(0)}% Markov / ${((1 - m.mixingTimeWeight) * 100).toFixed(0)}% Anchors`,
+      m.outOfSampleR2 !== null
+        ? `R²_OS: ${m.outOfSampleR2.toFixed(3)} (>0 = Markov adds value over mean)`
+        : '',
+      m.structuralBreakDetected
+        ? `⚠️ Structural break detected (divergence=${m.structuralBreakDivergence.toFixed(3)}); CI widened 50%, using default matrix`
+        : '',
+      m.sparseStates.length > 0
+        ? `⚠️ Sparse states (<5 obs): ${m.sparseStates.join(', ')} — transitions prior-dominated`
+        : '',
+      m.anchorDivergenceWarnings.length > 0
+        ? `⚠️ Cross-platform divergence: ${m.anchorDivergenceWarnings.map(w => `$${w.price} (${w.divergencePp.toFixed(1)}pp)`).join(', ')}`
         : '',
       '',
       'Price         P(>price)    90% CI                 Source',

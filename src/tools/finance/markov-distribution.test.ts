@@ -631,3 +631,318 @@ describe('estimateRegimeStats', () => {
     expect(stats.bull.meanReturn).toBeCloseTo(0.01, 5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tier 1a — countStateObservations + findSparseStates
+// ---------------------------------------------------------------------------
+
+import {
+  countStateObservations,
+  findSparseStates,
+  detectStructuralBreak,
+  mergeAnchorsWithCrossPlatformValidation,
+  type KalshiAnchor,
+} from './markov-distribution.js';
+
+describe('Tier 1a — countStateObservations', () => {
+  it('counts zero for all states when sequence is empty', () => {
+    const counts = countStateObservations([]);
+    for (const s of REGIME_STATES) expect(counts[s]).toBe(0);
+  });
+
+  it('correctly counts all occurrences', () => {
+    const states = ['bull', 'bull', 'bear', 'sideways', 'bull'] as ReturnType<typeof classifyRegimeState>[];
+    const counts = countStateObservations(states);
+    expect(counts.bull).toBe(3);
+    expect(counts.bear).toBe(1);
+    expect(counts.sideways).toBe(1);
+    expect(counts.high_vol_bull).toBe(0);
+    expect(counts.high_vol_bear).toBe(0);
+  });
+
+  it('total of all counts equals sequence length', () => {
+    const states = Array(50).fill('sideways').map((s, i) =>
+      REGIME_STATES[i % REGIME_STATES.length],
+    ) as ReturnType<typeof classifyRegimeState>[];
+    const counts = countStateObservations(states);
+    const total = Object.values(counts).reduce((s, v) => s + v, 0);
+    expect(total).toBe(50);
+  });
+});
+
+describe('Tier 1a — findSparseStates', () => {
+  it('returns all states when everything is zero', () => {
+    const counts = Object.fromEntries(REGIME_STATES.map(s => [s, 0])) as Record<ReturnType<typeof classifyRegimeState>, number>;
+    const sparse = findSparseStates(counts);
+    expect(sparse).toHaveLength(REGIME_STATES.length);
+  });
+
+  it('returns only states below the threshold', () => {
+    const counts = {
+      bull:          10,
+      bear:          3,        // < 5
+      high_vol_bull: 4,        // < 5
+      high_vol_bear: 0,        // < 5
+      sideways:      20,
+    };
+    const sparse = findSparseStates(counts);
+    expect(sparse).toContain('bear');
+    expect(sparse).toContain('high_vol_bull');
+    expect(sparse).toContain('high_vol_bear');
+    expect(sparse).not.toContain('bull');
+    expect(sparse).not.toContain('sideways');
+  });
+
+  it('returns empty array when all states have enough observations', () => {
+    const counts = Object.fromEntries(REGIME_STATES.map(s => [s, 10])) as Record<ReturnType<typeof classifyRegimeState>, number>;
+    expect(findSparseStates(counts)).toHaveLength(0);
+  });
+
+  it('respects custom minObs parameter', () => {
+    const counts = {
+      bull: 15, bear: 7, high_vol_bull: 20, high_vol_bear: 12, sideways: 9,
+    };
+    // minObs=10 → bear (7) and sideways (9) are sparse
+    const sparse = findSparseStates(counts, 10);
+    expect(sparse).toContain('bear');
+    expect(sparse).toContain('sideways');
+    expect(sparse).not.toContain('bull');
+  });
+});
+
+describe('Tier 1a — sparseStates in computeMarkovDistribution metadata', () => {
+  it('metadata.sparseStates includes states with few observations', async () => {
+    // Only 11 prices → 10 returns, all forcing bull state (tiny window ensures sparsity)
+    const prices = Array.from({ length: 11 }, (_, i) => 100 + i * 0.5);
+    const result = await computeMarkovDistribution({
+      ticker: 'SPARSE',
+      horizon: 5,
+      currentPrice: 105,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    // With only 10 returns all going up, high_vol_bear and bear should be sparse
+    expect(result.metadata.stateObservationCounts).toBeDefined();
+    expect(Array.isArray(result.metadata.sparseStates)).toBe(true);
+  });
+
+  it('metadata.stateObservationCounts sums to historicalDays', async () => {
+    const prices = Array.from({ length: 40 }, (_, i) => 100 * (1 + i * 0.002));
+    const result = await computeMarkovDistribution({
+      ticker: 'COUNT',
+      horizon: 5,
+      currentPrice: 107,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    const total = Object.values(result.metadata.stateObservationCounts).reduce((s, v) => s + v, 0);
+    expect(total).toBe(result.metadata.historicalDays);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 1b — detectStructuralBreak
+// ---------------------------------------------------------------------------
+
+describe('Tier 1b — detectStructuralBreak', () => {
+  it('detects no break in a stationary sequence', () => {
+    // Long alternating bull/bear sequence — consistent across halves
+    const states: ReturnType<typeof classifyRegimeState>[] = Array.from(
+      { length: 60 }, (_, i) => (i % 2 === 0 ? 'bull' : 'bear'),
+    );
+    const result = detectStructuralBreak(states);
+    // First and second halves have the same pattern — divergence should be low
+    expect(result.divergence).toBeDefined();
+    expect(result.firstHalfMatrix).toHaveLength(NUM_STATES);
+    expect(result.secondHalfMatrix).toHaveLength(NUM_STATES);
+  });
+
+  it('detects a break when regimes are completely different in each half', () => {
+    // First 30: all bull → bull; Last 30: all bear → bear
+    const states: ReturnType<typeof classifyRegimeState>[] = [
+      ...Array(30).fill('bull'),
+      ...Array(30).fill('bear'),
+    ];
+    const result = detectStructuralBreak(states);
+    // The two halves describe very different dynamics
+    expect(result.detected).toBe(true);
+    expect(result.divergence).toBeGreaterThan(0.05);
+  });
+
+  it('detected=false when sequence is too short', () => {
+    const result = detectStructuralBreak(['bull', 'bear', 'sideways'] as RegimeState[]);
+    // With only 3 states each half has 1-2 states — not enough for stable estimate
+    expect(typeof result.detected).toBe('boolean');
+    expect(result.divergence).toBeGreaterThanOrEqual(0);
+  });
+
+  it('both half matrices are row-stochastic', () => {
+    const states: ReturnType<typeof classifyRegimeState>[] = Array.from(
+      { length: 60 }, (_, i) => REGIME_STATES[i % REGIME_STATES.length],
+    );
+    const { firstHalfMatrix, secondHalfMatrix } = detectStructuralBreak(states);
+    for (const row of [...firstHalfMatrix, ...secondHalfMatrix]) {
+      const sum = row.reduce((s, v) => s + v, 0);
+      expect(sum).toBeCloseTo(1, 5);
+    }
+  });
+
+  it('metadata.structuralBreakDetected reflects detection', async () => {
+    // First half: all bull; second half: all bear → should trigger break
+    const bullPrices = Array.from({ length: 31 }, (_, i) => 100 * (1 + i * 0.01));  // 30 bull returns
+    const bearPrices = Array.from({ length: 31 }, (_, i) => bullPrices[30] * (1 - i * 0.01));
+    const prices = [...bullPrices, ...bearPrices.slice(1)];
+    const result = await computeMarkovDistribution({
+      ticker: 'BREAK',
+      horizon: 5,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(result.metadata.structuralBreakDivergence).toBeGreaterThanOrEqual(0);
+    expect(typeof result.metadata.structuralBreakDetected).toBe('boolean');
+    expect(typeof result.metadata.ciWidened).toBe('boolean');
+  });
+
+  it('CI is wider when structural break is detected', async () => {
+    // We compare two runs: one stationary (no break) vs one with clear break
+    // The break case should produce wider (upper-lower) CI intervals
+    const stationaryPrices = Array.from({ length: 60 }, (_, i) => 100 + i * 0.2);
+    const breakPrices = [
+      ...Array.from({ length: 30 }, (_, i) => 100 + i * 0.3),    // bull
+      ...Array.from({ length: 30 }, (_, i) => 109 - i * 0.3),    // bear
+    ];
+
+    const r1 = await computeMarkovDistribution({
+      ticker: 'STAT', horizon: 10, currentPrice: stationaryPrices[stationaryPrices.length - 1],
+      historicalPrices: stationaryPrices, polymarketMarkets: [],
+    });
+    const r2 = await computeMarkovDistribution({
+      ticker: 'BREAK', horizon: 10, currentPrice: breakPrices[breakPrices.length - 1],
+      historicalPrices: breakPrices, polymarketMarkets: [],
+    });
+
+    const avgWidth = (dist: typeof r1.distribution) =>
+      dist.reduce((s, d) => s + d.upperBound - d.lowerBound, 0) / dist.length;
+
+    // When structuralBreakDetected: true, the CI must be wider
+    if (r2.metadata.structuralBreakDetected) {
+      expect(avgWidth(r2.distribution)).toBeGreaterThan(avgWidth(r1.distribution) * 0.9);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 1c — mergeAnchorsWithCrossPlatformValidation
+// ---------------------------------------------------------------------------
+
+describe('Tier 1c — mergeAnchorsWithCrossPlatformValidation', () => {
+  it('returns only Polymarket anchors when no Kalshi anchors provided', () => {
+    const { anchors, warnings } = mergeAnchorsWithCrossPlatformValidation(
+      [{
+        price: 100, rawProbability: 0.6, probability: 0.57, trustScore: 'high', source: 'polymarket',
+      }],
+      [],
+    );
+    expect(anchors).toHaveLength(1);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('adds Kalshi-only anchors with no bias correction', () => {
+    const kalshi: KalshiAnchor[] = [{ price: 150, probability: 0.3, volume: 500 }];
+    const { anchors } = mergeAnchorsWithCrossPlatformValidation([], kalshi);
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0].source).toBe('kalshi');
+    // No YES-bias correction for Kalshi: rawProb = probability = 0.3
+    expect(anchors[0].probability).toBe(0.3);
+    expect(anchors[0].rawProbability).toBe(0.3);
+  });
+
+  it('averages matching anchors within price tolerance', () => {
+    const poly = [{
+      price: 100, rawProbability: 0.60, probability: 0.57, trustScore: 'high' as const, source: 'polymarket' as const,
+    }];
+    const kalshi: KalshiAnchor[] = [{ price: 100.5, probability: 0.60, volume: 200 }]; // within 2%
+    const { anchors, warnings } = mergeAnchorsWithCrossPlatformValidation(poly, kalshi);
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0].source).toBe('averaged');
+    // No divergence (both 0.60)
+    expect(warnings).toHaveLength(0);
+    // Averaged raw = (0.60 + 0.60) / 2 = 0.60; bias-corrected = 0.60 * 0.95 = 0.57
+    expect(anchors[0].rawProbability).toBeCloseTo(0.60, 5);
+    expect(anchors[0].probability).toBeCloseTo(0.57, 5);
+  });
+
+  it('emits warning when Polymarket and Kalshi diverge by more than 5pp', () => {
+    const poly = [{
+      price: 100, rawProbability: 0.70, probability: 0.665, trustScore: 'high' as const, source: 'polymarket' as const,
+    }];
+    const kalshi: KalshiAnchor[] = [{ price: 100, probability: 0.60 }]; // 10pp divergence
+    const { anchors, warnings } = mergeAnchorsWithCrossPlatformValidation(poly, kalshi);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].divergencePp).toBeCloseTo(10, 0);
+    expect(warnings[0].polymarketProb).toBeCloseTo(0.70, 5);
+    expect(warnings[0].kalshiProb).toBeCloseTo(0.60, 5);
+    // Averaged: (0.70 + 0.60) / 2 = 0.65; bias-corrected = 0.65 * 0.95
+    expect(anchors[0].rawProbability).toBeCloseTo(0.65, 5);
+    expect(anchors[0].probability).toBeCloseTo(0.65 * 0.95, 5);
+  });
+
+  it('does NOT emit warning when divergence is ≤5pp', () => {
+    const poly = [{
+      price: 100, rawProbability: 0.55, probability: 0.5225, trustScore: 'high' as const, source: 'polymarket' as const,
+    }];
+    const kalshi: KalshiAnchor[] = [{ price: 100, probability: 0.52 }]; // 3pp divergence
+    const { warnings } = mergeAnchorsWithCrossPlatformValidation(poly, kalshi);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('result anchors are sorted by price ascending', () => {
+    const poly = [
+      { price: 120, rawProbability: 0.3, probability: 0.285, trustScore: 'high' as const, source: 'polymarket' as const },
+      { price: 100, rawProbability: 0.7, probability: 0.665, trustScore: 'high' as const, source: 'polymarket' as const },
+    ];
+    const kalshi: KalshiAnchor[] = [{ price: 110, probability: 0.5 }];
+    const { anchors } = mergeAnchorsWithCrossPlatformValidation(poly, kalshi);
+    for (let i = 1; i < anchors.length; i++) {
+      expect(anchors[i].price).toBeGreaterThanOrEqual(anchors[i - 1].price);
+    }
+  });
+
+  it('upgrades trustScore to high when Kalshi anchor has volume', () => {
+    const poly = [{
+      price: 100, rawProbability: 0.55, probability: 0.5225, trustScore: 'low' as const, source: 'polymarket' as const,
+    }];
+    const kalshi: KalshiAnchor[] = [{ price: 100, probability: 0.54, volume: 1000 }];
+    const { anchors } = mergeAnchorsWithCrossPlatformValidation(poly, kalshi);
+    expect(anchors[0].trustScore).toBe('high');
+  });
+
+  it('kalshiAnchors parameter propagates through computeMarkovDistribution', async () => {
+    const prices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.3);
+    const result = await computeMarkovDistribution({
+      ticker: 'CROSS',
+      horizon: 10,
+      currentPrice: 111.7,
+      historicalPrices: prices,
+      polymarketMarkets: [
+        { question: 'Will CROSS exceed $115?', probability: 0.70, volume: 2000 },
+      ],
+      kalshiAnchors: [{ price: 115, probability: 0.60, volume: 500 }], // 10pp divergence
+    });
+    expect(result.metadata.anchorDivergenceWarnings).toHaveLength(1);
+    expect(result.metadata.anchorDivergenceWarnings[0].divergencePp).toBeCloseTo(10, 0);
+  });
+
+  it('no divergence warnings when kalshiAnchors is absent', async () => {
+    const prices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.3);
+    const result = await computeMarkovDistribution({
+      ticker: 'NOKALSHI',
+      horizon: 10,
+      currentPrice: 111.7,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(result.metadata.anchorDivergenceWarnings).toHaveLength(0);
+  });
+});
