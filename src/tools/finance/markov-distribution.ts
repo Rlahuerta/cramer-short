@@ -27,27 +27,28 @@ import { baumWelch, predict as hmmPredict, type HMMParams } from './hmm.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Joint regime state encoding both direction and volatility.
+ * Regime state: 3 states (bull / bear / sideways).
  *
- * Note: The original spec used a priority-override `high_vol` state that destroyed
- * directional information on volatile days. Joint states preserve both dimensions
- * (consistent with Nguyen 2018, where states encode distinct (mean, variance) pairs).
+ * Collapsed from the original 5-state model (which included high_vol_bull and
+ * high_vol_bear). With a 120-day walk-forward window, the high_vol states had
+ * only 2-4 observations each, making their transition rows dominated by the
+ * Dirichlet prior (uniform ≈ 0.2/state) with zero directional information.
+ * Merging to 3 states concentrates ~40 obs/state → 5-10× more reliable
+ * transition estimates. (Nguyen 2018 also uses 3-4 states for S&P 500.)
  */
-export type RegimeState = 'bull' | 'bear' | 'high_vol_bull' | 'high_vol_bear' | 'sideways';
+export type RegimeState = 'bull' | 'bear' | 'sideways';
 
 export const REGIME_STATES: RegimeState[] = [
-  'bull', 'bear', 'high_vol_bull', 'high_vol_bear', 'sideways',
+  'bull', 'bear', 'sideways',
 ];
 
-export const NUM_STATES = REGIME_STATES.length; // 5
+export const NUM_STATES = REGIME_STATES.length; // 3
 
 /** Maps state name → matrix row/column index */
 export const STATE_INDEX: Record<RegimeState, number> = {
-  bull:          0,
-  bear:          1,
-  high_vol_bull: 2,
-  high_vol_bear: 3,
-  sideways:      4,
+  bull:     0,
+  bear:     1,
+  sideways: 2,
 };
 
 export interface PriceThreshold {
@@ -68,7 +69,7 @@ export interface SentimentSignal {
   bearish: number;  // 0–1
 }
 
-/** 5×5 stochastic matrix (rows sum to 1) */
+/** 3×3 stochastic matrix (rows sum to 1) */
 export type TransitionMatrix = number[][];
 
 export interface MarkovDistributionPoint {
@@ -123,6 +124,10 @@ export interface MarkovDistributionResult {
     /** Goodness-of-fit: chi-squared p-value comparing observed vs expected transitions.
      *  Low p-value (< 0.05) means the Markov assumption is a poor fit. null if insufficient data. */
     goodnessOfFit: GoodnessOfFitResult | null;
+    /** HMM fitting metadata (null if HMM was not attempted) */
+    hmm: { converged: boolean; iterations: number; states: number; logLikelihood: number; volRegimeConverged?: boolean } | null;
+    /** Ensemble signal metadata */
+    ensemble: { consensus: number; adjustment: number };
   };
 }
 
@@ -271,27 +276,23 @@ export function extractPriceThresholds(
 // ---------------------------------------------------------------------------
 
 /**
- * Classify a trading day into a joint (direction × volatility) regime state.
+ * Classify a trading day into a directional regime state.
  *
- * Volatility and directional return are orthogonal dimensions — a high-volatility
- * day can be strongly bullish or strongly bearish. Using a priority override (as in
- * the original spec) discards directional information. Joint states preserve both.
+ * Collapsed from the original 5-state model: high_vol_bull and high_vol_bear
+ * are merged into bull and bear respectively, since with 120-day windows the
+ * high_vol variants had only 2-4 observations and produced noisy transitions.
  *
  * @param dailyReturn - Return for the day (e.g. 0.012 = +1.2%)
- * @param dailyVolatility - Intraday vol proxy (e.g. (high - low) / open)
+ * @param _dailyVolatility - Ignored (kept for backward compatibility)
  * @param returnThreshold - Adaptive threshold for bull/bear classification (default 0.01)
- * @param volThreshold - Adaptive threshold for high-vol classification (default 0.02)
+ * @param _volThreshold - Ignored (kept for backward compatibility)
  */
 export function classifyRegimeState(
   dailyReturn: number,
-  dailyVolatility: number,
+  _dailyVolatility: number,
   returnThreshold = 0.01,
-  volThreshold = 0.02,
+  _volThreshold = 0.02,
 ): RegimeState {
-  const highVol = dailyVolatility > volThreshold;
-  if (highVol) {
-    return dailyReturn > 0 ? 'high_vol_bull' : 'high_vol_bear';
-  }
   if (dailyReturn > returnThreshold)  return 'bull';
   if (dailyReturn < -returnThreshold) return 'bear';
   return 'sideways';
@@ -469,7 +470,7 @@ export function computeEnsembleSignal(prices: number[]): EnsembleSignal {
 }
 
 /**
- * Estimate a 5×5 Markov transition matrix from a sequence of regime states.
+ * Estimate a 3×3 Markov transition matrix from a sequence of regime states.
  *
  * Smoothing: Dirichlet α scales inversely with sample size (default: max(0.01, 5/N)).
  * Converges to ~0.1 (Jeffreys prior) at N=50, and shrinks for larger samples to let
@@ -477,7 +478,7 @@ export function computeEnsembleSignal(prices: number[]): EnsembleSignal {
  * formula reduces over-smoothing for longer windows while still regularizing short ones.
  *
  * Default matrix (insufficient data): 0.6 diagonal, uniform off-diagonal.
- * offDiag = (1 − 0.6) / (NUM_STATES − 1) = 0.4 / 4 = 0.1 per cell (rows sum to 1.0).
+ * offDiag = (1 − 0.6) / (NUM_STATES − 1) = 0.4 / 2 = 0.2 per cell (rows sum to 1.0).
  *
  * Bug note: The original spec specified "0.2 off-diagonal" for a 4-state matrix,
  * yielding row sums of 0.6 + 3×0.2 = 1.2. Fixed here to use the correct formula.
@@ -924,13 +925,11 @@ export function estimateRegimeStats(
   const defaults: Record<RegimeState, RegimeStats> = {
     bull:          { meanReturn:  0.005, stdReturn: 0.010 },
     bear:          { meanReturn: -0.005, stdReturn: 0.012 },
-    high_vol_bull: { meanReturn:  0.006, stdReturn: 0.025 },
-    high_vol_bear: { meanReturn: -0.006, stdReturn: 0.025 },
     sideways:      { meanReturn:  0.000, stdReturn: 0.006 },
   };
 
   const bins: Record<RegimeState, number[]> = {
-    bull: [], bear: [], high_vol_bull: [], high_vol_bear: [], sideways: [],
+    bull: [], bear: [], sideways: [],
   };
 
   for (let i = 0; i < Math.min(returns.length, states.length); i++) {
@@ -1304,6 +1303,8 @@ export function interpolateSurvival(
  * @param buyThreshold   Min upside for BUY zone (default 0.05 = +5%)
  * @param sellThreshold  Min downside for SELL zone (default 0.03 = −3%)
  * @param horizon        Forecast horizon in trading days (used to scale action thresholds)
+ * @param recentVol      Recent daily volatility (e.g. 20-day std of returns). Used to
+ *                        set dynamic thresholds so BUY/SELL triggers match actual signal range.
  */
 export function computeActionSignal(
   distribution: MarkovDistributionPoint[],
@@ -1311,6 +1312,7 @@ export function computeActionSignal(
   buyThreshold = 0.05,
   sellThreshold = 0.03,
   horizon = 30,
+  recentVol?: number,
 ): ActionSignal {
   const pAboveBuy  = interpolateSurvival(distribution, currentPrice * (1 + buyThreshold));
   const pAboveSell = interpolateSurvival(distribution, currentPrice * (1 - sellThreshold));
@@ -1348,9 +1350,23 @@ export function computeActionSignal(
 
   const riskRewardRatio = eDownside > 0 ? eUpside / eDownside : 1.0;
 
-  // Horizon-scaled action thresholds for recommendation (calibrated via backtest grid search)
-  const actionBuyThr  = horizon <= 7 ? 0.01 : horizon <= 30 ? 0.02 : 0.03;
-  const actionSellThr = horizon <= 7 ? 0.008 : horizon <= 30 ? 0.015 : 0.02;
+  // Dynamic action thresholds (Idea H): scale with asset volatility instead of fixed values.
+  // Previous fixed thresholds (±2% for 14-30d) were wider than the model's signal range
+  // (E[R] std ≈ 1.85%), causing 74% HOLD predictions. Dynamic thresholds use:
+  //   threshold = scaleFactor × dailyVol × sqrt(horizon)
+  // which adapts to each asset's actual volatility and the forecast horizon.
+  let actionBuyThr: number;
+  let actionSellThr: number;
+  if (recentVol && recentVol > 0) {
+    // 0.15× vol × sqrt(horizon) gives thresholds that match the expected signal magnitude
+    const volScaled = recentVol * Math.sqrt(horizon);
+    actionBuyThr  = Math.max(0.003, 0.15 * volScaled);
+    actionSellThr = Math.max(0.002, 0.12 * volScaled);
+  } else {
+    // Fallback: reduced fixed thresholds (still much smaller than the old ±2%)
+    actionBuyThr  = horizon <= 7 ? 0.005 : horizon <= 30 ? 0.008 : 0.015;
+    actionSellThr = horizon <= 7 ? 0.003 : horizon <= 30 ? 0.005 : 0.010;
+  }
 
   // Recommendation derived from expectedReturn (not zone argmax)
   let recommendation: 'BUY' | 'HOLD' | 'SELL';
@@ -1662,7 +1678,12 @@ export async function computeMarkovDistribution(params: {
     currentPrice,
     horizon,
     distribution,
-    actionSignal: computeActionSignal(distribution, currentPrice, undefined, undefined, horizon),
+    actionSignal: computeActionSignal(distribution, currentPrice, undefined, undefined, horizon,
+      // Pass recent daily volatility for dynamic threshold computation (Idea H)
+      returns.length >= 20
+        ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
+        : undefined,
+    ),
     metadata: {
       polymarketAnchors: polymarketAnchors.filter(a => a.trustScore === 'high').length,
       regimeState: currentRegime,
