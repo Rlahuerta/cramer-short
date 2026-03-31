@@ -801,3 +801,52 @@ $   886.40    38.4%   [31.8%–44.7%]   markov
 **No additional API keys required.** Uses `get_market_data` (existing) for historical prices. Polymarket anchors come from `polymarket_search` (existing). Kalshi anchors are optional and passed directly.
 
 **Tool name:** `markov_distribution` — registered in the tool registry and automatically available to the agent.
+
+---
+
+## 🌮 Trump Pressure Index
+
+A composite metric that tracks when political and market stress may force Trump to reverse policy — a "TACO moment" (Trump Always Chickens Out). Inspired by Deutsche Bank's methodology (Maximilian Uleer), extended with Polymarket prediction markets, gas prices, and social sentiment.
+
+### Components (7 inputs)
+
+| Component | Weight | Source | Direction |
+|-----------|--------|--------|-----------|
+| S&P 500 | 20% | Financial Datasets API (SPY) | Decline = pressure |
+| 10Y Treasury | 15% | FRED (DGS10) | Rising = pressure |
+| Inflation Expectations | 15% | FRED (T5YIE breakeven) | Rising = pressure |
+| Approval Rating | 10% | Polymarket proxy | Falling = pressure |
+| Gas Prices | 12% | Financial Datasets API (UGA) | Rising = pressure |
+| Policy Reversal | 15% | Polymarket search | Rising = pressure |
+| Social Sentiment | 13% | Reddit + X | Bearish = pressure |
+
+### Regime Classification
+
+- 🟢 **LOW** (<0.5σ): Markets calm, policy on course
+- 🟡 **MODERATE** (0.5–1.5σ): Growing unease, watch for rhetoric shifts
+- 🟠 **ELEVATED** (1.5–2.0σ): Significant stress, adjustments likely
+- 🔴 **CRITICAL** (≥2.0σ): TACO event probable — ⚠️ auto-alert triggered
+
+### TACO Probability
+
+Blends Markov regime transition probabilities (40%) with Polymarket policy-reversal markets (60%) using YES-bias correction.
+
+### Usage
+
+Ask Dexter:
+- "What's the Trump Pressure Index?"
+- "How likely is a tariff reversal?"
+- "Is Trump under enough pressure to back down?"
+- Use the `trump-pressure` skill for a guided step-by-step analysis
+
+### Historical Landmarks
+
+The tool compares current pressure to known TACO events:
+- Liberation Day (Apr 2025, 2.8σ): 90-day tariff pause → S&P +9.5%
+- US-China de-escalation (May 2025, 2.3σ): Tariffs cut from 145% to 30%
+- UK trade deal (Jul 2025, 1.5σ): First bilateral deal
+- Auto tariff exemption (Jan 2026, 1.8σ): Sector-specific relief
+
+**Academic grounding:** Uleer (2026, Deutsche Bank) pressure methodology; Nguyen (2018) 4-state HMM; Welton & Ades (2005) Dirichlet priors; Reichenbach & Walther (2025) YES-bias correction.
+
+**Tool name:** `trump_pressure_index` — registered in the tool registry. Skill: `trump-pressure`.

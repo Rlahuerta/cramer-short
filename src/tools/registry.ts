@@ -25,6 +25,7 @@ import { getOnchainCrypto, ONCHAIN_CRYPTO_DESCRIPTION } from './finance/onchain-
 import { polymarketForecastTool, POLYMARKET_FORECAST_DESCRIPTION } from './finance/polymarket-forecast.js';
 import { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION } from './finance/price-distribution-chart.js';
 import { markovDistributionTool, MARKOV_DISTRIBUTION_DESCRIPTION } from './finance/markov-distribution.js';
+import { trumpPressureIndexTool, TRUMP_PRESSURE_DESCRIPTION } from './finance/trump-pressure-index.js';
 
 /**
  * A registered tool with its rich description for system prompt injection.
@@ -109,6 +110,11 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       name: 'social_sentiment',
       tool: socialSentimentTool,
       description: SOCIAL_SENTIMENT_DESCRIPTION,
+    },
+    {
+      name: 'trump_pressure_index',
+      tool: trumpPressureIndexTool,
+      description: TRUMP_PRESSURE_DESCRIPTION,
     },
     {
       name: 'geopolitics_search',

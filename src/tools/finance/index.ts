@@ -20,4 +20,5 @@ export { getOnchainCrypto, ONCHAIN_CRYPTO_DESCRIPTION } from './onchain-crypto.j
 export { polymarketForecastTool, POLYMARKET_FORECAST_DESCRIPTION } from './polymarket-forecast.js';
 export { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION, buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
 export { markovDistributionTool, computeMarkovDistribution, MARKOV_DISTRIBUTION_DESCRIPTION } from './markov-distribution.js';
+export { trumpPressureIndexTool, TRUMP_PRESSURE_DESCRIPTION, computeTrumpPressureIndex, checkTacoAlert } from './trump-pressure-index.js';
 
