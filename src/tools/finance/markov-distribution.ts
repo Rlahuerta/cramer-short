@@ -20,6 +20,7 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
+import { baumWelch, predict as hmmPredict, type HMMParams } from './hmm.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -919,6 +920,7 @@ export function interpolateDistribution(
   monteCarloSamples = 1000,
   ciWidthMultiplier = 1.0,
   momentumAdjustment = 0,
+  hmmOverride?: { drift: number; vol: number; weight: number },
 ): MarkovDistributionPoint[] {
   const stepPct  = 0.015;
   let minPrice = currentPrice * Math.pow(1 - stepPct, numLevels / 2);
@@ -951,15 +953,28 @@ export function interpolateDistribution(
   const Pn = matPow(P, horizon);
   const stateWeights = Pn[initialIdx];
 
-  // Compute regime-weighted drift and vol
-  const mu_eff = REGIME_STATES.reduce(
+  // Compute regime-weighted drift and vol (observable Markov)
+  const mu_obs = REGIME_STATES.reduce(
     (s, state, i) => s + stateWeights[i] * regimeStats[state].meanReturn, 0,
   );
-  const sigma_eff = Math.sqrt(
+  const sigma_obs = Math.sqrt(
     REGIME_STATES.reduce(
       (s, state, i) => s + stateWeights[i] * regimeStats[state].stdReturn ** 2, 0,
     ),
   );
+
+  // Blend HMM forecast with observable Markov when available
+  let mu_eff: number;
+  let sigma_eff: number;
+  if (hmmOverride) {
+    const w = hmmOverride.weight; // HMM weight (0..1)
+    mu_eff = w * hmmOverride.drift + (1 - w) * mu_obs;
+    sigma_eff = w * hmmOverride.vol + (1 - w) * sigma_obs;
+  } else {
+    mu_eff = mu_obs;
+    sigma_eff = sigma_obs;
+  }
+
   const mu_n    = horizon * (mu_eff + momentumAdjustment);
   const sigma_n = sigma_eff * Math.sqrt(horizon);
 
@@ -1346,10 +1361,40 @@ export async function computeMarkovDistribution(params: {
   // Halve momentum weight when structural break detected (trend may have broken)
   const momentumAdj = breakResult.detected ? momentum.adjustment * 0.5 : momentum.adjustment;
 
+  // --- HMM forecast (Idea B: Hidden Markov Model) ---
+  // Fit a Gaussian HMM on daily returns when we have enough data.
+  // Blend its drift/vol forecast with the observable Markov estimate.
+  let hmmOverride: { drift: number; vol: number; weight: number } | undefined;
+  let hmmMeta: { converged: boolean; iterations: number; states: number; logLikelihood: number } | undefined;
+  const HMM_MIN_OBS = 60; // need at least 60 returns for stable HMM
+  if (returns.length >= HMM_MIN_OBS) {
+    try {
+      const hmmResult = baumWelch(returns, 3, 50, 1e-3);
+      const hmmForecast = hmmPredict(returns, hmmResult.params, horizon);
+      hmmMeta = {
+        converged: hmmResult.converged,
+        iterations: hmmResult.iterations,
+        states: hmmResult.params.nStates,
+        logLikelihood: hmmResult.logLikelihood,
+      };
+      if (hmmResult.converged && Number.isFinite(hmmForecast.expectedReturn)) {
+        // Weight HMM at 0.5 when converged; reduce to 0.25 for short series
+        const hmmWeight = returns.length >= 120 ? 0.5 : 0.25;
+        hmmOverride = {
+          drift: hmmForecast.expectedReturn,
+          vol: hmmForecast.expectedVolatility,
+          weight: hmmWeight,
+        };
+      }
+    } catch {
+      // HMM fitting can fail on degenerate data — fall back to observable Markov
+    }
+  }
+
   // --- Distribution ---
   const distribution = interpolateDistribution(
     currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
-    20, 1000, ciWidthMultiplier, momentumAdj,
+    20, 1000, ciWidthMultiplier, momentumAdj, hmmOverride,
   );
 
   // --- Optional R²_OS (leave-one-out on training tail) ---
@@ -1398,6 +1443,7 @@ export async function computeMarkovDistribution(params: {
       anchorDivergenceWarnings,
       anchorCoverage: assessAnchorCoverage(polymarketAnchors, currentPrice),
       goodnessOfFit: gofResult,
+      hmm: hmmMeta ?? null,
     },
   };
 }
