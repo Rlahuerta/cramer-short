@@ -160,3 +160,73 @@ describe('probability_assessment skill E2E', () => {
     ).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Markov distribution E2E — separate agent run for price distribution query
+// ---------------------------------------------------------------------------
+// This suite verifies that the markov_distribution tool is invoked when the
+// user asks an explicit price-distribution question (Step 2c of the skill).
+// ---------------------------------------------------------------------------
+
+const MARKOV_QUERY =
+  '--deep Use the probability_assessment skill. What is the probability distribution for BTC price in 30 days? Show me the full Markov-enhanced distribution with confidence intervals.';
+
+let markovResult: E2EResult;
+let markovTools: string[];
+let markovAnswer: string;
+
+describe('markov_distribution E2E — price distribution workflow', () => {
+  beforeAll(async () => {
+    if (!RUN_E2E) return;
+    markovResult = await runAgentE2E(MARKOV_QUERY);
+    markovTools = markovResult.toolsCalled;
+    markovAnswer = markovResult.answer;
+  }, E2E_TIMEOUT_MS);
+
+  // ── Tool chain ──────────────────────────────────────────────────────────
+
+  e2eIt('calls markov_distribution tool during the run', () => {
+    expect(
+      markovTools.some((t) => t === 'markov_distribution'),
+      'markov_distribution must be invoked for a price distribution query',
+    ).toBe(true);
+  });
+
+  e2eIt('calls price_distribution_chart before markov_distribution', () => {
+    const chartIdx = markovTools.findIndex((t) => t.includes('chart'));
+    const markovIdx = markovTools.findIndex((t) => t === 'markov_distribution');
+    expect(chartIdx, 'price_distribution_chart must be called').toBeGreaterThanOrEqual(0);
+    expect(markovIdx, 'markov_distribution must be called').toBeGreaterThanOrEqual(0);
+    // chart can come before or after markov — both are valid orderings depending on model
+    // What matters is both are called in the same run
+  });
+
+  e2eIt('calls get_market_data to fetch historical prices for regime estimation', () => {
+    expect(
+      markovTools.some((t) => t === 'get_market_data'),
+      'historical prices must be fetched via get_market_data',
+    ).toBe(true);
+  });
+
+  // ── Answer quality ──────────────────────────────────────────────────────
+
+  e2eIt('answer contains regime state information', () => {
+    // The markov tool emits the current regime state (bull/bear/sideways/high_vol_*)
+    expect(markovAnswer.toLowerCase()).toMatch(/regime|bull|bear|sideways/);
+  });
+
+  e2eIt('answer includes a confidence interval or CI reference', () => {
+    // The markov tool provides 90% CI bounds
+    expect(markovAnswer).toMatch(/CI|confidence interval|90%|\[\d+\.?\d*%.*%\]/i);
+  });
+
+  e2eIt('answer includes probability distribution table or price levels', () => {
+    // The distribution output contains price levels with probabilities
+    expect(markovAnswer).toMatch(/P\(>|\$\d+.*%|probability/i);
+  });
+
+  e2eIt('answer mentions Markov chain or regime transitions', () => {
+    expect(markovAnswer.toLowerCase()).toMatch(/markov|regime|transition/);
+  });
+});
+

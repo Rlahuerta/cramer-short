@@ -84,6 +84,43 @@ For each such market, record `{price, probability}` where:
 
 ---
 
+## Step 2c — Markov distribution (asset price queries only)
+
+**If the query is about an asset price AND you have ≥2 Polymarket price thresholds:**
+
+After calling `price_distribution_chart` (Step 2b), call `markov_distribution` to enrich
+the distribution with regime-aware Markov interpolation and 90% Monte Carlo confidence intervals.
+
+1. **Gather inputs** (you likely already have these from prior steps):
+   - `ticker` — the asset symbol (e.g. NVDA, BTC-USD, SPY)
+   - `horizon` — forecast horizon in trading days (convert calendar days: 30 calendar ≈ 21 trading)
+   - `historicalPrices` — 60–90 days of daily close prices from `get_market_data` (oldest first)
+   - `polymarketMarkets` — the raw Polymarket market objects (question + probability + volume)
+   - `sentiment` (optional) — bullish/bearish from `social_sentiment` if already gathered
+
+2. **Call `markov_distribution`** with these inputs. The tool will:
+   - Classify each day into a regime state (bull/bear/high_vol_bull/high_vol_bear/sideways)
+   - Estimate a 5×5 Markov transition matrix with Dirichlet smoothing
+   - Detect structural breaks (regime shifts mid-window) and widen CI when detected
+   - Blend Markov log-normal estimates with bias-corrected Polymarket anchors
+   - Return P(price > X) for 20+ levels with [5th, 95th] percentile CI bounds
+
+3. **Embed the output** in the Signal Evidence section after the `price_distribution_chart`.
+   Highlight the regime state, mixing-time weight, and any warnings (sparse states, structural break,
+   cross-platform divergence).
+
+4. **Report in the Signal Evidence section:**
+   - Current regime state (e.g. "bull", "high_vol_bear")
+   - Mixing-time weight (e.g. "42% Markov / 58% Polymarket anchors")
+   - R²_OS if available (positive = Markov adds predictive value over mean)
+   - Any `⚠️` warnings from metadata
+
+> ⚠️ **Do NOT skip `markov_distribution` when you have ≥2 price thresholds and historical prices.**
+> It provides crucial uncertainty quantification (CI bounds) that `price_distribution_chart` alone
+> cannot produce. Missing it is a quality failure for price distribution queries.
+
+---
+
 ## Step 3 — Gather remaining signals
 
 Collect as many of these as are relevant and available. Each becomes a

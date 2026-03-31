@@ -931,6 +931,27 @@ export async function computeMarkovDistribution(params: {
 // 9. LangChain tool wrapper
 // ---------------------------------------------------------------------------
 
+export const MARKOV_DISTRIBUTION_DESCRIPTION = `
+**markov_distribution** — Full probability distribution for a stock/ETF price at a specified horizon.
+
+**Use when:**
+- The user asks for a probability distribution of future prices (not a point estimate)
+- The query includes a specific price target and horizon (e.g. "Will NVDA hit $1000 in 30 days?")
+- You already have ≥2 Polymarket price threshold markets available as anchors
+- You want to interpolate between Polymarket anchors using regime-aware Markov transitions
+
+**What it does:**
+- Combines Polymarket real-money anchors + historical regime transitions + sentiment
+- Returns P(price > X) for 20+ price levels with 90% Monte Carlo confidence intervals
+- Flags structural breaks (regime change mid-window), sparse states, and cross-platform divergence
+- Automatically applies YES-bias correction (×0.95) to raw Polymarket probabilities
+
+**Do NOT use when:**
+- The query is a simple binary probability (use probability_assessment skill instead)
+- You have fewer than 10 historical prices (not enough for regime estimation)
+- The horizon is > 90 trading days (model accuracy degrades at long horizons)
+`.trim();
+
 export const markovDistributionTool = new DynamicStructuredTool({
   name: 'markov_distribution',
   description: `

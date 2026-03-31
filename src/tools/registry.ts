@@ -24,6 +24,7 @@ import { getEarningsTranscript, EARNINGS_TRANSCRIPT_DESCRIPTION } from './financ
 import { getOnchainCrypto, ONCHAIN_CRYPTO_DESCRIPTION } from './finance/onchain-crypto.js';
 import { polymarketForecastTool, POLYMARKET_FORECAST_DESCRIPTION } from './finance/polymarket-forecast.js';
 import { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION } from './finance/price-distribution-chart.js';
+import { markovDistributionTool, MARKOV_DISTRIBUTION_DESCRIPTION } from './finance/markov-distribution.js';
 
 /**
  * A registered tool with its rich description for system prompt injection.
@@ -98,6 +99,11 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       name: 'price_distribution_chart',
       tool: priceDistributionChartTool,
       description: PRICE_DISTRIBUTION_CHART_DESCRIPTION,
+    },
+    {
+      name: 'markov_distribution',
+      tool: markovDistributionTool,
+      description: MARKOV_DISTRIBUTION_DESCRIPTION,
     },
     {
       name: 'social_sentiment',
