@@ -1469,6 +1469,8 @@ export function computePredictionConfidence(options: {
   assetType?: 'etf' | 'equity' | 'crypto';
   /** Recent daily volatility — high vol → harder to predict → lower confidence */
   recentVol?: number;
+  /** Fraction of momentum lookbacks that agree on direction (0-1). Idea R. */
+  momentumAgreement?: number;
 }): number {
   const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
 
@@ -1484,11 +1486,16 @@ export function computePredictionConfidence(options: {
   // 4. Regime stability: saturates at 20 consecutive days
   const stabilityScore = Math.min(1.0, regimeRunLength / 20);
 
-  // Weighted combination
-  let confidence = 0.40 * decisiveness
-                 + 0.25 * consensusScore
+  // Weighted combination (total base weights = 1.0)
+  let confidence = 0.35 * decisiveness
+                 + 0.20 * consensusScore
                  + 0.15 * hmmScore
                  + 0.20 * stabilityScore;
+
+  // 5. Multi-lookback momentum agreement (Idea R): when 10d, 20d, and 40d
+  // momentum all point the same way, the trend is robust across timeframes.
+  const momentumAgr = options.momentumAgreement ?? 0;
+  confidence += 0.10 * momentumAgr;
 
   // Penalty for structural break (regime change mid-window → unreliable)
   if (structuralBreak) confidence *= 0.6;
@@ -1821,8 +1828,19 @@ export async function computeMarkovDistribution(params: {
   // --- Tier 1b: Widen CI when structural break detected ---
   const ciWidthMultiplier = breakResult.detected ? 1.5 : 1.0;
 
-  // --- Momentum signal ---
+  // --- Momentum signal + multi-lookback confirmation (Idea R) ---
   const momentum = computeMomentumSignal(historicalPrices);
+  // Check if momentum direction agrees across multiple lookbacks (10d, 20d, 40d)
+  const m10 = computeMomentumSignal(historicalPrices, 10);
+  const m40 = historicalPrices.length > 41
+    ? computeMomentumSignal(historicalPrices, 40)
+    : null;
+  // Count lookbacks agreeing with the primary signal direction
+  const primaryDir = Math.sign(momentum.velocity);
+  let lookbackAgreement = 1; // primary always agrees
+  if (Math.sign(m10.velocity) === primaryDir && primaryDir !== 0) lookbackAgreement++;
+  if (m40 && Math.sign(m40.velocity) === primaryDir && primaryDir !== 0) lookbackAgreement++;
+  const totalLookbacks = m40 ? 3 : 2;
   // Halve momentum weight when structural break detected (trend may have broken)
   const momentumAdj = breakResult.detected ? momentum.adjustment * 0.5 : momentum.adjustment;
 
@@ -1949,6 +1967,7 @@ export async function computeMarkovDistribution(params: {
     structuralBreak: breakResult.detected,
     assetType: assetProfile.type,
     recentVol: recentDailyVol,
+    momentumAgreement: lookbackAgreement / totalLookbacks,
   });
 
   // --- Optional R²_OS (leave-one-out on training tail) ---

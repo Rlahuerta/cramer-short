@@ -2197,6 +2197,7 @@ describe('computePredictionConfidence', () => {
       hmmConverged: true,
       regimeRunLength: 25, // stable regime
       structuralBreak: false,
+      momentumAgreement: 1.0, // all lookbacks agree
     });
     expect(c).toBeGreaterThan(0.8);
     expect(c).toBeLessThanOrEqual(1.0);
@@ -2313,6 +2314,23 @@ describe('computePredictionConfidence', () => {
     const noVol  = computePredictionConfidence(base);
     const lowVol = computePredictionConfidence({ ...base, recentVol: 0.015 });
     expect(lowVol).toBeCloseTo(noVol, 5);
+  });
+
+  it('full momentum agreement boosts confidence (Idea R)', () => {
+    const base = { pUp: 0.7, ensembleConsensus: 2, hmmConverged: true, regimeRunLength: 10, structuralBreak: false };
+    const noMom  = computePredictionConfidence({ ...base, momentumAgreement: 0 });
+    const fullMom = computePredictionConfidence({ ...base, momentumAgreement: 1.0 });
+    expect(fullMom).toBeGreaterThan(noMom);
+    expect(fullMom - noMom).toBeCloseTo(0.10, 1); // 10% weight for momentum agreement
+  });
+
+  it('partial momentum agreement gives partial boost', () => {
+    const base = { pUp: 0.7, ensembleConsensus: 2, hmmConverged: true, regimeRunLength: 10, structuralBreak: false };
+    const none = computePredictionConfidence({ ...base, momentumAgreement: 0 });
+    const half = computePredictionConfidence({ ...base, momentumAgreement: 0.5 });
+    const full = computePredictionConfidence({ ...base, momentumAgreement: 1.0 });
+    expect(half).toBeGreaterThan(none);
+    expect(full).toBeGreaterThan(half);
   });
 });
 
