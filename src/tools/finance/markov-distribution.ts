@@ -1262,6 +1262,74 @@ export function computeR2OS(
 }
 
 // ---------------------------------------------------------------------------
+// 7b. Bayesian probability calibration (Idea I)
+// ---------------------------------------------------------------------------
+
+/**
+ * Calibrate raw survival probabilities via Bayesian shrinkage toward the base rate.
+ *
+ * The raw Markov model is overconfident at extremes: predicted P=0.04 actually resolves
+ * at ~0.47, and predicted P=0.95 resolves at ~0.59 (per walk-forward backtest). This is
+ * a classic calibration failure — the model rank-orders correctly but has too-wide spread.
+ *
+ * Fix: shrink raw probabilities toward 0.5 (uninformative prior).
+ *   calibrated = prior_weight × 0.5 + (1 - prior_weight) × raw
+ *
+ * prior_weight is controlled by:
+ *   - Base shrinkage: always pull extremes toward 0.5 somewhat (κ)
+ *   - Ensemble consensus: higher consensus → less shrinkage (more confident)
+ *   - Data sufficiency: more historical data → less shrinkage
+ *
+ * After shrinkage, monotonicity is re-enforced (P(>X) must be non-increasing in X).
+ */
+export function calibrateProbabilities(
+  distribution: MarkovDistributionPoint[],
+  options?: {
+    ensembleConsensus?: number;   // 0-3: how many ensemble signals agree
+    historicalDays?: number;      // number of daily returns available
+    hmmConverged?: boolean;       // whether HMM converged (adds confidence)
+  },
+): MarkovDistributionPoint[] {
+  const consensus = options?.ensembleConsensus ?? 0;
+  const nDays = options?.historicalDays ?? 60;
+  const hmmOk = options?.hmmConverged ?? false;
+
+  // Base shrinkage coefficient κ ∈ [0.15, 0.55]
+  // κ=0.55 means "pull 55% toward 0.5" (very uncertain)
+  // κ=0.15 means "pull 15% toward 0.5" (reasonably calibrated)
+  let kappa = 0.45; // start conservative — pull heavily toward 0.5
+
+  // Less shrinkage when ensemble signals agree (each consensus point → -0.07)
+  kappa -= consensus * 0.07;
+
+  // Less shrinkage with more data (logarithmic scaling — diminishing returns)
+  // 60 days → 0 adjustment; 120 days → -0.03; 250 days → -0.06
+  if (nDays > 60) {
+    kappa -= Math.min(0.08, 0.04 * Math.log2(nDays / 60));
+  }
+
+  // HMM convergence adds a small confidence boost
+  if (hmmOk) kappa -= 0.03;
+
+  // Clamp to valid range
+  kappa = Math.max(0.15, Math.min(0.55, kappa));
+
+  const calibrated = distribution.map(point => ({
+    ...point,
+    probability: kappa * 0.5 + (1 - kappa) * point.probability,
+  }));
+
+  // Re-enforce monotonicity after shrinkage (P(>X) non-increasing in X)
+  for (let i = calibrated.length - 2; i >= 0; i--) {
+    if (calibrated[i].probability < calibrated[i + 1].probability) {
+      calibrated[i].probability = calibrated[i + 1].probability;
+    }
+  }
+
+  return calibrated;
+}
+
+// ---------------------------------------------------------------------------
 // 8a. interpolateSurvival + computeActionSignal — Buy/Hold/Sell signal
 // ---------------------------------------------------------------------------
 
@@ -1644,10 +1712,17 @@ export async function computeMarkovDistribution(params: {
   }
 
   // --- Distribution ---
-  const distribution = interpolateDistribution(
+  const rawDistribution = interpolateDistribution(
     currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
     20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride,
   );
+
+  // --- Bayesian calibration (Idea I): shrink extreme probabilities toward 0.5 ---
+  const distribution = calibrateProbabilities(rawDistribution, {
+    ensembleConsensus: ensemble.consensus,
+    historicalDays: returns.length,
+    hmmConverged: hmmMeta?.converged ?? false,
+  });
 
   // --- Optional R²_OS (leave-one-out on training tail) ---
   let r2os: number | null = null;

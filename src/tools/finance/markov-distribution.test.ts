@@ -32,6 +32,7 @@ import {
   secondLargestEigenvalue,
   computeMixingWeight,
   computeR2OS,
+  calibrateProbabilities,
   logNormalSurvival,
   estimateRegimeStats,
   matPow,
@@ -485,6 +486,82 @@ describe('computeR2OS', () => {
   it('Add 4: returns 0 for arrays shorter than 2', () => {
     expect(computeR2OS([], [])).toBe(0);
     expect(computeR2OS([0.01], [0.01])).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// calibrateProbabilities — Bayesian shrinkage (Idea I)
+// ---------------------------------------------------------------------------
+
+describe('calibrateProbabilities', () => {
+  const sampleDist = [
+    { price: 90,  probability: 0.95, lowerBound: 0.90, upperBound: 0.98, source: 'markov' as const },
+    { price: 100, probability: 0.70, lowerBound: 0.60, upperBound: 0.80, source: 'markov' as const },
+    { price: 110, probability: 0.30, lowerBound: 0.20, upperBound: 0.40, source: 'markov' as const },
+    { price: 120, probability: 0.05, lowerBound: 0.02, upperBound: 0.10, source: 'markov' as const },
+  ];
+
+  it('shrinks extreme probabilities toward 0.5', () => {
+    const calibrated = calibrateProbabilities(sampleDist);
+    // P=0.95 should be pulled down (closer to 0.5)
+    expect(calibrated[0].probability).toBeLessThan(0.95);
+    expect(calibrated[0].probability).toBeGreaterThan(0.5);
+    // P=0.05 should be pulled up (closer to 0.5)
+    expect(calibrated[3].probability).toBeGreaterThan(0.05);
+    expect(calibrated[3].probability).toBeLessThan(0.5);
+  });
+
+  it('maintains monotonicity after calibration', () => {
+    const calibrated = calibrateProbabilities(sampleDist);
+    for (let i = 0; i < calibrated.length - 1; i++) {
+      expect(calibrated[i].probability).toBeGreaterThanOrEqual(calibrated[i + 1].probability);
+    }
+  });
+
+  it('shrinks less with high ensemble consensus', () => {
+    const noConsensus = calibrateProbabilities(sampleDist, { ensembleConsensus: 0 });
+    const fullConsensus = calibrateProbabilities(sampleDist, { ensembleConsensus: 3 });
+    // With full consensus, the extreme values should be further from 0.5
+    // (less shrinkage → more extreme → P=0.95 stays higher)
+    expect(fullConsensus[0].probability).toBeGreaterThan(noConsensus[0].probability);
+    // Low end: P=0.05 with full consensus should be lower (less shrunk toward 0.5)
+    expect(fullConsensus[3].probability).toBeLessThan(noConsensus[3].probability);
+  });
+
+  it('shrinks less with more historical data', () => {
+    const short = calibrateProbabilities(sampleDist, { historicalDays: 60 });
+    const long = calibrateProbabilities(sampleDist, { historicalDays: 250 });
+    expect(long[0].probability).toBeGreaterThan(short[0].probability);
+    expect(long[3].probability).toBeLessThan(short[3].probability);
+  });
+
+  it('HMM convergence reduces shrinkage', () => {
+    const noHmm = calibrateProbabilities(sampleDist, { hmmConverged: false });
+    const withHmm = calibrateProbabilities(sampleDist, { hmmConverged: true });
+    expect(withHmm[0].probability).toBeGreaterThan(noHmm[0].probability);
+  });
+
+  it('preserves probabilities close to 0.5 (already calibrated)', () => {
+    const midDist = [
+      { price: 100, probability: 0.52, lowerBound: 0.45, upperBound: 0.60, source: 'markov' as const },
+      { price: 110, probability: 0.48, lowerBound: 0.40, upperBound: 0.55, source: 'markov' as const },
+    ];
+    const calibrated = calibrateProbabilities(midDist);
+    // Already near 0.5 — should barely change
+    expect(Math.abs(calibrated[0].probability - 0.52)).toBeLessThan(0.02);
+    expect(Math.abs(calibrated[1].probability - 0.48)).toBeLessThan(0.02);
+  });
+
+  it('returns valid probabilities in [0, 1]', () => {
+    const extremeDist = [
+      { price: 50,  probability: 1.00, lowerBound: 0.99, upperBound: 1.00, source: 'markov' as const },
+      { price: 200, probability: 0.00, lowerBound: 0.00, upperBound: 0.02, source: 'markov' as const },
+    ];
+    const calibrated = calibrateProbabilities(extremeDist);
+    for (const p of calibrated) {
+      expect(p.probability).toBeGreaterThanOrEqual(0);
+      expect(p.probability).toBeLessThanOrEqual(1);
+    }
   });
 });
 
