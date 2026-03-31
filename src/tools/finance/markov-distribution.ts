@@ -1455,7 +1455,7 @@ export function calibrateProbabilities(
  * coverage for accuracy by abstaining when confidence is low.
  */
 export function computePredictionConfidence(options: {
-  /** P(price > currentPrice at horizon) after calibration */
+  /** P(price > currentPrice at horizon) — preferably raw (pre-calibration) */
   pUp: number;
   /** Ensemble consensus count (0–3) */
   ensembleConsensus: number;
@@ -1465,6 +1465,10 @@ export function computePredictionConfidence(options: {
   regimeRunLength: number;
   /** Whether a structural break was detected */
   structuralBreak: boolean;
+  /** Asset type — crypto predictions get a confidence discount */
+  assetType?: 'etf' | 'equity' | 'crypto';
+  /** Recent daily volatility — high vol → harder to predict → lower confidence */
+  recentVol?: number;
 }): number {
   const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
 
@@ -1488,6 +1492,23 @@ export function computePredictionConfidence(options: {
 
   // Penalty for structural break (regime change mid-window → unreliable)
   if (structuralBreak) confidence *= 0.6;
+
+  // Asset-type discount: crypto is inherently noisier → scale confidence down.
+  // ETFs are the most predictable → small boost.
+  const assetType = options.assetType;
+  if (assetType === 'crypto') {
+    confidence *= 0.7; // crypto accuracy is 30-40% → predictions are unreliable
+  } else if (assetType === 'etf') {
+    confidence *= 1.1; // ETFs (SPY, GLD, QQQ) are the most predictable
+  }
+
+  // Volatility penalty: daily vol > 3% → scale confidence down.
+  // Mean daily vol: SPY~1%, TSLA~3%, BTC~4%. High vol = harder to predict.
+  const vol = options.recentVol;
+  if (vol && vol > 0.02) {
+    const volPenalty = Math.max(0.7, 1 - (vol - 0.02) * 5); // linear ramp from 1.0 at 2% to 0.7 at 8%
+    confidence *= volPenalty;
+  }
 
   return Math.max(0, Math.min(1, confidence));
 }
@@ -1912,6 +1933,11 @@ export async function computeMarkovDistribution(params: {
   const rawPUp = interpolateSurvival(rawDistribution, currentPrice);
   const calPUp = interpolateSurvival(distribution, currentPrice);
 
+  // Recent daily volatility (20-day std of daily returns)
+  const recentDailyVol = returns.length >= 20
+    ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
+    : undefined;
+
   // --- Prediction confidence (Idea M: selective prediction) ---
   // Use raw P(up) for decisiveness (how far from coin flip) since calibrated P(up)
   // is often compressed to 0.45-0.55, making decisiveness uniformly low.
@@ -1921,6 +1947,8 @@ export async function computeMarkovDistribution(params: {
     hmmConverged: hmmMeta?.converged ?? false,
     regimeRunLength,
     structuralBreak: breakResult.detected,
+    assetType: assetProfile.type,
+    recentVol: recentDailyVol,
   });
 
   // --- Optional R²_OS (leave-one-out on training tail) ---
@@ -1953,10 +1981,7 @@ export async function computeMarkovDistribution(params: {
     horizon,
     distribution,
     actionSignal: computeActionSignal(distribution, currentPrice, undefined, undefined, horizon,
-      // Pass recent daily volatility for dynamic threshold computation (Idea H)
-      returns.length >= 20
-        ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
-        : undefined,
+      recentDailyVol,
     ),
     predictionConfidence,
     metadata: {

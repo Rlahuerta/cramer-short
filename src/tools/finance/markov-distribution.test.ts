@@ -2285,6 +2285,35 @@ describe('computePredictionConfidence', () => {
     });
     expect(low).toBeCloseTo(high, 5);
   });
+
+  it('crypto asset type reduces confidence (Idea N+)', () => {
+    const base = { pUp: 0.7, ensembleConsensus: 2, hmmConverged: true, regimeRunLength: 10, structuralBreak: false };
+    const equity = computePredictionConfidence({ ...base, assetType: 'equity' });
+    const crypto = computePredictionConfidence({ ...base, assetType: 'crypto' });
+    expect(crypto).toBeLessThan(equity);
+    expect(crypto / equity).toBeCloseTo(0.7, 1); // 0.7× discount
+  });
+
+  it('ETF asset type boosts confidence', () => {
+    const base = { pUp: 0.7, ensembleConsensus: 2, hmmConverged: true, regimeRunLength: 10, structuralBreak: false };
+    const equity = computePredictionConfidence({ ...base, assetType: 'equity' });
+    const etf    = computePredictionConfidence({ ...base, assetType: 'etf' });
+    expect(etf).toBeGreaterThan(equity);
+  });
+
+  it('high volatility reduces confidence', () => {
+    const base = { pUp: 0.7, ensembleConsensus: 2, hmmConverged: true, regimeRunLength: 10, structuralBreak: false };
+    const lowVol  = computePredictionConfidence({ ...base, recentVol: 0.01 });
+    const highVol = computePredictionConfidence({ ...base, recentVol: 0.05 });
+    expect(highVol).toBeLessThan(lowVol);
+  });
+
+  it('vol < 2% has no penalty', () => {
+    const base = { pUp: 0.7, ensembleConsensus: 2, hmmConverged: true, regimeRunLength: 10, structuralBreak: false };
+    const noVol  = computePredictionConfidence(base);
+    const lowVol = computePredictionConfidence({ ...base, recentVol: 0.015 });
+    expect(lowVol).toBeCloseTo(noVol, 5);
+  });
 });
 
 // ---------------------------------------------------------------------------
