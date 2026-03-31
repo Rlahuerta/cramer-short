@@ -1992,8 +1992,13 @@ export async function computeMarkovDistribution(params: {
   const conditionalPUp = REGIME_STATES.reduce(
     (s, state, i) => s + stateWeightsForUp[i] * regimeUpRates[state], 0,
   );
-  // Blend: 70% regime-conditional, 30% unconditional base rate (hedge against noise)
-  const calibrationCenter = 0.7 * conditionalPUp + 0.3 * baseRate;
+  // Blend: regime-conditional + unconditional, weighted by asset reliability.
+  // ETFs have reliable regime models (80/20). Crypto regimes are noisy (40/60),
+  // so default more toward the unconditional base rate which is at least directionally correct.
+  const conditionalWeight = assetProfile.type === 'etf' ? 0.80
+    : assetProfile.type === 'equity' ? 0.65
+    : 0.40; // crypto
+  const calibrationCenter = conditionalWeight * conditionalPUp + (1 - conditionalWeight) * baseRate;
 
   const distribution = calibrateProbabilities(rawDistribution, {
     ensembleConsensus: ensemble.consensus,
@@ -2005,12 +2010,14 @@ export async function computeMarkovDistribution(params: {
   });
 
   // --- Base-rate floor (Idea S, Round 4) ---
-  // Use the regime-conditional center (not raw baseRate) for the floor.
-  // This prevents the model from predicting DOWN when the regime-aware
-  // empirical frequency of UP is much higher.
+  // Adaptive bear margin: scales with how bullish the base rate is.
+  // In strongly bullish markets, require very strong evidence to predict down.
+  // Near 50%, the floor is tighter because even small over-prediction of bear hurts.
   const calPUpPreFloor = interpolateSurvival(distribution, currentPrice);
-  const bearMargin = 0.15;
-  const pUpFloor = Math.max(0.30, calibrationCenter - bearMargin);
+  // bearMargin scales linearly: from 0.05 (at baseRate=0.5) to 0.10 (at baseRate=0.75+)
+  // This ensures the model defaults to UP for assets near 50-55% base rate
+  const bearMargin = Math.max(0.05, Math.min(0.10, 0.05 + (baseRate - 0.5) * 0.2));
+  const pUpFloor = Math.max(0.35, calibrationCenter - bearMargin);
   if (calPUpPreFloor < pUpFloor) {
     const deficit = pUpFloor - calPUpPreFloor;
     for (const pt of distribution) {
