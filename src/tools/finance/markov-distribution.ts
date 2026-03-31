@@ -19,6 +19,7 @@
 
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,8 +53,9 @@ export interface PriceThreshold {
   price: number;
   /** Raw YES probability from Polymarket (0–1) */
   rawProbability: number;
-  /** Bias-corrected probability (rawProbability × 0.95). Reichenbach & Walther (2025)
-   *  found systematic YES-overtrading across 124M trades. */
+  /** Bias-corrected probability (rawProbability × YES_BIAS_MULTIPLIER). Reichenbach & Walther (2025)
+   *  found systematic YES-overtrading across 124M trades. Uses multiplicative form
+   *  (vs. additive in ensemble.ts) because survival interpolation is log-spaced. */
   probability: number;
   /** Whether this anchor is trusted based on liquidity/age heuristics */
   trustScore: 'high' | 'low';
@@ -161,7 +163,7 @@ function parsePrice(raw: string): number {
 /**
  * Parse Polymarket market objects into sorted price thresholds with bias correction.
  *
- * YES-bias correction: multiply all raw probabilities by 0.95 (Reichenbach & Walther 2025).
+ * YES-bias correction: multiply all raw probabilities by YES_BIAS_MULTIPLIER (Reichenbach & Walther 2025).
  * Liquidity guard: markets under 48h or with zero volume receive trustScore='low'.
  */
 export function extractPriceThresholds(
@@ -199,7 +201,7 @@ export function extractPriceThresholds(
     const corrected: PriceThreshold = {
       price: matched,
       rawProbability,
-      probability: rawProbability * 0.95,
+      probability: rawProbability * YES_BIAS_MULTIPLIER,
       trustScore,
       source: 'polymarket',
     };
@@ -453,7 +455,7 @@ export function mergeAnchorsWithCrossPlatformValidation(
       merged[matchIdx] = {
         ...poly,
         rawProbability: averaged,
-        probability: averaged * 0.95, // apply bias correction to blended probability
+        probability: averaged * YES_BIAS_MULTIPLIER, // apply bias correction to blended probability
         source: 'averaged',
         // Upgrade to high trust if either source qualifies
         trustScore: poly.trustScore === 'high' || (kalshi.volume ?? 0) > 0 ? 'high' : 'low',
@@ -1077,7 +1079,7 @@ export const MARKOV_DISTRIBUTION_DESCRIPTION = `
 - Combines Polymarket real-money anchors + historical regime transitions + sentiment
 - Returns P(price > X) for 20+ price levels with 90% Monte Carlo confidence intervals
 - Flags structural breaks (regime change mid-window), sparse states, and cross-platform divergence
-- Automatically applies YES-bias correction (×0.95) to raw Polymarket probabilities
+- Automatically applies YES-bias correction (×${YES_BIAS_MULTIPLIER}) to raw Polymarket probabilities
 
 **Do NOT use when:**
 - The query is a simple binary probability (use probability_assessment skill instead)

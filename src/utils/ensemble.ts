@@ -54,8 +54,22 @@ function clamp(v: number, lo: number, hi: number): number {
 // ---------------------------------------------------------------------------
 
 /**
- * Apply a yes-side bias correction.  Markets tend to overweight YES outcomes;
- * subtract beta from probabilities above 0.5.
+ * Apply a yes-side bias correction for conditional return estimation.
+ *
+ * Reichenbach & Walther (2025) found systematic YES-overtrading across 124M
+ * Polymarket trades. This function uses an *additive offset* (−β when p > 0.5)
+ * because ensemble conditional returns are linear in p: small absolute shifts
+ * in p map directly to small return shifts.
+ *
+ * The Markov distribution module uses a *multiplicative* correction (p × 0.95)
+ * instead, because survival probabilities are log-spaced and a multiplicative
+ * discount is more natural for interpolation across price levels.
+ *
+ * Both corrections target the same phenomenon (YES overpricing) but use the
+ * form best suited to their downstream math.
+ *
+ * @param p    Raw YES probability [0, 1]
+ * @param beta Additive discount when p > 0.5 (default 0.035 = 3.5pp)
  */
 export function adjustYesBias(p: number, beta = 0.035): number {
   if (p > 0.5) {
@@ -63,6 +77,16 @@ export function adjustYesBias(p: number, beta = 0.035): number {
   }
   return clamp(p, 0.01, 0.99);
 }
+
+/**
+ * Multiplicative YES-bias discount factor.
+ * Shared constant used by markov-distribution.ts (and any future module that
+ * needs multiplicative rather than additive bias correction).
+ *
+ * 0.95 = 5% haircut on all raw Polymarket probabilities.
+ * Rationale: Reichenbach & Walther (2025) report ~5% aggregate YES overpricing.
+ */
+export const YES_BIAS_MULTIPLIER = 0.95;
 
 /**
  * Composite quality weight for a single Polymarket market.

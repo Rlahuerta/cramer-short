@@ -62,6 +62,8 @@ interface PolymarketMarket {
   outcomes: string;
   outcomePrices: string;
   endDateIso?: string;
+  /** Gamma API returns ISO date string for market creation time. */
+  createdAt?: string;
   volume24hr?: number;
   volumeNum?: number;
   liquidityNum?: number;
@@ -84,6 +86,8 @@ interface FormattedMarket {
   endDate: string | null;
   volume24h: string;
   liquidity: string;
+  /** Days since the market was created (undefined if createdAt missing from API). */
+  ageDays: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +95,113 @@ interface FormattedMarket {
 // ---------------------------------------------------------------------------
 
 const GAMMA_BASE = 'https://gamma-api.polymarket.com';
+
+// ---------------------------------------------------------------------------
+// Retry with exponential backoff
+// ---------------------------------------------------------------------------
+
+/** Delays in ms between retry attempts (1s, 2s, 4s). */
+export let RETRY_DELAYS = [1_000, 2_000, 4_000];
+
+/** Override retry delays (for testing). Call with `[]` to disable waits. */
+export function setRetryDelays(delays: number[]): void {
+  RETRY_DELAYS = delays;
+}
+
+/**
+ * Retries `fn` up to `maxRetries` times with exponential backoff.
+ * Only retries on transient errors (network, 5xx, timeout).
+ * 4xx errors are not retried.
+ */
+export async function fetchWithRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  delays: number[] = RETRY_DELAYS,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      // Don't retry on 4xx client errors
+      if (err instanceof Error && /\b4\d{2}\b/.test(err.message)) throw err;
+      if (attempt < maxRetries) {
+        const delay = delays[attempt] ?? 4_000;
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastError;
+}
+
+// ---------------------------------------------------------------------------
+// TTL cache for search results (5-minute default)
+// ---------------------------------------------------------------------------
+
+const CACHE_TTL_MS = 5 * 60 * 1_000; // 5 minutes
+const CACHE_MAX_ENTRIES = 64;
+
+interface CacheEntry<T> {
+  data: T;
+  expiresAt: number;
+}
+
+const searchCache = new Map<string, CacheEntry<FormattedMarket[]>>();
+
+function cacheKey(query: string, limit: number): string {
+  return `${query.toLowerCase().trim()}:${limit}`;
+}
+
+function getCached(key: string): FormattedMarket[] | undefined {
+  const entry = searchCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    searchCache.delete(key);
+    return undefined;
+  }
+  return entry.data;
+}
+
+function setCache(key: string, data: FormattedMarket[]): void {
+  // Evict oldest entries if over capacity
+  if (searchCache.size >= CACHE_MAX_ENTRIES) {
+    const oldest = searchCache.keys().next().value;
+    if (oldest !== undefined) searchCache.delete(oldest);
+  }
+  searchCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+/** Clear the search cache. Exported for testing. */
+export function clearPolymarketCache(): void {
+  searchCache.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Degradation warnings collector
+// ---------------------------------------------------------------------------
+
+/** Collects non-fatal warnings during a search pass. */
+let _searchWarnings: string[] = [];
+
+/** Returns and clears accumulated search warnings. Exported for testing. */
+export function drainSearchWarnings(): string[] {
+  const w = _searchWarnings;
+  _searchWarnings = [];
+  return w;
+}
+
+// ---------------------------------------------------------------------------
+// Market age computation
+// ---------------------------------------------------------------------------
+
+/** Compute days since creation from an ISO date string. Returns undefined if invalid. */
+function computeAgeDays(createdAt: string | undefined): number | undefined {
+  if (!createdAt) return undefined;
+  const ms = Date.now() - new Date(createdAt).getTime();
+  if (isNaN(ms) || ms < 0) return undefined;
+  return Math.floor(ms / 86_400_000);
+}
 
 // ---------------------------------------------------------------------------
 // Client-side text filtering (API keyword param is unreliable)
@@ -219,6 +330,7 @@ function formatMarket(m: PolymarketMarket): FormattedMarket | null {
     endDate: m.endDateIso ?? null,
     volume24h: formatVolume(m.volume24hr),
     liquidity: formatVolume(m.liquidityNum),
+    ageDays: computeAgeDays(m.createdAt),
   };
 }
 
@@ -237,51 +349,64 @@ async function searchEventsByTag(
   limit: number,
 ): Promise<FormattedMarket[]> {
   try {
-    const params = new URLSearchParams({
-      limit: String(Math.min(limit * 8, 80)), // fetch wide — text filter reduces count
-      active: 'true',
-      closed: 'false',
-      order: 'volume24hr',
-      ascending: 'false',
-      tag_slug: tagSlug,
-    });
-    const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
-      headers: { 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (!res.ok) return [];
-    const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
+    return await fetchWithRetry(async () => {
+      const params = new URLSearchParams({
+        limit: String(Math.min(limit * 8, 80)), // fetch wide — text filter reduces count
+        active: 'true',
+        closed: 'false',
+        order: 'volume24hr',
+        ascending: 'false',
+        tag_slug: tagSlug,
+      });
+      const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (!res.ok) throw new Error(`Gamma API ${res.status} for tag_slug=${tagSlug}`);
+      const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
 
-    const results: FormattedMarket[] = [];
-    for (const event of events) {
-      if (!event.markets?.length) continue;
-      const titleMatches = questionMatchesQuery(event.title ?? '', textFilter);
-      const sorted = [...event.markets]
-        .filter((m) => m.active && !m.closed)
-        .sort((a, b) => (b.volume24hr ?? 0) - (a.volume24hr ?? 0))
-        .slice(0, 4); // up to 4 markets per event
-      for (const m of sorted) {
-        if (!titleMatches && !questionMatchesQuery(m.question, textFilter)) continue;
-        const fmt = formatMarket(m);
-        if (fmt) results.push(fmt);
-        if (results.length >= limit) return results;
+      const results: FormattedMarket[] = [];
+      for (const event of events) {
+        if (!event.markets?.length) continue;
+        const titleMatches = questionMatchesQuery(event.title ?? '', textFilter);
+        const sorted = [...event.markets]
+          .filter((m) => m.active && !m.closed)
+          .sort((a, b) => (b.volume24hr ?? 0) - (a.volume24hr ?? 0))
+          .slice(0, 4); // up to 4 markets per event
+        for (const m of sorted) {
+          if (!titleMatches && !questionMatchesQuery(m.question, textFilter)) continue;
+          const fmt = formatMarket(m);
+          if (fmt) results.push(fmt);
+          if (results.length >= limit) return results;
+        }
       }
-    }
-    return results;
-  } catch {
+      return results;
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    _searchWarnings.push(`Tag "${tagSlug}" fetch failed after retries: ${msg}`);
     return [];
   }
 }
 
 /**
  * Primary search function. Uses tag slugs + client-side text filtering.
+ * Results are cached for CACHE_TTL_MS (5 min) to avoid redundant API calls.
  *
  * Strategy:
- *  1. Infer tag slugs from query → fetch /events?tag_slug=X (works reliably)
- *  2. If tags infer 0 results or no tags found, do a broad top-events fetch
+ *  1. Check TTL cache → return immediately if fresh
+ *  2. Infer tag slugs from query → fetch /events?tag_slug=X (works reliably)
+ *  3. If tags infer 0 results or no tags found, do a broad top-events fetch
  *     and rely entirely on the client-side text filter.
  */
 async function searchEvents(query: string, limit: number): Promise<FormattedMarket[]> {
+  const key = cacheKey(query, limit);
+  const cached = getCached(key);
+  if (cached) return cached;
+
+  // Reset warnings for this search pass
+  _searchWarnings = [];
+
   const slugs = inferTagSlugs(query);
 
   if (slugs.length > 0) {
@@ -296,60 +421,71 @@ async function searchEvents(query: string, limit: number): Promise<FormattedMark
       if (r.status !== 'fulfilled') continue;
       for (const m of r.value) {
         if (!seen.has(m.question)) { seen.add(m.question); combined.push(m); }
-        if (combined.length >= limit) return combined;
+        if (combined.length >= limit) break;
       }
+      if (combined.length >= limit) break;
     }
-    if (combined.length > 0) return combined;
+    if (combined.length > 0) {
+      setCache(key, combined);
+      return combined;
+    }
   }
 
   // Broad fallback: no tags inferred or tags returned 0 results.
   // Fetch top events globally and rely on text filter.
   try {
-    const params = new URLSearchParams({
-      limit: String(limit * 10),
-      active: 'true',
-      closed: 'false',
-      order: 'volume24hr',
-      ascending: 'false',
-    });
-    const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
-      headers: { 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) {
-      polymarketBreaker.onFailure();
-      throw new Error(`Polymarket API error: ${res.status}`);
-    }
-    polymarketBreaker.onSuccess();
-
-    const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
-    const results: FormattedMarket[] = [];
-    const seen = new Set<string>();
-    for (const event of events) {
-      if (!event.markets?.length) continue;
-      const titleMatches = questionMatchesQuery(event.title ?? '', query);
-      const sorted = [...event.markets]
-        .filter((m) => m.active && !m.closed)
-        .sort((a, b) => (b.volume24hr ?? 0) - (a.volume24hr ?? 0))
-        .slice(0, 2);
-      for (const m of sorted) {
-        if (!titleMatches && !questionMatchesQuery(m.question, query)) continue;
-        const fmt = formatMarket(m);
-        if (fmt && !seen.has(fmt.question)) {
-          seen.add(fmt.question);
-          results.push(fmt);
-        }
-        if (results.length >= limit) return results;
+    const results = await fetchWithRetry(async () => {
+      const params = new URLSearchParams({
+        limit: String(limit * 10),
+        active: 'true',
+        closed: 'false',
+        order: 'volume24hr',
+        ascending: 'false',
+      });
+      const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        polymarketBreaker.onFailure();
+        throw new Error(`Polymarket API error: ${res.status}`);
       }
-    }
+      polymarketBreaker.onSuccess();
+
+      const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
+      const out: FormattedMarket[] = [];
+      const seen = new Set<string>();
+      for (const event of events) {
+        if (!event.markets?.length) continue;
+        const titleMatches = questionMatchesQuery(event.title ?? '', query);
+        const sorted = [...event.markets]
+          .filter((m) => m.active && !m.closed)
+          .sort((a, b) => (b.volume24hr ?? 0) - (a.volume24hr ?? 0))
+          .slice(0, 2);
+        for (const m of sorted) {
+          if (!titleMatches && !questionMatchesQuery(m.question, query)) continue;
+          const fmt = formatMarket(m);
+          if (fmt && !seen.has(fmt.question)) {
+            seen.add(fmt.question);
+            out.push(fmt);
+          }
+          if (out.length >= limit) return out;
+        }
+      }
+      return out;
+    });
+
+    if (results.length > 0) setCache(key, results);
     return results;
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    _searchWarnings.push(`Global fallback fetch failed: ${msg}`);
     if (slugs.length === 0) throw err; // only re-throw if we had no tag results at all
     return [];
   }
 }
 
-function formatResults(markets: FormattedMarket[], query: string): string {
+function formatResults(markets: FormattedMarket[], query: string, warnings: string[]): string {
   if (markets.length === 0) {
     return `No active Polymarket prediction markets found for "${query}". Try broader keywords.`;
   }
@@ -368,7 +504,14 @@ function formatResults(markets: FormattedMarket[], query: string): string {
     if (m.endDate) meta.push(`expires ${m.endDate}`);
     if (m.volume24h !== '$0') meta.push(`24h vol ${m.volume24h}`);
     if (m.liquidity !== '$0') meta.push(`liquidity ${m.liquidity}`);
+    if (m.ageDays !== undefined) meta.push(`age ${m.ageDays}d`);
     if (meta.length) lines.push(`    ${meta.join(' · ')}`);
+    lines.push('');
+  }
+
+  if (warnings.length > 0) {
+    lines.push('⚠️  Data quality warnings:');
+    for (const w of warnings) lines.push(`  • ${w}`);
     lines.push('');
   }
 
@@ -387,6 +530,8 @@ export interface PolymarketMarketResult {
   probability: number;
   /** 24-hour trading volume in USD */
   volume24h: number;
+  /** Days since market was created (undefined if unavailable from API). */
+  ageDays: number | undefined;
 }
 
 function parseYesProbability(probs: Record<string, string>): number {
@@ -417,6 +562,7 @@ export async function fetchPolymarketMarkets(
     question: m.question,
     probability: parseYesProbability(m.probabilities),
     volume24h: parseVolumeStr(m.volume24h),
+    ageDays: m.ageDays,
   }));
 }
 
@@ -441,7 +587,8 @@ export const polymarketTool = new DynamicStructuredTool({
     }
     try {
       const markets = await searchEvents(query, limit);
-      return formatToolResult({ result: formatResults(markets, query) });
+      const warnings = drainSearchWarnings();
+      return formatToolResult({ result: formatResults(markets, query, warnings) });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return formatToolResult({ error: `Polymarket search failed: ${msg}` });

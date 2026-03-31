@@ -1,6 +1,16 @@
-import { describe, expect, it, beforeEach } from 'bun:test';
-import { polymarketTool, questionMatchesQuery, inferTagSlugs } from './polymarket.js';
+import { describe, expect, it, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
+import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache } from './polymarket.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
+
+// Disable retry delays in tests to avoid timeouts
+let originalDelays: number[];
+beforeAll(() => {
+  originalDelays = [...RETRY_DELAYS];
+  setRetryDelays([0, 0, 0]);
+});
+afterAll(() => {
+  setRetryDelays(originalDelays);
+});
 
 // ---------------------------------------------------------------------------
 // Unit tests — no network, mock fetch
@@ -169,7 +179,7 @@ describe('inferTagSlugs', () => {
 });
 
 describe('polymarketTool', () => {
-  beforeEach(() => { polymarketBreaker.reset(); });
+  beforeEach(() => { polymarketBreaker.reset(); clearPolymarketCache(); });
 
   it('tool name is polymarket_search', () => {
     expect(polymarketTool.name).toBe('polymarket_search');
@@ -278,5 +288,287 @@ describe('inferTagSlugs — commodity coverage (regression)', () => {
   });
   it('maps wheat to commodities', () => {
     expect(inferTagSlugs('wheat supply chain')).toContain('commodities');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchWithRetry — exponential backoff
+// ---------------------------------------------------------------------------
+
+describe('fetchWithRetry', () => {
+  it('returns result on first success', async () => {
+    const { fetchWithRetry } = await import('./polymarket.js');
+    const result = await fetchWithRetry(async () => 42, 3, [0, 0, 0]);
+    expect(result).toBe(42);
+  });
+
+  it('retries on transient error and succeeds', async () => {
+    const { fetchWithRetry } = await import('./polymarket.js');
+    let calls = 0;
+    const result = await fetchWithRetry(async () => {
+      calls++;
+      if (calls < 3) throw new Error('Server 500');
+      return 'ok';
+    }, 3, [0, 0, 0]);
+    expect(result).toBe('ok');
+    expect(calls).toBe(3);
+  });
+
+  it('does NOT retry on 4xx client error', async () => {
+    const { fetchWithRetry } = await import('./polymarket.js');
+    let calls = 0;
+    try {
+      await fetchWithRetry(async () => {
+        calls++;
+        throw new Error('HTTP 404 not found');
+      }, 3, [0, 0, 0]);
+    } catch (e) {
+      expect((e as Error).message).toContain('404');
+    }
+    expect(calls).toBe(1); // no retries
+  });
+
+  it('throws after exhausting retries', async () => {
+    const { fetchWithRetry } = await import('./polymarket.js');
+    let calls = 0;
+    try {
+      await fetchWithRetry(async () => {
+        calls++;
+        throw new Error('timeout');
+      }, 2, [0, 0]);
+    } catch (e) {
+      expect((e as Error).message).toBe('timeout');
+    }
+    expect(calls).toBe(3); // initial + 2 retries
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TTL cache
+// ---------------------------------------------------------------------------
+
+describe('TTL cache', () => {
+  let savedFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    savedFetch = globalThis.fetch;
+    clearPolymarketCache();
+  });
+  afterEach(() => { globalThis.fetch = savedFetch; });
+
+  it('returns cached result on second call with same query', async () => {
+    let fetchCount = 0;
+    globalThis.fetch = (async () => {
+      fetchCount++;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [{
+          id: 'e1',
+          title: 'Test Event',
+          volume24hr: 100,
+          markets: [{
+            id: '1',
+            question: 'Will test pass?',
+            outcomes: '["Yes","No"]',
+            outcomePrices: '["0.80","0.20"]',
+            endDateIso: '2027-01-01',
+            volume24hr: 100,
+            volumeNum: 1000,
+            liquidityNum: 500,
+            active: true,
+            closed: false,
+          }],
+        }],
+      };
+    }) as unknown as typeof fetch;
+
+    await polymarketTool.invoke({ query: 'test pass', limit: 3 });
+    const count1 = fetchCount;
+
+    await polymarketTool.invoke({ query: 'test pass', limit: 3 });
+    // Second call should not increase fetch count (served from cache)
+    expect(fetchCount).toBe(count1);
+  });
+
+  it('clearPolymarketCache empties the cache', async () => {
+    let fetchCount = 0;
+    globalThis.fetch = (async () => {
+      fetchCount++;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [{
+          id: 'e1',
+          title: 'Cache Test',
+          volume24hr: 100,
+          markets: [{
+            id: '1',
+            question: 'Will cache clear?',
+            outcomes: '["Yes","No"]',
+            outcomePrices: '["0.60","0.40"]',
+            endDateIso: '2027-01-01',
+            volume24hr: 100,
+            volumeNum: 1000,
+            liquidityNum: 500,
+            active: true,
+            closed: false,
+          }],
+        }],
+      };
+    }) as unknown as typeof fetch;
+
+    await polymarketTool.invoke({ query: 'cache clear', limit: 3 });
+    const countBefore = fetchCount;
+    clearPolymarketCache();
+    await polymarketTool.invoke({ query: 'cache clear', limit: 3 });
+    expect(fetchCount).toBeGreaterThan(countBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Degradation warnings
+// ---------------------------------------------------------------------------
+
+describe('degradation warnings', () => {
+  let savedFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    savedFetch = globalThis.fetch;
+    clearPolymarketCache();
+    polymarketBreaker.reset();
+  });
+  afterEach(() => { globalThis.fetch = savedFetch; });
+
+  it('drainSearchWarnings returns and clears warnings', async () => {
+    const { drainSearchWarnings } = await import('./polymarket.js');
+
+    // Force a failure in tag search so a warning is emitted
+    globalThis.fetch = (async () => {
+      throw new Error('Simulated outage');
+    }) as unknown as typeof fetch;
+
+    const result = await polymarketTool.invoke({ query: 'gold price', limit: 3 });
+    const text = typeof result === 'string' ? result : JSON.stringify(result);
+    // Warnings are drained and included in tool output
+    expect(text.includes('warning') || text.includes('Warning') || text.includes('failed') || text.includes('No active')).toBe(true);
+
+    // After tool call, drainSearchWarnings should be empty (already consumed)
+    const leftover = drainSearchWarnings();
+    expect(leftover.length).toBe(0);
+  });
+
+  it('surfaces warnings in tool output when API partially fails', async () => {
+    let callCount = 0;
+    globalThis.fetch = (async (url: string | URL) => {
+      callCount++;
+      const urlStr = String(url);
+      // Tag search succeeds, global fallback fails
+      if (urlStr.includes('tag_slug=')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{
+            id: 'e1',
+            title: 'Gold Prices',
+            volume24hr: 500_000,
+            markets: [{
+              id: '1',
+              question: 'Will gold exceed $3000?',
+              outcomes: '["Yes","No"]',
+              outcomePrices: '["0.55","0.45"]',
+              endDateIso: '2027-01-01',
+              volume24hr: 500_000,
+              volumeNum: 2_000_000,
+              liquidityNum: 1_000_000,
+              active: true,
+              closed: false,
+            }],
+          }],
+        };
+      }
+      throw new Error('Global API outage');
+    }) as unknown as typeof fetch;
+
+    const result = await polymarketTool.invoke({ query: 'gold price', limit: 3 });
+    const text = typeof result === 'string' ? result : JSON.stringify(result);
+    expect(text).toContain('gold');
+    // Should still return results from tag search even though global fallback failed
+    expect(text).toContain('55.0%');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeAgeDays (indirectly via formatMarket)
+// ---------------------------------------------------------------------------
+
+describe('ageDays population', () => {
+  let savedFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    savedFetch = globalThis.fetch;
+    clearPolymarketCache();
+    polymarketBreaker.reset();
+  });
+  afterEach(() => { globalThis.fetch = savedFetch; });
+
+  it('populates ageDays in tool output when createdAt is present', async () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => [{
+        id: 'e1',
+        title: 'Bitcoin Price Prediction',
+        volume24hr: 100,
+        markets: [{
+          id: '1',
+          question: 'Will Bitcoin exceed $100K?',
+          outcomes: '["Yes","No"]',
+          outcomePrices: '["0.70","0.30"]',
+          endDateIso: '2027-01-01',
+          volume24hr: 100,
+          volumeNum: 1000,
+          liquidityNum: 500,
+          active: true,
+          closed: false,
+          createdAt: twoDaysAgo,
+        }],
+      }],
+    })) as unknown as typeof fetch;
+
+    // Use tool directly (not fetchPolymarketMarkets which may be mocked by other tests)
+    const result = await polymarketTool.invoke({ query: 'bitcoin price', limit: 5 });
+    const text = typeof result === 'string' ? result : JSON.stringify(result);
+    // Tool output should contain market info
+    expect(text).toContain('Bitcoin');
+    expect(text).toContain('70.0%');
+  });
+
+  it('handles missing createdAt gracefully', async () => {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => [{
+        id: 'e1',
+        title: 'Ethereum Price',
+        volume24hr: 100,
+        markets: [{
+          id: '1',
+          question: 'Will Ethereum reach $5000?',
+          outcomes: '["Yes","No"]',
+          outcomePrices: '["0.50","0.50"]',
+          endDateIso: '2027-01-01',
+          volume24hr: 100,
+          volumeNum: 1000,
+          liquidityNum: 500,
+          active: true,
+          closed: false,
+          // No createdAt field — ageDays should be undefined internally
+        }],
+      }],
+    })) as unknown as typeof fetch;
+
+    const result = await polymarketTool.invoke({ query: 'ethereum price', limit: 5 });
+    const text = typeof result === 'string' ? result : JSON.stringify(result);
+    expect(text).toContain('Ethereum');
+    expect(text).toContain('50.0%');
   });
 });

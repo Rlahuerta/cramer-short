@@ -229,7 +229,7 @@ export const polymarketForecastTool = new DynamicStructuredTool({
 
       // Deduplicate by question string
       const seen = new Set<string>();
-      const rawMarkets: { question: string; probability: number; volume24h: number; signalCategory: string }[] = [];
+      const rawMarkets: { question: string; probability: number; volume24h: number; ageDays: number | undefined; signalCategory: string }[] = [];
       for (let i = 0; i < signals.length; i++) {
         const result = allResults[i];
         if (result.status !== 'fulfilled') continue;
@@ -248,7 +248,7 @@ export const polymarketForecastTool = new DynamicStructuredTool({
           question: m.question,
           probability: m.probability,
           volume24hUsd: m.volume24h,
-          ageDays: undefined,
+          ageDays: m.ageDays,
           priceSpikeDetected: false,
           signalTier: categoryToTier(m.signalCategory),
           deltaYes: mImpact.deltaYes,
