@@ -102,6 +102,31 @@ export interface TrajectoryPoint {
   regime: RegimeState;
 }
 
+/** A single scenario bucket in the probability distribution (e.g., "Down >5%"). */
+export interface ScenarioBucket {
+  /** Human-readable label, e.g., "Down >5%", "Flat ±3%", "Up 3-5%" */
+  label: string;
+  /** Probability mass in this bucket (0–1), derived from the calibrated CDF */
+  probability: number;
+  /** Price range boundaries [low, high]. null means unbounded in that direction. */
+  priceRange: [number | null, number | null];
+}
+
+/**
+ * Pre-computed scenario probabilities derived FROM the calibrated CDF distribution.
+ * These are guaranteed to be consistent with the P(>Price) table and sum to ~100%.
+ */
+export interface ScenarioProbabilities {
+  /** Scenario buckets: Down >5%, Down 3-5%, Flat ±3%, Up 3-5%, Up >5% */
+  buckets: ScenarioBucket[];
+  /** Expected price at horizon (from calibrated distribution median) */
+  expectedPrice: number;
+  /** Expected return as decimal, e.g., 0.006 for +0.6% */
+  expectedReturn: number;
+  /** P(price > currentPrice) from the calibrated CDF */
+  pUp: number;
+}
+
 export interface MarkovDistributionResult {
   ticker: string;
   currentPrice: number;
@@ -111,6 +136,12 @@ export interface MarkovDistributionResult {
   rawDistribution: MarkovDistributionPoint[];
   /** Actionable Buy / Hold / Sell signal derived from the distribution. */
   actionSignal: ActionSignal;
+  /**
+   * Pre-computed scenario probabilities derived from the calibrated CDF.
+   * Use these instead of computing scenarios independently — they are
+   * guaranteed to be consistent with the distribution[] P(>Price) table.
+   */
+  scenarios: ScenarioProbabilities;
   /**
    * Prediction confidence score (0–1). Higher values indicate the model is more
    * decisive and historically more accurate. Combines:
@@ -1919,6 +1950,68 @@ export function interpolateSurvival(
 }
 
 /**
+ * Compute scenario probability buckets from the calibrated CDF distribution.
+ * Buckets: Down >5%, Down 3–5%, Flat ±3%, Up 3–5%, Up >5%.
+ * All probabilities are derived from `interpolateSurvival()` to guarantee
+ * consistency with the P(>Price) table. Bucket probabilities sum to ~1.0.
+ */
+export function computeScenarioProbabilities(
+  distribution: MarkovDistributionPoint[],
+  currentPrice: number,
+): ScenarioProbabilities {
+  // Threshold prices
+  const down5  = currentPrice * 0.95;
+  const down3  = currentPrice * 0.97;
+  const up3    = currentPrice * 1.03;
+  const up5    = currentPrice * 1.05;
+
+  // Read survival probabilities from the CDF
+  const pAboveDown5  = interpolateSurvival(distribution, down5);
+  const pAboveDown3  = interpolateSurvival(distribution, down3);
+  const pAboveUp3    = interpolateSurvival(distribution, up3);
+  const pAboveUp5    = interpolateSurvival(distribution, up5);
+
+  // Derive bucket probabilities (all from the same CDF, guaranteed consistent)
+  const pDownOver5  = 1.0 - pAboveDown5;         // P(price < down5)
+  const pDown3to5   = pAboveDown5 - pAboveDown3;  // P(down5 ≤ price < down3)
+  const pFlat       = pAboveDown3 - pAboveUp3;    // P(down3 ≤ price ≤ up3)
+  const pUp3to5     = pAboveUp3 - pAboveUp5;      // P(up3 < price ≤ up5)
+  const pUpOver5    = pAboveUp5;                   // P(price > up5)
+
+  // P(up) from calibrated CDF
+  const pUp = interpolateSurvival(distribution, currentPrice);
+
+  // Expected return via trapezoidal integration of the survival function
+  // E[price] = currentPrice + ∫₀^∞ P(price > x) dx - ∫₋∞^0 P(price < x) dx
+  // Approximated by summing over distribution grid points
+  let expectedPrice = currentPrice;
+  if (distribution.length >= 2) {
+    let integral = 0;
+    for (let i = 0; i < distribution.length - 1; i++) {
+      const dx = distribution[i + 1].price - distribution[i].price;
+      const avgP = (distribution[i].probability + distribution[i + 1].probability) / 2;
+      integral += avgP * dx;
+    }
+    // E[price] = minPrice + integral (from survival function identity)
+    expectedPrice = distribution[0].price + integral;
+  }
+  const expectedReturn = (expectedPrice - currentPrice) / currentPrice;
+
+  return {
+    buckets: [
+      { label: 'Down >5%',  probability: Math.max(0, pDownOver5), priceRange: [null, Math.round(down5 * 100) / 100] },
+      { label: 'Down 3–5%', probability: Math.max(0, pDown3to5),  priceRange: [Math.round(down5 * 100) / 100, Math.round(down3 * 100) / 100] },
+      { label: 'Flat ±3%',  probability: Math.max(0, pFlat),      priceRange: [Math.round(down3 * 100) / 100, Math.round(up3 * 100) / 100] },
+      { label: 'Up 3–5%',   probability: Math.max(0, pUp3to5),    priceRange: [Math.round(up3 * 100) / 100, Math.round(up5 * 100) / 100] },
+      { label: 'Up >5%',    probability: Math.max(0, pUpOver5),   priceRange: [Math.round(up5 * 100) / 100, null] },
+    ],
+    expectedPrice: Math.round(expectedPrice * 100) / 100,
+    expectedReturn: Math.round(expectedReturn * 10000) / 10000,
+    pUp: Math.round(pUp * 1000) / 1000,
+  };
+}
+
+/**
  * Derive a Buy / Hold / Sell action signal from the probability distribution.
  *
  * Zones (relative to currentPrice):
@@ -2434,7 +2527,30 @@ export async function computeMarkovDistribution(params: {
       combinedDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
       recentDailyVol,
     );
+
+    // Align trajectory P(Up) with the calibrated CDF at the final day.
+    // The trajectory computes P(Up) independently (uncalibrated), which can
+    // diverge from the calibrated distribution. Override the final day and
+    // interpolate intermediate days to maintain monotone consistency.
+    if (trajectoryResult.length > 0) {
+      const calibratedPUpFinal = calPUp;
+      const lastIdx = trajectoryResult.length - 1;
+      const rawFinalPUp = trajectoryResult[lastIdx].pUp;
+      // Only override if they diverge by more than 2pp (avoid unnecessary perturbation)
+      if (Math.abs(rawFinalPUp - calibratedPUpFinal) > 0.02) {
+        for (let i = 0; i <= lastIdx; i++) {
+          // Linear interpolation from 0.5 (day 0) toward calibrated P(Up) at final day
+          const t = (i + 1) / (lastIdx + 1);
+          trajectoryResult[i].pUp = Math.round(
+            (0.5 + t * (calibratedPUpFinal - 0.5)) * 1000,
+          ) / 1000;
+        }
+      }
+    }
   }
+
+  // --- Scenario probabilities (derived from calibrated CDF) ---
+  const scenarios = computeScenarioProbabilities(distribution, currentPrice);
 
   return {
     ticker,
@@ -2445,6 +2561,7 @@ export async function computeMarkovDistribution(params: {
     actionSignal: computeActionSignal(distribution, currentPrice, undefined, undefined, horizon,
       recentDailyVol,
     ),
+    scenarios,
     predictionConfidence,
     trajectory: trajectoryResult,
     metadata: {
@@ -2613,7 +2730,25 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       whatToDo.push(`   Consider selling puts at $${fmt(lvl.stopLoss)} or calls at $${fmt(lvl.targetPrice)} to capture premium`);
     }
 
-    // --- Section 3: Header and metadata ---
+    // --- Section 3: Scenario Probability Table (derived from CDF) ---
+    const scenarioSection: string[] = [];
+    if (result.scenarios) {
+      const sc = result.scenarios;
+      scenarioSection.push('');
+      scenarioSection.push('📊 Scenario Probabilities (from calibrated distribution)');
+      scenarioSection.push('─'.repeat(60));
+      for (const b of sc.buckets) {
+        const pctStr = (b.probability * 100).toFixed(1).padStart(5);
+        const lo = b.priceRange[0] !== null ? `$${fmt(b.priceRange[0])}` : '     —';
+        const hi = b.priceRange[1] !== null ? `$${fmt(b.priceRange[1])}` : '—     ';
+        scenarioSection.push(`  ${b.label.padEnd(10)} ${pctStr}%   ${lo} – ${hi}`);
+      }
+      const expRetSign = sc.expectedReturn >= 0 ? '+' : '';
+      scenarioSection.push('');
+      scenarioSection.push(`  Expected: $${fmt(sc.expectedPrice)} (${expRetSign}${(sc.expectedReturn * 100).toFixed(1)}%)  |  P(up): ${(sc.pUp * 100).toFixed(1)}%`);
+    }
+
+    // --- Section 4: Header and metadata ---
     const header = [
       '',
       `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
@@ -2683,6 +2818,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       ...decisionCard,
       ...actionPlan,
       ...whatToDo,
+      ...scenarioSection,
       ...header,
       ...(warnings.length > 0 ? ['', ...warnings] : []),
       ...table,

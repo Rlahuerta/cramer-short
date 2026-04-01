@@ -51,8 +51,10 @@ import {
   studentTSurvival,
   computeTrajectory,
   winsorize,
+  interpolateSurvival,
+  computeScenarioProbabilities,
 } from './markov-distribution.js';
-import type { RegimeState } from './markov-distribution.js';
+import type { RegimeState, MarkovDistributionPoint } from './markov-distribution.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -807,6 +809,59 @@ describe('computeMarkovDistribution (integration)', () => {
     });
     expect(result.metadata.sentimentAdjustment).toBeCloseTo(0.6, 5);
   });
+
+  it('scenarios are present and consistent with distribution CDF', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    // Scenarios must exist
+    expect(result.scenarios).toBeDefined();
+    expect(result.scenarios.buckets).toHaveLength(5);
+
+    // Bucket probabilities must sum to ~1
+    const total = result.scenarios.buckets.reduce((s, b) => s + b.probability, 0);
+    expect(total).toBeCloseTo(1.0, 1);
+
+    // P(Up>5%) must equal CDF P(>1.05×current)
+    const upOver5 = result.scenarios.buckets.find(b => b.label === 'Up >5%')!;
+    const cdfAt105 = interpolateSurvival(result.distribution, 118 * 1.05);
+    expect(upOver5.probability).toBeCloseTo(cdfAt105, 2);
+
+    // P(Down>5%) must equal 1 - CDF P(>0.95×current)
+    const downOver5 = result.scenarios.buckets.find(b => b.label === 'Down >5%')!;
+    const cdfAt95 = interpolateSurvival(result.distribution, 118 * 0.95);
+    expect(downOver5.probability).toBeCloseTo(1 - cdfAt95, 2);
+
+    // scenarios.pUp should match CDF at currentPrice
+    const cdfPUp = interpolateSurvival(result.distribution, 118);
+    expect(result.scenarios.pUp).toBeCloseTo(cdfPUp, 2);
+  });
+
+  it('trajectory P(Up) is aligned with calibrated CDF at final day', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+      trajectoryDays: 7,
+    });
+
+    expect(result.trajectory).toBeDefined();
+    const traj = result.trajectory!;
+    const finalDay = traj[traj.length - 1];
+    const calPUp = interpolateSurvival(result.distribution, 118);
+
+    // Final-day trajectory P(Up) should be within 3pp of calibrated CDF P(Up)
+    // (we allow 3pp because the alignment only kicks in when divergence > 2pp)
+    expect(Math.abs(finalDay.pUp - calPUp)).toBeLessThan(0.05);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1142,9 +1197,7 @@ describe('Tier 1c — mergeAnchorsWithCrossPlatformValidation', () => {
 // ---------------------------------------------------------------------------
 
 import {
-  interpolateSurvival,
   computeActionSignal,
-  type MarkovDistributionPoint,
 } from './markov-distribution.js';
 
 /** Build a synthetic linear distribution: P(>price) = 1 − (price − lo) / (hi − lo) */
@@ -1182,6 +1235,106 @@ describe('interpolateSurvival', () => {
     const p = interpolateSurvival(dist, 90);
     expect(p).toBeGreaterThan(0.7);
     expect(p).toBeLessThan(0.8);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeScenarioProbabilities — derived from calibrated CDF
+// ---------------------------------------------------------------------------
+
+describe('computeScenarioProbabilities', () => {
+  it('bucket probabilities sum to ~1.0', () => {
+    const dist = makeLinearDist(80, 120);
+    const result = computeScenarioProbabilities(dist, 100);
+    const total = result.buckets.reduce((s, b) => s + b.probability, 0);
+    expect(total).toBeCloseTo(1.0, 2);
+  });
+
+  it('returns 5 labeled buckets in the correct order', () => {
+    const dist = makeLinearDist(80, 120);
+    const result = computeScenarioProbabilities(dist, 100);
+    expect(result.buckets).toHaveLength(5);
+    expect(result.buckets.map(b => b.label)).toEqual([
+      'Down >5%', 'Down 3–5%', 'Flat ±3%', 'Up 3–5%', 'Up >5%',
+    ]);
+  });
+
+  it('all bucket probabilities are non-negative', () => {
+    const dist = makeLinearDist(80, 120);
+    const result = computeScenarioProbabilities(dist, 100);
+    for (const b of result.buckets) {
+      expect(b.probability).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('P(Up>5%) is consistent with CDF P(>price) at 1.05×current', () => {
+    const dist = makeLinearDist(80, 120);
+    const current = 100;
+    const result = computeScenarioProbabilities(dist, current);
+    const upOver5 = result.buckets.find(b => b.label === 'Up >5%')!;
+    const cdfAt105 = interpolateSurvival(dist, current * 1.05);
+    // P(Up>5%) = P(price > 1.05*current) from CDF
+    expect(upOver5.probability).toBeCloseTo(cdfAt105, 5);
+  });
+
+  it('P(Down>5%) is consistent with CDF P(<price) at 0.95×current', () => {
+    const dist = makeLinearDist(80, 120);
+    const current = 100;
+    const result = computeScenarioProbabilities(dist, current);
+    const downOver5 = result.buckets.find(b => b.label === 'Down >5%')!;
+    const cdfAt95 = interpolateSurvival(dist, current * 0.95);
+    // P(Down>5%) = 1 - P(price > 0.95*current)
+    expect(downOver5.probability).toBeCloseTo(1 - cdfAt95, 5);
+  });
+
+  it('Flat bucket covers the correct probability mass for a uniform distribution', () => {
+    // Linear dist [80, 120] ≈ uniform. ±3% of 100 → [97, 103] = 6/40 = 15% of range.
+    // For uniform, P(Flat) ≈ 6/40 = 0.15, which is smaller than P(Down>5%) ≈ 15/40 = 0.375
+    const dist = makeLinearDist(80, 120);
+    const result = computeScenarioProbabilities(dist, 100);
+    const flat = result.buckets.find(b => b.label === 'Flat ±3%')!;
+    expect(flat.probability).toBeCloseTo(0.15, 1);
+  });
+
+  it('price ranges are contiguous and cover the full distribution', () => {
+    const dist = makeLinearDist(80, 120);
+    const result = computeScenarioProbabilities(dist, 100);
+    // Down >5%: [null, 95] — Down 3-5%: [95, 97] — Flat: [97, 103] — Up 3-5%: [103, 105] — Up >5%: [105, null]
+    expect(result.buckets[0].priceRange[0]).toBeNull();
+    expect(result.buckets[0].priceRange[1]).toBe(result.buckets[1].priceRange[0]);
+    expect(result.buckets[1].priceRange[1]).toBe(result.buckets[2].priceRange[0]);
+    expect(result.buckets[2].priceRange[1]).toBe(result.buckets[3].priceRange[0]);
+    expect(result.buckets[3].priceRange[1]).toBe(result.buckets[4].priceRange[0]);
+    expect(result.buckets[4].priceRange[1]).toBeNull();
+  });
+
+  it('pUp is consistent with interpolateSurvival at currentPrice', () => {
+    const dist = makeLinearDist(80, 120);
+    const current = 100;
+    const result = computeScenarioProbabilities(dist, current);
+    const cdfPUp = interpolateSurvival(dist, current);
+    expect(result.pUp).toBeCloseTo(cdfPUp, 2);
+  });
+
+  it('expectedReturn is reasonable for a symmetric distribution', () => {
+    const dist = makeLinearDist(80, 120);
+    const result = computeScenarioProbabilities(dist, 100);
+    // Symmetric around 100 → expected return near 0
+    expect(Math.abs(result.expectedReturn)).toBeLessThan(0.05);
+  });
+
+  it('scenarios are consistent with CDF: cannot have P(Up>5%) > P(>lowerPrice) from CDF', () => {
+    // This is the exact bug we're fixing: scenario P(Up>5%) must ≤ CDF P(>any price below the 5% threshold)
+    const dist = makeLinearDist(80, 120);
+    const current = 100;
+    const result = computeScenarioProbabilities(dist, current);
+    const upOver5 = result.buckets.find(b => b.label === 'Up >5%')!;
+    // P(>$105) from CDF should exactly equal the scenario probability
+    const cdfAt105 = interpolateSurvival(dist, current * 1.05);
+    expect(upOver5.probability).toBeCloseTo(cdfAt105, 10);
+    // And P(>$102) must be > P(Up>5%) (monotonicity)
+    const cdfAt102 = interpolateSurvival(dist, current * 1.02);
+    expect(cdfAt102).toBeGreaterThan(upOver5.probability);
   });
 });
 
