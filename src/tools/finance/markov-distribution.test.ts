@@ -335,6 +335,54 @@ describe('extractPriceThresholds', () => {
     ]);
     expect(result.map(r => r.price)).toEqual([60_000, 70_000, 80_000]);
   });
+
+  it('inverts probability for "fall below" markets to P(>price)', () => {
+    // "Will gold fall below $4,200?" at P=0.31 means P(<4200) = 0.31*0.95
+    // So P(>4200) = 1 - 0.31*0.95 = 0.7055
+    const result = extractPriceThresholds([
+      { question: 'Will gold fall below $4,200 by end of June?', probability: 0.31, volume: 1000, createdAt: Date.now() - 7 * 24 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].price).toBe(4200);
+    expect(result[0].probability).toBeCloseTo(1 - 0.31 * 0.95, 4); // inverted
+    expect(result[0].probability).toBeGreaterThan(0.50); // must be P(above), which is high
+  });
+
+  it('inverts probability for "drop below" markets', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will BTC drop below $50,000?', probability: 0.20, volume: 500, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].price).toBe(50_000);
+    // P(<50K)=0.20*0.95=0.19, so P(>50K)=1-0.19=0.81
+    expect(result[0].probability).toBeCloseTo(1 - 0.20 * 0.95, 4);
+    expect(result[0].probability).toBeGreaterThan(0.70);
+  });
+
+  it('does NOT invert probability for "exceed" markets', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will gold exceed $5,500?', probability: 0.40, volume: 1000, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].probability).toBeCloseTo(0.40 * 0.95, 4); // NOT inverted
+    expect(result[0].probability).toBeLessThan(0.50);
+  });
+
+  it('handles mixed above/below markets for the same asset', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will gold exceed $5,500 by June?', probability: 0.40, volume: 1000, createdAt: Date.now() - 72 * 3600_000 },
+      { question: 'Will gold fall below $4,200 by June?', probability: 0.30, volume: 800, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(2);
+    // $4,200 (below market): P(>4200) = 1 - 0.30*0.95 = 0.715
+    const low = result.find(r => r.price === 4200)!;
+    expect(low.probability).toBeCloseTo(1 - 0.30 * 0.95, 4);
+    // $5,500 (above market): P(>5500) = 0.40*0.95 = 0.38
+    const high = result.find(r => r.price === 5500)!;
+    expect(high.probability).toBeCloseTo(0.40 * 0.95, 4);
+    // CDF monotonicity: P(>4200) > P(>5500)
+    expect(low.probability).toBeGreaterThan(high.probability);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3264,6 +3312,20 @@ describe('normalizeAnchorPricesForETF', () => {
     const result = normalizeAnchorPricesForETF(anchors, 415, 'GLD');
     expect(result[0].trustScore).toBe('high');
     expect(result[0].probability).toBe(0.42);
+  });
+
+  it('uses correct median for even-length anchor arrays', () => {
+    // 4 anchors: [4200, 4700, 5500, 6000] → median = (4700+5500)/2 = 5100
+    // conversionFactor = 430 / 5100 = 0.08431
+    const anchors = [makeAnchor(4200), makeAnchor(4700), makeAnchor(5500), makeAnchor(6000)];
+    const result = normalizeAnchorPricesForETF(anchors, 430, 'GLD');
+    // With median=5100: $4700 → 4700*(430/5100) ≈ $396.47
+    // With wrong median=5500 (old code): $4700 → 4700*(430/5500) ≈ $367.27
+    const converted4700 = result.find(a => a.price > 390 && a.price < 405);
+    expect(converted4700).toBeDefined();
+    // $5500 should NOT map to exactly current price (that was the bug)
+    const converted5500 = result.find(a => Math.abs(a.price - 430) < 5);
+    expect(converted5500).toBeUndefined(); // No anchor should land exactly at current price
   });
 });
 

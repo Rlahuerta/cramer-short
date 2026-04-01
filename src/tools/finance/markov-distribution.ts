@@ -443,9 +443,8 @@ export function getAssetProfile(ticker: string): AssetProfile {
 // 1. extractPriceThresholds
 // ---------------------------------------------------------------------------
 
-const PRICE_PATTERNS = [
+const ABOVE_PATTERNS = [
   /(?:exceed|above|over|surpass)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
-  /(?:below|under|drop\s*(?:below|to))\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
   /(?:reach|hit)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
   /\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)\s*(?:or\s*(?:higher|above|more))/i,
   // Commodity-specific patterns (per barrel, per ounce, etc.)
@@ -453,6 +452,11 @@ const PRICE_PATTERNS = [
   /(?:at|to|past)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
   // Plain price reference: "oil $150" or "gold $3000"
   /(?:oil|crude|gold|silver|bitcoin|btc|eth)\s+\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
+];
+
+const BELOW_PATTERNS = [
+  /(?:fall|drop|decline|decrease|sink|dip)s?\s*(?:below|under|to)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
+  /(?:below|under|less\s*than)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
 ];
 
 /** Parse a price string like "$70K" or "$1,234.56" into a number. */
@@ -480,11 +484,26 @@ export function extractPriceThresholds(
 
   for (const market of markets) {
     let matched: number | null = null;
-    for (const pattern of PRICE_PATTERNS) {
+    let isBelow = false;
+
+    // Try "below" patterns first (more specific)
+    for (const pattern of BELOW_PATTERNS) {
       const m = market.question.match(pattern);
       if (m) {
         matched = parsePrice(m[1]);
+        isBelow = true;
         break;
+      }
+    }
+    // Then try "above" patterns
+    if (matched === null) {
+      for (const pattern of ABOVE_PATTERNS) {
+        const m = market.question.match(pattern);
+        if (m) {
+          matched = parsePrice(m[1]);
+          isBelow = false;
+          break;
+        }
       }
     }
     if (matched === null) continue;
@@ -500,10 +519,17 @@ export function extractPriceThresholds(
     const trustScore: 'high' | 'low' = isYoung || !hasVolume ? 'low' : 'high';
 
     const rawProbability = market.probability;
+    const correctedRaw = rawProbability * YES_BIAS_MULTIPLIER;
+
+    // Convert to survival probability P(> price):
+    // "exceed/above $X" at P=p → P(> X) = p
+    // "fall below $X" at P=p → P(< X) = p → P(> X) = 1 - p
+    const survivalProb = isBelow ? (1 - correctedRaw) : correctedRaw;
+
     const corrected: PriceThreshold = {
       price: matched,
       rawProbability,
-      probability: rawProbability * YES_BIAS_MULTIPLIER,
+      probability: Math.max(0, Math.min(1, survivalProb)),
       trustScore,
       source: 'polymarket',
     };
@@ -545,9 +571,12 @@ export function normalizeAnchorPricesForETF(
   ]);
   if (!commodityETFs.has(ticker.toUpperCase())) return anchors;
 
-  // Compute median anchor price
+  // Compute median anchor price (proper average for even-length arrays)
   const sorted = [...anchors].sort((a, b) => a.price - b.price);
-  const medianAnchor = sorted[Math.floor(sorted.length / 2)].price;
+  const mid = Math.floor(sorted.length / 2);
+  const medianAnchor = sorted.length % 2 === 1
+    ? sorted[mid].price
+    : (sorted[mid - 1].price + sorted[mid].price) / 2;
 
   // Only convert if anchors are clearly in a different price scale (>3× current)
   if (medianAnchor <= currentPrice * 3) return anchors;
@@ -2480,6 +2509,19 @@ export async function computeMarkovDistribution(params: {
     polymarketAnchors, currentPrice, ticker,
   );
 
+  // Filter uninformative anchors:
+  // 1. Trivially-true anchors: price well below current with P≈1 (e.g., "gold stays above $3,000")
+  // 2. Trivially-false anchors: price well above current with P≈0
+  // These carry no predictive signal — they just confirm what the current price already implies.
+  polymarketAnchors = polymarketAnchors.filter(a => {
+    const dist = (a.price - currentPrice) / currentPrice;
+    // Anchor below current price with very high survival prob → trivially true
+    if (dist < -0.05 && a.probability > 0.90) return false;
+    // Anchor far above current price with very low survival prob → trivially false
+    if (dist > 0.50 && a.probability < 0.05) return false;
+    return true;
+  });
+
   if (params.kalshiAnchors && params.kalshiAnchors.length > 0) {
     const merged = mergeAnchorsWithCrossPlatformValidation(polymarketAnchors, params.kalshiAnchors);
     polymarketAnchors = merged.anchors;
@@ -2965,6 +3007,12 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       scenarioSection.push(`  Expected: $${fmt(sc.expectedPrice)} (${expRetSign}${(sc.expectedReturn * 100).toFixed(1)}%)  |  P(up): ${(sc.pUp * 100).toFixed(1)}%`);
     }
 
+    // --- Section 3b: Methodology note ---
+    const anchorCount = m.polymarketAnchors;
+    const methodNote = anchorCount > 0
+      ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history) blended with ${anchorCount} Polymarket anchor(s). Probabilities from calibrated survival function with Monte Carlo confidence intervals.`
+      : `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history). Probabilities from calibrated survival function with Monte Carlo confidence intervals. No prediction market anchors available.`;
+
     // --- Section 4: Header and metadata ---
     const header = [
       '',
@@ -3036,6 +3084,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       ...actionPlan,
       ...whatToDo,
       ...scenarioSection,
+      '',
+      methodNote,
       ...header,
       ...(warnings.length > 0 ? ['', ...warnings] : []),
       ...table,
