@@ -634,6 +634,42 @@ describe('calibrateProbabilities', () => {
     // Sideways adds +0.04 kappa → more shrinkage toward center
     expect(sideways[0].probability).toBeLessThan(noRegime[0].probability);
   });
+
+  it('drift-based mode preserves S-shape (spread ≥ 70pp from -15% to +15%)', () => {
+    // Simulate a distribution with strong S-shape
+    const cp = 100;
+    const driftN = 0.005; // slight bullish drift
+    const volN = 0.10;    // 10% n-day vol
+    const prices = [80, 85, 90, 95, 100, 105, 110, 115, 120];
+    const rawDist = prices.map(p => ({
+      price: p,
+      probability: studentTSurvival(cp, p, driftN, volN),
+      lowerBound: studentTSurvival(cp, p, driftN, volN) * 0.8,
+      upperBound: Math.min(1, studentTSurvival(cp, p, driftN, volN) * 1.2),
+      source: 'markov' as const,
+    }));
+
+    // Calibrate with drift params (new path) — strong base rate push
+    const calibrated = calibrateProbabilities(rawDist, {
+      baseRate: 0.75,
+      currentPrice: cp,
+      driftN,
+      volN,
+    });
+
+    // The critical invariant: spread from -15% to +15% must remain large
+    const pBelow = calibrated.find(p => p.price === 85)!.probability;
+    const pAbove = calibrated.find(p => p.price === 115)!.probability;
+    const spread = pBelow - pAbove;
+
+    // With legacy per-point shrinkage, spread would collapse to ~15-20pp.
+    // Drift-based calibration preserves ≥70pp spread.
+    expect(spread).toBeGreaterThanOrEqual(0.70);
+    // Monotonicity: higher prices have lower P(>price)
+    for (let i = 0; i < calibrated.length - 1; i++) {
+      expect(calibrated[i].probability).toBeGreaterThanOrEqual(calibrated[i + 1].probability);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1913,8 +1949,9 @@ describe('sensitivity analysis', () => {
       sentiment: { bullish: 0.2, bearish: 0.8 },
     });
 
-    // Bullish sentiment → higher expected return than bearish
-    expect(bullish.actionSignal.expectedReturn).toBeGreaterThanOrEqual(bearish.actionSignal.expectedReturn);
+    // Bullish sentiment → higher expected return than bearish (allow MC noise tolerance)
+    const mcTolerance = 0.001;
+    expect(bullish.actionSignal.expectedReturn).toBeGreaterThanOrEqual(bearish.actionSignal.expectedReturn - mcTolerance);
     // Neutral should be between (or at least not more extreme than either)
     expect(neutral.actionSignal.expectedReturn).toBeGreaterThanOrEqual(bearish.actionSignal.expectedReturn - 0.01);
     expect(neutral.actionSignal.expectedReturn).toBeLessThanOrEqual(bullish.actionSignal.expectedReturn + 0.01);

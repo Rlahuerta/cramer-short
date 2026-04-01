@@ -1193,6 +1193,25 @@ export function studentTCDF(x: number, nu: number): number {
 }
 
 /**
+ * Inverse Student-t CDF via bisection: find x such that CDF(x, nu) = p.
+ * Used for drift-based calibration to convert a target P(up) into a drift value.
+ */
+export function inverseStudentTCDF(p: number, nu: number): number {
+  if (p <= 0) return -50;
+  if (p >= 1) return 50;
+  if (Math.abs(p - 0.5) < 1e-12) return 0;
+  let lo = -50, hi = 50;
+  for (let iter = 0; iter < 100; iter++) {
+    const mid = (lo + hi) / 2;
+    const cdf = studentTCDF(mid, nu);
+    if (cdf < p) lo = mid;
+    else hi = mid;
+    if (hi - lo < 1e-10) break;
+  }
+  return (lo + hi) / 2;
+}
+
+/**
  * Fat-tailed survival function: P(price > X) using Student-t distribution.
  * Same interface as logNormalSurvival but uses Student-t with `nu` degrees
  * of freedom (default 5, typical for daily equity returns).
@@ -1231,6 +1250,47 @@ function singleMarkovWalk(
   // Use the n-step transition row for the initial state
   const Pn = matPow(P, n);
   return Pn[initialStateIdx];
+}
+
+/**
+ * Compute the effective n-step drift and volatility from the Markov chain.
+ * Extracted so both interpolateDistribution and calibration logic can reuse it.
+ */
+export function computeHorizonDriftVol(
+  horizon: number,
+  P: TransitionMatrix,
+  regimeStats: Record<RegimeState, RegimeStats>,
+  initialState: RegimeState,
+  momentumAdjustment = 0,
+  hmmOverride?: { drift: number; vol: number; weight: number },
+): { mu_n: number; sigma_n: number } {
+  const Pn = matPow(P, horizon);
+  const stateWeights = Pn[STATE_INDEX[initialState]];
+
+  const mu_obs = REGIME_STATES.reduce(
+    (s, state, i) => s + stateWeights[i] * regimeStats[state].meanReturn, 0,
+  );
+  const sigma_obs = Math.sqrt(
+    REGIME_STATES.reduce(
+      (s, state, i) => s + stateWeights[i] * regimeStats[state].stdReturn ** 2, 0,
+    ),
+  );
+
+  let mu_eff: number;
+  let sigma_eff: number;
+  if (hmmOverride) {
+    const w = hmmOverride.weight;
+    mu_eff = w * hmmOverride.drift + (1 - w) * mu_obs;
+    sigma_eff = w * hmmOverride.vol + (1 - w) * sigma_obs;
+  } else {
+    mu_eff = mu_obs;
+    sigma_eff = sigma_obs;
+  }
+
+  return {
+    mu_n: horizon * (mu_eff + momentumAdjustment),
+    sigma_n: sigma_eff * Math.sqrt(horizon),
+  };
 }
 
 /**
@@ -1286,36 +1346,11 @@ export function interpolateDistribution(
   prices.sort((a, b) => a - b);
 
   const mixWeight = computeMixingWeight(secondEigenvalue, horizon);
-  const initialIdx = STATE_INDEX[initialState];
 
-  // n-step transition row for initial state
-  const Pn = matPow(P, horizon);
-  const stateWeights = Pn[initialIdx];
-
-  // Compute regime-weighted drift and vol (observable Markov)
-  const mu_obs = REGIME_STATES.reduce(
-    (s, state, i) => s + stateWeights[i] * regimeStats[state].meanReturn, 0,
+  // Compute regime-weighted drift and vol via shared helper
+  const { mu_n, sigma_n } = computeHorizonDriftVol(
+    horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride,
   );
-  const sigma_obs = Math.sqrt(
-    REGIME_STATES.reduce(
-      (s, state, i) => s + stateWeights[i] * regimeStats[state].stdReturn ** 2, 0,
-    ),
-  );
-
-  // Blend HMM forecast with observable Markov when available
-  let mu_eff: number;
-  let sigma_eff: number;
-  if (hmmOverride) {
-    const w = hmmOverride.weight; // HMM weight (0..1)
-    mu_eff = w * hmmOverride.drift + (1 - w) * mu_obs;
-    sigma_eff = w * hmmOverride.vol + (1 - w) * sigma_obs;
-  } else {
-    mu_eff = mu_obs;
-    sigma_eff = sigma_obs;
-  }
-
-  const mu_n    = horizon * (mu_eff + momentumAdjustment);
-  const sigma_n = sigma_eff * Math.sqrt(horizon);
 
   // Nearest anchor lookup helper
   const findAnchor = (price: number) => {
@@ -1437,6 +1472,10 @@ export function calibrateProbabilities(
     baseRate?: number;            // empirical P(up) from recent history (default 0.5)
     kappaMultiplier?: number;     // asset-profile kappa scaling (Idea N). >1 = more shrinkage.
     currentRegime?: string;       // Idea O: regime-gated kappa adjustment
+    // Drift-based calibration params (preserves distribution S-shape)
+    currentPrice?: number;        // required for drift-based mode
+    driftN?: number;              // n-step drift (mu_n) from computeHorizonDriftVol
+    volN?: number;                // n-step volatility (sigma_n)
   },
 ): MarkovDistributionPoint[] {
   const consensus = options?.ensembleConsensus ?? 0;
@@ -1445,21 +1484,15 @@ export function calibrateProbabilities(
   const kappaScale = options?.kappaMultiplier ?? 1.0;
   // Adaptive center: shrink toward empirical base rate, not 0.5.
   // Idea S (Round 4): Raised center cap from [0.35, 0.65] to [0.25, 0.80].
-  // The old 0.65 cap destroyed directional signal in bullish markets where
-  // the actual 14d up-rate was 70-82%. With higher cap, the calibration
-  // pulls predictions toward the ACTUAL base rate instead of a clipped one.
   const center = Math.max(0.25, Math.min(0.80, options?.baseRate ?? 0.5));
 
   // Base shrinkage coefficient κ ∈ [0.15, 0.55]
-  // κ=0.55 means "pull 55% toward center" (very uncertain)
-  // κ=0.15 means "pull 15% toward center" (reasonably calibrated)
-  let kappa = 0.45; // start conservative — pull heavily toward center
+  let kappa = 0.45;
 
   // Less shrinkage when ensemble signals agree (each consensus point → -0.07)
   kappa -= consensus * 0.07;
 
   // Less shrinkage with more data (logarithmic scaling — diminishing returns)
-  // 60 days → 0 adjustment; 120 days → -0.03; 250 days → -0.06
   if (nDays > 60) {
     kappa -= Math.min(0.08, 0.04 * Math.log2(nDays / 60));
   }
@@ -1468,23 +1501,67 @@ export function calibrateProbabilities(
   if (hmmOk) kappa -= 0.03;
 
   // Asset-profile scaling (Idea N): multiply kappa by profile factor
-  // ETFs: 0.85× (less shrinkage), Crypto: 1.3× (more shrinkage)
   kappa *= kappaScale;
 
-  // Regime-gated adjustment (Idea O): trending regimes get less shrinkage
-  // because directional persistence means the model's signal is more reliable.
-  // Sideways regimes get more shrinkage (no directional edge, revert to center).
-  // Conservative magnitudes to avoid amplifying wrong-direction signals.
+  // Regime-gated adjustment (Idea O)
   const regime = options?.currentRegime;
   if (regime === 'bull' || regime === 'bear') {
-    kappa -= 0.03; // trending: slightly trust model's directional signal
+    kappa -= 0.03;
   } else if (regime === 'sideways') {
-    kappa += 0.03; // choppy: be cautious, pull toward center
+    kappa += 0.03;
   }
 
   // Clamp to valid range
   kappa = Math.max(0.15, Math.min(0.55, kappa));
 
+  // --- Drift-based calibration (preserves S-shape) ---
+  // When currentPrice, driftN, and volN are provided, calibrate by shifting
+  // the distribution's drift instead of compressing each probability independently.
+  // This preserves the survival curve shape: far-below prices stay ~99%,
+  // far-above prices stay ~1%, while P(up) at currentPrice is calibrated toward center.
+  const cp = options?.currentPrice;
+  const driftN = options?.driftN;
+  const volN = options?.volN;
+
+  if (cp != null && driftN != null && volN != null && volN > 0) {
+    const nu = 5; // Student-t degrees of freedom (must match studentTSurvival)
+    const rawPUp = studentTSurvival(cp, cp, driftN, volN);
+    const targetPUp = Math.max(0.01, Math.min(0.99, kappa * center + (1 - kappa) * rawPUp));
+
+    // Find the drift that produces targetPUp via inverse CDF:
+    //   targetPUp = 1 - CDF(-calibratedDrift / scaledVol)
+    //   CDF(-calibratedDrift / scaledVol) = 1 - targetPUp
+    //   -calibratedDrift / scaledVol = inverseStudentTCDF(1 - targetPUp, nu)
+    const scaledVol = nu > 2 ? volN * Math.sqrt((nu - 2) / nu) : volN;
+    const zTarget = inverseStudentTCDF(1 - targetPUp, nu);
+    const calibratedDrift = -zTarget * scaledVol;
+
+    const calibrated = distribution.map(point => {
+      let newProb: number;
+      if (point.source === 'markov') {
+        // Pure Markov point: recompute survival with calibrated drift
+        newProb = studentTSurvival(cp, point.price, calibratedDrift, volN);
+      } else {
+        // Blended/polymarket point: apply additive delta to preserve anchor contribution
+        const oldMarkov = studentTSurvival(cp, point.price, driftN, volN);
+        const newMarkov = studentTSurvival(cp, point.price, calibratedDrift, volN);
+        newProb = Math.max(0, Math.min(1, point.probability + (newMarkov - oldMarkov)));
+      }
+      return { ...point, probability: newProb };
+      // lowerBound and upperBound preserved from Monte Carlo — no compression
+    });
+
+    // Re-enforce monotonicity
+    for (let i = calibrated.length - 2; i >= 0; i--) {
+      if (calibrated[i].probability < calibrated[i + 1].probability) {
+        calibrated[i].probability = calibrated[i + 1].probability;
+      }
+    }
+    return calibrated;
+  }
+
+  // --- Legacy fallback: probability-level calibration ---
+  // Used when drift params are not available (e.g., unit tests with synthetic data)
   const calibrated = distribution.map(point => ({
     ...point,
     probability: kappa * center + (1 - kappa) * point.probability,
@@ -2019,6 +2096,11 @@ export async function computeMarkovDistribution(params: {
     20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol,
   );
 
+  // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
+  const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
+    horizon, P, regimeStats, currentRegime, combinedDriftAdj, hmmOverride,
+  );
+
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
   // Compute empirical base rate: P(up) from recent returns (Idea L: adaptive center)
   const recentReturns = returns.slice(-Math.min(120, returns.length));
@@ -2027,9 +2109,6 @@ export async function computeMarkovDistribution(params: {
     : 0.5;
 
   // --- Regime-conditional P(up) (Idea T, Round 4) ---
-  // Instead of using the unconditional baseRate as calibration center, compute
-  // P(up) = Σ P(regime_i at horizon) × P(up | regime_i) from the training data.
-  // This is strictly more informative because it conditions on the CURRENT regime.
   const regimeUpRates = computeRegimeUpRates(regimeSeq, returns, horizon);
   const Pn = matPow(P, horizon);
   const initialIdx = STATE_INDEX[currentRegime];
@@ -2037,14 +2116,15 @@ export async function computeMarkovDistribution(params: {
   const conditionalPUp = REGIME_STATES.reduce(
     (s, state, i) => s + stateWeightsForUp[i] * regimeUpRates[state], 0,
   );
-  // Blend: regime-conditional + unconditional, weighted by asset reliability.
-  // ETFs have reliable regime models (80/20). Crypto regimes are noisy (40/60),
-  // so default more toward the unconditional base rate which is at least directionally correct.
   const conditionalWeight = assetProfile.type === 'etf' ? 0.80
     : assetProfile.type === 'equity' ? 0.65
     : 0.40; // crypto
   const calibrationCenter = conditionalWeight * conditionalPUp + (1 - conditionalWeight) * baseRate;
 
+  // Drift-based calibration: shifts the distribution center (P(up)) toward
+  // calibrationCenter while preserving the survival curve's S-shape.
+  // Unlike the old probability-level shrinkage which compressed ALL probabilities
+  // toward center (destroying tails), this only adjusts the drift parameter.
   const distribution = calibrateProbabilities(rawDistribution, {
     ensembleConsensus: ensemble.consensus,
     historicalDays: returns.length,
@@ -2052,6 +2132,9 @@ export async function computeMarkovDistribution(params: {
     baseRate: calibrationCenter,
     kappaMultiplier: assetProfile.kappaMultiplier,
     currentRegime,
+    currentPrice,
+    driftN: calDriftN,
+    volN: calVolN,
   });
 
   // --- Base-rate floor (Idea S, Round 4) ---
