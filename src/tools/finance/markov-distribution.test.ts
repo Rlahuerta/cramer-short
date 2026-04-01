@@ -49,6 +49,7 @@ import {
   REGIME_STATES,
   studentTCDF,
   studentTSurvival,
+  computeTrajectory,
 } from './markov-distribution.js';
 import type { RegimeState } from './markov-distribution.js';
 
@@ -2514,5 +2515,195 @@ describe('computeRegimeUpRates', () => {
     // bull: 3 up / 3 total = 1.0, bear: 0 up / 2 total = 0.0
     expect(rates.bull).toBeGreaterThan(0.8);
     expect(rates.bear).toBeLessThan(0.2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeTrajectory — day-by-day price forecast
+// ---------------------------------------------------------------------------
+
+describe('computeTrajectory', () => {
+  // Simple 3-state bull-dominant regime
+  const regimeStats = {
+    bull: { meanReturn: 0.001, stdReturn: 0.012 },
+    bear: { meanReturn: -0.001, stdReturn: 0.015 },
+    sideways: { meanReturn: 0.0002, stdReturn: 0.010 },
+  };
+  const P = [
+    [0.7, 0.1, 0.2], // bull stays bull
+    [0.2, 0.6, 0.2], // bear
+    [0.3, 0.2, 0.5], // sideways
+  ];
+
+  it('returns the correct number of days', () => {
+    const traj = computeTrajectory(100, 7, P, regimeStats, 'bull', 0);
+    expect(traj).toHaveLength(7);
+    expect(traj[0].day).toBe(1);
+    expect(traj[6].day).toBe(7);
+  });
+
+  it('CI widths monotonically increase (or stay same)', () => {
+    const traj = computeTrajectory(100, 14, P, regimeStats, 'bull', 0, undefined, 2000);
+    for (let i = 1; i < traj.length; i++) {
+      const prevWidth = traj[i - 1].upperBound - traj[i - 1].lowerBound;
+      const currWidth = traj[i].upperBound - traj[i].lowerBound;
+      // Allow small MC noise tolerance (0.5% of price)
+      expect(currWidth).toBeGreaterThanOrEqual(prevWidth - 0.5);
+    }
+  });
+
+  it('lower bound < expected < upper bound for all days', () => {
+    const traj = computeTrajectory(100, 7, P, regimeStats, 'bull', 0);
+    for (const pt of traj) {
+      expect(pt.lowerBound).toBeLessThan(pt.expectedPrice);
+      expect(pt.upperBound).toBeGreaterThan(pt.expectedPrice);
+    }
+  });
+
+  it('expected price is near current for day 1', () => {
+    const traj = computeTrajectory(200, 7, P, regimeStats, 'bull', 0);
+    expect(Math.abs(traj[0].expectedPrice - 200)).toBeLessThan(5);
+  });
+
+  it('P(up) is between 0 and 1 for all days', () => {
+    const traj = computeTrajectory(100, 7, P, regimeStats, 'bear', 0);
+    for (const pt of traj) {
+      expect(pt.pUp).toBeGreaterThanOrEqual(0);
+      expect(pt.pUp).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('cumulative return is formatted correctly', () => {
+    const traj = computeTrajectory(100, 3, P, regimeStats, 'bull', 0);
+    for (const pt of traj) {
+      expect(pt.cumulativeReturn).toMatch(/^[+-]\d+\.\d+%$/);
+    }
+  });
+
+  it('regime is a valid RegimeState', () => {
+    const traj = computeTrajectory(100, 5, P, regimeStats, 'sideways', 0);
+    const validRegimes: RegimeState[] = ['bull', 'bear', 'sideways'];
+    for (const pt of traj) {
+      expect(validRegimes).toContain(pt.regime);
+    }
+  });
+
+  it('handles horizon=1 (single day)', () => {
+    const traj = computeTrajectory(100, 1, P, regimeStats, 'bull', 0);
+    expect(traj).toHaveLength(1);
+    expect(traj[0].day).toBe(1);
+  });
+
+  it('all values are finite (no NaN/Infinity)', () => {
+    const traj = computeTrajectory(100, 10, P, regimeStats, 'bull', 0);
+    for (const pt of traj) {
+      expect(Number.isFinite(pt.expectedPrice)).toBe(true);
+      expect(Number.isFinite(pt.lowerBound)).toBe(true);
+      expect(Number.isFinite(pt.upperBound)).toBe(true);
+      expect(Number.isFinite(pt.pUp)).toBe(true);
+    }
+  });
+
+  it('uses HMM override when provided', () => {
+    const hmmOverride = { drift: 0.005, vol: 0.02, weight: 0.5 };
+    const trajNoHmm = computeTrajectory(100, 7, P, regimeStats, 'bull', 0);
+    const trajHmm = computeTrajectory(100, 7, P, regimeStats, 'bull', 0, hmmOverride);
+    // HMM with higher drift should produce higher expected prices
+    const noHmmFinal = trajNoHmm[6].expectedPrice;
+    const hmmFinal = trajHmm[6].expectedPrice;
+    expect(hmmFinal).toBeGreaterThan(noHmmFinal);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeMarkovDistribution — trajectory integration
+// ---------------------------------------------------------------------------
+
+describe('computeMarkovDistribution trajectory mode', () => {
+  const prices = Array.from({ length: 60 }, (_, i) => 100 + i * 0.3);
+
+  it('returns trajectory when trajectory=true', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TRAJ_TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+    });
+    expect(result.trajectory).toBeDefined();
+    expect(result.trajectory!.length).toBe(7);
+  });
+
+  it('trajectory is undefined when trajectory=false', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TRAJ_OFF',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: false,
+    });
+    expect(result.trajectory).toBeUndefined();
+  });
+
+  it('respects trajectoryDays param', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TRAJ_DAYS',
+      horizon: 14,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+      trajectoryDays: 5,
+    });
+    expect(result.trajectory!.length).toBe(5);
+  });
+
+  it('trajectoryDays capped at 30', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TRAJ_CAP',
+      horizon: 90,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+      trajectoryDays: 50,
+    });
+    expect(result.trajectory!.length).toBe(30);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markovDistributionTool — trajectory output format
+// ---------------------------------------------------------------------------
+
+describe('markovDistributionTool trajectory output', () => {
+  const prices = Array.from({ length: 60 }, (_, i) => 100 + i * 0.3);
+
+  it('includes trajectory table when trajectory=true', async () => {
+    const output = await markovDistributionTool.invoke({
+      ticker: 'FMT_TRAJ',
+      horizon: 7,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+    });
+    expect(output).toContain('DAY PRICE TRAJECTORY');
+    expect(output).toContain('Day │ Expected');
+    expect(output).toContain('P(up)');
+    expect(output).toContain('Return');
+    expect(output).toContain('probability-weighted means');
+  });
+
+  it('does not include trajectory when trajectory=false', async () => {
+    const output = await markovDistributionTool.invoke({
+      ticker: 'FMT_NOTRAJ',
+      horizon: 7,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: false,
+    });
+    expect(output).not.toContain('DAY PRICE TRAJECTORY');
   });
 });

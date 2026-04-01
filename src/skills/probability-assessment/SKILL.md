@@ -263,3 +263,30 @@ play out.
   `polymarket_search` or the pre-injected 🎯 block.
 - Polymarket probabilities are market-implied, not guaranteed outcomes. Always
   include a disclaimer at the end.
+
+---
+
+## Trajectory Mode (Short-Horizon Forecasts)
+
+When the user asks for day-by-day price movement (e.g., "What will AAPL do over
+the next 7 days?"), use the `markov_distribution` tool with `trajectory: true`:
+
+```
+markov_distribution({
+  ticker: "AAPL",
+  horizon: 7,
+  historicalPrices: [...],
+  polymarketMarkets: [],
+  trajectory: true,
+  trajectoryDays: 7
+})
+```
+
+This returns a day-by-day table with expected price, 90% CI, P(up), and cumulative
+return for each day. Present the trajectory table alongside your probability
+assessment for a complete short-term outlook.
+
+**When to use trajectory mode:**
+- User asks for day-by-day or multi-day outlook
+- Short horizons (1–14 days) where the path matters, not just the endpoint
+- Comparing how uncertainty grows over the forecast window

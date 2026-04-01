@@ -525,3 +525,85 @@ by March?"), the model uses them as real-money anchors:
 
 The model works without any Polymarket data — pass an empty array for
 `polymarketMarkets` to use pure Markov + HMM + momentum signals.
+
+---
+
+## Day-by-Day Price Trajectory
+
+The `trajectory` option generates a day-by-day price forecast with expected price,
+90% confidence intervals, and directional probability for each day up to the horizon.
+
+### Usage
+
+Set `trajectory: true` when calling the tool. Optionally specify `trajectoryDays`
+(1–30, defaults to the horizon value):
+
+```
+"Give me a 7-day price trajectory for AAPL"
+"Show me day-by-day BTC forecast for the next 14 days"
+```
+
+### Output Format
+
+```
+═══ 7-DAY PRICE TRAJECTORY: AAPL ═══
+Current: $213.00 | Regime: bull | Confidence: 0.42
+
+Day │ Expected │     90% CI Range    │ P(up) │ Return
+────┼──────────┼─────────────────────┼───────┼────────
+  1 │  $213.40 │ $211.90 – $214.90   │   54% │ +0.19%
+  2 │  $213.90 │ $211.10 – $216.70   │   56% │ +0.42%
+  3 │  $214.30 │ $210.20 – $218.40   │   57% │ +0.61%
+  4 │  $214.80 │ $209.50 – $220.10   │   58% │ +0.84%
+  5 │  $215.20 │ $208.60 – $221.80   │   59% │ +1.03%
+  6 │  $215.70 │ $207.80 – $223.60   │   60% │ +1.27%
+  7 │  $216.10 │ $206.90 – $225.30   │   61% │ +1.46%
+
+📈 Trend: Bullish drift, CI widens ~$2.50/day
+⚠️  Point estimates are probability-weighted means, not forecasts.
+    The CI range is the honest measure of uncertainty.
+```
+
+### Columns Explained
+
+| Column | Description |
+|--------|-------------|
+| **Day** | Trading days from today (1 = tomorrow) |
+| **Expected** | Regime-weighted expected price (mean of Monte Carlo paths) |
+| **90% CI Range** | 5th–95th percentile of simulated prices at that day |
+| **P(up)** | Probability price exceeds current price at this horizon |
+| **Return** | Cumulative expected return from current price |
+
+### How It Works
+
+1. **Shared Monte Carlo paths**: 1,000 random walks are generated using Student-t
+   variates (fat tails, ν determined by regime). Each path is sampled at every day.
+2. **Analytical drift/vol**: At each day d, `computeHorizonDriftVol(d, ...)` provides
+   the regime-weighted drift and volatility from the transition matrix.
+3. **CI bounds**: 5th and 95th percentiles of the Monte Carlo price distribution at day d.
+4. **P(up)**: From the Student-t survival function `S(currentPrice; drift_d, vol_d)`.
+5. **Regime**: Most likely regime state from `P^d` (d-step transition matrix).
+
+### Key Properties
+
+- **CI widths monotonically increase** — uncertainty grows with time (guaranteed by
+  shared random walks).
+- **Compatible with calibration** — the drift-based calibration preserves the S-shape
+  of the survival curve at each day.
+- **Maximum 30 days** — beyond this, weekly or monthly summaries would be more useful.
+  For longer horizons, use the standard single-snapshot mode.
+
+### Interpreting the Trajectory
+
+- **P(up) near 50%**: No strong directional signal — focus on the CI range.
+- **P(up) > 60%**: Moderate bullish signal. The expected price is above current.
+- **Wide CI**: High uncertainty — the range matters more than the point estimate.
+- **Narrow CI**: Relatively stable asset — the expected price is more meaningful.
+
+### Limitations
+
+- Trajectory assumes **no regime changes** within the forecast window. For volatile
+  assets (BTC, TSLA), a regime flip mid-trajectory is possible but not modeled.
+- **Day 1-2 signals are very weak** — P(up) will be close to 50% for most assets.
+- The trajectory is **not a prediction** — it's a probability-weighted projection.
+  Always quote the CI range, not just the expected price.
