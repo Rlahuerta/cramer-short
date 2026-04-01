@@ -17,7 +17,12 @@ import {
   gofPassRate,
   generateReport,
   optimizeThresholds,
+  bootstrapMetricCI,
+  bootstrapDirectionalCI,
+  bootstrapBrierCI,
+  bootstrapCIcoverageCI,
   type BacktestStep,
+  type BootstrapCI,
 } from './metrics.js';
 
 // ---------------------------------------------------------------------------
@@ -433,5 +438,132 @@ describe('computeRCCurve', () => {
     const steps = [makeStep()];
     const curve = computeRCCurve(steps, [0, 0.25, 0.5, 0.75]);
     expect(curve).toHaveLength(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bootstrapMetricCI
+// ---------------------------------------------------------------------------
+
+describe('bootstrapMetricCI', () => {
+  it('returns CI near 100% for all-correct directional data', () => {
+    const steps = Array.from({ length: 50 }, () =>
+      makeStep({ recommendation: 'BUY', actualReturn: 0.05 }),
+    );
+    const ci = bootstrapDirectionalCI(steps);
+    expect(ci.lower).toBeCloseTo(1.0, 2);
+    expect(ci.median).toBeCloseTo(1.0, 2);
+    expect(ci.upper).toBeCloseTo(1.0, 2);
+    expect(ci.nResamples).toBe(1000);
+  });
+
+  it('returns CI around 50% for random-like data', () => {
+    // Half correct, half wrong → directional accuracy ≈ 0.5
+    const steps = Array.from({ length: 100 }, (_, i) =>
+      makeStep({
+        recommendation: 'BUY',
+        actualReturn: i % 2 === 0 ? 0.05 : -0.05,
+      }),
+    );
+    const ci = bootstrapDirectionalCI(steps);
+    expect(ci.lower).toBeGreaterThan(0.3);
+    expect(ci.upper).toBeLessThan(0.7);
+    expect(ci.median).toBeCloseTo(0.5, 1);
+  });
+
+  it('is reproducible with the same seed', () => {
+    const steps = Array.from({ length: 30 }, (_, i) =>
+      makeStep({
+        recommendation: 'BUY',
+        actualReturn: i % 3 === 0 ? -0.02 : 0.04,
+      }),
+    );
+    const a = bootstrapMetricCI(steps, directionalAccuracy, 500, 42);
+    const b = bootstrapMetricCI(steps, directionalAccuracy, 500, 42);
+    expect(a.lower).toBe(b.lower);
+    expect(a.median).toBe(b.median);
+    expect(a.upper).toBe(b.upper);
+  });
+
+  it('produces different results with different seeds', () => {
+    // Use enough variation that bootstrap resamples are sensitive to seed
+    const steps = Array.from({ length: 60 }, (_, i) =>
+      makeStep({
+        recommendation: 'BUY',
+        actualReturn: i % 5 === 0 ? -0.08 : i % 3 === 0 ? -0.02 : 0.04,
+      }),
+    );
+    const a = bootstrapMetricCI(steps, directionalAccuracy, 1000, 1);
+    const b = bootstrapMetricCI(steps, directionalAccuracy, 1000, 99999);
+    // With 1000 resamples and different seeds, percentiles should differ
+    const allSame = a.lower === b.lower && a.median === b.median && a.upper === b.upper;
+    expect(allSame).toBe(false);
+  });
+
+  it('returns zeros for empty input', () => {
+    const ci = bootstrapMetricCI([], directionalAccuracy);
+    expect(ci.lower).toBe(0);
+    expect(ci.median).toBe(0);
+    expect(ci.upper).toBe(0);
+    expect(ci.nResamples).toBe(1000);
+  });
+
+  it('handles single element', () => {
+    const steps = [makeStep({ recommendation: 'BUY', actualReturn: 0.05 })];
+    const ci = bootstrapDirectionalCI(steps);
+    // Single correct step: every resample is identical → CI = [1, 1]
+    expect(ci.lower).toBe(1.0);
+    expect(ci.median).toBe(1.0);
+    expect(ci.upper).toBe(1.0);
+  });
+
+  it('lower ≤ median ≤ upper', () => {
+    const steps = Array.from({ length: 40 }, (_, i) =>
+      makeStep({
+        recommendation: i % 2 === 0 ? 'BUY' : 'SELL',
+        actualReturn: i % 3 === 0 ? 0.05 : -0.03,
+      }),
+    );
+    const ci = bootstrapDirectionalCI(steps);
+    expect(ci.lower).toBeLessThanOrEqual(ci.median);
+    expect(ci.median).toBeLessThanOrEqual(ci.upper);
+  });
+
+  it('respects nResamples parameter', () => {
+    const steps = Array.from({ length: 20 }, () =>
+      makeStep({ recommendation: 'BUY', actualReturn: 0.05 }),
+    );
+    const ci = bootstrapMetricCI(steps, directionalAccuracy, 200);
+    expect(ci.nResamples).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bootstrapBrierCI / bootstrapCIcoverageCI wrappers
+// ---------------------------------------------------------------------------
+
+describe('bootstrap convenience wrappers', () => {
+  const steps = Array.from({ length: 40 }, (_, i) =>
+    makeStep({
+      predictedProb: 0.6,
+      actualBinary: i % 2,
+      ciLower: 90,
+      ciUpper: 110,
+      realizedPrice: 100,
+    }),
+  );
+
+  it('bootstrapBrierCI returns valid CI', () => {
+    const ci = bootstrapBrierCI(steps);
+    expect(ci.lower).toBeGreaterThanOrEqual(0);
+    expect(ci.upper).toBeLessThanOrEqual(1);
+    expect(ci.lower).toBeLessThanOrEqual(ci.upper);
+  });
+
+  it('bootstrapCIcoverageCI returns valid CI', () => {
+    const ci = bootstrapCIcoverageCI(steps);
+    expect(ci.lower).toBeGreaterThanOrEqual(0);
+    expect(ci.upper).toBeLessThanOrEqual(1);
+    expect(ci.lower).toBeLessThanOrEqual(ci.upper);
   });
 });

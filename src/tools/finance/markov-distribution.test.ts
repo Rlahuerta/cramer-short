@@ -2213,6 +2213,8 @@ describe('computePredictionConfidence', () => {
       regimeRunLength: 25, // stable regime
       structuralBreak: false,
       momentumAgreement: 1.0, // all lookbacks agree
+      calibratedPUp: 0.80, // aligned with strongly bullish base rate
+      baseRate: 0.75,
     });
     expect(c).toBeGreaterThan(0.8);
     expect(c).toBeLessThanOrEqual(1.0);
@@ -2275,7 +2277,7 @@ describe('computePredictionConfidence', () => {
       pUp: 0.7, ensembleConsensus: 1, hmmConverged: true, regimeRunLength: 5, structuralBreak: false,
     });
     expect(withHmm).toBeGreaterThan(noHmm);
-    expect(withHmm - noHmm).toBeCloseTo(0.15, 1); // HMM adds 15% weight
+    expect(withHmm - noHmm).toBeCloseTo(0.10, 1); // HMM adds 10% weight
   });
 
   it('always returns value in [0, 1]', () => {

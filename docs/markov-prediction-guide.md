@@ -1,0 +1,527 @@
+# Markov Chain Prediction System
+
+Dexter includes a Markov chain probability distribution model for asset price
+forecasting. Instead of returning a single price target, it produces a full
+probability distribution — P(price > X) at many price levels — along with
+confidence intervals, action signals, and a confidence score you can use to
+filter predictions.
+
+**Source:** `src/tools/finance/markov-distribution.ts`
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [How the Model Works](#how-the-model-works)
+3. [Interpreting Results](#interpreting-results)
+4. [Selective Prediction Strategy](#selective-prediction-strategy)
+5. [Per-Asset Reliability Profiles](#per-asset-reliability-profiles)
+6. [Known Limitations](#known-limitations)
+7. [Backtest Methodology](#backtest-methodology)
+8. [Code Examples](#code-examples)
+9. [Configuration & Tuning](#configuration--tuning)
+
+---
+
+## Overview
+
+The Markov distribution model answers questions like "What's the probability
+SPY finishes above $600 in 14 days?" by combining three independent signals:
+
+1. **Markov regime transitions** — classifies recent history into bull/bear/
+   sideways regimes, then projects forward via matrix exponentiation.
+2. **Hidden Markov Model (HMM)** — a Baum-Welch Gaussian HMM fitted on daily
+   returns for an independent directional + volatility forecast.
+3. **Ensemble momentum indicators** — mean-reversion z-score, SMA crossover,
+   and volatility compression signals.
+
+These are calibrated through Bayesian shrinkage toward an empirical base rate
+and packaged into actionable outputs.
+
+### When to use it
+
+- Probability assessment for a specific price target and horizon
+- Understanding the range of likely outcomes (confidence intervals)
+- Generating BUY / HOLD / SELL signals grounded in a full distribution
+- Filtering predictions by confidence score (selective prediction)
+
+### Key outputs
+
+| Output | Description |
+|--------|-------------|
+| `distribution` | Array of `{price, probability}` points — a survival curve |
+| `actionSignal` | BUY / HOLD / SELL recommendation with expected return |
+| `predictionConfidence` | 0–1 score for selective prediction filtering |
+| `metadata` | Regime state, HMM info, ensemble consensus, diagnostics |
+
+---
+
+## How the Model Works
+
+### Regime Detection
+
+The model classifies each trading day into one of three regimes: **Bull**,
+**Bear**, or **Sideways**.
+
+Classification uses *adaptive* thresholds derived from the asset's own return
+distribution — not fixed cutoffs. The threshold is set at half the median
+absolute daily return, so roughly 30–40% of days fall into each of bull and
+bear, with 20–30% sideways, regardless of whether the asset is SPY (daily vol
+~1%) or BTC (daily vol ~4%).
+
+```
+Bull:     daily return > threshold
+Bear:     daily return < −threshold
+Sideways: |daily return| ≤ threshold
+```
+
+Why three states instead of five? An earlier version included high-volatility
+bull/bear states, but with a 120-day walk-forward window those states had only
+2–4 observations each — their transition rows were dominated by the Dirichlet
+prior with zero directional information. Collapsing to three states
+concentrates ~40 observations per state and yields 5–10× more reliable
+transition estimates.
+
+### Transition Matrix
+
+Once every day is labelled with a regime, the model counts transitions (bull →
+bear, bear → sideways, etc.) and builds a 3×3 stochastic matrix where entry
+`P[i][j]` = probability of moving from regime `i` to regime `j` on the next
+day.
+
+Key details:
+
+- **Dirichlet prior** for smoothing — the smoothing constant scales inversely
+  with sample size (`α = max(0.01, 5/N)`). Small samples get more
+  regularization; large samples let the data dominate.
+- **Exponential decay** — recent transitions are weighted more heavily than
+  older ones (default decay rate 0.97). This lets the matrix adapt to changing
+  market conditions.
+- **N-step projection** — to forecast `h` days ahead, the matrix is raised to
+  the `h`-th power via repeated squaring. The resulting row gives regime
+  probabilities at the horizon given the current regime.
+- **Structural break detection** — the training window is split in half and
+  the two sub-matrices are compared via chi-squared divergence. If a break is
+  detected, the model falls back to a conservative default matrix and widens
+  confidence intervals by 50%.
+
+### Ensemble Prediction
+
+Three independent signals contribute to the final distribution:
+
+| Signal | What it measures | Weight mechanism |
+|--------|-----------------|------------------|
+| **Markov chain** | Regime persistence and transition probabilities | Primary signal — regime-conditional P(up) |
+| **HMM (Baum-Welch)** | Latent states from daily returns | Weighted blend (0.25–0.70 depending on data length and asset) |
+| **Momentum ensemble** | Mean-reversion z-score, SMA5/SMA20 crossover, vol compression | Applied as drift adjustment when ≥2 of 3 signals agree |
+
+The momentum ensemble includes multi-lookback confirmation (10d, 20d, 40d). If
+all lookbacks agree on direction, the trend is considered robust across
+timeframes, which increases the confidence score.
+
+### Calibration
+
+Raw model probabilities tend to be overconfident. The calibration step applies
+**Bayesian shrinkage** to pull predictions toward a center value:
+
+```
+calibrated_P = κ × center + (1 − κ) × raw_P
+```
+
+Where:
+
+- **κ (kappa)** is the shrinkage coefficient (0.15–0.55). Lower = trust the
+  model more. Adjusted down for ensemble consensus, more data, HMM
+  convergence, and trending regimes. Adjusted up for sideways regimes.
+- **center** is the calibration target — not a fixed 0.5, but a blend of:
+  - **Regime-conditional P(up)**: empirical frequency of positive returns
+    following each regime, weighted by the n-step transition probabilities.
+  - **Unconditional base rate**: simple fraction of recent up-days.
+  - Blending weights depend on asset type: ETFs use 80% regime-conditional
+    (their regime model is reliable), crypto uses only 40% (noisier).
+- **Asset-type scaling**: ETFs get κ × 0.85 (less shrinkage), crypto gets
+  κ × 1.3 (more shrinkage toward base rate).
+
+After shrinkage, a monotonicity pass ensures P(> X) is non-increasing in X,
+and a base-rate floor prevents the model from predicting "down" in strongly
+bullish markets without strong evidence.
+
+### Confidence Scoring
+
+The prediction confidence score (0–1) combines five factors:
+
+| Factor | Weight | How it works |
+|--------|--------|--------------|
+| Decisiveness | 35% | `|P(up) − 0.5| × 2` — distance from coin flip (uses raw, pre-calibration P(up)) |
+| Ensemble consensus | 20% | Fraction of momentum/MR/crossover signals that agree (0–3 → 0–1) |
+| HMM convergence | 15% | Binary: did Baum-Welch converge? |
+| Regime stability | 20% | Consecutive days in the current regime / 20 (saturates at 20 days) |
+| Multi-lookback momentum | 10% | Fraction of lookback windows (10d/20d/40d) agreeing on direction |
+
+Penalties applied after the weighted sum:
+
+- **Structural break** detected: multiply by 0.6
+- **Crypto** asset type: multiply by 0.7
+- **ETF** asset type: multiply by 1.1
+- **High volatility** (daily vol > 2%): linear penalty ramping from 1.0 at 2%
+  to 0.7 at 8%
+
+---
+
+## Interpreting Results
+
+### Probability Distribution
+
+The `distribution` array is a **survival function** — a set of
+`{price, probability}` points where `probability` = P(asset price > this
+level at the horizon).
+
+- Sorted ascending by price, with probability non-increasing.
+- Covers roughly ±3 standard deviations from the current price (20+ points).
+- `P(> currentPrice) > 0.5` → the model leans bullish.
+- `P(> currentPrice) < 0.5` → the model leans bearish.
+
+**Example:** If `P(> $580) = 0.73` for SPY at 14 days, the model estimates a
+73% chance SPY finishes above $580.
+
+### Confidence Intervals
+
+Each distribution point includes `lowerBound` and `upperBound` fields
+representing the **90% confidence interval** (5th and 95th percentiles from
+Monte Carlo simulation).
+
+- Wider CIs for volatile assets (TSLA, BTC) — reflecting genuine uncertainty.
+- Narrower CIs for stable assets (GLD, SPY).
+- CIs are widened by 50% when a structural break is detected in the training
+  window.
+
+**Walk-forward backtest CI coverage:** 93% at the 90% level (well-calibrated —
+slightly conservative).
+
+### Action Signals
+
+The `actionSignal` object provides a concrete BUY / HOLD / SELL
+recommendation:
+
+| Field | Description |
+|-------|-------------|
+| `recommendation` | `'BUY'` / `'HOLD'` / `'SELL'` |
+| `expectedReturn` | Probability-weighted expected return (e.g., 0.023 = +2.3%) |
+| `riskRewardRatio` | Expected upside / expected downside (> 1 favours upside) |
+| `confidence` | `'HIGH'` / `'MEDIUM'` / `'LOW'` (conviction relative to threshold) |
+| `actionLevels.targetPrice` | Where P(> price) ≈ 30% — profit-taking level |
+| `actionLevels.stopLoss` | Where P(> price) ≈ 90% — strong support level |
+| `actionLevels.medianPrice` | Where P(> price) ≈ 50% — expected median outcome |
+| `actionLevels.bullCase` | 80th-percentile upside |
+| `actionLevels.bearCase` | 20th-percentile downside |
+
+**How recommendations are decided:**
+
+- Expected return is computed by integrating over the full distribution
+  (trapezoid rule on the survival curve).
+- **Dynamic thresholds** scale with asset volatility and horizon:
+  `threshold = scaleFactor × dailyVol × √horizon`. This avoids the problem of
+  fixed thresholds producing 74% HOLD predictions for low-vol assets.
+- `BUY` when expected return exceeds the buy threshold.
+- `SELL` when expected return is below the negative sell threshold.
+- `HOLD` otherwise.
+
+### Prediction Confidence (0–1)
+
+| Range | Interpretation |
+|-------|---------------|
+| > 0.5 | **High confidence** — signals strongly agree, decisive probability |
+| 0.3–0.5 | **Medium confidence** — most signals agree, reasonable to act on |
+| < 0.3 | **Low confidence** — signals disagree or model is near random |
+
+⚠️ **Recommendation:** Only act on predictions with confidence ≥ 0.3 for
+directional bets. Use confidence ≥ 0.4 for high-conviction trades.
+
+---
+
+## Selective Prediction Strategy
+
+The aggregate directional accuracy of 63% includes many uncertain predictions
+that dilute overall performance. By filtering on the confidence score, you
+trade coverage (fewer predictions) for accuracy (higher hit rate).
+
+### Risk-Coverage (RC) Curve
+
+| Confidence ≥ | Accuracy | Coverage | Predictions |
+|--------------|----------|----------|-------------|
+| 0.0 | 63% | 100% | 484 |
+| 0.2 | 65% | 54% | 262 |
+| 0.3 | 65% | 26% | 124 |
+| 0.4 | 80% | 5% | 25 |
+| 0.5 | 93% | 3% | 15 |
+
+### Recommended Strategies
+
+- **Baseline filter (conf ≥ 0.3):** Use as the minimum threshold for any
+  directional bet. Cuts out 74% of uncertain predictions while maintaining 65%
+  accuracy on the remainder.
+- **High-conviction only (conf ≥ 0.4):** 80% accuracy on 25 predictions.
+  Suitable for concentrated positions where being wrong is costly.
+- **Very selective (conf ≥ 0.5):** 93% accuracy but only 15 predictions over
+  the full backtest period. Statistically limited (see
+  [Known Limitations](#known-limitations)).
+
+The intuition: when the model's regime detection, HMM, and momentum signals
+all agree *and* the probability is far from 0.5, the prediction is
+substantially more reliable than the 63% baseline.
+
+---
+
+## Per-Asset Reliability Profiles
+
+| Asset Type | Examples | Best At | Caution |
+|-----------|---------|---------|---------|
+| **ETFs** | SPY, QQQ, GLD | 14d direction (70–76%), reliable CI | Overfit risk on very short horizons (< 7d) |
+| **Stocks** | AAPL | 30d direction (67%) | High company-specific risk (earnings, news) not captured |
+| **Volatile Stocks** | TSLA | 30d with confidence filter | Low raw accuracy (51–58%), only use with selective filtering |
+| **Crypto** | BTC | CI coverage (100% at 90% level) | Direction near random (~50%), **do not trust for directional calls** |
+
+### Per-Ticker Backtest Results (14d / 30d)
+
+| Ticker | Directional Accuracy | CI Coverage (90%) |
+|--------|---------------------|--------------------|
+| SPY | 76% / 72% | 81% / 83% |
+| GLD | 73% / 89% | 97% / 86% |
+| QQQ | 73% / 69% | 89% / 89% |
+| AAPL | 54% / 67% | 92% / 94% |
+| TSLA | 51% / 58% | 97% / 97% |
+| BTC | 42% / 54% | 100% / 100% |
+
+⚠️ **BTC and TSLA show near-random or anti-correlated directional accuracy.**
+The regime model can be actively misleading for highly volatile assets. Use the
+confidence score to filter, or rely only on CI coverage for these tickers.
+
+---
+
+## Known Limitations
+
+⚠️ **Bullish bias.** The model was trained on 2022–2025 data, which was
+predominantly bullish. The base-rate floor and calibration center both reflect
+this. Performance may degrade in a sustained bear market not represented in the
+training window.
+
+⚠️ **No fundamental data.** The model uses only price history — it cannot
+capture earnings surprises, news events, macro announcements, or sector
+rotation. Combine with Dexter's other tools (SEC filings, financial metrics,
+web search) for a complete picture.
+
+⚠️ **Sample size.** The walk-forward backtest has n = 36–60 per
+ticker-horizon combination. The 95% confidence interval on the aggregate 63%
+accuracy (n = 484) is approximately [59%, 67%]. Individual ticker results have
+wider statistical uncertainty.
+
+⚠️ **BTC/TSLA anti-correlation.** The model shows negative directional skill
+on these assets. The regime model can be anti-informative when volatility
+overwhelms regime persistence.
+
+⚠️ **Small n at high confidence.** The 93% accuracy at confidence ≥ 0.5 is
+based on only 15 predictions. This is not statistically significant — the 95%
+CI on that 93% spans roughly [68%, 100%]. Treat as encouraging but
+unvalidated.
+
+⚠️ **Non-stationary markets.** Performance is expected to degrade during
+regime changes not seen in training data (e.g., a sustained deflationary
+crash, a market structure change, or a new asset class entering the training
+universe).
+
+⚠️ **Horizon limits.** 14d and 30d horizons are well-tested. 7d and 60d have
+less backtest coverage. Beyond 60d, the Markov chain mixes toward its
+stationary distribution and loses directional information.
+
+---
+
+## Backtest Methodology
+
+The model was validated using a **walk-forward backtest** — the same design
+used in production, with no look-ahead.
+
+### Design
+
+| Parameter | Value |
+|-----------|-------|
+| Warmup window | 120 trading days |
+| Stride | 10 trading days (non-overlapping prediction windows) |
+| Tickers | SPY, QQQ, GLD, AAPL, TSLA, BTC |
+| Horizons | 14 days, 30 days |
+| Configurations | 6 tickers × 2 horizons = 12 |
+| Predictions per config | ~36–60 |
+| Total predictions | 484 |
+
+At each step, the model sees only the trailing 120 days of price history,
+makes a prediction, then walks forward 10 days. No future data is used at any
+point.
+
+### Metrics
+
+| Metric | Value | Description |
+|--------|-------|-------------|
+| Aggregate Directional Accuracy | 63% | % of predictions where predicted direction matches actual |
+| 90% CI Coverage | 93% | % of actual prices falling within the predicted 90% CI |
+| Brier Score | 0.247 | Mean squared error of P(up) vs. actual binary outcome (lower = better) |
+| Selective conf ≥ 0.4 | 80% accuracy, 5% coverage | High-confidence subset |
+| Selective conf ≥ 0.5 | 93% accuracy, 3% coverage | Very-high-confidence subset |
+
+### Stressed Backtests
+
+The model was also tested against synthetic scenarios:
+
+- **Crash** — sudden 20% drawdown
+- **V-recovery** — crash followed by sharp rebound
+- **Sideways** — extended low-volatility range-bound market
+- **Volatility spike** — sudden doubling of daily volatility
+- **Regime flip** — abrupt transition from bull to bear (or reverse)
+
+These stress tests validate that confidence intervals widen appropriately, the
+structural break detector fires, and the model degrades gracefully rather than
+producing dangerously confident wrong predictions.
+
+---
+
+## Code Examples
+
+### Basic Usage
+
+```typescript
+import { computeMarkovDistribution } from './tools/finance/markov-distribution.js';
+
+const result = await computeMarkovDistribution({
+  ticker: 'SPY',
+  horizon: 14,
+  currentPrice: 580,
+  historicalPrices: prices, // 120+ daily closes, oldest first
+  polymarketMarkets: [],   // optional: Polymarket threshold anchors
+});
+
+// Action signal
+console.log(result.actionSignal.recommendation); // 'BUY' | 'HOLD' | 'SELL'
+console.log(result.actionSignal.expectedReturn);  // e.g., 0.023 (2.3%)
+console.log(result.actionSignal.riskRewardRatio); // e.g., 1.4
+
+// Prediction confidence (use for selective filtering)
+console.log(result.predictionConfidence); // 0.0 – 1.0
+
+// Full probability distribution (survival curve)
+for (const point of result.distribution) {
+  console.log(`P(SPY > $${point.price}) = ${(point.probability * 100).toFixed(1)}%`);
+}
+
+// Key price levels
+const { targetPrice, stopLoss, medianPrice } = result.actionSignal.actionLevels;
+console.log(`Target: $${targetPrice}, Stop: $${stopLoss}, Median: $${medianPrice}`);
+```
+
+### Selective Prediction (Confidence Filtering)
+
+```typescript
+const result = await computeMarkovDistribution({ /* ... */ });
+
+// Only act when confidence is high enough
+if (result.predictionConfidence >= 0.3) {
+  console.log(`Signal: ${result.actionSignal.recommendation}`);
+  console.log(`Expected return: ${(result.actionSignal.expectedReturn * 100).toFixed(2)}%`);
+  console.log(`Confidence: ${result.predictionConfidence.toFixed(2)}`);
+} else {
+  console.log('Low confidence — abstaining from prediction.');
+}
+```
+
+### Reading the Probability at a Specific Price
+
+```typescript
+import {
+  computeMarkovDistribution,
+  interpolateSurvival,
+} from './tools/finance/markov-distribution.js';
+
+const result = await computeMarkovDistribution({ /* ... */ });
+
+// What's the probability SPY finishes above $600?
+const pAbove600 = interpolateSurvival(result.distribution, 600);
+console.log(`P(SPY > $600) = ${(pAbove600 * 100).toFixed(1)}%`);
+```
+
+### Inspecting Model Diagnostics
+
+```typescript
+const result = await computeMarkovDistribution({ /* ... */ });
+const meta = result.metadata;
+
+console.log(`Current regime: ${meta.regimeState}`);
+console.log(`HMM converged: ${meta.hmm?.converged}`);
+console.log(`Ensemble consensus: ${meta.ensemble.consensus}/3`);
+console.log(`Structural break: ${meta.structuralBreakDetected}`);
+console.log(`Sparse states: ${meta.sparseStates.join(', ') || 'none'}`);
+console.log(`Goodness-of-fit p-value: ${meta.goodnessOfFit?.pValue.toFixed(3)}`);
+console.log(`Out-of-sample R²: ${meta.outOfSampleR2?.toFixed(4)}`);
+```
+
+---
+
+## Configuration & Tuning
+
+### Asset Profiles
+
+The model applies per-asset-class parameter overrides. These are selected
+automatically based on the ticker symbol.
+
+| Parameter | ETF | Equity | Crypto |
+|-----------|-----|--------|--------|
+| Kappa multiplier | 0.85× (less shrinkage) | 1.0× (baseline) | 1.3× (more shrinkage) |
+| HMM weight multiplier | 1.1× (trust HMM more) | 0.9× | 0.5× (HMM less reliable) |
+| Student-t degrees of freedom | 5 (lighter tails) | 4 | 3 (fattest tails) |
+| Transition matrix decay rate | 0.97 | 0.96 | 0.94 (faster adaptation) |
+
+**Recognized tickers:**
+- **ETFs:** SPY, QQQ, IWM, DIA, VOO, VTI, GLD, SLV, TLT, XLF, XLK, ARKK,
+  and ~40 more common US ETFs.
+- **Crypto:** Any ticker containing BTC, ETH, SOL, DOGE, XRP, or ending in
+  `-USD` / `USDT`.
+- **Equity:** Everything else (default).
+
+### Horizon Guidance
+
+| Horizon | Backtest Coverage | Notes |
+|---------|-------------------|-------|
+| 7 days | Limited | Less tested, higher noise |
+| **14 days** | **Well-tested** | Best directional accuracy for ETFs |
+| **30 days** | **Well-tested** | Good balance of signal and horizon |
+| 60 days | Limited | Markov chain starts mixing toward stationary |
+| 90+ days | Not recommended | Model loses directional information |
+
+### Default Parameters
+
+All defaults are optimized for the walk-forward backtest and should not need
+adjustment for typical use. Key internal defaults:
+
+- **Dirichlet smoothing:** `α = max(0.01, 5/N)` — auto-tuned per window size
+- **Transition decay:** 0.94–0.97 depending on asset type
+- **Calibration kappa:** 0.15–0.55 (adaptive per prediction)
+- **HMM:** 3-state Gaussian HMM, max 50 Baum-Welch iterations, convergence
+  threshold 1e-3
+- **Minimum data:** 60 returns for HMM fitting, 30 transitions for matrix
+  estimation, 120+ daily prices recommended
+- **Monte Carlo simulations:** 1,000 per distribution point (for CI bounds)
+- **Grid:** 20+ price levels spanning approximately ±3σ from current price
+
+### Polymarket Anchors
+
+When Polymarket threshold markets are available (e.g., "Will AAPL exceed $200
+by March?"), the model uses them as real-money anchors:
+
+- Raw probabilities are corrected for **YES-bias** (multiplicative adjustment
+  based on Reichenbach & Walther, 2025).
+- Trust scoring based on liquidity and market age filters out thin markets.
+- Optional **Kalshi cross-platform validation** flags price levels where
+  Polymarket and Kalshi disagree by more than 5 percentage points.
+- When anchors are available, the distribution blends Markov projections with
+  anchor probabilities, weighted by the spectral gap (mixing time) of the
+  transition matrix.
+
+The model works without any Polymarket data — pass an empty array for
+`polymarketMarkets` to use pure Markov + HMM + momentum signals.

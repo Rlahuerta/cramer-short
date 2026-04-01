@@ -289,6 +289,91 @@ export function generateReport(
 }
 
 // ---------------------------------------------------------------------------
+// Bootstrap Confidence Intervals
+// ---------------------------------------------------------------------------
+
+export interface BootstrapCI {
+  lower: number;
+  median: number;
+  upper: number;
+  nResamples: number;
+}
+
+/**
+ * Mulberry32 seeded PRNG — same algorithm used by generate-synthetic.ts.
+ * Returns a function that produces uniform [0, 1) values.
+ */
+function mulberry32(seed: number): () => number {
+  let s = seed;
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Bootstrap confidence interval for any backtest metric.
+ *
+ * Resamples `steps` with replacement `nResamples` times, evaluates `metricFn`
+ * on each resample, then returns the 2.5th/97.5th percentiles (95% CI) and
+ * the median.
+ *
+ * Uses a seeded PRNG (Mulberry32) for reproducibility.
+ */
+export function bootstrapMetricCI(
+  steps: BacktestStep[],
+  metricFn: (steps: BacktestStep[]) => number,
+  nResamples = 1000,
+  seed = 12345,
+): BootstrapCI {
+  if (steps.length === 0) {
+    return { lower: 0, median: 0, upper: 0, nResamples };
+  }
+
+  const rand = mulberry32(seed);
+  const estimates: number[] = [];
+
+  for (let r = 0; r < nResamples; r++) {
+    const sample: BacktestStep[] = [];
+    for (let i = 0; i < steps.length; i++) {
+      sample.push(steps[Math.floor(rand() * steps.length)]);
+    }
+    estimates.push(metricFn(sample));
+  }
+
+  estimates.sort((a, b) => a - b);
+
+  const pctIdx = (p: number) => Math.min(
+    Math.max(Math.floor(p * estimates.length), 0),
+    estimates.length - 1,
+  );
+
+  return {
+    lower: estimates[pctIdx(0.025)],
+    median: estimates[pctIdx(0.5)],
+    upper: estimates[pctIdx(0.975)],
+    nResamples,
+  };
+}
+
+/** Bootstrap 95% CI for directional accuracy. */
+export function bootstrapDirectionalCI(steps: BacktestStep[], nResamples = 1000, seed = 12345): BootstrapCI {
+  return bootstrapMetricCI(steps, directionalAccuracy, nResamples, seed);
+}
+
+/** Bootstrap 95% CI for Brier score. */
+export function bootstrapBrierCI(steps: BacktestStep[], nResamples = 1000, seed = 12345): BootstrapCI {
+  return bootstrapMetricCI(steps, brierScore, nResamples, seed);
+}
+
+/** Bootstrap 95% CI for CI coverage. */
+export function bootstrapCIcoverageCI(steps: BacktestStep[], nResamples = 1000, seed = 12345): BootstrapCI {
+  return bootstrapMetricCI(steps, ciCoverage, nResamples, seed);
+}
+
+// ---------------------------------------------------------------------------
 // Threshold Optimization (development-time calibration tool)
 // ---------------------------------------------------------------------------
 
@@ -348,4 +433,53 @@ export function optimizeThresholds(
   }
 
   return { bestBuyThreshold: bestBuy, bestSellThreshold: bestSell, bestAccuracy, grid };
+}
+
+// ---------------------------------------------------------------------------
+// P(up)-based Directional Accuracy (no HOLD dead zone)
+// ---------------------------------------------------------------------------
+
+/**
+ * Directional accuracy based purely on predicted P(up) vs actual outcome.
+ * No HOLD dead zone: P(up) > 0.5 → predicted UP, else predicted DOWN.
+ *
+ * This gives a cleaner measure of directional skill since the recommendation-based
+ * metric penalizes HOLD predictions even when the model correctly signals UP direction
+ * but with insufficient conviction to trigger BUY (e.g. E[R]=+0.3% < buy threshold).
+ */
+export function pUpDirectionalAccuracy(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+  const correct = steps.filter(s =>
+    (s.predictedProb > 0.5 && s.actualBinary === 1) ||
+    (s.predictedProb < 0.5 && s.actualBinary === 0) ||
+    (s.predictedProb === 0.5 && s.actualBinary === 1), // tie → UP (matches base-rate bias)
+  );
+  return correct.length / steps.length;
+}
+
+/**
+ * Selective P(up)-based directional accuracy with confidence filtering.
+ * Combines confidence-based abstention with P(up) directional check.
+ */
+export function selectivePUpAccuracy(
+  steps: BacktestStep[],
+  minConfidence: number,
+): { accuracy: number; coverage: number; selected: number; total: number } {
+  if (steps.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: 0 };
+
+  const selected = steps.filter(s => s.confidence >= minConfidence);
+  if (selected.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: steps.length };
+
+  const correct = selected.filter(s =>
+    (s.predictedProb > 0.5 && s.actualBinary === 1) ||
+    (s.predictedProb < 0.5 && s.actualBinary === 0) ||
+    (s.predictedProb === 0.5 && s.actualBinary === 1),
+  );
+
+  return {
+    accuracy: correct.length / selected.length,
+    coverage: selected.length / steps.length,
+    selected: selected.length,
+    total: steps.length,
+  };
 }

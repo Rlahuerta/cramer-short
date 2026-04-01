@@ -1536,6 +1536,10 @@ export function computePredictionConfidence(options: {
   recentVol?: number;
   /** Fraction of momentum lookbacks that agree on direction (0-1). Idea R. */
   momentumAgreement?: number;
+  /** Calibrated P(up) — used for base-rate alignment scoring */
+  calibratedPUp?: number;
+  /** Historical base rate P(up) from recent returns */
+  baseRate?: number;
 }): number {
   const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
 
@@ -1552,15 +1556,35 @@ export function computePredictionConfidence(options: {
   const stabilityScore = Math.min(1.0, regimeRunLength / 20);
 
   // Weighted combination (total base weights = 1.0)
-  let confidence = 0.35 * decisiveness
-                 + 0.20 * consensusScore
-                 + 0.15 * hmmScore
-                 + 0.20 * stabilityScore;
+  let confidence = 0.30 * decisiveness
+                 + 0.15 * consensusScore
+                 + 0.10 * hmmScore
+                 + 0.15 * stabilityScore;
 
-  // 5. Multi-lookback momentum agreement (Idea R): when 10d, 20d, and 40d
-  // momentum all point the same way, the trend is robust across timeframes.
+  // 5. Multi-lookback momentum agreement (Idea R)
   const momentumAgr = options.momentumAgreement ?? 0;
   confidence += 0.10 * momentumAgr;
+
+  // 6. Base-rate alignment (Round 5): predictions that agree with the empirical
+  // base rate are much more reliable than predictions that go against it.
+  // In a 74% up market, a BUY prediction is right ~74% of the time (aligned),
+  // while a SELL prediction is right ~26% of the time (contra-directional).
+  const calPUp = options.calibratedPUp;
+  const bRate = options.baseRate;
+  if (calPUp !== undefined && bRate !== undefined) {
+    const predDirection = calPUp >= 0.5 ? 1 : -1;
+    const baseDirection = bRate >= 0.5 ? 1 : -1;
+    const baseStrength = Math.abs(bRate - 0.5) * 2; // 0 at bRate=0.5, 1 at bRate=0/1
+
+    if (predDirection === baseDirection) {
+      // Aligned: boost proportional to how strong the base rate signal is
+      confidence += 0.20 * baseStrength;
+    } else {
+      // Contra-directional: mild penalty — don't over-punish since model might have
+      // genuine information that diverges from the base rate
+      confidence -= 0.08 * baseStrength;
+    }
+  }
 
   // Penalty for structural break (regime change mid-window → unreliable)
   if (structuralBreak) confidence *= 0.6;
@@ -1569,16 +1593,15 @@ export function computePredictionConfidence(options: {
   // ETFs are the most predictable → small boost.
   const assetType = options.assetType;
   if (assetType === 'crypto') {
-    confidence *= 0.7; // crypto accuracy is 30-40% → predictions are unreliable
+    confidence *= 0.7;
   } else if (assetType === 'etf') {
-    confidence *= 1.1; // ETFs (SPY, GLD, QQQ) are the most predictable
+    confidence *= 1.1;
   }
 
   // Volatility penalty: daily vol > 3% → scale confidence down.
-  // Mean daily vol: SPY~1%, TSLA~3%, BTC~4%. High vol = harder to predict.
   const vol = options.recentVol;
   if (vol && vol > 0.02) {
-    const volPenalty = Math.max(0.7, 1 - (vol - 0.02) * 5); // linear ramp from 1.0 at 2% to 0.7 at 8%
+    const volPenalty = Math.max(0.7, 1 - (vol - 0.02) * 5);
     confidence *= volPenalty;
   }
 
@@ -1685,14 +1708,15 @@ export function computeActionSignal(
   let actionBuyThr: number;
   let actionSellThr: number;
   if (recentVol && recentVol > 0) {
-    // 0.15× vol × sqrt(horizon) gives thresholds that match the expected signal magnitude
+    // Lower thresholds → more BUY/SELL signals (fewer HOLDs).
+    // In bullish markets, HOLD is usually wrong (actual returns are +3-10%),
+    // so converting uncertain HOLDs to BUYs improves directional accuracy.
     const volScaled = recentVol * Math.sqrt(horizon);
-    actionBuyThr  = Math.max(0.003, 0.15 * volScaled);
-    actionSellThr = Math.max(0.002, 0.12 * volScaled);
+    actionBuyThr  = Math.max(0.001, 0.08 * volScaled);
+    actionSellThr = Math.max(0.001, 0.06 * volScaled);
   } else {
-    // Fallback: reduced fixed thresholds (still much smaller than the old ±2%)
-    actionBuyThr  = horizon <= 7 ? 0.005 : horizon <= 30 ? 0.008 : 0.015;
-    actionSellThr = horizon <= 7 ? 0.003 : horizon <= 30 ? 0.005 : 0.010;
+    actionBuyThr  = horizon <= 7 ? 0.003 : horizon <= 30 ? 0.005 : 0.008;
+    actionSellThr = horizon <= 7 ? 0.002 : horizon <= 30 ? 0.003 : 0.005;
   }
 
   // Recommendation derived from expectedReturn (not zone argmax)
@@ -2067,6 +2091,8 @@ export async function computeMarkovDistribution(params: {
   // --- Prediction confidence (Idea M: selective prediction) ---
   // Use raw P(up) for decisiveness (how far from coin flip) since calibrated P(up)
   // is often compressed to 0.45-0.55, making decisiveness uniformly low.
+  // Include base-rate alignment (Round 5): predictions aligned with the empirical
+  // base rate are much more reliable than contra-directional ones.
   const predictionConfidence = computePredictionConfidence({
     pUp: rawPUp,
     ensembleConsensus: ensemble.consensus,
@@ -2076,6 +2102,8 @@ export async function computeMarkovDistribution(params: {
     assetType: assetProfile.type,
     recentVol: recentDailyVol,
     momentumAgreement: lookbackAgreement / totalLookbacks,
+    calibratedPUp: calPUp,
+    baseRate,
   });
 
   // --- Optional R²_OS (leave-one-out on training tail) ---
