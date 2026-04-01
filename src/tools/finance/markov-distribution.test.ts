@@ -50,6 +50,7 @@ import {
   studentTCDF,
   studentTSurvival,
   computeTrajectory,
+  winsorize,
 } from './markov-distribution.js';
 import type { RegimeState } from './markov-distribution.js';
 
@@ -2402,8 +2403,24 @@ describe('getAssetProfile', () => {
     expect(getAssetProfile('QQQ').type).toBe('etf');
   });
 
-  it('classifies GLD as ETF', () => {
-    expect(getAssetProfile('GLD').type).toBe('etf');
+  it('classifies GLD as commodity', () => {
+    expect(getAssetProfile('GLD').type).toBe('commodity');
+  });
+
+  it('classifies CL as commodity', () => {
+    expect(getAssetProfile('CL').type).toBe('commodity');
+  });
+
+  it('classifies NG as commodity', () => {
+    expect(getAssetProfile('NG').type).toBe('commodity');
+  });
+
+  it('classifies GC as commodity', () => {
+    expect(getAssetProfile('GC').type).toBe('commodity');
+  });
+
+  it('classifies USO as commodity', () => {
+    expect(getAssetProfile('USO').type).toBe('commodity');
   });
 
   it('classifies AAPL as equity', () => {
@@ -2705,5 +2722,126 @@ describe('markovDistributionTool trajectory output', () => {
       trajectory: false,
     });
     expect(output).not.toContain('DAY PRICE TRAJECTORY');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// winsorize — outlier clamping
+// ---------------------------------------------------------------------------
+
+describe('winsorize', () => {
+  it('clamps outliers beyond 3 standard deviations', () => {
+    // Normal values clustered near 0 plus one extreme outlier
+    const vals = [0.01, 0.02, -0.01, 0.0, 0.01, -0.02, 0.01, -0.01, 0.02, 0.0, 0.50];
+    const cleaned = winsorize(vals);
+    // The 0.50 outlier should be clamped down significantly
+    expect(Math.max(...cleaned)).toBeLessThan(0.50);
+    // Non-outlier values should be unchanged
+    expect(cleaned[0]).toBe(0.01);
+    expect(cleaned[3]).toBe(0.0);
+  });
+
+  it('preserves values within bounds', () => {
+    const vals = [0.01, -0.01, 0.02, -0.02, 0.005];
+    const cleaned = winsorize(vals);
+    expect(cleaned).toEqual(vals);
+  });
+
+  it('handles empty and short arrays', () => {
+    expect(winsorize([])).toEqual([]);
+    expect(winsorize([1.0])).toEqual([1.0]);
+    expect(winsorize([1.0, 2.0])).toEqual([1.0, 2.0]);
+  });
+
+  it('handles constant array', () => {
+    const vals = [0.01, 0.01, 0.01, 0.01];
+    expect(winsorize(vals)).toEqual(vals);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// estimateRegimeStats — drift cap and winsorization
+// ---------------------------------------------------------------------------
+
+describe('estimateRegimeStats drift cap', () => {
+  it('caps daily drift when maxDailyDrift is provided', () => {
+    // Simulate geopolitical shock: bull returns averaging +3% daily
+    const returns: number[] = [];
+    const states: RegimeState[] = [];
+    for (let i = 0; i < 50; i++) {
+      returns.push(0.03 + (Math.random() - 0.5) * 0.01);
+      states.push('bull');
+    }
+    const maxDrift = 0.01;
+    const stats = estimateRegimeStats(returns, states, maxDrift);
+    expect(Math.abs(stats.bull.meanReturn)).toBeLessThanOrEqual(maxDrift + 1e-10);
+  });
+
+  it('does not cap drift when maxDailyDrift is undefined', () => {
+    const returns = Array(20).fill(0.03);
+    const states: RegimeState[] = Array(20).fill('bull');
+    const stats = estimateRegimeStats(returns, states);
+    expect(stats.bull.meanReturn).toBeGreaterThan(0.02);
+  });
+
+  it('caps negative drift (bear regime) symmetrically', () => {
+    const returns = Array(20).fill(-0.04);
+    const states: RegimeState[] = Array(20).fill('bear');
+    const stats = estimateRegimeStats(returns, states, 0.01);
+    expect(stats.bear.meanReturn).toBeGreaterThanOrEqual(-0.01 - 1e-10);
+  });
+
+  it('stdReturn is not affected by drift cap', () => {
+    const returns = Array(30).fill(0.05);
+    // Add some variance
+    returns[0] = 0.04;
+    returns[1] = 0.06;
+    const states: RegimeState[] = Array(30).fill('bull');
+    const withCap = estimateRegimeStats(returns, states, 0.01);
+    const noCap = estimateRegimeStats(returns, states);
+    // std should be similar (winsorization may slightly affect it, but shouldn't destroy it)
+    expect(withCap.bull.stdReturn).toBeGreaterThan(0);
+    expect(Math.abs(withCap.bull.stdReturn - noCap.bull.stdReturn)).toBeLessThan(0.01);
+  });
+
+  it('winsorization removes shock outliers from regime stats', () => {
+    // Normal returns with one extreme outlier
+    const returns: number[] = Array(50).fill(0).map(() => 0.001 + (Math.random() - 0.5) * 0.02);
+    returns[25] = 0.15; // 15% daily return = extreme outlier
+    const states: RegimeState[] = Array(50).fill('bull');
+    const stats = estimateRegimeStats(returns, states, 0.01);
+    // Mean should not be dominated by the outlier
+    expect(stats.bull.meanReturn).toBeLessThan(0.01 + 1e-10);
+    // Std should be reasonable (not inflated by outlier)
+    expect(stats.bull.stdReturn).toBeLessThan(0.05);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commodity asset profile — maxDailyDrift
+// ---------------------------------------------------------------------------
+
+describe('commodity asset profile', () => {
+  it('has maxDailyDrift defined', () => {
+    const profile = getAssetProfile('CL');
+    expect(profile.maxDailyDrift).toBeDefined();
+    expect(profile.maxDailyDrift!).toBeGreaterThan(0);
+    expect(profile.maxDailyDrift!).toBeLessThanOrEqual(0.015);
+  });
+
+  it('all profiles have maxDailyDrift defined', () => {
+    for (const ticker of ['SPY', 'AAPL', 'BTC-USD', 'CL']) {
+      const profile = getAssetProfile(ticker);
+      expect(profile.maxDailyDrift).toBeDefined();
+      expect(profile.maxDailyDrift!).toBeGreaterThan(0);
+    }
+  });
+
+  it('crypto has the highest maxDailyDrift', () => {
+    const crypto = getAssetProfile('BTC-USD');
+    const commodity = getAssetProfile('CL');
+    const etf = getAssetProfile('SPY');
+    expect(crypto.maxDailyDrift!).toBeGreaterThan(commodity.maxDailyDrift!);
+    expect(commodity.maxDailyDrift!).toBeGreaterThan(etf.maxDailyDrift!);
   });
 });

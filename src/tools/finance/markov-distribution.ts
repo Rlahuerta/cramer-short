@@ -238,7 +238,7 @@ export interface AnchorCoverageDiagnostic {
  */
 export interface AssetProfile {
   /** Asset class identifier */
-  type: 'etf' | 'equity' | 'crypto';
+  type: 'etf' | 'equity' | 'crypto' | 'commodity';
   /** Calibration kappa multiplier (1.0 = default). Higher = more conservative. */
   kappaMultiplier: number;
   /** HMM weight multiplier (1.0 = default). Lower = trust HMM less. */
@@ -247,6 +247,8 @@ export interface AssetProfile {
   studentTNu: number;
   /** Transition matrix decay rate */
   decayRate: number;
+  /** Maximum absolute daily drift (caps regime meanReturn to prevent shock contamination) */
+  maxDailyDrift?: number;
 }
 
 const ASSET_PROFILES: Record<AssetProfile['type'], AssetProfile> = {
@@ -256,6 +258,7 @@ const ASSET_PROFILES: Record<AssetProfile['type'], AssetProfile> = {
     hmmWeightMultiplier: 1.1,  // HMM works well on smoother series
     studentTNu: 5,
     decayRate: 0.97,
+    maxDailyDrift: 0.008,      // ~2% annualized cap
   },
   equity: {
     type: 'equity',
@@ -263,6 +266,7 @@ const ASSET_PROFILES: Record<AssetProfile['type'], AssetProfile> = {
     hmmWeightMultiplier: 0.9,  // slightly less HMM trust (more idiosyncratic)
     studentTNu: 4,             // fatter tails than ETFs
     decayRate: 0.96,
+    maxDailyDrift: 0.012,      // ~3% annualized cap
   },
   crypto: {
     type: 'crypto',
@@ -270,6 +274,15 @@ const ASSET_PROFILES: Record<AssetProfile['type'], AssetProfile> = {
     hmmWeightMultiplier: 0.5,  // HMM less reliable on crypto noise
     studentTNu: 3,             // fattest tails
     decayRate: 0.94,
+    maxDailyDrift: 0.025,      // crypto can legitimately drift more
+  },
+  commodity: {
+    type: 'commodity',
+    kappaMultiplier: 1.1,      // commodities are driven by supply shocks → slightly more conservative
+    hmmWeightMultiplier: 0.7,  // regime switching is real but noisy (geopolitics)
+    studentTNu: 4,             // fat tails from supply shocks
+    decayRate: 0.95,
+    maxDailyDrift: 0.010,      // ~2.5% annualized; prevents geopolitical shock drift contamination
   },
 };
 
@@ -285,10 +298,28 @@ export function getAssetProfile(ticker: string): AssetProfile {
       t.endsWith('USDT') || t.includes('CRYPTO')) {
     return ASSET_PROFILES.crypto;
   }
+  // Commodity futures detection (CME/NYMEX/COMEX tickers)
+  const commodityTickers = new Set([
+    'CL', 'NG', 'HO', 'RB',          // energy: crude, nat gas, heating oil, gasoline
+    'GC', 'SI', 'HG', 'PL', 'PA',    // metals: gold, silver, copper, platinum, palladium
+    'ZC', 'ZW', 'ZS', 'ZM', 'ZL',    // grains: corn, wheat, soybeans, soybean meal/oil
+    'CT', 'KC', 'SB', 'CC', 'OJ',    // softs: cotton, coffee, sugar, cocoa, OJ
+    'LE', 'HE', 'GF',                 // livestock: live cattle, lean hogs, feeder cattle
+    'WTICOUSD', 'BRENTUSD',           // spot oil aliases
+  ]);
+  if (commodityTickers.has(t)) return ASSET_PROFILES.commodity;
+  // Commodity ETFs — use commodity profile (they track commodity prices)
+  const commodityEtfs = new Set([
+    'USO', 'UNG', 'DBO', 'GSG', 'DJP', 'PDBC',  // broad/energy commodity ETFs
+    'GLD', 'SLV', 'IAU', 'SGOL', 'PPLT',         // precious metal ETFs
+    'CPER', 'JJC',                                  // copper ETFs
+    'DBA', 'WEAT', 'CORN', 'SOYB',                // agriculture ETFs
+  ]);
+  if (commodityEtfs.has(t)) return ASSET_PROFILES.commodity;
   // ETF detection (common US ETFs and patterns)
   const etfTickers = new Set([
     'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'VTI', 'VXUS', 'EFA', 'EEM',
-    'GLD', 'SLV', 'USO', 'UNG', 'TLT', 'IEF', 'SHY', 'LQD', 'HYG',
+    'TLT', 'IEF', 'SHY', 'LQD', 'HYG',
     'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLY', 'XLU', 'XLB',
     'ARKK', 'ARKG', 'ARKW', 'SOXL', 'TQQQ', 'SQQQ', 'SPXL', 'VGK',
     'IEMG', 'AGG', 'BND', 'SCHD', 'VYM', 'JEPI', 'VNQ', 'XLRE',
@@ -1072,9 +1103,25 @@ interface RegimeStats {
  * Estimate per-regime empirical return statistics from historical data.
  * Falls back to literature-informed defaults when data is sparse.
  */
+/**
+ * Winsorize an array: clamp values beyond ±k standard deviations to the boundary.
+ * Prevents extreme outliers (geopolitical shocks, flash crashes) from contaminating
+ * regime statistics.
+ */
+export function winsorize(values: number[], k = 3.0): number[] {
+  if (values.length < 3) return [...values];
+  const mean = values.reduce((s, v) => s + v, 0) / values.length;
+  const std = Math.sqrt(values.reduce((s, v) => s + (v - mean) ** 2, 0) / values.length);
+  if (std < 1e-12) return [...values];
+  const lo = mean - k * std;
+  const hi = mean + k * std;
+  return values.map(v => Math.max(lo, Math.min(hi, v)));
+}
+
 export function estimateRegimeStats(
   returns: number[],
   states: RegimeState[],
+  maxDailyDrift?: number,
 ): Record<RegimeState, RegimeStats> {
   const defaults: Record<RegimeState, RegimeStats> = {
     bull:          { meanReturn:  0.005, stdReturn: 0.010 },
@@ -1093,9 +1140,16 @@ export function estimateRegimeStats(
   const result = { ...defaults };
   for (const [state, vals] of Object.entries(bins) as [RegimeState, number[]][]) {
     if (vals.length >= 5) {
-      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
-      const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length;
-      result[state] = { meanReturn: mean, stdReturn: Math.sqrt(variance) };
+      // Winsorize at 3σ to remove shock outliers before computing stats
+      const cleaned = winsorize(vals);
+      const mean = cleaned.reduce((s, v) => s + v, 0) / cleaned.length;
+      const variance = cleaned.reduce((s, v) => s + (v - mean) ** 2, 0) / cleaned.length;
+      let cappedMean = mean;
+      // Cap daily drift to prevent shock-period contamination
+      if (maxDailyDrift !== undefined && maxDailyDrift > 0) {
+        cappedMean = Math.max(-maxDailyDrift, Math.min(maxDailyDrift, mean));
+      }
+      result[state] = { meanReturn: cappedMean, stdReturn: Math.sqrt(variance) };
     }
   }
   return result;
@@ -1743,8 +1797,8 @@ export function computePredictionConfidence(options: {
   regimeRunLength: number;
   /** Whether a structural break was detected */
   structuralBreak: boolean;
-  /** Asset type — crypto predictions get a confidence discount */
-  assetType?: 'etf' | 'equity' | 'crypto';
+  /** Asset type — crypto/commodity predictions get a confidence discount */
+  assetType?: 'etf' | 'equity' | 'crypto' | 'commodity';
   /** Recent daily volatility — high vol → harder to predict → lower confidence */
   recentVol?: number;
   /** Fraction of momentum lookbacks that agree on direction (0-1). Idea R. */
@@ -1803,10 +1857,13 @@ export function computePredictionConfidence(options: {
   if (structuralBreak) confidence *= 0.6;
 
   // Asset-type discount: crypto is inherently noisier → scale confidence down.
+  // Commodities are driven by supply shocks → moderate discount.
   // ETFs are the most predictable → small boost.
   const assetType = options.assetType;
   if (assetType === 'crypto') {
     confidence *= 0.7;
+  } else if (assetType === 'commodity') {
+    confidence *= 0.85;
   } else if (assetType === 'etf') {
     confidence *= 1.1;
   }
@@ -2116,9 +2173,9 @@ export async function computeMarkovDistribution(params: {
   const sentimentShift = sentimentSignal.bullish - sentimentSignal.bearish;
   P = adjustTransitionMatrix(P, sentimentSignal);
 
-  // --- Regime statistics ---
+  // --- Regime statistics (winsorized + drift-capped per asset profile) ---
   const logReturns = returns.map(r => Math.log(1 + r));
-  const regimeStats = estimateRegimeStats(logReturns, regimeSeq);
+  const regimeStats = estimateRegimeStats(logReturns, regimeSeq, assetProfile.maxDailyDrift);
 
   // --- Tier 1c: Polymarket anchors with optional cross-platform validation ---
   let polymarketAnchors = extractPriceThresholds(polymarketMarkets);
@@ -2257,6 +2314,7 @@ export async function computeMarkovDistribution(params: {
     (s, state, i) => s + stateWeightsForUp[i] * regimeUpRates[state], 0,
   );
   const conditionalWeight = assetProfile.type === 'etf' ? 0.80
+    : assetProfile.type === 'commodity' ? 0.60
     : assetProfile.type === 'equity' ? 0.65
     : 0.40; // crypto
   const calibrationCenter = conditionalWeight * conditionalPUp + (1 - conditionalWeight) * baseRate;
