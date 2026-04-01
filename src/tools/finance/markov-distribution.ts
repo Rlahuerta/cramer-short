@@ -1861,14 +1861,30 @@ export function calibrateProbabilities(
         const newMarkov = studentTSurvival(cp, point.price, calibratedDrift, volN);
         newProb = Math.max(0, Math.min(1, point.probability + (newMarkov - oldMarkov)));
       }
-      return { ...point, probability: newProb };
-      // lowerBound and upperBound preserved from Monte Carlo — no compression
+      // Shift CI bounds by the same delta so they remain consistent with the point estimate.
+      // Without this, calibrated probability can fall outside the raw MC CI bounds.
+      const delta = newProb - point.probability;
+      const newLower = Math.max(0, Math.min(1, (point.lowerBound ?? newProb) + delta));
+      const newUpper = Math.max(0, Math.min(1, (point.upperBound ?? newProb) + delta));
+      return {
+        ...point,
+        probability: newProb,
+        lowerBound: Math.min(newLower, newProb),
+        upperBound: Math.max(newUpper, newProb),
+      };
     });
 
-    // Re-enforce monotonicity
+    // Re-enforce monotonicity (adjust bounds to stay consistent)
     for (let i = calibrated.length - 2; i >= 0; i--) {
       if (calibrated[i].probability < calibrated[i + 1].probability) {
         calibrated[i].probability = calibrated[i + 1].probability;
+        // Ensure bounds still bracket the probability after adjustment
+        if (calibrated[i].upperBound != null && calibrated[i].upperBound < calibrated[i].probability) {
+          calibrated[i].upperBound = calibrated[i].probability;
+        }
+        if (calibrated[i].lowerBound != null && calibrated[i].lowerBound > calibrated[i].probability) {
+          calibrated[i].lowerBound = calibrated[i].probability;
+        }
       }
     }
     return calibrated;
@@ -1876,10 +1892,18 @@ export function calibrateProbabilities(
 
   // --- Legacy fallback: probability-level calibration ---
   // Used when drift params are not available (e.g., unit tests with synthetic data)
-  const calibrated = distribution.map(point => ({
-    ...point,
-    probability: kappa * center + (1 - kappa) * point.probability,
-  }));
+  const calibrated = distribution.map(point => {
+    const newProb = kappa * center + (1 - kappa) * point.probability;
+    const delta = newProb - point.probability;
+    const newLower = Math.max(0, Math.min(1, (point.lowerBound ?? newProb) + delta));
+    const newUpper = Math.max(0, Math.min(1, (point.upperBound ?? newProb) + delta));
+    return {
+      ...point,
+      probability: newProb,
+      lowerBound: Math.min(newLower, newProb),
+      upperBound: Math.max(newUpper, newProb),
+    };
+  });
 
   // Re-enforce monotonicity after shrinkage (P(>X) non-increasing in X)
   for (let i = calibrated.length - 2; i >= 0; i--) {
@@ -2222,14 +2246,15 @@ export function computeActionSignal(
   let confidence: 'HIGH' | 'MEDIUM' | 'LOW' =
     conviction >= 2 * activeThr ? 'HIGH' : conviction >= activeThr ? 'MEDIUM' : 'LOW';
 
-  // Cap confidence when scenario cross-check is borderline
-  // (e.g., median is negative but expected return is positive)
-  if (scenarios) {
-    const medianReturn = scenarios.expectedReturn;
-    // If mean and median disagree in sign, cap confidence at MEDIUM
-    if ((expectedReturn > 0 && medianReturn < -0.005) || (expectedReturn < 0 && medianReturn > 0.005)) {
-      if (confidence === 'HIGH') confidence = 'MEDIUM';
-    }
+  // Compute action levels (includes the true median price from CDF)
+  const actionLevels = computeActionLevels(distribution, currentPrice);
+
+  // Cap confidence when mean (expectedReturn) and median disagree in sign.
+  // scenarios.expectedReturn is the mean, NOT the median — use the true
+  // CDF median from actionLevels for this cross-check.
+  const medianReturn = (actionLevels.medianPrice - currentPrice) / currentPrice;
+  if ((expectedReturn > 0 && medianReturn < -0.005) || (expectedReturn < 0 && medianReturn > 0.005)) {
+    if (confidence === 'HIGH') confidence = 'MEDIUM';
   }
 
   return {
@@ -2242,7 +2267,7 @@ export function computeActionSignal(
     riskRewardRatio,
     buyThreshold,
     sellThreshold,
-    actionLevels: computeActionLevels(distribution, currentPrice),
+    actionLevels,
   };
 }
 
@@ -2671,6 +2696,18 @@ export async function computeMarkovDistribution(params: {
           ) / 1000;
         }
       }
+    }
+  }
+
+  // --- Final bounds enforcement ---
+  // Anchor blending, calibration, and monotonicity passes can push probabilities
+  // outside MC-derived CI bounds. Enforce lowerBound ≤ probability ≤ upperBound.
+  for (const pt of distribution) {
+    if (pt.upperBound != null && pt.upperBound < pt.probability) {
+      pt.upperBound = pt.probability;
+    }
+    if (pt.lowerBound != null && pt.lowerBound > pt.probability) {
+      pt.lowerBound = pt.probability;
     }
   }
 
