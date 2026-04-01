@@ -298,7 +298,7 @@ export function getAssetProfile(ticker: string): AssetProfile {
       t.endsWith('USDT') || t.includes('CRYPTO')) {
     return ASSET_PROFILES.crypto;
   }
-  // Commodity futures detection (CME/NYMEX/COMEX tickers)
+  // Commodity futures detection (CME/NYMEX/COMEX tickers + common names)
   const commodityTickers = new Set([
     'CL', 'NG', 'HO', 'RB',          // energy: crude, nat gas, heating oil, gasoline
     'GC', 'SI', 'HG', 'PL', 'PA',    // metals: gold, silver, copper, platinum, palladium
@@ -306,6 +306,9 @@ export function getAssetProfile(ticker: string): AssetProfile {
     'CT', 'KC', 'SB', 'CC', 'OJ',    // softs: cotton, coffee, sugar, cocoa, OJ
     'LE', 'HE', 'GF',                 // livestock: live cattle, lean hogs, feeder cattle
     'WTICOUSD', 'BRENTUSD',           // spot oil aliases
+    'GOLD', 'SILVER', 'COPPER',       // common names for precious/base metals
+    'XAUUSD', 'XAGUSD',              // forex-style spot metal symbols
+    'NATGAS', 'CRUDE', 'OIL',        // informal energy names
   ]);
   if (commodityTickers.has(t)) return ASSET_PROFILES.commodity;
   // Commodity ETFs — use commodity profile (they track commodity prices)

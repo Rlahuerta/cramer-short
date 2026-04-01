@@ -2471,6 +2471,14 @@ describe('getAssetProfile', () => {
     expect(getAssetProfile('USO').type).toBe('commodity');
   });
 
+  it('classifies GOLD as commodity', () => {
+    expect(getAssetProfile('GOLD').type).toBe('commodity');
+  });
+
+  it('classifies XAUUSD as commodity', () => {
+    expect(getAssetProfile('XAUUSD').type).toBe('commodity');
+  });
+
   it('classifies AAPL as equity', () => {
     expect(getAssetProfile('AAPL').type).toBe('equity');
   });
