@@ -2116,6 +2116,7 @@ export function computeActionSignal(
   sellThreshold = 0.03,
   horizon = 30,
   recentVol?: number,
+  scenarios?: ScenarioProbabilities,
 ): ActionSignal {
   const pAboveBuy  = interpolateSurvival(distribution, currentPrice * (1 + buyThreshold));
   const pAboveSell = interpolateSurvival(distribution, currentPrice * (1 - sellThreshold));
@@ -2185,11 +2186,51 @@ export function computeActionSignal(
     recommendation = 'HOLD';
   }
 
+  // Cross-validate recommendation against scenario probabilities.
+  // The mean (expectedReturn) can be pulled positive by a fat right tail even when
+  // the median is negative and downside scenarios dominate. In such cases, a BUY
+  // signal is misleading — the most likely outcome is a loss.
+  if (scenarios) {
+    const pUp = scenarios.pUp;
+    const upScenarios   = (scenarios.buckets[3]?.probability ?? 0) + (scenarios.buckets[4]?.probability ?? 0);
+    const downScenarios = (scenarios.buckets[0]?.probability ?? 0) + (scenarios.buckets[1]?.probability ?? 0);
+
+    if (recommendation === 'BUY') {
+      // Gate 1: P(up) < 50% → CDF says more likely to go down than up → cannot be BUY
+      if (pUp < 0.50) {
+        recommendation = 'HOLD';
+      }
+      // Gate 2: downside scenarios exceed upside by >5pp → bearish tilt → downgrade
+      else if (downScenarios > upScenarios + 0.05) {
+        recommendation = 'HOLD';
+      }
+    } else if (recommendation === 'SELL') {
+      // Mirror: P(up) > 50% → more likely up → cannot be SELL
+      if (pUp > 0.50) {
+        recommendation = 'HOLD';
+      }
+      // Upside scenarios exceed downside by >5pp → bullish tilt → downgrade
+      else if (upScenarios > downScenarios + 0.05) {
+        recommendation = 'HOLD';
+      }
+    }
+  }
+
   // Confidence from conviction strength relative to threshold
   const activeThr = recommendation === 'BUY' ? actionBuyThr : actionSellThr;
   const conviction = Math.abs(expectedReturn);
-  const confidence: 'HIGH' | 'MEDIUM' | 'LOW' =
+  let confidence: 'HIGH' | 'MEDIUM' | 'LOW' =
     conviction >= 2 * activeThr ? 'HIGH' : conviction >= activeThr ? 'MEDIUM' : 'LOW';
+
+  // Cap confidence when scenario cross-check is borderline
+  // (e.g., median is negative but expected return is positive)
+  if (scenarios) {
+    const medianReturn = scenarios.expectedReturn;
+    // If mean and median disagree in sign, cap confidence at MEDIUM
+    if ((expectedReturn > 0 && medianReturn < -0.005) || (expectedReturn < 0 && medianReturn > 0.005)) {
+      if (confidence === 'HIGH') confidence = 'MEDIUM';
+    }
+  }
 
   return {
     buyProbability:  pAboveBuy,
@@ -2643,7 +2684,7 @@ export async function computeMarkovDistribution(params: {
     distribution,
     rawDistribution,
     actionSignal: computeActionSignal(distribution, currentPrice, undefined, undefined, horizon,
-      recentDailyVol,
+      recentDailyVol, scenarios,
     ),
     scenarios,
     predictionConfidence,

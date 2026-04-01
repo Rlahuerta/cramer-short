@@ -55,7 +55,7 @@ import {
   computeScenarioProbabilities,
   normalizeAnchorPricesForETF,
 } from './markov-distribution.js';
-import type { RegimeState, MarkovDistributionPoint, PriceThreshold } from './markov-distribution.js';
+import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1400,6 +1400,135 @@ describe('computeActionSignal', () => {
     const dist = makeLinearDist(80, 105);
     const sig = computeActionSignal(dist, 100);
     expect(sig.expectedReturn).toBeLessThan(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cross-validation: scenario-gated recommendation
+  // ---------------------------------------------------------------------------
+
+  it('downgrades BUY to HOLD when P(up) < 0.50 from scenarios', () => {
+    // Right-skewed dist with fat tail: mean positive but median below current
+    // Prices from 90 to 200, but most mass is near 90-100 (bearish median)
+    // Create distribution where P(>100) ≈ 0.45 (more likely to go down)
+    // but E[price] > 100 due to fat right tail above 150
+    const dist: MarkovDistributionPoint[] = [
+      { price: 90,  probability: 0.99, lowerBound: 0.95, upperBound: 1.0,  source: 'markov' },
+      { price: 95,  probability: 0.85, lowerBound: 0.80, upperBound: 0.90, source: 'markov' },
+      { price: 100, probability: 0.45, lowerBound: 0.40, upperBound: 0.50, source: 'markov' },
+      { price: 105, probability: 0.20, lowerBound: 0.15, upperBound: 0.25, source: 'markov' },
+      { price: 110, probability: 0.15, lowerBound: 0.10, upperBound: 0.20, source: 'markov' },
+      { price: 150, probability: 0.12, lowerBound: 0.08, upperBound: 0.15, source: 'markov' },
+      { price: 200, probability: 0.10, lowerBound: 0.05, upperBound: 0.12, source: 'markov' },
+    ];
+
+    // Without scenarios, the fat right tail makes expectedReturn positive → BUY
+    const sigNoScenarios = computeActionSignal(dist, 100, 0.05, 0.03, 30);
+    expect(sigNoScenarios.expectedReturn).toBeGreaterThan(0);
+
+    // With scenarios reflecting the CDF truth (P(up)=0.45 < 0.50), BUY should be downgraded
+    const scenarios: ScenarioProbabilities = {
+      buckets: [
+        { label: 'Down >5%',  probability: 0.15, priceRange: [null, 95] },
+        { label: 'Down 3–5%', probability: 0.30, priceRange: [95, 97] },
+        { label: 'Flat ±3%',  probability: 0.25, priceRange: [97, 103] },
+        { label: 'Up 3–5%',   probability: 0.10, priceRange: [103, 105] },
+        { label: 'Up >5%',    probability: 0.20, priceRange: [105, null] },
+      ],
+      expectedPrice: 103,
+      expectedReturn: 0.03,
+      pUp: 0.45, // < 0.50 → bearish
+    };
+
+    const sigWithScenarios = computeActionSignal(dist, 100, 0.05, 0.03, 30, undefined, scenarios);
+    expect(sigWithScenarios.recommendation).toBe('HOLD');
+  });
+
+  it('downgrades BUY to HOLD when downside scenarios exceed upside by >5pp', () => {
+    const dist = makeLinearDist(90, 115); // slightly bullish
+    const scenarios: ScenarioProbabilities = {
+      buckets: [
+        { label: 'Down >5%',  probability: 0.20, priceRange: [null, 95] },
+        { label: 'Down 3–5%', probability: 0.15, priceRange: [95, 97] },
+        { label: 'Flat ±3%',  probability: 0.40, priceRange: [97, 103] },
+        { label: 'Up 3–5%',   probability: 0.10, priceRange: [103, 105] },
+        { label: 'Up >5%',    probability: 0.15, priceRange: [105, null] },
+      ],
+      expectedPrice: 101,
+      expectedReturn: 0.01,
+      pUp: 0.55, // slightly above 0.50
+    };
+    // downside = 0.20 + 0.15 = 0.35, upside = 0.10 + 0.15 = 0.25
+    // gap = 0.35 - 0.25 = 0.10 > 0.05 → downgrade BUY to HOLD
+    const sig = computeActionSignal(dist, 100, 0.05, 0.03, 30, undefined, scenarios);
+    expect(sig.recommendation).not.toBe('BUY');
+  });
+
+  it('downgrades SELL to HOLD when P(up) > 0.50 from scenarios', () => {
+    // Bearish mean but P(up) > 0.50 → median above current
+    const dist = makeLinearDist(50, 102); // mean below current, most mass below
+    const scenarios: ScenarioProbabilities = {
+      buckets: [
+        { label: 'Down >5%',  probability: 0.10, priceRange: [null, 95] },
+        { label: 'Down 3–5%', probability: 0.10, priceRange: [95, 97] },
+        { label: 'Flat ±3%',  probability: 0.40, priceRange: [97, 103] },
+        { label: 'Up 3–5%',   probability: 0.20, priceRange: [103, 105] },
+        { label: 'Up >5%',    probability: 0.20, priceRange: [105, null] },
+      ],
+      expectedPrice: 101,
+      expectedReturn: 0.01,
+      pUp: 0.55, // > 0.50 → cannot SELL
+    };
+    const sig = computeActionSignal(dist, 100, 0.05, 0.03, 30, undefined, scenarios);
+    // Even if mean-based logic would say SELL, P(up) > 0.50 overrides
+    expect(sig.recommendation).not.toBe('SELL');
+  });
+
+  it('preserves BUY when scenarios confirm bullish tilt', () => {
+    const dist = makeLinearDist(95, 120); // clearly bullish
+    const scenarios: ScenarioProbabilities = {
+      buckets: [
+        { label: 'Down >5%',  probability: 0.05, priceRange: [null, 95] },
+        { label: 'Down 3–5%', probability: 0.05, priceRange: [95, 97] },
+        { label: 'Flat ±3%',  probability: 0.30, priceRange: [97, 103] },
+        { label: 'Up 3–5%',   probability: 0.25, priceRange: [103, 105] },
+        { label: 'Up >5%',    probability: 0.35, priceRange: [105, null] },
+      ],
+      expectedPrice: 108,
+      expectedReturn: 0.08,
+      pUp: 0.65, // clearly bullish
+    };
+    const sig = computeActionSignal(dist, 100, 0.05, 0.03, 30, undefined, scenarios);
+    expect(sig.recommendation).toBe('BUY');
+  });
+
+  it('caps confidence to MEDIUM when mean and median disagree in sign', () => {
+    // Positive mean but negative median: skewed distribution
+    const dist: MarkovDistributionPoint[] = [
+      { price: 90,  probability: 0.99, lowerBound: 0.95, upperBound: 1.0,  source: 'markov' },
+      { price: 95,  probability: 0.80, lowerBound: 0.75, upperBound: 0.85, source: 'markov' },
+      { price: 100, probability: 0.55, lowerBound: 0.50, upperBound: 0.60, source: 'markov' },
+      { price: 105, probability: 0.40, lowerBound: 0.35, upperBound: 0.45, source: 'markov' },
+      { price: 110, probability: 0.30, lowerBound: 0.25, upperBound: 0.35, source: 'markov' },
+      { price: 150, probability: 0.20, lowerBound: 0.15, upperBound: 0.25, source: 'markov' },
+      { price: 200, probability: 0.15, lowerBound: 0.10, upperBound: 0.20, source: 'markov' },
+    ];
+    const scenarios: ScenarioProbabilities = {
+      buckets: [
+        { label: 'Down >5%',  probability: 0.20, priceRange: [null, 95] },
+        { label: 'Down 3–5%', probability: 0.10, priceRange: [95, 97] },
+        { label: 'Flat ±3%',  probability: 0.25, priceRange: [97, 103] },
+        { label: 'Up 3–5%',   probability: 0.15, priceRange: [103, 105] },
+        { label: 'Up >5%',    probability: 0.30, priceRange: [105, null] },
+      ],
+      expectedPrice: 99, // below current → negative median return
+      expectedReturn: -0.01, // negative median return
+      pUp: 0.55,
+    };
+    const sig = computeActionSignal(dist, 100, 0.05, 0.03, 30, undefined, scenarios);
+    // Mean is positive (fat tail), median is negative → confidence should not be HIGH
+    if (sig.expectedReturn > 0) {
+      expect(sig.confidence).not.toBe('HIGH');
+    }
   });
 
   it('computeMarkovDistribution result includes actionSignal field', async () => {
