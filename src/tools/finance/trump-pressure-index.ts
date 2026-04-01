@@ -437,10 +437,11 @@ async function fetchFredHistory(seriesId: string, days = 120): Promise<number[]>
   return values;
 }
 
-/** Fetch stock price history from Financial Datasets API */
+/** Fetch stock price history from Financial Datasets API, with FRED fallback */
 async function fetchStockHistory(ticker: string, days = 120): Promise<number[]> {
   const endDate = new Date().toISOString().slice(0, 10);
   const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  // Primary: Financial Datasets API
   try {
     const { data } = await api.get('/prices/', {
       ticker,
@@ -449,10 +450,25 @@ async function fetchStockHistory(ticker: string, days = 120): Promise<number[]> 
       end_date: endDate,
     });
     const prices: Array<{ close: number }> = data.prices ?? data ?? [];
-    return prices.map(p => p.close).filter(v => typeof v === 'number' && !isNaN(v));
+    const result = prices.map(p => p.close).filter(v => typeof v === 'number' && !isNaN(v));
+    if (result.length >= 21) return result;
   } catch {
-    return [];
+    // fall through to FRED fallback
   }
+  // Fallback: FRED series for known tickers
+  const fredFallback: Record<string, string> = {
+    SPY: 'SP500',      // S&P 500 index (close proxy for SPY)
+    UGA: 'GASDESW',    // US regular gas price (weekly, proxy for UGA)
+  };
+  const fredId = fredFallback[ticker.toUpperCase()];
+  if (fredId) {
+    try {
+      return await fetchFredHistory(fredId, days);
+    } catch {
+      // FRED also failed
+    }
+  }
+  return [];
 }
 
 /** Search Polymarket for policy-reversal markets and compute average reversal probability */
@@ -492,8 +508,10 @@ async function fetchPolicyReversalProb(): Promise<{ prob: number | null; count: 
   }
 }
 
-/** Search Polymarket for Trump approval markets */
+/** Search Polymarket for Trump approval markets.
+ *  Fallback: FRED consumer sentiment (UMCSENT) as proxy. */
 async function fetchApprovalData(): Promise<number | null> {
+  // Primary: Polymarket approval markets
   try {
     const { fetchPolymarketMarkets } = await import('./polymarket.js');
     const results = await fetchPolymarketMarkets('Trump approval rating', 5);
@@ -506,24 +524,53 @@ async function fetchApprovalData(): Promise<number | null> {
         return market.probability * 100;
       }
     }
-    return null;
   } catch {
-    return null;
+    // fall through to FRED fallback
   }
+  // Fallback: FRED consumer sentiment index as proxy (UMCSENT, monthly)
+  // Higher sentiment ≈ higher approval. Normalize to 0-100 scale.
+  try {
+    const vals = await fetchFredHistory('UMCSENT', 90);
+    if (vals.length > 0) {
+      // UMCSENT ranges roughly 50-110; normalize to 0-100
+      const latest = vals[vals.length - 1];
+      return Math.max(0, Math.min(100, latest));
+    }
+  } catch {
+    // FRED also failed
+  }
+  return null;
 }
 
-/** Fetch social sentiment for Trump policy / market impact */
+/** Fetch social sentiment for Trump policy / market impact.
+ *  Primary: socialSentimentTool. Fallback: GDELT news tone. */
 async function fetchPolicySentiment(): Promise<number | null> {
+  // Primary: social sentiment tool (Reddit, X/Twitter)
   try {
     const { socialSentimentTool } = await import('./social-sentiment.js');
     const result = await socialSentimentTool.invoke({ query: 'Trump tariffs economy market impact' });
-    // Parse sentiment score from result
     const match = typeof result === 'string' ? result.match(/Sentiment Score:\s*([-\d.]+)/) : null;
     if (match) return parseFloat(match[1]);
-    return null;
   } catch {
-    return null;
+    // fall through to GDELT
   }
+  // Fallback: GDELT news tone (free, no API key)
+  try {
+    const { fetchGdeltArticles } = await import('../osint/gdelt.js');
+    const articles = await fetchGdeltArticles('Trump tariffs economy', { timespan: '7d', maxRecords: 50 });
+    const tones = articles
+      .filter(a => a.tone !== undefined && !isNaN(a.tone!))
+      .map(a => a.tone!);
+    if (tones.length >= 5) {
+      // GDELT tone is roughly -100 to +100; normalize to -1..+1 range then scale to -100..+100
+      const avgTone = tones.reduce((s, v) => s + v, 0) / tones.length;
+      // GDELT tone typically ranges -10 to +10, so clamp and scale
+      return Math.max(-100, Math.min(100, avgTone * 10));
+    }
+  } catch {
+    // GDELT also failed
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

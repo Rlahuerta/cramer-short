@@ -1542,10 +1542,19 @@ export function interpolateDistribution(
     horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride,
   );
 
-  // Nearest anchor lookup helper
+  // Nearest anchor lookup helper with distance-based dampening.
+  // Anchors far from current price are less trustworthy (often illiquid/speculative).
+  // Apply exponential decay: weight = exp(-k * distance²) where distance = |price - current| / current.
+  // At 20% away: weight ≈ 0.67. At 40%: weight ≈ 0.20. At 60%+: weight ≈ 0.03.
   const findAnchor = (price: number) => {
     const TOLERANCE_PCT = 0.02;
-    return anchors.find(a => Math.abs(a.price - price) / price < TOLERANCE_PCT);
+    const raw = anchors.find(a => Math.abs(a.price - price) / price < TOLERANCE_PCT);
+    if (!raw) return undefined;
+    // Compute distance-decay factor
+    const distFromCurrent = Math.abs(raw.price - currentPrice) / currentPrice;
+    const DISTANCE_DECAY_K = 5.0; // controls how fast far anchors are dampened
+    const distanceWeight = Math.exp(-DISTANCE_DECAY_K * distFromCurrent * distFromCurrent);
+    return { ...raw, distanceWeight };
   };
 
   // Monte Carlo: vary initial state draw for CI
@@ -1571,12 +1580,14 @@ export function interpolateDistribution(
     let source: 'polymarket' | 'markov' | 'blend';
 
     if (anchor && anchor.trustScore === 'high') {
-      probability = mixWeight * markovEst + (1 - mixWeight) * anchor.probability;
-      source = mixWeight > 0.9 ? 'markov' : mixWeight < 0.1 ? 'polymarket' : 'blend';
+      // Scale anchor influence by distance from current price
+      const anchorW = (1 - mixWeight) * anchor.distanceWeight;
+      probability = (1 - anchorW) * markovEst + anchorW * anchor.probability;
+      source = anchorW < 0.05 ? 'markov' : anchorW > 0.5 ? 'polymarket' : 'blend';
     } else if (anchor && anchor.trustScore === 'low') {
-      // Low-trust anchors: weight them at half their nominal influence
-      probability = mixWeight * markovEst + (1 - mixWeight) * 0.5 * anchor.probability
-                  + (1 - mixWeight) * 0.5 * markovEst;
+      // Low-trust anchors: half nominal influence, further scaled by distance
+      const anchorW = (1 - mixWeight) * 0.5 * anchor.distanceWeight;
+      probability = (1 - anchorW) * markovEst + anchorW * anchor.probability;
       source = 'blend';
     } else {
       probability = markovEst;

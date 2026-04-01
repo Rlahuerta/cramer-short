@@ -1439,6 +1439,54 @@ describe('interpolateDistribution anchor grid merging', () => {
     const minPrice = Math.min(...dist.map(d => d.price));
     expect(minPrice).toBeLessThan(55);
   });
+
+  it('far-away anchors have dampened influence (distance decay)', () => {
+    const P = buildDefaultMatrix();
+    const regimeStats = estimateRegimeStats(
+      Array.from({ length: 30 }, () => 0.001),
+      Array.from({ length: 30 }, () => 'sideways' as const),
+    );
+    // Near anchor: 5% away, probability 0.70
+    const nearAnchor = {
+      price: 105,
+      rawProbability: 0.70,
+      probability: 0.70,
+      trustScore: 'high' as const,
+      source: 'polymarket' as const,
+    };
+    // Far anchor: 50% away, probability 0.70
+    const farAnchor = {
+      price: 150,
+      rawProbability: 0.70,
+      probability: 0.70,
+      trustScore: 'high' as const,
+      source: 'polymarket' as const,
+    };
+
+    // Get distributions with each anchor separately
+    const distNear = interpolateDistribution(100, 14, P, regimeStats, 'sideways', [nearAnchor], 0.5);
+    const distFar = interpolateDistribution(100, 14, P, regimeStats, 'sideways', [farAnchor], 0.5);
+
+    // Near the near-anchor price, the anchor should strongly influence the result
+    const nearPoint = distNear.find(d => Math.abs(d.price - 105) / 105 < 0.03);
+    // Near the far-anchor price, the influence should be dampened
+    const farPoint = distFar.find(d => Math.abs(d.price - 150) / 150 < 0.03);
+
+    // Both should exist in the grid
+    expect(nearPoint).toBeDefined();
+    expect(farPoint).toBeDefined();
+
+    if (nearPoint && farPoint) {
+      // The near anchor should pull probability closer to 0.70
+      // The far anchor should be more dampened (closer to pure Markov)
+      // At 5% distance: distanceWeight ≈ 0.988 (nearly full influence)
+      // At 50% distance: distanceWeight ≈ 0.287 (heavily dampened)
+      // So the far point's probability should be further from 0.70 (closer to Markov)
+      const nearDeviation = Math.abs(nearPoint.probability - 0.70);
+      const farDeviation = Math.abs(farPoint.probability - 0.70);
+      expect(farDeviation).toBeGreaterThan(nearDeviation);
+    }
+  });
 });
 
 // ===========================================================================
