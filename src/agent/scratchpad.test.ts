@@ -45,7 +45,7 @@ afterEach(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function addTools(sp: Scratchpad, count: number): void {
+function addTools(sp: InstanceType<typeof Scratchpad>, count: number): void {
   for (let i = 0; i < count; i++) {
     sp.addToolResult(`tool_${i}`, { ticker: `T${i}` }, JSON.stringify({ value: i * 100 }));
   }

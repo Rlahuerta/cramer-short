@@ -2,7 +2,7 @@ import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from 'bun:
 import { AIMessage } from '@langchain/core/messages';
 
 const mockCallLlm = mock(async () => ({
-  response: { ticker: 'AAPL', filing_types: ['10-K'], limit: 10 },
+  response: { ticker: 'AAPL', filing_types: ['10-K'], limit: 10 } as any,
   usage: undefined,
 }));
 
@@ -83,7 +83,7 @@ describe('read_filings — step 1 failure', () => {
 
   test('returns error when step 1 returns invalid schema', async () => {
     // Return schema-incompatible object (missing required fields)
-    mockCallLlm.mockResolvedValueOnce({ response: { bad: 'data' }, usage: undefined });
+    mockCallLlm.mockResolvedValueOnce({ response: { bad: 'data' } as any, usage: undefined });
 
     const tool = createReadFilings('test-model');
     const result = await tool.invoke({ query: 'AAPL annual report' });

@@ -419,7 +419,7 @@ export function predict(
 
 function matPow(M: number[][], n: number): number[][] {
   const size = M.length;
-  let result = Array.from({ length: size }, (_, i) =>
+  let result: number[][] = Array.from({ length: size }, (_, i) =>
     Array.from({ length: size }, (_, j) => (i === j ? 1 : 0)),
   );
   let base = M.map(row => [...row]);

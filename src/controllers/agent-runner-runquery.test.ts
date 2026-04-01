@@ -82,9 +82,8 @@ function makeFakeChatHistory() {
 
 function makeController() {
   const changes: number[] = [];
-  // @ts-expect-error partial agentConfig — only properties used by runQuery
   const ctrl = new AgentRunnerController(
-    { model: null, tools: [], systemPrompt: '' },
+    { model: undefined },
     makeFakeChatHistory(),
     () => changes.push(Date.now()),
   );
@@ -196,9 +195,8 @@ describe('runQuery — success path', () => {
       { type: 'done', answer: 'ok', totalTime: 100, toolCalls: [] },
     ];
     const chatHistory = makeFakeChatHistory();
-    // @ts-expect-error partial config
     const ctrl = new AgentRunnerController(
-      { model: null, tools: [], systemPrompt: '' },
+      { model: undefined },
       chatHistory,
     );
     await ctrl.runQuery('my research question');

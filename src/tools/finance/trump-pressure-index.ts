@@ -449,7 +449,7 @@ async function fetchStockHistory(ticker: string, days = 120): Promise<number[]> 
       start_date: startDate,
       end_date: endDate,
     });
-    const prices: Array<{ close: number }> = data.prices ?? data ?? [];
+    const prices: Array<{ close: number }> = (data as any).prices ?? data as any ?? [];
     const result = prices.map(p => p.close).filter(v => typeof v === 'number' && !isNaN(v));
     if (result.length >= 21) return result;
   } catch {

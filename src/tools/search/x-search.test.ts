@@ -84,6 +84,7 @@ describe('xSearchTool — missing token', () => {
 describe('xSearchTool — search command', () => {
   it('returns tweets on a successful search', async () => {
     const resp = makeSearchResponse();
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(resp), { status: 200 }) as Response;
 
@@ -94,6 +95,7 @@ describe('xSearchTool — search command', () => {
 
   it('auto-appends -is:retweet when not present in query', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
@@ -105,6 +107,7 @@ describe('xSearchTool — search command', () => {
 
   it('does NOT double-append -is:retweet when already present', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
@@ -119,6 +122,7 @@ describe('xSearchTool — search command', () => {
     const tweets = [makeTweet('t1'), makeTweet('t2')];
     tweets[0].public_metrics.like_count = 20;
     tweets[1].public_metrics.like_count = 2;
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(makeSearchResponse(tweets)), { status: 200 }) as Response;
 
@@ -132,6 +136,7 @@ describe('xSearchTool — search command', () => {
     const tweets = [makeTweet('t1'), makeTweet('t2')];
     tweets[0].public_metrics.like_count = 5;
     tweets[1].public_metrics.like_count = 100;
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(makeSearchResponse(tweets)), { status: 200 }) as Response;
 
@@ -150,6 +155,7 @@ describe('xSearchTool — search command', () => {
 
   it('includes since parameter in URL when provided', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
@@ -161,6 +167,7 @@ describe('xSearchTool — search command', () => {
 
   it('handles rate limit (429) with descriptive error', async () => {
     const resetTime = String(Math.floor(Date.now() / 1000) + 60);
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response('Too Many Requests', {
         status: 429,
@@ -173,6 +180,7 @@ describe('xSearchTool — search command', () => {
   });
 
   it('handles HTTP error with status code', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response('Forbidden', { status: 403 }) as Response;
 
@@ -181,6 +189,7 @@ describe('xSearchTool — search command', () => {
 
   it('deduplicates tweets across pages', async () => {
     let callCount = 0;
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => {
       callCount++;
       const resp = {
@@ -204,6 +213,7 @@ describe('xSearchTool — search command', () => {
 describe('xSearchTool — profile command', () => {
   it('returns user info and tweets', async () => {
     let callCount = 0;
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => {
       callCount++;
       if (callCount === 1) {
@@ -225,6 +235,7 @@ describe('xSearchTool — profile command', () => {
   });
 
   it('throws when user is not found', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify({ data: null }), { status: 200 }) as Response;
 
@@ -240,6 +251,7 @@ describe('xSearchTool — profile command', () => {
 
 describe('xSearchTool — thread command', () => {
   it('returns thread tweets', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
 
@@ -261,6 +273,7 @@ describe('xSearchTool — thread command', () => {
 describe('parseSince (via search URL)', () => {
   async function captureUrl(since: string) {
     let url = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (u: string | URL | Request) => {
       url = u.toString();
       return new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;

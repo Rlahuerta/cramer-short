@@ -20,9 +20,10 @@ const mockGetFinancialStore = mock(() => ({
   recallByTicker: mockRecallByTicker,
 }));
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockManagerGet = mock(async () => ({
   getFinancialStore: mockGetFinancialStore,
-})) as () => Promise<never>;
+})) as any;
 
 beforeEach(() => {
   mockStoreInsight.mockClear();
@@ -93,7 +94,7 @@ describe('seedWatchlistEntries', () => {
   });
 
   it('does not throw when getFinancialStore returns null', async () => {
-    mockGetFinancialStore.mockImplementation(() => null);
+    mockGetFinancialStore.mockImplementation((() => null) as any);
     await expect(seedWatchlistEntries([{ ticker: 'AAPL' }], mockManagerGet)).resolves.toBeUndefined();
   });
 });

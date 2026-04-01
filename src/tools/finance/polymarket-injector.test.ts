@@ -8,7 +8,7 @@ import type { SignalCategory } from './signal-extractor.js';
 // ---------------------------------------------------------------------------
 
 const market = (question: string, probability: number, volume24h = 100_000): PolymarketMarketResult =>
-  ({ question, probability, volume24h });
+  ({ question, probability, volume24h, ageDays: 0 });
 
 const noSignals = (): SignalCategory[] => [];
 

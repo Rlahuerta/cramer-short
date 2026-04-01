@@ -11,8 +11,8 @@ import type { PolymarketMarketResult } from './polymarket.js';
 const realPolymarket = await import('./polymarket.js');
 
 const mockMarkets: PolymarketMarketResult[] = [
-  { question: 'Will NVIDIA beat Q2 earnings?', probability: 0.72, volume24h: 500_000 },
-  { question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000 },
+  { question: 'Will NVIDIA beat Q2 earnings?', probability: 0.72, volume24h: 500_000, ageDays: 0 },
+  { question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000, ageDays: 0 },
 ];
 
 mock.module('./polymarket.js', () => ({

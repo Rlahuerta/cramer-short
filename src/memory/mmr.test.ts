@@ -10,7 +10,6 @@ import type { MemorySearchResult } from './types.js';
 function makeResult(overrides: Partial<MemorySearchResult> & { path: string }): MemorySearchResult {
   return {
     snippet: overrides.snippet ?? 'default snippet',
-    path: overrides.path,
     startLine: overrides.startLine ?? 1,
     endLine: overrides.endLine ?? 5,
     score: overrides.score ?? 1.0,

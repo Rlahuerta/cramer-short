@@ -194,6 +194,8 @@ describe('createSessionSelector — with sessions', () => {
       firstQuery: 'What is the PE ratio of AAPL?',
       lastModified: Date.now() - 3600_000,
       queryCount: 3,
+      created: Date.now() - 3600_000,
+      file: 'sess-1.json',
     },
     {
       id: 'sess-2',
@@ -201,6 +203,8 @@ describe('createSessionSelector — with sessions', () => {
       firstQuery: 'Analyze Tesla earnings',
       lastModified: Date.now() - 7200_000,
       queryCount: 5,
+      created: Date.now() - 7200_000,
+      file: 'sess-2.json',
     },
   ];
 
@@ -279,8 +283,8 @@ describe('createSkillSelector — empty skills', () => {
 describe('createSkillSelector — with skills', () => {
   it('returns a VimSelectList with skill items', () => {
     const skills = [
-      { name: 'dcf', description: 'Discounted Cash Flow valuation for equities' },
-      { name: 'sentiment', description: 'Market sentiment analysis' },
+      { name: 'dcf', description: 'Discounted Cash Flow valuation for equities', path: '/skills/dcf/SKILL.md', source: 'builtin' as const },
+      { name: 'sentiment', description: 'Market sentiment analysis', path: '/skills/sentiment/SKILL.md', source: 'builtin' as const },
     ];
     const onSelect = mock((_: string | null) => {});
     const comp = createSkillSelector(skills, onSelect);
@@ -291,7 +295,7 @@ describe('createSkillSelector — with skills', () => {
 
   it('truncates long skill descriptions', () => {
     const skills = [
-      { name: 'long-skill', description: 'A'.repeat(60) },
+      { name: 'long-skill', description: 'A'.repeat(60), path: '/skills/long-skill/SKILL.md', source: 'builtin' as const },
     ];
     expect(() => createSkillSelector(skills, () => {})).not.toThrow();
   });

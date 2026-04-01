@@ -44,7 +44,7 @@ beforeEach(() => {
     return { data: {}, url: 'https://api.test/' };
   });
   apiPostSpy = spyOn(api, 'post').mockResolvedValue({
-    data: MOCK_SCREENER_RESULTS,
+    data: MOCK_SCREENER_RESULTS as unknown as Record<string, unknown>,
     url: 'https://api.test/screener/',
   });
 });
@@ -68,7 +68,7 @@ describe('screen_stocks — happy path', () => {
         filters: [{ field: 'market_cap', operator: 'gt', value: 1e12 }],
         currency: 'USD',
         limit: 10,
-      },
+      } as any,
       usage: undefined,
     });
 
@@ -81,7 +81,7 @@ describe('screen_stocks — happy path', () => {
   test('calls api.post with filters from LLM response', async () => {
     const filters = [{ field: 'pe_ratio', operator: 'lt', value: 15 }];
     mockCallLlm.mockResolvedValueOnce({
-      response: { filters, currency: 'USD', limit: 5 },
+      response: { filters, currency: 'USD', limit: 5 } as any,
       usage: undefined,
     });
 
@@ -95,7 +95,7 @@ describe('screen_stocks — happy path', () => {
 describe('screen_stocks — error paths', () => {
   test('returns error when screener API call fails', async () => {
     mockCallLlm.mockResolvedValueOnce({
-      response: { filters: [], currency: 'USD', limit: 10 },
+      response: { filters: [], currency: 'USD', limit: 10 } as any,
       usage: undefined,
     });
     apiPostSpy.mockRejectedValueOnce(new Error('API error'));
@@ -108,7 +108,7 @@ describe('screen_stocks — error paths', () => {
 
   test('returns error when LLM returns invalid filter schema', async () => {
     mockCallLlm.mockResolvedValueOnce({
-      response: null, // Invalid schema — Zod parse will fail
+      response: null as any, // Invalid schema — Zod parse will fail
       usage: undefined,
     });
 

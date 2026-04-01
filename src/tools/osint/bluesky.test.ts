@@ -96,6 +96,7 @@ describe('deduplicatePosts', () => {
 describe('searchBskyPosts', () => {
   it('returns normalized posts on a successful response', async () => {
     const raw = { posts: [makeRawPost()] };
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response(JSON.stringify(raw), { status: 200 }) as Response;
 
     const posts = await searchBskyPosts('hello');
@@ -106,6 +107,7 @@ describe('searchBskyPosts', () => {
   });
 
   it('returns empty array when posts field is absent', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 }) as Response;
     const posts = await searchBskyPosts('missing');
     expect(posts).toHaveLength(0);
@@ -113,6 +115,7 @@ describe('searchBskyPosts', () => {
 
   it('passes limit and sort params in the URL', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ posts: [] }), { status: 200 }) as Response;
@@ -125,6 +128,7 @@ describe('searchBskyPosts', () => {
 
   it('passes since param when provided', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ posts: [] }), { status: 200 }) as Response;
@@ -135,11 +139,13 @@ describe('searchBskyPosts', () => {
   });
 
   it('throws on HTTP error response', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response('Not Found', { status: 404, statusText: 'Not Found' }) as Response;
     await expect(searchBskyPosts('fail')).rejects.toThrow('Bluesky HTTP 404');
   });
 
   it('throws a timeout error when request is aborted', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (_url: unknown, init?: RequestInit) => {
       return new Promise<Response>((_, reject) => {
         if (init?.signal) {
@@ -166,6 +172,7 @@ describe('searchBskyPosts', () => {
 
   it('normalizes missing fields to defaults', async () => {
     const minimal = { posts: [{ uri: 'at://x/app.bsky.feed.post/1' }] };
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response(JSON.stringify(minimal), { status: 200 }) as Response;
     const posts = await searchBskyPosts('minimal');
     expect(posts[0].authorHandle).toBe('');
@@ -181,6 +188,7 @@ describe('searchBskyPosts', () => {
 describe('getBskyAuthorFeed', () => {
   it('returns normalized posts from author feed', async () => {
     const raw = { feed: [{ post: makeRawPost() }] };
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response(JSON.stringify(raw), { status: 200 }) as Response;
 
     const posts = await getBskyAuthorFeed('bellingcat.bsky.social');
@@ -189,6 +197,7 @@ describe('getBskyAuthorFeed', () => {
   });
 
   it('returns empty array when feed is absent', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 }) as Response;
     const posts = await getBskyAuthorFeed('nobody');
     expect(posts).toHaveLength(0);
@@ -196,6 +205,7 @@ describe('getBskyAuthorFeed', () => {
 
   it('includes actor and limit in the request URL', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ feed: [] }), { status: 200 }) as Response;
@@ -207,6 +217,7 @@ describe('getBskyAuthorFeed', () => {
   });
 
   it('throws on HTTP error response', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response('Forbidden', { status: 403, statusText: 'Forbidden' }) as Response;
     await expect(getBskyAuthorFeed('locked')).rejects.toThrow('Bluesky feed HTTP 403');

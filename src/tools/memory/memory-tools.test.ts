@@ -46,7 +46,7 @@ describe('memory_get', () => {
 
     await memoryGetTool.invoke({ path: 'MEMORY.md', from: 5, lines: 2 });
 
-    expect(mockGet.mock.calls[0][0]).toEqual({ path: 'MEMORY.md', from: 5, lines: 2 });
+    expect((mockGet.mock.calls as any[][])[0][0]).toEqual({ path: 'MEMORY.md', from: 5, lines: 2 });
   });
 
   it('reads a daily log file', async () => {
@@ -54,7 +54,7 @@ describe('memory_get', () => {
     setupManager({ get: mockGet });
 
     await memoryGetTool.invoke({ path: '2026-01-01.md' });
-    expect(mockGet.mock.calls[0][0].path).toBe('2026-01-01.md');
+    expect((mockGet.mock.calls as any[][])[0][0].path).toBe('2026-01-01.md');
   });
 });
 
@@ -79,7 +79,7 @@ describe('memory_search', () => {
     setupManager({ isAvailable: () => true, search: mockSearch });
 
     await memorySearchTool.invoke({ query: 'my specific query' });
-    expect(mockSearch.mock.calls[0][0]).toBe('my specific query');
+    expect((mockSearch.mock.calls as any[][])[0][0]).toBe('my specific query');
   });
 
   it('returns disabled error when memory is unavailable', async () => {
@@ -136,7 +136,7 @@ describe('memory_update — append', () => {
 
     expect(result.success).toBe(true);
     expect(result.file).toBe('MEMORY.md');
-    expect(mockAppend.mock.calls[0]).toEqual(['long_term', 'Test content']);
+    expect((mockAppend.mock.calls as any[][])[0]).toEqual(['long_term', 'Test content']);
   });
 
   it('resolves daily to today YYYY-MM-DD.md', async () => {
@@ -195,7 +195,7 @@ describe('memory_update — edit', () => {
     ) as { success: boolean };
 
     expect(result.success).toBe(true);
-    expect(mockEdit.mock.calls[0]).toEqual(['long_term', 'old value', 'new value']);
+    expect((mockEdit.mock.calls as any[][])[0]).toEqual(['long_term', 'old value', 'new value']);
   });
 
   it('returns error when text is not found', async () => {
@@ -240,7 +240,7 @@ describe('memory_update — delete', () => {
     ) as { success: boolean };
 
     expect(result.success).toBe(true);
-    expect(mockDelete.mock.calls[0]).toEqual(['long_term', 'Remove me']);
+    expect((mockDelete.mock.calls as any[][])[0]).toEqual(['long_term', 'Remove me']);
   });
 
   it('returns error when text is not found', async () => {
@@ -482,7 +482,7 @@ describe('store_financial_insight', () => {
     });
 
     await storeFinancialInsightTool.invoke({ ticker: 'aapl', content: 'test' });
-    const storedTags: string[] = (mockStore.mock.calls[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
     expect(storedTags).toContain('ticker:AAPL');
   });
 
@@ -494,7 +494,7 @@ describe('store_financial_insight', () => {
     });
 
     await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'test', tags: ['ticker:AAPL'] });
-    const storedTags: string[] = (mockStore.mock.calls[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
     expect(storedTags.filter((t) => t === 'ticker:AAPL').length).toBe(1);
   });
 
@@ -507,10 +507,10 @@ describe('store_financial_insight', () => {
     });
 
     await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'test', routing: 'fmp-ok' });
-    const storedTags: string[] = (mockStore.mock.calls[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
     expect(storedTags).toContain('routing:fmp-ok');
-    expect(mockAppend.mock.calls[0][0]).toBe('FINANCE.md');
-    expect(mockAppend.mock.calls[0][1]).toContain('AAPL');
+    expect((mockAppend.mock.calls as any[][])[0][0]).toBe('FINANCE.md');
+    expect((mockAppend.mock.calls as any[][])[0][1]).toContain('AAPL');
   });
 
   it('does not duplicate routing tag if already in tags', async () => {
@@ -526,7 +526,7 @@ describe('store_financial_insight', () => {
       routing: 'fmp-ok',
       tags: ['routing:fmp-ok'],
     });
-    const storedTags: string[] = (mockStore.mock.calls[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
     expect(storedTags.filter((t) => t.startsWith('routing:')).length).toBe(1);
   });
 
@@ -538,7 +538,7 @@ describe('store_financial_insight', () => {
     });
 
     await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'test', sector: 'Technology' });
-    const storedTags: string[] = (mockStore.mock.calls[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
     expect(storedTags).toContain('sector:technology');
   });
 
@@ -550,7 +550,7 @@ describe('store_financial_insight', () => {
     });
 
     await storeFinancialInsightTool.invoke({ ticker: 'VWS.CO', content: 'test', exchange: 'cph' });
-    const storedTags: string[] = (mockStore.mock.calls[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
     expect(storedTags).toContain('exchange:CPH');
   });
 
@@ -562,7 +562,7 @@ describe('store_financial_insight', () => {
     });
 
     await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'test', namespace: 'dcf' });
-    const storedTags: string[] = (mockStore.mock.calls[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
     expect(storedTags).toContain('ns:dcf');
   });
 
@@ -605,7 +605,7 @@ describe('store_financial_insight', () => {
       routing: 'fmp-premium',
       exchange: 'CPH',
     });
-    expect(mockAppend.mock.calls[0][1]).toContain('(CPH)');
+    expect((mockAppend.mock.calls as any[][])[0][1]).toContain('(CPH)');
   });
 
   it('includes all passed tags alongside auto-generated ones', async () => {
@@ -620,7 +620,7 @@ describe('store_financial_insight', () => {
       content: 'test',
       tags: ['analysis:thesis', 'analysis:risk'],
     });
-    const storedTags: string[] = (mockStore.mock.calls[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
     expect(storedTags).toContain('analysis:thesis');
     expect(storedTags).toContain('analysis:risk');
     expect(storedTags).toContain('ticker:AAPL');

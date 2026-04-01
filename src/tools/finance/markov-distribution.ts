@@ -1052,7 +1052,7 @@ export function secondLargestEigenvalue(P: TransitionMatrix, iterations = 100): 
   const vUnit = vL2 < 1e-12 ? v : v.map(x => x / vL2);
 
   // Deflate: remove first eigenvector component, find second via power iteration
-  let w = Array.from({ length: n }, (_, i) => (i === 0 ? 0.6 : 0.1));
+  let w: number[] = Array.from({ length: n }, (_, i) => (i === 0 ? 0.6 : 0.1));
   const wNorm = w.reduce((s, x) => s + x * x, 0) ** 0.5;
   w = w.map(x => x / wNorm);
 

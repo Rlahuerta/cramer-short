@@ -40,6 +40,7 @@ beforeEach(() => {
 describe('perplexitySearch', () => {
   it('returns formatted answer with citations and search results', async () => {
     const payload = makePerplexityResponse();
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(payload), { status: 200 }) as Response;
 
@@ -53,6 +54,7 @@ describe('perplexitySearch', () => {
       citations: ['https://same.com'],
       search_results: [{ title: 'Same', url: 'https://same.com' }],
     });
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(payload), { status: 200 }) as Response;
 
@@ -63,6 +65,7 @@ describe('perplexitySearch', () => {
 
   it('handles response with no citations (null)', async () => {
     const payload = makePerplexityResponse({ citations: null, search_results: null });
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(payload), { status: 200 }) as Response;
 
@@ -72,6 +75,7 @@ describe('perplexitySearch', () => {
 
   it('handles response with no search_results but has citations', async () => {
     const payload = makePerplexityResponse({ search_results: null });
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(payload), { status: 200 }) as Response;
 
@@ -81,6 +85,7 @@ describe('perplexitySearch', () => {
 
   it('handles empty choices array gracefully', async () => {
     const payload = makePerplexityResponse({ choices: [] });
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(payload), { status: 200 }) as Response;
 
@@ -96,6 +101,7 @@ describe('perplexitySearch', () => {
   });
 
   it('throws on non-ok HTTP response with status code', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response('Unauthorized', { status: 401 }) as Response;
 
@@ -103,6 +109,7 @@ describe('perplexitySearch', () => {
   });
 
   it('throws on HTTP 429 rate limit', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response('Too Many Requests', { status: 429 }) as Response;
 
@@ -117,6 +124,7 @@ describe('perplexitySearch', () => {
         { title: 'Dup', url: 'https://citation-only.com' },
       ],
     });
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response(JSON.stringify(payload), { status: 200 }) as Response;
 
@@ -127,6 +135,7 @@ describe('perplexitySearch', () => {
 
   it('sends the query to the Perplexity API endpoint', async () => {
     let capturedBody = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (_url: unknown, opts?: RequestInit) => {
       capturedBody = opts?.body as string ?? '';
       return new Response(JSON.stringify(makePerplexityResponse()), { status: 200 }) as Response;

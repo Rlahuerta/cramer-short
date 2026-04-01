@@ -122,8 +122,8 @@ describe('InMemoryChatHistory.selectRelevantMessages()', () => {
 
   it('calls LLM and returns selected messages', async () => {
     mockCallLlm.mockImplementation(async () => ({
-      response: { message_ids: [0] },
-      usage: {},
+      response: { message_ids: [0] } as any,
+      usage: { inputTokens: 0, outputTokens: 0 },
     }));
     const h = new InMemoryChatHistory();
     h.seedMessage({ query: 'What is AAPL?', answer: 'Apple stock.', summary: 'AAPL info' });
@@ -142,8 +142,8 @@ describe('InMemoryChatHistory.selectRelevantMessages()', () => {
 
   it('caches result for the same query', async () => {
     mockCallLlm.mockImplementation(async () => ({
-      response: { message_ids: [] },
-      usage: {},
+      response: { message_ids: [] } as any,
+      usage: { inputTokens: 0, outputTokens: 0 },
     }));
     const h = new InMemoryChatHistory();
     h.seedMessage({ query: 'Q', answer: 'A', summary: 'S' });

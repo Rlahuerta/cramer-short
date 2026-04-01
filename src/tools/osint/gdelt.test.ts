@@ -97,6 +97,7 @@ describe('deduplicateArticles', () => {
 describe('fetchGdeltArticles', () => {
   it('returns normalized articles on a successful response', async () => {
     const raw = { articles: [makeRaw()] };
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response(JSON.stringify(raw), { status: 200 }) as Response;
 
     const articles = await fetchGdeltArticles('ukraine war');
@@ -106,6 +107,7 @@ describe('fetchGdeltArticles', () => {
   });
 
   it('returns empty array when articles field is absent', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 }) as Response;
     const articles = await fetchGdeltArticles('empty');
     expect(articles).toHaveLength(0);
@@ -113,6 +115,7 @@ describe('fetchGdeltArticles', () => {
 
   it('normalizes missing raw fields to defaults', async () => {
     const raw = { articles: [{}] };
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response(JSON.stringify(raw), { status: 200 }) as Response;
     const articles = await fetchGdeltArticles('minimal');
     expect(articles[0].url).toBe('');
@@ -122,6 +125,7 @@ describe('fetchGdeltArticles', () => {
 
   it('includes query and timespan in the URL', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ articles: [] }), { status: 200 }) as Response;
@@ -134,6 +138,7 @@ describe('fetchGdeltArticles', () => {
 
   it('applies domain filter when domains are provided', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ articles: [] }), { status: 200 }) as Response;
@@ -146,6 +151,7 @@ describe('fetchGdeltArticles', () => {
 
   it('includes sourcelang in the query', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ articles: [] }), { status: 200 }) as Response;
@@ -157,6 +163,7 @@ describe('fetchGdeltArticles', () => {
 
   it('respects maxRecords option', async () => {
     let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ articles: [] }), { status: 200 }) as Response;
@@ -167,6 +174,7 @@ describe('fetchGdeltArticles', () => {
   });
 
   it('throws on HTTP error response', async () => {
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () =>
       new Response('Service Unavailable', { status: 503, statusText: 'Service Unavailable' }) as Response;
     await expect(fetchGdeltArticles('fail')).rejects.toThrow('GDELT HTTP 503');
@@ -174,6 +182,7 @@ describe('fetchGdeltArticles', () => {
 
   it('parses numeric tone correctly', async () => {
     const raw = { articles: [{ ...makeRaw(), tone: 3.7 }] };
+    // @ts-expect-error Bun fetch preconnect
     globalThis.fetch = async () => new Response(JSON.stringify(raw), { status: 200 }) as Response;
     const articles = await fetchGdeltArticles('tone');
     expect(articles[0].tone).toBe(3.7);
@@ -185,6 +194,7 @@ describe('fetchGdeltArticles', () => {
     };
     for (const [ts, minutes] of Object.entries(timespanMap)) {
       let capturedUrl = '';
+    // @ts-expect-error Bun fetch preconnect
       globalThis.fetch = async (url: string | URL | Request) => {
         capturedUrl = url.toString();
         return new Response(JSON.stringify({ articles: [] }), { status: 200 }) as Response;

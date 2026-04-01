@@ -255,14 +255,14 @@ describe('ChatLogComponent — addPerformanceStats', () => {
   it('includes token usage when totalTokens exceeds 20000', () => {
     const log = new ChatLogComponent(fakeTui);
     const before = childCount(log);
-    log.addPerformanceStats(3000, { input: 10000, output: 15000, totalTokens: 25000 }, 42.5);
+    log.addPerformanceStats(3000, { inputTokens: 10000, outputTokens: 15000, totalTokens: 25000 }, 42.5);
     expect(childCount(log)).toBeGreaterThan(before);
   });
 
   it('omits token usage when totalTokens is below threshold', () => {
     const log = new ChatLogComponent(fakeTui);
     const before = childCount(log);
-    log.addPerformanceStats(3000, { input: 5000, output: 10000, totalTokens: 15000 });
+    log.addPerformanceStats(3000, { inputTokens: 5000, outputTokens: 10000, totalTokens: 15000 });
     expect(childCount(log)).toBeGreaterThan(before);
   });
 

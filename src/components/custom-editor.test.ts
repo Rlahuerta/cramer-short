@@ -43,9 +43,9 @@ describe('CustomEditor — handleInput: escape', () => {
     const editor = makeEditor();
     editor.onEscape = () => {};
     // After escape, internal state should not change (no character inserted)
-    const before = editor.getValue?.() ?? (editor as any).state.lines.join('\n');
+    const before = (editor as any).getValue?.() ?? (editor as any).state.lines.join('\n');
     editor.handleInput('\x1b');
-    const after = editor.getValue?.() ?? (editor as any).state.lines.join('\n');
+    const after = (editor as any).getValue?.() ?? (editor as any).state.lines.join('\n');
     expect(after).toBe(before);
   });
 

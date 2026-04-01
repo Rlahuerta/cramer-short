@@ -417,7 +417,7 @@ describe('interpolateDistribution', () => {
     const dist = interpolateDistribution(100, 2, P, regimeStats, 'sideways', anchors, 0.01);
     const point = dist.find(d => Math.abs(d.price - 100) < 5);
     // With very low ρ, markovWeight ≈ exp(-0.01×2) ≈ 0.98 → should be 'markov' or 'blend'
-    expect(['markov', 'blend', 'polymarket']).toContain(point?.source);
+    expect(['markov', 'blend', 'polymarket']).toContain(point?.source as string);
   });
 });
 

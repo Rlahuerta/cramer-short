@@ -31,9 +31,8 @@ function makeFakeChatHistory() {
 
 function makeController(chatHistory?: InMemoryChatHistory) {
   const changes: number[] = [];
-  // @ts-expect-error partial agentConfig — only testing non-runQuery paths
   const ctrl = new AgentRunnerController(
-    { model: null, tools: [], systemPrompt: '' },
+    { model: undefined },
     chatHistory ?? makeFakeChatHistory(),
     () => changes.push(Date.now()),
   );
@@ -154,7 +153,7 @@ describe('AgentRunnerController — setError', () => {
 describe('AgentRunnerController — respondToApproval', () => {
   it('does nothing when approvalResolve is null (no pending approval)', () => {
     const { ctrl } = makeController();
-    expect(() => ctrl.respondToApproval('approve')).not.toThrow();
+    expect(() => ctrl.respondToApproval('allow-once')).not.toThrow();
     expect(ctrl.pendingApproval).toBeNull();
   });
 
@@ -166,7 +165,7 @@ describe('AgentRunnerController — respondToApproval', () => {
       tool: 't',
       args: {},
     };
-    ctrl.respondToApproval('approve');
+    ctrl.respondToApproval('allow-once');
     expect(ctrl.workingState.status).toBe('thinking');
     expect(ctrl.pendingApproval).toBeNull();
   });
@@ -192,8 +191,8 @@ describe('AgentRunnerController — respondToApproval', () => {
       tool: 't',
       args: {},
     };
-    ctrl.respondToApproval('approve_session');
-    expect(resolveFn).toHaveBeenCalledWith('approve_session');
+    ctrl.respondToApproval('allow-session');
+    expect(resolveFn).toHaveBeenCalledWith('allow-session');
   });
 });
 
@@ -442,9 +441,10 @@ describe('AgentRunnerController — handleEvent: answer_start / answer_chunk / d
       type: 'done',
       answer: 'Final answer',
       totalTime: 1234,
-      tokenUsage: { input: 100, output: 50 },
+      tokenUsage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
       tokensPerSecond: 42,
       toolCalls: [],
+      iterations: 1,
     };
     await fire(ctrl, doneEv);
     const item = getHistory(ctrl)[0];
@@ -462,9 +462,10 @@ describe('AgentRunnerController — handleEvent: answer_start / answer_chunk / d
       type: 'done',
       answer: 'Stored answer',
       totalTime: 100,
-      tokenUsage: { input: 10, output: 5 },
+      tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
       tokensPerSecond: 20,
       toolCalls: [],
+      iterations: 1,
     } as DoneEvent);
     expect(fakeChatHistory.saveAnswer).toHaveBeenCalledWith('Stored answer');
   });
@@ -477,9 +478,10 @@ describe('AgentRunnerController — handleEvent: answer_start / answer_chunk / d
       type: 'done',
       answer: '',
       totalTime: 100,
-      tokenUsage: { input: 10, output: 5 },
+      tokenUsage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
       tokensPerSecond: 0,
       toolCalls: [],
+      iterations: 1,
     } as DoneEvent);
     expect(fakeChatHistory.saveAnswer).not.toHaveBeenCalled();
   });
