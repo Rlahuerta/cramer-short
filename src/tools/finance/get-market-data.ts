@@ -60,7 +60,7 @@ import { getInsiderTrades } from './insider_trades.js';
 // models with unreliable tool-calling support such as local Ollama models).
 // ---------------------------------------------------------------------------
 
-/** Common company/crypto name → ticker mapping for fallback resolution. */
+/** Common company/crypto/commodity name → ticker mapping for fallback resolution. */
 const COMPANY_TICKERS: Record<string, string> = {
   apple: 'AAPL', microsoft: 'MSFT', google: 'GOOGL', alphabet: 'GOOGL',
   amazon: 'AMZN', meta: 'META', facebook: 'META', nvidia: 'NVDA',
@@ -68,6 +68,10 @@ const COMPANY_TICKERS: Record<string, string> = {
   intel: 'INTC', amd: 'AMD', qualcomm: 'QCOM', broadcom: 'AVGO',
   bitcoin: 'BTC', ethereum: 'ETH', solana: 'SOL', dogecoin: 'DOGE',
   cardano: 'ADA', ripple: 'XRP', polkadot: 'DOT', chainlink: 'LINK',
+  // Commodities — use the most liquid ETF ticker for price data
+  gold: 'GLD', silver: 'SLV', platinum: 'PPLT', palladium: 'PALL',
+  'crude oil': 'USO', oil: 'USO', 'natural gas': 'UNG', copper: 'CPER',
+  wheat: 'WEAT', corn: 'CORN', soybeans: 'SOYB',
 };
 
 /** Extract the first resolvable ticker from a natural language query. */
@@ -127,10 +131,14 @@ Given a user's natural language query about market data, call the appropriate to
 
 ## Guidelines
 
-1. **Ticker Resolution**: Convert company/crypto names to ticker symbols:
+1. **Ticker Resolution**: Convert company/crypto/commodity names to ticker symbols:
    - Apple → AAPL, Tesla → TSLA, Microsoft → MSFT, Amazon → AMZN
    - Google/Alphabet → GOOGL, Meta/Facebook → META, Nvidia → NVDA
    - Bitcoin → BTC, Ethereum → ETH, Solana → SOL
+   - Gold/GOLD/XAUUSD → GLD (ETF that tracks gold price)
+   - Silver/SILVER/XAGUSD → SLV, Crude Oil/OIL/WTICOUSD → USO
+   - Natural Gas → UNG, Copper → CPER, Wheat → WEAT
+   - For commodities, prefer the liquid ETF ticker (GLD, SLV, USO) over futures (GC, SI, CL) — ETFs have better daily price data availability
 
 2. **Date Inference**: Use schema-supported filters for date ranges:
    - "last month" → start_date 1 month ago, end_date today

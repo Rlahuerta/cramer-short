@@ -2474,13 +2474,20 @@ export async function computeMarkovDistribution(params: {
 // ---------------------------------------------------------------------------
 
 export const MARKOV_DISTRIBUTION_DESCRIPTION = `
-**markov_distribution** — Full probability distribution for a stock/ETF price at a specified horizon.
+**markov_distribution** — Full probability distribution for a stock/ETF/commodity price at a specified horizon.
 
 **Use when:**
 - The user asks for a probability distribution of future prices (not a point estimate)
 - The query includes a specific price target and horizon (e.g. "Will NVDA hit $1000 in 30 days?")
 - You already have ≥2 Polymarket price threshold markets available as anchors
 - You want to interpolate between Polymarket anchors using regime-aware Markov transitions
+
+**Commodity tickers:** For commodities, always use the liquid ETF ticker:
+- Gold/GOLD/XAUUSD → use **GLD** (ETF that tracks gold spot price)
+- Silver/SILVER/XAGUSD → use **SLV**
+- Oil/Crude/WTICOUSD → use **USO**
+- Natural Gas → use **UNG**
+GLD, SLV, USO etc. are ETFs that replicate the underlying commodity price.
 
 **What it does:**
 - Combines Polymarket real-money anchors + historical regime transitions + sentiment
@@ -2497,18 +2504,22 @@ export const MARKOV_DISTRIBUTION_DESCRIPTION = `
 export const markovDistributionTool = new DynamicStructuredTool({
   name: 'markov_distribution',
   description: `
-Generate a full probability distribution for a stock/ETF price at a specified horizon.
+Generate a full probability distribution for a stock/ETF/commodity price at a specified horizon.
 Combines Polymarket threshold markets (real-money anchors) with historical Markov regime
 transitions to produce P(price > X) for each price level in the distribution.
 
 Use when the query asks for a probability distribution of future prices, not just a point estimate.
 Requires: ticker symbol, horizon in trading days (1–90), and access to recent price history.
 
+IMPORTANT — Commodity tickers: For commodities, use the liquid ETF ticker for best data availability:
+  Gold → GLD, Silver → SLV, Oil → USO, Natural Gas → UNG, Copper → CPER.
+  GLD is an ETF that replicates the price of gold — querying "GLD" and "gold" should yield the same prediction.
+
 Set trajectory=true for a day-by-day price forecast with expected price, 90% CI, and P(up) at each day.
 Use trajectoryDays to control the number of days (1–30, default=horizon).
 `.trim(),
   schema: z.object({
-    ticker: z.string().describe('Stock/ETF ticker symbol, e.g. NVDA, SPY, BTC-USD'),
+    ticker: z.string().describe('Stock/ETF/commodity ticker symbol, e.g. NVDA, SPY, BTC-USD, GLD. For commodities, prefer the liquid ETF (GLD for gold, SLV for silver, USO for oil) over futures tickers.'),
     horizon: z.number().int().min(1).max(90).describe('Forecast horizon in trading days'),
     currentPrice: z.number().optional().describe('Current price (fetched automatically if omitted)'),
     historicalPrices: z.array(z.number()).min(10).describe(

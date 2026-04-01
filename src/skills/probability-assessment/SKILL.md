@@ -92,7 +92,7 @@ After calling `price_distribution_chart` (Step 2b), call `markov_distribution` t
 the distribution with regime-aware Markov interpolation and 90% Monte Carlo confidence intervals.
 
 1. **Gather inputs** (you likely already have these from prior steps):
-   - `ticker` — the asset symbol (e.g. NVDA, BTC-USD, SPY)
+   - `ticker` — the asset symbol (e.g. NVDA, BTC-USD, SPY). For commodities, use the liquid ETF: gold → GLD, silver → SLV, oil → USO.
    - `horizon` — forecast horizon in trading days (convert calendar days: 30 calendar ≈ 21 trading)
    - `historicalPrices` — 60–90 days of daily close prices from `get_market_data` (oldest first)
    - `polymarketMarkets` — the raw Polymarket market objects (question + probability + volume)
