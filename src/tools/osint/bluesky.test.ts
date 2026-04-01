@@ -96,8 +96,7 @@ describe('deduplicatePosts', () => {
 describe('searchBskyPosts', () => {
   it('returns normalized posts on a successful response', async () => {
     const raw = { posts: [makeRawPost()] };
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () => new Response(JSON.stringify(raw), { status: 200 }) as Response;
+    globalThis.fetch = (async () => new Response(JSON.stringify(raw), { status: 200 })) as unknown as typeof fetch;
 
     const posts = await searchBskyPosts('hello');
     expect(posts).toHaveLength(1);
@@ -107,19 +106,17 @@ describe('searchBskyPosts', () => {
   });
 
   it('returns empty array when posts field is absent', async () => {
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 }) as Response;
+    globalThis.fetch = (async () => new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch;
     const posts = await searchBskyPosts('missing');
     expect(posts).toHaveLength(0);
   });
 
   it('passes limit and sort params in the URL', async () => {
     let capturedUrl = '';
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ posts: [] }), { status: 200 }) as Response;
-    };
+    }) as unknown as typeof fetch;
 
     await searchBskyPosts('test', { limit: 10, sort: 'top' });
     expect(capturedUrl).toContain('limit=10');
@@ -128,25 +125,22 @@ describe('searchBskyPosts', () => {
 
   it('passes since param when provided', async () => {
     let capturedUrl = '';
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ posts: [] }), { status: 200 }) as Response;
-    };
+    }) as unknown as typeof fetch;
 
     await searchBskyPosts('test', { since: '2024-01-01T00:00:00Z' });
     expect(capturedUrl).toContain('since=');
   });
 
   it('throws on HTTP error response', async () => {
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () => new Response('Not Found', { status: 404, statusText: 'Not Found' }) as Response;
+    globalThis.fetch = (async () => new Response('Not Found', { status: 404, statusText: 'Not Found' })) as unknown as typeof fetch;
     await expect(searchBskyPosts('fail')).rejects.toThrow('Bluesky HTTP 404');
   });
 
   it('throws a timeout error when request is aborted', async () => {
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async (_url: unknown, init?: RequestInit) => {
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
       return new Promise<Response>((_, reject) => {
         if (init?.signal) {
           init.signal.addEventListener('abort', () => {
@@ -156,7 +150,7 @@ describe('searchBskyPosts', () => {
           });
         }
       });
-    };
+    }) as unknown as typeof fetch;
 
     // override timeout to be very short so test doesn't hang
     const { searchBskyPosts: search } = await import('./bluesky.js?t=' + Date.now());
@@ -172,8 +166,7 @@ describe('searchBskyPosts', () => {
 
   it('normalizes missing fields to defaults', async () => {
     const minimal = { posts: [{ uri: 'at://x/app.bsky.feed.post/1' }] };
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () => new Response(JSON.stringify(minimal), { status: 200 }) as Response;
+    globalThis.fetch = (async () => new Response(JSON.stringify(minimal), { status: 200 })) as unknown as typeof fetch;
     const posts = await searchBskyPosts('minimal');
     expect(posts[0].authorHandle).toBe('');
     expect(posts[0].likeCount).toBe(0);
@@ -188,8 +181,7 @@ describe('searchBskyPosts', () => {
 describe('getBskyAuthorFeed', () => {
   it('returns normalized posts from author feed', async () => {
     const raw = { feed: [{ post: makeRawPost() }] };
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () => new Response(JSON.stringify(raw), { status: 200 }) as Response;
+    globalThis.fetch = (async () => new Response(JSON.stringify(raw), { status: 200 })) as unknown as typeof fetch;
 
     const posts = await getBskyAuthorFeed('bellingcat.bsky.social');
     expect(posts).toHaveLength(1);
@@ -197,19 +189,17 @@ describe('getBskyAuthorFeed', () => {
   });
 
   it('returns empty array when feed is absent', async () => {
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 }) as Response;
+    globalThis.fetch = (async () => new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch;
     const posts = await getBskyAuthorFeed('nobody');
     expect(posts).toHaveLength(0);
   });
 
   it('includes actor and limit in the request URL', async () => {
     let capturedUrl = '';
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify({ feed: [] }), { status: 200 }) as Response;
-    };
+    }) as unknown as typeof fetch;
 
     await getBskyAuthorFeed('user.bsky.social', 7);
     expect(capturedUrl).toContain('actor=user.bsky.social');
@@ -217,9 +207,8 @@ describe('getBskyAuthorFeed', () => {
   });
 
   it('throws on HTTP error response', async () => {
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () =>
-      new Response('Forbidden', { status: 403, statusText: 'Forbidden' }) as Response;
+    globalThis.fetch = (async () =>
+      new Response('Forbidden', { status: 403, statusText: 'Forbidden' })) as unknown as typeof fetch;
     await expect(getBskyAuthorFeed('locked')).rejects.toThrow('Bluesky feed HTTP 403');
   });
 });

@@ -84,9 +84,8 @@ describe('xSearchTool — missing token', () => {
 describe('xSearchTool — search command', () => {
   it('returns tweets on a successful search', async () => {
     const resp = makeSearchResponse();
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify(resp), { status: 200 }) as Response;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(resp), { status: 200 })) as unknown as typeof fetch;
 
     const result = await xSearchTool.invoke({ command: 'search', query: 'AAPL earnings' });
     expect(result).toContain('testuser');
@@ -95,11 +94,10 @@ describe('xSearchTool — search command', () => {
 
   it('auto-appends -is:retweet when not present in query', async () => {
     let capturedUrl = '';
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
-    };
+    }) as unknown as typeof fetch;
 
     await xSearchTool.invoke({ command: 'search', query: 'NVDA' });
     expect(decodeURIComponent(capturedUrl)).toContain('-is:retweet');
@@ -107,11 +105,10 @@ describe('xSearchTool — search command', () => {
 
   it('does NOT double-append -is:retweet when already present', async () => {
     let capturedUrl = '';
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
-    };
+    }) as unknown as typeof fetch;
 
     await xSearchTool.invoke({ command: 'search', query: 'NVDA -is:retweet' });
     const decoded = decodeURIComponent(capturedUrl);
@@ -122,9 +119,8 @@ describe('xSearchTool — search command', () => {
     const tweets = [makeTweet('t1'), makeTweet('t2')];
     tweets[0].public_metrics.like_count = 20;
     tweets[1].public_metrics.like_count = 2;
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify(makeSearchResponse(tweets)), { status: 200 }) as Response;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(makeSearchResponse(tweets)), { status: 200 })) as unknown as typeof fetch;
 
     const result = await xSearchTool.invoke({ command: 'search', query: 'test', min_likes: 10 });
     // Only tweet with 20 likes should pass (t1). t2 (2 likes) should be filtered out.
@@ -136,9 +132,8 @@ describe('xSearchTool — search command', () => {
     const tweets = [makeTweet('t1'), makeTweet('t2')];
     tweets[0].public_metrics.like_count = 5;
     tweets[1].public_metrics.like_count = 100;
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify(makeSearchResponse(tweets)), { status: 200 }) as Response;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(makeSearchResponse(tweets)), { status: 200 })) as unknown as typeof fetch;
 
     const result = await xSearchTool.invoke({ command: 'search', query: 'sort test', sort: 'likes' });
     // tweet t2 (100 likes) should appear before t1 (5 likes)
@@ -155,11 +150,10 @@ describe('xSearchTool — search command', () => {
 
   it('includes since parameter in URL when provided', async () => {
     let capturedUrl = '';
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request) => {
       capturedUrl = url.toString();
       return new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
-    };
+    }) as unknown as typeof fetch;
 
     await xSearchTool.invoke({ command: 'search', query: 'news', since: '1h' });
     expect(capturedUrl).toContain('start_time=');
@@ -167,12 +161,11 @@ describe('xSearchTool — search command', () => {
 
   it('handles rate limit (429) with descriptive error', async () => {
     const resetTime = String(Math.floor(Date.now() / 1000) + 60);
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () =>
+    globalThis.fetch = (async () =>
       new Response('Too Many Requests', {
         status: 429,
         headers: { 'x-rate-limit-reset': resetTime },
-      }) as Response;
+      })) as unknown as typeof fetch;
 
     await expect(xSearchTool.invoke({ command: 'search', query: 'test' })).rejects.toThrow(
       'rate limited',
@@ -180,24 +173,22 @@ describe('xSearchTool — search command', () => {
   });
 
   it('handles HTTP error with status code', async () => {
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () =>
-      new Response('Forbidden', { status: 403 }) as Response;
+    globalThis.fetch = (async () =>
+      new Response('Forbidden', { status: 403 })) as unknown as typeof fetch;
 
     await expect(xSearchTool.invoke({ command: 'search', query: 'test' })).rejects.toThrow('403');
   });
 
   it('deduplicates tweets across pages', async () => {
     let callCount = 0;
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () => {
+    globalThis.fetch = (async () => {
       callCount++;
       const resp = {
         ...makeSearchResponse([makeTweet('t1')]),
         meta: callCount === 1 ? { next_token: 'page2' } : {},
       };
       return new Response(JSON.stringify(resp), { status: 200 }) as Response;
-    };
+    }) as unknown as typeof fetch;
 
     const result = await xSearchTool.invoke({ command: 'search', query: 'dup', pages: 2 });
     // t1 should appear only once despite being returned on both pages
@@ -213,8 +204,7 @@ describe('xSearchTool — search command', () => {
 describe('xSearchTool — profile command', () => {
   it('returns user info and tweets', async () => {
     let callCount = 0;
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () => {
+    globalThis.fetch = (async () => {
       callCount++;
       if (callCount === 1) {
         // First call: user lookup
@@ -222,7 +212,7 @@ describe('xSearchTool — profile command', () => {
       }
       // Second call: tweet search
       return new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
-    };
+    }) as unknown as typeof fetch;
 
     const result = await xSearchTool.invoke({ command: 'profile', username: 'testuser' });
     expect(result).toContain('testuser');
@@ -235,9 +225,8 @@ describe('xSearchTool — profile command', () => {
   });
 
   it('throws when user is not found', async () => {
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify({ data: null }), { status: 200 }) as Response;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: null }), { status: 200 })) as unknown as typeof fetch;
 
     await expect(
       xSearchTool.invoke({ command: 'profile', username: 'ghost' }),
@@ -251,9 +240,8 @@ describe('xSearchTool — profile command', () => {
 
 describe('xSearchTool — thread command', () => {
   it('returns thread tweets', async () => {
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(makeSearchResponse()), { status: 200 })) as unknown as typeof fetch;
 
     const result = await xSearchTool.invoke({ command: 'thread', query: '123456789' });
     expect(result).toContain('testuser');
@@ -273,11 +261,10 @@ describe('xSearchTool — thread command', () => {
 describe('parseSince (via search URL)', () => {
   async function captureUrl(since: string) {
     let url = '';
-    // @ts-expect-error Bun fetch preconnect
-    globalThis.fetch = async (u: string | URL | Request) => {
+    globalThis.fetch = (async (u: string | URL | Request) => {
       url = u.toString();
       return new Response(JSON.stringify(makeSearchResponse()), { status: 200 }) as Response;
-    };
+    }) as unknown as typeof fetch;
     await xSearchTool.invoke({ command: 'search', query: 'x', since });
     return url;
   }
