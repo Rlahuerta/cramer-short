@@ -1333,6 +1333,7 @@ export function computeTrajectory(
   hmmOverride?: { drift: number; vol: number; weight: number },
   nSamples = 1000,
   nu = 5,
+  empiricalDailyVol?: number,
 ): TrajectoryPoint[] {
   const initialIdx = STATE_INDEX[initialState];
   const trajectory: TrajectoryPoint[] = [];
@@ -1344,6 +1345,16 @@ export function computeTrajectory(
     regimeWeightsPerDay.push(Pd[initialIdx]);
   }
 
+  // Compute 1-day regime-weighted drift and vol for MC steps
+  const { mu_n: drift1d, sigma_n: regimeVol1d } = computeHorizonDriftVol(
+    1, P, regimeStats, initialState, momentumAdjustment, hmmOverride,
+  );
+
+  // Use max(regime-weighted vol, empirical vol) for MC paths.
+  // Regime-weighted vol = E[Var(R|S)] misses between-state variance Var(E[R|S]),
+  // causing systematically narrow CIs. Empirical vol captures total variance.
+  const mcVol = empiricalDailyVol ? Math.max(regimeVol1d, empiricalDailyVol) : regimeVol1d;
+
   // Run shared Monte Carlo: generate nSamples random walks, each of length `days`
   // Using Student-t random variates for fat tails
   const paths: number[][] = []; // paths[sample][day] = log(price/currentPrice)
@@ -1351,13 +1362,10 @@ export function computeTrajectory(
     const path = new Array(days);
     let cumLogReturn = 0;
     for (let d = 0; d < days; d++) {
-      const { mu_n: drift1d, sigma_n: vol1d } = computeHorizonDriftVol(
-        1, P, regimeStats, initialState, momentumAdjustment, hmmOverride,
-      );
       // Student-t variate via inverse CDF of uniform
       const u = Math.random();
       const z = inverseStudentTCDF(u, nu);
-      const scaledVol = nu > 2 ? vol1d * Math.sqrt((nu - 2) / nu) : vol1d;
+      const scaledVol = nu > 2 ? mcVol * Math.sqrt((nu - 2) / nu) : mcVol;
       cumLogReturn += drift1d + z * scaledVol;
       path[d] = cumLogReturn;
     }
@@ -1374,15 +1382,20 @@ export function computeTrajectory(
     );
 
     // Expected price from analytical drift
-    const expectedPrice = currentPrice * Math.exp(mu_n);
+    const analyticalExpected = currentPrice * Math.exp(mu_n);
 
     // CI bounds from Monte Carlo paths
     const prices = paths.map(path => currentPrice * Math.exp(path[dayIdx]));
     prices.sort((a, b) => a - b);
     const p5Idx = Math.max(0, Math.floor(nSamples * 0.05) - 1);
+    const p50Idx = Math.floor(nSamples * 0.5);
     const p95Idx = Math.min(nSamples - 1, Math.ceil(nSamples * 0.95));
     const lowerBound = prices[p5Idx];
     const upperBound = prices[p95Idx];
+
+    // Use MC median when empirical vol is used (more consistent with MC bounds),
+    // otherwise use the analytical expected price
+    const expectedPrice = empiricalDailyVol ? prices[p50Idx] : analyticalExpected;
 
     // P(up) from Student-t survival at currentPrice
     const pUp = studentTSurvival(currentPrice, currentPrice, mu_n, sigma_n, nu);
@@ -2347,6 +2360,7 @@ export async function computeMarkovDistribution(params: {
     trajectoryResult = computeTrajectory(
       currentPrice, trajDays, P, regimeStats, currentRegime,
       combinedDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
+      recentDailyVol,
     );
   }
 
