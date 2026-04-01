@@ -21,6 +21,40 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
 import { baumWelch, predict as hmmPredict, type HMMParams } from './hmm.js';
+import { api } from './api.js';
+
+// ---------------------------------------------------------------------------
+// Auto-fetch historical prices (used when LLM omits historicalPrices)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch daily close prices from the Financial Datasets API.
+ * Returns oldest-first array of close prices, or empty array on failure.
+ */
+export async function fetchHistoricalPrices(
+  ticker: string,
+  days = 120,
+): Promise<number[]> {
+  const endDate = new Date().toISOString().slice(0, 10);
+  const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  try {
+    const { data } = await api.get('/prices/', {
+      ticker,
+      interval: 'day',
+      start_date: startDate,
+      end_date: endDate,
+    });
+    const prices: Array<{ close: number }> =
+      (data as any).prices ?? (data as any) ?? [];
+    return prices
+      .map((p) => p.close)
+      .filter((v) => typeof v === 'number' && !isNaN(v));
+  } catch {
+    return [];
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -439,6 +473,51 @@ export function extractPriceThresholds(
   }
 
   return Array.from(seen.values()).sort((a, b) => a.price - b.price);
+}
+
+/**
+ * Normalize Polymarket anchor prices for commodity ETFs.
+ *
+ * Polymarket gold markets reference futures/per-oz prices (e.g., $5,500 for GC)
+ * while GLD trades at ~1/10th of spot gold. This function detects the mismatch
+ * and scales anchors into the ETF's price range using the current price as reference.
+ *
+ * Heuristic: if the median anchor price is >3× the current price, we estimate a
+ * conversion factor = currentPrice / medianAnchor and apply it. This is conservative
+ * — it only fires when the price scales are obviously different (futures vs ETF).
+ */
+export function normalizeAnchorPricesForETF(
+  anchors: PriceThreshold[],
+  currentPrice: number,
+  ticker: string,
+): PriceThreshold[] {
+  if (anchors.length === 0) return anchors;
+
+  // Only apply to known commodity ETFs
+  const commodityETFs = new Set([
+    'GLD', 'IAU', 'SGOL',   // gold
+    'SLV', 'SIVR',           // silver
+    'USO', 'BNO',            // oil
+    'UNG',                    // natural gas
+    'CPER',                   // copper
+  ]);
+  if (!commodityETFs.has(ticker.toUpperCase())) return anchors;
+
+  // Compute median anchor price
+  const sorted = [...anchors].sort((a, b) => a.price - b.price);
+  const medianAnchor = sorted[Math.floor(sorted.length / 2)].price;
+
+  // Only convert if anchors are clearly in a different price scale (>3× current)
+  if (medianAnchor <= currentPrice * 3) return anchors;
+
+  // Estimate conversion factor: ratio of current ETF price to anchor median
+  // For GLD: ~$415 / ~$4,700 ≈ 0.088 (≈1/10 gold spot → GLD)
+  const conversionFactor = currentPrice / medianAnchor;
+
+  return anchors.map((a) => ({
+    ...a,
+    price: Math.round(a.price * conversionFactor * 100) / 100,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -2288,6 +2367,11 @@ export async function computeMarkovDistribution(params: {
   let polymarketAnchors = extractPriceThresholds(polymarketMarkets);
   let anchorDivergenceWarnings: AnchorDivergenceWarning[] = [];
 
+  // Normalize commodity ETF anchors: convert futures/per-oz prices to ETF scale
+  polymarketAnchors = normalizeAnchorPricesForETF(
+    polymarketAnchors, currentPrice, ticker,
+  );
+
   if (params.kalshiAnchors && params.kalshiAnchors.length > 0) {
     const merged = mergeAnchorsWithCrossPlatformValidation(polymarketAnchors, params.kalshiAnchors);
     polymarketAnchors = merged.anchors;
@@ -2626,7 +2710,7 @@ Combines Polymarket threshold markets (real-money anchors) with historical Marko
 transitions to produce P(price > X) for each price level in the distribution.
 
 Use when the query asks for a probability distribution of future prices, not just a point estimate.
-Requires: ticker symbol, horizon in trading days (1–90), and access to recent price history.
+Requires: ticker symbol and horizon in trading days (1–90). Historical prices are auto-fetched if not provided.
 
 IMPORTANT — Commodity tickers: For commodities, use the liquid ETF ticker for best data availability:
   Gold → GLD, Silver → SLV, Oil → USO, Natural Gas → UNG, Copper → CPER.
@@ -2639,15 +2723,15 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     ticker: z.string().describe('Stock/ETF/commodity ticker symbol, e.g. NVDA, SPY, BTC-USD, GLD. For commodities, prefer the liquid ETF (GLD for gold, SLV for silver, USO for oil) over futures tickers.'),
     horizon: z.number().int().min(1).max(90).describe('Forecast horizon in trading days'),
     currentPrice: z.number().optional().describe('Current price (fetched automatically if omitted)'),
-    historicalPrices: z.array(z.number()).min(10).describe(
-      'Daily close prices oldest-first, minimum 30 recommended for regime estimation',
+    historicalPrices: z.array(z.number()).optional().describe(
+      'Daily close prices oldest-first. Auto-fetched if omitted or empty. Minimum 10 required, 30+ recommended.',
     ),
     polymarketMarkets: z.array(z.object({
       question:    z.string(),
       probability: z.number().min(0).max(1),
       volume:      z.number().optional(),
       createdAt:   z.union([z.string(), z.number()]).optional(),
-    })).describe('Polymarket markets with dollar price thresholds (can be empty array)'),
+    })).optional().default([]).describe('Polymarket markets with dollar price thresholds (optional, defaults to empty)'),
     sentiment: z.object({
       bullish: z.number().min(0).max(1),
       bearish: z.number().min(0).max(1),
@@ -2663,15 +2747,28 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       .describe('Number of days for trajectory (default: horizon, max 30)'),
   }),
   func: async (input) => {
+    // Auto-fetch historical prices if not provided or too few
+    let historicalPrices = input.historicalPrices ?? [];
+    if (historicalPrices.length < 10) {
+      const fetched = await fetchHistoricalPrices(input.ticker, 120);
+      if (fetched.length >= 10) {
+        historicalPrices = fetched;
+      } else {
+        return `Error: Could not fetch enough historical prices for ${input.ticker}. `
+          + `Got ${fetched.length} prices (minimum 10 required). `
+          + `Try providing historicalPrices manually via get_market_data first.`;
+      }
+    }
+
     const price = input.currentPrice
-      ?? input.historicalPrices[input.historicalPrices.length - 1];
+      ?? historicalPrices[historicalPrices.length - 1];
 
     const result = await computeMarkovDistribution({
       ticker:            input.ticker,
       horizon:           input.horizon,
       currentPrice:      price,
-      historicalPrices:  input.historicalPrices,
-      polymarketMarkets: input.polymarketMarkets,
+      historicalPrices:  historicalPrices,
+      polymarketMarkets: input.polymarketMarkets ?? [],
       sentiment:         input.sentiment,
       kalshiAnchors:     input.kalshiAnchors,
       trajectory:        input.trajectory,

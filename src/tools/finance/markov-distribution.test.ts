@@ -53,8 +53,9 @@ import {
   winsorize,
   interpolateSurvival,
   computeScenarioProbabilities,
+  normalizeAnchorPricesForETF,
 } from './markov-distribution.js';
-import type { RegimeState, MarkovDistributionPoint } from './markov-distribution.js';
+import type { RegimeState, MarkovDistributionPoint, PriceThreshold } from './markov-distribution.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3052,5 +3053,125 @@ describe('commodity asset profile', () => {
     const etf = getAssetProfile('SPY');
     expect(crypto.maxDailyDrift!).toBeGreaterThan(commodity.maxDailyDrift!);
     expect(commodity.maxDailyDrift!).toBeGreaterThan(etf.maxDailyDrift!);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeAnchorPricesForETF — commodity futures → ETF price conversion
+// ---------------------------------------------------------------------------
+
+describe('normalizeAnchorPricesForETF', () => {
+  const makeAnchor = (price: number): PriceThreshold => ({
+    price,
+    rawProbability: 0.5,
+    probability: 0.475,
+    trustScore: 'high',
+    source: 'polymarket',
+  });
+
+  it('converts gold futures anchors ($5,500) to GLD-scale (~$485)', () => {
+    const anchors = [makeAnchor(5000), makeAnchor(5500), makeAnchor(6000)];
+    const result = normalizeAnchorPricesForETF(anchors, 415, 'GLD');
+    // Should scale down by ~415/5500 ≈ 0.075
+    for (const a of result) {
+      expect(a.price).toBeLessThan(1000);
+      expect(a.price).toBeGreaterThan(300);
+    }
+  });
+
+  it('preserves anchor order after conversion', () => {
+    const anchors = [makeAnchor(4000), makeAnchor(5000), makeAnchor(6000)];
+    const result = normalizeAnchorPricesForETF(anchors, 415, 'GLD');
+    for (let i = 1; i < result.length; i++) {
+      expect(result[i].price).toBeGreaterThan(result[i - 1].price);
+    }
+  });
+
+  it('does not convert when anchors are already in ETF range', () => {
+    const anchors = [makeAnchor(400), makeAnchor(420), makeAnchor(450)];
+    const result = normalizeAnchorPricesForETF(anchors, 415, 'GLD');
+    expect(result[0].price).toBe(400);
+    expect(result[1].price).toBe(420);
+    expect(result[2].price).toBe(450);
+  });
+
+  it('does not convert for non-commodity tickers', () => {
+    const anchors = [makeAnchor(5000), makeAnchor(5500)];
+    const result = normalizeAnchorPricesForETF(anchors, 150, 'AAPL');
+    expect(result[0].price).toBe(5000);
+    expect(result[1].price).toBe(5500);
+  });
+
+  it('works for silver ETF (SLV)', () => {
+    // Silver at ~$30/oz, SLV at ~$28. Polymarket might say "$35 silver"
+    // If anchors are >3x current, conversion kicks in
+    const anchors = [makeAnchor(100), makeAnchor(120)];
+    const result = normalizeAnchorPricesForETF(anchors, 28, 'SLV');
+    // 100 > 28*3=84, so conversion applies
+    for (const a of result) {
+      expect(a.price).toBeLessThan(50);
+    }
+  });
+
+  it('works for oil ETF (USO)', () => {
+    const anchors = [makeAnchor(300), makeAnchor(400)];
+    const result = normalizeAnchorPricesForETF(anchors, 80, 'USO');
+    // 300 > 80*3=240, so conversion applies
+    for (const a of result) {
+      expect(a.price).toBeLessThan(120);
+    }
+  });
+
+  it('returns empty array for empty input', () => {
+    expect(normalizeAnchorPricesForETF([], 415, 'GLD')).toEqual([]);
+  });
+
+  it('preserves trustScore and probability after conversion', () => {
+    const anchors = [makeAnchor(5500)];
+    anchors[0].trustScore = 'high';
+    anchors[0].probability = 0.42;
+    const result = normalizeAnchorPricesForETF(anchors, 415, 'GLD');
+    expect(result[0].trustScore).toBe('high');
+    expect(result[0].probability).toBe(0.42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markov_distribution tool — auto-fetch and schema validation
+// ---------------------------------------------------------------------------
+
+describe('markov_distribution tool schema', () => {
+  it('accepts call without historicalPrices (optional field)', () => {
+    // Verify the schema accepts undefined historicalPrices
+    const schema = markovDistributionTool.schema;
+    const parsed = schema.safeParse({
+      ticker: 'GLD',
+      horizon: 30,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('accepts call with empty polymarketMarkets (defaults to [])', () => {
+    const schema = markovDistributionTool.schema;
+    const parsed = schema.safeParse({
+      ticker: 'SPY',
+      horizon: 7,
+      historicalPrices: Array(30).fill(100),
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.polymarketMarkets).toEqual([]);
+    }
+  });
+
+  it('still accepts valid historicalPrices when provided', () => {
+    const schema = markovDistributionTool.schema;
+    const parsed = schema.safeParse({
+      ticker: 'AAPL',
+      horizon: 14,
+      historicalPrices: Array(60).fill(150),
+      polymarketMarkets: [],
+    });
+    expect(parsed.success).toBe(true);
   });
 });
