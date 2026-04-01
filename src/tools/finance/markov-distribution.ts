@@ -28,8 +28,44 @@ import { api } from './api.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch daily close prices from the Financial Datasets API.
- * Returns oldest-first array of close prices, or empty array on failure.
+ * Yahoo Finance chart API — free, supports stocks, ETFs, crypto, commodities.
+ * Returns oldest-first array of daily close prices.
+ */
+async function fetchYahooChartPrices(
+  ticker: string,
+  days: number,
+): Promise<number[]> {
+  // Map days to Yahoo range parameter
+  const range = days <= 30 ? '1mo' : days <= 90 ? '3mo' : days <= 180 ? '6mo' : '1y';
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
+    `?range=${range}&interval=1d&includePrePost=false`;
+  const UA =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': UA, Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return [];
+    const json = await res.json() as {
+      chart?: { result?: Array<{
+        indicators?: { quote?: Array<{ close?: (number | null)[] }> };
+      }> };
+    };
+    const closes = json.chart?.result?.[0]?.indicators?.quote?.[0]?.close;
+    if (!Array.isArray(closes)) return [];
+    return closes.filter((v): v is number => typeof v === 'number' && !isNaN(v));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Fetch daily close prices. Tries Financial Datasets API first (fast, high quality),
+ * then falls back to Yahoo Finance chart API (free, works for ETFs/commodities).
+ * Returns oldest-first array of close prices, or empty array on total failure.
  */
 export async function fetchHistoricalPrices(
   ticker: string,
@@ -39,6 +75,8 @@ export async function fetchHistoricalPrices(
   const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10);
+
+  // Try Financial Datasets API first
   try {
     const { data } = await api.get('/prices/', {
       ticker,
@@ -48,12 +86,16 @@ export async function fetchHistoricalPrices(
     });
     const prices: Array<{ close: number }> =
       (data as any).prices ?? (data as any) ?? [];
-    return prices
+    const closes = prices
       .map((p) => p.close)
       .filter((v) => typeof v === 'number' && !isNaN(v));
+    if (closes.length >= 10) return closes;
   } catch {
-    return [];
+    // Financial Datasets failed (premium required, rate limit, etc.) — fall through
   }
+
+  // Fallback: Yahoo Finance chart API (works for ETFs, commodities, most tickers)
+  return fetchYahooChartPrices(ticker, days);
 }
 
 // ---------------------------------------------------------------------------
