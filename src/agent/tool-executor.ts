@@ -154,6 +154,14 @@ export class AgentToolExecutor {
     }
   }
 
+  async *executeTool(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+    ctx: RunContext,
+  ): AsyncGenerator<ToolExecutionEvent, void> {
+    yield* this.executeSingle(toolName, toolArgs, ctx);
+  }
+
   private async *executeSingle(
     toolName: string,
     toolArgs: Record<string, unknown>,

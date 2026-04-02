@@ -196,12 +196,23 @@ describe('buildIterationPrompt', () => {
     const prompt = buildIterationPrompt('BTC query', results);
     expect(prompt).toContain('markov_distribution explicitly abstained');
     expect(prompt).toContain('MUST NOT create, correct, extrapolate');
+    expect(prompt).toContain('MAY provide fallback analysis such as a point forecast');
+    expect(prompt).toContain('MUST clearly warn');
   });
 
   it('does not inject canonical markov guard for non-markov tool output', () => {
     const results = '### get_market_data(query=BTC)\n{"data":{"ticker":"BTC-USD"}}';
     const prompt = buildIterationPrompt('BTC query', results);
     expect(prompt).not.toContain('markov_distribution results are present');
+  });
+});
+
+describe('buildSystemPrompt tool guidance', () => {
+  it('prioritizes markov_distribution for terminal price distributions', async () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('For terminal price probability distributions');
+    expect(prompt).toContain('use markov_distribution FIRST');
+    expect(prompt).toContain('only valid source of scenario bucket probabilities');
   });
 });
 

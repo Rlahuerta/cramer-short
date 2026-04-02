@@ -104,6 +104,11 @@ mock.module('@langchain/ollama', () => ({
 }));
 
 const { Agent } = await import('./agent.js');
+const {
+  inferDistributionTicker,
+  inferDistributionHorizon,
+  shouldForceMarkovDistribution,
+} = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -216,6 +221,23 @@ describe('Agent', () => {
       const idxStart = events.indexOf(answerStart!);
       const idxDone = events.indexOf(done!);
       expect(idxStart).toBeLessThan(idxDone);
+    });
+
+    it('infers ticker and horizon for explicit terminal distribution queries', () => {
+      expect(inferDistributionTicker('What is the probability distribution for BTC-USD in 7 trading days?')).toBe('BTC-USD');
+      expect(inferDistributionHorizon('What is the probability distribution for BTC-USD in 7 trading days?')).toBe(7);
+    });
+
+    it('flags explicit terminal distribution queries for forced markov routing', () => {
+      expect(shouldForceMarkovDistribution(
+        'What is the probability distribution for BTC-USD in 7 trading days? Use the Markov distribution methodology with terminal threshold markets only.',
+        [],
+      )).toBe(true);
+
+      expect(shouldForceMarkovDistribution(
+        'What is the probability distribution for BTC-USD in 7 trading days?',
+        [{ tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7 }, result: '{"data":{"_tool":"markov_distribution","status":"abstain"}}' }],
+      )).toBe(false);
     });
   });
 });

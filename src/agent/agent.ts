@@ -17,7 +17,7 @@ import { runMemoryFlush, shouldRunMemoryFlush } from '../memory/flush.js';
 import { injectMemoryContext } from './memory-injection.js';
 import { extractTickers as extractTickersFn } from '../memory/ticker-extractor.js';
 import { injectPolymarketContext } from '../tools/finance/polymarket-injector.js';
-import { extractSignals as extractSignalsFn } from '../tools/finance/signal-extractor.js';
+import { detectAssetType, extractSignals as extractSignalsFn } from '../tools/finance/signal-extractor.js';
 import { fetchPolymarketMarkets } from '../tools/finance/polymarket.js';
 import { resolveProvider } from '../providers.js';
 import type { ToolCallRecord } from './scratchpad.js';
@@ -167,6 +167,50 @@ function isDistributionQuery(query: string): boolean {
   return /probability distribution|price distribution|full distribution|distribution for .*price/i.test(query);
 }
 
+export function isExplicitTerminalDistributionQuery(query: string): boolean {
+  const lower = query.toLowerCase();
+  return isDistributionQuery(query)
+    || lower.includes('markov distribution')
+    || lower.includes('markov chain')
+    || lower.includes('terminal threshold');
+}
+
+export function inferDistributionTicker(query: string): string | null {
+  const extracted = extractTickersFn(query);
+  if (extracted.length > 0) {
+    const first = extracted[0]!;
+    if (/^[A-Z]{2,5}$/.test(first)) {
+      const detected = detectAssetType(query);
+      if (detected.type === 'crypto') return `${first}-USD`;
+    }
+    return first;
+  }
+
+  const detected = detectAssetType(query);
+  if (detected.type === 'crypto' && detected.ticker) return `${detected.ticker}-USD`;
+  return detected.ticker;
+}
+
+export function inferDistributionHorizon(query: string): number | null {
+  const lower = query.toLowerCase();
+
+  const tradingDaysMatch = lower.match(/(\d+)\s+trading\s+days?/i);
+  if (tradingDaysMatch) return parseInt(tradingDaysMatch[1]!, 10);
+
+  const dayMatch = lower.match(/(\d+)[-\s]days?\b/i);
+  if (dayMatch) return parseInt(dayMatch[1]!, 10);
+
+  const weekMatch = lower.match(/(\d+)[-\s]weeks?\b/i);
+  if (weekMatch) return parseInt(weekMatch[1]!, 10) * 5;
+
+  return null;
+}
+
+export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCallRecord[]): boolean {
+  return isExplicitTerminalDistributionQuery(query)
+    && !toolCalls.some((call) => call.tool === 'markov_distribution');
+}
+
 function hasSuccessfulMarkovDistribution(toolCalls: ToolCallRecord[]): boolean {
   for (let i = toolCalls.length - 1; i >= 0; i--) {
     const call = toolCalls[i];
@@ -199,6 +243,54 @@ export function buildUnavailableDistributionAnswer(query: string, toolCalls: Too
     '## Safe next options',
     '- Wait for terminal threshold markets that match the requested horizon, or',
     '- Use `polymarket_forecast` for a point estimate with a confidence interval instead of a full distribution.',
+  ].join('\n');
+}
+
+export function buildDistributionWarningPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
+  if (!isDistributionQuery(query)) return null;
+  if (hasSuccessfulMarkovDistribution(toolCalls)) return null;
+
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (call.tool !== 'markov_distribution') continue;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(call.result);
+    } catch {
+      continue;
+    }
+
+    const data = parsed && typeof parsed === 'object' ? (parsed as { data?: unknown }).data : null;
+    if (!data || typeof data !== 'object') continue;
+
+    const payload = data as Record<string, unknown>;
+    if (payload['_tool'] !== 'markov_distribution' || payload['status'] !== 'abstain') continue;
+
+    const abstainReasons = Array.isArray(payload['abstainReasons'])
+      ? payload['abstainReasons'].filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
+      : [];
+
+    return [
+      '## Warning: no calibrated Markov terminal distribution was available',
+      '',
+      'The Markov distribution workflow abstained for this query. Any fallback analysis below must be treated as non-distribution context unless it comes directly from a validated canonical Markov payload.',
+      ...(abstainReasons.length > 0
+        ? ['', 'Key abstain reasons:', ...abstainReasons.map((reason) => `- ${reason}`)]
+        : []),
+      '',
+      '---',
+      '',
+    ].join('\n');
+  }
+
+  return [
+    '## Warning: no validated Markov distribution was produced',
+    '',
+    'Dexter did not produce a successful non-abstaining `markov_distribution` result for this distribution query. Any answer below should be read as fallback analysis, not a calibrated probability distribution.',
+    '',
+    '---',
+    '',
   ].join('\n');
 }
 
@@ -524,6 +616,19 @@ export class Agent {
 
       // No tool calls = final answer is in this response
       if (typeof response === 'string' || !hasToolCalls(response)) {
+        if (shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
+          const forced = yield* this.forceMarkovDistribution(ctx);
+          if (forced) {
+            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
+            currentPrompt = buildIterationPrompt(
+              query,
+              ctx.scratchpad.getToolResults(),
+              ctx.scratchpad.formatToolUsageForPrompt(),
+            );
+            continue;
+          }
+        }
+
         yield* this.handleDirectResponse(responseText ?? '', ctx, currentPrompt);
         return;
       }
@@ -552,6 +657,19 @@ export class Agent {
         const stToolCalls = (response as AIMessage).tool_calls ?? [];
         if (stToolCalls.some((tc) => tc.name === 'sequential_thinking')) {
           sequentialThinkingUsed = true;
+        }
+      }
+
+      if (sequentialThinkingUsed && shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
+        const forced = yield* this.forceMarkovDistribution(ctx);
+        if (forced) {
+          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
+          currentPrompt = buildIterationPrompt(
+            query,
+            ctx.scratchpad.getToolResults(),
+            ctx.scratchpad.formatToolUsageForPrompt(),
+          );
+          continue;
         }
       }
 
@@ -638,6 +756,23 @@ export class Agent {
     return { response: result.response, usage: result.usage };
   }
 
+  private async *forceMarkovDistribution(
+    ctx: RunContext,
+  ): AsyncGenerator<AgentEvent, boolean> {
+    const ticker = inferDistributionTicker(ctx.query);
+    const horizon = inferDistributionHorizon(ctx.query);
+    if (!ticker || !horizon) return false;
+
+    for await (const event of this.toolExecutor.executeTool('markov_distribution', { ticker, horizon }, ctx)) {
+      yield event;
+      if (event.type === 'tool_error' || event.type === 'tool_denied') {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   /**
    * Emit the response text as the final answer.
    *
@@ -661,9 +796,9 @@ export class Agent {
     let streamedAnswer = '';
 
     const toolCalls = ctx.scratchpad.getToolCallRecords();
-    const abstainingMarkovAnswer = buildAbstainingMarkovAnswer(toolCalls);
-    const unavailableDistributionAnswer = buildUnavailableDistributionAnswer(ctx.query, toolCalls);
-    const text = abstainingMarkovAnswer ?? unavailableDistributionAnswer ?? stripThinkingTags(fallbackText);
+    const warningPrefix = buildDistributionWarningPrefix(ctx.query, toolCalls);
+    const baseText = stripThinkingTags(fallbackText);
+    const text = warningPrefix ? `${warningPrefix}${baseText}` : baseText;
 
     if (text) {
       // We already have the answer from the non-streaming callLlm response.

@@ -128,7 +128,7 @@ mock.module('../memory/index.js', () => ({
 // ---------------------------------------------------------------------------
 // Dynamic import AFTER mocks are registered.
 // ---------------------------------------------------------------------------
-const { Agent, buildAbstainingMarkovAnswer, buildUnavailableDistributionAnswer } = await import('./agent.js');
+const { Agent, buildAbstainingMarkovAnswer, buildDistributionWarningPrefix } = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
 // Test environment helpers
@@ -338,14 +338,44 @@ describe('buildAbstainingMarkovAnswer', () => {
   });
 });
 
-describe('buildUnavailableDistributionAnswer', () => {
-  it('returns fallback for distribution queries without successful markov output', () => {
-    const answer = buildUnavailableDistributionAnswer(
+describe('buildDistributionWarningPrefix', () => {
+  it('returns warning prefix for distribution queries without successful markov output', () => {
+    const answer = buildDistributionWarningPrefix(
       'What is the bitcoin probability distribution in 7 days?',
       [],
     );
-    expect(answer).toContain('Probability Distribution Unavailable');
-    expect(answer).toContain('not emitting substitute distribution buckets');
+    expect(answer).toContain('Warning: no validated Markov distribution was produced');
+    expect(answer).toContain('fallback analysis');
+  });
+
+  it('includes abstention diagnostics when markov_distribution abstains', () => {
+    const scratchpad = new Scratchpad('btc abstain warning test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 7 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'abstain',
+          abstainReasons: ['No trusted anchors.'],
+          canonical: {
+            ticker: 'BTC-USD',
+            horizon: 7,
+            currentPrice: 67713.5,
+            diagnostics: { trustedAnchors: 0, totalAnchors: 2, anchorQuality: 'none' },
+          },
+        },
+      }),
+    );
+
+    const answer = buildDistributionWarningPrefix(
+      'What is the bitcoin probability distribution in 7 days?',
+      scratchpad.getToolCallRecords(),
+    );
+    expect(answer).toContain('Warning: no calibrated Markov terminal distribution was available');
+    expect(answer).toContain('Key abstain reasons:');
+    expect(answer).toContain('No trusted anchors.');
+    expect(answer).not.toContain('## BTC-USD 7-Day Probability Distribution: Model Abstained');
   });
 
   it('returns null when successful markov output exists', () => {
@@ -363,7 +393,7 @@ describe('buildUnavailableDistributionAnswer', () => {
     );
 
     expect(
-      buildUnavailableDistributionAnswer(
+      buildDistributionWarningPrefix(
         'What is the bitcoin probability distribution in 7 days?',
         scratchpad.getToolCallRecords(),
       ),
