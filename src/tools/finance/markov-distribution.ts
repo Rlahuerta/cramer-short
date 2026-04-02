@@ -22,6 +22,9 @@ import { z } from 'zod';
 import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
 import { baumWelch, predict as hmmPredict, type HMMParams } from './hmm.js';
 import { api } from './api.js';
+import { fetchBinanceDailyCloses } from './binance.js';
+import { fetchPolymarketAnchorMarkets } from './polymarket.js';
+import { extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -95,6 +98,9 @@ export async function fetchHistoricalPrices(
     // Financial Datasets failed (premium required, rate limit, etc.) — fall through
   }
 
+  const binanceCloses = await fetchBinanceDailyCloses(ticker, days);
+  if (binanceCloses.length >= 10) return binanceCloses;
+
   // Fallback: Yahoo Finance chart API (works for ETFs, commodities, most tickers)
   return fetchYahooChartPrices(ticker, days);
 }
@@ -139,6 +145,7 @@ export interface PriceThreshold {
   /** Whether this anchor is trusted based on liquidity/age heuristics */
   trustScore: 'high' | 'low';
   source: 'polymarket' | 'kalshi' | 'averaged';
+  endDate?: string | null;
 }
 
 export interface SentimentSignal {
@@ -244,6 +251,7 @@ export interface MarkovDistributionResult {
     secondEigenvalue: number;
     /** R²_OS vs. historical-average baseline; null if no held-out data */
     outOfSampleR2: number | null;
+    validationMetric: 'daily_return' | 'horizon_return';
     /** Tier 1: Observations per regime state in the training window */
     stateObservationCounts: Record<RegimeState, number>;
     /** Tier 1: States with < 5 observations — transitions dominated by Dirichlet prior */
@@ -490,7 +498,9 @@ export function extractPriceThresholds(
     probability: number;
     volume?: number;
     createdAt?: string | number;
+    endDate?: string | null;
   }>,
+  options?: { ticker?: string; horizonDays?: number },
 ): PriceThreshold[] {
   const seen = new Map<number, PriceThreshold>();
 
@@ -532,7 +542,15 @@ export function extractPriceThresholds(
         : market.createdAt) < 48 * 60 * 60 * 1000;
 
     const hasVolume = (market.volume ?? 0) > 0;
-    const trustScore: 'high' | 'low' = isYoung || !hasVolume ? 'low' : 'high';
+    const isShortHorizonCrypto = options?.ticker != null
+      && getAssetProfile(options.ticker).type === 'crypto'
+      && options?.horizonDays != null
+      && options.horizonDays <= 14;
+    const isNearTargetResolution = options?.horizonDays != null && market.endDate
+      ? Math.abs((Date.parse(market.endDate) - Date.now()) / 86_400_000 - options.horizonDays) <= 2
+      : false;
+    const trustScore: 'high' | 'low' =
+      hasVolume && (!isYoung || (isShortHorizonCrypto && isNearTargetResolution)) ? 'high' : 'low';
 
     const rawProbability = market.probability;
     const correctedRaw = rawProbability * YES_BIAS_MULTIPLIER;
@@ -548,6 +566,7 @@ export function extractPriceThresholds(
       probability: Math.max(0, Math.min(1, survivalProb)),
       trustScore,
       source: 'polymarket',
+      endDate: market.endDate ?? null,
     };
 
     const existing = seen.get(matched);
@@ -557,6 +576,93 @@ export function extractPriceThresholds(
   }
 
   return Array.from(seen.values()).sort((a, b) => a.price - b.price);
+}
+
+export function inferPolymarketSearchPhrase(ticker: string): string {
+  const normalized = ticker.trim().toUpperCase().replace(/-USD$/, '');
+  return normalizeForPolymarket(`${normalized} price`, normalized);
+}
+
+export function buildPolymarketAnchorQueryVariants(ticker: string): string[] {
+  const normalized = ticker.trim().toUpperCase().replace(/-USD$/, '');
+  const primary = inferPolymarketSearchPhrase(ticker);
+  const manual = [
+    normalizeForPolymarket(normalized, normalized),
+    normalizeForPolymarket(`${normalized} above`, normalized),
+    normalizeForPolymarket(`${normalized} below`, normalized),
+  ];
+  const extracted = extractSignals(normalized)
+    .flatMap((signal) => [signal.searchPhrase, ...(signal.queryVariants ?? [])]);
+
+  return Array.from(new Set([primary, ...manual, ...extracted].filter(Boolean)));
+}
+
+function sortMarketsByHorizonCloseness<T extends { endDate?: string | null; volume?: number }>(
+  markets: T[],
+  horizonDays: number,
+): T[] {
+  return [...markets].sort((a, b) => {
+    const aDays = a.endDate ? (Date.parse(a.endDate) - Date.now()) / 86_400_000 : Number.POSITIVE_INFINITY;
+    const bDays = b.endDate ? (Date.parse(b.endDate) - Date.now()) / 86_400_000 : Number.POSITIVE_INFINITY;
+    const aDist = Number.isFinite(aDays) ? Math.abs(aDays - horizonDays) : Number.POSITIVE_INFINITY;
+    const bDist = Number.isFinite(bDays) ? Math.abs(bDays - horizonDays) : Number.POSITIVE_INFINITY;
+    if (aDist !== bDist) return aDist - bDist;
+    return (b.volume ?? 0) - (a.volume ?? 0);
+  });
+}
+
+function filterMarketsToHorizon<T extends { endDate?: string | null }>(
+  markets: T[],
+  horizonDays: number,
+): T[] {
+  const strict = markets.filter((market) => {
+    if (!market.endDate) return true;
+    const endMs = Date.parse(market.endDate);
+    if (Number.isNaN(endMs)) return true;
+    const daysUntilResolution = (endMs - Date.now()) / 86_400_000;
+    return Math.abs(daysUntilResolution - horizonDays) <= Math.max(2, horizonDays * 0.5);
+  });
+
+  if (strict.length > 0) return strict;
+  return sortMarketsByHorizonCloseness(markets, horizonDays).slice(0, 8);
+}
+
+async function fetchCandidatePolymarketAnchors(
+  ticker: string,
+  horizonDays: number,
+): Promise<Array<{
+  question: string;
+  probability: number;
+  volume?: number;
+  createdAt?: string | number;
+  endDate?: string | null;
+}>> {
+  const queries = buildPolymarketAnchorQueryVariants(ticker);
+  const settled = await Promise.allSettled(
+    queries.slice(0, 6).map((query) => fetchPolymarketAnchorMarkets(query, 40, { ticker, horizonDays })),
+  );
+
+  const seen = new Set<string>();
+  const combined = settled
+    .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof fetchPolymarketAnchorMarkets>>> => result.status === 'fulfilled')
+    .flatMap((result) => result.value)
+    .map((market) => ({
+      question: market.question,
+      probability: market.probability,
+      volume: market.volume24h,
+      createdAt: market.ageDays != null ? Date.now() - market.ageDays * 86_400_000 : undefined,
+      endDate: market.endDate ?? null,
+    }))
+    .filter((market) => {
+      if (seen.has(market.question)) return false;
+      seen.add(market.question);
+      return true;
+    });
+
+  return sortMarketsByHorizonCloseness(
+    filterMarketsToHorizon(combined, horizonDays),
+    horizonDays,
+  );
 }
 
 /**
@@ -1843,6 +1949,84 @@ export function computeR2OS(
   return 1 - ssRes / ssTot;
 }
 
+function computeValidationR2OS(params: {
+  assetType: AssetProfile['type'];
+  horizon: number;
+  regimeSeq: RegimeState[];
+  logReturns: number[];
+  assetProfile: AssetProfile;
+}): { r2os: number | null; validationMetric: 'daily_return' | 'horizon_return' } {
+  const { assetType, horizon, regimeSeq, logReturns, assetProfile } = params;
+
+  const useHorizonValidator = assetType === 'crypto' && horizon >= 7 && horizon <= 14;
+  if (useHorizonValidator) {
+    const heldoutDays = Math.min(logReturns.length - 30, Math.max(12 * horizon, 84));
+    if (logReturns.length >= 30 + heldoutDays) {
+      const actuals: number[] = [];
+      const predicted: number[] = [];
+      const baseline: number[] = [];
+      const startIdx = logReturns.length - heldoutDays;
+
+      for (let start = startIdx; start + horizon <= logReturns.length; start += horizon) {
+        const trainStates = regimeSeq.slice(0, start);
+        const trainLogReturns = logReturns.slice(0, start);
+        if (trainStates.length < 20 || trainLogReturns.length < 20) continue;
+
+        const trainP = estimateTransitionMatrix(trainStates);
+        const trainRegimeStats = estimateRegimeStats(trainLogReturns, trainStates, assetProfile.maxDailyDrift);
+        const lastTrainState = trainStates[trainStates.length - 1];
+        const trainMean = trainLogReturns.reduce((s, v) => s + v, 0) / trainLogReturns.length;
+        const realizedHorizonReturn = logReturns.slice(start, start + horizon).reduce((s, v) => s + v, 0);
+        const { mu_n } = computeHorizonDriftVol(
+          horizon,
+          trainP,
+          trainRegimeStats,
+          lastTrainState,
+          0,
+          undefined,
+        );
+
+        actuals.push(realizedHorizonReturn);
+        predicted.push(mu_n);
+        baseline.push(horizon * trainMean);
+      }
+
+      if (actuals.length >= 6) {
+        return {
+          r2os: computeR2OS(actuals, predicted) - computeR2OS(actuals, baseline),
+          validationMetric: 'horizon_return',
+        };
+      }
+    }
+  }
+
+  const minHeldOut = 20;
+  if (regimeSeq.length >= minHeldOut + 30) {
+    const trainStates  = regimeSeq.slice(0, -minHeldOut);
+    const trainReturns = logReturns.slice(0, -minHeldOut);
+    const testReturns  = logReturns.slice(-minHeldOut);
+
+    const trainP    = estimateTransitionMatrix(trainStates);
+    const trainRegimeStats = estimateRegimeStats(trainReturns, trainStates, assetProfile.maxDailyDrift);
+    const trainMean = trainReturns.reduce((s, v) => s + v, 0) / trainReturns.length;
+    const predicted = testReturns.map((_, i) => {
+      const Pn = matPow(trainP, i + 1);
+      const stateIdx = STATE_INDEX[trainStates[trainStates.length - 1]];
+      const weights  = Pn[stateIdx];
+      return REGIME_STATES.reduce(
+        (s, state, j) => s + weights[j] * trainRegimeStats[state].meanReturn, 0,
+      );
+    });
+    const baseline = Array(minHeldOut).fill(trainMean);
+    return {
+      r2os: computeR2OS(testReturns, predicted) - computeR2OS(testReturns, baseline),
+      validationMetric: 'daily_return',
+    };
+  }
+
+  return { r2os: null, validationMetric: 'daily_return' };
+}
+
 // ---------------------------------------------------------------------------
 // 7b. Bayesian probability calibration (Idea I)
 // ---------------------------------------------------------------------------
@@ -2042,8 +2226,18 @@ export function computePredictionConfidence(options: {
   calibratedPUp?: number;
   /** Historical base rate P(up) from recent returns */
   baseRate?: number;
+  trustedAnchors?: number;
+  horizonDays?: number;
+  outOfSampleR2?: number | null;
 }): number {
   const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
+  const cryptoShortHorizon = options.assetType === 'crypto'
+    && options.horizonDays != null
+    && options.horizonDays <= 14;
+  const anchorsHelpful = (options.trustedAnchors ?? 0) >= 2;
+  const r2 = options.outOfSampleR2;
+  const r2ClearlyBad = typeof r2 === 'number' && Number.isFinite(r2) && r2 < -0.05;
+  const r2NearZero = typeof r2 === 'number' && Number.isFinite(r2) && r2 >= -0.02 && r2 <= 0.02;
 
   // 1. Decisiveness: |P(up) - 0.5| scaled to [0, 1]
   const decisiveness = Math.min(1.0, Math.abs(pUp - 0.5) * 2);
@@ -2088,15 +2282,22 @@ export function computePredictionConfidence(options: {
     }
   }
 
+  if (cryptoShortHorizon && r2NearZero) {
+    confidence += 0.08;
+  }
+
   // Penalty for structural break (regime change mid-window → unreliable)
-  if (structuralBreak) confidence *= 0.6;
+  if (structuralBreak) {
+    const breakPenalty = cryptoShortHorizon && anchorsHelpful && !r2ClearlyBad ? 0.8 : 0.6;
+    confidence *= breakPenalty;
+  }
 
   // Asset-type discount: crypto is inherently noisier → scale confidence down.
   // Commodities are driven by supply shocks → moderate discount.
   // ETFs are the most predictable → small boost.
   const assetType = options.assetType;
   if (assetType === 'crypto') {
-    confidence *= 0.7;
+    confidence *= cryptoShortHorizon && anchorsHelpful ? 0.85 : 0.7;
   } else if (assetType === 'commodity') {
     confidence *= 0.85;
   } else if (assetType === 'etf') {
@@ -2401,6 +2602,7 @@ export function computeActionLevels(
 export function assessAnchorCoverage(
   anchors: PriceThreshold[],
   currentPrice: number,
+  options?: { ticker?: string; horizonDays?: number },
 ): AnchorCoverageDiagnostic {
   const trusted = anchors.filter(a => a.trustScore === 'high');
   if (trusted.length === 0) {
@@ -2428,8 +2630,13 @@ export function assessAnchorCoverage(
   }
 
   const maxGapPct = maxGap * 100;
+  const isShortHorizonCrypto = options?.ticker != null
+    && getAssetProfile(options.ticker).type === 'crypto'
+    && options?.horizonDays != null
+    && options.horizonDays <= 14;
+
   const quality: 'good' | 'sparse' | 'none' =
-    trusted.length >= 3 && maxGapPct < 15 ? 'good'
+    trusted.length >= (isShortHorizonCrypto ? 2 : 3) && maxGapPct < (isShortHorizonCrypto ? 22 : 15) ? 'good'
     : trusted.length >= 1 ? 'sparse'
     : 'none';
 
@@ -2517,7 +2724,7 @@ export async function computeMarkovDistribution(params: {
   const regimeStats = estimateRegimeStats(logReturns, regimeSeq, assetProfile.maxDailyDrift);
 
   // --- Tier 1c: Polymarket anchors with optional cross-platform validation ---
-  let polymarketAnchors = extractPriceThresholds(polymarketMarkets);
+  let polymarketAnchors = extractPriceThresholds(polymarketMarkets, { ticker, horizonDays: horizon });
   let anchorDivergenceWarnings: AnchorDivergenceWarning[] = [];
 
   // Normalize commodity ETF anchors: convert futures/per-oz prices to ETF scale
@@ -2726,6 +2933,18 @@ export async function computeMarkovDistribution(params: {
     ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
     : undefined;
 
+  const anchorCoverage = assessAnchorCoverage(polymarketAnchors, currentPrice, { ticker, horizonDays: horizon });
+
+  // --- Optional R²_OS (leave-one-out on training tail) ---
+  const validation = computeValidationR2OS({
+    assetType: assetProfile.type,
+    horizon,
+    regimeSeq,
+    logReturns,
+    assetProfile,
+  });
+  const r2os = validation.r2os;
+
   // --- Prediction confidence (Idea M: selective prediction) ---
   // Use raw P(up) for decisiveness (how far from coin flip) since calibrated P(up)
   // is often compressed to 0.45-0.55, making decisiveness uniformly low.
@@ -2742,31 +2961,10 @@ export async function computeMarkovDistribution(params: {
     momentumAgreement: lookbackAgreement / totalLookbacks,
     calibratedPUp: calPUp,
     baseRate,
+    trustedAnchors: anchorCoverage.trustedAnchors,
+    horizonDays: horizon,
+    outOfSampleR2: r2os,
   });
-
-  // --- Optional R²_OS (leave-one-out on training tail) ---
-  let r2os: number | null = null;
-  const minHeldOut = 20;
-  if (regimeSeq.length >= minHeldOut + 30) {
-    const trainStates  = regimeSeq.slice(0, -minHeldOut);
-    const trainReturns = logReturns.slice(0, -minHeldOut);
-    const testReturns  = logReturns.slice(-minHeldOut);
-
-    const trainP    = estimateTransitionMatrix(trainStates);
-    const trainMean = trainReturns.reduce((s, v) => s + v, 0) / trainReturns.length;
-    const predicted = testReturns.map((_, i) => {
-      const Pn = matPow(trainP, i + 1);
-      const stateIdx = STATE_INDEX[trainStates[trainStates.length - 1]];
-      const weights  = Pn[stateIdx];
-      return REGIME_STATES.reduce(
-        (s, state, j) => s + weights[j] * regimeStats[state].meanReturn, 0,
-      );
-    });
-    const baseline = Array(minHeldOut).fill(trainMean);
-    const r2model    = computeR2OS(testReturns, predicted);
-    const r2base     = computeR2OS(testReturns, baseline);
-    r2os = r2model - r2base; // incremental R²_OS over mean baseline
-  }
 
   // --- Trajectory computation (optional day-by-day forecast) ---
   let trajectoryResult: TrajectoryPoint[] | undefined;
@@ -2834,13 +3032,14 @@ export async function computeMarkovDistribution(params: {
       mixingTimeWeight: mixWeight,
       secondEigenvalue: rho,
       outOfSampleR2: r2os,
+      validationMetric: validation.validationMetric,
       stateObservationCounts,
       sparseStates,
       structuralBreakDetected: breakResult.detected,
       structuralBreakDivergence: breakResult.divergence,
       ciWidened: breakResult.detected,
       anchorDivergenceWarnings,
-      anchorCoverage: assessAnchorCoverage(polymarketAnchors, currentPrice),
+      anchorCoverage,
       goodnessOfFit: gofResult,
       hmm: hmmMeta ?? null,
       ensemble: { consensus: ensemble.consensus, adjustment: ensembleAdj },
@@ -2950,12 +3149,16 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     const price = input.currentPrice
       ?? historicalPrices[historicalPrices.length - 1];
 
+    const polymarketMarkets = (input.polymarketMarkets && input.polymarketMarkets.length > 0)
+      ? input.polymarketMarkets
+      : await fetchCandidatePolymarketAnchors(input.ticker, input.horizon);
+
     const result = await computeMarkovDistribution({
       ticker:            input.ticker,
       horizon:           input.horizon,
       currentPrice:      price,
       historicalPrices:  historicalPrices,
-      polymarketMarkets: input.polymarketMarkets ?? [],
+      polymarketMarkets,
       sentiment:         input.sentiment,
       kalshiAnchors:     input.kalshiAnchors,
       trajectory:        input.trajectory,
@@ -2977,7 +3180,16 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     const retPct  = pct(sig.expectedReturn);
     const rrLabel = sig.riskRewardRatio.toFixed(2);
     const recEmoji = sig.recommendation === 'BUY' ? '📈' : sig.recommendation === 'SELL' ? '📉' : '➡️ ';
+    const cryptoShortHorizon = getAssetProfile(result.ticker).type === 'crypto' && result.horizon <= 14;
+    const r2NeutralForCrypto = cryptoShortHorizon
+      && m.validationMetric === 'horizon_return'
+      && m.anchorCoverage.quality === 'good'
+      && m.anchorCoverage.trustedAnchors >= 2
+      && typeof m.outOfSampleR2 === 'number'
+      && Number.isFinite(m.outOfSampleR2)
+      && m.outOfSampleR2 >= -0.04;
     const hasPositiveR2 = typeof m.outOfSampleR2 === 'number' && Number.isFinite(m.outOfSampleR2) && m.outOfSampleR2 > 0;
+    const validationAcceptable = hasPositiveR2 || r2NeutralForCrypto;
     const abstainReasons: string[] = [];
 
     if (m.anchorCoverage.trustedAnchors === 0) {
@@ -2986,7 +3198,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       abstainReasons.push(`Prediction-market anchor coverage is ${m.anchorCoverage.quality}, so calibrated scenario buckets would be overly model-driven.`);
     }
 
-    if (!hasPositiveR2) {
+    if (!validationAcceptable) {
       if (m.outOfSampleR2 === null || !Number.isFinite(m.outOfSampleR2)) {
         abstainReasons.push('Out-of-sample Markov validation is unavailable for this run.');
       } else {
@@ -2997,7 +3209,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     const canEmitCanonical =
       m.anchorCoverage.trustedAnchors > 0
       && m.anchorCoverage.quality === 'good'
-      && hasPositiveR2;
+      && validationAcceptable;
 
     // --- Section 1: Decision Card (FIRST — most important) ---
     const decisionCard = [

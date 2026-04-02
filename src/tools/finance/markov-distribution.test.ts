@@ -19,7 +19,7 @@
  *  Add 5  — Dirichlet default 0.1 (merged with Fix 6)
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import {
   classifyRegimeState,
   estimateTransitionMatrix,
@@ -54,8 +54,46 @@ import {
   interpolateSurvival,
   computeScenarioProbabilities,
   normalizeAnchorPricesForETF,
+  inferPolymarketSearchPhrase,
+  buildPolymarketAnchorQueryVariants,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
+
+const realPolymarketModule = await import('./polymarket.js');
+
+mock.module('./polymarket.js', () => ({
+  ...realPolymarketModule,
+  fetchPolymarketMarkets: async (_query: string, _limit: number) => [
+    {
+      question: 'Will the price of Bitcoin be above $64000 on April 9?',
+      probability: 0.78,
+      volume24h: 250000,
+      ageDays: 5,
+      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    },
+    {
+      question: 'Will the price of Bitcoin be above $66000 on April 9?',
+      probability: 0.54,
+      volume24h: 220000,
+      ageDays: 5,
+      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    },
+    {
+      question: 'Will the price of Bitcoin be above $68000 on April 9?',
+      probability: 0.31,
+      volume24h: 190000,
+      ageDays: 5,
+      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    },
+    {
+      question: 'Will Bitcoin reach $70000 this week?',
+      probability: 0.22,
+      volume24h: 180000,
+      ageDays: 5,
+      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    },
+  ],
+}));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2476,7 +2514,8 @@ describe('markovDistributionTool output format', () => {
       historicalPrices: prices,
       polymarketMarkets: [],
     });
-    expect(output).toContain('No trusted');
+    expect(output).toContain('Why this abstained');
+    expect(output).toMatch(/anchor coverage is sparse|No trusted/);
   });
 });
 
@@ -2780,6 +2819,61 @@ describe('computePredictionConfidence', () => {
     const crypto = computePredictionConfidence({ ...base, assetType: 'crypto' });
     expect(crypto).toBeLessThan(equity);
     expect(crypto / equity).toBeCloseTo(0.7, 1); // 0.7× discount
+  });
+
+  it('short-horizon crypto with anchors gets a lighter discount', () => {
+    const base = { pUp: 0.7, ensembleConsensus: 2, hmmConverged: true, regimeRunLength: 10, structuralBreak: false };
+    const plainCrypto = computePredictionConfidence({ ...base, assetType: 'crypto' });
+    const anchoredCrypto = computePredictionConfidence({
+      ...base,
+      assetType: 'crypto',
+      horizonDays: 7,
+      trustedAnchors: 2,
+      outOfSampleR2: -0.01,
+    });
+    expect(anchoredCrypto).toBeGreaterThan(plainCrypto);
+  });
+
+  it('structural break penalty is softer for short-horizon crypto with anchors and neutral R²', () => {
+    const broken = computePredictionConfidence({
+      pUp: 0.75,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 10,
+      structuralBreak: true,
+      assetType: 'crypto',
+      horizonDays: 7,
+      trustedAnchors: 2,
+      outOfSampleR2: -0.01,
+    });
+    const brokenBadR2 = computePredictionConfidence({
+      pUp: 0.75,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 10,
+      structuralBreak: true,
+      assetType: 'crypto',
+      horizonDays: 7,
+      trustedAnchors: 2,
+      outOfSampleR2: -0.08,
+    });
+    expect(broken).toBeGreaterThan(brokenBadR2);
+  });
+
+  it('treats near-zero R² as less severe than clearly bad R² for short-horizon crypto with anchors', () => {
+    const base = {
+      pUp: 0.7,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 10,
+      structuralBreak: false,
+      assetType: 'crypto' as const,
+      horizonDays: 7,
+      trustedAnchors: 2,
+    };
+    const neutral = computePredictionConfidence({ ...base, outOfSampleR2: -0.01 });
+    const clearlyBad = computePredictionConfidence({ ...base, outOfSampleR2: -0.08 });
+    expect(neutral).toBeGreaterThan(clearlyBad);
   });
 
   it('ETF asset type boosts confidence', () => {
@@ -3435,7 +3529,46 @@ describe('markov_distribution tool schema', () => {
   });
 });
 
+describe('markov_distribution anchor query strategy', () => {
+  it('normalizes BTC-USD search phrase to Bitcoin price', () => {
+    expect(inferPolymarketSearchPhrase('BTC-USD')).toBe('Bitcoin price');
+  });
+
+  it('builds richer Bitcoin anchor query variants', () => {
+    const variants = buildPolymarketAnchorQueryVariants('BTC-USD');
+    expect(variants).toContain('Bitcoin price');
+    expect(variants).toContain('Bitcoin');
+    expect(variants).toContain('Bitcoin above');
+    expect(variants).toContain('Bitcoin below');
+  });
+});
+
 describe('markov_distribution tool output envelope', () => {
+  it('auto-fetches candidate Polymarket anchors when polymarketMarkets are omitted', async () => {
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const parsedInput = freshTool.schema.parse({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const result = await freshTool.func(parsedInput);
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data._tool).toBe('markov_distribution');
+    expect(parsed.data.canonical?.diagnostics?.totalAnchors).toBeGreaterThan(0);
+    expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBeGreaterThan(0);
+  });
+
   it('returns abstain payload when anchors or validation are insufficient', async () => {
     const result = await markovDistributionTool.func({
       ticker: 'SPY',
@@ -3489,6 +3622,34 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.actionSignal).toBeDefined();
     expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
     expect(Array.isArray(parsed.data.distribution)).toBe(true);
+  });
+
+  it('uses horizon-return validation when short-horizon crypto has enough history', async () => {
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+    const currentPrice = prices[prices.length - 1];
+    const result = await markovDistributionTool.func({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [
+        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.97)} on April 9?`, probability: 0.72, volume: 5000, createdAt: Date.now() - 86400000 * 3 },
+        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice)} on April 9?`, probability: 0.51, volume: 5000, createdAt: Date.now() - 86400000 * 3 },
+        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.03)} on April 9?`, probability: 0.29, volume: 5000, createdAt: Date.now() - 86400000 * 3 },
+      ],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data.canonical.diagnostics.anchorQuality).toBe('good');
+    expect(parsed.data.canonical.diagnostics.trustedAnchors).toBeGreaterThanOrEqual(2);
+    expect(parsed.data.canonical.diagnostics.outOfSampleR2).not.toBeNull();
+    expect(parsed.data.status).toBe('ok');
   });
 });
 
