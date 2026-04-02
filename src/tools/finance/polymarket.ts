@@ -532,6 +532,7 @@ export interface PolymarketMarketResult {
   volume24h: number;
   /** Days since market was created (undefined if unavailable from API). */
   ageDays: number | undefined;
+  endDate?: string | null;
 }
 
 function parseYesProbability(probs: Record<string, string>): number {
@@ -563,6 +564,7 @@ export async function fetchPolymarketMarkets(
     probability: parseYesProbability(m.probabilities),
     volume24h: parseVolumeStr(m.volume24h),
     ageDays: m.ageDays,
+    endDate: m.endDate,
   }));
 }
 
@@ -595,5 +597,3 @@ export const polymarketTool = new DynamicStructuredTool({
     }
   },
 });
-
-

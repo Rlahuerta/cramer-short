@@ -22,6 +22,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
+import { Scratchpad } from './scratchpad.js';
 
 // ---------------------------------------------------------------------------
 // Mutable mock state — reset before each test.
@@ -127,7 +128,7 @@ mock.module('../memory/index.js', () => ({
 // ---------------------------------------------------------------------------
 // Dynamic import AFTER mocks are registered.
 // ---------------------------------------------------------------------------
-const { Agent } = await import('./agent.js');
+const { Agent, buildAbstainingMarkovAnswer, buildUnavailableDistributionAnswer } = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
 // Test environment helpers
@@ -279,6 +280,94 @@ describe('Agent — synthesis timeout graceful fallback', () => {
 
     expect(startIdx).toBeGreaterThanOrEqual(0);
     expect(doneIdx).toBeGreaterThan(startIdx);
+  });
+});
+
+describe('buildAbstainingMarkovAnswer', () => {
+  it('returns diagnostics-only answer when markov_distribution abstains', () => {
+    const scratchpad = new Scratchpad('btc abstain test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 7 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'abstain',
+          abstainReasons: ['No trusted anchors.', 'Out-of-sample Markov R² is -0.011.'],
+          canonical: {
+            ticker: 'BTC-USD',
+            horizon: 7,
+            currentPrice: 67713.5,
+            diagnostics: {
+              trustedAnchors: 0,
+              totalAnchors: 2,
+              anchorQuality: 'none',
+              outOfSampleR2: -0.011,
+              structuralBreakDetected: true,
+              structuralBreakDivergence: 0.119,
+              predictionConfidence: 0.14,
+            },
+          },
+        },
+      }),
+    );
+
+    const answer = buildAbstainingMarkovAnswer(scratchpad.getToolCallRecords());
+    expect(answer).toContain('Model Abstained');
+    expect(answer).toContain('no replacement scenario probabilities are shown');
+    expect(answer).toContain('No trusted anchors.');
+    expect(answer).toContain('Out-of-sample Markov R² is -0.011.');
+    expect(answer).toContain('Trusted anchors');
+  });
+
+  it('returns null when markov_distribution did not abstain', () => {
+    const scratchpad = new Scratchpad('btc ok test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 7 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'ok',
+          canonical: { ticker: 'BTC-USD', horizon: 7, scenarios: { buckets: [] } },
+        },
+      }),
+    );
+
+    expect(buildAbstainingMarkovAnswer(scratchpad.getToolCallRecords())).toBeNull();
+  });
+});
+
+describe('buildUnavailableDistributionAnswer', () => {
+  it('returns fallback for distribution queries without successful markov output', () => {
+    const answer = buildUnavailableDistributionAnswer(
+      'What is the bitcoin probability distribution in 7 days?',
+      [],
+    );
+    expect(answer).toContain('Probability Distribution Unavailable');
+    expect(answer).toContain('not emitting substitute distribution buckets');
+  });
+
+  it('returns null when successful markov output exists', () => {
+    const scratchpad = new Scratchpad('btc ok test for distribution');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 7 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'ok',
+          canonical: { ticker: 'BTC-USD', horizon: 7, scenarios: { buckets: [] } },
+        },
+      }),
+    );
+
+    expect(
+      buildUnavailableDistributionAnswer(
+        'What is the bitcoin probability distribution in 7 days?',
+        scratchpad.getToolCallRecords(),
+      ),
+    ).toBeNull();
   });
 });
 

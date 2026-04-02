@@ -501,10 +501,25 @@ ${fullToolResults}`;
 IMPORTANT: One or more data tools returned an error or empty result. Per your Financial Data Fallback Policy you MUST call web_search next with a targeted query (e.g. "Vestas Wind Systems VWS.CO revenue 2024 annual report"). Do NOT write a final answer until you have tried web_search. Continuing without trying web_search is not acceptable.`;
   }
 
+  const hasCanonicalMarkovOutput = /"_tool"\s*:\s*"markov_distribution"/.test(fullToolResults);
+  if (hasCanonicalMarkovOutput) {
+    prompt += `
+
+IMPORTANT: markov_distribution results are present. Treat the canonical Markov payload as authoritative. Use the reported scenario bucket probabilities and diagnostics verbatim. Do NOT recompute, sum, or infer scenario probabilities from raw Polymarket titles, threshold questions, or price_distribution_chart output — those are inputs/visual aids, not the canonical distribution.`;
+  }
+
+  const hasAbstainingMarkovOutput =
+    /"_tool"\s*:\s*"markov_distribution"/.test(fullToolResults)
+    && /"status"\s*:\s*"abstain"/.test(fullToolResults);
+  if (hasAbstainingMarkovOutput) {
+    prompt += `
+
+IMPORTANT: markov_distribution explicitly abstained. Its diagnostics are authoritative, but no calibrated scenario distribution is available. You may explain the abstain reasons and discuss market-quality limitations, but you MUST NOT create, correct, extrapolate, interpolate, renormalize, or manually synthesize replacement scenario buckets or probability percentages from later polymarket_search results. Numeric scenario distributions are only allowed when copied directly from a non-abstaining canonical Markov payload.`;
+  }
+
   prompt += `
 
 Continue working toward answering the query. When you have gathered sufficient data to answer, write your complete answer directly and do not call more tools. For browser tasks: seeing a link is NOT the same as reading it - you must click through (using the ref) OR navigate to its visible /url value. NEVER guess at URLs - use ONLY URLs visible in snapshots.`;
 
   return prompt;
 }
-

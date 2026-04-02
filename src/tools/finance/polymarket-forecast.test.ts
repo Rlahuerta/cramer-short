@@ -15,6 +15,10 @@ const mockMarkets: PolymarketMarketResult[] = [
   { question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000, ageDays: 0 },
 ];
 
+function futureIso(daysAhead: number): string {
+  return new Date(Date.now() + daysAhead * 86_400_000).toISOString();
+}
+
 mock.module('./polymarket.js', () => ({
   fetchPolymarketMarkets: async (_query: string, _limit: number): Promise<PolymarketMarketResult[]> =>
     mockMarkets,
@@ -127,6 +131,68 @@ describe('polymarketForecastTool', () => {
       undefined,
     );
     expect(parseResult(raw)).toContain('Grade: D');
+  });
+});
+
+describe('threshold chart horizon alignment', () => {
+  it('omits threshold chart and emits warning when threshold markets resolve at the wrong horizon', async () => {
+    mock.module('./polymarket.js', () => ({
+      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
+        {
+          question: 'Will the price of Bitcoin be above $60,000 on April 2?',
+          probability: 0.99,
+          volume24h: 300_000,
+          ageDays: 1,
+          endDate: futureIso(0),
+        },
+        {
+          question: 'Will the price of Bitcoin be above $76,000 on April 2?',
+          probability: 0.04,
+          volume24h: 200_000,
+          ageDays: 1,
+          endDate: futureIso(0),
+        },
+      ],
+    }));
+
+    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(result).not.toContain('BTC Price Distribution');
+    expect(result).toContain('Threshold-style markets were omitted from the distribution chart');
+  });
+
+  it('renders threshold chart when threshold markets resolve near the requested horizon', async () => {
+    mock.module('./polymarket.js', () => ({
+      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
+        {
+          question: 'Will the price of Bitcoin be above $60,000 on April 9?',
+          probability: 0.99,
+          volume24h: 300_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+        {
+          question: 'Will the price of Bitcoin be above $76,000 on April 9?',
+          probability: 0.04,
+          volume24h: 200_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+    }));
+
+    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(result).toContain('BTC Price Distribution');
+    expect(result).not.toContain('Threshold-style markets were omitted from the distribution chart');
   });
 });
 

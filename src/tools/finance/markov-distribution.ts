@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
 import { baumWelch, predict as hmmPredict, type HMMParams } from './hmm.js';
 import { api } from './api.js';
+import { formatToolResult } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -444,19 +445,30 @@ export function getAssetProfile(ticker: string): AssetProfile {
 // ---------------------------------------------------------------------------
 
 const ABOVE_PATTERNS = [
-  /(?:exceed|above|over|surpass)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
-  /(?:reach|hit)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
+  /(?:exceed|above|over)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
+  /(?:settle|close)\s*(?:above|over|at\s*>?)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
+  /(?:be\s+)?at\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
   /\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)\s*(?:or\s*(?:higher|above|more))/i,
-  // Commodity-specific patterns (per barrel, per ounce, etc.)
   /\$(\d[\d,]*(?:\.\d+)?)\s*(?:per\s*(?:barrel|bbl|ounce|oz|gallon|gal))/i,
-  /(?:at|to|past)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
-  // Plain price reference: "oil $150" or "gold $3000"
-  /(?:oil|crude|gold|silver|bitcoin|btc|eth)\s+\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
+  />\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
 ];
 
 const BELOW_PATTERNS = [
-  /(?:fall|drop|decline|decrease|sink|dip)s?\s*(?:below|under|to)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
   /(?:below|under|less\s*than)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
+  /(?:settle|close)\s*(?:below|under)\s*\$(\d[\d,]*(?:\.\d+)?(?:[KkMm])?)/i,
+];
+
+const BARRIER_PATTERNS = [
+  /\breach\b/i,
+  /\bhit\b/i,
+  /\bgo\s+(?:above|below|over|under)\b/i,
+  /\bremain\s+(?:above|below|over|under)\b/i,
+  /\btrade\s+(?:above|below|over|under)\b/i,
+  /\bsurpass\b/i,
+  /\btouch\b/i,
+  /\bstay\s+(?:above|below|over|under)\b/i,
+  /\b(?:move|go)\s+to\b/i,
+  /\b(?:dip|drop|fall|sink|decline|decrease)s?\s+to\b/i,
 ];
 
 /** Parse a price string like "$70K" or "$1,234.56" into a number. */
@@ -483,6 +495,10 @@ export function extractPriceThresholds(
   const seen = new Map<number, PriceThreshold>();
 
   for (const market of markets) {
+    if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question))) {
+      continue;
+    }
+
     let matched: number | null = null;
     let isBelow = false;
 
@@ -2857,6 +2873,8 @@ GLD, SLV, USO etc. are ETFs that replicate the underlying commodity price.
 - Returns P(price > X) for 20+ price levels with 90% Monte Carlo confidence intervals
 - Flags structural breaks (regime change mid-window), sparse states, and cross-platform divergence
 - Automatically applies YES-bias correction (×${YES_BIAS_MULTIPLIER}) to raw Polymarket probabilities
+- Accepts only **terminal threshold** anchors (e.g. "be above $60,000 on April 2", "settle below $4,200")
+- Rejects touch / barrier markets like "reach $70K", "hit $70K", "dip to $64K", or "stay above $60K through March"
 
 **Do NOT use when:**
 - The query is a simple binary probability (use probability_assessment skill instead)
@@ -2873,6 +2891,12 @@ transitions to produce P(price > X) for each price level in the distribution.
 
 Use when the query asks for a probability distribution of future prices, not just a point estimate.
 Requires: ticker symbol and horizon in trading days (1–90). Historical prices are auto-fetched if not provided.
+
+IMPORTANT — Anchor semantics: only pass **terminal threshold** markets as anchors
+(e.g. "be above $60,000 on April 2", "settle below $4,200"). Do NOT pass
+touch/barrier markets like "reach $70K", "hit $70K", "dip to $64K", "drop below
+$50K", or "stay above $60K through March" — those are path-dependent, not
+P(price > X at horizon).
 
 IMPORTANT — Commodity tickers: For commodities, use the liquid ETF ticker for best data availability:
   Gold → GLD, Silver → SLV, Oil → USO, Natural Gas → UNG, Copper → CPER.
@@ -2916,9 +2940,10 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       if (fetched.length >= 10) {
         historicalPrices = fetched;
       } else {
-        return `Error: Could not fetch enough historical prices for ${input.ticker}. `
-          + `Got ${fetched.length} prices (minimum 10 required). `
-          + `Try providing historicalPrices manually via get_market_data first.`;
+        return formatToolResult({
+          _tool: 'markov_distribution',
+          error: `Could not fetch enough historical prices for ${input.ticker}. Got ${fetched.length} prices (minimum 10 required). Try providing historicalPrices manually via get_market_data first.`,
+        });
       }
     }
 
@@ -2952,6 +2977,27 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     const retPct  = pct(sig.expectedReturn);
     const rrLabel = sig.riskRewardRatio.toFixed(2);
     const recEmoji = sig.recommendation === 'BUY' ? '📈' : sig.recommendation === 'SELL' ? '📉' : '➡️ ';
+    const hasPositiveR2 = typeof m.outOfSampleR2 === 'number' && Number.isFinite(m.outOfSampleR2) && m.outOfSampleR2 > 0;
+    const abstainReasons: string[] = [];
+
+    if (m.anchorCoverage.trustedAnchors === 0) {
+      abstainReasons.push('No trusted terminal prediction-market anchors are available for this horizon.');
+    } else if (m.anchorCoverage.quality !== 'good') {
+      abstainReasons.push(`Prediction-market anchor coverage is ${m.anchorCoverage.quality}, so calibrated scenario buckets would be overly model-driven.`);
+    }
+
+    if (!hasPositiveR2) {
+      if (m.outOfSampleR2 === null || !Number.isFinite(m.outOfSampleR2)) {
+        abstainReasons.push('Out-of-sample Markov validation is unavailable for this run.');
+      } else {
+        abstainReasons.push(`Out-of-sample Markov R² is ${m.outOfSampleR2.toFixed(3)}, so the model does not beat a historical-mean baseline.`);
+      }
+    }
+
+    const canEmitCanonical =
+      m.anchorCoverage.trustedAnchors > 0
+      && m.anchorCoverage.quality === 'good'
+      && hasPositiveR2;
 
     // --- Section 1: Decision Card (FIRST — most important) ---
     const decisionCard = [
@@ -3079,17 +3125,66 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       trajectorySection.push('    The CI range is the honest measure of uncertainty.');
     }
 
-    return [
-      ...decisionCard,
-      ...actionPlan,
-      ...whatToDo,
-      ...scenarioSection,
-      '',
-      methodNote,
-      ...header,
-      ...(warnings.length > 0 ? ['', ...warnings] : []),
-      ...table,
-      ...trajectorySection,
-    ].filter(l => l !== undefined).join('\n');
+    const report = canEmitCanonical
+      ? [
+        ...decisionCard,
+        ...actionPlan,
+        ...whatToDo,
+        ...scenarioSection,
+        '',
+        methodNote,
+        ...header,
+        ...(warnings.length > 0 ? ['', ...warnings] : []),
+        ...table,
+        ...trajectorySection,
+      ].filter(l => l !== undefined).join('\n')
+      : [
+        '🚫 Diagnostics-only Markov output',
+        '',
+        `No calibrated scenario distribution was emitted for ${result.ticker} at the ${result.horizon}-day horizon.`,
+        '',
+        'Why this abstained:',
+        ...abstainReasons.map((reason) => `- ${reason}`),
+        '',
+        ...header,
+        ...(warnings.length > 0 ? ['', ...warnings] : []),
+      ].filter(l => l !== undefined).join('\n');
+
+    return formatToolResult({
+      _tool: 'markov_distribution',
+      status: canEmitCanonical ? 'ok' : 'abstain',
+      manualSynthesisForbidden: !canEmitCanonical,
+      abstainReasons,
+      report,
+      canonical: {
+        ticker: result.ticker,
+        currentPrice: result.currentPrice,
+        horizon: result.horizon,
+        scenarios: canEmitCanonical ? result.scenarios : null,
+        actionSignal: canEmitCanonical ? result.actionSignal : null,
+        diagnostics: {
+          totalAnchors: m.anchorCoverage.totalAnchors,
+          trustedAnchors: m.anchorCoverage.trustedAnchors,
+          anchorQuality: m.anchorCoverage.quality,
+          anchorWarning: m.anchorCoverage.warning || null,
+          regimeState: m.regimeState,
+          mixingTimeWeight: m.mixingTimeWeight,
+          markovWeight: m.mixingTimeWeight,
+          anchorWeight: 1 - m.mixingTimeWeight,
+          outOfSampleR2: m.outOfSampleR2,
+          structuralBreakDetected: m.structuralBreakDetected,
+          structuralBreakDivergence: m.structuralBreakDivergence,
+          ciWidened: m.ciWidened,
+          predictionConfidence: result.predictionConfidence,
+          status: canEmitCanonical ? 'ok' : 'abstain',
+          canEmitCanonical,
+          manualSynthesisForbidden: !canEmitCanonical,
+          abstainReasons,
+          warnings,
+        },
+      },
+      distribution: canEmitCanonical ? result.distribution : null,
+      trajectory: canEmitCanonical ? (result.trajectory ?? null) : null,
+    });
   },
 });

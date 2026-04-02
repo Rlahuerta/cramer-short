@@ -12,8 +12,8 @@ import {
 describe('extractPriceThresholds', () => {
   it('extracts plain dollar amounts from question text', () => {
     const markets = [
-      { question: 'Will BTC reach $70,000 by March?', probability: 0.035 },
-      { question: 'Will BTC stay above $60,000?', probability: 0.997 },
+      { question: 'Will BTC be above $70,000 on April 5?', probability: 0.035 },
+      { question: 'Will BTC settle above $60,000?', probability: 0.997 },
     ];
     const pts = extractPriceThresholds(markets);
     expect(pts).toHaveLength(2);
@@ -24,7 +24,7 @@ describe('extractPriceThresholds', () => {
   it('handles K suffix (e.g. $70K → 70000)', () => {
     const markets = [
       { question: 'Will BTC exceed $70K?', probability: 0.04 },
-      { question: 'Will BTC stay above $60K?', probability: 0.99 },
+      { question: 'Will BTC settle above $60K?', probability: 0.99 },
     ];
     const pts = extractPriceThresholds(markets);
     expect(pts[0]?.price).toBe(60_000);
@@ -42,7 +42,7 @@ describe('extractPriceThresholds', () => {
   it('averages probability when same price appears in multiple markets', () => {
     const markets = [
       { question: 'Will gold exceed $3,400?', probability: 0.08 },
-      { question: 'Will gold settle above $3,400?', probability: 0.10 },
+      { question: 'Will gold close above $3,400?', probability: 0.10 },
     ];
     const pts = extractPriceThresholds(markets);
     expect(pts).toHaveLength(1);
@@ -70,10 +70,33 @@ describe('extractPriceThresholds', () => {
 
   it('handles comma-formatted numbers like $3,400', () => {
     const markets = [
-      { question: 'Will Gold hit $3,400?', probability: 0.079 },
+      { question: 'Will Gold close above $3,400?', probability: 0.079 },
     ];
     const pts = extractPriceThresholds(markets);
     expect(pts[0]?.price).toBe(3_400);
+  });
+
+  it('rejects barrier-style reach markets', () => {
+    const markets = [
+      { question: 'Will BTC reach $70,000 by March?', probability: 0.035 },
+    ];
+    expect(extractPriceThresholds(markets)).toEqual([]);
+  });
+
+  it('rejects barrier-style stay-above markets', () => {
+    const markets = [
+      { question: 'Will BTC stay above $60,000 through March?', probability: 0.997 },
+    ];
+    expect(extractPriceThresholds(markets)).toEqual([]);
+  });
+
+  it('accepts terminal at-expiry phrasing', () => {
+    const markets = [
+      { question: 'Will BTC be at $70,000 on April 5?', probability: 0.12 },
+    ];
+    const pts = extractPriceThresholds(markets);
+    expect(pts).toHaveLength(1);
+    expect(pts[0]?.price).toBe(70_000);
   });
 });
 
@@ -211,9 +234,9 @@ describe('buildPriceDistributionChart', () => {
 describe('extractPriceThresholds + buildPriceDistributionChart round-trip', () => {
   it('produces a valid chart from real-world-style market question data', () => {
     const markets = [
-      { question: 'Will BTC reach $70K by March 30?', probability: 0.035 },
-      { question: 'Will BTC stay above $62K by March 30?', probability: 0.987 },
-      { question: 'Will BTC stay above $60K by March 30?', probability: 0.997 },
+      { question: 'Will BTC be above $70K on March 30?', probability: 0.035 },
+      { question: 'Will BTC settle above $62K on March 30?', probability: 0.987 },
+      { question: 'Will BTC close above $60K on March 30?', probability: 0.997 },
     ];
     const thresholds = extractPriceThresholds(markets);
     expect(thresholds.length).toBeGreaterThanOrEqual(2);

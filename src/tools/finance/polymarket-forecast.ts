@@ -18,6 +18,41 @@ import { lookupImpact, inferAssetClass } from './impact-map.js';
 import { runEnsemble, computePolymarketSignal, computeEnsemble, computeConditionalReturn, adjustYesBias, type MarketInput } from '../../utils/ensemble.js';
 import { buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
 
+type RawMarket = {
+  question: string;
+  probability: number;
+  volume24h: number;
+  ageDays: number | undefined;
+  signalCategory: string;
+  endDate?: string | null;
+};
+
+function daysUntilEndDate(endDate: string | null | undefined): number | null {
+  if (!endDate) return null;
+  const target = new Date(endDate);
+  if (Number.isNaN(target.getTime())) return null;
+  return (target.getTime() - Date.now()) / 86_400_000;
+}
+
+function isThresholdChartAlignedToHorizon(markets: RawMarket[], horizonDays: number): boolean {
+  const thresholds = extractPriceThresholds(markets);
+  if (thresholds.length < 2) return false;
+
+  const datedThresholdMarkets = markets.filter((market) => {
+    if (!market.endDate) return false;
+    return extractPriceThresholds([{ question: market.question, probability: market.probability }]).length > 0;
+  });
+  if (datedThresholdMarkets.length < 2) return false;
+
+  const alignedMarkets = datedThresholdMarkets.filter((market) => {
+    const days = daysUntilEndDate(market.endDate);
+    if (days === null) return false;
+    return Math.abs(days - horizonDays) <= Math.max(1.5, horizonDays * 0.35);
+  });
+
+  return alignedMarkets.length >= 2;
+}
+
 // ---------------------------------------------------------------------------
 // Description (injected into system prompt)
 // ---------------------------------------------------------------------------
@@ -229,7 +264,7 @@ export const polymarketForecastTool = new DynamicStructuredTool({
 
       // Deduplicate by question string
       const seen = new Set<string>();
-      const rawMarkets: { question: string; probability: number; volume24h: number; ageDays: number | undefined; signalCategory: string }[] = [];
+      const rawMarkets: RawMarket[] = [];
       for (let i = 0; i < signals.length; i++) {
         const result = allResults[i];
         if (result.status !== 'fulfilled') continue;
@@ -276,6 +311,7 @@ export const polymarketForecastTool = new DynamicStructuredTool({
       const pmPct = pct(result.pmSignal);
       const pmWeightPct = (result.pmEffectiveWeight * 100).toFixed(1);
       const avgQualityStr = result.avgMarketQuality.toFixed(3);
+      let thresholdChartWarning: string | null = null;
 
       const lines: string[] = [
         `📊 Polymarket Forecast: ${ticker}  |  Horizon: ${horizonDays} days  |  Grade: ${result.qualityGrade} (${result.qualityScore}/100)`,
@@ -406,19 +442,26 @@ export const polymarketForecastTool = new DynamicStructuredTool({
       // Extract any markets containing explicit price thresholds ("$70K", "$3,400"…)
       // and render an implied probability bar chart when ≥2 levels are found.
       const thresholds = extractPriceThresholds(rawMarkets);
-      if (thresholds.length >= 2) {
+      const thresholdChartAligned = isThresholdChartAlignedToHorizon(rawMarkets, horizonDays);
+      if (thresholds.length >= 2 && thresholdChartAligned) {
         const chart = buildPriceDistributionChart(thresholds, currentPrice, ticker);
         if (chart) {
           lines.push('');
           lines.push('── Price Distribution (from threshold markets) ────────────────────────────');
           lines.push(chart);
         }
+      } else if (thresholds.length >= 2) {
+        thresholdChartWarning = 'Threshold-style markets were omitted from the distribution chart because their resolution dates do not align with the requested forecast horizon.';
       }
 
       lines.push('');
       lines.push('── Warnings ───────────────────────────────────────────────────────────────');
 
-      const allWarnings = [...(result.warnings ?? []), ...pmWarnings.filter((w) => !result.warnings?.includes(w))];
+      const allWarnings = [
+        ...(result.warnings ?? []),
+        ...pmWarnings.filter((w) => !result.warnings?.includes(w)),
+        ...(thresholdChartWarning ? [thresholdChartWarning] : []),
+      ];
       const uniqueWarnings = [...new Set(allWarnings)];
       if (uniqueWarnings.length === 0) {
         lines.push('  None');

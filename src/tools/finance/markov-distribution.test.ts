@@ -276,7 +276,7 @@ describe('extractPriceThresholds', () => {
 
   it('parses K suffix correctly ($70K → 70000)', () => {
     const result = extractPriceThresholds([
-      { question: 'Will BTC reach $70K?', probability: 0.5 },
+      { question: 'Will BTC close above $70K on Friday?', probability: 0.5 },
     ]);
     expect(result[0].price).toBe(70_000);
   });
@@ -321,10 +321,46 @@ describe('extractPriceThresholds', () => {
   it('deduplicates same price level, keeping highest probability', () => {
     const result = extractPriceThresholds([
       { question: 'Will BTC exceed $70000?', probability: 0.6 },
-      { question: 'Will BTC reach $70000 by EOY?', probability: 0.7 },
+      { question: 'Will BTC close above $70000 at expiry?', probability: 0.7 },
     ]);
     expect(result).toHaveLength(1);
     expect(result[0].rawProbability).toBe(0.7);
+  });
+
+  it('rejects barrier-style "reach" markets', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will BTC reach $70000 this week?', probability: 0.5, volume: 1000 },
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('rejects barrier-style "hit" markets', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will BTC hit $70000 this week?', probability: 0.5, volume: 1000 },
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('rejects barrier-style "dip to" markets', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will BTC dip to $64000 this week?', probability: 0.2, volume: 1000 },
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('rejects barrier-style "go past" markets', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will BTC go past $100000 this year?', probability: 0.3, volume: 1000 },
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('accepts terminal "at $X on date" markets', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will BTC be at $70000 on April 5?', probability: 0.4, volume: 1000, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].price).toBe(70_000);
   });
 
   it('sorts results by price ascending', () => {
@@ -2347,13 +2383,27 @@ describe('sensitivity analysis', () => {
 
 describe('markovDistributionTool output format', () => {
   const prices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.5);
+  const canonicalPrices = Array.from({ length: 91 }, (_, i) => {
+    let p = 100;
+    for (let j = 0; j <= i; j++) {
+      p *= 1 + Math.sin(j * 0.15) * 0.006;
+    }
+    return Math.round(p * 100) / 100;
+  });
+  const canonicalCurrentPrice = canonicalPrices[canonicalPrices.length - 1];
+  const canonicalAnchors = [0.97, 1.0, 1.03].map((mult, idx) => ({
+    question: `Will FMT_TEST be above $${Math.round(canonicalCurrentPrice * mult)} on April 9?`,
+    probability: [0.72, 0.5, 0.28][idx],
+    volume: 5000,
+    createdAt: Date.now() - 86400000 * 5,
+  }));
 
   it('output contains Decision Card with BUY/HOLD/SELL', async () => {
     const output = await markovDistributionTool.invoke({
       ticker: 'FMT_TEST',
-      horizon: 15,
-      historicalPrices: prices,
-      polymarketMarkets: [],
+      horizon: 7,
+      historicalPrices: canonicalPrices,
+      polymarketMarkets: canonicalAnchors,
     });
     expect(output).toContain('Your Options');
     expect(output).toContain('BUY');
@@ -2364,9 +2414,9 @@ describe('markovDistributionTool output format', () => {
   it('output contains Action Plan with price levels', async () => {
     const output = await markovDistributionTool.invoke({
       ticker: 'FMT_TEST',
-      horizon: 15,
-      historicalPrices: prices,
-      polymarketMarkets: [],
+      horizon: 7,
+      historicalPrices: canonicalPrices,
+      polymarketMarkets: canonicalAnchors,
     });
     expect(output).toContain('Action Plan');
     expect(output).toContain('Target');
@@ -2379,9 +2429,9 @@ describe('markovDistributionTool output format', () => {
   it('output contains recommendation with confidence', async () => {
     const output = await markovDistributionTool.invoke({
       ticker: 'FMT_TEST',
-      horizon: 15,
-      historicalPrices: prices,
-      polymarketMarkets: [],
+      horizon: 7,
+      historicalPrices: canonicalPrices,
+      polymarketMarkets: canonicalAnchors,
     });
     // Should have one of: [HIGH confidence], [MEDIUM confidence], [LOW confidence]
     expect(output).toMatch(/\[(HIGH|MEDIUM|LOW) confidence\]/);
@@ -2390,9 +2440,9 @@ describe('markovDistributionTool output format', () => {
   it('output contains distribution table with P(>price) column', async () => {
     const output = await markovDistributionTool.invoke({
       ticker: 'FMT_TEST',
-      horizon: 15,
-      historicalPrices: prices,
-      polymarketMarkets: [],
+      horizon: 7,
+      historicalPrices: canonicalPrices,
+      polymarketMarkets: canonicalAnchors,
     });
     expect(output).toContain('P(>price)');
     expect(output).toContain('90% CI');
@@ -2402,9 +2452,9 @@ describe('markovDistributionTool output format', () => {
   it('output contains anchor quality diagnostic', async () => {
     const output = await markovDistributionTool.invoke({
       ticker: 'FMT_TEST',
-      horizon: 15,
-      historicalPrices: prices,
-      polymarketMarkets: [],
+      horizon: 7,
+      historicalPrices: canonicalPrices,
+      polymarketMarkets: canonicalAnchors,
     });
     expect(output).toContain('Anchor quality:');
   });
@@ -2412,9 +2462,9 @@ describe('markovDistributionTool output format', () => {
   it('output contains contextual guidance (💡)', async () => {
     const output = await markovDistributionTool.invoke({
       ticker: 'FMT_TEST',
-      horizon: 15,
-      historicalPrices: prices,
-      polymarketMarkets: [],
+      horizon: 7,
+      historicalPrices: canonicalPrices,
+      polymarketMarkets: canonicalAnchors,
     });
     expect(output).toContain('💡');
   });
@@ -3085,14 +3135,27 @@ describe('computeMarkovDistribution trajectory mode', () => {
 // ---------------------------------------------------------------------------
 
 describe('markovDistributionTool trajectory output', () => {
-  const prices = Array.from({ length: 60 }, (_, i) => 100 + i * 0.3);
+  const prices = Array.from({ length: 91 }, (_, i) => {
+    let p = 100;
+    for (let j = 0; j <= i; j++) {
+      p *= 1 + Math.sin(j * 0.15) * 0.006;
+    }
+    return Math.round(p * 100) / 100;
+  });
+  const currentPrice = prices[prices.length - 1];
+  const anchors = [0.97, 1.0, 1.03].map((mult, idx) => ({
+    question: `Will FMT_TRAJ be above $${Math.round(currentPrice * mult)} on April 9?`,
+    probability: [0.72, 0.5, 0.28][idx],
+    volume: 5000,
+    createdAt: Date.now() - 86400000 * 5,
+  }));
 
   it('includes trajectory table when trajectory=true', async () => {
     const output = await markovDistributionTool.invoke({
       ticker: 'FMT_TRAJ',
       horizon: 7,
       historicalPrices: prices,
-      polymarketMarkets: [],
+      polymarketMarkets: anchors,
       trajectory: true,
     });
     expect(output).toContain('DAY PRICE TRAJECTORY');
@@ -3107,7 +3170,10 @@ describe('markovDistributionTool trajectory output', () => {
       ticker: 'FMT_NOTRAJ',
       horizon: 7,
       historicalPrices: prices,
-      polymarketMarkets: [],
+      polymarketMarkets: anchors.map((anchor) => ({
+        ...anchor,
+        question: anchor.question.replace('FMT_TRAJ', 'FMT_NOTRAJ'),
+      })),
       trajectory: false,
     });
     expect(output).not.toContain('DAY PRICE TRAJECTORY');
@@ -3366,6 +3432,63 @@ describe('markov_distribution tool schema', () => {
       polymarketMarkets: [],
     });
     expect(parsed.success).toBe(true);
+  });
+});
+
+describe('markov_distribution tool output envelope', () => {
+  it('returns abstain payload when anchors or validation are insufficient', async () => {
+    const result = await markovDistributionTool.func({
+      ticker: 'SPY',
+      horizon: 7,
+      currentPrice: 100,
+      historicalPrices: Array.from({ length: 40 }, (_, i) => 100 + i * 0.5),
+      polymarketMarkets: [],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data._tool).toBe('markov_distribution');
+    expect(typeof parsed.data.report).toBe('string');
+    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.manualSynthesisForbidden).toBe(true);
+    expect(Array.isArray(parsed.data.abstainReasons)).toBe(true);
+    expect(parsed.data.canonical).toBeDefined();
+    expect(parsed.data.canonical.scenarios).toBeNull();
+    expect(parsed.data.canonical.actionSignal).toBeNull();
+    expect(parsed.data.canonical.diagnostics).toBeDefined();
+    expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
+    expect(parsed.data.distribution).toBeNull();
+  });
+
+  it('returns canonical payload when trusted anchors and positive validation are present', async () => {
+    const prices: number[] = [];
+    let p = 100;
+    for (let i = 0; i < 91; i++) {
+      p *= 1 + Math.sin(i * 0.15) * 0.006;
+      prices.push(Math.round(p * 100) / 100);
+    }
+    const currentPrice = prices[prices.length - 1];
+    const result = await markovDistributionTool.func({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [
+        { question: `Will TEST be above $${Math.round(currentPrice * 0.97)} on April 9?`, probability: 0.72, volume: 5000, createdAt: Date.now() - 86400000 * 5 },
+        { question: `Will TEST be above $${Math.round(currentPrice)} on April 9?`, probability: 0.50, volume: 5000, createdAt: Date.now() - 86400000 * 5 },
+        { question: `Will TEST be above $${Math.round(currentPrice * 1.03)} on April 9?`, probability: 0.28, volume: 5000, createdAt: Date.now() - 86400000 * 5 },
+      ],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data.status).toBe('ok');
+    expect(parsed.data.manualSynthesisForbidden).toBe(false);
+    expect(parsed.data.abstainReasons).toEqual([]);
+    expect(parsed.data.canonical.scenarios).toBeDefined();
+    expect(parsed.data.canonical.actionSignal).toBeDefined();
+    expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+    expect(Array.isArray(parsed.data.distribution)).toBe(true);
   });
 });
 

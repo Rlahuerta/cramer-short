@@ -18,6 +18,29 @@ const BAR_WIDTH = 20; // total bar character width
 const FILLED = '█';
 const EMPTY  = '░';
 
+const TERMINAL_UPPER_TAIL_PATTERNS = [
+  /(?:above|over|exceed|surpass)\s*\$/i,
+  /(?:settle|close)\s+(?:above|over)\s*\$/i,
+  /(?:at)\s*\$/i,
+  />\s*\$/i,
+];
+
+const BARRIER_PATTERNS = [
+  /\breach\b/i,
+  /\bcross\b/i,
+  /\bhit\b/i,
+  /\bmove\s+to\b/i,
+  /\bgo\s+(?:above|below|over|under)\b/i,
+  /\bremain\s+(?:above|below|over|under)\b/i,
+  /\btrade\s+(?:above|below|over|under)\b/i,
+  /\bsurpass\b/i,
+  /\btouch\b/i,
+  /\bstay\s+(?:above|below|over|under)\b/i,
+  /\bdip(?:\s+to|\s+below)?\b/i,
+  /\bdrop(?:\s+to|\s+below)?\b/i,
+  /\bfall(?:\s+to|\s+below)?\b/i,
+];
+
 export interface ThresholdPoint {
   /** Price level (e.g. 70000 for $70K) */
   price: number;
@@ -126,13 +149,6 @@ function formatPrice(price: number): string {
   return price.toFixed(2);
 }
 
-/**
- * Parse price thresholds from a list of Polymarket market questions.
- * Recognises patterns like "Will X exceed $70K?", "Will X stay above $62,000?",
- * "Will X settle at >$6,200?", "reach $3,400", etc.
- *
- * Returns an array of ThresholdPoint sorted ascending by price, or [] if none found.
- */
 export function extractPriceThresholds(
   markets: { question: string; probability: number }[],
 ): ThresholdPoint[] {
@@ -142,6 +158,13 @@ export function extractPriceThresholds(
   const seen = new Map<number, number[]>();
 
   for (const { question, probability } of markets) {
+    if (BARRIER_PATTERNS.some((pattern) => pattern.test(question))) {
+      continue;
+    }
+    if (!TERMINAL_UPPER_TAIL_PATTERNS.some((pattern) => pattern.test(question))) {
+      continue;
+    }
+
     PRICE_RE.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = PRICE_RE.exec(question)) !== null) {
@@ -177,15 +200,15 @@ export function extractPriceThresholds(
 
 export const PRICE_DISTRIBUTION_CHART_DESCRIPTION = `
 Generate a terminal ASCII bar chart showing the implied probability distribution
-of an asset's price across ranges, derived from Polymarket binary threshold markets.
+of an asset's price across ranges, derived from terminal upper-tail threshold markets.
 
 **Use when**: You have gathered multiple Polymarket markets of the form
-"Will [asset] exceed/reach/stay above $X?" for the same asset and want to
+"Will [asset] be above/exceed/settle above $X on [date]?" for the same asset and want to
 visualise the crowd-implied price distribution.
 
 **Do NOT use when**: You have fewer than 2 distinct price thresholds, or the
-markets are not price-level events (e.g. "Will Fed cut rates?" — these are
-binary events, not price thresholds).
+markets are not terminal price-level events (e.g. "Will BTC reach $70K?", "Will BTC dip to $64K?",
+or "Will Fed cut rates?" — these are touch/barrier or binary events, not terminal thresholds).
 
 **Input**: A JSON array of threshold objects with \`price\` (number) and
 \`probability\` (number 0–1, upper-tail: P(asset > price)):

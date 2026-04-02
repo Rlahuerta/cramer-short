@@ -183,6 +183,26 @@ describe('buildIterationPrompt', () => {
     const prompt = buildIterationPrompt('test', '');
     expect(prompt).toContain('Continue working');
   });
+
+  it('injects canonical markov guard when markov_distribution output is present', () => {
+    const results = '### markov_distribution(ticker=BTC-USD)\n{"data":{"_tool":"markov_distribution","canonical":{"scenarios":{}}}}';
+    const prompt = buildIterationPrompt('BTC query', results);
+    expect(prompt).toContain('markov_distribution results are present');
+    expect(prompt).toContain('Do NOT recompute');
+  });
+
+  it('injects abstention guard when markov_distribution abstains', () => {
+    const results = '### markov_distribution(ticker=BTC-USD)\n{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null}}}';
+    const prompt = buildIterationPrompt('BTC query', results);
+    expect(prompt).toContain('markov_distribution explicitly abstained');
+    expect(prompt).toContain('MUST NOT create, correct, extrapolate');
+  });
+
+  it('does not inject canonical markov guard for non-markov tool output', () => {
+    const results = '### get_market_data(query=BTC)\n{"data":{"ticker":"BTC-USD"}}';
+    const prompt = buildIterationPrompt('BTC query', results);
+    expect(prompt).not.toContain('markov_distribution results are present');
+  });
 });
 
 describe('buildGroupSection', () => {
