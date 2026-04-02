@@ -68,6 +68,8 @@ interface TrajectoryWFStep {
   inCI: boolean;
   directionCorrect: boolean;
   regime: string;
+  confidence: number;
+  confidenceBucket: string;
 }
 
 const wfSteps: TrajectoryWFStep[] = [];
@@ -243,6 +245,8 @@ describe('Markov trajectory integration tests', () => {
                   inCI,
                   directionCorrect,
                   regime: pt.regime,
+                  confidence: result.predictionConfidence,
+                  confidenceBucket: confidenceBucketLabel(result.predictionConfidence),
                 });
               }
             } catch (err) {
@@ -449,6 +453,98 @@ describe('Markov trajectory integration tests', () => {
       TIMEOUT,
     );
 
+    integrationIt(
+      'trajectory CI coverage by regime',
+      async () => {
+        const lines: string[] = ['', '═══ TRAJECTORY CI COVERAGE BY REGIME ═══'];
+        lines.push('  Regime   │ Steps │ CI Cov │ Dir Acc │ Avg CI Width');
+        lines.push('  ─────────┼───────┼────────┼─────────┼─────────────');
+
+        const regimeMap = new Map<string, typeof wfSteps>();
+        for (const s of wfSteps) {
+          if (!regimeMap.has(s.regime)) regimeMap.set(s.regime, []);
+          regimeMap.get(s.regime)!.push(s);
+        }
+
+        for (const [regime, steps] of [...regimeMap.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+          const inCI = steps.filter(s => s.inCI).length;
+          const dirCorrect = steps.filter(s => s.directionCorrect).length;
+          const coverage = inCI / steps.length;
+          const dirAcc = dirCorrect / steps.length;
+          const avgWidth = steps.reduce((sum, s) => sum + (s.upperBound - s.lowerBound), 0) / steps.length;
+          lines.push(
+            `  ${regime.padEnd(8)}│ ${String(steps.length).padStart(5)} │ ${(coverage * 100).toFixed(1).padStart(4)}%  │ ${(dirAcc * 100).toFixed(1).padStart(5)}%  │ $${avgWidth.toFixed(2)}`,
+          );
+        }
+        lines.push('  ═══════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+        expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    integrationIt(
+      'trajectory metrics by day number and confidence bucket',
+      async () => {
+        const lines: string[] = ['', '═══ TRAJECTORY METRICS BY DAY × CONFIDENCE ═══'];
+        lines.push('  Day │ Bucket         │ Steps │ CI Cov │ Dir Acc │ Avg CI Width');
+        lines.push('  ────┼────────────────┼───────┼────────┼─────────┼─────────────');
+
+        for (let d = 1; d <= TRAJECTORY_DAYS; d++) {
+          const daySteps = wfSteps.filter(s => s.day === d);
+          if (daySteps.length === 0) continue;
+
+          for (const b of CONFIDENCE_BUCKETS) {
+            const bucketSteps = daySteps.filter(s => s.confidenceBucket === b.label);
+            if (bucketSteps.length === 0) continue;
+
+            const inCI = bucketSteps.filter(s => s.inCI).length;
+            const dirCorrect = bucketSteps.filter(s => s.directionCorrect).length;
+            const coverage = inCI / bucketSteps.length;
+            const dirAcc = dirCorrect / bucketSteps.length;
+            const avgWidth = bucketSteps.reduce((sum, s) => sum + (s.upperBound - s.lowerBound), 0) / bucketSteps.length;
+
+            lines.push(
+              `  ${String(d).padStart(3)} │ ${b.label.padEnd(14)} │ ${String(bucketSteps.length).padStart(5)} │ ${(coverage * 100).toFixed(1).padStart(4)}%  │ ${(dirAcc * 100).toFixed(1).padStart(5)}%  │ $${avgWidth.toFixed(2)}`,
+            );
+          }
+        }
+        lines.push('  ═════════════════════════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+        expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    integrationIt(
+      'trajectory metrics by confidence bucket',
+      async () => {
+        const lines: string[] = ['', '═══ TRAJECTORY METRICS BY CONFIDENCE BUCKET ═══'];
+        lines.push('  Bucket │ Steps │ CI Cov │ Dir Acc │ Avg CI Width');
+        lines.push('  ────────┼───────┼────────┼─────────┼─────────────');
+
+        for (const b of CONFIDENCE_BUCKETS) {
+          const bucketSteps = wfSteps.filter(s => s.confidenceBucket === b.label);
+          if (bucketSteps.length === 0) {
+            lines.push(`  ${b.label.padEnd(6)} │     0 │    —   │    —   │    —   `);
+            continue;
+          }
+          const inCI = bucketSteps.filter(s => s.inCI).length;
+          const dirCorrect = bucketSteps.filter(s => s.directionCorrect).length;
+          const coverage = inCI / bucketSteps.length;
+          const dirAcc = dirCorrect / bucketSteps.length;
+          const avgWidth = bucketSteps.reduce((sum, s) => sum + (s.upperBound - s.lowerBound), 0) / bucketSteps.length;
+          lines.push(
+            `  ${b.label.padEnd(6)} │ ${String(bucketSteps.length).padStart(5)} │ ${(coverage * 100).toFixed(1).padStart(4)}%  │ ${(dirAcc * 100).toFixed(1).padStart(5)}%  │ $${avgWidth.toFixed(2)}`,
+          );
+        }
+        lines.push('  ═════════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+        expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+
     // Print comprehensive final report
     integrationIt(
       'prints final trajectory backtest report',
@@ -505,6 +601,19 @@ describe('Markov trajectory integration tests', () => {
     );
   });
 });
+
+const CONFIDENCE_BUCKETS = [
+  { label: '[0.00, 0.40)', min: 0.0, max: 0.4 },
+  { label: '[0.40, 0.70)', min: 0.4, max: 0.7 },
+  { label: '[0.70, 1.00]', min: 0.7, max: 1.0 },
+] as const;
+
+function confidenceBucketLabel(confidence: number): string {
+  for (const b of CONFIDENCE_BUCKETS) {
+    if (confidence >= b.min && confidence < b.max) return b.label;
+  }
+  return '[0.70, 1.00]';
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

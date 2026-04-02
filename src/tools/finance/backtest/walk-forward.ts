@@ -93,6 +93,17 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         recommendation: result.actionSignal.recommendation,
         gofPasses: result.metadata.goodnessOfFit?.passes ?? null,
         confidence: result.predictionConfidence,
+        regime: result.metadata.regimeState,
+        anchorQuality: result.metadata.anchorCoverage.quality,
+        trustedAnchors: result.metadata.anchorCoverage.trustedAnchors,
+        markovWeight: result.metadata.mixingTimeWeight,
+        anchorWeight: 1 - result.metadata.mixingTimeWeight,
+        validationMetric: result.metadata.validationMetric,
+        outOfSampleR2: result.metadata.outOfSampleR2,
+        structuralBreakDetected: result.metadata.structuralBreakDetected,
+        structuralBreakDivergence: result.metadata.structuralBreakDivergence,
+        hmmConverged: result.metadata.hmm?.converged ?? null,
+        ensembleConsensus: result.metadata.ensemble.consensus,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });

@@ -18,6 +18,7 @@ import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
 import { walkForward, type WalkForwardResult } from './backtest/walk-forward.js';
 import {
+  computeFailureDecomposition,
   brierScore,
   ciCoverage,
   directionalAccuracy,
@@ -36,6 +37,7 @@ import {
   pUpDirectionalAccuracy,
   selectivePUpAccuracy,
   type BacktestStep,
+  type FailureSliceKey,
 } from './backtest/metrics.js';
 import { generateStressScenarios, type StressScenario } from './backtest/stress-scenarios.js';
 
@@ -69,6 +71,52 @@ interface FixtureData {
 let fixture: FixtureData;
 const results: Map<string, Map<number, WalkForwardResult>> = new Map();
 const allSteps: BacktestStep[] = [];
+
+function formatPct(value: number, digits = 0): string {
+  return `${(value * 100).toFixed(digits)}%`;
+}
+
+function formatSignedPct(value: number, digits = 1): string {
+  const pct = value * 100;
+  return `${pct >= 0 ? '+' : ''}${pct.toFixed(digits)}%`;
+}
+
+function appendRawVsCalibratedBlock(lines: string[], label: string, steps: BacktestStep[]): void {
+  if (steps.length === 0) return;
+  const calibrated = directionalAccuracy(steps);
+  const raw = pUpDirectionalAccuracy(steps);
+  const deltaPp = (raw - calibrated) * 100;
+  lines.push(
+    `    ${label.padEnd(12)} rec=${formatPct(calibrated).padStart(4)} | raw=${formatPct(raw).padStart(4)} | Δ=${deltaPp >= 0 ? '+' : ''}${deltaPp.toFixed(1)}pp | n=${steps.length}`,
+  );
+}
+
+function appendFailureSlice(
+  lines: string[],
+  title: string,
+  steps: BacktestStep[],
+  key: FailureSliceKey,
+): void {
+  if (steps.length === 0) return;
+  const slice = computeFailureDecomposition(steps).slices.find(item => item.key === key);
+  if (!slice) return;
+
+  const rows = slice.rows.filter(row => row.count > 0);
+  if (rows.length === 0) return;
+
+  lines.push(`    ${title}:`);
+  for (const row of rows) {
+    lines.push(
+      `      ${row.label.padEnd(14)} n=${String(row.count).padStart(3)} | dir=${formatPct(row.directionalAccuracy).padStart(4)} | bal=${formatPct(row.balancedDirectionalAccuracy).padStart(4)} | brier=${row.brierScore.toFixed(3)} | ci=${formatPct(row.ciCoverage).padStart(4)} | edge=${formatSignedPct(row.meanEdge).padStart(6)}`,
+    );
+  }
+}
+
+function collectTickerSteps(ticker: string, horizons: readonly number[]): BacktestStep[] {
+  const horizonMap = results.get(ticker);
+  if (!horizonMap) return [];
+  return horizons.flatMap(horizon => horizonMap.get(horizon)?.steps ?? []);
+}
 
 // ---------------------------------------------------------------------------
 // Test suite
@@ -254,6 +302,18 @@ describe('Markov distribution walk-forward backtest', () => {
         );
       }
 
+      const btcAggregateSteps = collectTickerSteps('BTC-USD', HORIZONS);
+      lines.push('  Raw vs calibrated direction:');
+      appendRawVsCalibratedBlock(lines, 'AGGREGATE', allSteps);
+      appendRawVsCalibratedBlock(lines, 'BTC-ONLY', btcAggregateSteps);
+
+      lines.push('  Failure decomposition (aggregate):');
+      appendFailureSlice(lines, 'Regime', allSteps, 'regime');
+      appendFailureSlice(lines, 'Volatility', allSteps, 'volatility');
+      appendFailureSlice(lines, 'Confidence', allSteps, 'confidence');
+      appendFailureSlice(lines, 'Anchor quality', allSteps, 'anchorQuality');
+      appendFailureSlice(lines, 'Validation metric', allSteps, 'validationMetric');
+
       // ETF-only accuracy
       const etfTickers = ['SPY', 'GLD', 'QQQ'];
       const etfSteps = allSteps.filter((_s, idx) => {
@@ -376,6 +436,7 @@ describe('Markov distribution walk-forward backtest', () => {
           const bsCI = bootstrapBrierCI(result.steps);
           const dirCI = bootstrapDirectionalCI(result.steps);
           const covCI = bootstrapCIcoverageCI(result.steps);
+          const rawDir = pUpDirectionalAccuracy(result.steps);
 
           lines.push(
             `  BTC-USD ${horizon}d: Brier=${bs.toFixed(3)} [${bsCI.lower.toFixed(3)}, ${bsCI.upper.toFixed(3)}] | `
@@ -383,6 +444,12 @@ describe('Markov distribution walk-forward backtest', () => {
             + `CI=${(cov * 100).toFixed(0)}% [${(covCI.lower * 100).toFixed(0)}%, ${(covCI.upper * 100).toFixed(0)}%] | `
             + `RelDev=${(maxDev * 100).toFixed(0)}pp | n=${result.steps.length}`,
           );
+          lines.push(
+            `    Raw vs calibrated: rec=${formatPct(dir).padStart(4)} | raw=${formatPct(rawDir).padStart(4)} | Δ=${((rawDir - dir) * 100 >= 0 ? '+' : '')}${((rawDir - dir) * 100).toFixed(1)}pp`,
+          );
+          appendFailureSlice(lines, 'Anchor quality', result.steps, 'anchorQuality');
+          appendFailureSlice(lines, 'Confidence', result.steps, 'confidence');
+          appendFailureSlice(lines, 'Regime', result.steps, 'regime');
 
           for (const b of bins) {
             if (b.count < 3) continue;

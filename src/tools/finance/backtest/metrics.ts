@@ -10,6 +10,74 @@
 // Types
 // ---------------------------------------------------------------------------
 
+export type BacktestRecommendation = 'BUY' | 'HOLD' | 'SELL';
+
+export type AnchorQuality = 'good' | 'sparse' | 'none';
+
+export type ValidationMetric = 'daily_return' | 'horizon_return';
+
+export type ConfidenceBucketLabel =
+  | '[0.00, 0.20)'
+  | '[0.20, 0.40)'
+  | '[0.40, 0.60)'
+  | '[0.60, 0.80)'
+  | '[0.80, 1.00]';
+
+export type VolatilityBucketLabel = 'low' | 'medium' | 'high';
+
+export type FailureSliceKey =
+  | 'tickerHorizon'
+  | 'regime'
+  | 'confidence'
+  | 'volatility'
+  | 'anchorQuality'
+  | 'validationMetric'
+  | 'structuralBreak'
+  | 'hmmConverged'
+  | 'ensembleConsensus';
+
+export interface NumericBucketDefinition<Label extends string = string> {
+  label: Label;
+  minInclusive: number;
+  maxExclusive: number;
+  includeMax?: boolean;
+}
+
+export const DEFAULT_CONFIDENCE_BUCKETS = [
+  { label: '[0.00, 0.20)', minInclusive: 0.0, maxExclusive: 0.2 },
+  { label: '[0.20, 0.40)', minInclusive: 0.2, maxExclusive: 0.4 },
+  { label: '[0.40, 0.60)', minInclusive: 0.4, maxExclusive: 0.6 },
+  { label: '[0.60, 0.80)', minInclusive: 0.6, maxExclusive: 0.8 },
+  { label: '[0.80, 1.00]', minInclusive: 0.8, maxExclusive: 1.0, includeMax: true },
+] as const satisfies readonly NumericBucketDefinition<ConfidenceBucketLabel>[];
+
+export const DEFAULT_VOLATILITY_BUCKET_LABELS = ['low', 'medium', 'high'] as const satisfies readonly VolatilityBucketLabel[];
+
+export const BALANCED_DIRECTIONAL_CLASSES = ['BUY', 'HOLD', 'SELL'] as const satisfies readonly BacktestRecommendation[];
+
+export const MEAN_EDGE_HOLD_POLICY = 'penalize_missed_move' as const;
+
+export interface BucketedMetricRow {
+  label: string;
+  count: number;
+  fraction: number;
+  directionalAccuracy: number;
+  balancedDirectionalAccuracy: number;
+  brierScore: number;
+  ciCoverage: number;
+  meanEdge: number;
+}
+
+export interface FailureSlice {
+  key: FailureSliceKey;
+  rows: BucketedMetricRow[];
+}
+
+export interface FailureDecompositionReport {
+  totalSteps: number;
+  slices: FailureSlice[];
+}
+
 export interface BacktestStep {
   /** Date index (trading day offset from start) */
   t: number;
@@ -28,11 +96,22 @@ export interface BacktestStep {
   /** Realized price at t + horizon */
   realizedPrice: number;
   /** Recommendation: BUY, HOLD, or SELL */
-  recommendation: 'BUY' | 'HOLD' | 'SELL';
+  recommendation: BacktestRecommendation;
   /** Whether the GOF test passed for this window (null if not computed) */
   gofPasses: boolean | null;
   /** Prediction confidence score (0–1) for selective prediction filtering */
   confidence: number;
+  regime?: string;
+  anchorQuality?: AnchorQuality;
+  trustedAnchors?: number;
+  markovWeight?: number;
+  anchorWeight?: number;
+  validationMetric?: ValidationMetric;
+  outOfSampleR2?: number | null;
+  structuralBreakDetected?: boolean;
+  structuralBreakDivergence?: number | null;
+  hmmConverged?: boolean | null;
+  ensembleConsensus?: number | null;
 }
 
 export interface ReliabilityBin {
@@ -59,6 +138,9 @@ export interface BacktestReport {
   sharpness: number;
   reliabilityBins: ReliabilityBin[];
   gofPassRate: number | null;
+  balancedDirectionalAccuracy?: number;
+  meanEdge?: number;
+  failureDecomposition?: FailureDecompositionReport;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +238,223 @@ export function directionalAccuracy(steps: BacktestStep[], holdThreshold = 0.03)
     return Math.abs(s.actualReturn) < holdThreshold;
   });
   return correct.length / steps.length;
+}
+
+const UNKNOWN_LABEL = 'unknown';
+const ANCHOR_QUALITY_BUCKETS = ['good', 'sparse', 'none', UNKNOWN_LABEL] as const;
+const VALIDATION_METRIC_BUCKETS = ['daily_return', 'horizon_return', UNKNOWN_LABEL] as const;
+
+function classifyActualRecommendation(actualReturn: number, holdThreshold: number): BacktestRecommendation {
+  if (actualReturn > holdThreshold) return 'BUY';
+  if (actualReturn < -holdThreshold) return 'SELL';
+  return 'HOLD';
+}
+
+function bucketRow(
+  label: string,
+  bucketSteps: BacktestStep[],
+  totalSteps: number,
+  holdThreshold: number,
+): BucketedMetricRow {
+  if (bucketSteps.length === 0) {
+    return {
+      label,
+      count: 0,
+      fraction: 0,
+      directionalAccuracy: 0,
+      balancedDirectionalAccuracy: 0,
+      brierScore: 0,
+      ciCoverage: 0,
+      meanEdge: 0,
+    };
+  }
+
+  return {
+    label,
+    count: bucketSteps.length,
+    fraction: totalSteps > 0 ? bucketSteps.length / totalSteps : 0,
+    directionalAccuracy: directionalAccuracy(bucketSteps, holdThreshold),
+    balancedDirectionalAccuracy: balancedDirectionalAccuracy(bucketSteps, holdThreshold),
+    brierScore: brierScore(bucketSteps),
+    ciCoverage: ciCoverage(bucketSteps),
+    meanEdge: meanEdge(bucketSteps),
+  };
+}
+
+function numericBucketLabel<Label extends string>(
+  value: number,
+  buckets: readonly NumericBucketDefinition<Label>[],
+): Label | null {
+  if (!Number.isFinite(value)) return null;
+  for (const bucket of buckets) {
+    if (value < bucket.minInclusive) continue;
+    if (value < bucket.maxExclusive) return bucket.label;
+    if (bucket.includeMax && value === bucket.maxExclusive) return bucket.label;
+  }
+  return null;
+}
+
+function summarizeFixedBuckets(
+  steps: BacktestStep[],
+  labels: readonly string[],
+  labeler: (step: BacktestStep) => string,
+  holdThreshold: number,
+): BucketedMetricRow[] {
+  const grouped = new Map<string, BacktestStep[]>();
+  for (const label of labels) grouped.set(label, []);
+
+  for (const step of steps) {
+    const label = labeler(step);
+    const bucket = grouped.get(label);
+    if (bucket) {
+      bucket.push(step);
+      continue;
+    }
+
+    const unknownBucket = grouped.get(UNKNOWN_LABEL);
+    if (unknownBucket) {
+      unknownBucket.push(step);
+      continue;
+    }
+
+    grouped.set(label, [step]);
+  }
+
+  return Array.from(grouped.entries()).map(([label, bucketSteps]) =>
+    bucketRow(label, bucketSteps, steps.length, holdThreshold),
+  );
+}
+
+function summarizeObservedBuckets(
+  steps: BacktestStep[],
+  labels: string[],
+  labeler: (step: BacktestStep) => string,
+  holdThreshold: number,
+): BucketedMetricRow[] {
+  const grouped = new Map<string, BacktestStep[]>();
+  for (const label of labels) grouped.set(label, []);
+  for (const step of steps) {
+    const label = labeler(step);
+    const bucket = grouped.get(label);
+    if (bucket) {
+      bucket.push(step);
+    } else {
+      grouped.set(label, [step]);
+    }
+  }
+  return Array.from(grouped.entries()).map(([label, bucketSteps]) =>
+    bucketRow(label, bucketSteps, steps.length, holdThreshold),
+  );
+}
+
+export function balancedDirectionalAccuracy(steps: BacktestStep[], holdThreshold = 0.03): number {
+  if (steps.length === 0) return 0;
+
+  const recalls: number[] = [];
+  for (const label of BALANCED_DIRECTIONAL_CLASSES) {
+    const actualClass = steps.filter(step => classifyActualRecommendation(step.actualReturn, holdThreshold) === label);
+    if (actualClass.length === 0) continue;
+    const correct = actualClass.filter(step => step.recommendation === label).length;
+    recalls.push(correct / actualClass.length);
+  }
+
+  if (recalls.length === 0) return 0;
+  return recalls.reduce((sum, recall) => sum + recall, 0) / recalls.length;
+}
+
+export function meanEdge(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+
+  const total = steps.reduce((sum, step) => {
+    if (step.recommendation === 'BUY') return sum + step.actualReturn;
+    if (step.recommendation === 'SELL') return sum - step.actualReturn;
+    return sum - Math.abs(step.actualReturn);
+  }, 0);
+
+  return total / steps.length;
+}
+
+export function bucketByConfidence(
+  steps: BacktestStep[],
+  buckets: readonly NumericBucketDefinition<ConfidenceBucketLabel>[] = DEFAULT_CONFIDENCE_BUCKETS,
+  holdThreshold = 0.03,
+): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    buckets.map(bucket => bucket.label),
+    step => numericBucketLabel(step.confidence, buckets) ?? UNKNOWN_LABEL,
+    holdThreshold,
+  );
+}
+
+export function bucketByVolatility(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+): BucketedMetricRow[] {
+  if (steps.length === 0) {
+    return DEFAULT_VOLATILITY_BUCKET_LABELS.map(label => bucketRow(label, [], 0, holdThreshold));
+  }
+
+  const magnitudes = steps
+    .map(step => Math.abs(step.actualReturn))
+    .sort((a, b) => a - b);
+  const q1 = magnitudes[Math.floor((magnitudes.length - 1) / 3)];
+  const q2 = magnitudes[Math.floor((2 * (magnitudes.length - 1)) / 3)];
+
+  return summarizeFixedBuckets(
+    steps,
+    [...DEFAULT_VOLATILITY_BUCKET_LABELS],
+    step => {
+      const magnitude = Math.abs(step.actualReturn);
+      if (magnitude <= q1) return 'low';
+      if (magnitude <= q2) return 'medium';
+      return 'high';
+    },
+    holdThreshold,
+  );
+}
+
+export function bucketByAnchorQuality(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...ANCHOR_QUALITY_BUCKETS],
+    step => step.anchorQuality ?? UNKNOWN_LABEL,
+    holdThreshold,
+  );
+}
+
+export function bucketByRegime(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  const observed = Array.from(new Set(steps.map(step => step.regime ?? UNKNOWN_LABEL)));
+  const knownLabels = observed.filter(label => label !== UNKNOWN_LABEL).sort((a, b) => a.localeCompare(b));
+  const labels = observed.includes(UNKNOWN_LABEL)
+    ? [...knownLabels, UNKNOWN_LABEL]
+    : knownLabels;
+  return summarizeObservedBuckets(steps, labels, step => step.regime ?? UNKNOWN_LABEL, holdThreshold);
+}
+
+export function bucketByValidationMetric(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...VALIDATION_METRIC_BUCKETS],
+    step => step.validationMetric ?? UNKNOWN_LABEL,
+    holdThreshold,
+  );
+}
+
+export function computeFailureDecomposition(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+): FailureDecompositionReport {
+  return {
+    totalSteps: steps.length,
+    slices: [
+      { key: 'regime', rows: bucketByRegime(steps, holdThreshold) },
+      { key: 'volatility', rows: bucketByVolatility(steps, holdThreshold) },
+      { key: 'confidence', rows: bucketByConfidence(steps, DEFAULT_CONFIDENCE_BUCKETS, holdThreshold) },
+      { key: 'anchorQuality', rows: bucketByAnchorQuality(steps, holdThreshold) },
+      { key: 'validationMetric', rows: bucketByValidationMetric(steps, holdThreshold) },
+    ],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +584,9 @@ export function generateReport(
     sharpness: sharpness(steps),
     reliabilityBins: bins,
     gofPassRate: gofPassRate(steps),
+    balancedDirectionalAccuracy: balancedDirectionalAccuracy(steps),
+    meanEdge: meanEdge(steps),
+    failureDecomposition: computeFailureDecomposition(steps),
   };
 }
 

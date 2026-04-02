@@ -5,22 +5,30 @@
 
 import { describe, it, expect } from 'bun:test';
 import {
+  balancedDirectionalAccuracy,
   brierScore,
-  reliabilityBins,
-  maxReliabilityDeviation,
+  bucketByAnchorQuality,
+  bucketByConfidence,
+  bucketByRegime,
+  bucketByValidationMetric,
+  bucketByVolatility,
   ciCoverage,
+  computeFailureDecomposition,
   directionalAccuracy,
-  selectiveDirectionalAccuracy,
   computeRCCurve,
   expectedReturnCorrelation,
-  sharpness,
-  gofPassRate,
   generateReport,
+  gofPassRate,
+  maxReliabilityDeviation,
+  meanEdge,
   optimizeThresholds,
-  bootstrapMetricCI,
   bootstrapDirectionalCI,
+  bootstrapMetricCI,
   bootstrapBrierCI,
   bootstrapCIcoverageCI,
+  reliabilityBins,
+  selectiveDirectionalAccuracy,
+  sharpness,
   type BacktestStep,
   type BootstrapCI,
 } from './metrics.js';
@@ -200,6 +208,164 @@ describe('directionalAccuracy', () => {
   });
 });
 
+describe('balancedDirectionalAccuracy', () => {
+  it('averages per-class recall across supported classes', () => {
+    const steps = [
+      makeStep({ recommendation: 'BUY', actualReturn: 0.05 }),
+      makeStep({ recommendation: 'SELL', actualReturn: 0.04 }),
+      makeStep({ recommendation: 'HOLD', actualReturn: 0.01 }),
+      makeStep({ recommendation: 'BUY', actualReturn: -0.05 }),
+      makeStep({ recommendation: 'SELL', actualReturn: -0.06 }),
+    ];
+
+    expect(balancedDirectionalAccuracy(steps)).toBeCloseTo((0.5 + 1 + 0.5) / 3, 10);
+  });
+
+  it('ignores classes with zero support', () => {
+    const steps = [
+      makeStep({ recommendation: 'BUY', actualReturn: 0.05 }),
+      makeStep({ recommendation: 'SELL', actualReturn: 0.04 }),
+    ];
+
+    expect(balancedDirectionalAccuracy(steps)).toBeCloseTo(0.5, 10);
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(balancedDirectionalAccuracy([])).toBe(0);
+  });
+});
+
+describe('meanEdge', () => {
+  it('computes signed realized edge in the chosen direction', () => {
+    const steps = [
+      makeStep({ recommendation: 'BUY', actualReturn: 0.05 }),
+      makeStep({ recommendation: 'SELL', actualReturn: -0.02 }),
+      makeStep({ recommendation: 'HOLD', actualReturn: 0.04 }),
+    ];
+
+    expect(meanEdge(steps)).toBeCloseTo((0.05 + 0.02 - 0.04) / 3, 10);
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(meanEdge([])).toBe(0);
+  });
+});
+
+describe('bucket helpers', () => {
+  it('buckets confidence into the fixed PR1 ranges', () => {
+    const rows = bucketByConfidence([
+      makeStep({ confidence: 0.05 }),
+      makeStep({ confidence: 0.25 }),
+      makeStep({ confidence: 0.45 }),
+      makeStep({ confidence: 0.65 }),
+      makeStep({ confidence: 1.0 }),
+    ]);
+
+    expect(rows.map(row => row.label)).toEqual([
+      '[0.00, 0.20)',
+      '[0.20, 0.40)',
+      '[0.40, 0.60)',
+      '[0.60, 0.80)',
+      '[0.80, 1.00]',
+    ]);
+    expect(rows.map(row => row.count)).toEqual([1, 1, 1, 1, 1]);
+    expect(rows.map(row => row.fraction)).toEqual([0.2, 0.2, 0.2, 0.2, 0.2]);
+  });
+
+  it('buckets volatility into low medium and high thirds', () => {
+    const rows = bucketByVolatility([
+      makeStep({ actualReturn: 0.01 }),
+      makeStep({ actualReturn: -0.02 }),
+      makeStep({ actualReturn: 0.03 }),
+      makeStep({ actualReturn: -0.04 }),
+      makeStep({ actualReturn: 0.05 }),
+      makeStep({ actualReturn: -0.06 }),
+    ]);
+
+    expect(rows.map(row => row.label)).toEqual(['low', 'medium', 'high']);
+    expect(rows.map(row => row.count)).toEqual([2, 2, 2]);
+  });
+
+  it('buckets anchor quality and preserves unknown rows', () => {
+    const rows = bucketByAnchorQuality([
+      makeStep({ anchorQuality: 'good' }),
+      makeStep({ anchorQuality: 'sparse' }),
+      makeStep({ anchorQuality: 'none' }),
+      makeStep({ anchorQuality: undefined }),
+    ]);
+
+    expect(rows.map(row => row.label)).toEqual(['good', 'sparse', 'none', 'unknown']);
+    expect(rows.map(row => row.count)).toEqual([1, 1, 1, 1]);
+  });
+
+  it('buckets regimes deterministically and keeps unknown last', () => {
+    const rows = bucketByRegime([
+      makeStep({ regime: 'bull' }),
+      makeStep({ regime: 'bear' }),
+      makeStep({ regime: 'bull' }),
+      makeStep({ regime: undefined }),
+    ]);
+
+    expect(rows.map(row => row.label)).toEqual(['bear', 'bull', 'unknown']);
+    expect(rows.map(row => row.count)).toEqual([1, 2, 1]);
+  });
+
+  it('buckets validation metrics and handles sparse metadata', () => {
+    const rows = bucketByValidationMetric([
+      makeStep({ validationMetric: 'daily_return' }),
+      makeStep({ validationMetric: 'horizon_return' }),
+      makeStep({ validationMetric: undefined }),
+    ]);
+
+    expect(rows.map(row => row.label)).toEqual(['daily_return', 'horizon_return', 'unknown']);
+    expect(rows.map(row => row.count)).toEqual([1, 1, 1]);
+  });
+});
+
+describe('computeFailureDecomposition', () => {
+  it('returns the expected slice keys and stable counts', () => {
+    const report = computeFailureDecomposition([
+      makeStep({ confidence: 0.1, actualReturn: 0.01, recommendation: 'HOLD', regime: 'bull', anchorQuality: 'good', validationMetric: 'daily_return' }),
+      makeStep({ confidence: 0.3, actualReturn: -0.02, recommendation: 'SELL', regime: 'bear', anchorQuality: 'sparse', validationMetric: 'horizon_return' }),
+      makeStep({ confidence: 0.7, actualReturn: -0.05, recommendation: 'SELL', regime: 'bull', anchorQuality: 'none', validationMetric: 'daily_return' }),
+      makeStep({ confidence: 0.9, actualReturn: 0.08, recommendation: 'BUY', regime: undefined, anchorQuality: undefined, validationMetric: undefined }),
+    ]);
+
+    expect(report.totalSteps).toBe(4);
+    expect(report.slices.map(slice => slice.key)).toEqual([
+      'regime',
+      'volatility',
+      'confidence',
+      'anchorQuality',
+      'validationMetric',
+    ]);
+
+    const regimeRows = report.slices[0].rows.map(row => ({ label: row.label, count: row.count, fraction: row.fraction }));
+    expect(regimeRows).toEqual([
+      { label: 'bear', count: 1, fraction: 0.25 },
+      { label: 'bull', count: 2, fraction: 0.5 },
+      { label: 'unknown', count: 1, fraction: 0.25 },
+    ]);
+
+    const validationRows = report.slices[4].rows.map(row => ({ label: row.label, count: row.count }));
+    expect(validationRows).toEqual([
+      { label: 'daily_return', count: 2 },
+      { label: 'horizon_return', count: 1 },
+      { label: 'unknown', count: 1 },
+    ]);
+  });
+
+  it('handles empty input without throwing', () => {
+    const report = computeFailureDecomposition([]);
+
+    expect(report.totalSteps).toBe(0);
+    expect(report.slices).toHaveLength(5);
+    expect(report.slices[0].rows).toEqual([]);
+    expect(report.slices[1].rows.map(row => row.count)).toEqual([0, 0, 0]);
+    expect(report.slices[2].rows.map(row => row.count)).toEqual([0, 0, 0, 0, 0]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // expectedReturnCorrelation
 // ---------------------------------------------------------------------------
@@ -298,6 +464,9 @@ describe('generateReport', () => {
     expect(typeof report.expectedReturnCorrelation).toBe('number');
     expect(typeof report.sharpness).toBe('number');
     expect(report.reliabilityBins).toHaveLength(10);
+    expect(typeof report.balancedDirectionalAccuracy).toBe('number');
+    expect(typeof report.meanEdge).toBe('number');
+    expect(report.failureDecomposition?.slices).toHaveLength(5);
   });
 });
 
