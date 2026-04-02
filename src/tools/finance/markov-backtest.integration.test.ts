@@ -313,6 +313,93 @@ describe('Markov distribution walk-forward backtest', () => {
     });
   });
 
+  describe('BTC short-horizon calibration', () => {
+    const btcHorizons = [7, 14] as const;
+    const btcResults: Map<number, WalkForwardResult> = new Map();
+
+    for (const horizon of btcHorizons) {
+      integrationIt(
+        `BTC-USD ${horizon}d: walk-forward completes without errors`,
+        async () => {
+          const data = fixture.tickers['BTC-USD'];
+          expect(data).toBeDefined();
+
+          const result = await walkForward({
+            ticker: 'BTC-USD',
+            prices: data.closes,
+            horizon,
+            warmup: WARMUP,
+            stride: STRIDE,
+          });
+
+          btcResults.set(horizon, result);
+
+          expect(result.errors).toHaveLength(0);
+          expect(result.steps.length).toBeGreaterThan(5);
+        },
+        TIMEOUT,
+      );
+    }
+
+    for (const horizon of btcHorizons) {
+      integrationIt(
+        `BTC-USD ${horizon}d: loose sanity gates`,
+        async () => {
+          const result = btcResults.get(horizon);
+          if (!result || result.steps.length === 0) return;
+
+          const bs = brierScore(result.steps);
+          const dir = directionalAccuracy(result.steps);
+          const cov = ciCoverage(result.steps);
+
+          expect(bs).toBeLessThan(0.55);
+          expect(cov).toBeGreaterThan(0.40);
+        },
+        TIMEOUT,
+      );
+    }
+
+    integrationIt(
+      'BTC-USD 7d/14d: calibration report + bootstrap CIs',
+      async () => {
+        const lines: string[] = ['', '═══ BTC SHORT-HORIZON CALIBRATION ═══'];
+
+        for (const horizon of btcHorizons) {
+          const result = btcResults.get(horizon);
+          if (!result || result.steps.length === 0) continue;
+
+          const bs = brierScore(result.steps);
+          const dir = directionalAccuracy(result.steps);
+          const cov = ciCoverage(result.steps);
+          const bins = reliabilityBins(result.steps, 5);
+          const maxDev = maxReliabilityDeviation(bins, 3);
+          const bsCI = bootstrapBrierCI(result.steps);
+          const dirCI = bootstrapDirectionalCI(result.steps);
+          const covCI = bootstrapCIcoverageCI(result.steps);
+
+          lines.push(
+            `  BTC-USD ${horizon}d: Brier=${bs.toFixed(3)} [${bsCI.lower.toFixed(3)}, ${bsCI.upper.toFixed(3)}] | `
+            + `Dir=${(dir * 100).toFixed(0)}% [${(dirCI.lower * 100).toFixed(0)}%, ${(dirCI.upper * 100).toFixed(0)}%] | `
+            + `CI=${(cov * 100).toFixed(0)}% [${(covCI.lower * 100).toFixed(0)}%, ${(covCI.upper * 100).toFixed(0)}%] | `
+            + `RelDev=${(maxDev * 100).toFixed(0)}pp | n=${result.steps.length}`,
+          );
+
+          for (const b of bins) {
+            if (b.count < 3) continue;
+            lines.push(
+              `    [${b.binLower.toFixed(1)}–${b.binUpper.toFixed(1)}): pred=${b.meanPredicted.toFixed(2)} actual=${b.actualFrequency.toFixed(2)} n=${b.count}`,
+            );
+          }
+        }
+
+        lines.push('═════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+        expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+  });
+
   // ========================================================================
   // Tier 4: STRESS TESTS — extreme market scenarios + bootstrap CIs
   // ========================================================================

@@ -174,6 +174,7 @@ describe('markov_distribution integration — R²_OS', () => {
     // 90 returns > 50 threshold → R²_OS should be computed
     expect(result.metadata.outOfSampleR2).not.toBeNull();
     expect(typeof result.metadata.outOfSampleR2).toBe('number');
+    expect(result.metadata.validationMetric).toBe('daily_return');
   });
 
   it('R²_OS is null when fewer than 50 days of history', async () => {
@@ -188,6 +189,20 @@ describe('markov_distribution integration — R²_OS', () => {
     });
     // 39 returns < 50 threshold → R²_OS is null
     expect(result.metadata.outOfSampleR2).toBeNull();
+    expect(result.metadata.validationMetric).toBe('daily_return');
+  });
+
+  it('uses horizon-return validation for crypto 7–14 day horizons when sufficient history exists', async () => {
+    const prices = makeTrendingPrices(121, 65000, 0.001, 0.02);
+    const current = prices[prices.length - 1];
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(result.metadata.validationMetric).toBe('horizon_return');
   });
 });
 

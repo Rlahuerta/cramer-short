@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
-import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache } from './polymarket.js';
+import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache, scoreAnchorMarketRelevance, fetchPolymarketAnchorMarkets } from './polymarket.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 
 // Disable retry delays in tests to avoid timeouts
@@ -175,6 +175,67 @@ describe('inferTagSlugs', () => {
 
   it('returns tariffs slug for tariff query', () => {
     expect(inferTagSlugs('US China tariffs')).toContain('tariffs');
+  });
+});
+
+describe('scoreAnchorMarketRelevance', () => {
+  it('prefers dated threshold questions over touch-style markets', () => {
+    const threshold = scoreAnchorMarketRelevance(
+      'Will the price of Bitcoin be above $70,000 on April 9?',
+      'BTC-USD',
+      7,
+      new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    );
+    const barrier = scoreAnchorMarketRelevance(
+      'Will Bitcoin reach $70,000 this week?',
+      'BTC-USD',
+      7,
+      new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    );
+    expect(threshold).toBeGreaterThan(barrier);
+  });
+});
+
+describe('fetchPolymarketAnchorMarkets', () => {
+  beforeEach(() => { clearPolymarketCache(); });
+
+  it('ranks terminal threshold markets ahead of generic or touch-style matches', async () => {
+    const event = {
+      id: 'btc-anchor',
+      title: 'Bitcoin markets',
+      markets: [
+        {
+          id: '1',
+          question: 'Will Bitcoin reach $70,000 this week?',
+          outcomes: '["Yes","No"]',
+          outcomePrices: '["0.30","0.70"]',
+          endDateIso: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          volume24hr: 400000,
+          volumeNum: 400000,
+          liquidityNum: 100000,
+          active: true,
+          closed: false,
+          createdAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+        },
+        {
+          id: '2',
+          question: 'Will the price of Bitcoin be above $70,000 on April 9?',
+          outcomes: '["Yes","No"]',
+          outcomePrices: '["0.45","0.55"]',
+          endDateIso: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          volume24hr: 120000,
+          volumeNum: 120000,
+          liquidityNum: 50000,
+          active: true,
+          closed: false,
+          createdAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+        },
+      ],
+    };
+
+    globalThis.fetch = mockFetch([event], []) as typeof fetch;
+    const results = await fetchPolymarketAnchorMarkets('Bitcoin above', 5, { ticker: 'BTC-USD', horizonDays: 7 });
+    expect(results[0]?.question).toContain('be above $70,000 on April 9');
   });
 });
 

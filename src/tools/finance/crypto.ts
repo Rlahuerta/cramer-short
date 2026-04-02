@@ -1,6 +1,7 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { api } from './api.js';
+import { fetchBinanceDailyCloses, fetchBinanceTicker24h, toBinanceSymbol } from './binance.js';
 import { formatToolResult } from '../types.js';
 
 const CryptoPriceSnapshotInputSchema = z.object({
@@ -16,9 +17,24 @@ export const getCryptoPriceSnapshot = new DynamicStructuredTool({
   description: `Fetches the most recent price snapshot for a specific cryptocurrency, including the latest price, trading volume, and other open, high, low, and close price data. Ticker format: use 'CRYPTO-USD' for USD prices (e.g., 'BTC-USD') or 'CRYPTO-CRYPTO' for crypto-to-crypto prices (e.g., 'BTC-ETH' for Bitcoin priced in Ethereum).`,
   schema: CryptoPriceSnapshotInputSchema,
   func: async (input) => {
-    const params = { ticker: input.ticker };
-    const { data, url } = await api.get('/crypto/prices/snapshot/', params);
-    return formatToolResult(data.snapshot || {}, [url]);
+    try {
+      const params = { ticker: input.ticker };
+      const { data, url } = await api.get('/crypto/prices/snapshot/', params);
+      return formatToolResult(data.snapshot || {}, [url]);
+    } catch {
+      const snapshot = await fetchBinanceTicker24h(input.ticker);
+      if (!snapshot) {
+        return formatToolResult({ error: `No crypto snapshot available for ${input.ticker}` });
+      }
+      return formatToolResult({
+        ticker: toBinanceSymbol(input.ticker),
+        price: snapshot.price,
+        change24h: snapshot.change24h,
+        changePercent24h: snapshot.changePercent24h,
+        volume24h: snapshot.volume24h,
+        source: 'binance',
+      }, [`https://api.binance.com/api/v3/ticker/24hr?symbol=${toBinanceSymbol(input.ticker)}`]);
+    }
   },
 });
 
@@ -52,12 +68,24 @@ export const getCryptoPrices = new DynamicStructuredTool({
       start_date: input.start_date,
       end_date: input.end_date,
     };
-    // Cache when the date window is fully closed (OHLCV data is final)
     const endDate = new Date(input.end_date + 'T00:00:00');
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const { data, url } = await api.get('/crypto/prices/', params, { cacheable: endDate < today });
-    return formatToolResult(data.prices || [], [url]);
+    try {
+      const { data, url } = await api.get('/crypto/prices/', params, { cacheable: endDate < today });
+      return formatToolResult(data.prices || [], [url]);
+    } catch {
+      const startDate = new Date(input.start_date + 'T00:00:00');
+      const days = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / 86_400_000) + 1);
+      const closes = await fetchBinanceDailyCloses(input.ticker, days);
+      if (closes.length === 0) {
+        return formatToolResult({ error: `No crypto price history available for ${input.ticker}` });
+      }
+      return formatToolResult(
+        closes.map((close, index) => ({ close, index })),
+        [`https://api.binance.com/api/v3/klines?symbol=${toBinanceSymbol(input.ticker)}&interval=1d&limit=${Math.min(days, 1000)}`],
+      );
+    }
   },
 });
 

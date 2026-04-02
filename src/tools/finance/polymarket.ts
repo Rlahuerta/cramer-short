@@ -233,6 +233,49 @@ export function questionMatchesQuery(text: string, query: string): boolean {
   return words.some((word) => lower.includes(word));
 }
 
+function extractCanonicalNames(ticker: string): string[] {
+  const normalized = ticker.trim().toUpperCase().replace(/-USD$/, '');
+  const known: Record<string, string[]> = {
+    BTC: ['bitcoin', 'btc'],
+    ETH: ['ethereum', 'eth'],
+    SOL: ['solana', 'sol'],
+    DOGE: ['dogecoin', 'doge'],
+    XRP: ['ripple', 'xrp'],
+    ADA: ['cardano', 'ada'],
+  };
+  return known[normalized] ?? [normalized.toLowerCase()];
+}
+
+export function scoreAnchorMarketRelevance(
+  question: string,
+  ticker: string,
+  horizonDays?: number,
+  endDate?: string | null,
+): number {
+  const lower = question.toLowerCase();
+  let score = 0;
+
+  if (/\$[\d,]+(?:\.\d+)?(?:[KkMm])?/.test(question)) score += 3;
+  if (/\b(above|below|less than|more than|greater than|under|over)\b/.test(lower)) score += 2;
+  if (/\b(on|at)\b/.test(lower)) score += 1;
+
+  const names = extractCanonicalNames(ticker);
+  if (names.some((name) => lower.includes(name))) score += 2;
+
+  if (/\b(reach|hit|dip to|between|up or down|first)\b/.test(lower)) score -= 3;
+  if (/\b(election|sports|game|match|player|team|president|candidate)\b/.test(lower)) score -= 5;
+
+  if (horizonDays != null && endDate) {
+    const endMs = Date.parse(endDate);
+    if (Number.isFinite(endMs)) {
+      const daysUntilResolution = Math.abs((endMs - Date.now()) / 86_400_000 - horizonDays);
+      score += Math.max(0, 4 - Math.min(4, daysUntilResolution));
+    }
+  }
+
+  return score;
+}
+
 // ---------------------------------------------------------------------------
 // Tag-slug map  (verified against live Gamma API — /events endpoint only)
 // ---------------------------------------------------------------------------
@@ -535,6 +578,16 @@ export interface PolymarketMarketResult {
   endDate?: string | null;
 }
 
+function toStructuredMarketResult(m: FormattedMarket): PolymarketMarketResult {
+  return {
+    question: m.question,
+    probability: parseYesProbability(m.probabilities),
+    volume24h: parseVolumeStr(m.volume24h),
+    ageDays: m.ageDays,
+    endDate: m.endDate,
+  };
+}
+
 function parseYesProbability(probs: Record<string, string>): number {
   const key = Object.keys(probs).find((k) => k.toLowerCase() === 'yes') ?? Object.keys(probs)[0];
   if (!key) return 0.5;
@@ -559,13 +612,33 @@ export async function fetchPolymarketMarkets(
   limit: number,
 ): Promise<PolymarketMarketResult[]> {
   const markets = await searchEvents(query, limit);
-  return markets.map((m) => ({
-    question: m.question,
-    probability: parseYesProbability(m.probabilities),
-    volume24h: parseVolumeStr(m.volume24h),
-    ageDays: m.ageDays,
-    endDate: m.endDate,
-  }));
+  return markets.map(toStructuredMarketResult);
+}
+
+export async function fetchPolymarketAnchorMarkets(
+  query: string,
+  limit: number,
+  options: { ticker: string; horizonDays?: number },
+): Promise<PolymarketMarketResult[]> {
+  const markets = await searchEvents(query, Math.max(limit * 3, 24));
+  return markets
+    .map(toStructuredMarketResult)
+    .map((market) => ({
+      market,
+      score: scoreAnchorMarketRelevance(
+        market.question,
+        options.ticker,
+        options.horizonDays,
+        market.endDate,
+      ),
+    }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      return b.market.volume24h - a.market.volume24h;
+    })
+    .slice(0, limit)
+    .map(({ market }) => market);
 }
 
 // ---------------------------------------------------------------------------

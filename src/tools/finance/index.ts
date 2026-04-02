@@ -3,6 +3,7 @@ export { getFilings, get10KFilingItems, get10QFilingItems, get8KFilingItems } fr
 export { getKeyRatios, getHistoricalKeyRatios } from './key-ratios.js';
 export { getAnalystEstimates } from './estimates.js';
 export { getSegmentedRevenues } from './segments.js';
+export { fetchBinanceDailyCloses, fetchBinanceTicker24h, toBinanceSymbol } from './binance.js';
 export { getStockPrice, getStockPrices, getStockTickers, STOCK_PRICE_DESCRIPTION } from './stock-price.js';
 export { getCryptoPriceSnapshot, getCryptoPrices, getCryptoTickers } from './crypto.js';
 export { getInsiderTrades } from './insider_trades.js';
@@ -21,4 +22,3 @@ export { polymarketForecastTool, POLYMARKET_FORECAST_DESCRIPTION } from './polym
 export { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION, buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
 export { markovDistributionTool, computeMarkovDistribution, MARKOV_DISTRIBUTION_DESCRIPTION } from './markov-distribution.js';
 export { trumpPressureIndexTool, TRUMP_PRESSURE_DESCRIPTION, computeTrumpPressureIndex, checkTacoAlert } from './trump-pressure-index.js';
-
