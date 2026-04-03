@@ -20,6 +20,7 @@
  */
 
 import { describe, it, expect, mock } from 'bun:test';
+import { integrationIt } from '../../utils/test-guards.js';
 import {
   classifyRegimeState,
   estimateTransitionMatrix,
@@ -89,6 +90,36 @@ mock.module('./polymarket.js', () => ({
       question: 'Will Bitcoin reach $70000 this week?',
       probability: 0.22,
       volume24h: 180000,
+      ageDays: 5,
+      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    },
+  ],
+  fetchPolymarketAnchorMarkets: async (_query: string, _limit: number, _options: unknown) => [
+    {
+      question: 'Will the price of Bitcoin be above $62000 by end of week?',
+      probability: 0.85,
+      volume24h: 300000,
+      ageDays: 7,
+      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    },
+    {
+      question: 'Will the price of Bitcoin be above $65000 by end of week?',
+      probability: 0.62,
+      volume24h: 260000,
+      ageDays: 6,
+      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    },
+    {
+      question: 'Will the price of Bitcoin be above $68000 by end of week?',
+      probability: 0.38,
+      volume24h: 210000,
+      ageDays: 5,
+      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    },
+    {
+      question: 'Will the price of Bitcoin fall below $63000 by end of week?',
+      probability: 0.25,
+      volume24h: 190000,
       ageDays: 5,
       endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
     },
@@ -3627,7 +3658,7 @@ describe('markov_distribution anchor query strategy', () => {
 });
 
 describe('markov_distribution tool output envelope', () => {
-  it('auto-fetches candidate Polymarket anchors when polymarketMarkets are omitted', async () => {
+  integrationIt('auto-fetches candidate Polymarket anchors when polymarketMarkets are omitted', async () => {
     const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
     const prices: number[] = [];
     let p = 65000;

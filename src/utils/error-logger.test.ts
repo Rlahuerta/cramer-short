@@ -1,32 +1,40 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdirSync, rmSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { classifyError } from './errors.js';
 
 // ---------------------------------------------------------------------------
-// Isolation: each test gets its own tmp dir so log files don't accumulate.
+// Isolation: mock getCramerShortDir to return an absolute per-test tmpDir.
+// Using process.chdir() is unsafe in Bun because worker threads share the
+// process CWD — parallel test files can race and corrupt relative paths.
 // ---------------------------------------------------------------------------
+let mockDir = '';
+
+mock.module('./paths.js', () => ({
+  getCramerShortDir: () => mockDir,
+  cramerShortPath: (...segments: string[]) => join(mockDir, ...segments),
+}));
+
 let tmpDir: string;
-let originalCwd: string;
 
 beforeEach(() => {
   tmpDir = join(tmpdir(), `error-logger-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tmpDir, { recursive: true });
-  originalCwd = process.cwd();
-  process.chdir(tmpDir);
+  // Point getCramerShortDir at <tmpDir>/.cramer-short so logError writes to
+  // the same path the test assertions check (join(tmpDir, '.cramer-short', 'logs', ...)).
+  mockDir = join(tmpDir, '.cramer-short');
 });
 
 afterEach(() => {
-  process.chdir(originalCwd);
   rmSync(tmpDir, { recursive: true, force: true });
+  mockDir = '';
 });
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Import logError freshly so getCramerShortDir() uses the chdir'd cwd. */
 async function getLogError() {
   const { logError } = await import('./error-logger.js');
   return logError;
