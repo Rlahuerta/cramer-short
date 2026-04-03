@@ -402,4 +402,97 @@ The local references strongly caution against treating prediction-market prices 
 ### Files
 
 - `src/tools/finance/polymarket.ts`
-- `src/tools/finance/markov-distrib
+- `src/tools/finance/markov-distribution.ts`
+- any new finance helper modules required for signal quality, plus backtest coverage
+
+### Primary function targets
+
+- `fetchPolymarketMarkets(...)`
+- `fetchPolymarketAnchorMarkets(...)`
+- anchor-quality / divergence handling in `markov-distribution.ts`
+- `computeActionSignal(...)` only if external quality flags are intentionally allowed to affect the decision layer
+
+### Primary signal-quality themes from local references
+
+- persistence test for market shocks
+- 3–5% YES-bias discounting
+- cross-market divergence as a noise flag
+- never treating Polymarket as a single source of truth
+
+### Acceptance criteria
+
+- external signals improve BTC short-horizon direction beyond the best internal-only model
+- signal quality filters are explicit and testable
+- the added complexity is justified by measurable lift
+
+### QA scenario
+
+**Primary commands**
+
+```bash
+bun test
+RUN_INTEGRATION=1 bun test src/tools/finance/markov-backtest.integration.test.ts
+bun run typecheck
+```
+
+**Expected result**
+
+- exit code 0
+- external signals show measurable additive value, not just noise
+
+---
+
+## Required ablation discipline
+
+Every stage after Stage 0 should report all of the following for BTC 7d and 14d:
+
+1. baseline directional accuracy
+2. candidate directional accuracy
+3. raw `P(up)` directional accuracy
+4. confidence-filtered accuracy at declared thresholds
+5. hold / abstain rate
+6. mean edge
+7. regime-specific breakdown
+8. `P(up)`-band breakdown
+9. coverage and abstain rate, whenever >60% is claimed
+
+If a stage cannot beat the previous stage on the declared target, it should stop and not proceed blindly.
+
+## Suggested atomic PR sequence
+
+1. **PR3A** — target-metric sharpening and ambiguity-band reporting
+2. **PR3B** — selective prediction / abstention for BTC short horizons
+3. **PR3C** — metadata-aware meta-decision layer
+4. **PR3D** — regime/state-model expansion for short-horizon crypto
+5. **PR3E** — horizon-native calibration redesign
+6. **PR3F** — external signal integration, only if still needed
+
+## TDD expectation for every stage
+
+For every stage, the implementation order should be:
+
+1. add or extend the failing unit / integration tests for the target slice first
+2. implement the smallest code change that satisfies the stage goal
+3. run the listed QA commands
+4. inspect the BTC 7d / 14d report output before declaring success
+
+## Merge-readiness QA command set for each stage
+
+```bash
+bun test src/tools/finance/markov-distribution.test.ts
+bun test src/tools/finance/backtest/metrics.test.ts
+RUN_INTEGRATION=1 bun test src/tools/finance/markov-backtest.integration.test.ts
+RUN_INTEGRATION=1 bun test src/tools/finance/markov-trajectory.integration.test.ts
+bun run typecheck
+```
+
+Use the trajectory suite only for stages that touch trajectory behavior or state-model changes.
+
+## Review questions
+
+Reviewers should be able to answer:
+
+1. is the >60% target being pursued via full coverage, selective coverage, or both?
+2. which stage is expected to produce the first credible >60% result?
+3. what evidence would justify moving from decision-layer work into deeper model changes?
+4. how will we know whether a gain is real rather than a coverage trick or metric redefinition?

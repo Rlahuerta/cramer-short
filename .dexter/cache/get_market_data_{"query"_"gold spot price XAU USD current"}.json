@@ -1,1 +1,0 @@
-{"key":"get_market_data:{\"query\":\"gold spot price XAU USD current\"}","value":"{\"data\":{\"_errors\":[{\"tool\":\"get_crypto_price_snapshot\",\"args\":{\"ticker\":\"XAU-USD\"},\"error\":\"[Financial Datasets API] request failed: 400 Bad Request\"}]}}","expiresAt":1775036574411,"toolName":"get_market_data","savedAt":"2026-04-01T09:27:54.411Z"}

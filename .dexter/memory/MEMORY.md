@@ -1,4 +1,0 @@
-- **User Strategy Preference**: Uses Polymarket prediction market forecasts to identify ETF trading opportunities with asymmetric risk/reward. Favors prediction market-based probabilistic analysis (Polymarket anchors + Markov regime transitions) over point estimates. Prefers 7–14 day horizons for tactical positioning.
-- **Polymarket Anchor Requirements** (2026-04-02): Requires ≥2 trusted terminal threshold anchors for markov_distribution. Terminal = "settle above on [date]". Touch/barrier markets ("reach/dip to") are path-dependent and invalid for distribution modeling.
-  - GLD/IAU: FMP premium-required for historical prices — use web_search + Yahoo Finance/Investing.com
-  - GOLD vs B: GOLD = Gold.com Inc. (domain company); B = Barrick Gold Mining. Use GLD for gold commodity exposure.

@@ -1,1 +1,0 @@
-{"key":"get_market_data:{\"query\":\"crude oil price CL futures current\"}","value":"{\"data\":{\"get_stock_price_CL\":{\"error\":\"Error 432: This request exceeds this API key's set usage limit. You can increase its limit on the Tavily dashboard.\"}}}","expiresAt":1774967546172,"toolName":"get_market_data","savedAt":"2026-03-31T14:17:26.172Z"}
