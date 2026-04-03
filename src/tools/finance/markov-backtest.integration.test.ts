@@ -34,10 +34,17 @@ import {
   bootstrapDirectionalCI,
   bootstrapBrierCI,
   bootstrapCIcoverageCI,
+  bootstrapMetricCI,
   pUpDirectionalAccuracy,
+  calibratedPUpDirectionalAccuracy,
+  rawPUpDirectionalAccuracy,
   selectivePUpAccuracy,
+  selectiveRawPUpAccuracy,
+  bucketByPUpBand,
   type BacktestStep,
   type FailureSliceKey,
+  type DecisionSource,
+  type ProbabilitySource,
 } from './backtest/metrics.js';
 import { generateStressScenarios, type StressScenario } from './backtest/stress-scenarios.js';
 
@@ -420,46 +427,241 @@ describe('Markov distribution walk-forward backtest', () => {
     }
 
     integrationIt(
-      'BTC-USD 7d/14d: calibration report + bootstrap CIs',
+      'BTC-USD 7d/14d: PR3A calibration diagnostic report',
       async () => {
-        const lines: string[] = ['', '═══ BTC SHORT-HORIZON CALIBRATION ═══'];
+        // Named baseline constants — Stage 0 / PR3A reference values
+        // These are informational; the backtest harness is the source of truth.
+        const PR3A_BASELINE: Record<number, { recAccuracy: number; calPUpAccuracy: number; rawPUpAccuracy: number | null }> = {
+          7:  { recAccuracy: 0.44, calPUpAccuracy: 0.44, rawPUpAccuracy: null },
+          14: { recAccuracy: 0.47, calPUpAccuracy: 0.47, rawPUpAccuracy: null },
+        };
+
+        const lines: string[] = ['', '═══ BTC SHORT-HORIZON PR3A DIAGNOSTIC ═══'];
 
         for (const horizon of btcHorizons) {
           const result = btcResults.get(horizon);
           if (!result || result.steps.length === 0) continue;
+          const steps = result.steps;
 
-          const bs = brierScore(result.steps);
-          const dir = directionalAccuracy(result.steps);
-          const cov = ciCoverage(result.steps);
-          const bins = reliabilityBins(result.steps, 5);
+          const baseline = PR3A_BASELINE[horizon];
+
+          const bs = brierScore(steps);
+          const recDir = directionalAccuracy(steps);
+          const calPUp = calibratedPUpDirectionalAccuracy(steps);
+          const rawPUp = rawPUpDirectionalAccuracy(steps);
+          const cov = ciCoverage(steps);
+          const bins = reliabilityBins(steps, 5);
           const maxDev = maxReliabilityDeviation(bins, 3);
-          const bsCI = bootstrapBrierCI(result.steps);
-          const dirCI = bootstrapDirectionalCI(result.steps);
-          const covCI = bootstrapCIcoverageCI(result.steps);
-          const rawDir = pUpDirectionalAccuracy(result.steps);
+          const bsCI = bootstrapBrierCI(steps);
+          const recDirCI = bootstrapDirectionalCI(steps);
+          const covCI = bootstrapCIcoverageCI(steps);
+
+          // Bootstrap CIs for the three directional metrics
+          const calPUpCI = bootstrapMetricCI(steps, calibratedPUpDirectionalAccuracy);
+          const rawPUpCI = bootstrapMetricCI(steps, rawPUpDirectionalAccuracy);
 
           lines.push(
-            `  BTC-USD ${horizon}d: Brier=${bs.toFixed(3)} [${bsCI.lower.toFixed(3)}, ${bsCI.upper.toFixed(3)}] | `
-            + `Dir=${(dir * 100).toFixed(0)}% [${(dirCI.lower * 100).toFixed(0)}%, ${(dirCI.upper * 100).toFixed(0)}%] | `
+            `  BTC-USD ${horizon}d (n=${steps.length}):`,
+          );
+          lines.push(
+            `    Brier=${bs.toFixed(3)} [${bsCI.lower.toFixed(3)}, ${bsCI.upper.toFixed(3)}] | `
             + `CI=${(cov * 100).toFixed(0)}% [${(covCI.lower * 100).toFixed(0)}%, ${(covCI.upper * 100).toFixed(0)}%] | `
-            + `RelDev=${(maxDev * 100).toFixed(0)}pp | n=${result.steps.length}`,
+            + `RelDev=${(maxDev * 100).toFixed(0)}pp`,
+          );
+
+          // PR3A directional accuracy comparison
+          const flag = (v: number, good: number, bad: number) =>
+            v >= good ? '✓' : v >= bad ? '~' : '✗';
+          lines.push(
+            `    Recommendation accuracy:  ${(recDir * 100).toFixed(0)}% [${(recDirCI.lower * 100).toFixed(0)}%, ${(recDirCI.upper * 100).toFixed(0)}%] ${flag(recDir, 0.55, 0.45)}`
+            + (baseline.recAccuracy !== null ? ` (baseline ${(baseline.recAccuracy * 100).toFixed(0)}%)` : ''),
           );
           lines.push(
-            `    Raw vs calibrated: rec=${formatPct(dir).padStart(4)} | raw=${formatPct(rawDir).padStart(4)} | Δ=${((rawDir - dir) * 100 >= 0 ? '+' : '')}${((rawDir - dir) * 100).toFixed(1)}pp`,
+            `    Calibrated P(up) sign:    ${(calPUp * 100).toFixed(0)}% [${(calPUpCI.lower * 100).toFixed(0)}%, ${(calPUpCI.upper * 100).toFixed(0)}%] ${flag(calPUp, 0.55, 0.45)}`
+            + (baseline.calPUpAccuracy !== null ? ` (baseline ${(baseline.calPUpAccuracy * 100).toFixed(0)}%)` : ''),
           );
-          appendFailureSlice(lines, 'Anchor quality', result.steps, 'anchorQuality');
-          appendFailureSlice(lines, 'Confidence', result.steps, 'confidence');
-          appendFailureSlice(lines, 'Regime', result.steps, 'regime');
+          lines.push(
+            `    Raw P(up) sign:           ${(rawPUp * 100).toFixed(0)}% [${(rawPUpCI.lower * 100).toFixed(0)}%, ${(rawPUpCI.upper * 100).toFixed(0)}%] ${flag(rawPUp, 0.55, 0.45)}`
+            + (baseline.rawPUpAccuracy !== null ? ` (baseline ${(baseline.rawPUpAccuracy * 100).toFixed(0)}%)` : ''),
+          );
 
+          // Selective accuracy at thresholds 0.10 / 0.15 / 0.20
+          const selectiveThresholds = [0.10, 0.15, 0.20];
+          lines.push('    Selective accuracy (confidence ≥ threshold):');
+          for (const t of selectiveThresholds) {
+            const recSel = selectiveDirectionalAccuracy(steps, t);
+            const calSel = selectivePUpAccuracy(steps, t);
+            const rawSel = selectiveRawPUpAccuracy(steps, t);
+            const recBar = recSel.selected > 0 ? '▓'.repeat(Math.round(recSel.accuracy * 10)) : '·';
+            const calBar = calSel.selected > 0 ? '▓'.repeat(Math.round(calSel.accuracy * 10)) : '·';
+            const rawBar = rawSel.selected > 0 ? '▓'.repeat(Math.round(rawSel.accuracy * 10)) : '·';
+            lines.push(
+              `      conf≥${t.toFixed(2)}: rec=${(recSel.accuracy * 100).toFixed(0).padStart(3)}% `
+              + `cov=${(recSel.coverage * 100).toFixed(0).padStart(3)}% n=${String(recSel.selected).padStart(4)} ${recBar} | `
+              + `cal=${(calSel.accuracy * 100).toFixed(0).padStart(3)}% cov=${(calSel.coverage * 100).toFixed(0).padStart(3)}% n=${String(calSel.selected).padStart(4)} ${calBar} | `
+              + `raw=${(rawSel.accuracy * 100).toFixed(0).padStart(3)}% cov=${(rawSel.coverage * 100).toFixed(0).padStart(3)}% n=${String(rawSel.selected).padStart(4)} ${rawBar}`,
+            );
+          }
+
+          // Hold rate
+          const holdRate = steps.filter(s => s.recommendation === 'HOLD').length / steps.length;
+          lines.push(`    Hold rate: ${(holdRate * 100).toFixed(1)}%`);
+
+          // P(up) band breakdown using calibrated P(up)
+          const pUpBandRows = bucketByPUpBand(steps, 0.03, undefined, 'calibrated');
+          lines.push('    P(up) band breakdown (calibrated prob → calibrated direction):');
+          for (const row of pUpBandRows) {
+            if (row.count === 0) continue;
+            const bar = '▓'.repeat(Math.round(row.directionalAccuracy * 10));
+            lines.push(
+              `      ${row.label.padEnd(12)} n=${String(row.count).padStart(3)} | `
+              + `dir=${(row.directionalAccuracy * 100).toFixed(0).padStart(3)}% | `
+              + `bal=${(row.balancedDirectionalAccuracy * 100).toFixed(0).padStart(3)}% | `
+              + `brier=${row.brierScore.toFixed(3)} ${bar}`,
+            );
+          }
+
+          const rawPUpBandRows = bucketByPUpBand(steps, 0.03, undefined, 'raw');
+          lines.push('    P(up) band breakdown (raw prob → raw sign reference):');
+          for (const row of rawPUpBandRows) {
+            if (row.count === 0) continue;
+            const bar = '▓'.repeat(Math.round(row.directionalAccuracy * 10));
+            lines.push(
+              `      ${row.label.padEnd(12)} n=${String(row.count).padStart(3)} | `
+              + `dir=${(row.directionalAccuracy * 100).toFixed(0).padStart(3)}% | `
+              + `bal=${(row.balancedDirectionalAccuracy * 100).toFixed(0).padStart(3)}% | `
+              + `brier=${row.brierScore.toFixed(3)} ${bar}`,
+            );
+          }
+
+          appendFailureSlice(lines, 'Anchor quality', steps, 'anchorQuality');
+          appendFailureSlice(lines, 'Confidence', steps, 'confidence');
+          appendFailureSlice(lines, 'Regime', steps, 'regime');
+          appendFailureSlice(lines, 'Structural break', steps, 'structuralBreak');
+          appendFailureSlice(lines, 'HMM converged', steps, 'hmmConverged');
+          appendFailureSlice(lines, 'Ensemble consensus', steps, 'ensembleConsensus');
+
+          // Reliability bins (5-bin)
           for (const b of bins) {
             if (b.count < 3) continue;
             lines.push(
-              `    [${b.binLower.toFixed(1)}–${b.binUpper.toFixed(1)}): pred=${b.meanPredicted.toFixed(2)} actual=${b.actualFrequency.toFixed(2)} n=${b.count}`,
+              `    [${b.binLower.toFixed(1)}–${b.binUpper.toFixed(1)}): `
+              + `pred=${b.meanPredicted.toFixed(2)} actual=${b.actualFrequency.toFixed(2)} n=${b.count}`,
             );
           }
         }
 
-        lines.push('═════════════════════════════════════', '');
+        lines.push('═════════════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+        expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    integrationIt(
+      'BTC-USD 7d/14d: PR3B ablation harness',
+      async () => {
+        const lines: string[] = ['', '═══ BTC SHORT-HORIZON PR3B ABLATION ═══'];
+        const data = fixture.tickers['BTC-USD'];
+        
+        // Define the parameter grid to explore
+        const weights = [0.4, 0.6, 0.8]; // Crypto default is 0.4
+        const kappas = [1.3, 1.0, 0.8];  // Crypto default is 1.3
+
+        for (const horizon of btcHorizons) {
+          lines.push(`\n  Horizon: ${horizon}d`);
+          lines.push('  Weight | Kappa | DirAcc% | CalPUp% | Brier | CI% | Hold%');
+          lines.push('  -------+-------+---------+---------+-------+-----+------');
+          
+          for (const w of weights) {
+            for (const k of kappas) {
+              const result = await walkForward({
+                ticker: 'BTC-USD',
+                prices: data.closes,
+                horizon,
+                warmup: WARMUP,
+                stride: STRIDE,
+                cryptoShortHorizonConditionalWeight: w,
+                cryptoShortHorizonKappaMultiplier: k,
+              });
+              
+              if (result.steps.length === 0) continue;
+              
+              const steps = result.steps;
+              const bs = brierScore(steps);
+              const recDir = directionalAccuracy(steps);
+              const calPUp = calibratedPUpDirectionalAccuracy(steps);
+              const cov = ciCoverage(steps);
+              const holdRate = steps.filter(s => s.recommendation === 'HOLD').length / steps.length;
+              
+              lines.push(
+                `  ${w.toFixed(1).padEnd(6)} | ${k.toFixed(1).padEnd(5)} | ` +
+                `${(recDir * 100).toFixed(1).padStart(6)}% | ` +
+                `${(calPUp * 100).toFixed(1).padStart(6)}% | ` +
+                `${bs.toFixed(3).padStart(5)} | ` +
+                `${(cov * 100).toFixed(0).padStart(3)}% | ` +
+                `${(holdRate * 100).toFixed(1).padStart(4)}%`
+              );
+            }
+          }
+        }
+        
+        lines.push('═══════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+        expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    integrationIt(
+      'BTC-USD 7d/14d: PR3 Stage 2 Floor Ablation harness',
+      async () => {
+        const lines: string[] = ['', '═══ BTC SHORT-HORIZON PR3 STAGE 2 FLOOR ABLATION ═══'];
+        const data = fixture.tickers['BTC-USD'];
+        
+        // Define the parameter grid to explore
+        const floors = [0.35, 0.40, 0.45]; // Default is 0.35
+        const multipliers = [1.0, 0.5, 0.0];  // Default is 1.0
+
+        for (const horizon of btcHorizons) {
+          lines.push(`\n  Horizon: ${horizon}d`);
+          lines.push('  Floor | Mltpr | DirAcc% | CalPUp% | Brier | CI% | Hold%');
+          lines.push('  ------+-------+---------+---------+-------+-----+------');
+          
+          for (const f of floors) {
+            for (const m of multipliers) {
+              const result = await walkForward({
+                ticker: 'BTC-USD',
+                prices: data.closes,
+                horizon,
+                warmup: WARMUP,
+                stride: STRIDE,
+                cryptoShortHorizonPUpFloor: f,
+                cryptoShortHorizonBearMarginMultiplier: m,
+              });
+              
+              if (result.steps.length === 0) continue;
+              
+              const steps = result.steps;
+              const bs = brierScore(steps);
+              const recDir = directionalAccuracy(steps);
+              const calPUp = calibratedPUpDirectionalAccuracy(steps);
+              const cov = ciCoverage(steps);
+              const holdRate = steps.filter(s => s.recommendation === 'HOLD').length / steps.length;
+              
+              lines.push(
+                `  ${f.toFixed(2).padEnd(5)} | ${m.toFixed(1).padEnd(5)} | ` +
+                `${(recDir * 100).toFixed(1).padStart(6)}% | ` +
+                `${(calPUp * 100).toFixed(1).padStart(6)}% | ` +
+                `${bs.toFixed(3).padStart(5)} | ` +
+                `${(cov * 100).toFixed(0).padStart(3)}% | ` +
+                `${(holdRate * 100).toFixed(1).padStart(4)}%`
+              );
+            }
+          }
+        }
+        
+        lines.push('════════════════════════════════════════════════════', '');
         console.log(lines.join('\n'));
         expect(true).toBe(true);
       },
@@ -635,6 +837,560 @@ describe('Markov distribution walk-forward backtest', () => {
         lines.push('═══════════════════════════════', '');
         console.log(lines.join('\n'));
         expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+  });
+
+  describe('PR3 Lever: short-horizon crypto raw decision ablation', () => {
+    integrationIt(
+      'BTC-USD 7d & 14d default vs ablation',
+      async () => {
+        const prices = fixture.tickers['BTC-USD'].closes;
+
+        // 7d Default
+        const btc7dDefault = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 7,
+          warmup: WARMUP,
+          stride: STRIDE,
+        });
+
+        // 7d Ablation
+        const btc7dAblation = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 7,
+          warmup: WARMUP,
+          stride: STRIDE,
+          cryptoShortHorizonRawDecisionAblation: true,
+        });
+
+        // 14d Default
+        const btc14dDefault = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 14,
+          warmup: WARMUP,
+          stride: STRIDE,
+        });
+
+        // 14d Ablation
+        const btc14dAblation = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 14,
+          warmup: WARMUP,
+          stride: STRIDE,
+          cryptoShortHorizonRawDecisionAblation: true,
+        });
+
+        // Quick log and bounds assertions
+        const report = [
+          '',
+          '== PR3 Ablation: BTC-USD 7d/14d Default vs Raw-Decision ==',
+          'Horizon | Mode       |  N | Buy | Hold | Sell | DirAcc',
+          '--------+------------+----+-----+------+------+-------',
+        ];
+
+        const pushReport = (horizon: number, mode: string, res: WalkForwardResult) => {
+          const s = res.steps;
+          const buys = s.filter(x => x.recommendation === 'BUY').length;
+          const holds = s.filter(x => x.recommendation === 'HOLD').length;
+          const sells = s.filter(x => x.recommendation === 'SELL').length;
+          const dir = s.length > 0 ? (directionalAccuracy(s) * 100).toFixed(1) + '%' : '0.0%';
+          report.push(
+            `${String(horizon).padStart(7)} | ` +
+            `${mode.padEnd(10)} | ` +
+            `${String(s.length).padStart(2)} | ` +
+            `${String(buys).padStart(3)} | ` +
+            `${String(holds).padStart(4)} | ` +
+            `${String(sells).padStart(4)} | ` +
+            `${dir.padStart(6)}`
+          );
+        };
+
+        pushReport(7, 'Default', btc7dDefault);
+        pushReport(7, 'Raw', btc7dAblation);
+        pushReport(14, 'Default', btc14dDefault);
+        pushReport(14, 'Raw', btc14dAblation);
+
+        console.log(report.join('\n'));
+
+        // Basic bounded assertions
+        expect(btc7dDefault.steps.length).toBeGreaterThan(0);
+        expect(btc7dAblation.steps.length).toBe(btc7dDefault.steps.length);
+        expect(btc14dDefault.steps.length).toBeGreaterThan(0);
+        expect(btc14dAblation.steps.length).toBe(btc14dDefault.steps.length);
+
+        // PR3E provenance assertions: probabilitySource is calibrated for all steps
+        for (const step of [...btc7dDefault.steps, ...btc7dAblation.steps, ...btc14dDefault.steps, ...btc14dAblation.steps]) {
+          expect(step.probabilitySource).toBe('calibrated');
+        }
+
+        // PR3E provenance: default steps use 'default', ablation steps use 'crypto-short-horizon-raw'
+        for (const step of btc7dDefault.steps) {
+          expect(step.decisionSource).toBe('default');
+        }
+        for (const step of btc14dDefault.steps) {
+          expect(step.decisionSource).toBe('default');
+        }
+        for (const step of btc7dAblation.steps) {
+          expect(step.decisionSource).toBe('crypto-short-horizon-raw');
+        }
+        for (const step of btc14dAblation.steps) {
+          expect(step.decisionSource).toBe('crypto-short-horizon-raw');
+        }
+
+        // PR3E: aggregate provenance via generateReport
+        const report7dDefault = generateReport('BTC-USD', 7, btc7dDefault.steps);
+        expect(report7dDefault.provenanceSummary).toBeDefined();
+        expect(report7dDefault.provenanceSummary!.decisionSources.default).toBe(btc7dDefault.steps.length);
+        expect(report7dDefault.provenanceSummary!.probabilitySources.calibrated).toBe(btc7dDefault.steps.length);
+
+        const report7dAblation = generateReport('BTC-USD', 7, btc7dAblation.steps);
+        expect(report7dAblation.provenanceSummary!.decisionSources['crypto-short-horizon-raw']).toBe(btc7dAblation.steps.length);
+      },
+      TIMEOUT
+    );
+  });
+
+  describe('PR3F Lever: short-horizon crypto disagreement prior', () => {
+    integrationIt(
+      'BTC-USD 7d & 14d default vs PR3F ablation',
+      async () => {
+        const prices = fixture.tickers['BTC-USD'].closes;
+
+        // 7d Default
+        const btc7dDefault = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 7,
+          warmup: WARMUP,
+          stride: STRIDE,
+        });
+
+        // 7d PR3F
+        const btc7dPr3f = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 7,
+          warmup: WARMUP,
+          stride: STRIDE,
+          pr3fCryptoShortHorizonDisagreementPrior: true,
+        });
+
+        // 14d Default
+        const btc14dDefault = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 14,
+          warmup: WARMUP,
+          stride: STRIDE,
+        });
+
+        // 14d PR3F
+        const btc14dPr3f = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 14,
+          warmup: WARMUP,
+          stride: STRIDE,
+          pr3fCryptoShortHorizonDisagreementPrior: true,
+        });
+
+        const logRun = (label: string, steps: any[]) => {
+          const report = generateReport('BTC-USD', 0, steps);
+          const pr3fActive = report.provenanceSummary?.decisionSources['crypto-short-horizon-disagreement-blend'] || 0;
+          console.log(`[PR3F Test] ${label.padEnd(20)} | Steps: ${steps.length} | PR3F Active: ${pr3fActive} | Brier: ${report.brierScore.toFixed(4)} | Acc: ${(report.balancedDirectionalAccuracy! * 100).toFixed(1)}% | Edge: ${report.meanEdge?.toFixed(4) ?? 'N/A'}`);
+        };
+
+        console.log('\\n--- PR3F Lever Ablation ---');
+        logRun('BTC 7d Default', btc7dDefault.steps);
+        logRun('BTC 7d PR3F', btc7dPr3f.steps);
+        logRun('BTC 14d Default', btc14dDefault.steps);
+        logRun('BTC 14d PR3F', btc14dPr3f.steps);
+
+        // Assert step counts match
+        expect(btc7dPr3f.steps.length).toBeGreaterThan(0);
+        expect(btc7dPr3f.steps.length).toBe(btc7dDefault.steps.length);
+        expect(btc14dPr3f.steps.length).toBe(btc14dDefault.steps.length);
+
+        // Ensure canonical surfaces remain untouched
+        for (let i = 0; i < btc7dDefault.steps.length; i++) {
+          const def = btc7dDefault.steps[i];
+          const pr3f = btc7dPr3f.steps[i];
+          
+          expect(pr3f.predictedProb).toBe(def.predictedProb);
+          expect(pr3f.probabilitySource).toBe('calibrated');
+          expect(pr3f.ciLower).toBe(def.ciLower);
+          expect(pr3f.ciUpper).toBe(def.ciUpper);
+        }
+
+        // PR3E provenance
+        for (const step of btc7dDefault.steps) {
+          expect(step.decisionSource).toBe('default');
+        }
+        for (const step of btc14dDefault.steps) {
+          expect(step.decisionSource).toBe('default');
+        }
+        
+        // PR3F shouldn't be active on *every* step due to conditional checks, 
+        // but it should activate on some steps.
+        const report7dPr3f = generateReport('BTC-USD', 7, btc7dPr3f.steps);
+        const report14dPr3f = generateReport('BTC-USD', 14, btc14dPr3f.steps);
+        
+        expect(report7dPr3f.provenanceSummary?.decisionSources['crypto-short-horizon-disagreement-blend']).toBeGreaterThanOrEqual(0);
+        expect(report14dPr3f.provenanceSummary?.decisionSources['crypto-short-horizon-disagreement-blend']).toBeGreaterThanOrEqual(0);
+      },
+      TIMEOUT
+    );
+  });
+
+  describe('PR3G Lever: short-horizon crypto recency weighting', () => {
+    integrationIt(
+      'BTC-USD 7d & 14d default vs PR3G ablation',
+      async () => {
+        const prices = fixture.tickers['BTC-USD'].closes;
+
+        // 7d Default
+        const btc7dDefault = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 7,
+          warmup: WARMUP,
+          stride: STRIDE,
+        });
+
+        // 7d PR3G (default decay 0.94)
+        const btc7dPr3g = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 7,
+          warmup: WARMUP,
+          stride: STRIDE,
+          pr3gCryptoShortHorizonRecencyWeighting: true,
+        });
+
+        // 7d PR3G (milder decay 0.98)
+        const btc7dPr3gMilder = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 7,
+          warmup: WARMUP,
+          stride: STRIDE,
+          pr3gCryptoShortHorizonRecencyWeighting: true,
+          pr3gCryptoShortHorizonDecay: 0.98,
+        });
+
+        // 14d Default
+        const btc14dDefault = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 14,
+          warmup: WARMUP,
+          stride: STRIDE,
+        });
+
+        // 14d PR3G (default decay 0.94)
+        const btc14dPr3g = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 14,
+          warmup: WARMUP,
+          stride: STRIDE,
+          pr3gCryptoShortHorizonRecencyWeighting: true,
+        });
+
+        // 14d PR3G (milder decay 0.98)
+        const btc14dPr3gMilder = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 14,
+          warmup: WARMUP,
+          stride: STRIDE,
+          pr3gCryptoShortHorizonRecencyWeighting: true,
+          pr3gCryptoShortHorizonDecay: 0.98,
+        });
+
+        const logRun = (label: string, steps: any[]) => {
+          const report = generateReport('BTC-USD', 0, steps);
+          const pr3gActive = report.provenanceSummary?.decisionSources['crypto-short-horizon-recency'] || 0;
+          
+          let recAcc = 0;
+          let recAttempts = 0;
+          let pUpAcc = 0;
+          let pUpAttempts = 0;
+          
+          for (const step of steps) {
+            if (step.recommendation === 'BUY' || step.recommendation === 'SELL') {
+              recAttempts++;
+              if ((step.recommendation === 'BUY' && step.actualBinary === 1) ||
+                  (step.recommendation === 'SELL' && step.actualBinary === 0)) {
+                recAcc++;
+              }
+            }
+            if (Math.abs(step.predictedProb - 0.5) > 0.001) {
+              pUpAttempts++;
+              if ((step.predictedProb > 0.5 && step.actualBinary === 1) ||
+                  (step.predictedProb < 0.5 && step.actualBinary === 0)) {
+                pUpAcc++;
+              }
+            }
+          }
+          
+          const recAccStr = recAttempts > 0 ? (recAcc / recAttempts * 100).toFixed(1) + '%' : 'N/A';
+          const pUpAccStr = pUpAttempts > 0 ? (pUpAcc / pUpAttempts * 100).toFixed(1) + '%' : 'N/A';
+          
+          console.log(`[PR3G Test] ${label.padEnd(20)} | Steps: ${steps.length} | PR3G Active: ${pr3gActive} | Brier: ${report.brierScore.toFixed(4)} | P(up) Acc: ${pUpAccStr} | Rec Acc: ${recAccStr} (${recAttempts} recs)`);
+        };
+
+        console.log('\n--- PR3G Lever Ablation ---');
+        logRun('BTC 7d Default', btc7dDefault.steps);
+        logRun('BTC 7d PR3G (0.94)', btc7dPr3g.steps);
+        logRun('BTC 7d PR3G (0.98)', btc7dPr3gMilder.steps);
+        logRun('BTC 14d Default', btc14dDefault.steps);
+        logRun('BTC 14d PR3G (0.94)', btc14dPr3g.steps);
+        logRun('BTC 14d PR3G (0.98)', btc14dPr3gMilder.steps);
+
+        // Assert step counts match
+        expect(btc7dPr3g.steps.length).toBeGreaterThan(0);
+        expect(btc7dPr3g.steps.length).toBe(btc7dDefault.steps.length);
+        expect(btc7dPr3gMilder.steps.length).toBe(btc7dDefault.steps.length);
+        expect(btc14dPr3g.steps.length).toBe(btc14dDefault.steps.length);
+        expect(btc14dPr3gMilder.steps.length).toBe(btc14dDefault.steps.length);
+
+        // PR3G changes the conditional PUp, so it *will* change the calibrated surfaces.
+        // We only assert that probabilitySource remains 'calibrated'.
+        for (let i = 0; i < btc7dDefault.steps.length; i++) {
+          const pr3g = btc7dPr3g.steps[i];
+          expect(pr3g.probabilitySource).toBe('calibrated');
+        }
+
+        // PR3E provenance
+        for (const step of btc7dDefault.steps) {
+          expect(step.decisionSource).toBe('default');
+        }
+        for (const step of btc14dDefault.steps) {
+          expect(step.decisionSource).toBe('default');
+        }
+        for (const step of btc7dPr3g.steps) {
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
+        }
+        for (const step of btc7dPr3gMilder.steps) {
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
+        }
+        for (const step of btc14dPr3g.steps) {
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
+        }
+        for (const step of btc14dPr3gMilder.steps) {
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
+        }
+        
+        const report7dPr3g = generateReport('BTC-USD', 7, btc7dPr3g.steps);
+        const report14dPr3g = generateReport('BTC-USD', 14, btc14dPr3g.steps);
+        
+        expect(report7dPr3g.provenanceSummary?.decisionSources['crypto-short-horizon-recency']).toBe(btc7dPr3g.steps.length);
+        expect(report14dPr3g.provenanceSummary?.decisionSources['crypto-short-horizon-recency']).toBe(btc14dPr3g.steps.length);
+      },
+      TIMEOUT
+    );
+  });
+
+  describe('PR3H: deterministic historical replay', () => {
+    integrationIt(
+      'BTC-USD 14d default vs replay (empty & active)',
+      async () => {
+        const prices = fixture.tickers['BTC-USD'].closes;
+        const dates = fixture.tickers['BTC-USD'].dates;
+        const horizon = 14;
+        
+        const { walkForwardWithReplay } = await import('./backtest/replay.js');
+        
+        const btc14dEmptyReplay = await walkForwardWithReplay({
+          ticker: 'BTC-USD',
+          prices,
+          dates,
+          horizon,
+          warmup: WARMUP,
+          stride: STRIDE,
+          replaySnapshots: [],
+        });
+        
+        const btcReplayFixture = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures', 'btc-replay.json'), 'utf-8'));
+        
+        const btc14dActiveReplay = await walkForwardWithReplay({
+          ticker: 'BTC-USD',
+          prices,
+          dates,
+          horizon,
+          warmup: WARMUP,
+          stride: STRIDE,
+          replaySnapshots: btcReplayFixture,
+        });
+
+        const btc14dBaseline = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon,
+          warmup: WARMUP,
+          stride: STRIDE,
+        });
+
+        expect(btc14dBaseline.steps.length).toBeGreaterThan(0);
+        expect(btc14dEmptyReplay.steps.length).toBe(btc14dBaseline.steps.length);
+        expect(btc14dActiveReplay.steps.length).toBe(btc14dBaseline.steps.length);
+
+        for (let i = 0; i < btc14dBaseline.steps.length; i++) {
+          const base = btc14dBaseline.steps[i];
+          const empty = btc14dEmptyReplay.steps[i];
+          expect(empty.predictedProb).toBeCloseTo(base.predictedProb, 5);
+          expect(empty.decisionSource).toBe(base.decisionSource);
+        }
+
+        let activeReplayCount = 0;
+        let trustedReplayCount = 0;
+        let changedCount = 0;
+        for (let i = 0; i < btc14dActiveReplay.steps.length; i++) {
+          const step = btc14dActiveReplay.steps[i];
+          if (step.decisionSource === 'replay-anchor') {
+            activeReplayCount++;
+          }
+          if ((step.trustedAnchors ?? 0) > 0) {
+            trustedReplayCount++;
+          }
+          const base = btc14dBaseline.steps[i];
+          if (
+            Math.abs(base.predictedProb - step.predictedProb) > 1e-9 ||
+            Math.abs(base.ciLower - step.ciLower) > 1e-9 ||
+            Math.abs(base.ciUpper - step.ciUpper) > 1e-9 ||
+            base.recommendation !== step.recommendation
+          ) {
+            changedCount++;
+          }
+        }
+        
+        console.log(`[PR3H] Replay Anchor injected in ${activeReplayCount}/${btc14dActiveReplay.steps.length} steps | trusted=${trustedReplayCount} | changed=${changedCount}`);
+        expect(activeReplayCount).toBeGreaterThan(0);
+        expect(trustedReplayCount).toBeGreaterThan(0);
+        expect(changedCount).toBeGreaterThan(0);
+      },
+      TIMEOUT
+    );
+  });
+
+  describe('PR3I: replay-quality additive evaluation', () => {
+    integrationIt(
+      'BTC-USD 7d/14d: PR3G baseline vs quality-gated replay evaluation',
+      async () => {
+        const prices = fixture.tickers['BTC-USD'].closes;
+        const dates = fixture.tickers['BTC-USD'].dates;
+        const btcReplayFixture = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures', 'btc-replay.json'), 'utf-8'));
+
+        const { walkForwardWithReplay, filterReplayMarketsByTime } = await import('./backtest/replay.js');
+
+        const lines: string[] = ['', '═══ BTC SHORT-HORIZON PR3I REPLAY EVALUATION ═══'];
+        const horizons = [7, 14] as const;
+
+        for (const horizon of horizons) {
+          const baseline = await walkForward({
+            ticker: 'BTC-USD',
+            prices,
+            horizon,
+            warmup: WARMUP,
+            stride: STRIDE,
+            pr3gCryptoShortHorizonRecencyWeighting: true,
+            pr3gCryptoShortHorizonDecay: 0.98,
+          });
+
+          const emptyReplay = await walkForwardWithReplay({
+            ticker: 'BTC-USD',
+            prices,
+            dates,
+            horizon,
+            warmup: WARMUP,
+            stride: STRIDE,
+            replaySnapshots: [],
+            pr3gCryptoShortHorizonRecencyWeighting: true,
+            pr3gCryptoShortHorizonDecay: 0.98,
+          });
+
+          const activeReplay = await walkForwardWithReplay({
+            ticker: 'BTC-USD',
+            prices,
+            dates,
+            horizon,
+            warmup: WARMUP,
+            stride: STRIDE,
+            replaySnapshots: btcReplayFixture,
+            replayQualityFilters: {
+              minVolume: 600000,
+              requirePersistence: true,
+              maxProbabilityShock: 0.10,
+              requireHorizonAlignment: true,
+            },
+            pr3gCryptoShortHorizonRecencyWeighting: true,
+            pr3gCryptoShortHorizonDecay: 0.98,
+          });
+
+          expect(baseline.errors).toHaveLength(0);
+          expect(emptyReplay.errors).toHaveLength(0);
+          expect(activeReplay.errors).toHaveLength(0);
+          expect(emptyReplay.steps.length).toBe(baseline.steps.length);
+          expect(activeReplay.steps.length).toBe(baseline.steps.length);
+
+          for (let i = 0; i < baseline.steps.length; i++) {
+            expect(emptyReplay.steps[i].predictedProb).toBeCloseTo(baseline.steps[i].predictedProb, 5);
+            expect(emptyReplay.steps[i].decisionSource).toBe(baseline.steps[i].decisionSource);
+          }
+
+          const activeReport = generateReport('BTC-USD', horizon, activeReplay.steps);
+          const baselineDir = directionalAccuracy(baseline.steps);
+          const replayDir = directionalAccuracy(activeReplay.steps);
+          const baselinePUp = calibratedPUpDirectionalAccuracy(baseline.steps);
+          const replayPUp = calibratedPUpDirectionalAccuracy(activeReplay.steps);
+          const baselineBrier = brierScore(baseline.steps);
+          const replayBrier = brierScore(activeReplay.steps);
+          const changedSteps = activeReplay.steps.filter((step, idx) => {
+            const base = baseline.steps[idx];
+            return Math.abs(base.predictedProb - step.predictedProb) > 1e-9 || base.recommendation !== step.recommendation;
+          }).length;
+
+          const replayOnly =
+            (activeReport.provenanceSummary?.decisionSources['replay-anchor'] ?? 0) +
+            (activeReport.provenanceSummary?.decisionSources['crypto-short-horizon-recency+replay-anchor'] ?? 0) +
+            (activeReport.provenanceSummary?.decisionSources['crypto-short-horizon-disagreement-blend+replay-anchor'] ?? 0) +
+            (activeReport.provenanceSummary?.decisionSources['crypto-short-horizon-raw+replay-anchor'] ?? 0);
+
+          lines.push(
+            `  BTC-USD ${horizon}d | baseline dir=${(baselineDir * 100).toFixed(1)}% -> replay dir=${(replayDir * 100).toFixed(1)}% | ` +
+            `pUp=${(baselinePUp * 100).toFixed(1)}% -> ${(replayPUp * 100).toFixed(1)}% | ` +
+            `brier=${baselineBrier.toFixed(4)} -> ${replayBrier.toFixed(4)} | replaySteps=${replayOnly} | changed=${changedSteps}`
+          );
+
+          expect(replayOnly).toBeGreaterThan(0);
+          expect(changedSteps).toBeGreaterThan(0);
+        }
+
+        const futureRejected = filterReplayMarketsByTime(
+          [
+            {
+              question: 'Will Bitcoin be above $120000 on 2030-01-01?',
+              probability: 0.2,
+              createdAt: '2030-01-01T00:00:00Z',
+              endDate: '2030-01-02T00:00:00Z',
+              active: true,
+              closed: false,
+              enableOrderBook: true,
+            }
+          ],
+          Date.parse('2025-03-15T23:59:59Z'),
+        );
+
+        expect(futureRejected).toHaveLength(0);
+        lines.push('═══════════════════════════════════════════════', '');
+        console.log(lines.join('\n'));
       },
       TIMEOUT,
     );

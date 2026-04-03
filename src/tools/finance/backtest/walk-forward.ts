@@ -7,9 +7,10 @@
 
 import {
   computeMarkovDistribution,
+  getAssetProfile,
   type MarkovDistributionResult,
 } from '../markov-distribution.js';
-import type { BacktestStep } from './metrics.js';
+import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,6 +27,22 @@ export interface WalkForwardConfig {
   warmup?: number;
   /** Step forward by this many days between predictions (default: 5) */
   stride?: number;
+  /** Optional override for crypto short-horizon conditional weight (PR3B ablation) */
+  cryptoShortHorizonConditionalWeight?: number;
+  /** Optional override for crypto short-horizon kappa multiplier (PR3B ablation) */
+  cryptoShortHorizonKappaMultiplier?: number;
+  /** Optional flag: use raw P(up) for decision generation (PR3 lever ablation) */
+  cryptoShortHorizonRawDecisionAblation?: boolean;
+  /** Optional flag: use PR3F crypto short-horizon disagreement prior */
+  pr3fCryptoShortHorizonDisagreementPrior?: boolean;
+  /** Optional override for crypto short-horizon pUp floor clamp (PR3 Stage 2 ablation) */
+  cryptoShortHorizonPUpFloor?: number;
+  /** Optional override for crypto short-horizon bear margin multiplier (PR3 Stage 2 ablation) */
+  cryptoShortHorizonBearMarginMultiplier?: number;
+  /** Optional flag: use recency-weighted regime up-rates for crypto short-horizon (PR3G state-model improvement) */
+  pr3gCryptoShortHorizonRecencyWeighting?: boolean;
+  /** Optional explicit decay parameter for PR3G recency-weighted regime up-rates */
+  pr3gCryptoShortHorizonDecay?: number;
 }
 
 export interface WalkForwardResult {
@@ -73,17 +90,42 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         currentPrice,
         historicalPrices: histPrices,
         polymarketMarkets: [],  // pure Markov, no anchors
+        cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
+        cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
+        pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
+        cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
+        cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
+        cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
+        pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
+        pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
       });
 
-      // Find P(>currentPrice) from the distribution by interpolation
+      // Find P(>currentPrice) from the calibrated distribution by interpolation
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);
 
-      // Extract the 90% CI for the median price level
+      // Find raw (pre-calibration) P(>currentPrice) for PR3A diagnostic tracking.
+      // The raw distribution has wider spread and better sign discriminability.
+      const rawPredictedProb = interpolateSurvival(result.rawDistribution, currentPrice);
+
       const { ciLower, ciUpper } = extractCI(result.distribution, currentPrice);
+
+      let decisionSource: DecisionSource = 'default';
+      if (result.metadata.pr3fDisagreementBlendActive) {
+        decisionSource = 'crypto-short-horizon-disagreement-blend';
+      } else if (result.metadata.pr3gRecencyWeightingActive) {
+        decisionSource = 'crypto-short-horizon-recency';
+      } else if (
+        config.cryptoShortHorizonRawDecisionAblation === true &&
+        horizon <= 14 &&
+        getAssetProfile(ticker).type === 'crypto'
+      ) {
+        decisionSource = 'crypto-short-horizon-raw';
+      }
 
       steps.push({
         t,
         predictedProb,
+        rawPredictedProb,
         actualBinary: realizedPrice > currentPrice ? 1 : 0,
         predictedReturn: result.actionSignal.expectedReturn,
         actualReturn,
@@ -104,6 +146,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         structuralBreakDivergence: result.metadata.structuralBreakDivergence,
         hmmConverged: result.metadata.hmm?.converged ?? null,
         ensembleConsensus: result.metadata.ensemble.consensus,
+        probabilitySource: 'calibrated' as ProbabilitySource,
+        decisionSource,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });

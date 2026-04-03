@@ -278,6 +278,8 @@ export interface MarkovDistributionResult {
     hmm: { converged: boolean; iterations: number; states: number; logLikelihood: number; volRegimeConverged?: boolean } | null;
     /** Ensemble signal metadata */
     ensemble: { consensus: number; adjustment: number };
+    pr3fDisagreementBlendActive: boolean;
+    pr3gRecencyWeightingActive: boolean;
   };
 }
 
@@ -500,9 +502,11 @@ export function extractPriceThresholds(
     createdAt?: string | number;
     endDate?: string | null;
   }>,
-  options?: { ticker?: string; horizonDays?: number },
+  options?: { ticker?: string; horizonDays?: number; referenceTimeMs?: number },
 ): PriceThreshold[] {
   const seen = new Map<number, PriceThreshold>();
+
+  const now = options?.referenceTimeMs ?? Date.now();
 
   for (const market of markets) {
     if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question))) {
@@ -537,7 +541,7 @@ export function extractPriceThresholds(
 
     const isYoung =
       market.createdAt != null &&
-      Date.now() - (typeof market.createdAt === 'string'
+      now - (typeof market.createdAt === 'string'
         ? Date.parse(market.createdAt)
         : market.createdAt) < 48 * 60 * 60 * 1000;
 
@@ -547,7 +551,7 @@ export function extractPriceThresholds(
       && options?.horizonDays != null
       && options.horizonDays <= 14;
     const isNearTargetResolution = options?.horizonDays != null && market.endDate
-      ? Math.abs((Date.parse(market.endDate) - Date.now()) / 86_400_000 - options.horizonDays) <= 2
+      ? Math.abs((Date.parse(market.endDate) - now) / 86_400_000 - options.horizonDays) <= 2
       : false;
     const trustScore: 'high' | 'low' =
       hasVolume && (!isYoung || (isShortHorizonCrypto && isNearTargetResolution)) ? 'high' : 'low';
@@ -998,6 +1002,7 @@ export function computeRegimeUpRates(
   regimeSeq: RegimeState[],
   returns: number[],
   horizon: number,
+  decayRate?: number,
 ): Record<RegimeState, number> {
   const counts: Record<RegimeState, { up: number; total: number }> = {
     bull: { up: 0, total: 0 },
@@ -1014,8 +1019,14 @@ export function computeRegimeUpRates(
     for (let j = i; j < i + horizon; j++) {
       cumReturn += returns[j];
     }
-    counts[regime].total++;
-    if (cumReturn > 0) counts[regime].up++;
+    
+    // Bounded exponential weighting: recent observations get more weight
+    const weight = decayRate !== undefined
+      ? Math.pow(decayRate, maxStart - 1 - i)
+      : 1;
+
+    counts[regime].total += weight;
+    if (cumReturn > 0) counts[regime].up += weight;
   }
 
   const result = {} as Record<RegimeState, number>;
@@ -2655,6 +2666,40 @@ export function assessAnchorCoverage(
 }
 
 // ---------------------------------------------------------------------------
+// 8c. Base-rate floor helper (PR3 Stage 2 ablation)
+// ---------------------------------------------------------------------------
+
+export function computeBaseRateFloor(
+  baseRate: number,
+  calibrationCenter: number,
+  isCrypto: boolean,
+  horizon: number,
+  minPUpFloor?: number,
+  bearMarginMultiplier?: number
+): { bearMargin: number; pUpFloor: number } {
+  let clampBase = 0.05;
+  let clampCap = 0.10;
+  let scale = 0.2;
+  let floorMin = 0.35;
+
+  if (isCrypto && horizon <= 14) {
+    if (bearMarginMultiplier !== undefined) {
+      clampBase *= bearMarginMultiplier;
+      clampCap *= bearMarginMultiplier;
+      scale *= bearMarginMultiplier;
+    }
+    if (minPUpFloor !== undefined) {
+      floorMin = minPUpFloor;
+    }
+  }
+
+  const bearMargin = Math.max(clampBase, Math.min(clampCap, clampBase + (baseRate - 0.5) * scale));
+  const pUpFloor = Math.max(floorMin, calibrationCenter - bearMargin);
+
+  return { bearMargin, pUpFloor };
+}
+
+// ---------------------------------------------------------------------------
 // 8b. markovDistribution — main orchestration function
 // ---------------------------------------------------------------------------
 
@@ -2680,8 +2725,44 @@ export async function computeMarkovDistribution(params: {
   trajectory?: boolean;
   /** Number of days for trajectory (default: horizon, max 30) */
   trajectoryDays?: number;
+  /** Optional override for crypto short-horizon conditional weight (PR3B ablation) */
+  cryptoShortHorizonConditionalWeight?: number;
+  /** Optional override for crypto short-horizon kappa multiplier (PR3B ablation) */
+  cryptoShortHorizonKappaMultiplier?: number;
+  /** Optional flag: use raw P(up) for decision generation (PR3 lever ablation) */
+  cryptoShortHorizonRawDecisionAblation?: boolean;
+  /** Optional flag: use PR3F crypto short-horizon disagreement prior (blends raw and calibrated P(up) when materially divergent) */
+  pr3fCryptoShortHorizonDisagreementPrior?: boolean;
+  /** Optional override for crypto short-horizon pUp floor clamp (PR3 Stage 2 ablation) */
+  cryptoShortHorizonPUpFloor?: number;
+  /** Optional override for crypto short-horizon bear margin multiplier (PR3 Stage 2 ablation) */
+  cryptoShortHorizonBearMarginMultiplier?: number;
+  /** Optional flag: use recency-weighted regime up-rates for crypto short-horizon (PR3G state-model improvement) */
+  pr3gCryptoShortHorizonRecencyWeighting?: boolean;
+  /** Optional explicit decay parameter for PR3G recency-weighted regime up-rates (overrides asset profile default if provided) */
+  pr3gCryptoShortHorizonDecay?: number;
+  /** Optional explicit reference time for PR3H historical replay */
+  referenceTimeMs?: number;
 }): Promise<MarkovDistributionResult> {
-  const { ticker, horizon, currentPrice, historicalPrices, polymarketMarkets, sentiment } = params;
+  const {
+    ticker,
+    horizon,
+    currentPrice,
+    historicalPrices,
+    polymarketMarkets,
+    sentiment,
+    kalshiAnchors,
+    trajectory,
+    trajectoryDays,
+    cryptoShortHorizonConditionalWeight,
+    cryptoShortHorizonKappaMultiplier,
+    cryptoShortHorizonRawDecisionAblation,
+    pr3fCryptoShortHorizonDisagreementPrior,
+    cryptoShortHorizonPUpFloor,
+    cryptoShortHorizonBearMarginMultiplier,
+    pr3gCryptoShortHorizonRecencyWeighting,
+    pr3gCryptoShortHorizonDecay,
+  } = params;
 
   // --- Asset profile (Idea N): per-asset-class parameter tuning ---
   const assetProfile = getAssetProfile(ticker);
@@ -2730,7 +2811,7 @@ export async function computeMarkovDistribution(params: {
   const regimeStats = estimateRegimeStats(logReturns, regimeSeq, assetProfile.maxDailyDrift);
 
   // --- Tier 1c: Polymarket anchors with optional cross-platform validation ---
-  let polymarketAnchors = extractPriceThresholds(polymarketMarkets, { ticker, horizonDays: horizon });
+  let polymarketAnchors = extractPriceThresholds(polymarketMarkets, { ticker, horizonDays: horizon, referenceTimeMs: params.referenceTimeMs });
   let anchorDivergenceWarnings: AnchorDivergenceWarning[] = [];
 
   // Normalize commodity ETF anchors: convert futures/per-oz prices to ETF scale
@@ -2876,29 +2957,45 @@ export async function computeMarkovDistribution(params: {
     : 0.5;
 
   // --- Regime-conditional P(up) (Idea T, Round 4) ---
-  const regimeUpRates = computeRegimeUpRates(regimeSeq, returns, horizon);
+  const pr3gDecayRate = (pr3gCryptoShortHorizonRecencyWeighting && assetProfile.type === 'crypto' && horizon <= 14)
+    ? (pr3gCryptoShortHorizonDecay ?? assetProfile.decayRate)
+    : undefined;
+  const regimeUpRates = computeRegimeUpRates(regimeSeq, returns, horizon, pr3gDecayRate);
   const Pn = matPow(P, horizon);
   const initialIdx = STATE_INDEX[currentRegime];
   const stateWeightsForUp = Pn[initialIdx];
   const conditionalPUp = REGIME_STATES.reduce(
     (s, state, i) => s + stateWeightsForUp[i] * regimeUpRates[state], 0,
   );
-  const conditionalWeight = assetProfile.type === 'etf' ? 0.80
+  let conditionalWeight = assetProfile.type === 'etf' ? 0.80
     : assetProfile.type === 'commodity' ? 0.60
     : assetProfile.type === 'equity' ? 0.65
     : 0.40; // crypto
+
+  // Apply PR3B short-horizon crypto override if provided
+  if (cryptoShortHorizonConditionalWeight !== undefined && assetProfile.type === 'crypto' && horizon <= 14) {
+    conditionalWeight = cryptoShortHorizonConditionalWeight;
+  }
+
   const calibrationCenter = conditionalWeight * conditionalPUp + (1 - conditionalWeight) * baseRate;
 
   // Drift-based calibration: shifts the distribution center (P(up)) toward
   // calibrationCenter while preserving the survival curve's S-shape.
   // Unlike the old probability-level shrinkage which compressed ALL probabilities
   // toward center (destroying tails), this only adjusts the drift parameter.
+  let activeKappaMultiplier = assetProfile.kappaMultiplier;
+  
+  // Apply PR3B short-horizon crypto override if provided
+  if (cryptoShortHorizonKappaMultiplier !== undefined && assetProfile.type === 'crypto' && horizon <= 14) {
+    activeKappaMultiplier = cryptoShortHorizonKappaMultiplier;
+  }
+
   const distribution = calibrateProbabilities(rawDistribution, {
     ensembleConsensus: ensemble.consensus,
     historicalDays: returns.length,
     hmmConverged: hmmMeta?.converged ?? false,
     baseRate: calibrationCenter,
-    kappaMultiplier: assetProfile.kappaMultiplier,
+    kappaMultiplier: activeKappaMultiplier,
     currentRegime,
     currentPrice,
     driftN: calDriftN,
@@ -2912,8 +3009,14 @@ export async function computeMarkovDistribution(params: {
   const calPUpPreFloor = interpolateSurvival(distribution, currentPrice);
   // bearMargin scales linearly: from 0.05 (at baseRate=0.5) to 0.10 (at baseRate=0.75+)
   // This ensures the model defaults to UP for assets near 50-55% base rate
-  const bearMargin = Math.max(0.05, Math.min(0.10, 0.05 + (baseRate - 0.5) * 0.2));
-  const pUpFloor = Math.max(0.35, calibrationCenter - bearMargin);
+  const { bearMargin, pUpFloor } = computeBaseRateFloor(
+    baseRate,
+    calibrationCenter,
+    assetProfile.type === 'crypto',
+    horizon,
+    cryptoShortHorizonPUpFloor,
+    cryptoShortHorizonBearMarginMultiplier
+  );
   if (calPUpPreFloor < pUpFloor) {
     const deficit = pUpFloor - calPUpPreFloor;
     for (const pt of distribution) {
@@ -3018,14 +3121,70 @@ export async function computeMarkovDistribution(params: {
   // --- Scenario probabilities (derived from calibrated CDF) ---
   const scenarios = computeScenarioProbabilities(distribution, currentPrice);
 
+  const validationAcceptable = assetProfile.type === 'crypto' && horizon <= 14 && (r2os ?? 0) >= -0.05
+    ? true
+    : (r2os ?? 0) >= 0;
+  
+  const anchorBasedDiag =
+    anchorCoverage.trustedAnchors > 0 &&
+    anchorCoverage.quality === 'good' &&
+    validationAcceptable &&
+    !breakResult.detected;
+
+  // Allows PR3F on price-only BTC harness: crypto + short-horizon + zero anchors + acceptable validation + no break.
+  const priceOnlyCryptoDiag =
+    assetProfile.type === 'crypto' &&
+    horizon <= 14 &&
+    anchorCoverage.trustedAnchors === 0 &&
+    validationAcceptable &&
+    !breakResult.detected;
+
+  const diagnosticsPass = anchorBasedDiag || priceOnlyCryptoDiag;
+
+  const rawPUpForBlend = interpolateSurvival(rawDistribution, currentPrice);
+  const calPUpForBlend = interpolateSurvival(distribution, currentPrice);
+  
+  const usePr3fBlend = Boolean(
+    pr3fCryptoShortHorizonDisagreementPrior &&
+    assetProfile.type === 'crypto' &&
+    horizon <= 14 &&
+    Math.abs(calPUpForBlend - rawPUpForBlend) > 0.05 &&
+    diagnosticsPass
+  );
+
+  const useRawDecision = Boolean(
+    cryptoShortHorizonRawDecisionAblation && 
+    assetProfile.type === 'crypto' && 
+    horizon <= 14 &&
+    !usePr3fBlend
+  );
+
+  let decisionDistribution = distribution;
+  let decisionScenarios = scenarios;
+
+  if (usePr3fBlend) {
+    decisionDistribution = distribution.map((d, i) => ({
+      price: d.price,
+      probability: (d.probability + rawDistribution[i].probability) / 2,
+      lowerBound: d.lowerBound,
+      upperBound: d.upperBound,
+      source: 'blend',
+    }));
+    decisionScenarios = computeScenarioProbabilities(decisionDistribution, currentPrice);
+  } else if (useRawDecision) {
+    decisionDistribution = rawDistribution;
+    decisionScenarios = computeScenarioProbabilities(rawDistribution, currentPrice);
+  }
+
   return {
     ticker,
     currentPrice,
     horizon,
     distribution,
     rawDistribution,
-    actionSignal: computeActionSignal(distribution, currentPrice, undefined, undefined, horizon,
-      recentDailyVol, scenarios, assetProfile.type,
+    actionSignal: computeActionSignal(
+      decisionDistribution, currentPrice, undefined, undefined, horizon,
+      recentDailyVol, decisionScenarios, assetProfile.type
     ),
     scenarios,
     predictionConfidence,
@@ -3048,12 +3207,12 @@ export async function computeMarkovDistribution(params: {
       anchorCoverage,
       goodnessOfFit: gofResult,
       hmm: hmmMeta ?? null,
-      ensemble: { consensus: ensemble.consensus, adjustment: ensembleAdj },
-    },
+      ensemble,
+      pr3fDisagreementBlendActive: usePr3fBlend,
+      pr3gRecencyWeightingActive: pr3gDecayRate !== undefined,
+    }
   };
 }
-
-// ---------------------------------------------------------------------------
 // 9. LangChain tool wrapper
 // ---------------------------------------------------------------------------
 

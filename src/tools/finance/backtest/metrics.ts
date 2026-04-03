@@ -25,6 +25,35 @@ export type ConfidenceBucketLabel =
 
 export type VolatilityBucketLabel = 'low' | 'medium' | 'high';
 
+export type PUpBandLabel = '<0.45' | '0.45–0.50' | '0.50–0.55' | '>0.55';
+
+export type PUpBandSource = 'calibrated' | 'raw';
+
+// ---------------------------------------------------------------------------
+// Provenance types (PR3E)
+// ---------------------------------------------------------------------------
+
+/** What generated the probability for this step */
+export type ProbabilitySource = 'calibrated';
+
+/** What generated the recommendation for this step */
+export type DecisionSource =
+  | 'default'
+  | 'crypto-short-horizon-raw'
+  | 'crypto-short-horizon-disagreement-blend'
+  | 'crypto-short-horizon-recency'
+  | 'replay-anchor'
+  | 'crypto-short-horizon-raw+replay-anchor'
+  | 'crypto-short-horizon-disagreement-blend+replay-anchor'
+  | 'crypto-short-horizon-recency+replay-anchor';
+
+export const DEFAULT_PUP_BANDS = [
+  { label: '<0.45',      minInclusive: 0.0,  maxExclusive: 0.45 },
+  { label: '0.45–0.50', minInclusive: 0.45, maxExclusive: 0.50 },
+  { label: '0.50–0.55', minInclusive: 0.50, maxExclusive: 0.55 },
+  { label: '>0.55',     minInclusive: 0.55, maxExclusive: 1.0  },
+] as const satisfies readonly NumericBucketDefinition<PUpBandLabel>[];
+
 export type FailureSliceKey =
   | 'tickerHorizon'
   | 'regime'
@@ -34,7 +63,8 @@ export type FailureSliceKey =
   | 'validationMetric'
   | 'structuralBreak'
   | 'hmmConverged'
-  | 'ensembleConsensus';
+  | 'ensembleConsensus'
+  | 'pUpBand';
 
 export interface NumericBucketDefinition<Label extends string = string> {
   label: Label;
@@ -81,8 +111,13 @@ export interface FailureDecompositionReport {
 export interface BacktestStep {
   /** Date index (trading day offset from start) */
   t: number;
-  /** Predicted P(price > currentPrice at t+horizon) */
+  /** Predicted P(price > currentPrice at t+horizon) — calibrated */
   predictedProb: number;
+  /** Raw (pre-calibration) P(>currentPrice) from the Markov distribution.
+   * Present only when the model returned both calibrated and raw distributions.
+   * When absent, raw === predictedProb (identical for backtest runs that only
+   * have a single distribution object). */
+  rawPredictedProb?: number;
   /** Did the actual price exceed currentPrice? (1 = yes, 0 = no) */
   actualBinary: number;
   /** Predicted expected return over the horizon */
@@ -112,6 +147,10 @@ export interface BacktestStep {
   structuralBreakDivergence?: number | null;
   hmmConverged?: boolean | null;
   ensembleConsensus?: number | null;
+  /** Provenance: what generated the probability (PR3E) */
+  probabilitySource?: ProbabilitySource;
+  /** Provenance: what generated the recommendation (PR3E) */
+  decisionSource?: DecisionSource;
 }
 
 export interface ReliabilityBin {
@@ -125,6 +164,11 @@ export interface ReliabilityBin {
   actualFrequency: number;
   /** Number of observations in this bin */
   count: number;
+}
+
+export interface ProvenanceSummary {
+  decisionSources: Record<DecisionSource, number>;
+  probabilitySources: Record<ProbabilitySource, number>;
 }
 
 export interface BacktestReport {
@@ -141,6 +185,8 @@ export interface BacktestReport {
   balancedDirectionalAccuracy?: number;
   meanEdge?: number;
   failureDecomposition?: FailureDecompositionReport;
+  /** Aggregated provenance counts across all steps (PR3E) */
+  provenanceSummary?: ProvenanceSummary;
 }
 
 // ---------------------------------------------------------------------------
@@ -441,6 +487,65 @@ export function bucketByValidationMetric(steps: BacktestStep[], holdThreshold = 
   );
 }
 
+export function bucketByStructuralBreak(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  const labels = ['true', 'false', UNKNOWN_LABEL] as const;
+  return summarizeFixedBuckets(
+    steps,
+    [...labels],
+    step => step.structuralBreakDetected === undefined ? UNKNOWN_LABEL : String(step.structuralBreakDetected),
+    holdThreshold,
+  );
+}
+
+export function bucketByHmmConverged(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  const labels = ['true', 'false', UNKNOWN_LABEL] as const;
+  return summarizeFixedBuckets(
+    steps,
+    [...labels],
+    step => step.hmmConverged === undefined ? UNKNOWN_LABEL : String(step.hmmConverged),
+    holdThreshold,
+  );
+}
+
+export function bucketByEnsembleConsensus(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  if (steps.length === 0) {
+    return [UNKNOWN_LABEL, 'low', 'medium', 'high'].map(label =>
+      bucketRow(label, [], 0, holdThreshold),
+    );
+  }
+  const labels = ['low', 'medium', 'high', UNKNOWN_LABEL] as const;
+  return summarizeFixedBuckets(
+    steps,
+    [...labels],
+    step => {
+      if (step.ensembleConsensus === undefined || step.ensembleConsensus === null) return UNKNOWN_LABEL;
+      if (step.ensembleConsensus < 0.4) return 'low';
+      if (step.ensembleConsensus < 0.7) return 'medium';
+      return 'high';
+    },
+    holdThreshold,
+  );
+}
+
+export function bucketByPUpBand(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+  bands: readonly NumericBucketDefinition<PUpBandLabel>[] = DEFAULT_PUP_BANDS,
+  source: PUpBandSource = 'calibrated',
+): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    bands.map(b => b.label),
+    step => {
+      const prob = source === 'raw'
+        ? (step.rawPredictedProb ?? step.predictedProb)
+        : step.predictedProb;
+      return numericBucketLabel(prob, bands) ?? UNKNOWN_LABEL;
+    },
+    holdThreshold,
+  );
+}
+
 export function computeFailureDecomposition(
   steps: BacktestStep[],
   holdThreshold = 0.03,
@@ -453,6 +558,10 @@ export function computeFailureDecomposition(
       { key: 'confidence', rows: bucketByConfidence(steps, DEFAULT_CONFIDENCE_BUCKETS, holdThreshold) },
       { key: 'anchorQuality', rows: bucketByAnchorQuality(steps, holdThreshold) },
       { key: 'validationMetric', rows: bucketByValidationMetric(steps, holdThreshold) },
+      { key: 'structuralBreak', rows: bucketByStructuralBreak(steps, holdThreshold) },
+      { key: 'hmmConverged', rows: bucketByHmmConverged(steps, holdThreshold) },
+      { key: 'ensembleConsensus', rows: bucketByEnsembleConsensus(steps, holdThreshold) },
+      { key: 'pUpBand', rows: bucketByPUpBand(steps, holdThreshold) },
     ],
   };
 }
@@ -573,6 +682,33 @@ export function generateReport(
   steps: BacktestStep[],
 ): BacktestReport {
   const bins = reliabilityBins(steps);
+
+  const provenanceSummary: ProvenanceSummary = {
+    decisionSources: {
+      default: 0,
+      'crypto-short-horizon-raw': 0,
+      'crypto-short-horizon-disagreement-blend': 0,
+      'crypto-short-horizon-recency': 0,
+      'replay-anchor': 0,
+      'crypto-short-horizon-raw+replay-anchor': 0,
+      'crypto-short-horizon-disagreement-blend+replay-anchor': 0,
+      'crypto-short-horizon-recency+replay-anchor': 0,
+    },
+    probabilitySources: { calibrated: 0 },
+  };
+  for (const step of steps) {
+    if (step.decisionSource) {
+      provenanceSummary.decisionSources[step.decisionSource]++;
+    } else {
+      provenanceSummary.decisionSources.default++;
+    }
+    if (step.probabilitySource) {
+      provenanceSummary.probabilitySources[step.probabilitySource]++;
+    } else {
+      provenanceSummary.probabilitySources.calibrated++;
+    }
+  }
+
   return {
     ticker,
     horizon,
@@ -587,6 +723,7 @@ export function generateReport(
     balancedDirectionalAccuracy: balancedDirectionalAccuracy(steps),
     meanEdge: meanEdge(steps),
     failureDecomposition: computeFailureDecomposition(steps),
+    provenanceSummary,
   };
 }
 
@@ -742,26 +879,47 @@ export function optimizeThresholds(
 // ---------------------------------------------------------------------------
 
 /**
- * Directional accuracy based purely on predicted P(up) vs actual outcome.
- * No HOLD dead zone: P(up) > 0.5 → predicted UP, else predicted DOWN.
- *
- * This gives a cleaner measure of directional skill since the recommendation-based
- * metric penalizes HOLD predictions even when the model correctly signals UP direction
- * but with insufficient conviction to trigger BUY (e.g. E[R]=+0.3% < buy threshold).
+ * Calibrated P(up)-based directional accuracy (no HOLD dead zone).
+ * Uses the calibrated predictedProb (0.5 → 1 compressed range).
+ * Correct when: prob > 0.5 and actualBinary === 1, or prob < 0.5 and actualBinary === 0.
+ * Tie (prob === 0.5) counts as correct for actualBinary === 1 (matches base-rate bias).
  */
-export function pUpDirectionalAccuracy(steps: BacktestStep[]): number {
+export function calibratedPUpDirectionalAccuracy(steps: BacktestStep[]): number {
   if (steps.length === 0) return 0;
   const correct = steps.filter(s =>
     (s.predictedProb > 0.5 && s.actualBinary === 1) ||
     (s.predictedProb < 0.5 && s.actualBinary === 0) ||
-    (s.predictedProb === 0.5 && s.actualBinary === 1), // tie → UP (matches base-rate bias)
+    (s.predictedProb === 0.5 && s.actualBinary === 1),
   );
+  return correct.length / steps.length;
+}
+
+/** Backward-compatible alias — pUpDirectionalAccuracy is the calibrated variant. */
+export const pUpDirectionalAccuracy = calibratedPUpDirectionalAccuracy;
+
+/**
+ * Raw P(up)-based directional accuracy (no HOLD dead zone).
+ * Uses the raw (pre-calibration) predicted probability for sign accuracy.
+ * This measures whether the model's uncalibrated signal correctly predicted direction.
+ * Correct when: rawProb > 0.5 and actualBinary === 1, or rawProb < 0.5 and actualBinary === 0.
+ * Tie (rawProb === 0.5) counts as correct for actualBinary === 1.
+ */
+export function rawPUpDirectionalAccuracy(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+  const correct = steps.filter(s => {
+    const rawProb = s.rawPredictedProb ?? s.predictedProb;
+    return (
+      (rawProb > 0.5 && s.actualBinary === 1) ||
+      (rawProb < 0.5 && s.actualBinary === 0) ||
+      (rawProb === 0.5 && s.actualBinary === 1)
+    );
+  });
   return correct.length / steps.length;
 }
 
 /**
  * Selective P(up)-based directional accuracy with confidence filtering.
- * Combines confidence-based abstention with P(up) directional check.
+ * Uses calibrated predictedProb. Combines confidence-based abstention with P(up) directional check.
  */
 export function selectivePUpAccuracy(
   steps: BacktestStep[],
@@ -777,6 +935,36 @@ export function selectivePUpAccuracy(
     (s.predictedProb < 0.5 && s.actualBinary === 0) ||
     (s.predictedProb === 0.5 && s.actualBinary === 1),
   );
+
+  return {
+    accuracy: correct.length / selected.length,
+    coverage: selected.length / steps.length,
+    selected: selected.length,
+    total: steps.length,
+  };
+}
+
+/**
+ * Selective raw P(up)-based directional accuracy with confidence filtering.
+ * Uses raw (pre-calibration) predicted probability for sign accuracy.
+ */
+export function selectiveRawPUpAccuracy(
+  steps: BacktestStep[],
+  minConfidence: number,
+): { accuracy: number; coverage: number; selected: number; total: number } {
+  if (steps.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: 0 };
+
+  const selected = steps.filter(s => s.confidence >= minConfidence);
+  if (selected.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: steps.length };
+
+  const correct = selected.filter(s => {
+    const rawProb = s.rawPredictedProb ?? s.predictedProb;
+    return (
+      (rawProb > 0.5 && s.actualBinary === 1) ||
+      (rawProb < 0.5 && s.actualBinary === 0) ||
+      (rawProb === 0.5 && s.actualBinary === 1)
+    );
+  });
 
   return {
     accuracy: correct.length / selected.length,

@@ -3180,6 +3180,42 @@ describe('computeRegimeUpRates', () => {
     expect(rates.bull).toBeGreaterThan(0.8);
     expect(rates.bear).toBeLessThan(0.2);
   });
+
+  it('applies exponential decay when decayRate is provided', () => {
+    // 4 days, all bull regime
+    const regimeSeq: RegimeState[] = ['bull', 'bull', 'bull', 'bull'];
+    // Returns: +1%, -1%, -1%, +1%
+    const returns = [0.01, -0.01, -0.01, 0.01];
+    const horizon = 1;
+    // maxStart = 3
+    // i=0: ret=0.01 (UP). weight = 0.5^(3-1-0) = 0.5^2 = 0.25
+    // i=1: ret=-0.01 (DOWN). weight = 0.5^(3-1-1) = 0.5^1 = 0.5
+    // i=2: ret=-0.01 (DOWN). weight = 0.5^(3-1-2) = 0.5^0 = 1.0
+    // Total weight = 1.75. Up weight = 0.25. P(up) = 0.25 / 1.75 = 1/7
+    const rates = computeRegimeUpRates(regimeSeq, returns, horizon, 0.5);
+    expect(rates.bull).toBeCloseTo(1 / 7, 5);
+  });
+
+  it('maintains default behavior when decayRate is omitted', () => {
+    const regimeSeq: RegimeState[] = ['bull', 'bull', 'bull', 'bull'];
+    const returns = [0.01, -0.01, -0.01, 0.01];
+    const horizon = 1;
+    // Same as above, but weight = 1 for all.
+    // Total weight = 3. Up weight = 1. P(up) = 1/3
+    const rates = computeRegimeUpRates(regimeSeq, returns, horizon);
+    expect(rates.bull).toBeCloseTo(1 / 3, 5);
+  });
+
+  it('handles sparse recent regimes correctly with decayRate', () => {
+    const regimeSeq: RegimeState[] = ['bear', 'bear'];
+    const returns = [0.01, 0.01];
+    const rates = computeRegimeUpRates(regimeSeq, returns, 1, 0.5);
+    // maxStart = 1
+    // i=0: weight = 0.5^0 = 1. UP.
+    expect(rates.bear).toBe(1.0);
+    expect(rates.bull).toBe(0.5); // Fallback
+    expect(rates.sideways).toBe(0.5);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3963,5 +3999,131 @@ describe('GLD 30-day output validation (integration)', () => {
     for (const pt of result.distribution) {
       expect(pt.price).toBeLessThan(2000); // no raw futures prices in output
     }
+  });
+});
+
+describe('PR3F Lever: short-horizon crypto disagreement prior', () => {
+  const prices = Array.from({ length: 150 }, (_, i) => 1000 + i * 1.5 + Math.sin(i / 3) * 15);
+  const currentPrice = prices[prices.length - 1];
+  
+  const polymarketMarkets = [
+    { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.95)} on April 9?`, probability: 0.95, volume: 5000, createdAt: Date.now() - 86400000 * 3 },
+    { question: `Will the price of Bitcoin be above $${Math.round(currentPrice)} on April 9?`, probability: 0.65, volume: 5000, createdAt: Date.now() - 86400000 * 3 },
+    { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.05)} on April 9?`, probability: 0.20, volume: 5000, createdAt: Date.now() - 86400000 * 3 },
+  ];
+
+  it('preserves default behavior when flag absent', async () => {
+    const defaultResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets,
+    });
+    expect(defaultResult.metadata.pr3fDisagreementBlendActive).toBe(false);
+  });
+
+  it('has no effect outside crypto <=14d', async () => {
+    // Non-crypto
+    const nonCrypto = await computeMarkovDistribution({
+      ticker: 'AAPL',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets,
+      pr3fCryptoShortHorizonDisagreementPrior: true,
+    });
+    expect(nonCrypto.metadata.pr3fDisagreementBlendActive).toBe(false);
+
+    // Crypto long horizon
+    const longHorizon = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 30,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets,
+      pr3fCryptoShortHorizonDisagreementPrior: true,
+    });
+    expect(longHorizon.metadata.pr3fDisagreementBlendActive).toBe(false);
+  });
+
+  it('activates deterministic blend when raw/calibrated disagree', async () => {
+    const defaultResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets,
+    });
+    
+    const pr3fResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets,
+      pr3fCryptoShortHorizonDisagreementPrior: true,
+    });
+
+    // The prices array creates a strong trend, causing high raw P(up). 
+    // Anchors pull the calibrated P(up) down to ~0.65, triggering the >0.05 disagreement.
+    expect(pr3fResult.metadata.pr3fDisagreementBlendActive).toBe(true);
+
+    // Canonical surfaces untouched (excluding MC-derived CI bounds which jitter)
+    for (let i = 0; i < defaultResult.distribution.length; i++) {
+      expect(pr3fResult.distribution[i].price).toBe(defaultResult.distribution[i].price);
+      expect(pr3fResult.distribution[i].probability).toBe(defaultResult.distribution[i].probability);
+      expect(pr3fResult.distribution[i].source).toBe(defaultResult.distribution[i].source);
+    }
+    
+    // Scenarios shouldn't be affected by MC bounds jitter, they are derived from probability
+    expect(pr3fResult.scenarios).toEqual(defaultResult.scenarios);
+    
+    // Action signal should differ (or at least reflect the blended P(up))
+    expect(pr3fResult.actionSignal).not.toEqual(defaultResult.actionSignal);
+  });
+});
+
+describe('PR3G Lever: Recency-Weighted Regime Up-Rates', () => {
+  const currentPrice = 60000;
+  const prices = Array.from({ length: 150 }, (_, i) => 
+    50000 + i * 100 + (Math.sin(i / 5) * 2000)
+  );
+
+  it('preserves default behavior when PR3G flag is absent', async () => {
+    const defaultResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(defaultResult.metadata.pr3gRecencyWeightingActive).toBe(false);
+  });
+
+  it('applies deterministic effect of a milder decay vs a more aggressive decay', async () => {
+    const aggressiveResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: true,
+      pr3gCryptoShortHorizonDecay: 0.5,
+    });
+    
+    const milderResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: true,
+      pr3gCryptoShortHorizonDecay: 0.99,
+    });
+
+    expect(aggressiveResult.metadata.pr3gRecencyWeightingActive).toBe(true);
+    expect(milderResult.metadata.pr3gRecencyWeightingActive).toBe(true);
+    expect(aggressiveResult.actionSignal.expectedReturn).not.toBe(milderResult.actionSignal.expectedReturn);
   });
 });
