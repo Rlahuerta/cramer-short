@@ -1,6 +1,6 @@
 /**
  * Lightweight on-disk cache that remembers which API backend works for each
- * ticker. Persisted at .dexter/api-routing.json.
+ * ticker. Persisted at .cramer-short/api-routing.json.
  *
  * This eliminates repeated fallback probing across sessions: once we discover
  * that VWS.CO is FMP-premium and needs Yahoo/web, that decision is saved and
@@ -12,7 +12,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { dexterPath } from './paths.js';
+import { cramerShortPath } from './paths.js';
 
 export type ApiPreference = 'fmp' | 'yahoo' | 'web' | 'financial-datasets';
 
@@ -27,7 +27,7 @@ interface RoutingCacheFile {
   routes: Record<string, RoutingEntry>;
 }
 
-const CACHE_PATH = dexterPath('api-routing.json');
+const CACHE_PATH = cramerShortPath('api-routing.json');
 const TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 let inMemoryCache: Map<string, RoutingEntry> | null = null;

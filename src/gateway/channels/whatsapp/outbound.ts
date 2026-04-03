@@ -3,12 +3,12 @@ import fs from 'node:fs';
 import type { WaSocket } from './session.js';
 import { loadGatewayConfig, resolveWhatsAppAccount } from '../../config.js';
 import { normalizeE164, toWhatsappJid } from '../../utils.js';
-import { dexterPath } from '../../../utils/paths.js';
+import { cramerShortPath } from '../../../utils/paths.js';
 
 function debugLog(msg: string) {
   try {
-    const logDir = dexterPath('debug', 'logs');
-    const logPath = dexterPath('debug', 'logs', 'gateway-outbound.log');
+    const logDir = cramerShortPath('debug', 'logs');
+    const logPath = cramerShortPath('debug', 'logs', 'gateway-outbound.log');
     fs.mkdirSync(logDir, { recursive: true });
     fs.appendFileSync(logPath, `${new Date().toISOString()} ${msg}\n`);
   } catch {

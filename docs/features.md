@@ -1,4 +1,4 @@
-# Dexter — New Features Reference
+# Cramer-Short — New Features Reference
 
 This document covers features added in the 2025 improvements milestone.
 
@@ -26,7 +26,7 @@ No configuration required — streaming is on by default for all providers.
 ## 🧠 Context Summary with Key Facts Preserved
 
 When the agent's context window fills up and old tool results must be dropped,
-Dexter now extracts key numeric facts before clearing them.
+Cramer-Short now extracts key numeric facts before clearing them.
 
 **Preserved fact types:**
 - Prices and market caps (`$12.34`, `$2.3B`)
@@ -59,11 +59,11 @@ in the same session without conflict.
 
 ## 📅 Scheduled Research Jobs
 
-Run Dexter headlessly without the TUI using the `schedule` subcommand.
+Run Cramer-Short headlessly without the TUI using the `schedule` subcommand.
 
 ### Setup
 
-Create `~/.dexter/schedules.json`:
+Create `~/.cramer-short/schedules.json`:
 
 ```json
 [
@@ -71,13 +71,13 @@ Create `~/.dexter/schedules.json`:
     "id": "morning-briefing",
     "description": "Daily watchlist briefing",
     "query": "Run the watchlist-briefing skill for my portfolio",
-    "outputFile": "~/.dexter/reports/{date}-briefing.md"
+    "outputFile": "~/.cramer-short/reports/{date}-briefing.md"
   },
   {
     "id": "nvda-weekly",
     "description": "Weekly NVDA analysis",
     "query": "Use the full-analysis skill for NVDA",
-    "outputFile": "~/.dexter/reports/{date}-nvda-full.md"
+    "outputFile": "~/.cramer-short/reports/{date}-nvda-full.md"
   }
 ]
 ```
@@ -107,7 +107,7 @@ bun start schedule help
 Add to crontab (`crontab -e`) to run every weekday at 7 AM:
 
 ```
-0 7 * * 1-5 cd /path/to/dexter && bun start schedule run morning-briefing >> ~/.dexter/logs/schedule.log 2>&1
+0 7 * * 1-5 cd /path/to/dexter && bun start schedule run morning-briefing >> ~/.cramer-short/logs/schedule.log 2>&1
 ```
 
 ---
@@ -138,7 +138,7 @@ Use the full-analysis skill for AAPL
 
 ## ⚡ FMP API Quota Tracking
 
-Dexter now tracks Financial Modeling Prep API calls in `~/.dexter/fmp-quota.json`
+Cramer-Short now tracks Financial Modeling Prep API calls in `~/.cramer-short/fmp-quota.json`
 and emits a warning when you approach the free tier limit (250 calls/day).
 
 - Warning at 80% usage (200 calls)
@@ -333,7 +333,7 @@ The namespace tag `ns:<name>` is automatically appended to the insight's tags.
 
 ## 🗂️ Ticker→API Routing Cache
 
-Dexter now persists API routing decisions to `.dexter/api-routing.json`.
+Cramer-Short now persists API routing decisions to `.cramer-short/api-routing.json`.
 After discovering that VWS.CO requires Yahoo Finance (FMP is premium), that
 preference is saved and used on every subsequent session — no repeated probing.
 
@@ -354,7 +354,7 @@ can see the interface — eliminating the perception of a slow startup.
 
 ## 🌐 Geopolitics OSINT (`geopolitics_search`)
 
-Dexter can now monitor geopolitical events and correlate them to financial asset
+Cramer-Short can now monitor geopolitical events and correlate them to financial asset
 implications using **free, open-access sources** — no X/Twitter credentials required.
 
 ### Sources
@@ -449,7 +449,7 @@ Files are saved to the current directory as `dexter-export-YYYY-MM-DD-HH-MM-SS.<
 
 ## ⚙️ Config Expansion (`/config`)
 
-View and tune Dexter's behaviour without editing files:
+View and tune Cramer-Short's behaviour without editing files:
 
 ```
 /config             # show all settings
@@ -469,13 +469,13 @@ View and tune Dexter's behaviour without editing files:
 | `cacheTtlMs` | 900000 | 60s–24h | In-session request cache TTL |
 | `parallelToolLimit` | 0 (unlimited) | 0–10 | Max concurrent tool calls |
 
-Settings are persisted to `.dexter/settings.json`.
+Settings are persisted to `.cramer-short/settings.json`.
 
 ---
 
 ## 🧠 Context Management Overhaul
 
-When the context window fills up, Dexter now **summarises instead of drops**:
+When the context window fills up, Cramer-Short now **summarises instead of drops**:
 
 - **Ticker-prefixed summaries**: `get_financials(ticker=NVDA): rev=$44.9B, PE=42x` — ticker context is never lost
 - **Compact metric tables**: multi-ticker comparisons are preserved as `NVDA: PE=42x | AMD: PE=28x` rows
@@ -517,7 +517,7 @@ When the agent fires multiple identical tool calls in parallel (e.g. three itera
 
 ## 🛡️ Config Schema Validation (Feature 23)
 
-`.dexter/settings.json` is now validated with Zod on load:
+`.cramer-short/settings.json` is now validated with Zod on load:
 
 - **Type errors** (`maxIterations: "abc"`) → warning to stderr, field stripped, rest of config used
 - **Range errors** (`maxIterations: 2`) → warning, field stripped  
@@ -565,16 +565,16 @@ What guidance did Tesla provide on the last earnings call?
 
 ## 💾 Cross-Session Persistent Cache (Feature 16)
 
-Tool results are now persisted to `.dexter/cache/` between sessions:
+Tool results are now persisted to `.cramer-short/cache/` between sessions:
 
 - On startup, cached results are loaded from disk and pre-populate the in-session cache
-- After each successful tool call, the result is saved to `.dexter/cache/<key>.json` with TTL
+- After each successful tool call, the result is saved to `.cramer-short/cache/<key>.json` with TTL
 - TTL controlled by `/config set cacheTtlMs <ms>` (default: 15 minutes)
 - Values >50 KB are not persisted (too large for disk cache)
 - Eliminates repeated API calls for daily watchlist queries, frequently-checked tickers, etc.
 
-Cache directory: `.dexter/cache/`  
-Clear manually: `rm -rf ~/.dexter/cache/`
+Cache directory: `.cramer-short/cache/`  
+Clear manually: `rm -rf ~/.cramer-short/cache/`
 
 ---
 
@@ -638,7 +638,7 @@ Search your current session's conversation history for any keyword:
 
 ## 🪵 Error Logging (Feature 19)
 
-All tool errors are now persisted to `.dexter/logs/errors.jsonl`:
+All tool errors are now persisted to `.cramer-short/logs/errors.jsonl`:
 
 ```json
 {"timestamp":"2025-01-15T14:23:01.234Z","type":"network_dns_failure","message":"getaddrinfo ENOTFOUND api.example.com","context":"tool:get_stock_price"}
@@ -655,7 +655,7 @@ Improved error classification — errors are now typed as:
 | `rate_limit` | 429 / "rate limit" |
 | `auth_error` | 401 / 403 / "unauthorized" |
 
-Log file: `.dexter/logs/errors.jsonl`
+Log file: `.cramer-short/logs/errors.jsonl`
 
 ---
 
@@ -833,7 +833,7 @@ Blends Markov regime transition probabilities (40%) with Polymarket policy-rever
 
 ### Usage
 
-Ask Dexter:
+Ask Cramer-Short:
 - "What's the Trump Pressure Index?"
 - "How likely is a tariff reversal?"
 - "Is Trump under enough pressure to back down?"

@@ -1,6 +1,6 @@
-# Dexter — Financial Analysis Tutorial
+# Cramer-Short — Financial Analysis Tutorial
 
-> **Dexter** is an autonomous financial research agent that lives in your terminal. It thinks, plans, and iterates until it has a data-backed answer. This tutorial walks you from installation to advanced research workflows.
+> **Cramer-Short** is an autonomous financial research agent that lives in your terminal. It thinks, plans, and iterates until it has a data-backed answer. This tutorial walks you from installation to advanced research workflows.
 
 > **Note:** This tutorial covers the community fork at [Rlahuerta/dexter](https://github.com/Rlahuerta/dexter), which extends the original [virattt/dexter](https://github.com/virattt/dexter) with session persistence, TUI improvements, extended thinking, and multi-provider data fallbacks.
 
@@ -8,11 +8,11 @@
 
 ## Table of Contents
 
-1. [What is Dexter?](#1-what-is-dexter)
+1. [What is Cramer-Short?](#1-what-is-dexter)
 2. [Prerequisites](#2-prerequisites)
 3. [Installation](#3-installation)
 4. [Environment Setup](#4-environment-setup)
-5. [Running Dexter](#5-running-dexter)
+5. [Running Cramer-Short](#5-running-dexter)
 6. [Session Persistence](#6-session-persistence)
 7. [How the Agent Works](#7-how-the-agent-works)
 8. [Choosing Your LLM Model](#8-choosing-your-llm-model)
@@ -38,9 +38,9 @@
 
 ---
 
-## 1. What is Dexter?
+## 1. What is Cramer-Short?
 
-Dexter is a CLI-based AI agent purpose-built for **deep financial research**. Unlike a chatbot, it doesn't just answer from its training data — it pulls live data, reads filings, runs valuations, and checks its own work before responding.
+Cramer-Short is a CLI-based AI agent purpose-built for **deep financial research**. Unlike a chatbot, it doesn't just answer from its training data — it pulls live data, reads filings, runs valuations, and checks its own work before responding.
 
 **What it can do:**
 
@@ -58,7 +58,7 @@ Dexter is a CLI-based AI agent purpose-built for **deep financial research**. Un
 | Memory | Remembers your preferences and past research |
 
 **Its investing philosophy:**  
-Dexter is grounded in Buffett and Munger principles — it values accuracy over comfort, inverts before endorsing, and acknowledges uncertainty explicitly. When the numbers contradict the narrative, it will tell you which one is lying.
+Cramer-Short is grounded in Buffett and Munger principles — it values accuracy over comfort, inverts before endorsing, and acknowledges uncertainty explicitly. When the numbers contradict the narrative, it will tell you which one is lying.
 
 ---
 
@@ -150,7 +150,7 @@ LANGSMITH_TRACING=false
 
 ---
 
-## 5. Running Dexter
+## 5. Running Cramer-Short
 
 ```bash
 # Start interactive mode
@@ -160,7 +160,7 @@ bun start
 bun dev
 ```
 
-You'll see the Dexter intro screen with your active model displayed. Type any question and press **Enter** to run it.
+You'll see the Cramer-Short intro screen with your active model displayed. Type any question and press **Enter** to run it.
 
 ### Slash commands
 
@@ -178,7 +178,7 @@ You'll see the Dexter intro screen with your active model displayed. Type any qu
 | `/watchlist snapshot` | Portfolio dashboard with ASCII allocation chart |
 | `/dream` | Consolidate memory files (merges daily notes into MEMORY.md) |
 | `/dream force` | Force Dream consolidation immediately |
-| `exit` / `quit` | Quit Dexter (session saved before exit) |
+| `exit` / `quit` | Quit Cramer-Short (session saved before exit) |
 
 ### Keyboard shortcuts
 
@@ -188,17 +188,17 @@ You'll see the Dexter intro screen with your active model displayed. Type any qu
 | `Enter` | Submit query |
 | `Esc` | **Cancel a running query immediately** |
 | `j` / `k` | Navigate selection lists (Vim-style) |
-| `Ctrl+C` | Exit Dexter (session saved before exit) |
+| `Ctrl+C` | Exit Cramer-Short (session saved before exit) |
 
 ---
 
 ## 6. Session Persistence
 
-Every query you submit is **automatically saved** to `.dexter/sessions/`. You can exit at any time and resume exactly where you left off — including full LLM context and conversation display.
+Every query you submit is **automatically saved** to `.cramer-short/sessions/`. You can exit at any time and resume exactly where you left off — including full LLM context and conversation display.
 
 ### Resuming a session
 
-1. Start Dexter: `bun start`
+1. Start Cramer-Short: `bun start`
 2. Type `/sessions` and press `Enter`
 3. Navigate the list with `↑` / `↓` (or `j` / `k`)
 4. Press `Enter` to resume
@@ -224,7 +224,7 @@ The session selector shows:
 ### Session files location
 
 ```
-.dexter/sessions/
+.cramer-short/sessions/
 ├── _index.json                    ← session list (id, name, queryCount, firstQuery, lastModified)
 ├── 1774531777088-fcc12161.json    ← full session (llmMessages + history)
 └── ...
@@ -240,7 +240,7 @@ Understanding the agent loop helps you write better queries.
 
 ### The iteration loop
 
-Dexter runs a **tool-calling loop** of up to 10 iterations per query:
+Cramer-Short runs a **tool-calling loop** of up to 10 iterations per query:
 
 ```
 Query
@@ -261,7 +261,7 @@ The loop exits when the LLM stops calling tools, indicating it has a complete an
 
 ### Context management
 
-Dexter manages a **120,000-token context window**. When tool results push past this limit:
+Cramer-Short manages a **120,000-token context window**. When tool results push past this limit:
 - Oldest results are cleared from the prompt
 - The last 10 results (or 3 on overflow) are kept
 - Important data is flushed to persistent memory
@@ -281,7 +281,7 @@ Type `/model` at the prompt to open the interactive selector:
 1. Choose a **provider** (OpenAI, Anthropic, Google, xAI, Moonshot, DeepSeek, OpenRouter, Ollama)
 2. Choose a **model** from the list, or type one manually (for OpenRouter and Ollama)
 
-Your selection is saved to `.dexter/settings.json` and persists across sessions.
+Your selection is saved to `.cramer-short/settings.json` and persists across sessions.
 
 ### Available models
 
@@ -318,7 +318,7 @@ For models that support extended reasoning (`qwen3`, `deepseek-r1`, `qwq`), use 
 /think
 ```
 
-- **ON** (default for reasoning models): the model produces a `<think>` reasoning block before its answer. Dexter strips this from the displayed output and shows it in a dimmed style.
+- **ON** (default for reasoning models): the model produces a `<think>` reasoning block before its answer. Cramer-Short strips this from the displayed output and shows it in a dimmed style.
 - **OFF**: disables the reasoning block for faster, shorter replies.
 
 > **Tip:** Use `/think` ON for deep analysis and DCF valuations; toggle it OFF for quick factual lookups to save time and tokens.
@@ -335,7 +335,7 @@ For models that support extended reasoning (`qwen3`, `deepseek-r1`, `qwq`), use 
 
 ### The two core financial tools
 
-Dexter routes financial queries through two intelligent meta-tools:
+Cramer-Short routes financial queries through two intelligent meta-tools:
 
 | Tool | Use for |
 |---|---|
@@ -346,7 +346,7 @@ You never call these directly — just ask in plain English.
 
 ### Data source fallback chain
 
-When the primary Financial Datasets API cannot return data (e.g. 402 for unpaid tickers, missing international data), Dexter automatically falls back to:
+When the primary Financial Datasets API cannot return data (e.g. 402 for unpaid tickers, missing international data), Cramer-Short automatically falls back to:
 
 1. **Yahoo Finance** — analyst price targets, international tickers (`VWS.CO`, `AZN.L`, `SAP.DE`, etc.)
 2. **Financial Modeling Prep (FMP)** — income statements, balance sheets, and cash flows for European and other international tickers (250 free requests/day with `FMP_API_KEY`)
@@ -573,7 +573,7 @@ What risk factors did Tesla add to their 10-K this year compared to last?
 
 ## 12. DCF Valuation
 
-Dexter has a built-in **DCF (Discounted Cash Flow) valuation skill** that follows a rigorous 8-step workflow. It triggers automatically on valuation-related queries.
+Cramer-Short has a built-in **DCF (Discounted Cash Flow) valuation skill** that follows a rigorous 8-step workflow. It triggers automatically on valuation-related queries.
 
 ### Triggering the DCF skill
 
@@ -605,7 +605,7 @@ The skill runs an 8-step workflow automatically:
 
 1. **Gather data** — 5-year FCF history, financial metrics, balance sheet, analyst estimates, current price, sector
 2. **Calculate FCF growth rate** — 5-year CAGR with 10–20% haircut, capped at 15%
-3. **Estimate WACC** — sector-adjusted using the Dexter sector-WACC table (risk-free: 4%, ERP: 5–6%)
+3. **Estimate WACC** — sector-adjusted using the Cramer-Short sector-WACC table (risk-free: 4%, ERP: 5–6%)
 4. **Project cash flows** — Years 1–5 with 5% annual growth decay; terminal value at 2.5%
 5. **Calculate present value** — Discount to Enterprise Value → subtract net debt → per-share fair value
 6. **Sensitivity analysis** — 3×3 matrix varying WACC (±1%) and terminal growth (2.0%, 2.5%, 3.0%)
@@ -642,7 +642,7 @@ Caveats
 
 ## 13. Markov Price Distribution
 
-Dexter can produce a **full probability distribution** for a stock or crypto price at a specified horizon, combining real-money Polymarket crowd odds with historical regime transitions.
+Cramer-Short can produce a **full probability distribution** for a stock or crypto price at a specified horizon, combining real-money Polymarket crowd odds with historical regime transitions.
 
 > **When to use:** Ask for "probability distribution", "full distribution", or "price probabilities" rather than a single point estimate. The feature is most informative when Polymarket has active markets on the asset.
 
@@ -751,7 +751,7 @@ If you have Kalshi market data, you can pass it alongside Polymarket anchors for
 
 ## 14. Watchlist & Portfolio Tracker
 
-Dexter includes a built-in watchlist so you can track your positions and get a morning briefing with a single command.
+Cramer-Short includes a built-in watchlist so you can track your positions and get a morning briefing with a single command.
 
 ### Managing positions
 
@@ -761,7 +761,7 @@ Dexter includes a built-in watchlist so you can track your positions and get a m
 /watchlist remove TSLA            # Remove a position
 ```
 
-The watchlist is persisted to `.dexter/watchlist.json` and survives restarts.
+The watchlist is persisted to `.cramer-short/watchlist.json` and survives restarts.
 
 ### Live-enriched list — `/watchlist list`
 
@@ -861,7 +861,7 @@ Injects your full position list into the agent and triggers the **watchlist-brie
 
 ## 15. Earnings Calendar
 
-Ask Dexter for a structured earnings calendar for any set of tickers.
+Ask Cramer-Short for a structured earnings calendar for any set of tickers.
 
 ### Example prompts
 
@@ -922,7 +922,7 @@ The **peer-comparison** skill:
 
 ## 17. Analysis Templates
 
-Dexter ships four structured research templates that can be triggered naturally or by name.
+Cramer-Short ships four structured research templates that can be triggered naturally or by name.
 
 ### Earnings Preview
 
@@ -972,7 +972,7 @@ Run an earnings preview for AAPL and save it to ~/reports/
 
 ## 18. Web Research
 
-Dexter can research the open web to complement structured financial data.
+Cramer-Short can research the open web to complement structured financial data.
 
 ### Web fetch (static pages)
 
@@ -1025,7 +1025,7 @@ Navigate to Yahoo Finance and read AAPL's analyst ratings
 
 ## 19. X/Twitter Sentiment Research
 
-If you have an `X_BEARER_TOKEN`, Dexter can research public sentiment on X/Twitter through the **X Research skill**.
+If you have an `X_BEARER_TOKEN`, Cramer-Short can research public sentiment on X/Twitter through the **X Research skill**.
 
 ### Triggering the X Research skill
 
@@ -1081,12 +1081,12 @@ Caveats
 
 ## 20. Persistent Memory
 
-Dexter has a **persistent memory system** that stores information across sessions as Markdown files backed by a SQLite vector database.
+Cramer-Short has a **persistent memory system** that stores information across sessions as Markdown files backed by a SQLite vector database.
 
 ### Memory storage location
 
 ```
-.dexter/memory/
+.cramer-short/memory/
   MEMORY.md              ← Long-term facts and preferences
   FINANCE.md             ← Accumulated financial research notes
   2026-03-25.md          ← Today's daily log
@@ -1127,9 +1127,9 @@ Log today's research: reviewed AAPL 10-K, noted Services gross margin expansion
 
 ### Memory auto-injection (automatic)
 
-At the start of every query, Dexter scans for **stock tickers** in your question and silently retrieves relevant prior research snippets from memory. These are prepended as a `📚 Prior Research:` block before the agent starts reasoning — so it builds on earlier work automatically without you having to repeat context.
+At the start of every query, Cramer-Short scans for **stock tickers** in your question and silently retrieves relevant prior research snippets from memory. These are prepended as a `📚 Prior Research:` block before the agent starts reasoning — so it builds on earlier work automatically without you having to repeat context.
 
-**Example:** if you previously researched AAPL and now ask *"Is AAPL expensive relative to its 5-year average P/E?"*, Dexter might prepend:
+**Example:** if you previously researched AAPL and now ask *"Is AAPL expensive relative to its 5-year average P/E?"*, Cramer-Short might prepend:
 
 ```
 📚 Prior Research:
@@ -1151,7 +1151,7 @@ As daily notes accumulate, memory can become fragmented (relative phrases like "
 4. Deduplicates ticker mentions — keeps the most recent data per ticker
 5. Resolves contradictions (e.g., two different price targets for NVDA)
 6. Rewrites `MEMORY.md` and `FINANCE.md` with consolidated summaries
-7. Archives processed daily files to `.dexter/memory/archive/` (never deleted)
+7. Archives processed daily files to `.cramer-short/memory/archive/` (never deleted)
 
 #### Auto-trigger conditions
 
@@ -1183,7 +1183,7 @@ Dream runs automatically at startup when **all three** are true:
 /dream           # shows "conditions not met" message if no action is taken
 ```
 
-Or inspect `.dexter/memory/.dream-meta.json`:
+Or inspect `.cramer-short/memory/.dream-meta.json`:
 
 ```json
 {
@@ -1206,7 +1206,7 @@ Memory embeddings use your existing LLM keys with this priority:
 
 ## 21. Heartbeat Monitoring
 
-The **heartbeat** feature lets Dexter periodically check things you care about on a schedule. This is especially useful when running Dexter through the WhatsApp gateway.
+The **heartbeat** feature lets Cramer-Short periodically check things you care about on a schedule. This is especially useful when running Cramer-Short through the WhatsApp gateway.
 
 ### Setting up a heartbeat
 
@@ -1230,18 +1230,18 @@ What is my heartbeat currently checking?
 
 ### How it works
 
-Your checklist lives in `.dexter/HEARTBEAT.md`. The gateway reads this file on each heartbeat tick (configurable interval) and runs the agent against it. Results are sent back via your configured channel (e.g., WhatsApp).
+Your checklist lives in `.cramer-short/HEARTBEAT.md`. The gateway reads this file on each heartbeat tick (configurable interval) and runs the agent against it. Results are sent back via your configured channel (e.g., WhatsApp).
 
 ---
 
 ## 22. Debugging with the Scratchpad
 
-Every query creates a **JSONL scratchpad file** in `.dexter/scratchpad/`. This is your audit trail.
+Every query creates a **JSONL scratchpad file** in `.cramer-short/scratchpad/`. This is your audit trail.
 
-### `.dexter/` directory overview
+### `.cramer-short/` directory overview
 
 ```
-.dexter/
+.cramer-short/
 ├── scratchpad/                         ← raw tool call logs (one file per query)
 │   ├── 2026-03-25-142300_9a8f10723f79.jsonl
 │   └── ...
@@ -1278,10 +1278,10 @@ Every query creates a **JSONL scratchpad file** in `.dexter/scratchpad/`. This i
 
 ```bash
 # Pretty-print the latest scratchpad
-cat .dexter/scratchpad/*.jsonl | tail -1 | python3 -m json.tool
+cat .cramer-short/scratchpad/*.jsonl | tail -1 | python3 -m json.tool
 
 # See all tool calls in a session
-cat .dexter/scratchpad/2026-03-25-142300_9a8f10723f79.jsonl | \
+cat .cramer-short/scratchpad/2026-03-25-142300_9a8f10723f79.jsonl | \
   python3 -c "import sys,json; [print(json.loads(l)['toolName']) for l in sys.stdin if 'toolName' in l]"
 ```
 
@@ -1289,7 +1289,7 @@ cat .dexter/scratchpad/2026-03-25-142300_9a8f10723f79.jsonl | \
 
 ## 23. WhatsApp Gateway
 
-Run Dexter through WhatsApp to get financial research delivered to your phone.
+Run Cramer-Short through WhatsApp to get financial research delivered to your phone.
 
 ### Setup
 
@@ -1303,13 +1303,13 @@ bun run gateway
 
 ### Usage
 
-Open WhatsApp and **message yourself**. Dexter processes messages sent to your own chat and responds.
+Open WhatsApp and **message yourself**. Cramer-Short processes messages sent to your own chat and responds.
 
-For group chats, **@mention** Dexter to activate it.
+For group chats, **@mention** Cramer-Short to activate it.
 
 ### Gateway configuration
 
-The gateway is configured through `.dexter/gateway.json`. The heartbeat feature integrates here:
+The gateway is configured through `.cramer-short/gateway.json`. The heartbeat feature integrates here:
 
 ```json
 {
@@ -1330,7 +1330,7 @@ For full setup instructions, see [`src/gateway/channels/whatsapp/README.md`](../
 
 ## 24. Evaluations
 
-Dexter includes a built-in evaluation suite to test answer quality against a dataset of financial questions.
+Cramer-Short includes a built-in evaluation suite to test answer quality against a dataset of financial questions.
 
 ### Running evaluations
 
@@ -1527,13 +1527,13 @@ Get MSFT revenue
 Compare AAPL and MSFT revenue for the last 3 years
 ```
 
-**Let Dexter pick the tool:**  
-You never need to say "use get_financials" or "call the DCF skill" — Dexter picks the right approach automatically based on your question.
+**Let Cramer-Short pick the tool:**  
+You never need to say "use get_financials" or "call the DCF skill" — Cramer-Short picks the right approach automatically based on your question.
 
 ### Getting the most from the DCF skill
 
 - Specify the ticker clearly: `Run a DCF on NVDA` not `what's it worth`
-- Ask for sensitivity: Dexter includes it automatically, but you can say `include a sensitivity analysis` to reinforce
+- Ask for sensitivity: Cramer-Short includes it automatically, but you can say `include a sensitivity analysis` to reinforce
 - Ask for caveats: `What are the main risks to your DCF assumptions?` after the valuation
 
 ### Using memory effectively
@@ -1564,7 +1564,7 @@ The free tier of the Financial Datasets API covers **AAPL, NVDA, and MSFT**. To 
 ### The model selector shows no Ollama models
 
 **Cause:** Ollama isn't running locally, or `OLLAMA_BASE_URL` points to a remote endpoint.  
-**Fix:** When the list is empty, Dexter falls back to free-text input — type your model name directly (e.g., `nemotron-3-super:cloud`).
+**Fix:** When the list is empty, Cramer-Short falls back to free-text input — type your model name directly (e.g., `nemotron-3-super:cloud`).
 
 ### "Reached maximum iterations"
 
@@ -1583,7 +1583,7 @@ The free tier of the Financial Datasets API covers **AAPL, NVDA, and MSFT**. To 
 
 ### `/sessions` list is empty
 
-**Cause:** No sessions have been saved yet, or Dexter was exited before any query was submitted.  
+**Cause:** No sessions have been saved yet, or Cramer-Short was exited before any query was submitted.  
 **Fix:** Sessions are created on the **first query** of a run. Submit at least one question, then `/sessions` will show it on next launch.
 
 ### Session context not fully restored after resume
@@ -1593,7 +1593,7 @@ The free tier of the Financial Datasets API covers **AAPL, NVDA, and MSFT**. To 
 
 ### Esc key not cancelling a running query
 
-**Cause:** Older version of Dexter or stream does not support mid-flight abort.  
+**Cause:** Older version of Cramer-Short or stream does not support mid-flight abort.  
 **Fix:** This fork includes immediate Escape cancellation. Ensure you are running the fork (`bun start` in the forked repo).
 
 ### Web search not working
@@ -1608,14 +1608,14 @@ The free tier of the Financial Datasets API covers **AAPL, NVDA, and MSFT**. To 
 
 ### Checking tool call history
 
-If Dexter gave an unexpected answer, check the scratchpad:
+If Cramer-Short gave an unexpected answer, check the scratchpad:
 
 ```bash
 # List scratchpad files sorted by recency
-ls -lt .dexter/scratchpad/
+ls -lt .cramer-short/scratchpad/
 
 # Read the latest session
-cat .dexter/scratchpad/<latest-file>.jsonl
+cat .cramer-short/scratchpad/<latest-file>.jsonl
 ```
 
 This shows every tool call, its arguments, the raw response, and the LLM's interpretation — useful for debugging routing or unexpected results.
@@ -1648,7 +1648,7 @@ If all 4 retries are exhausted the error is surfaced as usual (and may trigger t
 
 ### Multi-source data validation
 
-When `FINANCIAL_DATASETS_API_KEY` **and** `FMP_API_KEY` are both set, Dexter fetches annual income statements from **both** sources in parallel and compares them. If `totalRevenue` or `netIncome` diverge by more than **15 %** between the two providers, a warning is appended to the result:
+When `FINANCIAL_DATASETS_API_KEY` **and** `FMP_API_KEY` are both set, Cramer-Short fetches annual income statements from **both** sources in parallel and compares them. If `totalRevenue` or `netIncome` diverge by more than **15 %** between the two providers, a warning is appended to the result:
 
 ```
 ⚠️ Data discrepancy detected: Revenue — financialdatasets says $394.3B, FMP says $391.0B (0.8% difference). Verify before acting on these figures.

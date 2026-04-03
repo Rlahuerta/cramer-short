@@ -3,21 +3,21 @@ import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-// Unique temp dir per worker run — prevents parallel worker contamination of the real .dexter/cache
+// Unique temp dir per worker run — prevents parallel worker contamination of the real .cramer-short/cache
 const TEST_CACHE_DIR = join(tmpdir(), `dexter-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
-// Mock paths.js BEFORE cache.ts loads so the module-level CACHE_DIR = dexterPath('cache') resolves to our temp dir
+// Mock paths.js BEFORE cache.ts loads so the module-level CACHE_DIR = cramerShortPath('cache') resolves to our temp dir
 mock.module('./paths.js', () => ({
-  dexterPath: (first?: string, ...rest: string[]) =>
+  cramerShortPath: (first?: string, ...rest: string[]) =>
     first === 'cache' ? TEST_CACHE_DIR : join(TEST_CACHE_DIR, ...(first ? [first, ...rest] : [])),
-  getDexterDir: () => TEST_CACHE_DIR,
+  getCramerShortDir: () => TEST_CACHE_DIR,
 }));
 
 // Use a cache-busting query param to force Bun to re-evaluate cache.ts so that
-// the module-level CACHE_DIR = dexterPath('cache') is evaluated AFTER paths.js
+// the module-level CACHE_DIR = cramerShortPath('cache') is evaluated AFTER paths.js
 // is mocked above. Without the ?t= suffix, Bun returns a previously-cached
 // cache.ts instance (loaded by filings.test.ts → api.ts → cache.ts) that
-// already resolved CACHE_DIR against the real .dexter directory.
+// already resolved CACHE_DIR against the real .cramer-short directory.
 const { buildCacheKey, readCache, writeCache } = await import(`./cache.js?t=${Date.now()}`) as typeof import('./cache.js');
 
 // ---------------------------------------------------------------------------

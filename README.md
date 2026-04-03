@@ -1,6 +1,6 @@
-# Dexter 🤖
+# Cramer-Short 🤖
 
-Dexter is an autonomous financial research agent that thinks, plans, and learns as it works. It performs analysis using task planning, self-reflection, and real-time market data. Think Claude Code, but built specifically for financial research.
+Cramer-Short is an autonomous financial research agent that thinks, plans, and learns as it works. It performs analysis using task planning, self-reflection, and real-time market data. Think Claude Code, but built specifically for financial research.
 
 > **This is a community fork of [virattt/dexter](https://github.com/virattt/dexter)** with additional TUI improvements, session persistence, multi-provider fallbacks, Ollama support, and reliability fixes. See [Fork Changes](#-fork-changes) for details.
 
@@ -25,7 +25,7 @@ Dexter is an autonomous financial research agent that thinks, plans, and learns 
 
 ## 👋 Overview
 
-Dexter takes complex financial questions and turns them into clear, step-by-step research plans. It runs those tasks using live market data, checks its own work, and refines the results until it has a confident, data-backed answer.
+Cramer-Short takes complex financial questions and turns them into clear, step-by-step research plans. It runs those tasks using live market data, checks its own work, and refines the results until it has a confident, data-backed answer.
 
 **Key Capabilities:**
 - **Intelligent Task Planning**: Automatically decomposes complex queries into structured research steps
@@ -47,7 +47,7 @@ Dexter takes complex financial questions and turns them into clear, step-by-step
 This fork adds the following on top of the upstream repository:
 
 ### Session Persistence
-- Conversations are **auto-saved** after each query to `.dexter/sessions/`
+- Conversations are **auto-saved** after each query to `.cramer-short/sessions/`
 - Resume any past session with `/sessions` — the list shows the first query, relative timestamp (*Today 14:30*, *Yesterday 09:12*), and query count
 - Sessions are flushed to disk immediately on `Ctrl+C` or `/exit`, preventing data loss
 - LLM context and full display history are both restored on resume
@@ -71,18 +71,18 @@ This fork adds the following on top of the upstream repository:
 - **Fixed Income** (`get_fixed_income`): US Treasury yields (2Y/5Y/10Y/30Y), yield curve spread (with inversion flag), Fed funds rate, CPI, and unemployment rate via FRED API — free, no key required
 - **Options Chain** (`get_options_chain`): options contracts from Yahoo Finance — top calls/puts by open interest, put/call ratio (PCR), implied volatility, and unusual volume detection — free, no key required
 - **Export Framework** (`/export`): export session research to `markdown`, `json`, or `csv` — saved to the current directory; markdown format includes tool usage tables and full answers
-- **Config Expansion** (`/config`): view and tune `maxIterations`, `contextThreshold`, `keepToolUses`, `cacheTtlMs`, `parallelToolLimit` at runtime — persisted to `.dexter/settings.json`
+- **Config Expansion** (`/config`): view and tune `maxIterations`, `contextThreshold`, `keepToolUses`, `cacheTtlMs`, `parallelToolLimit` at runtime — persisted to `.cramer-short/settings.json`
 - **Context Management Overhaul**: summarise-instead-of-drop — cleared tool results are preserved as ticker-prefixed compact summaries with key metrics (P/E, revenue, etc.), merged into a single rolling block; prevents agent re-fetching data it already has
 - **Markdown Rendering**: bold, italic, inline code, headers (h1/h2/h3), bullet lists, and URLs now render with colour/style in the TUI chat output
 - **Parallel Request Deduplication**: when multiple iterations request the same tool+args simultaneously, only one API call fires — others wait on the in-flight promise (`pendingRequests` map)
-- **Config Schema Validation**: `.dexter/settings.json` validated with Zod on load — type/range errors warn to stderr and strip the invalid field; never crashes startup
+- **Config Schema Validation**: `.cramer-short/settings.json` validated with Zod on load — type/range errors warn to stderr and strip the invalid field; never crashes startup
 - **Dream Dedup Guard**: Dream consolidation deduplicates insights against existing `MEMORY.md`/`FINANCE.md` before writing — running Dream twice no longer produces duplicate lines
 - **Progress Bar**: working indicator now shows `[7/25 · ███░░░░░░░ 28% · 42s]` — visual bar shows how close the agent is to the iteration limit
 - **Earnings Transcripts** (`get_earnings_transcript`): fetch management prepared remarks, forward guidance phrases, and Q&A highlights from SEC EDGAR 8-K filings — free, no key required
-- **Cross-Session Cache**: tool results are persisted to `.dexter/cache/` between sessions — startup pre-populates the in-session cache; eliminates redundant API calls for recurring queries; TTL controlled via `/config set cacheTtlMs`
+- **Cross-Session Cache**: tool results are persisted to `.cramer-short/cache/` between sessions — startup pre-populates the in-session cache; eliminates redundant API calls for recurring queries; TTL controlled via `/config set cacheTtlMs`
 - **Skill Parameterization**: SKILL.md files can declare typed parameter schemas (`wacc`, `growth_rate`, `years`, etc.); invoke with overrides: "Run a DCF for MSFT with WACC 12% and 7-year horizon"; `{{placeholder}}` substitution in skill body; min/max validation
 - **Chat Search** (`/find`): search current session history by keyword — shows matching turn numbers, queries, and 200-char answer excerpts with keyword highlighted
-- **Error Logging**: all tool errors appended to `.dexter/logs/errors.jsonl` as structured JSON; 7 network error subtypes now classified (`network_dns_failure`, `rate_limit`, `auth_error`, etc.)
+- **Error Logging**: all tool errors appended to `.cramer-short/logs/errors.jsonl` as structured JSON; 7 network error subtypes now classified (`network_dns_failure`, `rate_limit`, `auth_error`, etc.)
 - **On-Chain Crypto** (`get_onchain_crypto`): CoinGecko market data, sentiment scores, developer activity (GitHub commits/PRs), community size (Twitter/Reddit/Telegram), and global market stats (BTC dominance, total market cap) — free, no key required
 
 ### Ollama / Local LLM
@@ -126,16 +126,16 @@ This fork adds the following on top of the upstream repository:
 - **Full Analysis** — flagship meta-skill that chains DCF → Peer Comparison → Short Thesis → Probability Assessment into one structured report. Invoke with: `Use the full-analysis skill for AAPL`
 
 ### Memory System & Dream Consolidation
-- **Persistent memory** stored in `.dexter/memory/` as plain Markdown (`MEMORY.md`, `FINANCE.md`, daily `YYYY-MM-DD.md` files)
+- **Persistent memory** stored in `.cramer-short/memory/` as plain Markdown (`MEMORY.md`, `FINANCE.md`, daily `YYYY-MM-DD.md` files)
 - **Four-tier priority system** (P1 critical → P4 noise) guides what the agent remembers and prunes
-- **Memory auto-injection**: at the start of every query, Dexter runs two memory search passes — (1) a ticker-based pass for any stock tickers in the query, and (2) a full-query semantic pass for non-ticker topics (gold, Fed rates, macro). Results from both passes are deduplicated and prepended as a `📚 Prior Research:` block so the agent builds on earlier work without re-fetching data (capped at 2 tickers × 3 snippets + 3 semantic snippets per query)
+- **Memory auto-injection**: at the start of every query, Cramer-Short runs two memory search passes — (1) a ticker-based pass for any stock tickers in the query, and (2) a full-query semantic pass for non-ticker topics (gold, Fed rates, macro). Results from both passes are deduplicated and prepended as a `📚 Prior Research:` block so the agent builds on earlier work without re-fetching data (capped at 2 tickers × 3 snippets + 3 semantic snippets per query)
 - **Memory namespaces**: scope financial insights to a workflow bucket (`namespace="dcf"`, `namespace="short-thesis"`) so WACC assumptions and bear-case notes from different analyses don't collide. `store_financial_insight(ticker=AAPL, namespace="dcf", ...)` then `recall_financial_context(ticker=AAPL, namespace="dcf")` — global insights (no namespace) remain visible in all recall calls
-- **Ticker→API routing cache**: persisted in `.dexter/api-routing.json`. After discovering that a ticker requires Yahoo Finance instead of FMP, that routing preference is saved and used in every subsequent session — eliminating repeated fallback probing. 30-day TTL, auto-populated, injected as hints into the LLM router
+- **Ticker→API routing cache**: persisted in `.cramer-short/api-routing.json`. After discovering that a ticker requires Yahoo Finance instead of FMP, that routing preference is saved and used in every subsequent session — eliminating repeated fallback probing. 30-day TTL, auto-populated, injected as hints into the LLM router
 - **Dream** — background consolidation cycle inspired by Claude Code's AutoDream: merges fragmented daily notes, replaces relative timestamps with absolute dates, deduplicates ticker data, resolves contradictions, and rewrites `MEMORY.md`/`FINANCE.md` into clean summaries
   - Auto-triggers at startup when: ≥2 daily files exist, ≥24h elapsed, ≥3 sessions since last run
   - **Async startup**: Dream defers 400 ms after the TUI paints, so the interface is fully responsive before consolidation begins
   - Manual trigger: `/dream` (respects conditions) or `/dream force` (always runs)
-  - Processed daily files are archived to `.dexter/memory/archive/` — never deleted
+  - Processed daily files are archived to `.cramer-short/memory/archive/` — never deleted
 - **Smarter context clearing**: when the agent's context window fills up and old tool results must be dropped, a compact text summary is automatically generated and injected into the scratchpad — key numeric facts (prices, P/E, WACC, probabilities) are explicitly preserved so the agent doesn't re-fetch data it already has
 - **Auto-save every 5 iterations**: memory is flushed to disk periodically throughout a session, not just on context overflow, so research survives session crashes
 - Full documentation: [`docs/memory.md`](docs/memory.md)
@@ -183,8 +183,8 @@ bun --version
 
 1. Clone this fork:
 ```bash
-git clone https://github.com/Rlahuerta/dexter.git
-cd dexter
+git clone https://github.com/Rlahuerta/cramer-short.git
+cd cramer-short
 ```
 
 2. Install dependencies:
@@ -230,7 +230,7 @@ Or with watch mode for development:
 bun dev
 ```
 
-On first launch Dexter detects which API keys are present and selects the best available model automatically. You can switch at any time with `/model`.
+On first launch Cramer-Short detects which API keys are present and selects the best available model automatically. You can switch at any time with `/model`.
 
 ## ⌨️ Slash Commands
 
@@ -251,7 +251,7 @@ Type `/` at the prompt to see all available commands:
 | `/watchlist snapshot` | Portfolio dashboard with ASCII allocation chart |
 | `/dream` | Consolidate memory files (merges daily notes into MEMORY.md) |
 | `/dream force` | Force Dream consolidation regardless of trigger conditions |
-| `/exit` | Exit Dexter (session is saved first) |
+| `/exit` | Exit Cramer-Short (session is saved first) |
 
 **Keyboard shortcuts:**
 - `↑` / `↓` — navigate input history
@@ -260,7 +260,7 @@ Type `/` at the prompt to see all available commands:
 
 ## 📅 Scheduled Research Jobs
 
-Run Dexter headlessly on a schedule using the `schedule` subcommand:
+Run Cramer-Short headlessly on a schedule using the `schedule` subcommand:
 
 ```bash
 # List configured jobs
@@ -273,7 +273,7 @@ bun start schedule run
 bun start schedule run morning-briefing
 ```
 
-Configure jobs in `~/.dexter/schedules.json`:
+Configure jobs in `~/.cramer-short/schedules.json`:
 
 ```json
 [
@@ -281,7 +281,7 @@ Configure jobs in `~/.dexter/schedules.json`:
     "id": "morning-briefing",
     "description": "Daily watchlist briefing",
     "query": "Run the watchlist-briefing skill for my portfolio",
-    "outputFile": "~/.dexter/reports/{date}-briefing.md"
+    "outputFile": "~/.cramer-short/reports/{date}-briefing.md"
   }
 ]
 ```
@@ -292,16 +292,16 @@ The `{date}` placeholder is replaced with today's ISO date (e.g. `2025-01-15`). 
 
 Every query is automatically saved. To resume a past conversation:
 
-1. Start Dexter: `bun start`
+1. Start Cramer-Short: `bun start`
 2. Type `/sessions` and press Enter
 3. Navigate the list with `↑` / `↓` (or `j` / `k`)
 4. Press `Enter` to resume — LLM context and display history are fully restored
 
-Sessions are stored in `.dexter/sessions/`. The selector shows the first question asked, a relative timestamp, and query count so you can quickly identify the right session.
+Sessions are stored in `.cramer-short/sessions/`. The selector shows the first question asked, a relative timestamp, and query count so you can quickly identify the right session.
 
 ## 🧠 Local Models with Ollama
 
-Run Dexter with no cloud API keys using [Ollama](https://ollama.com):
+Run Cramer-Short with no cloud API keys using [Ollama](https://ollama.com):
 
 ```bash
 # Install a model
@@ -317,7 +317,7 @@ For models that support extended reasoning (`qwen3`, `deepseek-r1`, `qwq`), use 
 
 ## 📊 How to Evaluate
 
-Dexter includes an evaluation suite that tests the agent against a dataset of financial questions. Evals use LangSmith for tracking and an LLM-as-judge approach for scoring correctness.
+Cramer-Short includes an evaluation suite that tests the agent against a dataset of financial questions. Evals use LangSmith for tracking and an LLM-as-judge approach for scoring correctness.
 
 **Run on all questions:**
 ```bash
@@ -333,10 +333,10 @@ The eval runner displays a real-time UI showing progress, current question, and 
 
 ## 🐛 How to Debug
 
-Dexter logs all tool calls to a scratchpad file for debugging and history tracking. Each query creates a new JSONL file in `.dexter/scratchpad/`.
+Cramer-Short logs all tool calls to a scratchpad file for debugging and history tracking. Each query creates a new JSONL file in `.cramer-short/scratchpad/`.
 
 ```
-.dexter/
+.cramer-short/
 ├── scratchpad/
 │   ├── 2026-01-30-111400_9a8f10723f79.jsonl
 │   └── ...
@@ -364,7 +364,7 @@ Each scratchpad file contains newline-delimited JSON entries tracking:
 
 ## 📱 How to Use with WhatsApp
 
-Chat with Dexter through WhatsApp by linking your phone to the gateway. Messages you send to yourself are processed by Dexter and responses are sent back to the same chat.
+Chat with Cramer-Short through WhatsApp by linking your phone to the gateway. Messages you send to yourself are processed by Cramer-Short and responses are sent back to the same chat.
 
 ```bash
 # Link your WhatsApp account (scan QR code)

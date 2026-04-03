@@ -217,11 +217,11 @@ describe('IntroComponent — compact status bar', () => {
     expect(text).toContain('Model:');
   });
 
-  test('compact mode shows ⬡ Dexter status bar', () => {
+  test('compact mode shows ⬡ Cramer-Short status bar', () => {
     const intro = new IntroComponent('gpt-5.4');
     intro.setCompact(true);
     const text = getModelLineText(intro);
-    expect(text).toContain('⬡ Dexter');
+    expect(text).toContain('⬡ Cramer-Short');
   });
 
   test('compact mode shows model name', () => {
@@ -284,7 +284,7 @@ describe('IntroComponent — compact status bar', () => {
     intro.setCompact(true);
     // compact mode again: should show think state we set earlier
     const compactText = getModelLineText(intro);
-    expect(compactText).toContain('⬡ Dexter');
+    expect(compactText).toContain('⬡ Cramer-Short');
     expect(compactText).toContain('off');
   });
 });

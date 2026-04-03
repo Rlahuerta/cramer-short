@@ -116,7 +116,7 @@ export async function writeSessionDailySummary(
     .map((h, i) => `[${i + 1}] User: ${h.query.slice(0, 400)}\nAssistant: ${h.answer.slice(0, 600)}`)
     .join('\n\n');
 
-  const prompt = `You are a financial research assistant. A user just finished a Dexter session.
+  const prompt = `You are a financial research assistant. A user just finished a Cramer-Short session.
 Summarize the key facts, decisions, and insights from this session in concise markdown bullet points.
 
 Rules:
@@ -202,7 +202,7 @@ export function buildHelpPanel(): Container {
     ['↑ / ↓',   'Browse input history'],
     ['Tab',      'Accept autocomplete suggestion'],
     ['Esc',      'Cancel current operation'],
-    ['Ctrl+C',   'Exit Dexter'],
+    ['Ctrl+C',   'Exit Cramer-Short'],
   ];
   for (const [key, desc] of shortcuts) {
     container.addChild(row(key, desc));
@@ -213,7 +213,7 @@ export function buildHelpPanel(): Container {
   container.addChild(new Spacer(1));
   container.addChild(row('/', 'Type / to see available commands'));
   container.addChild(row('Thinking', 'Enabled automatically for qwen3, deepseek-r1, qwq models'));
-  container.addChild(row('Fallback', 'Dexter uses web search when financial APIs fail'));
+  container.addChild(row('Fallback', 'Cramer-Short uses web search when financial APIs fail'));
   container.addChild(row('--deep', 'Launch with --deep flag for 40-iteration complex queries'));
   container.addChild(row('--export [path]', 'Auto-export session as Markdown on exit (omit path to auto-name)'));
 
@@ -1177,7 +1177,7 @@ export async function runCli() {
           : '';
         const fileList = dailyFiles.length > 0
           ? dailyFiles.map((f) => `  • ${f}`).join('\n')
-          : '  _(none yet — exit Dexter after conversations to generate them)_';
+          : '  _(none yet — exit Cramer-Short after conversations to generate them)_';
         const showAnswer = [
           `🌙 **Dream Status**`,
           ``,
@@ -1230,7 +1230,7 @@ export async function runCli() {
           const files = dreamResult.archivedFiles.map((f) => `  • ${f}`).join('\n');
           const archiveLine = n > 0
             ? `**Archived ${n} daily file${n === 1 ? '' : 's'}:**\n${files}\n\n`
-            : `_No daily session files to archive — exit Dexter (ctrl+c) after conversations to generate them._\n\n`;
+            : `_No daily session files to archive — exit Cramer-Short (ctrl+c) after conversations to generate them._\n\n`;
           dreamAnswer = `✨ **Dream complete** — memory consolidated\n\n${archiveLine}**Updated:** MEMORY.md, FINANCE.md`;
           intro.setModel(`✨ Dream: archived ${n} file${n === 1 ? '' : 's'}, memory updated`);
         } else {
@@ -1565,7 +1565,7 @@ export async function runCli() {
 
     if (helpVisible) {
       renderScreenView(
-        '⬡ Dexter — Help',
+        '⬡ Cramer-Short — Help',
         '',
         buildHelpPanel(),
         'Esc to close · type a question to close and ask',
@@ -1613,7 +1613,7 @@ export async function runCli() {
         tui.requestRender();
       });
       renderScreenView(
-        '⬡ Dexter — Sessions',
+        '⬡ Cramer-Short — Sessions',
         'Select a past conversation to resume',
         selector,
         'Enter to resume · ↑↓ navigate · Esc to close',
@@ -1632,7 +1632,7 @@ export async function runCli() {
         tui.requestRender();
       });
       renderScreenView(
-        '⬡ Dexter — Skills',
+        '⬡ Cramer-Short — Skills',
         'Select a skill to use — press Enter to pre-fill the prompt',
         selector,
         'Enter to use · ↑↓ navigate · Esc to close',
@@ -1669,7 +1669,7 @@ export async function runCli() {
         }
       }
       renderScreenView(
-        '⬡ Dexter — Memory',
+        '⬡ Cramer-Short — Memory',
         'Consolidated long-term memory',
         panel,
         'Esc to close · /dream [force] to consolidate · /dream shows merge conditions',
@@ -1686,7 +1686,7 @@ export async function runCli() {
 
       if (watchlistMode === 'show' && watchlistShowTicker) {
         const snap = watchlistPrices?.get(watchlistShowTicker) ?? null;
-        title    = `⬡ Dexter — ${watchlistShowTicker}`;
+        title    = `⬡ Cramer-Short — ${watchlistShowTicker}`;
         subtitle = watchlistPrices === null ? 'Loading…' : (snap ? 'Quick snapshot' : 'Price unavailable');
         panel    = watchlistPrices === null
           ? (() => { const c = new Container(); c.addChild(new Text(theme.muted('  ⏳ Fetching data…'), 0, 0)); return c; })()
@@ -1697,13 +1697,13 @@ export async function runCli() {
             })());
         footer   = 'Esc to close · /watchlist list · /watchlist snapshot';
       } else if (watchlistMode === 'snapshot') {
-        title    = '⬡ Dexter — Portfolio Snapshot';
+        title    = '⬡ Cramer-Short — Portfolio Snapshot';
         subtitle = watchlistEntries.length === 0 ? 'No positions tracked' : `${watchlistEntries.length} ticker${watchlistEntries.length === 1 ? '' : 's'}`;
         panel    = buildSnapshotPanel(watchlistEntries, watchlistPrices);
         footer   = 'Esc to close · /watchlist list · /watchlist show TICKER';
       } else {
         const loading = watchlistPrices === null;
-        title    = '⬡ Dexter — Watchlist';
+        title    = '⬡ Cramer-Short — Watchlist';
         subtitle = watchlistEntries.length === 0
           ? 'No positions tracked'
           : loading

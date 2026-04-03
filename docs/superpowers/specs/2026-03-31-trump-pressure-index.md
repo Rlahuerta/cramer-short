@@ -12,7 +12,7 @@ Deutsche Bank's original index tracks the 1-month change in four inputs:
 3. **Approval rating** — direct political pressure
 4. **10-year Treasury yield** — government borrowing cost
 
-Dexter's implementation extends this with three additional data sources for real-time pressure amplification.
+Cramer-Short's implementation extends this with three additional data sources for real-time pressure amplification.
 
 ## Architecture
 

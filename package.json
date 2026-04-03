@@ -1,11 +1,11 @@
 {
-  "name": "dexter-ts",
+  "name": "cramer-short",
   "version": "2026.3.25",
-  "description": "Dexter - AI agent for deep financial research.",
+  "description": "Cramer-Short - AI agent for deep financial research.",
   "type": "module",
   "main": "src/index.tsx",
   "bin": {
-    "dexter-ts": "./src/index.tsx"
+    "cramer-short": "./src/index.tsx"
   },
   "scripts": {
     "start": "bun run src/index.tsx",

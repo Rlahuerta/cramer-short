@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, normalize, relative } from 'node:path';
 import type { DreamMeta, MemoryReadOptions, MemoryReadResult, MemorySessionContext } from './types.js';
 import { estimateTokens } from '../utils/tokens.js';
-import { getDexterDir } from '../utils/paths.js';
+import { getCramerShortDir } from '../utils/paths.js';
 
 const MEMORY_DIRNAME = 'memory';
 const LONG_TERM_FILE = 'MEMORY.md';
@@ -20,7 +20,7 @@ export function formatDailyFileName(date: Date = new Date()): string {
 }
 
 export class MemoryStore {
-  constructor(private readonly baseDir: string = getDexterDir()) {}
+  constructor(private readonly baseDir: string = getCramerShortDir()) {}
 
   getMemoryDir(): string {
     return join(this.baseDir, MEMORY_DIRNAME);

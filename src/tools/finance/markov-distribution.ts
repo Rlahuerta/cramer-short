@@ -2429,6 +2429,7 @@ export function computeActionSignal(
   horizon = 30,
   recentVol?: number,
   scenarios?: ScenarioProbabilities,
+  assetType?: AssetProfile['type'],
 ): ActionSignal {
   const pAboveBuy  = interpolateSurvival(distribution, currentPrice * (1 + buyThreshold));
   const pAboveSell = interpolateSurvival(distribution, currentPrice * (1 - sellThreshold));
@@ -2496,6 +2497,11 @@ export function computeActionSignal(
     recommendation = 'SELL';
   } else {
     recommendation = 'HOLD';
+  }
+
+  const shortHorizonCrypto = assetType === 'crypto' && horizon <= 14;
+  if (shortHorizonCrypto && recommendation === 'HOLD' && scenarios) {
+    recommendation = scenarios.pUp >= 0.50 ? 'BUY' : 'SELL';
   }
 
   // Cross-validate recommendation against scenario probabilities.
@@ -3019,7 +3025,7 @@ export async function computeMarkovDistribution(params: {
     distribution,
     rawDistribution,
     actionSignal: computeActionSignal(distribution, currentPrice, undefined, undefined, horizon,
-      recentDailyVol, scenarios,
+      recentDailyVol, scenarios, assetProfile.type,
     ),
     scenarios,
     predictionConfidence,

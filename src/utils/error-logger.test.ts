@@ -26,7 +26,7 @@ afterEach(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Import logError freshly so getDexterDir() uses the chdir'd cwd. */
+/** Import logError freshly so getCramerShortDir() uses the chdir'd cwd. */
 async function getLogError() {
   const { logError } = await import('./error-logger.js');
   return logError;
@@ -39,7 +39,7 @@ async function getLogError() {
 describe('logError', () => {
   it('creates the log file if it does not exist', async () => {
     const logError = await getLogError();
-    const logFile = join(tmpDir, '.dexter', 'logs', 'errors.jsonl');
+    const logFile = join(tmpDir, '.cramer-short', 'logs', 'errors.jsonl');
 
     expect(existsSync(logFile)).toBe(false);
 
@@ -50,7 +50,7 @@ describe('logError', () => {
 
   it('writes valid JSON lines', async () => {
     const logError = await getLogError();
-    const logFile = join(tmpDir, '.dexter', 'logs', 'errors.jsonl');
+    const logFile = join(tmpDir, '.cramer-short', 'logs', 'errors.jsonl');
 
     logError({ type: 'rate_limit', message: 'Too many requests', context: 'tool:web_search' });
     logError({ type: 'auth', message: 'Unauthorized', context: 'tool:financial_search' });
@@ -71,7 +71,7 @@ describe('logError', () => {
 
   it('includes optional fields when provided', async () => {
     const logError = await getLogError();
-    const logFile = join(tmpDir, '.dexter', 'logs', 'errors.jsonl');
+    const logFile = join(tmpDir, '.cramer-short', 'logs', 'errors.jsonl');
 
     logError({
       type: 'network_dns_failure',
@@ -88,7 +88,7 @@ describe('logError', () => {
 
   it('silently succeeds even if the dir is unwritable', async () => {
     const logError = await getLogError();
-    const logsDir = join(tmpDir, '.dexter', 'logs');
+    const logsDir = join(tmpDir, '.cramer-short', 'logs');
     mkdirSync(logsDir, { recursive: true });
 
     // Make directory read-only so writes fail

@@ -16,7 +16,7 @@ export class IntroComponent extends Container {
   constructor(model: string) {
     super();
 
-    const welcomeText = 'Welcome to Dexter';
+    const welcomeText = 'Welcome to Cramer-Short';
     const versionText = ` v${packageJson.version}`;
     const fullText = welcomeText + versionText;
     const padding = Math.floor((INTRO_WIDTH - fullText.length - 2) / 2);
@@ -39,12 +39,13 @@ export class IntroComponent extends Container {
       theme.bold(
         theme.primary(
           `
-██████╗ ███████╗██╗  ██╗████████╗███████╗██████╗ 
-██╔══██╗██╔════╝╚██╗██╔╝╚══██╔══╝██╔════╝██╔══██╗
-██║  ██║█████╗   ╚███╔╝    ██║   █████╗  ██████╔╝
-██║  ██║██╔══╝   ██╔██╗    ██║   ██╔══╝  ██╔══██╗
-██████╔╝███████╗██╔╝ ██╗   ██║   ███████╗██║  ██║
-╚═════╝ ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝`,
+ ██████╗██████╗  █████╗ ███╗   ███╗███████╗██████╗ 
+██╔════╝██╔══██╗██╔══██╗████╗ ████║██╔════╝██╔══██╗
+██║     ██████╔╝███████║██╔████╔██║█████╗  ██████╔╝
+██║     ██╔══██╗██╔══██║██║╚██╔╝██║██╔══╝  ██╔══██╗
+╚██████╗██║  ██║██║  ██║██║ ╚═╝ ██║███████╗██║  ██║
+ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝
+        — SHORT`,
         ),
       ),
       0,
@@ -115,7 +116,7 @@ export class IntroComponent extends Container {
           ? `${sep}${theme.muted(this.tokenCount >= 1000 ? `${(this.tokenCount / 1000).toFixed(1)}k tokens` : `${this.tokenCount} tokens`)}`
           : '';
       this.modelText.setText(
-        `${theme.muted('⬡ Dexter')}${sep}${theme.primary(modelLabel)}${sep}${thinkPart}${tokenPart}`,
+        `${theme.muted('⬡ Cramer-Short')}${sep}${theme.primary(modelLabel)}${sep}${thinkPart}${tokenPart}`,
       );
     } else {
       this.modelText.setText(

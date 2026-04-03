@@ -2,7 +2,7 @@
  * web_fetch tool — lightweight one-shot page reader with caching.
  *
  * Core extraction logic ported from OpenClaw's src/agents/tools/web-fetch.ts (MIT license).
- * Adapted for Dexter's LangChain DynamicStructuredTool + Zod framework.
+ * Adapted for Cramer-Short's LangChain DynamicStructuredTool + Zod framework.
  *
  * Differences from OpenClaw:
  * - fetchWithSsrFGuard replaced with plain fetch + manual redirect handling
@@ -441,7 +441,7 @@ async function runWebFetch(params: {
 }
 
 // ============================================================================
-// Tool definition (adapted for Dexter's LangChain + Zod framework)
+// Tool definition (adapted for Cramer-Short's LangChain + Zod framework)
 // ============================================================================
 
 export const webFetchTool = new DynamicStructuredTool({

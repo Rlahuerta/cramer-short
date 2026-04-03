@@ -1,6 +1,6 @@
 # Markov Chain Prediction System
 
-Dexter includes a Markov chain probability distribution model for asset price
+Cramer-Short includes a Markov chain probability distribution model for asset price
 forecasting. Instead of returning a single price target, it produces a full
 probability distribution — P(price > X) at many price levels — along with
 confidence intervals, action signals, and a confidence score you can use to
@@ -308,7 +308,7 @@ training window.
 
 ⚠️ **No fundamental data.** The model uses only price history — it cannot
 capture earnings surprises, news events, macro announcements, or sector
-rotation. Combine with Dexter's other tools (SEC filings, financial metrics,
+rotation. Combine with Cramer-Short's other tools (SEC filings, financial metrics,
 web search) for a complete picture.
 
 ⚠️ **Sample size.** The walk-forward backtest has n = 36–60 per

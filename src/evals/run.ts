@@ -1,5 +1,5 @@
 /**
- * LangSmith Evaluation Runner for Dexter
+ * LangSmith Evaluation Runner for Cramer-Short
  * 
  * Usage:
  *   bun run src/evals/run.ts              # Run on all questions
@@ -137,7 +137,7 @@ function shuffleArray<T>(array: T[]): T[] {
 }
 
 // ============================================================================
-// Target function - wraps Dexter agent
+// Target function - wraps Cramer-Short agent
 // ============================================================================
 
 async function target(inputs: { question: string }): Promise<{ answer: string }> {
@@ -233,7 +233,7 @@ function createEvaluationRunner(sampleSize?: number) {
     // Create a unique dataset name for this run (sampling creates different datasets)
     const datasetName = sampleSize 
       ? `dexter-finance-eval-sample-${sampleSize}-${Date.now()}`
-      : 'dexter-finance-eval';
+      : 'cramer-short-finance-eval';
 
     // Yield init event
     yield {
@@ -296,7 +296,7 @@ function createEvaluationRunner(sampleSize?: number) {
 
       // Log to LangSmith for tracking
       await client.createRun({
-        name: 'dexter-eval-run',
+        name: 'cramer-short-eval-run',
         run_type: 'chain',
         inputs: example.inputs,
         outputs,

@@ -1,5 +1,5 @@
 /**
- * E2E test helper — runs the full Dexter agent against the configured Ollama
+ * E2E test helper — runs the full Cramer-Short agent against the configured Ollama
  * model and returns a structured result for assertion.
  *
  * Environment variables:
@@ -27,7 +27,7 @@ export interface E2EResult {
 }
 
 /**
- * Run the Dexter agent end-to-end with the E2E model.
+ * Run the Cramer-Short agent end-to-end with the E2E model.
  *
  * Handles the `--deep` CLI flag: strips it from the query string and maps it
  * to `maxIterations: 40` (in the CLI it is a process.argv flag, not part of

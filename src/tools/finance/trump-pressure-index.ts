@@ -1,5 +1,5 @@
 /**
- * Trump Pressure Index — Dexter-native implementation
+ * Trump Pressure Index — Cramer-Short-native implementation
  *
  * Inspired by Deutsche Bank strategist Maximilian Uleer's "Pressure Index" that
  * tracks when political/market stress may force Trump to reverse policy (a "TACO
@@ -11,7 +11,7 @@
  *   3. Inflation expectations 1-month change  (w=0.15)
  *   4. Approval rating 1-month change  (w=0.10)
  *
- * Dexter extensions (40% weight):
+ * Cramer-Short extensions (40% weight):
  *   5. Gas prices (UGA ETF) 1-month change  (w=0.12)
  *   6. Polymarket policy-reversal probability  (w=0.15)
  *   7. Social sentiment score  (w=0.13)
@@ -135,7 +135,7 @@ export const COMPONENT_WEIGHTS: ComponentWeight[] = [
   { name: '10Y Treasury',       key: 'yield10y',   weight: 0.15, direction:  1, group: 'db_core' },
   { name: 'Inflation Expect.',   key: 'inflation',  weight: 0.15, direction:  1, group: 'db_core' },
   { name: 'Approval Rating',    key: 'approval',   weight: 0.10, direction: -1, group: 'db_core' },
-  // Dexter Extensions (40%)
+  // Cramer-Short Extensions (40%)
   { name: 'Gas Prices',         key: 'gas',        weight: 0.12, direction:  1, group: 'extension' },
   { name: 'Policy Reversal',    key: 'polymarket',  weight: 0.15, direction:  1, group: 'extension' },
   { name: 'Social Sentiment',   key: 'sentiment',   weight: 0.13, direction: -1, group: 'extension' },

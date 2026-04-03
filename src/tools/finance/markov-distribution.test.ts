@@ -1655,6 +1655,89 @@ describe('computeActionSignal', () => {
     }
   });
 
+  it('uses bullish short-horizon crypto direction when pUp is clear but expected return stays in HOLD band', () => {
+    const dist: MarkovDistributionPoint[] = [
+      { price: 97,  probability: 0.95, lowerBound: 0.90, upperBound: 1.00, source: 'markov' },
+      { price: 99,  probability: 0.72, lowerBound: 0.68, upperBound: 0.76, source: 'markov' },
+      { price: 100, probability: 0.56, lowerBound: 0.52, upperBound: 0.60, source: 'markov' },
+      { price: 101, probability: 0.40, lowerBound: 0.36, upperBound: 0.44, source: 'markov' },
+      { price: 103, probability: 0.18, lowerBound: 0.14, upperBound: 0.22, source: 'markov' },
+      { price: 105, probability: 0.08, lowerBound: 0.05, upperBound: 0.11, source: 'markov' },
+    ];
+    const scenarios: ScenarioProbabilities = {
+      buckets: [
+        { label: 'Down >5%',  probability: 0.04, priceRange: [null, 95] },
+        { label: 'Down 3–5%', probability: 0.16, priceRange: [95, 97] },
+        { label: 'Flat ±3%',  probability: 0.28, priceRange: [97, 103] },
+        { label: 'Up 3–5%',   probability: 0.22, priceRange: [103, 105] },
+        { label: 'Up >5%',    probability: 0.30, priceRange: [105, null] },
+      ],
+      expectedPrice: 100.2,
+      expectedReturn: 0.002,
+      pUp: 0.56,
+    };
+
+    const sig = computeActionSignal(dist, 100, 0.05, 0.03, 7, 0.04, scenarios, 'crypto');
+
+    expect(sig.expectedReturn).toBeGreaterThan(0);
+    expect(sig.recommendation).toBe('BUY');
+  });
+
+  it('uses bearish short-horizon crypto direction when pUp is clear but expected return stays in HOLD band', () => {
+    const dist: MarkovDistributionPoint[] = [
+      { price: 95,  probability: 0.92, lowerBound: 0.88, upperBound: 0.96, source: 'markov' },
+      { price: 97,  probability: 0.80, lowerBound: 0.76, upperBound: 0.84, source: 'markov' },
+      { price: 99,  probability: 0.62, lowerBound: 0.58, upperBound: 0.66, source: 'markov' },
+      { price: 100, probability: 0.44, lowerBound: 0.40, upperBound: 0.48, source: 'markov' },
+      { price: 101, probability: 0.28, lowerBound: 0.24, upperBound: 0.32, source: 'markov' },
+      { price: 103, probability: 0.12, lowerBound: 0.09, upperBound: 0.15, source: 'markov' },
+    ];
+    const scenarios: ScenarioProbabilities = {
+      buckets: [
+        { label: 'Down >5%',  probability: 0.22, priceRange: [null, 95] },
+        { label: 'Down 3–5%', probability: 0.20, priceRange: [95, 97] },
+        { label: 'Flat ±3%',  probability: 0.24, priceRange: [97, 103] },
+        { label: 'Up 3–5%',   probability: 0.16, priceRange: [103, 105] },
+        { label: 'Up >5%',    probability: 0.18, priceRange: [105, null] },
+      ],
+      expectedPrice: 99.7,
+      expectedReturn: -0.003,
+      pUp: 0.44,
+    };
+
+    const sig = computeActionSignal(dist, 100, 0.05, 0.03, 7, 0.04, scenarios, 'crypto');
+
+    expect(sig.expectedReturn).toBeLessThan(0);
+    expect(sig.recommendation).toBe('SELL');
+  });
+
+  it('keeps the non-target short-horizon equity path unchanged for the same bullish setup', () => {
+    const dist: MarkovDistributionPoint[] = [
+      { price: 97,  probability: 0.95, lowerBound: 0.90, upperBound: 1.00, source: 'markov' },
+      { price: 99,  probability: 0.72, lowerBound: 0.68, upperBound: 0.76, source: 'markov' },
+      { price: 100, probability: 0.56, lowerBound: 0.52, upperBound: 0.60, source: 'markov' },
+      { price: 101, probability: 0.40, lowerBound: 0.36, upperBound: 0.44, source: 'markov' },
+      { price: 103, probability: 0.18, lowerBound: 0.14, upperBound: 0.22, source: 'markov' },
+      { price: 105, probability: 0.08, lowerBound: 0.05, upperBound: 0.11, source: 'markov' },
+    ];
+    const scenarios: ScenarioProbabilities = {
+      buckets: [
+        { label: 'Down >5%',  probability: 0.04, priceRange: [null, 95] },
+        { label: 'Down 3–5%', probability: 0.16, priceRange: [95, 97] },
+        { label: 'Flat ±3%',  probability: 0.28, priceRange: [97, 103] },
+        { label: 'Up 3–5%',   probability: 0.22, priceRange: [103, 105] },
+        { label: 'Up >5%',    probability: 0.30, priceRange: [105, null] },
+      ],
+      expectedPrice: 100.2,
+      expectedReturn: 0.002,
+      pUp: 0.56,
+    };
+
+    const sig = computeActionSignal(dist, 100, 0.05, 0.03, 7, 0.04, scenarios, 'equity');
+
+    expect(sig.recommendation).toBe('HOLD');
+  });
+
   it('computeMarkovDistribution result includes actionSignal field', async () => {
     const prices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.5);
     const result = await computeMarkovDistribution({

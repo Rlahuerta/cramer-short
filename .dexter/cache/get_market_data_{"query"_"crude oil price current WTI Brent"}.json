@@ -1,0 +1,1 @@
+{"key":"get_market_data:{\"query\":\"crude oil price current WTI Brent\"}","value":"{\"data\":{\"get_stock_price_WTI\":{\"error\":\"Error 432: This request exceeds this API key's set usage limit. You can increase its limit on the Tavily dashboard.\"}}}","expiresAt":1774946604623,"toolName":"get_market_data","savedAt":"2026-03-31T08:28:24.623Z"}

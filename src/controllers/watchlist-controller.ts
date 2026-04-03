@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { dexterPath } from '../utils/paths.js';
+import { cramerShortPath } from '../utils/paths.js';
 
 export interface WatchlistEntry {
   ticker: string;
@@ -82,7 +82,7 @@ export class WatchlistController {
   private readonly filePath: string;
 
   constructor(baseDir: string = process.cwd()) {
-    this.filePath = join(baseDir, dexterPath('watchlist.json'));
+    this.filePath = join(baseDir, cramerShortPath('watchlist.json'));
   }
 
   load(): WatchlistFile {

@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "routes": {
+    "AAPL": {
+      "preferred": "yahoo",
+      "updatedAt": "2026-04-01T08:31:38.579Z"
+    },
+    "VWS.CO": {
+      "preferred": "yahoo",
+      "updatedAt": "2026-03-30T14:02:19.744Z"
+    },
+    "SGOV": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:24.157Z"
+    },
+    "SHY": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:24.157Z"
+    },
+    "GLD": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:24.157Z"
+    },
+    "QUAL": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:24.157Z"
+    },
+    "UUP": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:24.157Z"
+    },
+    "VIXY": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:24.157Z"
+    },
+    "LMT": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:25.403Z"
+    },
+    "XOM": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:25.403Z"
+    },
+    "PG": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:25.403Z"
+    },
+    "JNJ": {
+      "preferred": "fmp",
+      "updatedAt": "2026-03-29T13:15:25.403Z"
+    },
+    "BTC-USD": {
+      "preferred": "yahoo",
+      "updatedAt": "2026-03-29T19:55:32.576Z"
+    },
+    "AMD": {
+      "preferred": "yahoo",
+      "updatedAt": "2026-04-01T08:17:15.278Z"
+    },
+    "ORCL": {
+      "preferred": "yahoo",
+      "updatedAt": "2026-04-01T08:17:15.278Z"
+    },
+    "VALE": {
+      "preferred": "yahoo",
+      "updatedAt": "2026-04-01T08:17:15.278Z"
+    },
+    "IAU": {
+      "preferred": "fmp",
+      "updatedAt": "2026-04-01T08:17:16.384Z"
+    },
+    "QID": {
+      "preferred": "fmp",
+      "updatedAt": "2026-04-01T08:17:16.384Z"
+    }
+  }
+}

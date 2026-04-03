@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "id": "1774615494284-40d3dea9",
+  "name": "2026-03-27 /watchlisy",
+  "created": 1774615494284,
+  "lastModified": 1774615496097,
+  "queryCount": 0,
+  "llmMessages": [],
+  "history": [
+    {
+      "id": "1774615494277",
+      "query": "/watchlisy",
+      "events": [],
+      "answer": "",
+      "status": "interrupted",
+      "startTime": 1774615494277
+    }
+  ]
+}

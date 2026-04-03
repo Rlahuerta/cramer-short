@@ -52,7 +52,7 @@ function makeErrorItem(): HistoryItem {
 describe('exportToMarkdown', () => {
   it('produces correct top-level headings', () => {
     const md = exportToMarkdown([makeItem()], 'My Session');
-    expect(md).toContain('# Dexter Research Report');
+    expect(md).toContain('# Cramer-Short Research Report');
     expect(md).toContain('**Session:** My Session');
     expect(md).toContain('**Queries:** 1');
   });
@@ -180,7 +180,7 @@ describe('exportToCsv', () => {
 describe('empty history', () => {
   it('exportToMarkdown returns minimal valid output', () => {
     const md = exportToMarkdown([]);
-    expect(md).toContain('# Dexter Research Report');
+    expect(md).toContain('# Cramer-Short Research Report');
     expect(md).toContain('**Queries:** 0');
     expect(() => md).not.toThrow();
   });
@@ -230,7 +230,7 @@ describe('status filtering', () => {
 describe('exportSession outputPath', () => {
   it('uses auto-generated filename when outputPath is omitted', () => {
     const { path } = exportSession([makeItem()], 'markdown');
-    expect(path).toMatch(/dexter-export-\d{4}-\d{2}-\d{2}.*\.md$/);
+    expect(path).toMatch(/cramer-short-export-\d{4}-\d{2}-\d{2}.*\.md$/);
     expect(path).toContain(process.cwd());
   });
 

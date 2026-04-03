@@ -22,10 +22,10 @@ import {
 } from './group/index.js';
 import type { GroupContext } from '../agent/prompts.js';
 import { appendFileSync } from 'node:fs';
-import { dexterPath } from '../utils/paths.js';
+import { cramerShortPath } from '../utils/paths.js';
 import { getSetting } from '../utils/config.js';
 
-const LOG_PATH = dexterPath('gateway-debug.log');
+const LOG_PATH = cramerShortPath('gateway-debug.log');
 function debugLog(msg: string) {
   appendFileSync(LOG_PATH, `${new Date().toISOString()} ${msg}\n`);
 }

@@ -18,8 +18,8 @@ mock.module('../tools/registry.js', () => ({
 // in tests because no assertion here checks for skill presence or absence.
 
 mock.module('../utils/paths.js', () => ({
-  dexterPath: mock((sub: string) => join(testDir, sub ?? 'SOUL.md')),
-  getDexterDir: mock(() => testDir),
+  cramerShortPath: mock((sub: string) => join(testDir, sub ?? 'SOUL.md')),
+  getCramerShortDir: mock(() => testDir),
 }));
 
 const {
@@ -138,9 +138,9 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('Group Chat');
   });
 
-  it('mentions Dexter as the assistant name', () => {
+  it('mentions Cramer-Short as the assistant name', () => {
     const prompt = buildSystemPrompt('gpt-5.4');
-    expect(prompt).toContain('Dexter');
+    expect(prompt).toContain('Cramer-Short');
   });
 });
 

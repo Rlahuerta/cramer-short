@@ -1,0 +1,22 @@
+{
+  "endpoint": "/prices/",
+  "params": {
+    "ticker": "AAPL",
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "interval": "day",
+    "interval_multiplier": 1
+  },
+  "data": {
+    "prices": [
+      {
+        "open": 100,
+        "close": 105,
+        "high": 106,
+        "low": 99
+      }
+    ]
+  },
+  "url": "https://api.financialdatasets.ai/prices/?ticker=AAPL&start_date=2024-01-01&end_date=2024-12-31",
+  "cachedAt": "2026-03-30T18:03:33.603Z"
+}

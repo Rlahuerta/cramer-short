@@ -1,6 +1,6 @@
 /**
  * TDD tests for session-store.ts — session persistence file I/O.
- * All tests use an isolated tmp directory; no side effects on .dexter/.
+ * All tests use an isolated tmp directory; no side effects on .cramer-short/.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';

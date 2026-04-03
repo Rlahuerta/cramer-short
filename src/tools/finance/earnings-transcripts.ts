@@ -90,7 +90,7 @@ export function parseEdgarAtomFeed(xml: string): Array<{ url: string; date: stri
 async function findTranscriptUrl(indexUrl: string): Promise<string | null> {
   try {
     const res = await fetch(indexUrl, {
-      headers: { 'User-Agent': 'Dexter/1.0 research@dexter.ai' },
+      headers: { 'User-Agent': 'CramerShort/1.0 research@cramer-short.ai' },
     });
     if (!res.ok) return null;
     const html = await res.text();
@@ -166,7 +166,7 @@ export const getEarningsTranscript = new DynamicStructuredTool({
         `&type=8-K&dateb=&owner=include&count=5&output=atom`;
 
       const atomRes = await fetch(atomUrl, {
-        headers: { 'User-Agent': 'Dexter/1.0 research@dexter.ai' },
+        headers: { 'User-Agent': 'CramerShort/1.0 research@cramer-short.ai' },
       });
 
       if (!atomRes.ok) {
@@ -222,7 +222,7 @@ export const getEarningsTranscript = new DynamicStructuredTool({
       }
 
       const transcriptRes = await fetch(transcriptUrl, {
-        headers: { 'User-Agent': 'Dexter/1.0 research@dexter.ai' },
+        headers: { 'User-Agent': 'CramerShort/1.0 research@cramer-short.ai' },
       });
       if (!transcriptRes.ok) {
         throw new Error(`Failed to fetch transcript: ${transcriptRes.status}`);

@@ -18,7 +18,7 @@ import { xApiBreaker } from '../../utils/circuit-breaker.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-const REDDIT_UA = 'Dexter/1.0 (financial research assistant)';
+const REDDIT_UA = 'CramerShort/1.0 (financial research assistant)';
 const REDDIT_BASE = 'https://www.reddit.com';
 const X_API_BASE = 'https://api.x.com/2';
 const FEAR_GREED_URL = 'https://api.alternative.me/fng/?limit=1';

@@ -12,8 +12,8 @@ import { tmpdir } from 'node:os';
 // Keep paths relative so chdir isolation works. Override any absolute-path
 // mock that parallel worker (agent.test.ts) might have registered.
 mock.module('../utils/paths.js', () => ({
-  dexterPath: mock((...segments: string[]) => join('.dexter', ...segments)),
-  getDexterDir: mock(() => '.dexter'),
+  cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
+  getCramerShortDir: mock(() => '.dexter'),
 }));
 
 const { createRunContext } = await import('./run-context.js');

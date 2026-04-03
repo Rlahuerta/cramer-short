@@ -1,8 +1,8 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getDexterDir } from './paths.js';
+import { getCramerShortDir } from './paths.js';
 
-export const CACHE_DIR = join(getDexterDir(), 'cache');
+export const CACHE_DIR = join(getCramerShortDir(), 'cache');
 
 export interface DiskCacheEntry {
   key: string;

@@ -74,7 +74,7 @@ export function exportToMarkdown(history: HistoryItem[], sessionName?: string): 
   const completed = history.filter((h) => h.status === 'complete');
   const lines: string[] = [];
 
-  lines.push('# Dexter Research Report');
+  lines.push('# Cramer-Short Research Report');
   lines.push(`**Session:** ${sessionName ?? 'Untitled'}`);
   lines.push(`**Date:** ${isoDate()}`);
   lines.push(`**Queries:** ${completed.length}`);
@@ -198,7 +198,7 @@ export function exportSession(
   outputPath?: string,
 ): { path: string; content: string } {
   const ext = format === 'markdown' ? 'md' : format === 'json' ? 'json' : 'csv';
-  const filename = `dexter-export-${exportTimestamp()}.${ext}`;
+  const filename = `cramer-short-export-${exportTimestamp()}.${ext}`;
   const filePath = outputPath ?? `${process.cwd()}/${filename}`;
 
   let content: string;

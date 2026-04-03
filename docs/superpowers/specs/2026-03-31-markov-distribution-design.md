@@ -8,7 +8,7 @@
 
 ## Overview
 
-This design adds a Markov chain-based probability distribution generator to Dexter. It produces full probability distributions for stock/ETF prices at user-specified horizons (1-90 days) by combining:
+This design adds a Markov chain-based probability distribution generator to Cramer-Short. It produces full probability distributions for stock/ETF prices at user-specified horizons (1-90 days) by combining:
 
 1. **Polymarket threshold markets** — Real-money probability anchors at specific price levels
 2. **Historical regime transitions** — Markov transition matrix estimated from 60-90 days of price history

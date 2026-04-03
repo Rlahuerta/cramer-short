@@ -1,6 +1,6 @@
 # Watchlist — Command Reference
 
-Dexter's `/watchlist` command is your portfolio tracker and quick-glance market dashboard. It stores positions locally and can fetch live prices, P&L, analyst targets, and recent news — all without invoking the full LLM agent.
+Cramer-Short's `/watchlist` command is your portfolio tracker and quick-glance market dashboard. It stores positions locally and can fetch live prices, P&L, analyst targets, and recent news — all without invoking the full LLM agent.
 
 ---
 
@@ -150,7 +150,7 @@ Shows portfolio-level aggregates and an allocation bar chart:
 
 ## Storage
 
-Watchlist data is stored locally in `~/.dexter/watchlist.json`:
+Watchlist data is stored locally in `~/.cramer-short/watchlist.json`:
 
 ```json
 {

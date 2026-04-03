@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "ticker": "VALE",
+      "addedAt": "2026-03-27"
+    },
+    {
+      "ticker": "AMD",
+      "addedAt": "2026-03-27"
+    },
+    {
+      "ticker": "IAU",
+      "addedAt": "2026-03-27"
+    },
+    {
+      "ticker": "ORACLE",
+      "addedAt": "2026-03-27"
+    },
+    {
+      "ticker": "VESTAS",
+      "addedAt": "2026-03-27"
+    },
+    {
+      "ticker": "QID",
+      "addedAt": "2026-03-30"
+    },
+    {
+      "ticker": "UCO",
+      "addedAt": "2026-03-30"
+    }
+  ]
+}

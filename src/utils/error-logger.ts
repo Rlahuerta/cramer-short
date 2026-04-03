@@ -1,6 +1,6 @@
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getDexterDir } from './paths.js';
+import { getCramerShortDir } from './paths.js';
 
 export interface ErrorLogEntry {
   timestamp: string;  // ISO 8601
@@ -11,7 +11,7 @@ export interface ErrorLogEntry {
 }
 
 function getLogsDir(): string {
-  return join(getDexterDir(), 'logs');
+  return join(getCramerShortDir(), 'logs');
 }
 
 function getLogFile(): string {

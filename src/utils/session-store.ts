@@ -2,8 +2,8 @@
  * Session persistence — file I/O layer.
  *
  * Storage layout:
- *   {baseDir}/.dexter/sessions/_index.json   — lightweight metadata for fast listing
- *   {baseDir}/.dexter/sessions/{id}.json     — full session file (two-layer format)
+ *   {baseDir}/.cramer-short/sessions/_index.json   — lightweight metadata for fast listing
+ *   {baseDir}/.cramer-short/sessions/{id}.json     — full session file (two-layer format)
  *
  * Two-layer format keeps the file lean:
  *   llmMessages  — compact (query + answer + summary), seeded into InMemoryChatHistory on resume
@@ -14,7 +14,7 @@ import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { getDexterDir } from './paths.js';
+import { getCramerShortDir } from './paths.js';
 import type { HistoryItem } from '../types.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ const SESSIONS_DIR = 'sessions';
 const INDEX_FILE = '_index.json';
 
 function sessionsDir(baseDir: string): string {
-  return join(baseDir, getDexterDir(), SESSIONS_DIR);
+  return join(baseDir, getCramerShortDir(), SESSIONS_DIR);
 }
 
 function indexPath(baseDir: string): string {

@@ -1,11 +1,11 @@
 import { join } from 'node:path';
 
-const DEXTER_DIR = '.dexter';
+const CRAMER_SHORT_DIR = '.cramer-short';
 
-export function getDexterDir(): string {
-  return DEXTER_DIR;
+export function getCramerShortDir(): string {
+  return CRAMER_SHORT_DIR;
 }
 
-export function dexterPath(...segments: string[]): string {
-  return join(getDexterDir(), ...segments);
+export function cramerShortPath(...segments: string[]): string {
+  return join(getCramerShortDir(), ...segments);
 }

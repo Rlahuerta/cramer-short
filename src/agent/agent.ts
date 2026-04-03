@@ -287,7 +287,7 @@ export function buildDistributionWarningPrefix(query: string, toolCalls: ToolCal
   return [
     '## Warning: no validated Markov distribution was produced',
     '',
-    'Dexter did not produce a successful non-abstaining `markov_distribution` result for this distribution query. Any answer below should be read as fallback analysis, not a calibrated probability distribution.',
+    'Cramer-Short did not produce a successful non-abstaining `markov_distribution` result for this distribution query. Any answer below should be read as fallback analysis, not a calibrated probability distribution.',
     '',
     '---',
     '',

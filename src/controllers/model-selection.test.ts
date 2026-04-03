@@ -13,9 +13,9 @@ import * as configModule from '../utils/config.js';
 import { ModelSelectionController } from './model-selection.js';
 
 // ---------------------------------------------------------------------------
-// Guard: prevent ANY test in this file from writing to .dexter/settings.json.
+// Guard: prevent ANY test in this file from writing to .cramer-short/settings.json.
 // Tests that reach completeModelSwitch() call setSetting() which persists model
-// names to disk, corrupting the real settings for the running Dexter process.
+// names to disk, corrupting the real settings for the running Cramer-Short process.
 // ---------------------------------------------------------------------------
 let setSettingSpy: ReturnType<typeof spyOn>;
 beforeEach(() => {

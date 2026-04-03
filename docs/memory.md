@@ -1,6 +1,6 @@
 # Memory System
 
-Dexter maintains persistent memory across sessions using plain markdown files stored in `.dexter/memory/`. This lets the agent remember your investment preferences, research notes, and portfolio context without re-explaining them every session.
+Cramer-Short maintains persistent memory across sessions using plain markdown files stored in `.cramer-short/memory/`. This lets the agent remember your investment preferences, research notes, and portfolio context without re-explaining them every session.
 
 ---
 
@@ -34,7 +34,7 @@ All memory content uses a four-tier priority system:
 
 ## Session Flush
 
-When the session context approaches the token limit, Dexter automatically flushes durable facts from the conversation into today's `YYYY-MM-DD.md` file. This prevents context overflow while preserving research value.
+When the session context approaches the token limit, Cramer-Short automatically flushes durable facts from the conversation into today's `YYYY-MM-DD.md` file. This prevents context overflow while preserving research value.
 
 Flush output follows the P1–P4 priority system and includes date-stamped financial data.
 
@@ -59,7 +59,7 @@ Dream auto-runs at startup when **all three** conditions are true:
 - ≥ 24 hours have elapsed since the last Dream run
 - ≥ 3 sessions have been started since the last Dream run
 
-The session counter increments automatically every time Dexter starts.
+The session counter increments automatically every time Cramer-Short starts.
 
 ### Manual trigger
 
@@ -84,13 +84,13 @@ Status is shown briefly in the header line during the run:
 
 ### Archived files
 
-Processed daily files are moved to `.dexter/memory/archive/` — they are never deleted. You can inspect them at any time to review what was consolidated.
+Processed daily files are moved to `.cramer-short/memory/archive/` — they are never deleted. You can inspect them at any time to review what was consolidated.
 
 ---
 
 ## Memory Search
 
-When memory is enabled (requires an embedding provider), Dexter uses hybrid vector + keyword search to retrieve the most relevant memory chunks for each query.
+When memory is enabled (requires an embedding provider), Cramer-Short uses hybrid vector + keyword search to retrieve the most relevant memory chunks for each query.
 
 Search is triggered automatically for financial queries and returns ranked results with source file, line range, and an explanation score (`v=vector k=keyword src=both`).
 
@@ -98,7 +98,7 @@ Search is triggered automatically for financial queries and returns ranked resul
 
 ## Memory Auto-Injection
 
-At the start of **every query**, Dexter searches memory for relevant prior
+At the start of **every query**, Cramer-Short searches memory for relevant prior
 research and prepends it to the prompt as a `📚 Prior Research:` block.
 
 **Two search passes run in parallel (results are deduplicated):**
@@ -173,7 +173,7 @@ Memory is disabled by default when no embedding provider is configured.
 
 ## Context Summaries (Smarter Clearing)
 
-When a long research session causes the agent's context window to fill up, Dexter must drop the oldest tool results to make room. Instead of simply discarding them, it first generates a compact **context summary** — a condensed digest of what was in the dropped results — and injects it into the scratchpad.
+When a long research session causes the agent's context window to fill up, Cramer-Short must drop the oldest tool results to make room. Instead of simply discarding them, it first generates a compact **context summary** — a condensed digest of what was in the dropped results — and injects it into the scratchpad.
 
 ### Why this matters
 
@@ -196,7 +196,7 @@ Each condensed entry includes:
 
 ### Viewing in scratchpad
 
-Context summary entries appear in the `.dexter/scratchpad/*.jsonl` debug files with `"type": "context_summary"`:
+Context summary entries appear in the `.cramer-short/scratchpad/*.jsonl` debug files with `"type": "context_summary"`:
 
 ```json
 {"type":"context_summary","timestamp":"...","content":"The following 2 earlier tool result(s) were condensed…"}
@@ -207,7 +207,7 @@ Context summary entries appear in the `.dexter/scratchpad/*.jsonl` debug files w
 ## File Layout
 
 ```
-.dexter/
+.cramer-short/
   memory/
     MEMORY.md              ← always loaded at session start
     FINANCE.md             ← always loaded at session start
@@ -264,8 +264,8 @@ for easy filtering and auditing.
 
 ## Ticker→API Routing Cache
 
-Each time a financial data call succeeds or falls back, Dexter records which API
-backend worked for that ticker in `.dexter/api-routing.json`. On the next session
+Each time a financial data call succeeds or falls back, Cramer-Short records which API
+backend worked for that ticker in `.cramer-short/api-routing.json`. On the next session
 the router reads this cache and routes directly to the correct backend without
 probing failing APIs first.
 

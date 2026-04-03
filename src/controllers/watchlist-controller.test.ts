@@ -2,7 +2,7 @@
  * WatchlistController tests — written BEFORE the implementation (TDD).
  *
  * All tests use a temporary directory so they never touch the real
- * .dexter/watchlist.json.
+ * .cramer-short/watchlist.json.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -46,7 +46,7 @@ describe('load()', () => {
 // ---------------------------------------------------------------------------
 describe('add()', () => {
   it('creates watchlist.json if it does not exist', () => {
-    const file = join(tmpDir, '.dexter', 'watchlist.json');
+    const file = join(tmpDir, '.cramer-short', 'watchlist.json');
     expect(existsSync(file)).toBe(false);
     ctrl.add('AAPL');
     expect(existsSync(file)).toBe(true);
@@ -164,7 +164,7 @@ describe('JSON schema', () => {
   it('saved file has version:1 and entries array', () => {
     ctrl.add('GOOG');
     const raw = JSON.parse(
-      readFileSync(join(tmpDir, '.dexter', 'watchlist.json'), 'utf-8'),
+      readFileSync(join(tmpDir, '.cramer-short', 'watchlist.json'), 'utf-8'),
     );
     expect(raw.version).toBe(1);
     expect(Array.isArray(raw.entries)).toBe(true);

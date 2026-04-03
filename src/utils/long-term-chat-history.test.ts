@@ -79,7 +79,7 @@ describe('LongTermChatHistory — load (existing file)', () => {
   it('recovers gracefully from corrupt JSON (resets to empty)', async () => {
     // Create a corrupt JSON file
     const { mkdir, writeFile } = await import('node:fs/promises');
-    const dir = join(tmpDir, '.dexter', 'messages');
+    const dir = join(tmpDir, '.cramer-short', 'messages');
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'chat_history.json'), 'NOT VALID JSON', 'utf-8');
 

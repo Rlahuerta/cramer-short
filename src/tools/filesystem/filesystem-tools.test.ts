@@ -18,8 +18,8 @@ import { expandPath, resolveReadPath, resolveToCwd } from './utils/path-utils.js
 // Temp directory setup — kept inside cwd so sandbox checks pass without mocking
 // ---------------------------------------------------------------------------
 
-const TMP_DIR = join(process.cwd(), '.dexter-fs-test-tmp');
-const REL_TMP = '.dexter-fs-test-tmp'; // relative to cwd
+const TMP_DIR = join(process.cwd(), '.cramer-short-fs-test-tmp');
+const REL_TMP = '.cramer-short-fs-test-tmp'; // relative to cwd
 
 beforeEach(async () => {
   await mkdir(TMP_DIR, { recursive: true });
@@ -294,7 +294,7 @@ describe('edit_file tool', () => {
       await editFileTool.invoke({
         path: relPath('edit.txt'),
         old_text: 'Hello world',
-        new_text: 'Hello Dexter',
+        new_text: 'Hello Cramer-Short',
       }),
     );
 

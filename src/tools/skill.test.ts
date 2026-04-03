@@ -17,7 +17,7 @@ function makeSkill(overrides: Partial<Skill> = {}): Skill {
   return {
     name: 'dcf',
     description: 'DCF valuation workflow',
-    path: '/home/user/.dexter/skills/dcf/SKILL.md',
+    path: '/home/user/.cramer-short/skills/dcf/SKILL.md',
     source: 'builtin',
     instructions: 'Step 1: Gather revenue data.\nStep 2: Estimate WACC.',
     parameters: {},

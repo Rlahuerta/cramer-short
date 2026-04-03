@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Dexter is an AI-powered financial research agent with a terminal UI (TUI). It uses LangChain to orchestrate LLM calls and provides tools for financial data retrieval, web search, and research synthesis.
+Cramer-Short is an AI-powered financial research agent with a terminal UI (TUI). It uses LangChain to orchestrate LLM calls and provides tools for financial data retrieval, web search, and research synthesis.
 
 ## Development Commands
 
@@ -56,11 +56,11 @@ bun run gateway        # Start gateway
 - `browser/` — Playwright for dynamic content
 
 ### Memory System (`src/memory/`)
-- Persistent Markdown in `.dexter/memory/` (`MEMORY.md`, `FINANCE.md`, daily `YYYY-MM-DD.md`)
+- Persistent Markdown in `.cramer-short/memory/` (`MEMORY.md`, `FINANCE.md`, daily `YYYY-MM-DD.md`)
 - Four-tier priority (P1 critical → P4 noise) for pruning
 - Auto-injection: Ticker-based + semantic search passes prepend `📚 Prior Research:` to queries
 - Namespaces: Scope insights per workflow (`namespace="dcf"`, `namespace="short-thesis"`)
-- Dream consolidation: Background merge of daily notes, archive to `.dexter/memory/archive/`
+- Dream consolidation: Background merge of daily notes, archive to `.cramer-short/memory/archive/`
 
 ### Skills (`src/skills/`)
 Pre-built research workflows: `dcf`, `full-analysis`, `short-thesis`, `earnings-preview`, `peer-comparison`, `watchlist-briefing`, `probability-assessment`, `sector-overview`, `geopolitics-osint`, `x-research`. Skills are prompt templates with parameter substitution.
@@ -117,15 +117,15 @@ Run a single test file: `bun test src/path/to/file.test.ts`
 
 ## API Routing Cache
 
-Ticker→API routing persisted in `.dexter/api-routing.json`. After discovering a ticker works better with FMP vs Yahoo Finance, that preference is cached and reused.
+Ticker→API routing persisted in `.cramer-short/api-routing.json`. After discovering a ticker works better with FMP vs Yahoo Finance, that preference is cached and reused.
 
 ## Session Files
 
-- `.dexter/settings.json` — Runtime config (`maxIterations`, `contextThreshold`, etc.)
-- `.dexter/schedules.json` — Scheduled research jobs
-- `.dexter/logs/errors.jsonl` — Structured error log
-- `.dexter/memory/` — Persistent Markdown memory
-- `.dexter/api-routing.json` — Ticker→API mappings (30-day TTL)
+- `.cramer-short/settings.json` — Runtime config (`maxIterations`, `contextThreshold`, etc.)
+- `.cramer-short/schedules.json` — Scheduled research jobs
+- `.cramer-short/logs/errors.jsonl` — Structured error log
+- `.cramer-short/memory/` — Persistent Markdown memory
+- `.cramer-short/api-routing.json` — Ticker→API mappings (30-day TTL)
 
 ## Documentation
 

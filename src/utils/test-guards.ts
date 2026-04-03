@@ -1,5 +1,5 @@
 /**
- * Shared test-tier guards for Dexter's three-tier test convention:
+ * Shared test-tier guards for Cramer-Short's three-tier test convention:
  *
  *   *.test.ts             — unit (pure logic, always run)
  *   *.integration.test.ts — real public APIs, no LLM
@@ -39,5 +39,5 @@ export const RUN_E2E = process.env.RUN_E2E === '1';
 /** Use instead of `it` for tests that hit real external APIs (no LLM). */
 export const integrationIt: typeof it = RUN_INTEGRATION ? it : it.skip;
 
-/** Use instead of `it` for tests that run the full Dexter agent against Ollama. */
+/** Use instead of `it` for tests that run the full Cramer-Short agent against Ollama. */
 export const e2eIt: typeof it = RUN_E2E ? it : it.skip;
