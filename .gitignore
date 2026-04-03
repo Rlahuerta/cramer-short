@@ -55,6 +55,7 @@ yarn-error.log*
 # Cramer-Short context files (offloaded tool outputs)
 .dexter/*
 .cramer-short/*
+.sisyphus/*
 references/*
 
 logs/
