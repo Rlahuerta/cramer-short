@@ -46,6 +46,10 @@ const TICKERS = [
   { symbol: 'TSLA',    type: 'stock'  as const, endpoint: 'prices' },
   { symbol: 'GLD',     type: 'etf'    as const, endpoint: 'prices' },
   { symbol: 'QQQ',     type: 'etf'    as const, endpoint: 'prices' },
+  { symbol: 'VOO',     type: 'etf'    as const, endpoint: 'prices' },
+  { symbol: 'DIA',     type: 'etf'    as const, endpoint: 'prices' },
+  { symbol: 'VTI',     type: 'etf'    as const, endpoint: 'prices' },
+  { symbol: 'IAU',     type: 'etf'    as const, endpoint: 'prices' },
   { symbol: 'BTC-USD', type: 'crypto' as const, endpoint: 'crypto/prices' },
 ];
 
