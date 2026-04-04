@@ -275,14 +275,24 @@ substantially more reliable than the 63% baseline.
 
 ## Per-Asset Reliability Profiles
 
-| Asset Type | Examples | Best At | Caution |
-|-----------|---------|---------|---------|
-| **ETFs** | SPY, QQQ, GLD | 14d direction (70–76%), reliable CI | Overfit risk on very short horizons (< 7d) |
-| **Stocks** | AAPL | 30d direction (67%) | High company-specific risk (earnings, news) not captured |
-| **Volatile Stocks** | TSLA | 30d with confidence filter | Low raw accuracy (51–58%), only use with selective filtering |
-| **Crypto** | BTC | CI coverage (100% at 90% level) | Direction near random (~50%), **do not trust for directional calls** |
+The current horizon audit for the live reporting surface tested
+`{5, 7, 10, 14, 20, 30, 45, 60}` using `walkForward`, `WARMUP=120`, and
+`STRIDE=10`. Use the table below for horizon selection and asset-specific
+directional guidance.
 
-### Per-Ticker Backtest Results (14d / 30d)
+| Asset | Good tested horizon(s) | Weak / unsupported horizon(s) | Notes |
+|-------|-------------------------|-------------------------------|-------|
+| **SPY** | **14d** (early positive), **20–30d** (supported band) | 5–10d limited; 45–60d not Markov-specific | Strong directional signal by 14d. |
+| **QQQ** | **14d** (early positive), **20–30d** (supported band) | 5–10d limited; 45–60d not Markov-specific | Similar to SPY, with clear strength by 14d. |
+| **GLD** | **20–30d** | 5–14d weaker; 45–60d not Markov-specific | Clearly strong by 20d and stronger by 30d. |
+| **BTC-USD** | **None** in `{5, 7, 10, 14, 20, 30, 45, 60}` | All tested horizons | Best observed directional accuracy was **49.2% at 30d**, still too weak for a “good horizon” claim. |
+
+The full horizon audit above is the current reporting-safe guidance. The
+historical 14d / 30d snapshot below remains useful context for the narrower
+original backtest, but it should not be used to infer that BTC has a good 30d
+horizon.
+
+### Historical 14d / 30d backtest snapshot
 
 | Ticker | Directional Accuracy | CI Coverage (90%) |
 |--------|---------------------|--------------------|
@@ -291,11 +301,15 @@ substantially more reliable than the 63% baseline.
 | QQQ | 73% / 69% | 89% / 89% |
 | AAPL | 54% / 67% | 92% / 94% |
 | TSLA | 51% / 58% | 97% / 97% |
-| BTC | 42% / 54% | 100% / 100% |
+| BTC | 42% / 54%* | 100% / 100% |
 
 ⚠️ **BTC and TSLA show near-random or anti-correlated directional accuracy.**
 The regime model can be actively misleading for highly volatile assets. Use the
 confidence score to filter, or rely only on CI coverage for these tickers.
+
+\* Historical 14d / 30d snapshot from the narrower backtest documented in this
+guide. The later full horizon audit still found **BTC-USD weak at every tested
+horizon**, with a best observed directional accuracy of **49.2% at 30d**.
 
 ---
 
@@ -330,9 +344,14 @@ regime changes not seen in training data (e.g., a sustained deflationary
 crash, a market structure change, or a new asset class entering the training
 universe).
 
-⚠️ **Horizon limits.** 14d and 30d horizons are well-tested. 7d and 60d have
-less backtest coverage. Beyond 60d, the Markov chain mixes toward its
-stationary distribution and loses directional information.
+⚠️ **Horizon limits.** The current horizon audit supports the **14–30d** band
+for non-crypto assets, with **SPY / QQQ already strong by 14d** and **GLD
+clearly strong from 20d onward**. **BTC-USD has no good tested horizon** in
+`{5, 7, 10, 14, 20, 30, 45, 60}`; its best observed directional accuracy was
+**49.2% at 30d**. At **45–60d**, average `markovWeight` is near zero, so those
+outcomes should not be attributed to the Markov chain signal itself. Beyond
+60d, the chain mixes toward its stationary distribution and loses directional
+information.
 
 ---
 
@@ -488,10 +507,11 @@ automatically based on the ticker symbol.
 
 | Horizon | Backtest Coverage | Notes |
 |---------|-------------------|-------|
-| 7 days | Limited | Less tested, higher noise |
-| **14 days** | **Well-tested** | Best directional accuracy for ETFs |
-| **30 days** | **Well-tested** | Good balance of signal and horizon |
-| 60 days | Limited | Markov chain starts mixing toward stationary |
+| 5–10 days | Limited | High noise across assets; not a supported band |
+| **14 days** | **Well-tested** | Earliest defensible horizon for **SPY / QQQ**; BTC remains weak |
+| **20 days** | **Well-tested** | Start of defensible good territory for non-crypto; **GLD** turns clearly strong |
+| **30 days** | **Well-tested** | Practical sweet spot for non-crypto; BTC is best observed here but still only **49.2%** |
+| 45–60 days | Limited | Average `markovWeight` is near zero; do not market wins as Markov-specific |
 | 90+ days | Not recommended | Model loses directional information |
 
 ### Default Parameters

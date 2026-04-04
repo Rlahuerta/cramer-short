@@ -159,6 +159,28 @@ These flags remain useful as reviewer-visible experiment seams, but none should 
 
 ---
 
+## Horizon audit summary (reporting alignment)
+
+The current harness was also audited across horizons `{5, 7, 10, 14, 20, 30, 45, 60}` using `walkForward`, `WARMUP=120`, and `STRIDE=10` on the embedded fixture.
+
+This was a reporting-alignment exercise, not a reopened modeling stage. The reviewer-safe summary is:
+
+- **BTC-USD has no good tested horizon.** The best observed BTC directional accuracy was **49.2% at 30d**, which is still weak and does not support a “good horizon” claim.
+- **SPY and QQQ show an early positive signal at 14d.**
+- **20d is the start of defensible good territory for non-crypto assets.**
+- **20-30d is the practical sweet spot for the non-crypto assets in this audit.**
+- **GLD is clearly strong by 20d and stronger by 30d.**
+- **45-60d should not be described as Markov-specific success** because average `markovWeight` is near zero there.
+
+Use that framing for reviewer-visible summaries:
+
+- do not soften the BTC result into “maybe a longer horizon works”
+- describe `14d` as an early positive signal only for `SPY` / `QQQ`
+- describe `20-30d` as the supported non-crypto band from this audit
+- if `45-60d` outcomes are mentioned at all, keep the attribution caveat explicit
+
+---
+
 ## Historical execution roadmap (completed)
 
 The stage sections below preserve the original PR3E–PR3I scope definitions as historical planning context. Actual outcomes are recorded in the completed-work tables and status tables in this document; they are not pending work.
