@@ -325,4 +325,41 @@ Confidence Distribution (SPY 14d):
     expect(total).toBeGreaterThan(0);
     expect(high + medium + low).toBe(total);
   }, 60_000);
+
+  it('compares per-ticker performance (SPY vs QQQ vs GLD)', async () => {
+    const tickers = ['SPY', 'QQQ', 'GLD'];
+    const results: Record<string, any> = {};
+
+    for (const ticker of tickers) {
+      const result = await runSwingTradeBacktest({
+        tickers: [ticker],
+        horizons: [14, 20],
+        confidenceThreshold: 0.25,
+        warmup: 120,
+        stride: 10,
+      });
+      results[ticker] = result.metrics;
+    }
+
+    console.log(`
+Per-Ticker Comparison (14d + 20d horizons, confidence ≥ 0.25):
+
+| Ticker | Signals | Filter Rate | Acc (filtered) | Win Rate | Sharpe |
+|--------|---------|-------------|----------------|----------|--------|
+| SPY    | ${results['SPY'].totalSignals.toString().padStart(7)} | ${(results['SPY'].filterRate * 100).toFixed(0).padStart(9)}% | ${(results['SPY'].filteredAccuracy * 100).toFixed(1).padStart(13)}% | ${(results['SPY'].filteredWinRate * 100).toFixed(1).padStart(8)}% | ${results['SPY'].filteredSharpe.toFixed(2).padStart(6)} |
+| QQQ    | ${results['QQQ'].totalSignals.toString().padStart(7)} | ${(results['QQQ'].filterRate * 100).toFixed(0).padStart(9)}% | ${(results['QQQ'].filteredAccuracy * 100).toFixed(1).padStart(13)}% | ${(results['QQQ'].filteredWinRate * 100).toFixed(1).padStart(8)}% | ${results['QQQ'].filteredSharpe.toFixed(2).padStart(6)} |
+| GLD    | ${results['GLD'].totalSignals.toString().padStart(7)} | ${(results['GLD'].filterRate * 100).toFixed(0).padStart(9)}% | ${(results['GLD'].filteredAccuracy * 100).toFixed(1).padStart(13)}% | ${(results['GLD'].filteredWinRate * 100).toFixed(1).padStart(8)}% | ${results['GLD'].filteredSharpe.toFixed(2).padStart(6)} |
+
+Key Insights:
+- **Best Sharpe:** ${Object.entries(results).sort((a, b) => b[1].filteredSharpe - a[1].filteredSharpe)[0][0]} (${Math.max(...Object.values(results).map(r => r.filteredSharpe)).toFixed(2)})
+- **Highest Win Rate:** ${Object.entries(results).sort((a, b) => b[1].filteredWinRate - a[1].filteredWinRate)[0][0]} (${(Math.max(...Object.values(results).map(r => r.filteredWinRate)) * 100).toFixed(1)}%)
+- **Most Signals:** ${Object.entries(results).sort((a, b) => b[1].totalSignals - a[1].totalSignals)[0][0]} (${Math.max(...Object.values(results).map(r => r.totalSignals))} total)
+`);
+
+    // Verify all tickers produced signals
+    for (const ticker of tickers) {
+      expect(results[ticker].totalSignals).toBeGreaterThan(0);
+      expect(results[ticker].filteredCount).toBeGreaterThan(0);
+    }
+  }, 120_000);
 });

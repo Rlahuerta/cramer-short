@@ -46,10 +46,28 @@ Then provide the ticker when prompted.
 Use the swing-trade-setup skill for NVDA
 ```
 
-**With parameters:**
+**With parameters (CLI syntax):**
+```
+/skills swing-trade-setup NVDA --horizon 20 --confidenceThreshold 0.30
+```
+
+**With parameters (natural language):**
 ```
 Use the swing-trade-setup skill for AAPL with a 20-day horizon
+Use the swing-trade-setup skill for TSLA with confidence threshold 0.35
 ```
+
+### Available Parameters
+
+| Parameter | Type | Default | Range | Description |
+|-----------|------|---------|-------|-------------|
+| `horizon` | number | 14 | 5–30 | Markov forecast horizon in trading days |
+| `confidenceThreshold` | number | 0.25 | 0.15–0.50 | Minimum confidence to act on signal |
+
+**When to override defaults:**
+- **Longer horizon (20–30d):** For swing trades with wider targets, or when 14d confidence is low
+- **Higher threshold (0.30–0.40):** When you want only high-conviction signals; reduces coverage but increases accuracy
+- **Lower threshold (0.15–0.20):** For exploratory analysis; not recommended for actual trades
 
 ### Example Prompts
 
@@ -171,7 +189,31 @@ Use the position-sizing skill for NVDA with a $100,000 portfolio
 Use the position-sizing skill for AAPL using my watchlist
 ```
 
-### Example Prompts
+**With parameters (CLI syntax):**
+```
+/skills position-sizing NVDA --horizon 20 --confidenceThreshold 0.30 --portfolioValue 75000 --riskPerTrade 0.015
+```
+
+**With parameters (natural language):**
+```
+Use the position-sizing skill for MSFT with a $75,000 portfolio and 1.5% risk per trade
+Use the position-sizing skill for GLD with horizon 30 days and confidence threshold 0.35
+```
+
+### Available Parameters
+
+| Parameter | Type | Default | Range | Description |
+|-----------|------|---------|-------|-------------|
+| `horizon` | number | 14 | 5–30 | Markov forecast horizon in trading days |
+| `confidenceThreshold` | number | 0.25 | 0.15–0.50 | Minimum confidence for sizing decisions |
+| `portfolioValue` | number | 100000 | 10k–10M | Total portfolio value in USD |
+| `riskPerTrade` | number | 0.01 | 0.005–0.03 | Base risk per trade (1% = 0.01) |
+
+**When to override defaults:**
+- **`portfolioValue`:** Always set to your actual portfolio value for accurate sizing
+- **`riskPerTrade`:** Increase to 0.015–0.02 for high-conviction setups; decrease to 0.005 for conservative approach
+- **`horizon`:** Match to your intended hold period (14d standard, 20–30d for wider targets)
+- **`confidenceThreshold`:** Increase to 0.30–0.40 for selective trading; never go below 0.20
 
 #### Basic Position Sizing
 ```
@@ -353,6 +395,7 @@ Both skills work best with **confirmed canonical coverage**:
 
 ### Example 1: High-Conviction Setup
 ```
+# Basic usage
 Use the swing-trade-setup skill for SPY with a 20-day horizon
 
 # Output shows:
@@ -366,6 +409,10 @@ Use the position-sizing skill for SPY with a $100,000 portfolio
 # Output shows:
 # - Recommended: 2.0% risk (1.5× standard due to high confidence)
 # - Position: 38 shares ($19,760)
+
+# Parameterized usage (CLI)
+/skills swing-trade-setup SPY --horizon 20 --confidenceThreshold 0.35
+/skills position-sizing SPY --portfolioValue 100000 --riskPerTrade 0.02
 ```
 
 ### Example 2: Low-Confidence Setup (Skip or Reduce)
@@ -407,6 +454,28 @@ Use the swing-trade-setup skill for GLD
 Use the position-sizing skill for SPY with $40,000 allocation
 Use the position-sizing skill for QQQ with $35,000 allocation
 Use the position-sizing skill for GLD with $25,000 allocation
+```
+
+### Example 5: Parameterized High-Conviction Trade
+```
+# Use higher confidence threshold for concentrated position
+/skills swing-trade-setup NVDA --horizon 14 --confidenceThreshold 0.40
+
+# If confidence ≥ 0.40, proceed with aggressive sizing
+/skills position-sizing NVDA --portfolioValue 75000 --riskPerTrade 0.02 --horizon 14
+
+# Output will use 2% base risk (instead of 1%) and 14-day Markov forecast
+```
+
+### Example 6: Conservative Exploration
+```
+# Lower confidence threshold to see more signals (for analysis only)
+/skills swing-trade-setup TSLA --horizon 7 --confidenceThreshold 0.20
+
+# Review signals, but use conservative sizing due to low confidence
+/skills position-sizing TSLA --portfolioValue 50000 --riskPerTrade 0.005 --confidenceThreshold 0.20
+
+# Uses 0.5% base risk (half of standard) due to speculative nature
 ```
 
 ---
@@ -454,4 +523,8 @@ Use the position-sizing skill for GLD with $25,000 allocation
 - **`swing-trade-setup`:** `/data/Repositories/dexter/src/skills/swing-trade-setup/SKILL.md`
 - **`position-sizing`:** `/data/Repositories/dexter/src/skills/position-sizing/SKILL.md`
 
-**Commit:** `b35d6da` — "Integrate Markov confidence into watchlist and add trading skills"
+**Commits:**
+- `b35d6da` — "Integrate Markov confidence into watchlist and add trading skills"
+- `98c901d` — "Add skill parameterization, confidence histogram, and swing-trade backtest"
+
+**Last Updated:** 2026-04-04 (parameters added)
