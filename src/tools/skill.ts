@@ -77,7 +77,12 @@ function resolveParams(
  */
 function applyPlaceholders(text: string, resolved: Record<string, string | number | boolean>): string {
   return text.replace(/\{\{(\w+)\}\}/g, (_match, key) => {
-    return key in resolved ? String(resolved[key]) : _match;
+    if (!(key in resolved)) return _match;
+    const val = resolved[key];
+    if (typeof val === 'string') {
+      return val.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+    }
+    return String(val);
   });
 }
 
