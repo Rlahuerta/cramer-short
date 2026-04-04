@@ -1028,9 +1028,9 @@ export function computeRegimeUpRates(
   const maxStart = Math.min(regimeSeq.length, returns.length) - horizon;
   for (let i = 0; i < maxStart; i++) {
     const regime = regimeSeq[i];
-    // Cumulative return over next `horizon` days
+    // Cumulative return over next `horizon` days (starts at i+1 — i.e., future returns only)
     let cumReturn = 0;
-    for (let j = i; j < i + horizon; j++) {
+    for (let j = i + 1; j <= i + horizon; j++) {
       cumReturn += returns[j];
     }
     
@@ -1709,10 +1709,16 @@ export function computeHorizonDriftVol(
   const mu_obs = REGIME_STATES.reduce(
     (s, state, i) => s + stateWeights[i] * regimeStats[state].meanReturn, 0,
   );
+  // Variance of the mixture: E[σ²] + Var(μ).
+  // E[σ²] captures within-regime volatility; Var(μ) captures between-regime
+  // mean differences — critical when regime weights are mixed and means are well-separated.
+  const varOfMeans = REGIME_STATES.reduce(
+    (s, state, i) => s + stateWeights[i] * (regimeStats[state].meanReturn - mu_obs) ** 2, 0,
+  );
   const sigma_obs = Math.sqrt(
     REGIME_STATES.reduce(
       (s, state, i) => s + stateWeights[i] * regimeStats[state].stdReturn ** 2, 0,
-    ),
+    ) + varOfMeans,
   );
 
   let mu_eff: number;
@@ -2135,6 +2141,7 @@ export function calibrateProbabilities(
     currentPrice?: number;        // required for drift-based mode
     driftN?: number;              // n-step drift (mu_n) from computeHorizonDriftVol
     volN?: number;                // n-step volatility (sigma_n)
+    nu?: number;                 // Student-t degrees of freedom (defaults to asset profile value)
   },
 ): MarkovDistributionPoint[] {
   const consensus = options?.ensembleConsensus ?? 0;
@@ -2186,7 +2193,7 @@ export function calibrateProbabilities(
   const volN = options?.volN;
 
   if (cp != null && driftN != null && volN != null && volN > 0) {
-    const nu = 5; // Student-t degrees of freedom (must match studentTSurvival)
+    const nu = options?.nu ?? 5; // Student-t degrees of freedom (must match studentTSurvival)
     const rawPUp = studentTSurvival(cp, cp, driftN, volN);
     const targetPUp = Math.max(0.01, Math.min(0.99, kappa * center + (1 - kappa) * rawPUp));
 
@@ -2270,14 +2277,15 @@ export function calibrateProbabilities(
 /**
  * Compute a 0–1 confidence score for a Markov prediction. Higher = more reliable.
  *
- * Combines four orthogonal signals:
- *   1. **Decisiveness** (40%): |P(up) − 0.5| × 2 — how far from a coin flip.
- *      When P(up)≈0.5, the model has no directional edge; ≈1.0 = very decisive.
- *   2. **Ensemble consensus** (25%): fraction of signals (momentum, mean-reversion,
+ * Combines six orthogonal signals:
+ *   1. **Decisiveness** (30%): |P(up) − 0.5| × 2 — how far from a coin flip.
+ *   2. **Ensemble consensus** (15%): fraction of signals (momentum, mean-reversion,
  *      crossover) that agree. consensus=3 → all agree → max contribution.
- *   3. **HMM convergence** (15%): Baum-Welch converged = +0.15 confidence.
- *   4. **Regime stability** (20%): consecutive days in the same regime / 20.
- *      Longer streaks → more predictable environment.
+ *   3. **HMM convergence** (10%): Baum-Welch converged = +0.10 confidence.
+ *   4. **Regime stability** (15%): consecutive days in the same regime / 20.
+ *   5. **Momentum agreement** (10%): fraction of lookbacks agreeing on direction.
+ *   6. **Base-rate alignment** (up to +20%): bonus when prediction agrees with
+ *      empirical P(up); mild penalty for contra-directional predictions.
  *
  * Inspired by El-Yaniv & Pidan (NeurIPS 2011): selective prediction trades
  * coverage for accuracy by abstaining when confidence is low.
@@ -3105,9 +3113,15 @@ export async function computeMarkovDistribution(params: {
     }
   }
 
-  // Apply P_fake override to inject the 3-state horizon weights smoothly into the rest of the pipeline
-  if (sidewaysSplitActive && weights3_experiment) {
-    P = [weights3_experiment, weights3_experiment, weights3_experiment];
+  // Apply P_fake override to inject the 3-state horizon weights smoothly into the rest of the pipeline.
+  // Guard: only activate if the experimental matrix is non-degenerate (all self-loops ≥ 0.333).
+  // This prevents the override from producing a matrix that violates basic ergodicity assumptions.
+  const sidewaysSplitSafe = sidewaysSplitActive
+    && weights3_experiment !== undefined
+    && Math.min(weights3_experiment[0], weights3_experiment[1], weights3_experiment[2]) >= 1 / 3;
+  if (sidewaysSplitSafe) {
+    const w = weights3_experiment!;
+    P = [w, w, w];
   }
 
   // --- Distribution ---
@@ -3158,7 +3172,7 @@ export async function computeMarkovDistribution(params: {
     stateWeightsForUp = Pn[STATE_INDEX[currentRegime]];
   }
 
-  const conditionalPUp = (typeof sidewaysSplitActive !== 'undefined' && sidewaysSplitActive && conditionalPUp_experiment !== undefined)
+  const conditionalPUp = (sidewaysSplitSafe && conditionalPUp_experiment !== undefined)
     ? conditionalPUp_experiment
     : REGIME_STATES.reduce(
         (s, state, i) => s + stateWeightsForUp[i] * regimeUpRates[state], 0,
@@ -3214,6 +3228,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice,
     driftN: calDriftN,
     volN: calVolN,
+    nu: assetProfile.studentTNu,
     matureBullCalibrationActive,
   });
 

@@ -3138,9 +3138,12 @@ describe('computeRegimeUpRates', () => {
     const regimeSeq: RegimeState[] = Array(10).fill('bull');
     const returns = [0.01, -0.01, 0.01, -0.01, 0.01, -0.01, 0.01, -0.01, 0.01, -0.01];
     const rates = computeRegimeUpRates(regimeSeq, returns, 1);
-    // horizon=1: i goes 0..8, cumReturn = returns[i]
-    // Up: i=0,2,4,6,8 (returns > 0) → 5 up out of 9 → 5/9 ≈ 0.556
-    expect(rates.bull).toBeCloseTo(5 / 9, 2);
+    // horizon=1: i goes 0..8 (i=9 has no forward return). Each i looks at returns[i+1].
+    // Odd i → returns[even] (DOWN); even i → returns[odd] (UP).
+    // i=0→1→DOWN, i=1→2→UP, i=2→3→DOWN, i=3→4→UP, i=4→5→DOWN,
+    // i=5→6→UP, i=6→7→DOWN, i=7→8→UP, i=8→9→DOWN
+    // 4 up / 9 total → 4/9 ≈ 0.444
+    expect(rates.bull).toBeCloseTo(4 / 9, 2);
   });
 
   it('handles multi-day horizon correctly', () => {
@@ -3148,11 +3151,13 @@ describe('computeRegimeUpRates', () => {
     const regimeSeq: RegimeState[] = Array(6).fill('bull');
     const returns = [0.01, 0.01, 0.01, -0.05, 0.01, 0.01];
     const rates = computeRegimeUpRates(regimeSeq, returns, 3);
-    // horizon=3: can start from day 0,1,2 (need 3 forward days)
-    // Day 0: cum = 0.01+0.01+0.01 = 0.03 → UP
-    // Day 1: cum = 0.01+0.01-0.05 = -0.03 → DOWN
-    // Day 2: cum = 0.01-0.05+0.01 = -0.03 → DOWN
-    expect(rates.bull).toBeCloseTo(1 / 3, 2);
+    // horizon=3: i can start at 0,1,2 (need 3 future days).
+    // Each window includes the large -5% drop at index 3:
+    // i=0: days 1,2,3 → 0.01+0.01-0.05 = -0.03 → DOWN
+    // i=1: days 2,3,4 → 0.01-0.05+0.01 = -0.03 → DOWN
+    // i=2: days 3,4,5 → -0.05+0.01+0.01 = -0.03 → DOWN
+    // P(up) = 0/3 = 0
+    expect(rates.bull).toBe(0);
   });
 
   it('returns 0.5 for regimes with no observations', () => {
@@ -3165,44 +3170,49 @@ describe('computeRegimeUpRates', () => {
   });
 
   it('distinguishes regime-specific up rates', () => {
-    // Bull days have positive returns, bear days have negative
+    // Bull days have positive returns, bear days have negative.
+    // With horizon=1 and i+1 offset, each i looks at returns[i+1].
     const regimeSeq: RegimeState[] = ['bull', 'bull', 'bull', 'bear', 'bear', 'bear'];
     const returns = [0.02, 0.01, 0.03, -0.02, -0.01, -0.03];
     const rates = computeRegimeUpRates(regimeSeq, returns, 1);
-    // Bull: days 0,1 look forward to +0.01, +0.03 → 2 up out of 2 (day 2 → bear return)
-    // Actually: day 0→returns[0]=0.02 is cumReturn starting at i=0, sum returns[0..0]=0.02 (up)
-    // Wait, let me re-check the implementation:
-    // for i=0: cumReturn = returns[0] = 0.02 > 0 → up
-    // for i=1: cumReturn = returns[1] = 0.01 > 0 → up
-    // for i=2: cumReturn = returns[2] = 0.03 > 0 → up (but regime=bull)
-    // for i=3: cumReturn = returns[3] = -0.02 < 0 → down (regime=bear)
-    // for i=4: cumReturn = returns[4] = -0.01 < 0 → down (regime=bear)
-    // maxStart = 6 - 1 = 5, so i goes 0..4
-    // bull: 3 up / 3 total = 1.0, bear: 0 up / 2 total = 0.0
-    expect(rates.bull).toBeGreaterThan(0.8);
-    expect(rates.bear).toBeLessThan(0.2);
+    // maxStart = 6 - 1 + 1 = 6, so i goes 0..5.
+    // i=0 (bull): look at returns[1]=0.01 → up
+    // i=1 (bull): look at returns[2]=0.03 → up
+    // i=2 (bull): look at returns[3]=-0.02 → down
+    // i=3 (bear): look at returns[4]=-0.01 → down
+    // i=4 (bear): look at returns[5]=-0.03 → down
+    // i=5 (bear): maxStart=6 → not in loop (i goes 0..5 only)
+    // bull: 2 up / 3 total = 2/3, bear: 0 up / 3 total = 0.0
+    expect(rates.bull).toBeCloseTo(2 / 3, 5);
+    expect(rates.bear).toBeLessThan(0.1);
   });
 
   it('applies exponential decay when decayRate is provided', () => {
-    // 4 days, all bull regime
+    // 4 days, all bull regime. With i+1 offset: each i looks at returns[i+1].
     const regimeSeq: RegimeState[] = ['bull', 'bull', 'bull', 'bull'];
     // Returns: +1%, -1%, -1%, +1%
     const returns = [0.01, -0.01, -0.01, 0.01];
     const horizon = 1;
-    // maxStart = 3
-    // i=0: ret=0.01 (UP). weight = 0.5^(3-1-0) = 0.5^2 = 0.25
-    // i=1: ret=-0.01 (DOWN). weight = 0.5^(3-1-1) = 0.5^1 = 0.5
-    // i=2: ret=-0.01 (DOWN). weight = 0.5^(3-1-2) = 0.5^0 = 1.0
-    // Total weight = 1.75. Up weight = 0.25. P(up) = 0.25 / 1.75 = 1/7
+    // maxStart = 4 - 1 + 1 = 4, so i goes 0..3.
+    // i=0: look at returns[1]=-0.01 → DOWN. weight = 0.5^(3-0)=0.125
+    // i=1: look at returns[2]=-0.01 → DOWN. weight = 0.5^(3-1)=0.25
+    // i=2: look at returns[3]=+0.01 → UP.   weight = 0.5^(3-2)=0.5
+    // i=3: maxStart=4 → not in loop (j=4 out of bounds)
+    // Total weight = 0.125+0.25+0.5 = 0.875. Up weight = 0.5. P(up) = 0.5/0.875 = 4/7
     const rates = computeRegimeUpRates(regimeSeq, returns, horizon, 0.5);
-    expect(rates.bull).toBeCloseTo(1 / 7, 5);
+    expect(rates.bull).toBeCloseTo(4 / 7, 5);
   });
 
   it('maintains default behavior when decayRate is omitted', () => {
     const regimeSeq: RegimeState[] = ['bull', 'bull', 'bull', 'bull'];
+    // Returns: +1%, -1%, -1%, +1%. With i+1 offset: i=3 looks at out-of-bounds.
     const returns = [0.01, -0.01, -0.01, 0.01];
     const horizon = 1;
-    // Same as above, but weight = 1 for all.
+    // maxStart = 4 - 1 + 1 = 4. i=0..3.
+    // i=0: look at returns[1]=-0.01 → DOWN (weight=1)
+    // i=1: look at returns[2]=-0.01 → DOWN (weight=1)
+    // i=2: look at returns[3]=+0.01 → UP (weight=1)
+    // i=3: j=4 out of bounds → not counted
     // Total weight = 3. Up weight = 1. P(up) = 1/3
     const rates = computeRegimeUpRates(regimeSeq, returns, horizon);
     expect(rates.bull).toBeCloseTo(1 / 3, 5);
@@ -3210,10 +3220,12 @@ describe('computeRegimeUpRates', () => {
 
   it('handles sparse recent regimes correctly with decayRate', () => {
     const regimeSeq: RegimeState[] = ['bear', 'bear'];
+    // Only one valid observation: i=0 looks at returns[1] (future), then horizon=1 is done.
     const returns = [0.01, 0.01];
     const rates = computeRegimeUpRates(regimeSeq, returns, 1, 0.5);
-    // maxStart = 1
-    // i=0: weight = 0.5^0 = 1. UP.
+    // maxStart = 2 - 1 = 1. i goes 0..0 only.
+    // i=0 (bear): look at returns[1]=0.01 → UP. weight = 0.5^(1-1-0)=0.5^0=1.
+    // bear: 1 up / 1 total = 1.0.
     expect(rates.bear).toBe(1.0);
     expect(rates.bull).toBe(0.5); // Fallback
     expect(rates.sideways).toBe(0.5);
