@@ -1379,8 +1379,9 @@ export function secondLargestEigenvalue(P: TransitionMatrix, iterations = 100): 
   const vL2 = v.reduce((s, x) => s + x * x, 0) ** 0.5;
   const vUnit = vL2 < 1e-12 ? v : v.map(x => x / vL2);
 
-  // Deflate: remove first eigenvector component, find second via power iteration
-  let w: number[] = Array.from({ length: n }, (_, i) => (i === 0 ? 0.6 : 0.1));
+  // Deflate: remove first eigenvector component, find second via power iteration.
+  // Use uniform starting vector to avoid biasing toward any particular state.
+  let w: number[] = Array.from({ length: n }, () => 1 / n);
   const wNorm = w.reduce((s, x) => s + x * x, 0) ** 0.5;
   w = w.map(x => x / wNorm);
 
@@ -1889,6 +1890,7 @@ export function interpolateDistribution(
   hmmOverride?: { drift: number; vol: number; weight: number },
   dailyVol?: number,
   startMixture?: Record<RegimeState, number>,
+  nu = 5,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -1951,7 +1953,7 @@ export function interpolateDistribution(
     const perturbedMu  = mu_n    + (rng() - 0.5) * sigma_n * 0.2;
     const perturbedVol = sigma_n * (0.9 + rng() * 0.2);
     for (const price of prices) {
-      const p = studentTSurvival(currentPrice, price, perturbedMu, perturbedVol);
+      const p = studentTSurvival(currentPrice, price, perturbedMu, perturbedVol, nu);
       ciSamples.get(price)!.push(p);
     }
   }
@@ -1959,7 +1961,7 @@ export function interpolateDistribution(
   // Build distribution points
   const rawPoints = prices.map(price => {
     const anchor = findAnchor(price);
-    const markovEst = studentTSurvival(currentPrice, price, mu_n, sigma_n);
+    const markovEst = studentTSurvival(currentPrice, price, mu_n, sigma_n, nu);
 
     let probability: number;
     let source: 'polymarket' | 'markov' | 'blend';
@@ -2193,8 +2195,8 @@ export function calibrateProbabilities(
   const volN = options?.volN;
 
   if (cp != null && driftN != null && volN != null && volN > 0) {
-    const nu = options?.nu ?? 5; // Student-t degrees of freedom (must match studentTSurvival)
-    const rawPUp = studentTSurvival(cp, cp, driftN, volN);
+    const nu = options?.nu ?? 5; // Student-t degrees of freedom
+    const rawPUp = studentTSurvival(cp, cp, driftN, volN, nu);
     const targetPUp = Math.max(0.01, Math.min(0.99, kappa * center + (1 - kappa) * rawPUp));
 
     // Find the drift that produces targetPUp via inverse CDF:
@@ -2209,11 +2211,11 @@ export function calibrateProbabilities(
       let newProb: number;
       if (point.source === 'markov') {
         // Pure Markov point: recompute survival with calibrated drift
-        newProb = studentTSurvival(cp, point.price, calibratedDrift, volN);
+        newProb = studentTSurvival(cp, point.price, calibratedDrift, volN, nu);
       } else {
         // Blended/polymarket point: apply additive delta to preserve anchor contribution
-        const oldMarkov = studentTSurvival(cp, point.price, driftN, volN);
-        const newMarkov = studentTSurvival(cp, point.price, calibratedDrift, volN);
+        const oldMarkov = studentTSurvival(cp, point.price, driftN, volN, nu);
+        const newMarkov = studentTSurvival(cp, point.price, calibratedDrift, volN, nu);
         newProb = Math.max(0, Math.min(1, point.probability + (newMarkov - oldMarkov)));
       }
       // Shift CI bounds by the same delta so they remain consistent with the point estimate.
@@ -2799,29 +2801,29 @@ export async function computeMarkovDistribution(params: {
   trajectory?: boolean;
   /** Number of days for trajectory (default: horizon, max 30) */
   trajectoryDays?: number;
-  /** Optional override for crypto short-horizon conditional weight (PR3B ablation) */
+  /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonConditionalWeight?: number;
-  /** Optional flag: activate PR3 post-experiment sideways_coil vs sideways_chop split for BTC short horizon */
+  /** @deprecated experimental ablation — backtests only */
   sidewaysSplit?: boolean;
-  /** Optional override for crypto short-horizon kappa multiplier (PR3B ablation) */
+  /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonKappaMultiplier?: number;
-  /** Optional flag: use raw P(up) for decision generation (PR3 lever ablation) */
+  /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonRawDecisionAblation?: boolean;
-  /** Optional flag: use PR3F crypto short-horizon disagreement prior (blends raw and calibrated P(up) when materially divergent) */
+  /** @deprecated experimental ablation — backtests only */
   pr3fCryptoShortHorizonDisagreementPrior?: boolean;
-  /** Optional override for crypto short-horizon pUp floor clamp (PR3 Stage 2 ablation) */
+  /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonPUpFloor?: number;
-  /** Optional override for crypto short-horizon bear margin multiplier (PR3 Stage 2 ablation) */
+  /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonBearMarginMultiplier?: number;
-  /** Optional flag: use recency-weighted regime up-rates for crypto short-horizon (PR3G state-model improvement) */
+  /** @deprecated experimental ablation — backtests only */
   pr3gCryptoShortHorizonRecencyWeighting?: boolean;
-  /** Optional explicit decay parameter for PR3G recency-weighted regime up-rates (overrides asset profile default if provided) */
+  /** @deprecated experimental ablation — backtests only */
   pr3gCryptoShortHorizonDecay?: number;
-  /** Optional explicit reference time for PR3H historical replay */
+  /** @deprecated experimental ablation — backtests only */
   referenceTimeMs?: number;
-  /** Optional flag: replace hard start state with additive mixture over last K states */
+  /** @deprecated experimental ablation — backtests only */
   startStateMixture?: boolean;
-  /** PR3 post-experiment: mature bull calibration correction for BTC 14d */
+  /** @deprecated experimental ablation — backtests only */
   matureBullCalibration?: boolean;
 }): Promise<MarkovDistributionResult> {
   const {
@@ -3070,10 +3072,6 @@ export async function computeMarkovDistribution(params: {
         const sum = row.reduce((a,b)=>a+b,0);
         return row.map(v => Math.max(0, v/sum));
       });
-      P4 = P4.map(row => {
-        const sum = row.reduce((a,b)=>a+b,0);
-        return row.map(v => v/sum);
-      });
 
       const Pn4 = matPow(P4, horizon);
       const w4 = Pn4[idx4[seq4[seq4.length - 1]]];
@@ -3137,6 +3135,7 @@ export async function computeMarkovDistribution(params: {
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
     20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, mixture,
+    assetProfile.studentTNu,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
