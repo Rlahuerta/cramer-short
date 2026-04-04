@@ -1,6 +1,19 @@
 ---
 name: swing-trade-setup
 description: Identify high-probability swing trade setups with entry signals, stop-loss levels, and confidence-weighted position sizing.
+parameters:
+  horizon:
+    type: number
+    description: "Forecast horizon in trading days (affects Markov confidence)"
+    default: 14
+    min: 5
+    max: 30
+  confidenceThreshold:
+    type: number
+    description: "Minimum Markov confidence to act on signal (0.25 recommended)"
+    default: 0.25
+    min: 0.15
+    max: 0.50
 ---
 
 # Swing Trade Setup Skill
@@ -45,7 +58,7 @@ Call `markov_distribution` to get regime-aware probability distribution:
 ```
 markov_distribution({
   ticker: "[TICKER]",
-  horizon: 14,
+  horizon: {{horizon}},
   historicalPrices: [...],  // from get_market_data or fetchHistoricalPrices
   polymarketMarkets: []     // omit if unavailable
 })
@@ -59,7 +72,7 @@ markov_distribution({
 - `actionSignal.actionLevels.targetPrice` — upside target
 - `actionSignal.actionLevels.stopLoss` — downside stop
 
-**Confidence threshold:** If `predictionConfidence < 0.25`, flag as **low-confidence setup** — accuracy drops to ~55% below this threshold. Consider waiting for higher-confidence signal or reducing position size.
+**Confidence threshold:** Active parameter `confidenceThreshold = {{confidenceThreshold}}`. If `predictionConfidence < {{confidenceThreshold}}`, flag as **low-confidence setup** — accuracy drops to ~55% below this threshold. Consider waiting for higher-confidence signal or reducing position size.
 
 ### Step 4 — Entry Signal Confirmation
 

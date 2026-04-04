@@ -467,6 +467,31 @@ export function buildSnapshotPanel(
     container.addChild(new Text('', 0, 0));
   }
 
+  // Markov confidence histogram (only when we have confidence data)
+  const confidenceValues = positionEntries
+    .filter((e) => e.predictionConfidence !== undefined)
+    .map((e) => e.predictionConfidence!);
+  if (confidenceValues.length > 0) {
+    const high = confidenceValues.filter((c) => c >= 0.40).length;
+    const medium = confidenceValues.filter((c) => c >= 0.25 && c < 0.40).length;
+    const low = confidenceValues.filter((c) => c < 0.25).length;
+    const total = confidenceValues.length;
+    const highPct = Math.round((high / total) * 100);
+    const medPct = Math.round((medium / total) * 100);
+    const lowPct = Math.round((low / total) * 100);
+    const avgConf = confidenceValues.reduce((a, b) => a + b, 0) / total;
+    container.addChild(new Text(theme.bold('  Markov Confidence Distribution:'), 0, 0));
+    const highBar = buildAsciiBar(highPct, 20);
+    const medBar = buildAsciiBar(medPct, 20);
+    const lowBar = buildAsciiBar(lowPct, 20);
+    container.addChild(new Text(`  High (≥0.40):   ${theme.success(highBar)} ${highPct}% (${high})`, 0, 0));
+    container.addChild(new Text(`  Medium (0.25–0.40): ${theme.warning(medBar)} ${medPct}% (${medium})`, 0, 0));
+    container.addChild(new Text(`  Low (<0.25):    ${theme.error(lowBar)} ${lowPct}% (${low})`, 0, 0));
+    const avgIcon = avgConf >= 0.40 ? theme.success('✓') : avgConf >= 0.25 ? theme.warning('⚠') : theme.error('✗');
+    container.addChild(new Text(`  Average: ${avgConf.toFixed(2)} ${avgIcon}`, 0, 0));
+    container.addChild(new Text('', 0, 0));
+  }
+
   // Watch-only section (tickers tracked without cost basis / shares)
   if (watchOnlyEntries.length > 0) {
     container.addChild(new Text(theme.muted('  Watching (no position):'), 0, 0));

@@ -1,6 +1,31 @@
 ---
 name: position-sizing
 description: Calculate optimal position size based on portfolio risk, Markov prediction confidence, and individual position risk characteristics.
+parameters:
+  horizon:
+    type: number
+    description: "Markov forecast horizon in trading days"
+    default: 14
+    min: 5
+    max: 30
+  confidenceThreshold:
+    type: number
+    description: "Minimum Markov confidence for sizing (0.25 recommended)"
+    default: 0.25
+    min: 0.15
+    max: 0.50
+  portfolioValue:
+    type: number
+    description: "Total portfolio value in USD (e.g. 100000 for $100k)"
+    default: 100000
+    min: 10000
+    max: 10000000
+  riskPerTrade:
+    type: number
+    description: "Base risk per trade as decimal (e.g. 0.01 for 1%)"
+    default: 0.01
+    min: 0.005
+    max: 0.03
 ---
 
 # Position Sizing Skill
@@ -40,11 +65,13 @@ For the target ticker, gather risk metrics:
 ```
 markov_distribution({
   ticker: "[TICKER]",
-  horizon: 14,
+  horizon: {{horizon}},
   historicalPrices: [...],
   polymarketMarkets: []
 })
 ```
+
+**Active parameters:** `horizon = {{horizon}}`, `confidenceThreshold = {{confidenceThreshold}}`, `portfolioValue = {{portfolioValue}}`, `riskPerTrade = {{riskPerTrade}}`
 
 **Extract:**
 - `predictionConfidence` — model decisiveness (0–1)
@@ -62,7 +89,7 @@ downsideRisk = (currentPrice - stopLoss) / currentPrice
 
 **Confidence-weighted risk adjustment:**
 ```
-baseConfidence = 0.30  // baseline confidence threshold
+baseConfidence = {{confidenceThreshold}}  // active parameter baseline
 confidenceFactor = predictionConfidence / baseConfidence
 // Clamp to 0.5× – 2.0× range
 confidenceFactor = max(0.5, min(2.0, confidenceFactor))
@@ -70,8 +97,8 @@ confidenceFactor = max(0.5, min(2.0, confidenceFactor))
 
 **Interpretation:**
 - `predictionConfidence ≥ 0.40` → confidenceFactor ≈ 1.3× (increase size)
-- `predictionConfidence 0.25–0.40` → confidenceFactor ≈ 0.8–1.3× (standard size)
-- `predictionConfidence < 0.25` → confidenceFactor ≈ 0.5–0.8× (reduce size)
+- `predictionConfidence {{confidenceThreshold}}–0.40` → confidenceFactor ≈ 0.8–1.3× (standard size)
+- `predictionConfidence < {{confidenceThreshold}}` → confidenceFactor ≈ 0.5–0.8× (reduce size)
 
 **Regime adjustment:**
 - Bear regime → reduce max position size by 20% (defensive stance)
@@ -85,8 +112,8 @@ Use the **Kelly-based fractional sizing** approach (conservative Kelly for swing
 **Method A: Risk-based sizing (recommended for most users)**
 
 ```
-portfolioValue = user's total portfolio value
-riskPerTrade = 0.01  // 1% portfolio risk per trade (standard swing trade rule)
+portfolioValue = {{portfolioValue}}  // active parameter
+riskPerTrade = {{riskPerTrade}}  // active parameter (e.g. 0.01 for 1%)
 downsideRisk = (entryPrice - stopLoss) / entryPrice
 
 positionValue = (portfolioValue × riskPerTrade × confidenceFactor) / downsideRisk
@@ -95,10 +122,10 @@ positionSizePct = positionValue / portfolioValue × 100
 ```
 
 **Example:**
-- Portfolio: $100,000
+- Portfolio: ${{portfolioValue}}
 - Entry: $100, Stop: $92 (8% downside)
 - predictionConfidence: 0.42 → confidenceFactor: 1.4
-- Position value = ($100,000 × 0.01 × 1.4) / 0.08 = $17,500
+- Position value = (${{portfolioValue}} × {{riskPerTrade}} × 1.4) / 0.08 = $17,500
 - Shares: 175
 - Position size: 17.5% of portfolio
 
@@ -134,16 +161,16 @@ Before finalizing recommendation, check for concentration risk:
 
 ### Step 6 — Apply Confidence Threshold Rules
 
-**Hard rules based on Markov predictionConfidence:**
+**Hard rules based on Markov predictionConfidence and active parameter `confidenceThreshold = {{confidenceThreshold}}`:**
 
 | Confidence | Max Position Size | Risk Per Trade | Notes |
 |------------|------------------|----------------|-------|
 | ≥ 0.40 (High) | 20% portfolio | 1.5% | High-conviction setups |
-| 0.25–0.40 (Medium) | 15% portfolio | 1.0% | Standard setups |
-| < 0.25 (Low) | 5% portfolio | 0.5% | Speculative, reduce exposure |
+| {{confidenceThreshold}}–0.40 (Medium) | 15% portfolio | 1.0% | Standard setups |
+| < {{confidenceThreshold}} (Low) | 5% portfolio | 0.5% | Speculative, reduce exposure |
 
-**If predictionConfidence < 0.25:**
-- Explicitly warn: "⚠️ Low Markov confidence — accuracy drops to ~55% below 0.25 threshold"
+**If predictionConfidence < {{confidenceThreshold}}:**
+- Explicitly warn: "⚠️ Low Markov confidence — accuracy drops to ~55% below {{confidenceThreshold}} threshold"
 - Recommend waiting for higher-confidence signal OR using minimum position size
 - Suggest tighter stop-loss to limit downside
 
