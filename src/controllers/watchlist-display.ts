@@ -24,6 +24,8 @@ export interface PriceSnapshot {
   analystRating?: string;       // e.g. "buy", "hold", "sell"
   analystAvgTarget?: number;
   news?: NewsItem[];
+  /** Markov Chain prediction confidence (0–1). Higher = more decisive + historically accurate. */
+  predictionConfidence?: number;
 }
 
 export interface NewsItem {
@@ -43,6 +45,8 @@ export interface EnrichedEntry {
   returnPct?: number;
   currentValue?: number;
   allocPct?: number;
+  /** Markov Chain prediction confidence (0–1), propagated from PriceSnapshot. */
+  predictionConfidence?: number;
 }
 
 export interface PortfolioTotals {
@@ -151,6 +155,7 @@ export function buildEnrichedEntries(
       returnPct: calcReturn(e, snap.price),
       currentValue: e.shares !== undefined ? snap.price * e.shares : undefined,
       allocPct: allocs.get(e.ticker),
+      predictionConfidence: snap.predictionConfidence,
     };
   });
 }

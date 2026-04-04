@@ -277,9 +277,9 @@ export function buildWatchlistPanel(
   // Header
   let header: string;
   if (hasPrices && hasPositions) {
-    header = `  ${'TICKER'.padEnd(8)}  ${'CURRENT'.padStart(9)}  ${'DAY%'.padStart(7)}  ${'P&L'.padStart(10)}  ${'RETURN'.padStart(8)}  ${'ALLOC'.padStart(6)}`;
+    header = `  ${'TICKER'.padEnd(8)}  ${'CURRENT'.padStart(9)}  ${'DAY%'.padStart(7)}  ${'P&L'.padStart(10)}  ${'RETURN'.padStart(8)}  ${'ALLOC'.padStart(6)}  ${'CONF'.padStart(5)}`;
   } else if (hasPrices) {
-    header = `  ${'TICKER'.padEnd(8)}  ${'CURRENT'.padStart(9)}  ${'DAY%'.padStart(7)}  ${'COST'.padStart(9)}  ${'SHARES'.padStart(8)}`;
+    header = `  ${'TICKER'.padEnd(8)}  ${'CURRENT'.padStart(9)}  ${'DAY%'.padStart(7)}  ${'COST'.padStart(9)}  ${'SHARES'.padStart(8)}  ${'CONF'.padStart(5)}`;
   } else {
     header = `  ${'TICKER'.padEnd(8)}  ${'COST BASIS'.padStart(10)}  ${'SHARES'.padStart(8)}  ADDED`;
   }
@@ -289,11 +289,16 @@ export function buildWatchlistPanel(
   const rows = enriched ?? entries.map((e) => ({
     ticker: e.ticker, shares: e.shares, costBasis: e.costBasis, addedAt: e.addedAt,
     price: undefined, changePercent: undefined, pnl: undefined, returnPct: undefined,
-    currentValue: undefined, allocPct: undefined,
+    currentValue: undefined, allocPct: undefined, predictionConfidence: undefined,
   }));
 
   for (const row of rows) {
     const ticker = theme.primary(row.ticker.padEnd(8));
+    const confStr = row.predictionConfidence !== undefined
+      ? row.predictionConfidence >= 0.25
+        ? theme.success('✓'.padStart(5))
+        : theme.warning('⚠'.padStart(5))
+      : '—'.padStart(5);
 
     if (hasPrices && hasPositions) {
       const price   = row.price !== undefined ? `$${row.price.toFixed(2)}`.padStart(9) : '         ';
@@ -309,7 +314,7 @@ export function buildWatchlistPanel(
       const alloc   = row.allocPct !== undefined
         ? `${row.allocPct.toFixed(0)}%`.padStart(6)
         : '      ';
-      container.addChild(new Text(`  ${ticker}  ${price}  ${day}  ${pnl}  ${ret}  ${alloc}`, 0, 0));
+      container.addChild(new Text(`  ${ticker}  ${price}  ${day}  ${pnl}  ${ret}  ${alloc}  ${confStr}`, 0, 0));
     } else if (hasPrices) {
       const price   = row.price !== undefined ? `$${row.price.toFixed(2)}`.padStart(9) : '         ';
       const day     = row.changePercent !== undefined
@@ -317,7 +322,7 @@ export function buildWatchlistPanel(
         : '       ';
       const cost    = row.costBasis !== undefined ? `$${row.costBasis}`.padStart(9) : '         ';
       const shares  = row.shares !== undefined ? String(row.shares).padStart(8) : '        ';
-      container.addChild(new Text(`  ${ticker}  ${price}  ${day}  ${cost}  ${shares}`, 0, 0));
+      container.addChild(new Text(`  ${ticker}  ${price}  ${day}  ${cost}  ${shares}  ${confStr}`, 0, 0));
     } else {
       const cost    = row.costBasis !== undefined ? `$${row.costBasis}`.padStart(10) : '          ';
       const shares  = row.shares !== undefined ? String(row.shares).padStart(8) : '        ';
@@ -437,15 +442,20 @@ export function buildSnapshotPanel(
     container.addChild(new Text('', 0, 0));
   }
 
-  // ASCII bar chart for allocation
+  // ASCII bar chart for allocation with Markov confidence
   if (positionEntries.length > 0) {
     container.addChild(new Text(theme.bold('  Allocation:'), 0, 0));
-    const BAR_WIDTH = 26;
+    const BAR_WIDTH = 22;
     for (const e of positionEntries) {
       const pct = e.allocPct!;
       const bar = buildAsciiBar(pct, BAR_WIDTH);
       const pctStr = `${pct.toFixed(0)}%`.padStart(4);
-      container.addChild(new Text(`  ${e.ticker.padEnd(6)} ${theme.primary(bar)} ${pctStr}`, 0, 0));
+      const confIcon = e.predictionConfidence !== undefined
+        ? e.predictionConfidence >= 0.25
+          ? theme.success(' ✓')
+          : theme.warning(' ⚠')
+        : ' —';
+      container.addChild(new Text(`  ${e.ticker.padEnd(6)} ${theme.primary(bar)} ${pctStr}${confIcon}`, 0, 0));
     }
     container.addChild(new Text('', 0, 0));
   }
@@ -824,8 +834,8 @@ export async function runCli() {
     const base = await fetcher(ticker);
     if (!base) return null;
 
-    // Fetch ratios + analyst targets + news in parallel
-    const [ratiosResult, analystResult, newsResult] = await Promise.allSettled([
+    // Fetch ratios + analyst targets + news + Markov confidence in parallel
+    const [ratiosResult, analystResult, newsResult, markovResult] = await Promise.allSettled([
       api.get('/financial-metrics/snapshot/', { ticker }),
       // Yahoo Finance analyst targets via env-conditional endpoint
       (async () => {
@@ -834,6 +844,11 @@ export async function runCli() {
         return typeof result === 'string' ? JSON.parse(result) : result;
       })(),
       api.get('/news', { ticker, limit: 3 }),
+      (async () => {
+        const markov = await import('./tools/finance/markov-distribution.js');
+        const result = await markov.markovDistributionTool.invoke({ ticker, horizon: 14 });
+        return typeof result === 'string' ? JSON.parse(result) : result;
+      })(),
     ]);
 
     const snap: PriceSnapshot = { ...base };
@@ -862,6 +877,13 @@ export async function runCli() {
           source: typeof item.source === 'string' ? item.source : undefined,
         };
       });
+    }
+
+    if (markovResult.status === 'fulfilled') {
+      const m = markovResult.value as { diagnostics?: { predictionConfidence?: number } };
+      if (m.diagnostics?.predictionConfidence !== undefined) {
+        snap.predictionConfidence = m.diagnostics.predictionConfidence;
+      }
     }
 
     return snap;
