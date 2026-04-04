@@ -144,6 +144,8 @@ export interface BacktestStep {
   validationMetric?: ValidationMetric;
   outOfSampleR2?: number | null;
   structuralBreakDetected?: boolean;
+  sidewaysSplitActive?: boolean;
+  matureBullCalibrationActive?: boolean;
   structuralBreakDivergence?: number | null;
   hmmConverged?: boolean | null;
   ensembleConsensus?: number | null;

@@ -17,6 +17,7 @@ import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.
 // ---------------------------------------------------------------------------
 
 export interface WalkForwardConfig {
+  sidewaysSplit?: boolean;
   /** Ticker symbol for display purposes */
   ticker: string;
   /** Daily close prices, oldest first */
@@ -43,6 +44,10 @@ export interface WalkForwardConfig {
   pr3gCryptoShortHorizonRecencyWeighting?: boolean;
   /** Optional explicit decay parameter for PR3G recency-weighted regime up-rates */
   pr3gCryptoShortHorizonDecay?: number;
+  /** Optional flag: reduce overconfidence in BTC 14d mature bull cases */
+  matureBullCalibration?: boolean;
+  /** Optional flag: replace hard start state with additive mixture over last K states */
+  startStateMixture?: boolean;
 }
 
 export interface WalkForwardResult {
@@ -98,6 +103,9 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
         pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
         pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
+        matureBullCalibration: config.matureBullCalibration,
+        startStateMixture: config.startStateMixture,
+        sidewaysSplit: config.sidewaysSplit,
       });
 
       // Find P(>currentPrice) from the calibrated distribution by interpolation
@@ -148,6 +156,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         ensembleConsensus: result.metadata.ensemble.consensus,
         probabilitySource: 'calibrated' as ProbabilitySource,
         decisionSource,
+        sidewaysSplitActive: result.metadata.sidewaysSplitActive,
+        matureBullCalibrationActive: result.metadata.matureBullCalibrationActive,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });

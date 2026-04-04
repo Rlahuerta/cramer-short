@@ -1280,6 +1280,82 @@ describe('Markov distribution walk-forward backtest', () => {
     );
   });
 
+  
+  
+
+  
+  describe('PR3 Post-Experiment: sideways_coil vs sideways_chop', () => {
+    integrationIt('evaluates sideways split against PR3G ceiling on canonical BTC 7d/14d', async () => {
+      const prices = fixture.tickers['BTC-USD'].closes;
+
+        const runEval = async (horizon: number, name: string, sidewaysSplit: boolean) => {
+          const config = {
+            ticker: 'BTC-USD',
+            prices,
+            horizon,
+            warmup: WARMUP,
+            stride: STRIDE,
+            pr3gCryptoShortHorizonRecencyWeighting: true,
+            pr3gCryptoShortHorizonDecay: 0.98,
+            sidewaysSplit,
+          };
+
+        const res = await walkForward(config);
+        const acc = directionalAccuracy(res.steps);
+        const calAcc = calibratedPUpDirectionalAccuracy(res.steps);
+        const brier = brierScore(res.steps);
+
+        const splitsActive = res.steps.filter(w => w.sidewaysSplitActive).length;
+
+        console.log(`[BTC ${horizon}d ${name}] Acc: ${(acc * 100).toFixed(1)}% | CalAcc: ${(calAcc * 100).toFixed(1)}% | Brier: ${brier.toFixed(3)} | Splits active: ${splitsActive}/${res.steps.length}`);
+      };
+
+      await runEval(7, 'Baseline (PR3G ceiling)', false);
+      await runEval(7, 'Experiment (Sideways Split)', true);
+
+      await runEval(14, 'Baseline (PR3G ceiling)', false);
+      await runEval(14, 'Experiment (Sideways Split)', true);
+      
+      expect(true).toBe(true);
+    }, 60000);
+  });
+
+  describe('PR3 Post-Experiment: matureBullCalibration', () => {
+    integrationIt('evaluates BTC 14d mature bull calibration against PR3G ceiling', async () => {
+      const prices = fixture.tickers['BTC-USD'].closes;
+
+      const runEval = async (horizon: number, name: string, matureBullCalibration: boolean) => {
+        const config = {
+          ticker: 'BTC-USD',
+          prices,
+          horizon,
+          warmup: WARMUP,
+          stride: STRIDE,
+          pr3gCryptoShortHorizonRecencyWeighting: true,
+          pr3gCryptoShortHorizonDecay: 0.98,
+          matureBullCalibration,
+        };
+
+        const res = await walkForward(config);
+        const acc = directionalAccuracy(res.steps);
+        const calAcc = calibratedPUpDirectionalAccuracy(res.steps);
+        const brier = brierScore(res.steps);
+
+        const calibrationsActive = res.steps.filter(w => w.matureBullCalibrationActive).length;
+
+        console.log(`[BTC ${horizon}d ${name}] Acc: ${(acc * 100).toFixed(1)}% | CalAcc: ${(calAcc * 100).toFixed(1)}% | Brier: ${brier.toFixed(3)} | Calibrations active: ${calibrationsActive}/${res.steps.length}`);
+        return { acc, calAcc, brier, calibrationsActive };
+      };
+
+      const base = await runEval(14, 'Baseline (PR3G ceiling)', false);
+      const exp = await runEval(14, 'Experiment (matureBullCalibration)', true);
+      
+      expect(base.brier).toBeGreaterThan(0);
+      expect(exp.brier).toBeGreaterThan(0);
+      expect(exp.calibrationsActive).toBeGreaterThan(0);
+    }, 60000);
+  });
+
   describe('PR3I: replay-quality additive evaluation', () => {
     integrationIt(
       'BTC-USD 7d/14d: PR3G baseline vs quality-gated replay evaluation',
@@ -1391,6 +1467,74 @@ describe('Markov distribution walk-forward backtest', () => {
         expect(futureRejected).toHaveLength(0);
         lines.push('═══════════════════════════════════════════════', '');
         console.log(lines.join('\n'));
+      },
+      TIMEOUT,
+    );
+  });
+
+  describe('PR3 experiment: startStateMixture', () => {
+    integrationIt(
+      'BTC-USD 7d/14d: PR3G baseline vs new startStateMixture experiment',
+      async () => {
+        const prices = fixture.tickers['BTC-USD'].closes;
+        const horizons = [7, 14] as const;
+
+        const lines: string[] = ['', '═══ BTC SHORT-HORIZON PR3 MIXTURE EXPERIMENT ═══'];
+
+        for (const horizon of horizons) {
+          const baseline = await walkForward({
+            ticker: 'BTC-USD',
+            prices,
+            horizon,
+            warmup: WARMUP,
+            stride: STRIDE,
+            pr3gCryptoShortHorizonRecencyWeighting: true,
+            pr3gCryptoShortHorizonDecay: 0.98,
+          });
+
+          const experiment = await walkForward({
+            ticker: 'BTC-USD',
+            prices,
+            horizon,
+            warmup: WARMUP,
+            stride: STRIDE,
+            pr3gCryptoShortHorizonRecencyWeighting: true,
+            pr3gCryptoShortHorizonDecay: 0.98,
+            startStateMixture: true,
+          });
+
+          const baseDir = directionalAccuracy(baseline.steps);
+          const basePUp = calibratedPUpDirectionalAccuracy(baseline.steps);
+          const baseBrier = brierScore(baseline.steps);
+          
+          const expDir = directionalAccuracy(experiment.steps);
+          const expPUp = calibratedPUpDirectionalAccuracy(experiment.steps);
+          const expBrier = brierScore(experiment.steps);
+
+          lines.push(`\n[${horizon}d Horizon]`);
+          lines.push(`  Baseline (PR3G ceiling):`);
+          lines.push(`    Dir Acc:    ${(baseDir * 100).toFixed(1)}%`);
+          lines.push(`    Cal P(up):  ${(basePUp * 100).toFixed(1)}%`);
+          lines.push(`    Brier:      ${baseBrier.toFixed(4)}`);
+          lines.push(`  Experiment (startStateMixture):`);
+          lines.push(`    Dir Acc:    ${(expDir * 100).toFixed(1)}%`);
+          lines.push(`    Cal P(up):  ${(expPUp * 100).toFixed(1)}%`);
+          lines.push(`    Brier:      ${expBrier.toFixed(4)}`);
+
+          const dirAccDelta = expDir - baseDir;
+          const calPUpDelta = expPUp - basePUp;
+          const brierDelta = expBrier - baseBrier;
+
+          lines.push(`  Diff (Exp - Base):`);
+          lines.push(`    Dir Acc:    ${dirAccDelta > 0 ? '+' : ''}${(dirAccDelta * 100).toFixed(2)}pp`);
+          lines.push(`    Cal P(up):  ${calPUpDelta > 0 ? '+' : ''}${(calPUpDelta * 100).toFixed(2)}pp`);
+          lines.push(`    Brier:      ${brierDelta > 0 ? '+' : ''}${brierDelta.toFixed(4)} ${brierDelta < 0 ? '(better)' : '(worse)'}`);
+        }
+
+        lines.push('═══════════════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+
+        expect(lines.length).toBeGreaterThan(5);
       },
       TIMEOUT,
     );

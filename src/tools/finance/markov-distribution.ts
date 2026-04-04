@@ -280,6 +280,8 @@ export interface MarkovDistributionResult {
     ensemble: { consensus: number; adjustment: number };
     pr3fDisagreementBlendActive: boolean;
     pr3gRecencyWeightingActive: boolean;
+    sidewaysSplitActive?: boolean;
+    matureBullCalibrationActive?: boolean;
   };
 }
 
@@ -1644,6 +1646,26 @@ function singleMarkovWalk(
 }
 
 /**
+ * Compute the initial probability vector over the current regime using the last K observed states.
+ * This replaces a hard start state (one-hot) with a smoothed mixture.
+ */
+export function computeStartStateMixture(
+  recentStates: RegimeState[],
+  alpha = 0.5
+): Record<RegimeState, number> {
+  const counts: Record<RegimeState, number> = { bull: alpha, bear: alpha, sideways: alpha } as Record<RegimeState, number>;
+  for (const s of recentStates) {
+    if (counts[s] !== undefined) counts[s]++;
+  }
+  const total = counts.bull + counts.bear + counts.sideways;
+  return {
+    bull: counts.bull / total,
+    bear: counts.bear / total,
+    sideways: counts.sideways / total,
+  };
+}
+
+/**
  * Compute the effective n-step drift and volatility from the Markov chain.
  * Extracted so both interpolateDistribution and calibration logic can reuse it.
  */
@@ -1654,9 +1676,23 @@ export function computeHorizonDriftVol(
   initialState: RegimeState,
   momentumAdjustment = 0,
   hmmOverride?: { drift: number; vol: number; weight: number },
+  startMixture?: Record<RegimeState, number>,
 ): { mu_n: number; sigma_n: number } {
   const Pn = matPow(P, horizon);
-  const stateWeights = Pn[STATE_INDEX[initialState]];
+  
+  let stateWeights: number[];
+  if (startMixture) {
+    stateWeights = [0, 0, 0];
+    for (const state of REGIME_STATES) {
+      const w = startMixture[state];
+      const idx = STATE_INDEX[state];
+      for (let j = 0; j < 3; j++) {
+        stateWeights[j] += w * Pn[idx][j];
+      }
+    }
+  } else {
+    stateWeights = Pn[STATE_INDEX[initialState]];
+  }
 
   const mu_obs = REGIME_STATES.reduce(
     (s, state, i) => s + stateWeights[i] * regimeStats[state].meanReturn, 0,
@@ -1705,6 +1741,7 @@ export function computeTrajectory(
   nSamples = 1000,
   nu = 5,
   empiricalDailyVol?: number,
+  startMixture?: Record<RegimeState, number>,
 ): TrajectoryPoint[] {
   const initialIdx = STATE_INDEX[initialState];
   const trajectory: TrajectoryPoint[] = [];
@@ -1713,12 +1750,24 @@ export function computeTrajectory(
   const regimeWeightsPerDay: number[][] = [];
   for (let d = 1; d <= days; d++) {
     const Pd = matPow(P, d);
-    regimeWeightsPerDay.push(Pd[initialIdx]);
+    if (startMixture) {
+      const weights = [0, 0, 0];
+      for (const state of REGIME_STATES) {
+        const w = startMixture[state];
+        const idx = STATE_INDEX[state];
+        for (let j = 0; j < 3; j++) {
+          weights[j] += w * Pd[idx][j];
+        }
+      }
+      regimeWeightsPerDay.push(weights);
+    } else {
+      regimeWeightsPerDay.push(Pd[initialIdx]);
+    }
   }
 
   // Compute 1-day regime-weighted drift and vol for MC steps
   const { mu_n: drift1d, sigma_n: regimeVol1d } = computeHorizonDriftVol(
-    1, P, regimeStats, initialState, momentumAdjustment, hmmOverride,
+    1, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture
   );
 
   // Use max(regime-weighted vol, empirical vol) for MC paths.
@@ -1749,7 +1798,7 @@ export function computeTrajectory(
 
     // Drift and vol at this horizon
     const { mu_n, sigma_n } = computeHorizonDriftVol(
-      d, P, regimeStats, initialState, momentumAdjustment, hmmOverride,
+      d, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
     );
 
     // Expected price from analytical drift
@@ -1821,6 +1870,7 @@ export function interpolateDistribution(
   momentumAdjustment = 0,
   hmmOverride?: { drift: number; vol: number; weight: number },
   dailyVol?: number,
+  startMixture?: Record<RegimeState, number>,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -1856,7 +1906,7 @@ export function interpolateDistribution(
 
   // Compute regime-weighted drift and vol via shared helper
   const { mu_n, sigma_n } = computeHorizonDriftVol(
-    horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride,
+    horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
   );
 
   // Nearest anchor lookup helper with distance-based dampening.
@@ -2068,6 +2118,7 @@ export function calibrateProbabilities(
     baseRate?: number;            // empirical P(up) from recent history (default 0.5)
     kappaMultiplier?: number;     // asset-profile kappa scaling (Idea N). >1 = more shrinkage.
     currentRegime?: string;       // Idea O: regime-gated kappa adjustment
+    matureBullCalibrationActive?: boolean; // PR3: BTC 14d mature bull calibration
     // Drift-based calibration params (preserves distribution S-shape)
     currentPrice?: number;        // required for drift-based mode
     driftN?: number;              // n-step drift (mu_n) from computeHorizonDriftVol
@@ -2101,7 +2152,10 @@ export function calibrateProbabilities(
 
   // Regime-gated adjustment (Idea O)
   const regime = options?.currentRegime;
-  if (regime === 'bull' || regime === 'bear') {
+  if (options?.matureBullCalibrationActive) {
+    // PR3: Mature bull calibration - stop lower-shrinkage bonus, apply extra shrinkage
+    kappa += 0.10;
+  } else if (regime === 'bull' || regime === 'bear') {
     kappa -= 0.03;
   } else if (regime === 'sideways') {
     kappa += 0.03;
@@ -2727,6 +2781,8 @@ export async function computeMarkovDistribution(params: {
   trajectoryDays?: number;
   /** Optional override for crypto short-horizon conditional weight (PR3B ablation) */
   cryptoShortHorizonConditionalWeight?: number;
+  /** Optional flag: activate PR3 post-experiment sideways_coil vs sideways_chop split for BTC short horizon */
+  sidewaysSplit?: boolean;
   /** Optional override for crypto short-horizon kappa multiplier (PR3B ablation) */
   cryptoShortHorizonKappaMultiplier?: number;
   /** Optional flag: use raw P(up) for decision generation (PR3 lever ablation) */
@@ -2743,6 +2799,10 @@ export async function computeMarkovDistribution(params: {
   pr3gCryptoShortHorizonDecay?: number;
   /** Optional explicit reference time for PR3H historical replay */
   referenceTimeMs?: number;
+  /** Optional flag: replace hard start state with additive mixture over last K states */
+  startStateMixture?: boolean;
+  /** PR3 post-experiment: mature bull calibration correction for BTC 14d */
+  matureBullCalibration?: boolean;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
@@ -2755,6 +2815,7 @@ export async function computeMarkovDistribution(params: {
     trajectory,
     trajectoryDays,
     cryptoShortHorizonConditionalWeight,
+    sidewaysSplit,
     cryptoShortHorizonKappaMultiplier,
     cryptoShortHorizonRawDecisionAblation,
     pr3fCryptoShortHorizonDisagreementPrior,
@@ -2762,6 +2823,8 @@ export async function computeMarkovDistribution(params: {
     cryptoShortHorizonBearMarginMultiplier,
     pr3gCryptoShortHorizonRecencyWeighting,
     pr3gCryptoShortHorizonDecay,
+    startStateMixture,
+    matureBullCalibration,
   } = params;
 
   // --- Asset profile (Idea N): per-asset-class parameter tuning ---
@@ -2934,19 +2997,125 @@ export async function computeMarkovDistribution(params: {
     }
   }
 
+  
+  // --- PR3 Post-Experiment: Sideways Split ---
+  const isBtcShortHorizon = sidewaysSplit && assetProfile.type === 'crypto' && horizon <= 14 && (ticker === 'BTC' || ticker === 'BTC-USD');
+  let sidewaysSplitActive = false;
+  let weights3_experiment: number[] | undefined;
+  let conditionalPUp_experiment: number | undefined;
+
+  if (isBtcShortHorizon) {
+    const seq4 = regimeSeq.map((r, i) => {
+      if (r !== 'sideways') return r;
+      const histSlice = historicalPrices.slice(0, i + 2);
+      if (histSlice.length >= 25) {
+        const sig = computeEnsembleSignal(histSlice);
+        return sig.volCompression < 1.0 ? 'sideways_coil' : 'sideways_chop';
+      }
+      return 'sideways_chop'; // default for early days
+    });
+
+    const c4 = { bull: 0, bear: 0, sideways_coil: 0, sideways_chop: 0 };
+    for (const s of seq4) c4[s as keyof typeof c4]++;
+
+    // fallback threshold: at least 5 obs
+    if (c4.sideways_coil >= 5 && c4.sideways_chop >= 5) {
+      sidewaysSplitActive = true;
+      
+      const alpha4 = 5.0 / seq4.length;
+      let P4 = Array.from({ length: 4 }, () => Array(4).fill(alpha4));
+      const idx4: Record<string, number> = { bull: 0, bear: 1, sideways_coil: 2, sideways_chop: 3 };
+      const decay4 = 0.97;
+      const nSteps = seq4.length - 1;
+      
+      for (let i = 0; i < nSteps; i++) {
+        P4[idx4[seq4[i]]][idx4[seq4[i+1]]] += Math.pow(decay4, nSteps - 1 - i);
+      }
+      
+      // normalize
+      P4 = P4.map(row => {
+        const sum = row.reduce((a,b)=>a+b,0);
+        return row.map(v => v/sum);
+      });
+      
+      // sentiment adjustment (replicate adjustTransitionMatrix logic exactly)
+      const shift = sentimentShift;
+      const alpha_sent = 0.07;
+      P4[0][0] *= (1 + alpha_sent * shift);
+      P4[0][1] *= (1 - alpha_sent * shift);
+      P4[1][1] *= (1 - alpha_sent * shift);
+      P4[1][0] *= (1 + alpha_sent * shift);
+      
+      P4 = P4.map(row => {
+        const sum = row.reduce((a,b)=>a+b,0);
+        return row.map(v => Math.max(0, v/sum));
+      });
+      P4 = P4.map(row => {
+        const sum = row.reduce((a,b)=>a+b,0);
+        return row.map(v => v/sum);
+      });
+
+      const Pn4 = matPow(P4, horizon);
+      const w4 = Pn4[idx4[seq4[seq4.length - 1]]];
+      
+      weights3_experiment = [w4[0], w4[1], w4[2] + w4[3]];
+
+      // Compute conditional up rates using the 4-state sequence
+      const pr3gDecayRate = (pr3gCryptoShortHorizonRecencyWeighting && assetProfile.type === 'crypto' && horizon <= 14)
+        ? (pr3gCryptoShortHorizonDecay ?? assetProfile.decayRate)
+        : undefined;
+
+      const upHits = { bull: 0, bear: 0, sideways_coil: 0, sideways_chop: 0 };
+      const upTotals = { bull: 0, bear: 0, sideways_coil: 0, sideways_chop: 0 };
+      const decay = pr3gDecayRate ?? 1.0;
+      const nHorizonReturns = seq4.length - horizon;
+      for (let i = 0; i < nHorizonReturns; i++) {
+        const state = seq4[i] as keyof typeof upTotals;
+        let ret = 0;
+        for (let j = 1; j <= horizon; j++) ret += returns[i + j];
+        const weight = Math.pow(decay, nHorizonReturns - 1 - i);
+        upTotals[state] += weight;
+        if (ret > 0) upHits[state] += weight;
+      }
+      
+      const upRates4 = {
+        bull: upTotals.bull > 0 ? upHits.bull / upTotals.bull : 0.5,
+        bear: upTotals.bear > 0 ? upHits.bear / upTotals.bear : 0.5,
+        sideways_coil: upTotals.sideways_coil > 0 ? upHits.sideways_coil / upTotals.sideways_coil : 0.5,
+        sideways_chop: upTotals.sideways_chop > 0 ? upHits.sideways_chop / upTotals.sideways_chop : 0.5,
+      };
+
+      conditionalPUp_experiment = 
+        w4[0] * upRates4.bull + 
+        w4[1] * upRates4.bear + 
+        w4[2] * upRates4.sideways_coil + 
+        w4[3] * upRates4.sideways_chop;
+    }
+  }
+
+  // Apply P_fake override to inject the 3-state horizon weights smoothly into the rest of the pipeline
+  if (sidewaysSplitActive && weights3_experiment) {
+    P = [weights3_experiment, weights3_experiment, weights3_experiment];
+  }
+
   // --- Distribution ---
+  const useStartStateMixture = startStateMixture && assetProfile.type === 'crypto' && horizon <= 14;
+  const mixture = useStartStateMixture && regimeSeq.length >= 5
+    ? computeStartStateMixture(regimeSeq.slice(-5))
+    : undefined;
+
   // Compute daily volatility for adaptive grid sizing
   const gridDailyVol = returns.length >= 20
     ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
     : undefined;
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
-    20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol,
+    20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, mixture,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
-    horizon, P, regimeStats, currentRegime, combinedDriftAdj, hmmOverride,
+    horizon, P, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, mixture,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -2962,11 +3131,26 @@ export async function computeMarkovDistribution(params: {
     : undefined;
   const regimeUpRates = computeRegimeUpRates(regimeSeq, returns, horizon, pr3gDecayRate);
   const Pn = matPow(P, horizon);
-  const initialIdx = STATE_INDEX[currentRegime];
-  const stateWeightsForUp = Pn[initialIdx];
-  const conditionalPUp = REGIME_STATES.reduce(
-    (s, state, i) => s + stateWeightsForUp[i] * regimeUpRates[state], 0,
-  );
+  
+  let stateWeightsForUp: number[];
+  if (mixture) {
+    stateWeightsForUp = [0, 0, 0];
+    for (const state of REGIME_STATES) {
+      const w = mixture[state];
+      const idx = STATE_INDEX[state];
+      for (let j = 0; j < 3; j++) {
+        stateWeightsForUp[j] += w * Pn[idx][j];
+      }
+    }
+  } else {
+    stateWeightsForUp = Pn[STATE_INDEX[currentRegime]];
+  }
+
+  const conditionalPUp = (typeof sidewaysSplitActive !== 'undefined' && sidewaysSplitActive && conditionalPUp_experiment !== undefined)
+    ? conditionalPUp_experiment
+    : REGIME_STATES.reduce(
+        (s, state, i) => s + stateWeightsForUp[i] * regimeUpRates[state], 0,
+      );
   let conditionalWeight = assetProfile.type === 'etf' ? 0.80
     : assetProfile.type === 'commodity' ? 0.60
     : assetProfile.type === 'equity' ? 0.65
@@ -2990,6 +3174,24 @@ export async function computeMarkovDistribution(params: {
     activeKappaMultiplier = cryptoShortHorizonKappaMultiplier;
   }
 
+  // --- Regime run length: consecutive days ending in the current regime ---
+  let regimeRunLength = 1;
+  for (let i = regimeSeq.length - 2; i >= 0; i--) {
+    if (regimeSeq[i] === currentRegime) regimeRunLength++;
+    else break;
+  }
+
+  const rawPUp = interpolateSurvival(rawDistribution, currentPrice);
+  const lookbackAgreementRatio = lookbackAgreement / totalLookbacks;
+
+  const matureBullCalibrationActive = !!matureBullCalibration &&
+    (ticker === 'BTC' || ticker === 'BTC-USD') &&
+    assetProfile.type === 'crypto' &&
+    horizon === 14 &&
+    currentRegime === 'bull' &&
+    rawPUp > 0.60 &&
+    momentum.acceleration <= 0;
+
   const distribution = calibrateProbabilities(rawDistribution, {
     ensembleConsensus: ensemble.consensus,
     historicalDays: returns.length,
@@ -3000,6 +3202,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice,
     driftN: calDriftN,
     volN: calVolN,
+    matureBullCalibrationActive,
   });
 
   // --- Base-rate floor (Idea S, Round 4) ---
@@ -3024,17 +3227,9 @@ export async function computeMarkovDistribution(params: {
     }
   }
 
-  // --- Regime run length: consecutive days ending in the current regime ---
-  let regimeRunLength = 1;
-  for (let i = regimeSeq.length - 2; i >= 0; i--) {
-    if (regimeSeq[i] === currentRegime) regimeRunLength++;
-    else break;
-  }
-
   // --- P(up) from both raw and calibrated distributions for confidence scoring ---
   // Raw P(up) reflects model's actual signal strength BEFORE calibration compresses it.
   // This gives a much more discriminative decisiveness score.
-  const rawPUp = interpolateSurvival(rawDistribution, currentPrice);
   const calPUp = interpolateSurvival(distribution, currentPrice);
 
   // Recent daily volatility (20-day std of daily returns)
@@ -3082,7 +3277,7 @@ export async function computeMarkovDistribution(params: {
     trajectoryResult = computeTrajectory(
       currentPrice, trajDays, P, regimeStats, currentRegime,
       combinedDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
-      recentDailyVol,
+      recentDailyVol, mixture,
     );
 
     // Align trajectory P(Up) with the calibrated CDF at the final day.
@@ -3210,6 +3405,8 @@ export async function computeMarkovDistribution(params: {
       ensemble,
       pr3fDisagreementBlendActive: usePr3fBlend,
       pr3gRecencyWeightingActive: pr3gDecayRate !== undefined,
+      sidewaysSplitActive,
+      matureBullCalibrationActive,
     }
   };
 }
