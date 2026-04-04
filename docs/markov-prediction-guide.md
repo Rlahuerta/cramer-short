@@ -105,6 +105,12 @@ Key details:
   the two sub-matrices are compared via chi-squared divergence. If a break is
   detected, the model falls back to a conservative default matrix and widens
   confidence intervals by 50%.
+- **Experimental 4-state sideways split** — an optional override that
+  decomposes the sideways regime into chop (high vol, mean-reverting) and coil
+  (low vol, accumulating). Activated only when the resulting matrix is
+  non-degenerate: all self-loop probabilities must be ≥ 1/3. If this
+  ergodicity guard fails, the override is silently skipped and the standard
+  3-state matrix is used.
 
 ### Ensemble Prediction
 
@@ -119,6 +125,16 @@ Three independent signals contribute to the final distribution:
 The momentum ensemble includes multi-lookback confirmation (10d, 20d, 40d). If
 all lookbacks agree on direction, the trend is considered robust across
 timeframes, which increases the confidence score.
+
+### Regime-Conditional Up-Rates
+
+When computing the conditional probability of a positive return for each
+regime, the model uses a **lookforward window** — it checks whether returns
+*after* day `i` are positive, not including day `i` itself. This avoids a
+circular leak where a bull day would always contribute a positive return to
+its own label. The lookforward iterates `j = i+1` to `i+horizon` inclusive,
+and the training window is sized so the last valid start index is always
+included (`maxStart = n - horizon` with `<` not `<=`).
 
 ### Calibration
 
@@ -550,6 +566,12 @@ automatically based on the ticker symbol.
 | Student-t degrees of freedom | 5 (lighter tails) | 4 | 3 (fattest tails) |
 | Transition matrix decay rate | 0.97 | 0.96 | 0.94 (faster adaptation) |
 
+The degrees-of-freedom parameter (`ν`, nu) is used in the Student-t survival
+function for probability calibration and is resolved from the asset profile.
+It is threaded consistently through all internal calls (calibration,
+distribution interpolation, and Monte Carlo CI bounds) so the same nu value
+applies throughout.
+
 **Recognized tickers:**
 - **ETFs:** SPY, QQQ, IWM, DIA, VOO, VTI, GLD, SLV, TLT, XLF, XLK, ARKK,
   and ~40 more common US ETFs.
@@ -653,7 +675,10 @@ Day │ Expected │     90% CI Range    │ P(up) │ Return
 1. **Shared Monte Carlo paths**: 1,000 random walks are generated using Student-t
    variates (fat tails, ν determined by regime). Each path is sampled at every day.
 2. **Analytical drift/vol**: At each day d, `computeHorizonDriftVol(d, ...)` provides
-   the regime-weighted drift and volatility from the transition matrix.
+   the regime-weighted drift and volatility from the transition matrix. The
+   volatility term includes both within-regime variance (`E[σ²]`) and the
+   between-regime variance of mean returns (`Var(μ)`), so mixed-regime
+   forecasts appropriately widen to reflect regime uncertainty.
 3. **CI bounds**: 5th and 95th percentiles of the Monte Carlo price distribution at day d.
 4. **P(up)**: From the Student-t survival function `S(currentPrice; drift_d, vol_d)`.
 5. **Regime**: Most likely regime state from `P^d` (d-step transition matrix).
