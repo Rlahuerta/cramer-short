@@ -778,6 +778,10 @@ export async function runCli() {
   // Skills overlay state
   let skillsVisible = false;
   let skillsList: SkillMetadata[] = [];
+  // Watchlist auto-refresh state
+  let watchlistRefreshIntervalMs = 0; // 0 = disabled
+  let watchlistRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  let watchlistLastRefresh: Date | null = null;
   // Tracks exchanges already flushed to scrollback on completion (long answers).
   // Prevents the "flush on next submit" path from double-writing them.
   const flushedItems = new WeakSet<HistoryItem>();
@@ -914,6 +918,51 @@ export async function runCli() {
     return snap;
   };
 
+  // Refresh watchlist prices and Markov confidence
+  const refreshWatchlistPrices = async () => {
+    if (!watchlistVisible || watchlistEntries.length === 0) return;
+    
+    watchlistLastRefresh = new Date();
+    renderSelectionOverlay();
+    tui.requestRender();
+
+    if (watchlistMode === 'show' && watchlistShowTicker) {
+      const snap = await fetchShowData(watchlistShowTicker);
+      watchlistPrices = snap ? new Map([[watchlistShowTicker, snap]]) : new Map();
+    } else {
+      const prices = await fetchLivePrices(
+        watchlistEntries.map((e) => e.ticker),
+        makePriceFetcher(),
+      );
+      watchlistPrices = prices;
+    }
+
+    if (watchlistVisible) {
+      renderSelectionOverlay();
+      tui.requestRender();
+    }
+  };
+
+  // Start/stop auto-refresh timer
+  const setWatchlistRefresh = (intervalMs: number) => {
+    if (watchlistRefreshTimer) {
+      clearInterval(watchlistRefreshTimer);
+      watchlistRefreshTimer = null;
+    }
+    watchlistRefreshIntervalMs = intervalMs;
+    if (intervalMs > 0 && watchlistVisible) {
+      watchlistRefreshTimer = setInterval(refreshWatchlistPrices, intervalMs);
+    }
+  };
+
+  const watchlistRefreshSuffix = () => {
+    if (watchlistRefreshIntervalMs <= 0 || !watchlistLastRefresh) return '';
+    const secs = Math.floor((Date.now() - watchlistLastRefresh.getTime()) / 1000);
+    if (secs < 5) return ' · refreshed just now';
+    if (secs < 60) return ` · refreshed ${secs}s ago`;
+    return ` · refreshed ${Math.floor(secs / 60)}m ago`;
+  };
+
   const handleSubmit = async (query: string) => {
     // Dismiss help overlay before processing; re-show below only if /help typed again.
     if (helpVisible) {
@@ -922,6 +971,7 @@ export async function runCli() {
     }
     if (watchlistVisible) {
       watchlistVisible = false;
+      setWatchlistRefresh(0);
       renderSelectionOverlay();
     }
     if (sessionsVisible) {
@@ -1117,6 +1167,18 @@ export async function runCli() {
         return;
       }
 
+      if (sub.cmd === 'refresh') {
+        if (!watchlistVisible) {
+          lastError = 'Open a watchlist view first with /watchlist list, show, or snapshot.';
+          refreshError();
+          renderSelectionOverlay();
+          tui.requestRender();
+          return;
+        }
+        void refreshWatchlistPrices();
+        return;
+      }
+
       if (sub.cmd === 'list') {
         watchlistEntries = watchlistCtrl.list();
         watchlistMode = 'list';
@@ -1126,10 +1188,11 @@ export async function runCli() {
         renderSelectionOverlay();
         tui.requestRender();
         // Fetch prices in background; re-render when done
-        void fetchLivePrices(watchlistEntries.map((e) => e.ticker), makePriceFetcher()).then((prices) => {
-          watchlistPrices = prices;
-          if (watchlistVisible) { renderSelectionOverlay(); tui.requestRender(); }
-        });
+        void refreshWatchlistPrices();
+        // Start auto-refresh if enabled
+        if (watchlistRefreshIntervalMs > 0) {
+          setWatchlistRefresh(watchlistRefreshIntervalMs);
+        }
         return;
       }
 
@@ -1144,10 +1207,10 @@ export async function runCli() {
         renderSelectionOverlay();
         tui.requestRender();
         // Fetch rich data for this ticker
-        void fetchShowData(ticker).then((snap) => {
-          watchlistPrices = snap ? new Map([[ticker, snap]]) : new Map();
-          if (watchlistVisible) { renderSelectionOverlay(); tui.requestRender(); }
-        });
+        void refreshWatchlistPrices();
+        if (watchlistRefreshIntervalMs > 0) {
+          setWatchlistRefresh(watchlistRefreshIntervalMs);
+        }
         return;
       }
 
@@ -1159,10 +1222,10 @@ export async function runCli() {
         watchlistVisible = true;
         renderSelectionOverlay();
         tui.requestRender();
-        void fetchLivePrices(watchlistEntries.map((e) => e.ticker), makePriceFetcher()).then((prices) => {
-          watchlistPrices = prices;
-          if (watchlistVisible) { renderSelectionOverlay(); tui.requestRender(); }
-        });
+        void refreshWatchlistPrices();
+        if (watchlistRefreshIntervalMs > 0) {
+          setWatchlistRefresh(watchlistRefreshIntervalMs);
+        }
         return;
       }
 
@@ -1464,6 +1527,7 @@ export async function runCli() {
         tui.requestRender();
       } else if (watchlistVisible) {
         watchlistVisible = false;
+        setWatchlistRefresh(0);
         renderSelectionOverlay();
         tui.requestRender();
       } else if (helpVisible) {
@@ -1500,6 +1564,7 @@ export async function runCli() {
     }
     if (watchlistVisible) {
       watchlistVisible = false;
+      setWatchlistRefresh(0);
       renderSelectionOverlay();
       return;
     }
@@ -1742,12 +1807,12 @@ export async function runCli() {
               c.addChild(new Text(theme.error(`  No price data available for ${watchlistShowTicker}`), 0, 0));
               return c;
             })());
-        footer   = 'Esc to close · /watchlist list · /watchlist snapshot';
+        footer   = `Esc to close · /watchlist list · /watchlist snapshot${watchlistRefreshSuffix()}`;
       } else if (watchlistMode === 'snapshot') {
         title    = '⬡ Cramer-Short — Portfolio Snapshot';
         subtitle = watchlistEntries.length === 0 ? 'No positions tracked' : `${watchlistEntries.length} ticker${watchlistEntries.length === 1 ? '' : 's'}`;
         panel    = buildSnapshotPanel(watchlistEntries, watchlistPrices);
-        footer   = 'Esc to close · /watchlist list · /watchlist show TICKER';
+        footer   = `Esc to close · /watchlist list · /watchlist show TICKER${watchlistRefreshSuffix()}`;
       } else {
         const loading = watchlistPrices === null;
         title    = '⬡ Cramer-Short — Watchlist';
@@ -1757,7 +1822,7 @@ export async function runCli() {
             ? `${watchlistEntries.length} position${watchlistEntries.length === 1 ? '' : 's'} — loading prices…`
             : `${watchlistEntries.length} position${watchlistEntries.length === 1 ? '' : 's'}`;
         panel    = buildWatchlistPanel(watchlistEntries, watchlistPrices);
-        footer   = 'Esc to close · /watchlist show TICKER · /watchlist snapshot';
+        footer   = `Esc to close · /watchlist show TICKER · /watchlist snapshot${watchlistRefreshSuffix()}`;
       }
 
       renderWatchlistView(title, subtitle, panel, footer);
