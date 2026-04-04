@@ -134,6 +134,18 @@ export const STATE_INDEX: Record<RegimeState, number> = {
   sideways: 2,
 };
 
+/**
+ * Recommended confidence threshold for selective prediction.
+ * Based on coverage-milestone analysis (2026-04-04, 14 tickers × 6 horizons):
+ * - conf ≥ 0.25: ~66% accuracy at ~44% coverage (aggregate)
+ * - conf ≥ 0.30: ~71% accuracy at ~30% coverage
+ * - conf ≥ 0.40: ~75% accuracy at ~15% coverage
+ *
+ * Use this threshold to filter low-confidence predictions when accuracy matters more than coverage.
+ * For full coverage (no filtering), ignore this threshold.
+ */
+export const RECOMMENDED_CONFIDENCE_THRESHOLD = 0.25;
+
 export interface PriceThreshold {
   price: number;
   /** Raw YES probability from Polymarket (0–1) */
@@ -3657,6 +3669,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       warnings.push(`⚠️ Markov fit test failed (χ²=${m.goodnessOfFit.chiSquared.toFixed(1)}, p=${m.goodnessOfFit.pValue.toFixed(3)}) — transitions may not follow Markov property`);
     if (m.goodnessOfFit?.passes)
       warnings.push(`✓ Markov fit test passed (p=${m.goodnessOfFit.pValue.toFixed(3)})`);
+    if (result.predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD)
+      warnings.push(`⚠️ Low confidence (${result.predictionConfidence.toFixed(2)} < ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)}): accuracy drops to ~55% below this threshold; consider waiting for higher-confidence signal`);
 
     // --- Section 5: Full distribution table ---
     const table = [
