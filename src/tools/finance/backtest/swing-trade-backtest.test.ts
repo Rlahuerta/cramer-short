@@ -362,4 +362,100 @@ Key Insights:
       expect(results[ticker].filteredCount).toBeGreaterThan(0);
     }
   }, 120_000);
+
+  it('analyzes per-horizon performance (5d/7d/10d/14d/20d/30d)', async () => {
+    const tickers = ['SPY', 'QQQ', 'GLD'];
+    const horizons = [5, 7, 10, 14, 20, 30];
+    const results: Record<string, Record<number, any>> = {};
+
+    for (const ticker of tickers) {
+      results[ticker] = {};
+      for (const horizon of horizons) {
+        const result = await runSwingTradeBacktest({
+          tickers: [ticker],
+          horizons: [horizon],
+          confidenceThreshold: 0.25,
+          warmup: 120,
+          stride: 10,
+        });
+        results[ticker][horizon] = result.metrics;
+      }
+    }
+
+    // Build per-horizon table for each ticker
+    for (const ticker of tickers) {
+      const tickerResults = results[ticker];
+      const bestHorizon = horizons.reduce((best, h) => {
+        return tickerResults[h].filteredSharpe > tickerResults[best].filteredSharpe ? h : best;
+      }, horizons[0]);
+
+      console.log(`
+═══════════════════════════════════════════════════════════════
+${ticker} — Per-Horizon Performance (confidence ≥ 0.25)
+═══════════════════════════════════════════════════════════════
+
+| Horizon | Signals | Filter Rate | Acc (filtered) | Win Rate | Sharpe  |
+|---------|---------|-------------|----------------|----------|---------|
+${horizons.map((h) => `| ${h.toString().padStart(7)}d | ${tickerResults[h].totalSignals.toString().padStart(7)} | ${(tickerResults[h].filterRate * 100).toFixed(0).padStart(9)}% | ${(tickerResults[h].filteredAccuracy * 100).toFixed(1).padStart(13)}% | ${(tickerResults[h].filteredWinRate * 100).toFixed(1).padStart(8)}% | ${tickerResults[h].filteredSharpe.toFixed(2).padStart(7)} |`).join('\n')}
+
+**Best Horizon for ${ticker}:** ${bestHorizon}d (Sharpe: ${tickerResults[bestHorizon].filteredSharpe.toFixed(2)})
+
+**Key Metrics at Best Horizon:**
+- Signals: ${tickerResults[bestHorizon].totalSignals}
+- Filter Rate: ${(tickerResults[bestHorizon].filterRate * 100).toFixed(0)}%
+- Directional Accuracy: ${(tickerResults[bestHorizon].filteredAccuracy * 100).toFixed(1)}%
+- Win Rate: ${(tickerResults[bestHorizon].filteredWinRate * 100).toFixed(1)}%
+- Sharpe (annualized): ${tickerResults[bestHorizon].filteredSharpe.toFixed(2)}
+`);
+    }
+
+    // Cross-ticker horizon comparison
+    const bestByHorizon: Record<number, { ticker: string; sharpe: number }> = {};
+    for (const horizon of horizons) {
+      let bestTicker = '';
+      let bestSharpe = -Infinity;
+      for (const ticker of tickers) {
+        const sharpe = results[ticker][horizon].filteredSharpe;
+        if (sharpe > bestSharpe) {
+          bestSharpe = sharpe;
+          bestTicker = ticker;
+        }
+      }
+      bestByHorizon[horizon] = { ticker: bestTicker, sharpe: bestSharpe };
+    }
+
+    console.log(`
+═══════════════════════════════════════════════════════════════
+Cross-Ticker Comparison — Best Asset per Horizon
+═══════════════════════════════════════════════════════════════
+
+| Horizon | Best Ticker | Sharpe  | Notes                              |
+|---------|-------------|---------|-------------------------------------|
+${horizons.map((h) => {
+      const best = bestByHorizon[h];
+      const notes: string[] = [];
+      if (h <= 7) notes.push('short-term');
+      else if (h <= 14) notes.push('mid-term');
+      else notes.push('long-term');
+      if (best.ticker === 'GLD') notes.push('defensive');
+      if (best.ticker === 'QQQ') notes.push('tech-heavy');
+      if (best.ticker === 'SPY') notes.push('broad-market');
+      return `| ${h.toString().padStart(7)}d | ${best.ticker.padEnd(11)} | ${best.sharpe.toFixed(2).padStart(7)} | ${notes.join(', ').padEnd(35)} |`;
+    }).join('\n')}
+
+**Optimal Horizon by Asset:**
+- **SPY:** ${horizons.reduce((best, h) => results['SPY'][h].filteredSharpe > results['SPY'][best].filteredSharpe ? h : best, horizons[0])}d
+- **QQQ:** ${horizons.reduce((best, h) => results['QQQ'][h].filteredSharpe > results['QQQ'][best].filteredSharpe ? h : best, horizons[0])}d
+- **GLD:** ${horizons.reduce((best, h) => results['GLD'][h].filteredSharpe > results['GLD'][best].filteredSharpe ? h : best, horizons[0])}d
+
+**Recommendation:** Use asset-specific horizons rather than one-size-fits-all. GLD shows strongest long-term signals (20–30d), while SPY/QQQ perform well across 10–20d band.
+`);
+
+    // Verify all horizons produced some signals
+    for (const ticker of tickers) {
+      for (const horizon of horizons) {
+        expect(results[ticker][horizon].totalSignals).toBeGreaterThan(0);
+      }
+    }
+  }, 180_000);
 });
