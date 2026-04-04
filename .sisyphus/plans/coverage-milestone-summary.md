@@ -158,4 +158,6 @@ If a gap-filling wave is later justified, it should:
 
 ---
 
-**Status:** Pending reviewer decision on Option A vs Option B.
+**Status:** Approved — Coverage-Complete (Option A)
+**Decision Date:** 2026-04-04
+**Rationale:** 39% confirmed coverage across 84 cells is sufficient for the current model version; broad-market and gold exposures well-covered; megacap tech has selective confirmation; no evidence that more overlap would add value.
