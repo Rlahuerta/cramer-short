@@ -50,6 +50,10 @@ const TICKERS = [
   { symbol: 'DIA',     type: 'etf'    as const, endpoint: 'prices' },
   { symbol: 'VTI',     type: 'etf'    as const, endpoint: 'prices' },
   { symbol: 'IAU',     type: 'etf'    as const, endpoint: 'prices' },
+  { symbol: 'MSFT',    type: 'stock'  as const, endpoint: 'prices' },
+  { symbol: 'NVDA',    type: 'stock'  as const, endpoint: 'prices' },
+  { symbol: 'GOOGL',   type: 'stock'  as const, endpoint: 'prices' },
+  { symbol: 'AMZN',    type: 'stock'  as const, endpoint: 'prices' },
   { symbol: 'BTC-USD', type: 'crypto' as const, endpoint: 'crypto/prices' },
 ];
 

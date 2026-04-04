@@ -294,6 +294,10 @@ reviewer-visible summaries.
 | **DIA** | **30d** | 5–20d still exploratory; 45–60d not Markov-specific | First-wave canonical validation only clears the confirmation bar at 30d. |
 | **VTI** | **14d, 20d, 30d** | 5–10d still exploratory; 45–60d not Markov-specific | First-wave canonical validation confirms a broad-market mid-horizon signal. |
 | **IAU** | **7d, 10d, 14d, 20d, 30d** | 5d still exploratory; 45–60d not Markov-specific | Strongest first-wave addition; especially strong at 20d and 30d. |
+| **MSFT** | **5d, 14d** | 7d, 10d, 20d, 30d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation only supports selective short / mid-horizon confirmation. |
+| **NVDA** | **5d, 14d, 20d** | 7d, 10d, 30d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation supports selective short / mid-horizon coverage. |
+| **GOOGL** | **7d** | 5d, 10d, 14d, 20d, 30d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation confirms only a narrow short-horizon case. |
+| **AMZN** | **20d, 30d** | 5d, 7d, 10d, 14d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation supports the mid-horizon band only. |
 | **BTC-USD** | **None** in `{5, 7, 10, 14, 20, 30, 45, 60}` | All tested horizons | Best observed directional accuracy was **49.2% at 30d**, still too weak for a “good horizon” claim. |
 | **AAPL** | **None in canonical coverage** | All tested canonical horizons | Not good enough for a canonical positive claim. |
 | **TSLA** | **None in canonical coverage** | All tested canonical horizons | Not good enough for a canonical positive claim. |
@@ -307,7 +311,7 @@ confirmed.
 | Tier | Assets | Why they matter | Next step |
 |------|--------|-----------------|-----------|
 | **Residual first-wave exploratory horizons** | **VOO 5d/7d/10d; DIA 5d/7d/10d/14d/20d; VTI 5d/7d/10d; IAU 5d** | First-wave canonical validation improved confidence, but these specific shorter or weaker horizons remain below the confirmed-docs bar. | Keep as exploratory unless a later canonical rerun clears them decisively. |
-| **Promising single-name candidates** | **MSFT, NVDA, GOOGL, AMZN** | They showed at least one strict-good exploratory horizon, but single-name equities are noisier than broad ETFs. | Only review after the first-wave ETF / commodity-ETF promotion pass. |
+| **Residual second-wave exploratory horizons** | **MSFT 7d/10d/20d/30d; NVDA 7d/10d/30d; GOOGL 5d/10d/14d/20d/30d; AMZN 5d/7d/10d/14d** | Second-wave canonical validation improved confidence, but these specific single-name horizons remain below the confirmed-docs bar. | Keep as exploratory unless a later canonical rerun clears them decisively. |
 
 ⚠️ Exploratory sweeps are useful for ranking what to validate next, not for
 claiming confirmed Markov coverage. Keep the distinction explicit.
@@ -315,6 +319,11 @@ claiming confirmed Markov coverage. Keep the distinction explicit.
 First-wave canonical validation confirms **VOO at 14d/20d/30d, DIA at 30d,
 VTI at 14d/20d/30d, and IAU at 7d/10d/14d/20d/30d**. Shorter or weaker
 first-wave results remain exploratory rather than confirmed.
+
+Second-wave canonical validation confirms **horizon-specific single-name coverage
+for MSFT (5d, 14d), NVDA (5d, 14d, 20d), GOOGL (7d), and AMZN (20d, 30d)**.
+Other tested single-name horizons remain exploratory, and `45–60d` horizons
+remain out of scope.
 
 The historical 14d / 30d snapshot below remains useful context for the narrower
 original backtest, but it should not be used to infer that BTC has a good 30d
@@ -375,14 +384,16 @@ universe).
 ⚠️ **Horizon limits.** The current canonical evidence supports the **14–30d**
 band broadly for non-crypto assets, with **SPY / QQQ already strong by 14d**,
 **GLD clearly strong from 20d onward**, and **IAU now confirmed from 7d
-through 30d**. Short horizons are still mixed overall: **SPY** is confirmed at
-5d/10d, while **VOO** and **VTI** only become review-safe from 14d onward and
-**DIA** only clears the confirmation bar at 30d. **BTC-USD has no good tested
-horizon** in `{5, 7, 10, 14, 20, 30, 45, 60}`; its best observed directional
-accuracy was **49.2% at 30d**. At **45–60d**, average `markovWeight` is near
-zero, so those outcomes should not be attributed to the Markov chain signal
-itself. Beyond 60d, the chain mixes toward its stationary distribution and
-loses directional information.
+through 30d**. Short horizons are still mixed overall: **SPY**, **MSFT**, and
+**NVDA** have selective 5d confirmation, **IAU** is confirmed from 7d onward,
+and **GOOGL** is only confirmed at 7d. **VOO** and **VTI** become review-safe
+from 14d onward, **AMZN** from 20d onward, and **DIA** only clears the
+confirmation bar at 30d. **BTC-USD has no good tested horizon** in
+`{5, 7, 10, 14, 20, 30, 45, 60}`; its best observed directional accuracy was
+**49.2% at 30d**. At **45–60d**, average `markovWeight` is near zero, so those
+outcomes should not be attributed to the Markov chain signal itself. Beyond
+60d, the chain mixes toward its stationary distribution and loses directional
+information.
 
 ---
 
@@ -538,10 +549,10 @@ automatically based on the ticker symbol.
 
 | Horizon | Backtest Coverage | Notes |
 |---------|-------------------|-------|
-| 5–10 days | Mixed | Confirmed for **SPY** and partly for **IAU**; still noisy or exploratory for many other assets |
-| **14 days** | **Well-tested** | Earliest broad defensible horizon for **SPY / QQQ / VOO / VTI**; **IAU** is also confirmed here; BTC remains weak |
-| **20 days** | **Well-tested** | Start of defensible good territory for non-crypto; **GLD** turns clearly strong and newer ETF confirmations persist |
-| **30 days** | **Well-tested** | Practical sweet spot for non-crypto; **DIA** only clears the confirmed bar here; BTC is still weak at **49.2%** |
+| 5–10 days | Mixed | Confirmed for **SPY**, **MSFT 5d**, **NVDA 5d**, **GOOGL 7d**, and much of **IAU**; still noisy or exploratory for many other assets |
+| **14 days** | **Well-tested** | Earliest broad defensible horizon for **SPY / QQQ / VOO / VTI**; **IAU**, **MSFT**, and **NVDA** are also confirmed here; BTC remains weak |
+| **20 days** | **Well-tested** | Start of defensible good territory for non-crypto; **GLD**, **IAU**, **VTI**, **VOO**, **NVDA**, and **AMZN** all have confirmed coverage here |
+| **30 days** | **Well-tested** | Practical sweet spot for non-crypto; **DIA** only clears the confirmed bar here, **AMZN** also joins here, and BTC is still weak at **49.2%** |
 | 45–60 days | Limited | Average `markovWeight` is near zero; do not market wins as Markov-specific |
 | 90+ days | Not recommended | Model loses directional information |
 

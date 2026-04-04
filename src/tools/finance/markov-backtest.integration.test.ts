@@ -515,6 +515,141 @@ describe('Markov distribution walk-forward backtest', () => {
     });
   });
 
+  describe('Second-wave promotion audit', () => {
+    const wave2Tickers = ['MSFT', 'NVDA', 'GOOGL', 'AMZN'] as const;
+    const wave2Horizons = [5, 7, 10, 14, 20, 30] as const;
+    const wave2Results: Map<string, Map<number, WalkForwardResult>> = new Map();
+    const wave2Steps: BacktestStep[] = [];
+
+    describe('Tier 1: robustness', () => {
+      for (const ticker of wave2Tickers) {
+        for (const horizon of wave2Horizons) {
+          integrationIt(
+            `${ticker} ${horizon}d: no crashes across walk-forward`,
+            async () => {
+              const data = fixture.tickers[ticker];
+              expect(data).toBeDefined();
+              expect(data.count).toBeGreaterThan(WARMUP + horizon + 10);
+
+              const result = await walkForward({
+                ticker,
+                prices: data.closes,
+                horizon,
+                warmup: WARMUP,
+                stride: STRIDE,
+              });
+
+              if (!wave2Results.has(ticker)) wave2Results.set(ticker, new Map());
+              wave2Results.get(ticker)!.set(horizon, result);
+              wave2Steps.push(...result.steps);
+
+              expect(result.errors).toHaveLength(0);
+              expect(result.steps.length).toBeGreaterThan(5);
+            },
+            TIMEOUT,
+          );
+        }
+      }
+
+      integrationIt('second-wave: no NaN in any prediction', async () => {
+        for (const step of wave2Steps) {
+          expect(Number.isNaN(step.predictedProb)).toBe(false);
+          expect(Number.isNaN(step.predictedReturn)).toBe(false);
+          expect(Number.isNaN(step.ciLower)).toBe(false);
+          expect(Number.isNaN(step.ciUpper)).toBe(false);
+        }
+      });
+
+      integrationIt('second-wave: predicted probabilities are in [0, 1]', async () => {
+        for (const step of wave2Steps) {
+          expect(step.predictedProb).toBeGreaterThanOrEqual(0);
+          expect(step.predictedProb).toBeLessThanOrEqual(1);
+        }
+      });
+
+      integrationIt('second-wave: CI lower < CI upper for all steps', async () => {
+        for (const step of wave2Steps) {
+          expect(step.ciLower).toBeLessThan(step.ciUpper);
+        }
+      });
+    });
+
+    describe('Tier 2: regression gates', () => {
+      for (const ticker of wave2Tickers) {
+        for (const horizon of wave2Horizons) {
+          integrationIt(
+            `${ticker} ${horizon}d: Brier score < ${BRIER_MAX}`,
+            async () => {
+              const result = wave2Results.get(ticker)?.get(horizon);
+              if (!result || result.steps.length === 0) return;
+              const bs = brierScore(result.steps);
+              expect(bs).toBeLessThan(BRIER_MAX);
+            },
+            TIMEOUT,
+          );
+        }
+      }
+
+      integrationIt('second-wave aggregate Brier score < 0.35', async () => {
+        if (wave2Steps.length === 0) return;
+        expect(brierScore(wave2Steps)).toBeLessThan(0.35);
+      });
+    });
+
+    describe('Tier 3: promotion metrics (informational)', () => {
+      integrationIt('prints second-wave promotion audit report', async () => {
+        if (wave2Steps.length === 0) return;
+
+        const lines: string[] = ['', '═══ SECOND-WAVE PROMOTION AUDIT ═══'];
+        for (const ticker of wave2Tickers) {
+          const horizonMap = wave2Results.get(ticker);
+          if (!horizonMap) continue;
+          for (const horizon of wave2Horizons) {
+            const result = horizonMap.get(horizon);
+            if (!result) continue;
+            const r = generateReport(ticker, horizon, result.steps);
+            const calPUp = calibratedPUpDirectionalAccuracy(result.steps);
+            const avgMarkovWeight = result.steps.length > 0
+              ? result.steps.reduce((sum, step) => sum + (step.markovWeight ?? 0), 0) / result.steps.length
+              : 0;
+            const flag = (v: number, good: number, bad: number) =>
+              v >= good ? '✓' : v >= bad ? '~' : '✗';
+            lines.push(
+              `  ${ticker.padEnd(5)} ${String(horizon).padStart(2)}d: `
+              + `Brier=${r.brierScore.toFixed(3)} ${flag(1 - r.brierScore, 0.75, 0.65)} | `
+              + `CI=${(r.ciCoverage * 100).toFixed(0).padStart(3)}% ${flag(r.ciCoverage, 0.80, 0.50)} | `
+              + `Dir=${(r.directionalAccuracy * 100).toFixed(0).padStart(3)}% ${flag(r.directionalAccuracy, 0.55, 0.45)} | `
+              + `CalPUp=${(calPUp * 100).toFixed(0).padStart(3)}% ${flag(calPUp, 0.55, 0.45)} | `
+              + `MW=${avgMarkovWeight.toExponential(2)} | `
+              + `n=${r.totalSteps}`,
+            );
+          }
+        }
+
+        const aggBrier = brierScore(wave2Steps);
+        const aggCI = ciCoverage(wave2Steps);
+        const aggDir = directionalAccuracy(wave2Steps);
+        const aggCalPUp = calibratedPUpDirectionalAccuracy(wave2Steps);
+        const aggMarkovWeight = wave2Steps.length > 0
+          ? wave2Steps.reduce((sum, step) => sum + (step.markovWeight ?? 0), 0) / wave2Steps.length
+          : 0;
+        lines.push('─'.repeat(110));
+        lines.push(
+          `  SECOND-WAVE AGG: Brier=${aggBrier.toFixed(3)} | `
+          + `CI=${(aggCI * 100).toFixed(0)}% | `
+          + `Dir=${(aggDir * 100).toFixed(0)}% | `
+          + `CalPUp=${(aggCalPUp * 100).toFixed(0)}% | `
+          + `MW=${aggMarkovWeight.toExponential(2)} | `
+          + `n=${wave2Steps.length}`,
+        );
+        lines.push('═════════════════════════════════', '');
+        console.log(lines.join('\n'));
+
+        expect(true).toBe(true);
+      }, TIMEOUT);
+    });
+  });
+
   describe('BTC short-horizon calibration', () => {
     const btcHorizons = [7, 14] as const;
     const btcResults: Map<number, WalkForwardResult> = new Map();
