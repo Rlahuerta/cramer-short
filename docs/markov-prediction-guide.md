@@ -277,20 +277,40 @@ substantially more reliable than the 63% baseline.
 
 The current horizon audit for the live reporting surface tested
 `{5, 7, 10, 14, 20, 30, 45, 60}` using `walkForward`, `WARMUP=120`, and
-`STRIDE=10`. Use the table below for horizon selection and asset-specific
-directional guidance.
+`STRIDE=10`. Use the tables below to separate **confirmed canonical coverage**
+from **exploratory candidates that are not yet canonical**.
+
+### Confirmed canonical coverage
+
+These rows are backed by the committed fixture audit and are safe for
+reviewer-visible summaries.
 
 | Asset | Good tested horizon(s) | Weak / unsupported horizon(s) | Notes |
 |-------|-------------------------|-------------------------------|-------|
-| **SPY** | **14d** (early positive), **20–30d** (supported band) | 5–10d limited; 45–60d not Markov-specific | Strong directional signal by 14d. |
-| **QQQ** | **14d** (early positive), **20–30d** (supported band) | 5–10d limited; 45–60d not Markov-specific | Similar to SPY, with clear strength by 14d. |
-| **GLD** | **20–30d** | 5–14d weaker; 45–60d not Markov-specific | Clearly strong by 20d and stronger by 30d. |
+| **SPY** | **5d, 10d, 14d, 20d, 30d** | 45–60d not Markov-specific | Confirmed positive from the short to mid horizon band. |
+| **QQQ** | **14d, 20d, 30d** | 5–10d limited; 45–60d not Markov-specific | Strongest confirmed tech/index case. |
+| **GLD** | **20d, 30d** | 5–14d weaker; 45–60d not Markov-specific | Clearly strong from 20d onward. |
 | **BTC-USD** | **None** in `{5, 7, 10, 14, 20, 30, 45, 60}` | All tested horizons | Best observed directional accuracy was **49.2% at 30d**, still too weak for a “good horizon” claim. |
+| **AAPL** | **None in canonical coverage** | All tested canonical horizons | Not good enough for a canonical positive claim. |
+| **TSLA** | **None in canonical coverage** | All tested canonical horizons | Not good enough for a canonical positive claim. |
 
-The full horizon audit above is the current reporting-safe guidance. The
-historical 14d / 30d snapshot below remains useful context for the narrower
+### Exploratory candidates (not yet canonical)
+
+The broader liquid-asset sweep found additional promising names, but these do
+**not** yet have committed fixture coverage. They must not be cited as already
+confirmed.
+
+| Tier | Assets | Why they matter | Next step |
+|------|--------|-----------------|-----------|
+| **Strong ETF / commodity-ETF candidates** | **VOO, DIA, VTI, IAU** | They cleared the stricter exploratory bar on multiple horizons and are structurally closest to the already-confirmed ETF / gold cases. | Add fixture data and re-run the canonical walk-forward harness. |
+| **Promising single-name candidates** | **MSFT, NVDA, GOOGL, AMZN** | They showed at least one strict-good exploratory horizon, but single-name equities are noisier than broad ETFs. | Only review after the first-wave ETF / commodity-ETF promotion pass. |
+
+⚠️ Exploratory sweeps are useful for ranking what to validate next, not for
+claiming confirmed Markov coverage. Keep the distinction explicit.
+
+The historical 14d / 30d snapshot below remains useful context for the narrower
 original backtest, but it should not be used to infer that BTC has a good 30d
-horizon.
+horizon or that exploratory candidates are already canonical.
 
 ### Historical 14d / 30d backtest snapshot
 
