@@ -325,11 +325,23 @@ for MSFT (5d, 14d), NVDA (5d, 14d, 20d), GOOGL (7d), and AMZN (20d, 30d)**.
 Other tested single-name horizons remain exploratory, and `45–60d` horizons
 remain out of scope.
 
-The historical 14d / 30d snapshot below remains useful context for the narrower
-original backtest, but it should not be used to infer that BTC has a good 30d
-horizon or that exploratory candidates are already canonical.
+The current canonical multi-horizon backtest (`swing-trade-backtest.test.ts`) covers
+6 horizons × 3 tickers with 36 signals per ticker-horizon. Key results:
 
-### Historical 14d / 30d backtest snapshot
+### Canonical multi-horizon results (confidence ≥ 0.25)
+
+| Ticker | Best Horizon | Sharpe | Win Rate | Directional Accuracy |
+|--------|-------------|--------|----------|---------------------|
+| SPY | 14d | 1.60 | 72.2% | 68.8% |
+| QQQ | 20d | 1.57 | 76.5% | 73.3% |
+| GLD | 30d | 2.61 | 88.9% | 88.9% |
+
+**Aggregate (all tickers, all horizons):** Sharpe 1.34 vs 1.09 unfiltered, 71.4% win rate.
+
+The older "Historical 14d / 30d snapshot" table (below) comes from a different
+backtest run with a narrower dataset. It remains as historical context only.
+
+### Historical 14d / 30d backtest snapshot (legacy)
 
 | Ticker | Directional Accuracy | CI Coverage (90%) |
 |--------|---------------------|--------------------|

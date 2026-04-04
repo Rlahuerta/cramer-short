@@ -14,6 +14,7 @@ Cramer-Short's `/watchlist` command is your portfolio tracker and quick-glance m
 | `/watchlist list` | Live-enriched table of all positions |
 | `/watchlist show TICKER` | Compact info card for one ticker |
 | `/watchlist snapshot` | Portfolio dashboard with allocation chart |
+| `/watchlist refresh` | Manually re-fetch live prices and Markov confidence for all watchlist tickers |
 
 ---
 
@@ -216,7 +217,23 @@ Watchlist data is stored locally in `~/.cramer-short/watchlist.json`:
 
 ---
 
-## Requirements
+## Auto-Refresh
+
+When a watchlist view (`list`, `show`, or `snapshot`) is open, prices and Markov confidence are re-fetched automatically at the interval configured via `WATCHLIST_REFRESH_INTERVAL_MS`.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `WATCHLIST_REFRESH_INTERVAL_MS` | `0` (disabled) | Polling interval in milliseconds. `0` = no auto-refresh |
+
+**Auto-refresh behavior:**
+- Refresh triggers every `N` ms while the watchlist overlay is open
+- Each refresh re-fetches live prices, P&L, and Markov confidence for all watchlist tickers
+- The overlay footer shows time since last refresh: `· refreshed just now` / `· refreshed 23s ago` / `· refreshed 2m ago`
+- Timer stops automatically when the watchlist overlay closes (Esc, submitting a query, or switching to another view)
+
+**Manual refresh:** `/watchlist refresh` re-fetches immediately without reopening the overlay. Returns an error if no watchlist view is currently open.
+
+
 
 | Feature | Requires |
 |---------|---------|

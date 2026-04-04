@@ -14,7 +14,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { cramerShortPath } from './paths.js';
 
-export type ApiPreference = 'fmp' | 'yahoo' | 'web' | 'financial-datasets';
+export type ApiPreference = 'fmp' | 'yahoo' | 'web' | 'financial-datasets' | 'robinhood';
 
 interface RoutingEntry {
   preferred: ApiPreference;

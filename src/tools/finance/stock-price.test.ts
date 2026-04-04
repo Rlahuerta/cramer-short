@@ -1,8 +1,4 @@
-import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
-
-// ---------------------------------------------------------------------------
-// Mock ../search/tavily.js BEFORE importing stock-price.js
-// ---------------------------------------------------------------------------
+import { describe, test, expect, mock, spyOn, beforeEach } from 'bun:test';
 
 const mockTavilyInvoke = mock(async (_input: unknown): Promise<string> =>
   JSON.stringify({ data: { result: 'AAPL current price $185' }, sourceUrls: [] }),
@@ -11,8 +7,35 @@ mock.module('../search/tavily.js', () => ({
   tavilySearch: { invoke: mockTavilyInvoke, name: 'web_search' },
 }));
 
+const MOCK_RH_QUOTE = {
+  symbol: 'AAPL',
+  lastTradePrice: '186.00',
+  bidPrice: '185.95',
+  askPrice: '186.05',
+  bidSize: 100,
+  askSize: 100,
+  lastTradeSize: 50,
+  lastTradeCondition: null,
+  lastUpdatedAt: '2025-01-01T00:00:00Z',
+  previousClose: '185.00',
+  adjustedPreviousClose: '185.00',
+  tradingHalted: false,
+  marketState: 'active',
+  volume: 50_000_000,
+};
+
+const mockGetQuote = mock(async (_ticker: string) => {
+  return MOCK_RH_QUOTE;
+});
+mock.module('./robinhood-client.js', () => ({
+  getQuote: mockGetQuote,
+  getFundamentals: mock(async () => null),
+}));
+
 import { api } from './api.js';
-import { getStockPrice, getStockPrices, getStockTickers } from './stock-price.js';
+import { makeGetStockPrice, getStockPrices, getStockTickers } from './stock-price.js';
+
+const getStockPrice = makeGetStockPrice(mockGetQuote);
 
 function parseResult(raw: unknown): { data: unknown; sourceUrls?: string[] } {
   return JSON.parse(raw as string);
@@ -32,6 +55,7 @@ const MOCK_SNAPSHOT = {
 describe('getStockPrice', () => {
   beforeEach(() => {
     mockTavilyInvoke.mockClear();
+    mockGetQuote.mockClear();
     delete process.env.TAVILY_API_KEY;
   });
 
@@ -69,22 +93,31 @@ describe('getStockPrice', () => {
     expect(parsed.data).toEqual({});
   });
 
-  test('falls back to Tavily when API throws and TAVILY_API_KEY is set', async () => {
+  test('falls back to Robinhood when API throws', async () => {
+    spyOn(api, 'get').mockRejectedValue(new Error('API unavailable'));
+    const result = await getStockPrice.invoke({ ticker: 'AAPL' });
+    expect(mockGetQuote).toHaveBeenCalledWith('AAPL');
+    const parsed = parseResult(result);
+    expect((parsed.data as { lastTradePrice: string }).lastTradePrice).toBe('186.00');
+  });
+
+  test('falls back to Tavily when API throws and Robinhood returns null', async () => {
     process.env.TAVILY_API_KEY = 'test-tavily-key';
     spyOn(api, 'get').mockRejectedValue(new Error('API unavailable'));
+    mockGetQuote.mockResolvedValueOnce(null as unknown as typeof MOCK_RH_QUOTE);
     mockTavilyInvoke.mockResolvedValueOnce(
       JSON.stringify({ data: { result: 'AAPL: $185.50' }, sourceUrls: [] }),
     );
 
     const result = await getStockPrice.invoke({ ticker: 'AAPL' });
     expect(mockTavilyInvoke).toHaveBeenCalled();
-    // Tavily result is returned as-is
     expect(result).toBeDefined();
   });
 
-  test('returns structured error when API throws and no Tavily key', async () => {
+  test('returns structured error when API and Robinhood both fail and no Tavily key', async () => {
     delete process.env.TAVILY_API_KEY;
     spyOn(api, 'get').mockRejectedValue(new Error('API unavailable'));
+    mockGetQuote.mockResolvedValueOnce(null as unknown as typeof MOCK_RH_QUOTE);
 
     const result = await getStockPrice.invoke({ ticker: 'AAPL' });
     const parsed = parseResult(result);
@@ -92,9 +125,10 @@ describe('getStockPrice', () => {
     expect(mockTavilyInvoke).not.toHaveBeenCalled();
   });
 
-  test('returns structured error when API and Tavily both fail', async () => {
+  test('returns structured error when API, Robinhood, and Tavily all fail', async () => {
     process.env.TAVILY_API_KEY = 'test-tavily-key';
     spyOn(api, 'get').mockRejectedValue(new Error('API unavailable'));
+    mockGetQuote.mockResolvedValueOnce(null as unknown as typeof MOCK_RH_QUOTE);
     mockTavilyInvoke.mockRejectedValueOnce(new Error('Tavily unavailable'));
 
     const result = await getStockPrice.invoke({ ticker: 'AAPL' });
