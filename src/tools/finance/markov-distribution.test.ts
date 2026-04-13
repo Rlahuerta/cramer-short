@@ -2879,6 +2879,62 @@ describe('computePredictionConfidence', () => {
     expect(broken).toBeCloseTo(base * 0.6, 2);
   });
 
+  it('trend_penalty_only skips the break penalty in sideways regimes', () => {
+    const base = {
+      pUp: 0.75,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 10,
+      momentumAgreement: 0.5,
+    };
+
+    const noBreak = computePredictionConfidence({
+      ...base,
+      structuralBreak: false,
+      regimeState: 'sideways',
+    });
+    const brokenDefault = computePredictionConfidence({
+      ...base,
+      structuralBreak: true,
+      regimeState: 'sideways',
+      breakConfidencePolicy: 'default',
+    });
+    const brokenTrendOnly = computePredictionConfidence({
+      ...base,
+      structuralBreak: true,
+      regimeState: 'sideways',
+      breakConfidencePolicy: 'trend_penalty_only',
+    });
+
+    expect(brokenDefault).toBeCloseTo(noBreak * 0.6, 2);
+    expect(brokenTrendOnly).toBeCloseTo(noBreak, 6);
+  });
+
+  it('trend_penalty_only preserves the break penalty in trending regimes', () => {
+    const base = {
+      pUp: 0.75,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 10,
+      momentumAgreement: 0.5,
+    };
+
+    const brokenDefault = computePredictionConfidence({
+      ...base,
+      structuralBreak: true,
+      regimeState: 'bull',
+      breakConfidencePolicy: 'default',
+    });
+    const brokenTrendOnly = computePredictionConfidence({
+      ...base,
+      structuralBreak: true,
+      regimeState: 'bull',
+      breakConfidencePolicy: 'trend_penalty_only',
+    });
+
+    expect(brokenTrendOnly).toBeCloseTo(brokenDefault, 6);
+  });
+
   it('more ensemble consensus increases confidence', () => {
     const low = computePredictionConfidence({
       pUp: 0.7, ensembleConsensus: 0, hmmConverged: false, regimeRunLength: 5, structuralBreak: false,

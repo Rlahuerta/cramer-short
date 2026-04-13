@@ -223,6 +223,8 @@ export interface ScenarioProbabilities {
   pUp: number;
 }
 
+export type BreakConfidencePolicy = 'default' | 'trend_penalty_only';
+
 export interface MarkovDistributionResult {
   ticker: string;
   currentPrice: number;
@@ -294,6 +296,7 @@ export interface MarkovDistributionResult {
     pr3gRecencyWeightingActive: boolean;
     sidewaysSplitActive?: boolean;
     matureBullCalibrationActive?: boolean;
+    trendPenaltyOnlyBreakConfidenceActive?: boolean;
   };
 }
 
@@ -1173,13 +1176,14 @@ export function detectStructuralBreak(
   states: RegimeState[],
   divergenceThreshold = 0.05,
   alpha = 0.1,
+  decayRate = 0.97,
 ): StructuralBreakResult {
   const mid = Math.floor(states.length / 2);
   const firstHalf  = states.slice(0, mid);
   const secondHalf = states.slice(mid);
 
-  const firstHalfMatrix  = estimateTransitionMatrix(firstHalf,  alpha, 10);
-  const secondHalfMatrix = estimateTransitionMatrix(secondHalf, alpha, 10);
+  const firstHalfMatrix  = estimateTransitionMatrix(firstHalf,  alpha, 10, decayRate);
+  const secondHalfMatrix = estimateTransitionMatrix(secondHalf, alpha, 10, decayRate);
 
   let divergence = 0;
   for (let i = 0; i < NUM_STATES; i++) {
@@ -2036,8 +2040,10 @@ function computeValidationR2OS(params: {
   regimeSeq: RegimeState[];
   logReturns: number[];
   assetProfile: AssetProfile;
+  transitionDecayOverride?: number;
 }): { r2os: number | null; validationMetric: 'daily_return' | 'horizon_return' } {
-  const { assetType, horizon, regimeSeq, logReturns, assetProfile } = params;
+  const { assetType, horizon, regimeSeq, logReturns, assetProfile, transitionDecayOverride } = params;
+  const effectiveDecayRate = transitionDecayOverride ?? 0.97;
 
   const useHorizonValidator = assetType === 'crypto' && horizon >= 7 && horizon <= 14;
   if (useHorizonValidator) {
@@ -2053,7 +2059,7 @@ function computeValidationR2OS(params: {
         const trainLogReturns = logReturns.slice(0, start);
         if (trainStates.length < 20 || trainLogReturns.length < 20) continue;
 
-        const trainP = estimateTransitionMatrix(trainStates);
+        const trainP = estimateTransitionMatrix(trainStates, undefined, 30, effectiveDecayRate);
         const trainRegimeStats = estimateRegimeStats(trainLogReturns, trainStates, assetProfile.maxDailyDrift);
         const lastTrainState = trainStates[trainStates.length - 1];
         const trainMean = trainLogReturns.reduce((s, v) => s + v, 0) / trainLogReturns.length;
@@ -2087,7 +2093,7 @@ function computeValidationR2OS(params: {
     const trainReturns = logReturns.slice(0, -minHeldOut);
     const testReturns  = logReturns.slice(-minHeldOut);
 
-    const trainP    = estimateTransitionMatrix(trainStates);
+    const trainP    = estimateTransitionMatrix(trainStates, undefined, 30, effectiveDecayRate);
     const trainRegimeStats = estimateRegimeStats(trainReturns, trainStates, assetProfile.maxDailyDrift);
     const trainMean = trainReturns.reduce((s, v) => s + v, 0) / trainReturns.length;
     const predicted = testReturns.map((_, i) => {
@@ -2316,6 +2322,8 @@ export function computePredictionConfidence(options: {
   trustedAnchors?: number;
   horizonDays?: number;
   outOfSampleR2?: number | null;
+  breakConfidencePolicy?: BreakConfidencePolicy;
+  regimeState?: RegimeState;
 }): number {
   const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
   const cryptoShortHorizon = options.assetType === 'crypto'
@@ -2375,8 +2383,14 @@ export function computePredictionConfidence(options: {
 
   // Penalty for structural break (regime change mid-window → unreliable)
   if (structuralBreak) {
-    const breakPenalty = cryptoShortHorizon && anchorsHelpful && !r2ClearlyBad ? 0.8 : 0.6;
-    confidence *= breakPenalty;
+    const breakConfidencePolicy = options.breakConfidencePolicy ?? 'default';
+    const skipBreakPenalty = breakConfidencePolicy === 'trend_penalty_only'
+      && options.regimeState === 'sideways';
+
+    if (!skipBreakPenalty) {
+      const breakPenalty = cryptoShortHorizon && anchorsHelpful && !r2ClearlyBad ? 0.8 : 0.6;
+      confidence *= breakPenalty;
+    }
   }
 
   // Asset-type discount: crypto is inherently noisier → scale confidence down.
@@ -2825,6 +2839,10 @@ export async function computeMarkovDistribution(params: {
   startStateMixture?: boolean;
   /** @deprecated experimental ablation — backtests only */
   matureBullCalibration?: boolean;
+  /** @deprecated experimental ablation — backtests only */
+  transitionDecayOverride?: number;
+  /** @deprecated experimental ablation — backtests only */
+  trendPenaltyOnlyBreakConfidence?: boolean;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
@@ -2847,6 +2865,8 @@ export async function computeMarkovDistribution(params: {
     pr3gCryptoShortHorizonDecay,
     startStateMixture,
     matureBullCalibration,
+    transitionDecayOverride,
+    trendPenaltyOnlyBreakConfidence,
   } = params;
 
   // --- Asset profile (Idea N): per-asset-class parameter tuning ---
@@ -2874,14 +2894,15 @@ export async function computeMarkovDistribution(params: {
   const sparseStates = findSparseStates(stateObservationCounts);
 
   // --- Tier 1b: Structural break detection ---
+  const effectiveTransitionDecay = transitionDecayOverride ?? 0.97;
   const breakResult = regimeSeq.length >= 20
-    ? detectStructuralBreak(regimeSeq)
+    ? detectStructuralBreak(regimeSeq, 0.05, 0.1, effectiveTransitionDecay)
     : { detected: false, divergence: 0, firstHalfMatrix: buildDefaultMatrix(), secondHalfMatrix: buildDefaultMatrix() };
 
   // --- Estimate transition matrix (fall back to default when break detected) ---
   let P = breakResult.detected
     ? buildDefaultMatrix()
-    : estimateTransitionMatrix(regimeSeq);
+    : estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
 
   // --- Goodness-of-fit test (before sentiment adjustment, which is intentional) ---
   const gofResult = breakResult.detected ? null : transitionGoodnessOfFit(regimeSeq, P);
@@ -3272,6 +3293,7 @@ export async function computeMarkovDistribution(params: {
     regimeSeq,
     logReturns,
     assetProfile,
+    transitionDecayOverride,
   });
   const r2os = validation.r2os;
 
@@ -3294,6 +3316,8 @@ export async function computeMarkovDistribution(params: {
     trustedAnchors: anchorCoverage.trustedAnchors,
     horizonDays: horizon,
     outOfSampleR2: r2os,
+    breakConfidencePolicy: trendPenaltyOnlyBreakConfidence ? 'trend_penalty_only' : 'default',
+    regimeState: currentRegime,
   });
 
   // --- Trajectory computation (optional day-by-day forecast) ---
@@ -3433,6 +3457,7 @@ export async function computeMarkovDistribution(params: {
       pr3gRecencyWeightingActive: pr3gDecayRate !== undefined,
       sidewaysSplitActive,
       matureBullCalibrationActive,
+      trendPenaltyOnlyBreakConfidenceActive: trendPenaltyOnlyBreakConfidence === true,
     }
   };
 }

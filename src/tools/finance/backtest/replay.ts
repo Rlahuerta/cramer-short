@@ -187,6 +187,7 @@ export async function walkForwardWithReplay(
         cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
         pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
         pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
+        trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
       });
 
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);
@@ -239,6 +240,7 @@ export async function walkForwardWithReplay(
         ensembleConsensus: result.metadata.ensemble.consensus,
         probabilitySource: 'calibrated' as ProbabilitySource,
         decisionSource,
+        trendPenaltyOnlyBreakConfidenceActive: result.metadata.trendPenaltyOnlyBreakConfidenceActive,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });

@@ -48,6 +48,14 @@ export interface WalkForwardConfig {
   matureBullCalibration?: boolean;
   /** Optional flag: replace hard start state with additive mixture over last K states */
   startStateMixture?: boolean;
+  /** Optional override for transition-matrix decay weighting (Phase 1 ablation) */
+  transitionDecayOverride?: number;
+  /** Optional flag: when a full-window run detects a break, rerun with a shorter window */
+  postBreakShortWindow?: boolean;
+  /** Optional shorter window size used by postBreakShortWindow (default: 60) */
+  postBreakWindowSize?: number;
+  /** Optional flag: keep break confidence penalty only in trending break contexts (Phase 4 ablation) */
+  trendPenaltyOnlyBreakConfidence?: boolean;
 }
 
 export interface WalkForwardResult {
@@ -89,7 +97,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     const actualReturn = (realizedPrice - currentPrice) / currentPrice;
 
     try {
-      const result: MarkovDistributionResult = await computeMarkovDistribution({
+      let result: MarkovDistributionResult = await computeMarkovDistribution({
         ticker,
         horizon,
         currentPrice,
@@ -106,7 +114,40 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         matureBullCalibration: config.matureBullCalibration,
         startStateMixture: config.startStateMixture,
         sidewaysSplit: config.sidewaysSplit,
+        transitionDecayOverride: config.transitionDecayOverride,
+        trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
       });
+
+      const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
+      const originalStructuralBreakDivergence = result.metadata.structuralBreakDivergence;
+      let structuralBreakRerunTriggered = false;
+
+      if (config.postBreakShortWindow && result.metadata.structuralBreakDetected) {
+        const shortWindowSize = Math.max(30, config.postBreakWindowSize ?? 60);
+        if (histPrices.length > shortWindowSize) {
+          structuralBreakRerunTriggered = true;
+          result = await computeMarkovDistribution({
+            ticker,
+            horizon,
+            currentPrice,
+            historicalPrices: histPrices.slice(-shortWindowSize),
+            polymarketMarkets: [],
+            cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
+            cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
+            pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
+            cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
+            cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
+            cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
+            pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
+            pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
+            matureBullCalibration: config.matureBullCalibration,
+            startStateMixture: config.startStateMixture,
+            sidewaysSplit: config.sidewaysSplit,
+            transitionDecayOverride: config.transitionDecayOverride,
+            trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
+          });
+        }
+      }
 
       // Find P(>currentPrice) from the calibrated distribution by interpolation
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);
@@ -151,13 +192,17 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         validationMetric: result.metadata.validationMetric,
         outOfSampleR2: result.metadata.outOfSampleR2,
         structuralBreakDetected: result.metadata.structuralBreakDetected,
+        structuralBreakRerunTriggered,
+        originalStructuralBreakDetected,
         structuralBreakDivergence: result.metadata.structuralBreakDivergence,
+        originalStructuralBreakDivergence,
         hmmConverged: result.metadata.hmm?.converged ?? null,
         ensembleConsensus: result.metadata.ensemble.consensus,
         probabilitySource: 'calibrated' as ProbabilitySource,
         decisionSource,
         sidewaysSplitActive: result.metadata.sidewaysSplitActive,
         matureBullCalibrationActive: result.metadata.matureBullCalibrationActive,
+        trendPenaltyOnlyBreakConfidenceActive: result.metadata.trendPenaltyOnlyBreakConfidenceActive,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });
@@ -198,10 +243,11 @@ function interpolateSurvival(
 }
 
 /**
- * Extract 90% confidence interval bounds from the distribution.
- * Uses central probability curve with 97.5/2.5 thresholds to account for
- * parameter uncertainty. The extra 2.5pp on each tail provides a
- * conservative buffer against model miscalibration.
+ * Extract a conservative price interval from the survival distribution.
+ *
+ * This is used for backtest coverage diagnostics only. The thresholds are tuned
+ * empirically for stable coverage and are intentionally more conservative than a
+ * literal central 90% interval.
  */
 function extractCI(
   dist: MarkovDistributionResult['distribution'],
@@ -212,8 +258,8 @@ function extractCI(
   let ciLower = dist[0].price;
   let ciUpper = dist[dist.length - 1].price;
 
-  // Use 99.5/0.5 thresholds — the extra margin on each tail absorbs model risk
-  // and parameter estimation error. Empirically calibrated to achieve ~90% coverage.
+  // Use conservative survival thresholds — tuned empirically for coverage rather
+  // than interpreted as literal 5th/95th percentiles.
   const lowerThreshold = 0.995;
   const upperThreshold = 0.005;
 
