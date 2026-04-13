@@ -25,9 +25,17 @@ export type ConfidenceBucketLabel =
 
 export type VolatilityBucketLabel = 'low' | 'medium' | 'high';
 
+export type MoveMagnitudeBucketLabel = '<2%' | '2–5%' | '5–10%' | '≥10%';
+
+export type MoveDirectionBucketLabel = 'up' | 'down' | 'flat';
+
+export type TrendVsChopLabel = 'trending' | 'chop';
+
 export type PUpBandLabel = '<0.45' | '0.45–0.50' | '0.50–0.55' | '>0.55';
 
 export type PUpBandSource = 'calibrated' | 'raw';
+
+export type DivergenceBucketLabel = '<0.05' | '0.05–0.10' | '0.10–0.20' | '≥0.20';
 
 // ---------------------------------------------------------------------------
 // Provenance types (PR3E)
@@ -54,14 +62,26 @@ export const DEFAULT_PUP_BANDS = [
   { label: '>0.55',     minInclusive: 0.55, maxExclusive: 1.0  },
 ] as const satisfies readonly NumericBucketDefinition<PUpBandLabel>[];
 
+export const DEFAULT_DIVERGENCE_BUCKETS = [
+  { label: '<0.05', minInclusive: Number.NEGATIVE_INFINITY, maxExclusive: 0.05 },
+  { label: '0.05–0.10', minInclusive: 0.05, maxExclusive: 0.10 },
+  { label: '0.10–0.20', minInclusive: 0.10, maxExclusive: 0.20 },
+  { label: '≥0.20', minInclusive: 0.20, maxExclusive: Number.POSITIVE_INFINITY },
+] as const satisfies readonly NumericBucketDefinition<DivergenceBucketLabel>[];
+
 export type FailureSliceKey =
   | 'tickerHorizon'
   | 'regime'
   | 'confidence'
   | 'volatility'
+  | 'moveMagnitude'
+  | 'moveDirection'
   | 'anchorQuality'
+  | 'recommendation'
+  | 'trendVsChop'
   | 'validationMetric'
   | 'structuralBreak'
+  | 'divergence'
   | 'hmmConverged'
   | 'ensembleConsensus'
   | 'pUpBand';
@@ -82,6 +102,19 @@ export const DEFAULT_CONFIDENCE_BUCKETS = [
 ] as const satisfies readonly NumericBucketDefinition<ConfidenceBucketLabel>[];
 
 export const DEFAULT_VOLATILITY_BUCKET_LABELS = ['low', 'medium', 'high'] as const satisfies readonly VolatilityBucketLabel[];
+
+export const DEFAULT_MOVE_MAGNITUDE_BUCKETS = [
+  { label: '<2%', minInclusive: Number.NEGATIVE_INFINITY, maxExclusive: 0.02 },
+  { label: '2–5%', minInclusive: 0.02, maxExclusive: 0.05 },
+  { label: '5–10%', minInclusive: 0.05, maxExclusive: 0.10 },
+  { label: '≥10%', minInclusive: 0.10, maxExclusive: Number.POSITIVE_INFINITY },
+] as const satisfies readonly NumericBucketDefinition<MoveMagnitudeBucketLabel>[];
+
+export const MOVE_DIRECTION_BUCKETS = ['up', 'down', 'flat'] as const satisfies readonly MoveDirectionBucketLabel[];
+
+export const TREND_VS_CHOP_BUCKETS = ['trending', 'chop'] as const satisfies readonly TrendVsChopLabel[];
+
+export const RECOMMENDATION_BUCKETS = ['BUY', 'HOLD', 'SELL'] as const satisfies readonly BacktestRecommendation[];
 
 export const BALANCED_DIRECTIONAL_CLASSES = ['BUY', 'HOLD', 'SELL'] as const satisfies readonly BacktestRecommendation[];
 
@@ -144,9 +177,17 @@ export interface BacktestStep {
   validationMetric?: ValidationMetric;
   outOfSampleR2?: number | null;
   structuralBreakDetected?: boolean;
+  /** Whether the full-window run triggered a short-window rerun due to a detected break. */
+  structuralBreakRerunTriggered?: boolean;
+  /** Structural-break flag from the pre-rerun full-window pass when applicable. */
+  originalStructuralBreakDetected?: boolean;
   sidewaysSplitActive?: boolean;
   matureBullCalibrationActive?: boolean;
+  /** Run-level provenance: the trend-only break-confidence experiment was enabled for this prediction run. */
+  trendPenaltyOnlyBreakConfidenceActive?: boolean;
   structuralBreakDivergence?: number | null;
+  /** Structural-break divergence from the pre-rerun full-window pass when applicable. */
+  originalStructuralBreakDivergence?: number | null;
   hmmConverged?: boolean | null;
   ensembleConsensus?: number | null;
   /** Provenance: what generated the probability (PR3E) */
@@ -189,6 +230,8 @@ export interface BacktestReport {
   failureDecomposition?: FailureDecompositionReport;
   /** Aggregated provenance counts across all steps (PR3E) */
   provenanceSummary?: ProvenanceSummary;
+  /** Whether any step in this report came from a run with the trend-only break-confidence experiment enabled. */
+  trendPenaltyOnlyBreakConfidenceActive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +505,35 @@ export function bucketByVolatility(
   );
 }
 
+export function bucketByMoveMagnitude(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+  buckets: readonly NumericBucketDefinition<MoveMagnitudeBucketLabel>[] = DEFAULT_MOVE_MAGNITUDE_BUCKETS,
+): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    buckets.map(bucket => bucket.label),
+    step => numericBucketLabel(Math.abs(step.actualReturn), buckets) ?? UNKNOWN_LABEL,
+    holdThreshold,
+  );
+}
+
+export function bucketByMoveDirection(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...MOVE_DIRECTION_BUCKETS],
+    step => {
+      if (step.actualReturn > holdThreshold) return 'up';
+      if (step.actualReturn < -holdThreshold) return 'down';
+      return 'flat';
+    },
+    holdThreshold,
+  );
+}
+
 export function bucketByAnchorQuality(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
   return summarizeFixedBuckets(
     steps,
@@ -480,6 +552,27 @@ export function bucketByRegime(steps: BacktestStep[], holdThreshold = 0.03): Buc
   return summarizeObservedBuckets(steps, labels, step => step.regime ?? UNKNOWN_LABEL, holdThreshold);
 }
 
+export function bucketByRecommendation(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...RECOMMENDATION_BUCKETS],
+    step => step.recommendation,
+    holdThreshold,
+  );
+}
+
+export function bucketByTrendVsChop(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...TREND_VS_CHOP_BUCKETS, UNKNOWN_LABEL],
+    step => {
+      if (!step.regime) return UNKNOWN_LABEL;
+      return step.regime === 'sideways' ? 'chop' : 'trending';
+    },
+    holdThreshold,
+  );
+}
+
 export function bucketByValidationMetric(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
   return summarizeFixedBuckets(
     steps,
@@ -494,7 +587,29 @@ export function bucketByStructuralBreak(steps: BacktestStep[], holdThreshold = 0
   return summarizeFixedBuckets(
     steps,
     [...labels],
-    step => step.structuralBreakDetected === undefined ? UNKNOWN_LABEL : String(step.structuralBreakDetected),
+    step => {
+      const effectiveBreak = step.originalStructuralBreakDetected ?? step.structuralBreakDetected;
+      return effectiveBreak === undefined ? UNKNOWN_LABEL : String(effectiveBreak);
+    },
+    holdThreshold,
+  );
+}
+
+export function bucketByDivergence(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+  buckets: readonly NumericBucketDefinition<DivergenceBucketLabel>[] = DEFAULT_DIVERGENCE_BUCKETS,
+): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...buckets.map(bucket => bucket.label), UNKNOWN_LABEL],
+    step => {
+      const divergence = step.originalStructuralBreakDivergence
+        ?? step.structuralBreakDivergence;
+      return divergence === null || divergence === undefined
+        ? UNKNOWN_LABEL
+        : numericBucketLabel(divergence, buckets) ?? UNKNOWN_LABEL;
+    },
     holdThreshold,
   );
 }
@@ -557,10 +672,15 @@ export function computeFailureDecomposition(
     slices: [
       { key: 'regime', rows: bucketByRegime(steps, holdThreshold) },
       { key: 'volatility', rows: bucketByVolatility(steps, holdThreshold) },
+      { key: 'moveMagnitude', rows: bucketByMoveMagnitude(steps, holdThreshold) },
+      { key: 'moveDirection', rows: bucketByMoveDirection(steps, holdThreshold) },
       { key: 'confidence', rows: bucketByConfidence(steps, DEFAULT_CONFIDENCE_BUCKETS, holdThreshold) },
       { key: 'anchorQuality', rows: bucketByAnchorQuality(steps, holdThreshold) },
+      { key: 'recommendation', rows: bucketByRecommendation(steps, holdThreshold) },
+      { key: 'trendVsChop', rows: bucketByTrendVsChop(steps, holdThreshold) },
       { key: 'validationMetric', rows: bucketByValidationMetric(steps, holdThreshold) },
       { key: 'structuralBreak', rows: bucketByStructuralBreak(steps, holdThreshold) },
+      { key: 'divergence', rows: bucketByDivergence(steps, holdThreshold) },
       { key: 'hmmConverged', rows: bucketByHmmConverged(steps, holdThreshold) },
       { key: 'ensembleConsensus', rows: bucketByEnsembleConsensus(steps, holdThreshold) },
       { key: 'pUpBand', rows: bucketByPUpBand(steps, holdThreshold) },
@@ -726,6 +846,9 @@ export function generateReport(
     meanEdge: meanEdge(steps),
     failureDecomposition: computeFailureDecomposition(steps),
     provenanceSummary,
+    trendPenaltyOnlyBreakConfidenceActive: steps.some(
+      step => step.trendPenaltyOnlyBreakConfidenceActive === true,
+    ),
   };
 }
 

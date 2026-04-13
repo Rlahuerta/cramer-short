@@ -9,11 +9,16 @@ import {
   brierScore,
   bucketByAnchorQuality,
   bucketByConfidence,
+  bucketByDivergence,
   bucketByEnsembleConsensus,
   bucketByHmmConverged,
+  bucketByMoveDirection,
+  bucketByMoveMagnitude,
   bucketByPUpBand,
   bucketByRegime,
+  bucketByRecommendation,
   bucketByStructuralBreak,
+  bucketByTrendVsChop,
   bucketByValidationMetric,
   bucketByVolatility,
   calibratedPUpDirectionalAccuracy,
@@ -350,10 +355,15 @@ describe('computeFailureDecomposition', () => {
     expect(report.slices.map(slice => slice.key)).toEqual([
       'regime',
       'volatility',
+      'moveMagnitude',
+      'moveDirection',
       'confidence',
       'anchorQuality',
+      'recommendation',
+      'trendVsChop',
       'validationMetric',
       'structuralBreak',
+      'divergence',
       'hmmConverged',
       'ensembleConsensus',
       'pUpBand',
@@ -366,7 +376,7 @@ describe('computeFailureDecomposition', () => {
       { label: 'unknown', count: 1, fraction: 0.25 },
     ]);
 
-    const validationRows = report.slices[4].rows.map(row => ({ label: row.label, count: row.count }));
+    const validationRows = report.slices[8].rows.map(row => ({ label: row.label, count: row.count }));
     expect(validationRows).toEqual([
       { label: 'daily_return', count: 2 },
       { label: 'horizon_return', count: 1 },
@@ -378,10 +388,10 @@ describe('computeFailureDecomposition', () => {
     const report = computeFailureDecomposition([]);
 
     expect(report.totalSteps).toBe(0);
-    expect(report.slices).toHaveLength(9);
+    expect(report.slices).toHaveLength(14);
     expect(report.slices[0].rows).toEqual([]);
     expect(report.slices[1].rows.map(row => row.count)).toEqual([0, 0, 0]);
-    expect(report.slices[2].rows.map(row => row.count)).toEqual([0, 0, 0, 0, 0]);
+    expect(report.slices[4].rows.map(row => row.count)).toEqual([0, 0, 0, 0, 0]);
   });
 });
 
@@ -485,7 +495,7 @@ describe('generateReport', () => {
     expect(report.reliabilityBins).toHaveLength(10);
     expect(typeof report.balancedDirectionalAccuracy).toBe('number');
     expect(typeof report.meanEdge).toBe('number');
-    expect(report.failureDecomposition?.slices).toHaveLength(9);
+    expect(report.failureDecomposition?.slices).toHaveLength(14);
   });
 
   it('aggregates provenanceSummary from steps', () => {
@@ -510,6 +520,15 @@ describe('generateReport', () => {
 
     expect(report.provenanceSummary!.decisionSources.default).toBe(1);
     expect(report.provenanceSummary!.probabilitySources.calibrated).toBe(1);
+  });
+
+  it('surfaces whether the trend-only break-confidence experiment was active', () => {
+    const report = generateReport('SPY', 14, [
+      makeStep({ trendPenaltyOnlyBreakConfidenceActive: false }),
+      makeStep({ trendPenaltyOnlyBreakConfidenceActive: true }),
+    ]);
+
+    expect(report.trendPenaltyOnlyBreakConfidenceActive).toBe(true);
   });
 });
 
@@ -964,6 +983,88 @@ describe('bucketByStructuralBreak', () => {
   });
 });
 
+describe('bucketByDivergence', () => {
+  it('buckets original or current structural-break divergence', () => {
+    const steps = [
+      makeStep({ structuralBreakDivergence: 0.04 }),
+      makeStep({ structuralBreakDivergence: 0.08 }),
+      makeStep({ originalStructuralBreakDivergence: 0.12 }),
+      makeStep({ structuralBreakDivergence: 0.25 }),
+      makeStep({ structuralBreakDivergence: null }),
+    ];
+    const rows = bucketByDivergence(steps);
+    const byLabel = Object.fromEntries(rows.map(r => [r.label, r.count]));
+    expect(byLabel['<0.05']).toBe(1);
+    expect(byLabel['0.05–0.10']).toBe(1);
+    expect(byLabel['0.10–0.20']).toBe(1);
+    expect(byLabel['≥0.20']).toBe(1);
+    expect(byLabel['unknown']).toBe(1);
+  });
+});
+
+describe('bucketByMoveMagnitude', () => {
+  it('buckets realized-move magnitudes into fixed ranges', () => {
+    const steps = [
+      makeStep({ actualReturn: 0.01 }),
+      makeStep({ actualReturn: -0.03 }),
+      makeStep({ actualReturn: 0.07 }),
+      makeStep({ actualReturn: -0.15 }),
+    ];
+    const rows = bucketByMoveMagnitude(steps);
+    const byLabel = Object.fromEntries(rows.map(r => [r.label, r.count]));
+    expect(byLabel['<2%']).toBe(1);
+    expect(byLabel['2–5%']).toBe(1);
+    expect(byLabel['5–10%']).toBe(1);
+    expect(byLabel['≥10%']).toBe(1);
+  });
+});
+
+describe('bucketByMoveDirection', () => {
+  it('classifies realized moves as up/down/flat', () => {
+    const steps = [
+      makeStep({ actualReturn: 0.05 }),
+      makeStep({ actualReturn: -0.05 }),
+      makeStep({ actualReturn: 0.01 }),
+    ];
+    const rows = bucketByMoveDirection(steps);
+    const byLabel = Object.fromEntries(rows.map(r => [r.label, r.count]));
+    expect(byLabel.up).toBe(1);
+    expect(byLabel.down).toBe(1);
+    expect(byLabel.flat).toBe(1);
+  });
+});
+
+describe('bucketByRecommendation', () => {
+  it('groups by BUY/HOLD/SELL recommendation', () => {
+    const steps = [
+      makeStep({ recommendation: 'BUY' }),
+      makeStep({ recommendation: 'HOLD' }),
+      makeStep({ recommendation: 'SELL' }),
+    ];
+    const rows = bucketByRecommendation(steps);
+    const byLabel = Object.fromEntries(rows.map(r => [r.label, r.count]));
+    expect(byLabel.BUY).toBe(1);
+    expect(byLabel.HOLD).toBe(1);
+    expect(byLabel.SELL).toBe(1);
+  });
+});
+
+describe('bucketByTrendVsChop', () => {
+  it('groups bull/bear as trending and sideways as chop', () => {
+    const steps = [
+      makeStep({ regime: 'bull' }),
+      makeStep({ regime: 'bear' }),
+      makeStep({ regime: 'sideways' }),
+      makeStep({ regime: undefined }),
+    ];
+    const rows = bucketByTrendVsChop(steps);
+    const byLabel = Object.fromEntries(rows.map(r => [r.label, r.count]));
+    expect(byLabel.trending).toBe(2);
+    expect(byLabel.chop).toBe(1);
+    expect(byLabel.unknown).toBe(1);
+  });
+});
+
 describe('bucketByHmmConverged', () => {
   it('assigns true/false/unknown buckets', () => {
     const steps = [
@@ -997,25 +1098,32 @@ describe('bucketByEnsembleConsensus', () => {
 });
 
 describe('computeFailureDecomposition PR3A slices', () => {
-  it('includes structuralBreak, hmmConverged, ensembleConsensus, pUpBand slices', () => {
+  it('includes structuralBreak, divergence, new move/trend slices, hmmConverged, ensembleConsensus, pUpBand slices', () => {
     const report = computeFailureDecomposition([
       makeStep({
         structuralBreakDetected: false,
+        structuralBreakDivergence: 0.11,
         hmmConverged: true,
         ensembleConsensus: 0.6,
         rawPredictedProb: 0.55,
+        regime: 'bull',
       }),
     ]);
     const keys = report.slices.map(s => s.key);
     expect(keys).toContain('structuralBreak');
+    expect(keys).toContain('divergence');
+    expect(keys).toContain('moveMagnitude');
+    expect(keys).toContain('moveDirection');
+    expect(keys).toContain('recommendation');
+    expect(keys).toContain('trendVsChop');
     expect(keys).toContain('hmmConverged');
     expect(keys).toContain('ensembleConsensus');
     expect(keys).toContain('pUpBand');
   });
 
-  it('has 9 slices total (was 5 before PR3A)', () => {
+  it('has 14 slices total after Phase 2A additions', () => {
     const report = computeFailureDecomposition([]);
-    expect(report.slices).toHaveLength(9);
+    expect(report.slices).toHaveLength(14);
   });
 });
 
