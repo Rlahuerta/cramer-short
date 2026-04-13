@@ -25,6 +25,8 @@ const { createRunContext } = await import('./run-context.js');
 import type { ToolEndEvent, ToolStartEvent } from './types.js';
 import type { RunContext } from './run-context.js';
 import { AIMessage } from '@langchain/core/messages';
+import { DynamicStructuredTool } from '@langchain/core/tools';
+import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
 // Isolation: each test gets its own tmp dir so Scratchpad JSONL files don't
@@ -395,5 +397,38 @@ describe('AgentToolExecutor — parallel request deduplication (pendingRequests)
     expect(callCount).toBe(2);
     const end = retryEvents.find((e) => e.type === 'tool_end') as ToolEndEvent | undefined;
     expect(end?.result).toBe('retry succeeded');
+  });
+
+  it('records schema validation errors in scratchpad for retry repair', async () => {
+    const schemaTool = new DynamicStructuredTool({
+      name: 'markov_distribution',
+      description: 'schema validation test tool',
+      schema: z.object({
+        ticker: z.string(),
+        horizon: z.number().int().min(1).max(90),
+      }),
+      func: async (_input) => JSON.stringify({ ok: true }),
+    });
+
+    const executor = new AgentToolExecutor(new Map([['markov_distribution', schemaTool]]));
+    const ctx = makeCtx();
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{
+        id: 'c1',
+        name: 'markov_distribution',
+        args: { ticker: 'AAPL', horizon: 999 },
+        type: 'tool_call' as const,
+      }],
+    });
+
+    const events = await drainEvents(executor.executeAll(msg, ctx));
+    const err = events.find((e) => e.type === 'tool_error');
+    expect(err).toBeDefined();
+
+    const records = ctx.scratchpad.getToolCallRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.tool).toBe('markov_distribution');
+    expect(records[0]?.result).toContain('Received tool input did not match expected schema');
   });
 });

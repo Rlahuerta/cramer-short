@@ -165,6 +165,50 @@ export interface SentimentSignal {
   bearish: number;  // 0–1
 }
 
+/**
+ * Normalize a sentiment signal that may arrive as human-readable percentages
+ * (e.g. {bullish: 71, bearish: 29} from social_sentiment) into the 0–1
+ * decimal format required by the Markov distribution internals.
+ *
+ * Heuristic: if either bullish or bearish is > 1, assume the caller passed
+ * percentages (0–100 scale) and divide by 100. Values already in [0, 1] are
+ * passed through unchanged.
+ *
+ * Strict failure modes (returns undefined → caller should not use sentiment):
+ *  - Negative values
+ *  - Values > 100
+ *  - Non-number types
+ *  - Mixed decimal/percent scales (except exact zero on one side, e.g. 100/0)
+ */
+export function normalizeSentiment(raw: unknown): SentimentSignal | undefined {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const bullish = obj.bullish;
+  const bearish = obj.bearish;
+  if (typeof bullish !== 'number' || typeof bearish !== 'number') return undefined;
+  if (!Number.isFinite(bullish) || !Number.isFinite(bearish)) return undefined;
+  if (bullish < 0 || bearish < 0) return undefined;
+  if (bullish > 100 || bearish > 100) return undefined;
+
+  // Percent-scale: if either side exceeds 1, treat the pair as percentages.
+  // Reject mixed-scale inputs like 71/0.3, but allow exact zero on one side.
+  const isPercentScale = bullish > 1 || bearish > 1;
+  if (isPercentScale) {
+    const hasMixedScale = (bullish > 0 && bullish <= 1) || (bearish > 0 && bearish <= 1);
+    if (hasMixedScale) return undefined;
+
+    return {
+      bullish: bullish / 100,
+      bearish: bearish / 100,
+    };
+  }
+
+  return {
+    bullish,
+    bearish,
+  };
+}
+
 /** 3×3 stochastic matrix (rows sum to 1) */
 export type TransitionMatrix = number[][];
 
@@ -2869,6 +2913,11 @@ export async function computeMarkovDistribution(params: {
     trendPenaltyOnlyBreakConfidence,
   } = params;
 
+  const normalizedSentiment = sentiment === undefined ? undefined : normalizeSentiment(sentiment);
+  if (sentiment !== undefined && normalizedSentiment === undefined) {
+    throw new Error('Invalid sentiment input: expected bullish/bearish as decimals in [0,1] or percentages in [0,100].');
+  }
+
   // --- Asset profile (Idea N): per-asset-class parameter tuning ---
   const assetProfile = getAssetProfile(ticker);
 
@@ -2908,7 +2957,7 @@ export async function computeMarkovDistribution(params: {
   const gofResult = breakResult.detected ? null : transitionGoodnessOfFit(regimeSeq, P);
 
   // --- Sentiment adjustment ---
-  const sentimentSignal = sentiment ?? { bullish: 0.5, bearish: 0.5 };
+  const sentimentSignal = normalizedSentiment ?? { bullish: 0.5, bearish: 0.5 };
   const sentimentShift = sentimentSignal.bullish - sentimentSignal.bearish;
   P = adjustTransitionMatrix(P, sentimentSignal);
 
@@ -3531,9 +3580,9 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       createdAt:   z.union([z.string(), z.number()]).optional(),
     })).optional().default([]).describe('Polymarket markets with dollar price thresholds (optional, defaults to empty)'),
     sentiment: z.object({
-      bullish: z.number().min(0).max(1),
-      bearish: z.number().min(0).max(1),
-    }).optional().describe('Sentiment signal from social_sentiment tool (optional)'),
+      bullish: z.number().min(0).max(100),
+      bearish: z.number().min(0).max(100),
+    }).optional().describe('Sentiment signal from social_sentiment tool. Accepts decimals (0–1) or percentages (0–100, auto-normalized).'),
     kalshiAnchors: z.array(z.object({
       price: z.number(),
       probability: z.number().min(0).max(1),
