@@ -665,6 +665,156 @@ Those results are directionally consistent with the earlier Phase 3 offline
 ablation, but the feature remains **experimental and non-default** until it is
 explicitly promoted.
 
+#### `breakFallbackCandidate?: BreakFallbackCandidate`
+
+- **Default (`undefined`)**: structural-break windows keep the current hard
+  replacement fallback matrix (`0.60` diagonal / `0.20` off-diagonal).
+- **Experimental**: provide a candidate only in backtest / replay harnesses to
+  compare alternative structural-break transition handling against the **Phase 4
+  baseline**.
+- **Supported modes**:
+  - `hard`: replace the estimated break-window matrix with the candidate fallback
+  - `blended`: interpolate between the estimated matrix and the candidate
+    fallback using divergence-bucket severity weights
+  - `blended_capped`: same as `blended`, but cap the blend weight
+- **Metadata / reporting**:
+  - `metadata.breakFallbackCandidateId`
+  - `metadata.breakFallbackMode`
+  - `BacktestStep.breakFallbackCandidateId`
+  - `BacktestStep.breakFallbackMode`
+
+The candidate type is backtest-only and currently lives in
+`src/tools/finance/markov-distribution.ts`:
+
+```ts
+interface BreakFallbackCandidate {
+  id: string;
+  mode: 'hard' | 'blended' | 'blended_capped';
+  conservativeDiagonal: number;
+  profileDiagonals: {
+    equity: number;
+    etf: number;
+    commodity: number;
+    crypto: number;
+  };
+  conservativeWeight: number;
+  severityWeights: {
+    mild: number;    // divergence in [0.05, 0.10)
+    medium: number;  // divergence in [0.10, 0.20)
+    high: number;    // divergence >= 0.20
+  };
+  maxBlendWeight?: number;
+}
+```
+
+**Phase 5 evaluation result (validated with the current script):** no tested
+candidate passed the approved promotion thresholds against the Phase 4 baseline.
+
+The strongest tested candidate on the primary target was:
+
+- `HYB_L025_M050_H075_lambda025`
+  - break+trending directional accuracy: **+0.5pp** vs Phase 4
+  - non-break directional accuracy: **no change**
+  - overall Brier: **+0.0061** worse
+  - result: **FAIL** (did not clear the +2.0pp primary target and exceeded the
+    Brier guardrail)
+
+### Validated usage examples for experimental backtests
+
+These commands were run against the current repository state while updating this
+documentation.
+
+#### Phase 4 comparison report
+
+```bash
+bun run src/tools/finance/backtest/phase4-trend-penalty-comparison.ts
+```
+
+Validated output summary:
+
+```text
+Overall:
+  baseline   rc@0.2=64.5%/57.9%  rc@0.3=62.6%/15.4%
+  experiment rc@0.2=65.4%/65.8%  rc@0.3=65.5%/28.3%
+
+Break-context:
+  baseline   rc@0.2=64.9%/54.2%  rc@0.3=60.7%/9.4%
+  experiment rc@0.2=65.9%/62.9%  rc@0.3=65.7%/23.8%
+
+Changed steps: 313 (break+chop: 313, break+trending: 0)
+```
+
+This command writes:
+
+- `.sisyphus/artifacts/phase4-trend-penalty-comparison.json`
+
+#### Phase 5 hybrid-fallback report
+
+```bash
+bun run src/tools/finance/backtest/phase5-hybrid-break-fallback.ts
+```
+
+Validated output summary:
+
+```text
+Candidate comparison:
+  C60                                  | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | CIcov=93.9%
+  HYB_L025_M050_H075_lambda025         | trend+brk=63.4% | non-brk=59.4% | Δtrend+brk=+0.5pp | Δbrier=0.0061 | CIcov=94.3%
+
+Result: No candidate passed all Phase 5 thresholds.
+```
+
+This command writes:
+
+- `.sisyphus/artifacts/phase5-hybrid-break-fallback.json`
+
+#### Using a candidate directly in a backtest harness
+
+```ts
+import { walkForward } from './src/tools/finance/backtest/walk-forward.js';
+
+const candidate = {
+  id: 'HYB_L025_M050_H075_lambda025',
+  mode: 'blended',
+  conservativeDiagonal: 0.60,
+  profileDiagonals: { etf: 0.55, equity: 0.60, commodity: 0.65, crypto: 0.70 },
+  conservativeWeight: 0.25,
+  severityWeights: { mild: 0.25, medium: 0.50, high: 0.75 },
+};
+
+const result = await walkForward({
+  ticker: 'SPY',
+  prices,
+  horizon: 14,
+  warmup: 120,
+  stride: 5,
+  trendPenaltyOnlyBreakConfidence: true,
+  breakFallbackCandidate: candidate,
+});
+
+console.log(result.steps[0]?.breakFallbackCandidateId);
+console.log(result.steps[0]?.breakFallbackMode);
+```
+
+What to expect:
+
+- `breakFallbackCandidateId` is populated on experiment runs
+- `breakFallbackMode` is populated when a candidate is threaded into the run
+- this does **not** promote the candidate to production behavior; it only changes
+  the backtest / replay experiment path
+
+#### Validating the experimental harnesses
+
+```bash
+bun test src/tools/finance/backtest/hybrid-break-fallback.test.ts
+bun test src/tools/finance/backtest/phase4-trend-penalty-comparison.test.ts
+```
+
+Validated result at the time of writing:
+
+- `hybrid-break-fallback.test.ts`: **11 passing tests**
+- `phase4-trend-penalty-comparison.test.ts`: **1 passing integration test**
+
 ### Polymarket Anchors
 
 When Polymarket threshold markets are available (e.g., "Will AAPL exceed $200
