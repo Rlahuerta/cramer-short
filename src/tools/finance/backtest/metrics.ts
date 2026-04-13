@@ -867,7 +867,7 @@ export interface BootstrapCI {
  * Mulberry32 seeded PRNG — same algorithm used by generate-synthetic.ts.
  * Returns a function that produces uniform [0, 1) values.
  */
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let s = seed;
   return () => {
     s = (s + 0x6D2B79F5) | 0;

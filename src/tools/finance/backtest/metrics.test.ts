@@ -31,6 +31,7 @@ import {
   gofPassRate,
   maxReliabilityDeviation,
   meanEdge,
+  mulberry32,
   optimizeThresholds,
   bootstrapDirectionalCI,
   bootstrapMetricCI,
@@ -147,10 +148,11 @@ describe('reliabilityBins', () => {
 
   it('perfectly calibrated data has low maxReliabilityDeviation', () => {
     // Create steps where predicted ≈ actual frequency
+    const rand = mulberry32(42);
     const steps: BacktestStep[] = [];
     for (let i = 0; i < 100; i++) {
       const p = (i + 0.5) / 100;
-      const actual = Math.random() < p ? 1 : 0;
+      const actual = rand() < p ? 1 : 0;
       steps.push(makeStep({ predictedProb: p, actualBinary: actual }));
     }
     // With 100 samples, deviation should be moderate (not zero due to randomness)
