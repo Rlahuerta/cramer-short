@@ -293,7 +293,21 @@ function formatSentimentReport(
   const xStats = aggregateStats(xTweets);
 
   if (stats.total === 0) {
-    return `No social media posts found for "${query}". Try a broader search term or check if the ticker is correct.`;
+    if (!fearGreed) {
+      return `No social media posts found for "${query}". Try a broader search term or check if the ticker is correct.`;
+    }
+
+    const fgBar = `${'█'.repeat(Math.round(fearGreed.value / 10))}${'░'.repeat(10 - Math.round(fearGreed.value / 10))}`;
+    return [
+      `📊 **Social Sentiment: ${ticker || query}**`,
+      '_No Reddit/X posts found in the past 7 days._',
+      '',
+      '## Crypto Fear & Greed Index',
+      `${fgBar} **${fearGreed.value}/100** — ${fearGreed.classification}`,
+      '',
+      '---',
+      '_Data sources: alternative.me Fear & Greed_',
+    ].join('\n');
   }
 
   const lines: string[] = [

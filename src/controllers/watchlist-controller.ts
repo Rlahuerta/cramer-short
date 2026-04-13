@@ -24,7 +24,8 @@ export type WatchlistSubcommand =
   | { cmd: 'remove'; ticker: string }
   | { cmd: 'list' }
   | { cmd: 'show'; ticker: string }
-  | { cmd: 'snapshot' };
+  | { cmd: 'snapshot' }
+  | { cmd: 'refresh' };
 
 /**
  * Parse the text that follows "/watchlist" into a typed subcommand.
@@ -67,6 +68,10 @@ export function parseWatchlistSubcommand(raw: string): WatchlistSubcommand {
 
   if (sub === 'snapshot') {
     return { cmd: 'snapshot' };
+  }
+
+  if (sub === 'refresh') {
+    return { cmd: 'refresh' };
   }
 
   return { cmd: 'briefing' };

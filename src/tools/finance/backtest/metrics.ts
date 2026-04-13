@@ -25,16 +25,66 @@ export type ConfidenceBucketLabel =
 
 export type VolatilityBucketLabel = 'low' | 'medium' | 'high';
 
+export type MoveMagnitudeBucketLabel = '<2%' | '2–5%' | '5–10%' | '≥10%';
+
+export type MoveDirectionBucketLabel = 'up' | 'down' | 'flat';
+
+export type TrendVsChopLabel = 'trending' | 'chop';
+
+export type PUpBandLabel = '<0.45' | '0.45–0.50' | '0.50–0.55' | '>0.55';
+
+export type PUpBandSource = 'calibrated' | 'raw';
+
+export type DivergenceBucketLabel = '<0.05' | '0.05–0.10' | '0.10–0.20' | '≥0.20';
+
+// ---------------------------------------------------------------------------
+// Provenance types (PR3E)
+// ---------------------------------------------------------------------------
+
+/** What generated the probability for this step */
+export type ProbabilitySource = 'calibrated';
+
+/** What generated the recommendation for this step */
+export type DecisionSource =
+  | 'default'
+  | 'crypto-short-horizon-raw'
+  | 'crypto-short-horizon-disagreement-blend'
+  | 'crypto-short-horizon-recency'
+  | 'replay-anchor'
+  | 'crypto-short-horizon-raw+replay-anchor'
+  | 'crypto-short-horizon-disagreement-blend+replay-anchor'
+  | 'crypto-short-horizon-recency+replay-anchor';
+
+export const DEFAULT_PUP_BANDS = [
+  { label: '<0.45',      minInclusive: 0.0,  maxExclusive: 0.45 },
+  { label: '0.45–0.50', minInclusive: 0.45, maxExclusive: 0.50 },
+  { label: '0.50–0.55', minInclusive: 0.50, maxExclusive: 0.55 },
+  { label: '>0.55',     minInclusive: 0.55, maxExclusive: 1.0  },
+] as const satisfies readonly NumericBucketDefinition<PUpBandLabel>[];
+
+export const DEFAULT_DIVERGENCE_BUCKETS = [
+  { label: '<0.05', minInclusive: Number.NEGATIVE_INFINITY, maxExclusive: 0.05 },
+  { label: '0.05–0.10', minInclusive: 0.05, maxExclusive: 0.10 },
+  { label: '0.10–0.20', minInclusive: 0.10, maxExclusive: 0.20 },
+  { label: '≥0.20', minInclusive: 0.20, maxExclusive: Number.POSITIVE_INFINITY },
+] as const satisfies readonly NumericBucketDefinition<DivergenceBucketLabel>[];
+
 export type FailureSliceKey =
   | 'tickerHorizon'
   | 'regime'
   | 'confidence'
   | 'volatility'
+  | 'moveMagnitude'
+  | 'moveDirection'
   | 'anchorQuality'
+  | 'recommendation'
+  | 'trendVsChop'
   | 'validationMetric'
   | 'structuralBreak'
+  | 'divergence'
   | 'hmmConverged'
-  | 'ensembleConsensus';
+  | 'ensembleConsensus'
+  | 'pUpBand';
 
 export interface NumericBucketDefinition<Label extends string = string> {
   label: Label;
@@ -52,6 +102,19 @@ export const DEFAULT_CONFIDENCE_BUCKETS = [
 ] as const satisfies readonly NumericBucketDefinition<ConfidenceBucketLabel>[];
 
 export const DEFAULT_VOLATILITY_BUCKET_LABELS = ['low', 'medium', 'high'] as const satisfies readonly VolatilityBucketLabel[];
+
+export const DEFAULT_MOVE_MAGNITUDE_BUCKETS = [
+  { label: '<2%', minInclusive: Number.NEGATIVE_INFINITY, maxExclusive: 0.02 },
+  { label: '2–5%', minInclusive: 0.02, maxExclusive: 0.05 },
+  { label: '5–10%', minInclusive: 0.05, maxExclusive: 0.10 },
+  { label: '≥10%', minInclusive: 0.10, maxExclusive: Number.POSITIVE_INFINITY },
+] as const satisfies readonly NumericBucketDefinition<MoveMagnitudeBucketLabel>[];
+
+export const MOVE_DIRECTION_BUCKETS = ['up', 'down', 'flat'] as const satisfies readonly MoveDirectionBucketLabel[];
+
+export const TREND_VS_CHOP_BUCKETS = ['trending', 'chop'] as const satisfies readonly TrendVsChopLabel[];
+
+export const RECOMMENDATION_BUCKETS = ['BUY', 'HOLD', 'SELL'] as const satisfies readonly BacktestRecommendation[];
 
 export const BALANCED_DIRECTIONAL_CLASSES = ['BUY', 'HOLD', 'SELL'] as const satisfies readonly BacktestRecommendation[];
 
@@ -81,8 +144,13 @@ export interface FailureDecompositionReport {
 export interface BacktestStep {
   /** Date index (trading day offset from start) */
   t: number;
-  /** Predicted P(price > currentPrice at t+horizon) */
+  /** Predicted P(price > currentPrice at t+horizon) — calibrated */
   predictedProb: number;
+  /** Raw (pre-calibration) P(>currentPrice) from the Markov distribution.
+   * Present only when the model returned both calibrated and raw distributions.
+   * When absent, raw === predictedProb (identical for backtest runs that only
+   * have a single distribution object). */
+  rawPredictedProb?: number;
   /** Did the actual price exceed currentPrice? (1 = yes, 0 = no) */
   actualBinary: number;
   /** Predicted expected return over the horizon */
@@ -109,9 +177,23 @@ export interface BacktestStep {
   validationMetric?: ValidationMetric;
   outOfSampleR2?: number | null;
   structuralBreakDetected?: boolean;
+  /** Whether the full-window run triggered a short-window rerun due to a detected break. */
+  structuralBreakRerunTriggered?: boolean;
+  /** Structural-break flag from the pre-rerun full-window pass when applicable. */
+  originalStructuralBreakDetected?: boolean;
+  sidewaysSplitActive?: boolean;
+  matureBullCalibrationActive?: boolean;
+  /** Run-level provenance: the trend-only break-confidence experiment was enabled for this prediction run. */
+  trendPenaltyOnlyBreakConfidenceActive?: boolean;
   structuralBreakDivergence?: number | null;
+  /** Structural-break divergence from the pre-rerun full-window pass when applicable. */
+  originalStructuralBreakDivergence?: number | null;
   hmmConverged?: boolean | null;
   ensembleConsensus?: number | null;
+  /** Provenance: what generated the probability (PR3E) */
+  probabilitySource?: ProbabilitySource;
+  /** Provenance: what generated the recommendation (PR3E) */
+  decisionSource?: DecisionSource;
 }
 
 export interface ReliabilityBin {
@@ -125,6 +207,11 @@ export interface ReliabilityBin {
   actualFrequency: number;
   /** Number of observations in this bin */
   count: number;
+}
+
+export interface ProvenanceSummary {
+  decisionSources: Record<DecisionSource, number>;
+  probabilitySources: Record<ProbabilitySource, number>;
 }
 
 export interface BacktestReport {
@@ -141,6 +228,10 @@ export interface BacktestReport {
   balancedDirectionalAccuracy?: number;
   meanEdge?: number;
   failureDecomposition?: FailureDecompositionReport;
+  /** Aggregated provenance counts across all steps (PR3E) */
+  provenanceSummary?: ProvenanceSummary;
+  /** Whether any step in this report came from a run with the trend-only break-confidence experiment enabled. */
+  trendPenaltyOnlyBreakConfidenceActive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +505,35 @@ export function bucketByVolatility(
   );
 }
 
+export function bucketByMoveMagnitude(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+  buckets: readonly NumericBucketDefinition<MoveMagnitudeBucketLabel>[] = DEFAULT_MOVE_MAGNITUDE_BUCKETS,
+): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    buckets.map(bucket => bucket.label),
+    step => numericBucketLabel(Math.abs(step.actualReturn), buckets) ?? UNKNOWN_LABEL,
+    holdThreshold,
+  );
+}
+
+export function bucketByMoveDirection(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...MOVE_DIRECTION_BUCKETS],
+    step => {
+      if (step.actualReturn > holdThreshold) return 'up';
+      if (step.actualReturn < -holdThreshold) return 'down';
+      return 'flat';
+    },
+    holdThreshold,
+  );
+}
+
 export function bucketByAnchorQuality(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
   return summarizeFixedBuckets(
     steps,
@@ -432,11 +552,113 @@ export function bucketByRegime(steps: BacktestStep[], holdThreshold = 0.03): Buc
   return summarizeObservedBuckets(steps, labels, step => step.regime ?? UNKNOWN_LABEL, holdThreshold);
 }
 
+export function bucketByRecommendation(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...RECOMMENDATION_BUCKETS],
+    step => step.recommendation,
+    holdThreshold,
+  );
+}
+
+export function bucketByTrendVsChop(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...TREND_VS_CHOP_BUCKETS, UNKNOWN_LABEL],
+    step => {
+      if (!step.regime) return UNKNOWN_LABEL;
+      return step.regime === 'sideways' ? 'chop' : 'trending';
+    },
+    holdThreshold,
+  );
+}
+
 export function bucketByValidationMetric(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
   return summarizeFixedBuckets(
     steps,
     [...VALIDATION_METRIC_BUCKETS],
     step => step.validationMetric ?? UNKNOWN_LABEL,
+    holdThreshold,
+  );
+}
+
+export function bucketByStructuralBreak(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  const labels = ['true', 'false', UNKNOWN_LABEL] as const;
+  return summarizeFixedBuckets(
+    steps,
+    [...labels],
+    step => {
+      const effectiveBreak = step.originalStructuralBreakDetected ?? step.structuralBreakDetected;
+      return effectiveBreak === undefined ? UNKNOWN_LABEL : String(effectiveBreak);
+    },
+    holdThreshold,
+  );
+}
+
+export function bucketByDivergence(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+  buckets: readonly NumericBucketDefinition<DivergenceBucketLabel>[] = DEFAULT_DIVERGENCE_BUCKETS,
+): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    [...buckets.map(bucket => bucket.label), UNKNOWN_LABEL],
+    step => {
+      const divergence = step.originalStructuralBreakDivergence
+        ?? step.structuralBreakDivergence;
+      return divergence === null || divergence === undefined
+        ? UNKNOWN_LABEL
+        : numericBucketLabel(divergence, buckets) ?? UNKNOWN_LABEL;
+    },
+    holdThreshold,
+  );
+}
+
+export function bucketByHmmConverged(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  const labels = ['true', 'false', UNKNOWN_LABEL] as const;
+  return summarizeFixedBuckets(
+    steps,
+    [...labels],
+    step => step.hmmConverged === undefined ? UNKNOWN_LABEL : String(step.hmmConverged),
+    holdThreshold,
+  );
+}
+
+export function bucketByEnsembleConsensus(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  if (steps.length === 0) {
+    return [UNKNOWN_LABEL, 'low', 'medium', 'high'].map(label =>
+      bucketRow(label, [], 0, holdThreshold),
+    );
+  }
+  const labels = ['low', 'medium', 'high', UNKNOWN_LABEL] as const;
+  return summarizeFixedBuckets(
+    steps,
+    [...labels],
+    step => {
+      if (step.ensembleConsensus === undefined || step.ensembleConsensus === null) return UNKNOWN_LABEL;
+      if (step.ensembleConsensus < 0.4) return 'low';
+      if (step.ensembleConsensus < 0.7) return 'medium';
+      return 'high';
+    },
+    holdThreshold,
+  );
+}
+
+export function bucketByPUpBand(
+  steps: BacktestStep[],
+  holdThreshold = 0.03,
+  bands: readonly NumericBucketDefinition<PUpBandLabel>[] = DEFAULT_PUP_BANDS,
+  source: PUpBandSource = 'calibrated',
+): BucketedMetricRow[] {
+  return summarizeFixedBuckets(
+    steps,
+    bands.map(b => b.label),
+    step => {
+      const prob = source === 'raw'
+        ? (step.rawPredictedProb ?? step.predictedProb)
+        : step.predictedProb;
+      return numericBucketLabel(prob, bands) ?? UNKNOWN_LABEL;
+    },
     holdThreshold,
   );
 }
@@ -450,9 +672,18 @@ export function computeFailureDecomposition(
     slices: [
       { key: 'regime', rows: bucketByRegime(steps, holdThreshold) },
       { key: 'volatility', rows: bucketByVolatility(steps, holdThreshold) },
+      { key: 'moveMagnitude', rows: bucketByMoveMagnitude(steps, holdThreshold) },
+      { key: 'moveDirection', rows: bucketByMoveDirection(steps, holdThreshold) },
       { key: 'confidence', rows: bucketByConfidence(steps, DEFAULT_CONFIDENCE_BUCKETS, holdThreshold) },
       { key: 'anchorQuality', rows: bucketByAnchorQuality(steps, holdThreshold) },
+      { key: 'recommendation', rows: bucketByRecommendation(steps, holdThreshold) },
+      { key: 'trendVsChop', rows: bucketByTrendVsChop(steps, holdThreshold) },
       { key: 'validationMetric', rows: bucketByValidationMetric(steps, holdThreshold) },
+      { key: 'structuralBreak', rows: bucketByStructuralBreak(steps, holdThreshold) },
+      { key: 'divergence', rows: bucketByDivergence(steps, holdThreshold) },
+      { key: 'hmmConverged', rows: bucketByHmmConverged(steps, holdThreshold) },
+      { key: 'ensembleConsensus', rows: bucketByEnsembleConsensus(steps, holdThreshold) },
+      { key: 'pUpBand', rows: bucketByPUpBand(steps, holdThreshold) },
     ],
   };
 }
@@ -573,6 +804,33 @@ export function generateReport(
   steps: BacktestStep[],
 ): BacktestReport {
   const bins = reliabilityBins(steps);
+
+  const provenanceSummary: ProvenanceSummary = {
+    decisionSources: {
+      default: 0,
+      'crypto-short-horizon-raw': 0,
+      'crypto-short-horizon-disagreement-blend': 0,
+      'crypto-short-horizon-recency': 0,
+      'replay-anchor': 0,
+      'crypto-short-horizon-raw+replay-anchor': 0,
+      'crypto-short-horizon-disagreement-blend+replay-anchor': 0,
+      'crypto-short-horizon-recency+replay-anchor': 0,
+    },
+    probabilitySources: { calibrated: 0 },
+  };
+  for (const step of steps) {
+    if (step.decisionSource) {
+      provenanceSummary.decisionSources[step.decisionSource]++;
+    } else {
+      provenanceSummary.decisionSources.default++;
+    }
+    if (step.probabilitySource) {
+      provenanceSummary.probabilitySources[step.probabilitySource]++;
+    } else {
+      provenanceSummary.probabilitySources.calibrated++;
+    }
+  }
+
   return {
     ticker,
     horizon,
@@ -587,6 +845,10 @@ export function generateReport(
     balancedDirectionalAccuracy: balancedDirectionalAccuracy(steps),
     meanEdge: meanEdge(steps),
     failureDecomposition: computeFailureDecomposition(steps),
+    provenanceSummary,
+    trendPenaltyOnlyBreakConfidenceActive: steps.some(
+      step => step.trendPenaltyOnlyBreakConfidenceActive === true,
+    ),
   };
 }
 
@@ -605,7 +867,7 @@ export interface BootstrapCI {
  * Mulberry32 seeded PRNG — same algorithm used by generate-synthetic.ts.
  * Returns a function that produces uniform [0, 1) values.
  */
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let s = seed;
   return () => {
     s = (s + 0x6D2B79F5) | 0;
@@ -742,26 +1004,47 @@ export function optimizeThresholds(
 // ---------------------------------------------------------------------------
 
 /**
- * Directional accuracy based purely on predicted P(up) vs actual outcome.
- * No HOLD dead zone: P(up) > 0.5 → predicted UP, else predicted DOWN.
- *
- * This gives a cleaner measure of directional skill since the recommendation-based
- * metric penalizes HOLD predictions even when the model correctly signals UP direction
- * but with insufficient conviction to trigger BUY (e.g. E[R]=+0.3% < buy threshold).
+ * Calibrated P(up)-based directional accuracy (no HOLD dead zone).
+ * Uses the calibrated predictedProb (0.5 → 1 compressed range).
+ * Correct when: prob > 0.5 and actualBinary === 1, or prob < 0.5 and actualBinary === 0.
+ * Tie (prob === 0.5) counts as correct for actualBinary === 1 (matches base-rate bias).
  */
-export function pUpDirectionalAccuracy(steps: BacktestStep[]): number {
+export function calibratedPUpDirectionalAccuracy(steps: BacktestStep[]): number {
   if (steps.length === 0) return 0;
   const correct = steps.filter(s =>
     (s.predictedProb > 0.5 && s.actualBinary === 1) ||
     (s.predictedProb < 0.5 && s.actualBinary === 0) ||
-    (s.predictedProb === 0.5 && s.actualBinary === 1), // tie → UP (matches base-rate bias)
+    (s.predictedProb === 0.5 && s.actualBinary === 1),
   );
+  return correct.length / steps.length;
+}
+
+/** Backward-compatible alias — pUpDirectionalAccuracy is the calibrated variant. */
+export const pUpDirectionalAccuracy = calibratedPUpDirectionalAccuracy;
+
+/**
+ * Raw P(up)-based directional accuracy (no HOLD dead zone).
+ * Uses the raw (pre-calibration) predicted probability for sign accuracy.
+ * This measures whether the model's uncalibrated signal correctly predicted direction.
+ * Correct when: rawProb > 0.5 and actualBinary === 1, or rawProb < 0.5 and actualBinary === 0.
+ * Tie (rawProb === 0.5) counts as correct for actualBinary === 1.
+ */
+export function rawPUpDirectionalAccuracy(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+  const correct = steps.filter(s => {
+    const rawProb = s.rawPredictedProb ?? s.predictedProb;
+    return (
+      (rawProb > 0.5 && s.actualBinary === 1) ||
+      (rawProb < 0.5 && s.actualBinary === 0) ||
+      (rawProb === 0.5 && s.actualBinary === 1)
+    );
+  });
   return correct.length / steps.length;
 }
 
 /**
  * Selective P(up)-based directional accuracy with confidence filtering.
- * Combines confidence-based abstention with P(up) directional check.
+ * Uses calibrated predictedProb. Combines confidence-based abstention with P(up) directional check.
  */
 export function selectivePUpAccuracy(
   steps: BacktestStep[],
@@ -777,6 +1060,36 @@ export function selectivePUpAccuracy(
     (s.predictedProb < 0.5 && s.actualBinary === 0) ||
     (s.predictedProb === 0.5 && s.actualBinary === 1),
   );
+
+  return {
+    accuracy: correct.length / selected.length,
+    coverage: selected.length / steps.length,
+    selected: selected.length,
+    total: steps.length,
+  };
+}
+
+/**
+ * Selective raw P(up)-based directional accuracy with confidence filtering.
+ * Uses raw (pre-calibration) predicted probability for sign accuracy.
+ */
+export function selectiveRawPUpAccuracy(
+  steps: BacktestStep[],
+  minConfidence: number,
+): { accuracy: number; coverage: number; selected: number; total: number } {
+  if (steps.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: 0 };
+
+  const selected = steps.filter(s => s.confidence >= minConfidence);
+  if (selected.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: steps.length };
+
+  const correct = selected.filter(s => {
+    const rawProb = s.rawPredictedProb ?? s.predictedProb;
+    return (
+      (rawProb > 0.5 && s.actualBinary === 1) ||
+      (rawProb < 0.5 && s.actualBinary === 0) ||
+      (rawProb === 0.5 && s.actualBinary === 1)
+    );
+  });
 
   return {
     accuracy: correct.length / selected.length,

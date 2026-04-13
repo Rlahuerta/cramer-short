@@ -216,6 +216,7 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
             'yahoo': 'Yahoo Finance is preferred — skip FMP, use get_yahoo_analyst_targets / get_yahoo_analyst_recommendations.',
             'web': 'All financial APIs unavailable for this ticker — prefer Yahoo Finance tools or rely on web search.',
             'financial-datasets': 'Financial Datasets API works for this ticker.',
+            'robinhood': 'Robinhood quote API works for this ticker.',
           };
           routingHint = `Ticker ${tickerMatch[1]}: ${hints[cachedApi] ?? cachedApi}`;
         }

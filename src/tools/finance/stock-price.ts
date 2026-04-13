@@ -3,10 +3,10 @@ import { z } from 'zod';
 import { api } from './api.js';
 import { formatToolResult } from '../types.js';
 import { tavilySearch } from '../search/tavily.js';
+import type { DynamicStructuredTool as DST } from '@langchain/core/tools';
+import type { RobinhoodQuote } from './robinhood-client.js';
 
-export const STOCK_PRICE_DESCRIPTION = `
-Fetches current stock price snapshots for equities, including open, high, low, close prices, volume, and market cap. Powered by Financial Datasets.
-`.trim();
+type RobinhoodQuoteFn = (ticker: string) => Promise<RobinhoodQuote | null>;
 
 const StockPriceInputSchema = z.object({
   ticker: z
@@ -14,34 +14,57 @@ const StockPriceInputSchema = z.object({
     .describe("The stock ticker symbol to fetch current price for. For example, 'AAPL' for Apple."),
 });
 
-export const getStockPrice = new DynamicStructuredTool({
-  name: 'get_stock_price',
-  description:
-    'Fetches the current stock price snapshot for an equity ticker, including open, high, low, close prices, volume, and market cap. Falls back to web search if the primary API is unavailable.',
-  schema: StockPriceInputSchema,
-  func: async (input) => {
-    const ticker = input.ticker.trim().toUpperCase();
-    try {
-      const { data, url } = await api.get('/prices/snapshot/', { ticker });
-      return formatToolResult(data.snapshot || {}, [url]);
-    } catch {
-      // Primary API failed — fall back to Tavily web search for current price
-      if (process.env.TAVILY_API_KEY) {
-        try {
-          return await tavilySearch.invoke({
-            query: `${ticker} stock price today current share price market cap`,
-          });
-        } catch {
-          // Tavily also failed
+export const STOCK_PRICE_DESCRIPTION = `
+Fetches current stock price snapshots for equities, including open, high, low, close prices, volume, and market cap. Powered by Financial Datasets.
+`.trim();
+
+export function makeGetStockPrice(
+  robinhoodQuote: RobinhoodQuoteFn,
+): DST {
+  return new DynamicStructuredTool({
+    name: 'get_stock_price',
+    description:
+      'Fetches the current stock price snapshot for an equity ticker, including open, high, low, close prices, volume, and market cap. Falls back to Robinhood then web search if the primary API is unavailable.',
+    schema: StockPriceInputSchema,
+    func: async (input) => {
+      const ticker = input.ticker.trim().toUpperCase();
+      try {
+        const { data, url } = await api.get('/prices/snapshot/', { ticker });
+        return formatToolResult(data.snapshot || {}, [url]);
+      } catch {
+        const quote = await robinhoodQuote(ticker);
+        if (quote) {
+          const data = {
+            symbol: quote.symbol,
+            lastTradePrice: quote.lastTradePrice,
+            bidPrice: quote.bidPrice,
+            askPrice: quote.askPrice,
+            volume: quote.volume,
+            adjustedPreviousClose: quote.adjustedPreviousClose,
+            tradingHalted: quote.tradingHalted,
+            previousClose: quote.previousClose,
+            high52Week: null,
+            low52Week: null,
+          };
+          return formatToolResult(data, [`https://robinhood.com/stocks/${ticker}`]);
         }
+        if (process.env.TAVILY_API_KEY) {
+          try {
+            return await tavilySearch.invoke({
+              query: `${ticker} stock price today current share price market cap`,
+            });
+          } catch {
+            // Tavily also failed
+          }
+        }
+        return formatToolResult(
+          { error: `Stock price unavailable for ${ticker}. Use web_search to find the current share price.` },
+          [],
+        );
       }
-      return formatToolResult(
-        { error: `Stock price unavailable for ${ticker}. Use web_search to find the current share price.` },
-        [],
-      );
-    }
-  },
-});
+    },
+  });
+}
 
 const StockPricesInputSchema = z.object({
   ticker: z
@@ -67,7 +90,6 @@ export const getStockPrices = new DynamicStructuredTool({
       start_date: input.start_date,
       end_date: input.end_date,
     };
-    // Cache when the date window is fully closed (OHLCV data is final)
     const endDate = new Date(input.end_date + 'T00:00:00');
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -85,3 +107,7 @@ export const getStockTickers = new DynamicStructuredTool({
     return formatToolResult(data.tickers || [], [url]);
   },
 });
+
+// Default singleton — uses real Robinhood API
+import { getQuote } from './robinhood-client.js';
+export const getStockPrice = makeGetStockPrice(getQuote);

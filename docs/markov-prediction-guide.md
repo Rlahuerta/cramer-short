@@ -53,7 +53,7 @@ and packaged into actionable outputs.
 | `distribution` | Array of `{price, probability}` points — a survival curve |
 | `actionSignal` | BUY / HOLD / SELL recommendation with expected return |
 | `predictionConfidence` | 0–1 score for selective prediction filtering |
-| `metadata` | Regime state, HMM info, ensemble consensus, diagnostics |
+| `metadata` | Regime state, HMM info, ensemble consensus, structural-break diagnostics, experimental flags |
 
 ---
 
@@ -105,6 +105,12 @@ Key details:
   the two sub-matrices are compared via chi-squared divergence. If a break is
   detected, the model falls back to a conservative default matrix and widens
   confidence intervals by 50%.
+- **Experimental 4-state sideways split** — an optional override that
+  decomposes the sideways regime into chop (high vol, mean-reverting) and coil
+  (low vol, accumulating). Activated only when the resulting matrix is
+  non-degenerate: all self-loop probabilities must be ≥ 1/3. If this
+  ergodicity guard fails, the override is silently skipped and the standard
+  3-state matrix is used.
 
 ### Ensemble Prediction
 
@@ -119,6 +125,16 @@ Three independent signals contribute to the final distribution:
 The momentum ensemble includes multi-lookback confirmation (10d, 20d, 40d). If
 all lookbacks agree on direction, the trend is considered robust across
 timeframes, which increases the confidence score.
+
+### Regime-Conditional Up-Rates
+
+When computing the conditional probability of a positive return for each
+regime, the model uses a **lookforward window** — it checks whether returns
+*after* day `i` are positive, not including day `i` itself. This avoids a
+circular leak where a bull day would always contribute a positive return to
+its own label. The lookforward iterates `j = i+1` to `i+horizon` inclusive,
+and the training window is sized so the last valid start index is always
+included (`maxStart = n - horizon` with `<` not `<=`).
 
 ### Calibration
 
@@ -149,23 +165,50 @@ bullish markets without strong evidence.
 
 ### Confidence Scoring
 
-The prediction confidence score (0–1) combines five factors:
+The prediction confidence score (0–1) combines five base factors plus a
+base-rate alignment adjustment:
 
 | Factor | Weight | How it works |
 |--------|--------|--------------|
-| Decisiveness | 35% | `|P(up) − 0.5| × 2` — distance from coin flip (uses raw, pre-calibration P(up)) |
-| Ensemble consensus | 20% | Fraction of momentum/MR/crossover signals that agree (0–3 → 0–1) |
-| HMM convergence | 15% | Binary: did Baum-Welch converge? |
-| Regime stability | 20% | Consecutive days in the current regime / 20 (saturates at 20 days) |
+| Decisiveness | 30% | `|P(up) − 0.5| × 2` — distance from coin flip (uses raw, pre-calibration P(up)) |
+| Ensemble consensus | 15% | Fraction of momentum/MR/crossover signals that agree (0–3 → 0–1) |
+| HMM convergence | 10% | Binary: did Baum-Welch converge? |
+| Regime stability | 15% | Consecutive days in the current regime / 20 (saturates at 20 days) |
 | Multi-lookback momentum | 10% | Fraction of lookback windows (10d/20d/40d) agreeing on direction |
+| Base-rate alignment | +20% / −8% | Boost when the calibrated direction agrees with the empirical base rate; mild penalty when it fights the base rate |
 
-Penalties applied after the weighted sum:
+Additional implementation heuristics:
 
-- **Structural break** detected: multiply by 0.6
-- **Crypto** asset type: multiply by 0.7
+- **Short-horizon crypto with near-zero R²** gets a small additive confidence bump
+  before multiplicative penalties.
+
+Penalties / multipliers applied after the weighted sum:
+
+- **Structural break** detected: multiply by 0.6 by default
+- **Short-horizon crypto with ≥2 trusted anchors and non-bad R²**: use a lighter
+  break penalty of 0.8 instead of 0.6
+- **Experimental Phase 4 flag** (`trendPenaltyOnlyBreakConfidence`, backtests only):
+  keep the structural-break penalty only for break+trending windows (`bull` /
+  `bear`) and skip it for break+`sideways` windows. This is **off by default**
+  and does not change the public tool behavior unless explicitly enabled in the
+  backtest pipeline.
+- **Crypto** asset type: multiply by 0.7, or 0.85 for the short-horizon anchored
+  crypto carve-out
+- **Commodity** asset type: multiply by 0.85
 - **ETF** asset type: multiply by 1.1
 - **High volatility** (daily vol > 2%): linear penalty ramping from 1.0 at 2%
   to 0.7 at 8%
+
+The Phase 4 experiment is exposed in metadata as
+`trendPenaltyOnlyBreakConfidenceActive`. In the real walk-forward pipeline
+validation (6 tickers × 3 horizons, `warmup=120`, `stride=5`), enabling the flag
+changed exactly **313 break+sideways** steps and **0 of 874 break+trending**
+steps, which confirms the implementation only touched the intended contexts.
+
+`trendPenaltyOnlyBreakConfidenceActive` is **run-level provenance**: it means the
+experimental policy was enabled for that prediction run. It does **not** imply
+that every flagged step skipped the break penalty; break+trending steps still
+retain the default break penalty under this experiment.
 
 ---
 
@@ -275,14 +318,73 @@ substantially more reliable than the 63% baseline.
 
 ## Per-Asset Reliability Profiles
 
-| Asset Type | Examples | Best At | Caution |
-|-----------|---------|---------|---------|
-| **ETFs** | SPY, QQQ, GLD | 14d direction (70–76%), reliable CI | Overfit risk on very short horizons (< 7d) |
-| **Stocks** | AAPL | 30d direction (67%) | High company-specific risk (earnings, news) not captured |
-| **Volatile Stocks** | TSLA | 30d with confidence filter | Low raw accuracy (51–58%), only use with selective filtering |
-| **Crypto** | BTC | CI coverage (100% at 90% level) | Direction near random (~50%), **do not trust for directional calls** |
+The current horizon audit for the live reporting surface tested
+`{5, 7, 10, 14, 20, 30, 45, 60}` using `walkForward`, `WARMUP=120`, and
+`STRIDE=10`. Use the tables below to separate **confirmed canonical coverage**
+from **exploratory candidates that are not yet canonical**.
 
-### Per-Ticker Backtest Results (14d / 30d)
+### Confirmed canonical coverage
+
+These rows are backed by the committed fixture audit and are safe for
+reviewer-visible summaries.
+
+| Asset | Good tested horizon(s) | Weak / unsupported horizon(s) | Notes |
+|-------|-------------------------|-------------------------------|-------|
+| **SPY** | **5d, 10d, 14d, 20d, 30d** | 45–60d not Markov-specific | Confirmed positive from the short to mid horizon band. |
+| **QQQ** | **14d, 20d, 30d** | 5–10d limited; 45–60d not Markov-specific | Strongest confirmed tech/index case. |
+| **GLD** | **20d, 30d** | 5–14d weaker; 45–60d not Markov-specific | Clearly strong from 20d onward. |
+| **VOO** | **14d, 20d, 30d** | 5–10d still exploratory; 45–60d not Markov-specific | First-wave canonical validation confirms the mid-horizon SPY-like pattern. |
+| **DIA** | **30d** | 5–20d still exploratory; 45–60d not Markov-specific | First-wave canonical validation only clears the confirmation bar at 30d. |
+| **VTI** | **14d, 20d, 30d** | 5–10d still exploratory; 45–60d not Markov-specific | First-wave canonical validation confirms a broad-market mid-horizon signal. |
+| **IAU** | **7d, 10d, 14d, 20d, 30d** | 5d still exploratory; 45–60d not Markov-specific | Strongest first-wave addition; especially strong at 20d and 30d. |
+| **MSFT** | **5d, 14d** | 7d, 10d, 20d, 30d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation only supports selective short / mid-horizon confirmation. |
+| **NVDA** | **5d, 14d, 20d** | 7d, 10d, 30d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation supports selective short / mid-horizon coverage. |
+| **GOOGL** | **7d** | 5d, 10d, 14d, 20d, 30d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation confirms only a narrow short-horizon case. |
+| **AMZN** | **20d, 30d** | 5d, 7d, 10d, 14d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation supports the mid-horizon band only. |
+| **BTC-USD** | **None** in `{5, 7, 10, 14, 20, 30, 45, 60}` | All tested horizons | Best observed directional accuracy was **49.2% at 30d**, still too weak for a “good horizon” claim. |
+| **AAPL** | **None in canonical coverage** | All tested canonical horizons | Not good enough for a canonical positive claim. |
+| **TSLA** | **None in canonical coverage** | All tested canonical horizons | Not good enough for a canonical positive claim. |
+
+### Exploratory candidates (not yet canonical)
+
+The broader liquid-asset sweep found additional promising names, but these do
+**not** yet have committed fixture coverage. They must not be cited as already
+confirmed.
+
+| Tier | Assets | Why they matter | Next step |
+|------|--------|-----------------|-----------|
+| **Residual first-wave exploratory horizons** | **VOO 5d/7d/10d; DIA 5d/7d/10d/14d/20d; VTI 5d/7d/10d; IAU 5d** | First-wave canonical validation improved confidence, but these specific shorter or weaker horizons remain below the confirmed-docs bar. | Keep as exploratory unless a later canonical rerun clears them decisively. |
+| **Residual second-wave exploratory horizons** | **MSFT 7d/10d/20d/30d; NVDA 7d/10d/30d; GOOGL 5d/10d/14d/20d/30d; AMZN 5d/7d/10d/14d** | Second-wave canonical validation improved confidence, but these specific single-name horizons remain below the confirmed-docs bar. | Keep as exploratory unless a later canonical rerun clears them decisively. |
+
+⚠️ Exploratory sweeps are useful for ranking what to validate next, not for
+claiming confirmed Markov coverage. Keep the distinction explicit.
+
+First-wave canonical validation confirms **VOO at 14d/20d/30d, DIA at 30d,
+VTI at 14d/20d/30d, and IAU at 7d/10d/14d/20d/30d**. Shorter or weaker
+first-wave results remain exploratory rather than confirmed.
+
+Second-wave canonical validation confirms **horizon-specific single-name coverage
+for MSFT (5d, 14d), NVDA (5d, 14d, 20d), GOOGL (7d), and AMZN (20d, 30d)**.
+Other tested single-name horizons remain exploratory, and `45–60d` horizons
+remain out of scope.
+
+The current canonical multi-horizon backtest (`swing-trade-backtest.test.ts`) covers
+6 horizons × 3 tickers with 36 signals per ticker-horizon. Key results:
+
+### Canonical multi-horizon results (confidence ≥ 0.25)
+
+| Ticker | Best Horizon | Sharpe | Win Rate | Directional Accuracy |
+|--------|-------------|--------|----------|---------------------|
+| SPY | 14d | 1.60 | 72.2% | 68.8% |
+| QQQ | 20d | 1.57 | 76.5% | 73.3% |
+| GLD | 30d | 2.61 | 88.9% | 88.9% |
+
+**Aggregate (all tickers, all horizons):** Sharpe 1.34 vs 1.09 unfiltered, 71.4% win rate.
+
+The older "Historical 14d / 30d snapshot" table (below) comes from a different
+backtest run with a narrower dataset. It remains as historical context only.
+
+### Historical 14d / 30d backtest snapshot (legacy)
 
 | Ticker | Directional Accuracy | CI Coverage (90%) |
 |--------|---------------------|--------------------|
@@ -291,11 +393,15 @@ substantially more reliable than the 63% baseline.
 | QQQ | 73% / 69% | 89% / 89% |
 | AAPL | 54% / 67% | 92% / 94% |
 | TSLA | 51% / 58% | 97% / 97% |
-| BTC | 42% / 54% | 100% / 100% |
+| BTC | 42% / 54%* | 100% / 100% |
 
 ⚠️ **BTC and TSLA show near-random or anti-correlated directional accuracy.**
 The regime model can be actively misleading for highly volatile assets. Use the
 confidence score to filter, or rely only on CI coverage for these tickers.
+
+\* Historical 14d / 30d snapshot from the narrower backtest documented in this
+guide. The later full horizon audit still found **BTC-USD weak at every tested
+horizon**, with a best observed directional accuracy of **49.2% at 30d**.
 
 ---
 
@@ -330,9 +436,19 @@ regime changes not seen in training data (e.g., a sustained deflationary
 crash, a market structure change, or a new asset class entering the training
 universe).
 
-⚠️ **Horizon limits.** 14d and 30d horizons are well-tested. 7d and 60d have
-less backtest coverage. Beyond 60d, the Markov chain mixes toward its
-stationary distribution and loses directional information.
+⚠️ **Horizon limits.** The current canonical evidence supports the **14–30d**
+band broadly for non-crypto assets, with **SPY / QQQ already strong by 14d**,
+**GLD clearly strong from 20d onward**, and **IAU now confirmed from 7d
+through 30d**. Short horizons are still mixed overall: **SPY**, **MSFT**, and
+**NVDA** have selective 5d confirmation, **IAU** is confirmed from 7d onward,
+and **GOOGL** is only confirmed at 7d. **VOO** and **VTI** become review-safe
+from 14d onward, **AMZN** from 20d onward, and **DIA** only clears the
+confirmation bar at 30d. **BTC-USD has no good tested horizon** in
+`{5, 7, 10, 14, 20, 30, 45, 60}`; its best observed directional accuracy was
+**49.2% at 30d**. At **45–60d**, average `markovWeight` is near zero, so those
+outcomes should not be attributed to the Markov chain signal itself. Beyond
+60d, the chain mixes toward its stationary distribution and loses directional
+information.
 
 ---
 
@@ -456,6 +572,7 @@ console.log(`Current regime: ${meta.regimeState}`);
 console.log(`HMM converged: ${meta.hmm?.converged}`);
 console.log(`Ensemble consensus: ${meta.ensemble.consensus}/3`);
 console.log(`Structural break: ${meta.structuralBreakDetected}`);
+console.log(`Trend-only break confidence active: ${meta.trendPenaltyOnlyBreakConfidenceActive}`);
 console.log(`Sparse states: ${meta.sparseStates.join(', ') || 'none'}`);
 console.log(`Goodness-of-fit p-value: ${meta.goodnessOfFit?.pValue.toFixed(3)}`);
 console.log(`Out-of-sample R²: ${meta.outOfSampleR2?.toFixed(4)}`);
@@ -477,6 +594,12 @@ automatically based on the ticker symbol.
 | Student-t degrees of freedom | 5 (lighter tails) | 4 | 3 (fattest tails) |
 | Transition matrix decay rate | 0.97 | 0.96 | 0.94 (faster adaptation) |
 
+The degrees-of-freedom parameter (`ν`, nu) is used in the Student-t survival
+function for probability calibration and is resolved from the asset profile.
+It is threaded consistently through all internal calls (calibration,
+distribution interpolation, and Monte Carlo CI bounds) so the same nu value
+applies throughout.
+
 **Recognized tickers:**
 - **ETFs:** SPY, QQQ, IWM, DIA, VOO, VTI, GLD, SLV, TLT, XLF, XLK, ARKK,
   and ~40 more common US ETFs.
@@ -488,10 +611,11 @@ automatically based on the ticker symbol.
 
 | Horizon | Backtest Coverage | Notes |
 |---------|-------------------|-------|
-| 7 days | Limited | Less tested, higher noise |
-| **14 days** | **Well-tested** | Best directional accuracy for ETFs |
-| **30 days** | **Well-tested** | Good balance of signal and horizon |
-| 60 days | Limited | Markov chain starts mixing toward stationary |
+| 5–10 days | Mixed | Confirmed for **SPY**, **MSFT 5d**, **NVDA 5d**, **GOOGL 7d**, and much of **IAU**; still noisy or exploratory for many other assets |
+| **14 days** | **Well-tested** | Earliest broad defensible horizon for **SPY / QQQ / VOO / VTI**; **IAU**, **MSFT**, and **NVDA** are also confirmed here; BTC remains weak |
+| **20 days** | **Well-tested** | Start of defensible good territory for non-crypto; **GLD**, **IAU**, **VTI**, **VOO**, **NVDA**, and **AMZN** all have confirmed coverage here |
+| **30 days** | **Well-tested** | Practical sweet spot for non-crypto; **DIA** only clears the confirmed bar here, **AMZN** also joins here, and BTC is still weak at **49.2%** |
+| 45–60 days | Limited | Average `markovWeight` is near zero; do not market wins as Markov-specific |
 | 90+ days | Not recommended | Model loses directional information |
 
 ### Default Parameters
@@ -508,6 +632,38 @@ adjustment for typical use. Key internal defaults:
   estimation, 120+ daily prices recommended
 - **Monte Carlo simulations:** 1,000 per distribution point (for CI bounds)
 - **Grid:** 20+ price levels spanning approximately ±3σ from current price
+
+### Experimental Backtest Flags
+
+These switches are for research / backtest plumbing, not the public
+`markov_distribution` tool schema. They are disabled unless a caller in the
+backtest harness opts in explicitly.
+
+#### `trendPenaltyOnlyBreakConfidence?: boolean`
+
+- **Default (`false`)**: every structural-break window gets the usual confidence
+  penalty (`×0.6`, or `×0.8` in the short-horizon anchored-crypto carve-out).
+- **Experimental (`true`)**: keep that penalty only when the break window is
+  still trending (`bull` / `bear`). If the break window is `sideways`, skip the
+  structural-break confidence penalty entirely.
+- **Metadata / reporting**: surfaced as
+  `metadata.trendPenaltyOnlyBreakConfidenceActive`, propagated into
+  `BacktestStep.trendPenaltyOnlyBreakConfidenceActive`, and summarized at the
+  report level as run provenance.
+
+**Phase 4 implementation verification (real end-to-end walk-forward, not just
+post-hoc rescoring):**
+
+| Slice | Baseline | `trendPenaltyOnlyBreakConfidence=true` |
+|-------|----------|----------------------------------------|
+| Overall RC @ conf ≥ 0.2 | 64.5% acc / 57.9% cov | **65.4% acc / 65.8% cov** |
+| Overall RC @ conf ≥ 0.3 | 62.6% acc / 15.4% cov | **65.5% acc / 28.3% cov** |
+| Break-context RC @ conf ≥ 0.2 | 64.9% acc / 54.2% cov | **65.9% acc / 62.9% cov** |
+| Break-context RC @ conf ≥ 0.3 | 60.7% acc / 9.4% cov | **65.7% acc / 23.8% cov** |
+
+Those results are directionally consistent with the earlier Phase 3 offline
+ablation, but the feature remains **experimental and non-default** until it is
+explicitly promoted.
 
 ### Polymarket Anchors
 
@@ -579,7 +735,10 @@ Day │ Expected │     90% CI Range    │ P(up) │ Return
 1. **Shared Monte Carlo paths**: 1,000 random walks are generated using Student-t
    variates (fat tails, ν determined by regime). Each path is sampled at every day.
 2. **Analytical drift/vol**: At each day d, `computeHorizonDriftVol(d, ...)` provides
-   the regime-weighted drift and volatility from the transition matrix.
+   the regime-weighted drift and volatility from the transition matrix. The
+   volatility term includes both within-regime variance (`E[σ²]`) and the
+   between-regime variance of mean returns (`Var(μ)`), so mixed-regime
+   forecasts appropriately widen to reflect regime uncertainty.
 3. **CI bounds**: 5th and 95th percentiles of the Monte Carlo price distribution at day d.
 4. **P(up)**: From the Student-t survival function `S(currentPrice; drift_d, vol_d)`.
 5. **Regime**: Most likely regime state from `P^d` (d-step transition matrix).

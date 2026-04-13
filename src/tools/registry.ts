@@ -22,6 +22,7 @@ import { getFixedIncomeTool, FIXED_INCOME_DESCRIPTION } from './finance/fixed-in
 import { getOptionsChainTool, OPTIONS_CHAIN_DESCRIPTION } from './finance/options.js';
 import { getEarningsTranscript, EARNINGS_TRANSCRIPT_DESCRIPTION } from './finance/earnings-transcripts.js';
 import { getOnchainCrypto, ONCHAIN_CRYPTO_DESCRIPTION } from './finance/onchain-crypto.js';
+import { getRobinhoodQuote, getRobinhoodFundamentals } from './finance/robinhood.js';
 import { polymarketForecastTool, POLYMARKET_FORECAST_DESCRIPTION } from './finance/polymarket-forecast.js';
 import { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION } from './finance/price-distribution-chart.js';
 import { markovDistributionTool, MARKOV_DISTRIBUTION_DESCRIPTION } from './finance/markov-distribution.js';
@@ -65,6 +66,16 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       name: 'get_market_data',
       tool: createGetMarketData(model),
       description: GET_MARKET_DATA_DESCRIPTION,
+    },
+    {
+      name: 'get_robinhood_quote',
+      tool: getRobinhoodQuote,
+      description: 'Fetches a real-time quote from Robinhood: last trade price, bid/ask, open/high/low/close, volume, and 52-week range. No API key required. Use as a fallback when get_stock_price (Financial Datasets) fails.',
+    },
+    {
+      name: 'get_robinhood_fundamentals',
+      tool: getRobinhoodFundamentals,
+      description: 'Fetches basic fundamental metrics from Robinhood: market cap, P/E ratio, EPS, dividend yield, shares outstanding, and 52-week high/low. No API key required. Use as a fallback when other sources fail.',
     },
     {
       name: 'read_filings',

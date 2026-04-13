@@ -1,0 +1,96 @@
+[
+  {
+    "label": "fed-rate-expectations-shift-2024q1",
+    "startDate": "2024-01-10",
+    "endDate": "2024-01-25",
+    "category": "macro",
+    "notes": "Early-2024 CPI and rate-cut repricing period."
+  },
+  {
+    "label": "btc-etf-approval-rally",
+    "startDate": "2024-01-08",
+    "endDate": "2024-01-22",
+    "category": "market-stress",
+    "notes": "Spot Bitcoin ETF approval and cross-asset risk-on rotation."
+  },
+  {
+    "label": "iran-israel-escalation-apr-2024",
+    "startDate": "2024-04-12",
+    "endDate": "2024-04-22",
+    "category": "geopolitical",
+    "notes": "Iran-Israel escalation with safe-haven and energy reactions."
+  },
+  {
+    "label": "nvda-earnings-q1-2024",
+    "startDate": "2024-05-20",
+    "endDate": "2024-05-24",
+    "category": "earnings",
+    "notes": "NVIDIA earnings catalyst and AI-led market repricing.",
+    "tickers": ["NVDA"]
+  },
+  {
+    "label": "japan-carry-trade-unwind",
+    "startDate": "2024-07-31",
+    "endDate": "2024-08-09",
+    "category": "market-stress",
+    "notes": "Yen spike, carry unwind, volatility shock, and broad equity selloff."
+  },
+  {
+    "label": "fed-first-cut-sep-2024",
+    "startDate": "2024-09-16",
+    "endDate": "2024-09-20",
+    "category": "macro",
+    "notes": "Fed easing shock and rapid repricing of growth and duration assets."
+  },
+  {
+    "label": "us-election-2024",
+    "startDate": "2024-11-01",
+    "endDate": "2024-11-08",
+    "category": "geopolitical",
+    "notes": "US election uncertainty and post-result market repricing."
+  },
+  {
+    "label": "fed-hawkish-pivot-dec-2024",
+    "startDate": "2024-12-16",
+    "endDate": "2024-12-20",
+    "category": "macro",
+    "notes": "Hawkish December Fed communication and rate-path reset."
+  },
+  {
+    "label": "deepseek-ai-shock-jan-2025",
+    "startDate": "2025-01-24",
+    "endDate": "2025-01-31",
+    "category": "market-stress",
+    "notes": "Open-source AI shock and semiconductor/growth repricing."
+  },
+  {
+    "label": "tariff-escalation-feb-2025",
+    "startDate": "2025-02-01",
+    "endDate": "2025-02-07",
+    "category": "tariff",
+    "notes": "North America and China tariff escalation headlines."
+  },
+  {
+    "label": "tariff-liberation-day-apr-2025",
+    "startDate": "2025-04-02",
+    "endDate": "2025-04-09",
+    "category": "tariff",
+    "notes": "Broad reciprocal tariff shock and cross-asset repricing."
+  },
+  {
+    "label": "msft-earnings-q3-2025",
+    "startDate": "2025-07-21",
+    "endDate": "2025-07-25",
+    "category": "earnings",
+    "notes": "Microsoft earnings with cloud and AI expectations reset.",
+    "tickers": ["MSFT"]
+  },
+  {
+    "label": "nvda-earnings-q2-2025",
+    "startDate": "2025-08-25",
+    "endDate": "2025-08-29",
+    "category": "earnings",
+    "notes": "NVIDIA earnings and Blackwell-related guidance shock.",
+    "tickers": ["NVDA"]
+  }
+]

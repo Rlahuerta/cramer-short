@@ -277,9 +277,9 @@ export function buildWatchlistPanel(
   // Header
   let header: string;
   if (hasPrices && hasPositions) {
-    header = `  ${'TICKER'.padEnd(8)}  ${'CURRENT'.padStart(9)}  ${'DAY%'.padStart(7)}  ${'P&L'.padStart(10)}  ${'RETURN'.padStart(8)}  ${'ALLOC'.padStart(6)}`;
+    header = `  ${'TICKER'.padEnd(8)}  ${'CURRENT'.padStart(9)}  ${'DAY%'.padStart(7)}  ${'P&L'.padStart(10)}  ${'RETURN'.padStart(8)}  ${'ALLOC'.padStart(6)}  ${'CONF'.padStart(5)}`;
   } else if (hasPrices) {
-    header = `  ${'TICKER'.padEnd(8)}  ${'CURRENT'.padStart(9)}  ${'DAY%'.padStart(7)}  ${'COST'.padStart(9)}  ${'SHARES'.padStart(8)}`;
+    header = `  ${'TICKER'.padEnd(8)}  ${'CURRENT'.padStart(9)}  ${'DAY%'.padStart(7)}  ${'COST'.padStart(9)}  ${'SHARES'.padStart(8)}  ${'CONF'.padStart(5)}`;
   } else {
     header = `  ${'TICKER'.padEnd(8)}  ${'COST BASIS'.padStart(10)}  ${'SHARES'.padStart(8)}  ADDED`;
   }
@@ -289,11 +289,16 @@ export function buildWatchlistPanel(
   const rows = enriched ?? entries.map((e) => ({
     ticker: e.ticker, shares: e.shares, costBasis: e.costBasis, addedAt: e.addedAt,
     price: undefined, changePercent: undefined, pnl: undefined, returnPct: undefined,
-    currentValue: undefined, allocPct: undefined,
+    currentValue: undefined, allocPct: undefined, predictionConfidence: undefined,
   }));
 
   for (const row of rows) {
     const ticker = theme.primary(row.ticker.padEnd(8));
+    const confStr = row.predictionConfidence !== undefined
+      ? row.predictionConfidence >= 0.25
+        ? theme.success('✓'.padStart(5))
+        : theme.warning('⚠'.padStart(5))
+      : '—'.padStart(5);
 
     if (hasPrices && hasPositions) {
       const price   = row.price !== undefined ? `$${row.price.toFixed(2)}`.padStart(9) : '         ';
@@ -309,7 +314,7 @@ export function buildWatchlistPanel(
       const alloc   = row.allocPct !== undefined
         ? `${row.allocPct.toFixed(0)}%`.padStart(6)
         : '      ';
-      container.addChild(new Text(`  ${ticker}  ${price}  ${day}  ${pnl}  ${ret}  ${alloc}`, 0, 0));
+      container.addChild(new Text(`  ${ticker}  ${price}  ${day}  ${pnl}  ${ret}  ${alloc}  ${confStr}`, 0, 0));
     } else if (hasPrices) {
       const price   = row.price !== undefined ? `$${row.price.toFixed(2)}`.padStart(9) : '         ';
       const day     = row.changePercent !== undefined
@@ -317,7 +322,7 @@ export function buildWatchlistPanel(
         : '       ';
       const cost    = row.costBasis !== undefined ? `$${row.costBasis}`.padStart(9) : '         ';
       const shares  = row.shares !== undefined ? String(row.shares).padStart(8) : '        ';
-      container.addChild(new Text(`  ${ticker}  ${price}  ${day}  ${cost}  ${shares}`, 0, 0));
+      container.addChild(new Text(`  ${ticker}  ${price}  ${day}  ${cost}  ${shares}  ${confStr}`, 0, 0));
     } else {
       const cost    = row.costBasis !== undefined ? `$${row.costBasis}`.padStart(10) : '          ';
       const shares  = row.shares !== undefined ? String(row.shares).padStart(8) : '        ';
@@ -437,15 +442,20 @@ export function buildSnapshotPanel(
     container.addChild(new Text('', 0, 0));
   }
 
-  // ASCII bar chart for allocation
+  // ASCII bar chart for allocation with Markov confidence
   if (positionEntries.length > 0) {
     container.addChild(new Text(theme.bold('  Allocation:'), 0, 0));
-    const BAR_WIDTH = 26;
+    const BAR_WIDTH = 22;
     for (const e of positionEntries) {
       const pct = e.allocPct!;
       const bar = buildAsciiBar(pct, BAR_WIDTH);
       const pctStr = `${pct.toFixed(0)}%`.padStart(4);
-      container.addChild(new Text(`  ${e.ticker.padEnd(6)} ${theme.primary(bar)} ${pctStr}`, 0, 0));
+      const confIcon = e.predictionConfidence !== undefined
+        ? e.predictionConfidence >= 0.25
+          ? theme.success(' ✓')
+          : theme.warning(' ⚠')
+        : ' —';
+      container.addChild(new Text(`  ${e.ticker.padEnd(6)} ${theme.primary(bar)} ${pctStr}${confIcon}`, 0, 0));
     }
     container.addChild(new Text('', 0, 0));
   }
@@ -454,6 +464,31 @@ export function buildSnapshotPanel(
   if (best && worst) {
     container.addChild(new Text(`  Best:  ${theme.primary(best.ticker.padEnd(6))} ${colorPct(best.returnPct!, fmtPct(best.returnPct!))}`, 0, 0));
     container.addChild(new Text(`  Worst: ${theme.primary(worst.ticker.padEnd(6))} ${colorPct(worst.returnPct!, fmtPct(worst.returnPct!))}`, 0, 0));
+    container.addChild(new Text('', 0, 0));
+  }
+
+  // Markov confidence histogram (only when we have confidence data)
+  const confidenceValues = positionEntries
+    .filter((e) => e.predictionConfidence !== undefined)
+    .map((e) => e.predictionConfidence!);
+  if (confidenceValues.length > 0) {
+    const high = confidenceValues.filter((c) => c >= 0.40).length;
+    const medium = confidenceValues.filter((c) => c >= 0.25 && c < 0.40).length;
+    const low = confidenceValues.filter((c) => c < 0.25).length;
+    const total = confidenceValues.length;
+    const highPct = Math.round((high / total) * 100);
+    const medPct = Math.round((medium / total) * 100);
+    const lowPct = Math.round((low / total) * 100);
+    const avgConf = confidenceValues.reduce((a, b) => a + b, 0) / total;
+    container.addChild(new Text(theme.bold('  Markov Confidence Distribution:'), 0, 0));
+    const highBar = buildAsciiBar(highPct, 20);
+    const medBar = buildAsciiBar(medPct, 20);
+    const lowBar = buildAsciiBar(lowPct, 20);
+    container.addChild(new Text(`  High (≥0.40):   ${theme.success(highBar)} ${highPct}% (${high})`, 0, 0));
+    container.addChild(new Text(`  Medium (0.25–0.40): ${theme.warning(medBar)} ${medPct}% (${medium})`, 0, 0));
+    container.addChild(new Text(`  Low (<0.25):    ${theme.error(lowBar)} ${lowPct}% (${low})`, 0, 0));
+    const avgIcon = avgConf >= 0.40 ? theme.success('✓') : avgConf >= 0.25 ? theme.warning('⚠') : theme.error('✗');
+    container.addChild(new Text(`  Average: ${avgConf.toFixed(2)} ${avgIcon}`, 0, 0));
     container.addChild(new Text('', 0, 0));
   }
 
@@ -743,6 +778,10 @@ export async function runCli() {
   // Skills overlay state
   let skillsVisible = false;
   let skillsList: SkillMetadata[] = [];
+  // Watchlist auto-refresh state
+  let watchlistRefreshIntervalMs = 0; // 0 = disabled
+  let watchlistRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  let watchlistLastRefresh: Date | null = null;
   // Tracks exchanges already flushed to scrollback on completion (long answers).
   // Prevents the "flush on next submit" path from double-writing them.
   const flushedItems = new WeakSet<HistoryItem>();
@@ -824,8 +863,8 @@ export async function runCli() {
     const base = await fetcher(ticker);
     if (!base) return null;
 
-    // Fetch ratios + analyst targets + news in parallel
-    const [ratiosResult, analystResult, newsResult] = await Promise.allSettled([
+    // Fetch ratios + analyst targets + news + Markov confidence in parallel
+    const [ratiosResult, analystResult, newsResult, markovResult] = await Promise.allSettled([
       api.get('/financial-metrics/snapshot/', { ticker }),
       // Yahoo Finance analyst targets via env-conditional endpoint
       (async () => {
@@ -834,6 +873,11 @@ export async function runCli() {
         return typeof result === 'string' ? JSON.parse(result) : result;
       })(),
       api.get('/news', { ticker, limit: 3 }),
+      (async () => {
+        const markov = await import('./tools/finance/markov-distribution.js');
+        const result = await markov.markovDistributionTool.invoke({ ticker, horizon: 14 });
+        return typeof result === 'string' ? JSON.parse(result) : result;
+      })(),
     ]);
 
     const snap: PriceSnapshot = { ...base };
@@ -864,7 +908,59 @@ export async function runCli() {
       });
     }
 
+    if (markovResult.status === 'fulfilled') {
+      const m = markovResult.value as { diagnostics?: { predictionConfidence?: number } };
+      if (m.diagnostics?.predictionConfidence !== undefined) {
+        snap.predictionConfidence = m.diagnostics.predictionConfidence;
+      }
+    }
+
     return snap;
+  };
+
+  // Refresh watchlist prices and Markov confidence
+  const refreshWatchlistPrices = async () => {
+    if (!watchlistVisible || watchlistEntries.length === 0) return;
+    
+    watchlistLastRefresh = new Date();
+    renderSelectionOverlay();
+    tui.requestRender();
+
+    if (watchlistMode === 'show' && watchlistShowTicker) {
+      const snap = await fetchShowData(watchlistShowTicker);
+      watchlistPrices = snap ? new Map([[watchlistShowTicker, snap]]) : new Map();
+    } else {
+      const prices = await fetchLivePrices(
+        watchlistEntries.map((e) => e.ticker),
+        makePriceFetcher(),
+      );
+      watchlistPrices = prices;
+    }
+
+    if (watchlistVisible) {
+      renderSelectionOverlay();
+      tui.requestRender();
+    }
+  };
+
+  // Start/stop auto-refresh timer
+  const setWatchlistRefresh = (intervalMs: number) => {
+    if (watchlistRefreshTimer) {
+      clearInterval(watchlistRefreshTimer);
+      watchlistRefreshTimer = null;
+    }
+    watchlistRefreshIntervalMs = intervalMs;
+    if (intervalMs > 0 && watchlistVisible) {
+      watchlistRefreshTimer = setInterval(refreshWatchlistPrices, intervalMs);
+    }
+  };
+
+  const watchlistRefreshSuffix = () => {
+    if (watchlistRefreshIntervalMs <= 0 || !watchlistLastRefresh) return '';
+    const secs = Math.floor((Date.now() - watchlistLastRefresh.getTime()) / 1000);
+    if (secs < 5) return ' · refreshed just now';
+    if (secs < 60) return ` · refreshed ${secs}s ago`;
+    return ` · refreshed ${Math.floor(secs / 60)}m ago`;
   };
 
   const handleSubmit = async (query: string) => {
@@ -875,6 +971,7 @@ export async function runCli() {
     }
     if (watchlistVisible) {
       watchlistVisible = false;
+      setWatchlistRefresh(0);
       renderSelectionOverlay();
     }
     if (sessionsVisible) {
@@ -1070,6 +1167,18 @@ export async function runCli() {
         return;
       }
 
+      if (sub.cmd === 'refresh') {
+        if (!watchlistVisible) {
+          lastError = 'Open a watchlist view first with /watchlist list, show, or snapshot.';
+          refreshError();
+          renderSelectionOverlay();
+          tui.requestRender();
+          return;
+        }
+        void refreshWatchlistPrices();
+        return;
+      }
+
       if (sub.cmd === 'list') {
         watchlistEntries = watchlistCtrl.list();
         watchlistMode = 'list';
@@ -1079,10 +1188,11 @@ export async function runCli() {
         renderSelectionOverlay();
         tui.requestRender();
         // Fetch prices in background; re-render when done
-        void fetchLivePrices(watchlistEntries.map((e) => e.ticker), makePriceFetcher()).then((prices) => {
-          watchlistPrices = prices;
-          if (watchlistVisible) { renderSelectionOverlay(); tui.requestRender(); }
-        });
+        void refreshWatchlistPrices();
+        // Start auto-refresh if enabled
+        if (watchlistRefreshIntervalMs > 0) {
+          setWatchlistRefresh(watchlistRefreshIntervalMs);
+        }
         return;
       }
 
@@ -1097,10 +1207,10 @@ export async function runCli() {
         renderSelectionOverlay();
         tui.requestRender();
         // Fetch rich data for this ticker
-        void fetchShowData(ticker).then((snap) => {
-          watchlistPrices = snap ? new Map([[ticker, snap]]) : new Map();
-          if (watchlistVisible) { renderSelectionOverlay(); tui.requestRender(); }
-        });
+        void refreshWatchlistPrices();
+        if (watchlistRefreshIntervalMs > 0) {
+          setWatchlistRefresh(watchlistRefreshIntervalMs);
+        }
         return;
       }
 
@@ -1112,10 +1222,10 @@ export async function runCli() {
         watchlistVisible = true;
         renderSelectionOverlay();
         tui.requestRender();
-        void fetchLivePrices(watchlistEntries.map((e) => e.ticker), makePriceFetcher()).then((prices) => {
-          watchlistPrices = prices;
-          if (watchlistVisible) { renderSelectionOverlay(); tui.requestRender(); }
-        });
+        void refreshWatchlistPrices();
+        if (watchlistRefreshIntervalMs > 0) {
+          setWatchlistRefresh(watchlistRefreshIntervalMs);
+        }
         return;
       }
 
@@ -1417,6 +1527,7 @@ export async function runCli() {
         tui.requestRender();
       } else if (watchlistVisible) {
         watchlistVisible = false;
+        setWatchlistRefresh(0);
         renderSelectionOverlay();
         tui.requestRender();
       } else if (helpVisible) {
@@ -1453,6 +1564,7 @@ export async function runCli() {
     }
     if (watchlistVisible) {
       watchlistVisible = false;
+      setWatchlistRefresh(0);
       renderSelectionOverlay();
       return;
     }
@@ -1695,12 +1807,12 @@ export async function runCli() {
               c.addChild(new Text(theme.error(`  No price data available for ${watchlistShowTicker}`), 0, 0));
               return c;
             })());
-        footer   = 'Esc to close · /watchlist list · /watchlist snapshot';
+        footer   = `Esc to close · /watchlist list · /watchlist snapshot${watchlistRefreshSuffix()}`;
       } else if (watchlistMode === 'snapshot') {
         title    = '⬡ Cramer-Short — Portfolio Snapshot';
         subtitle = watchlistEntries.length === 0 ? 'No positions tracked' : `${watchlistEntries.length} ticker${watchlistEntries.length === 1 ? '' : 's'}`;
         panel    = buildSnapshotPanel(watchlistEntries, watchlistPrices);
-        footer   = 'Esc to close · /watchlist list · /watchlist show TICKER';
+        footer   = `Esc to close · /watchlist list · /watchlist show TICKER${watchlistRefreshSuffix()}`;
       } else {
         const loading = watchlistPrices === null;
         title    = '⬡ Cramer-Short — Watchlist';
@@ -1710,7 +1822,7 @@ export async function runCli() {
             ? `${watchlistEntries.length} position${watchlistEntries.length === 1 ? '' : 's'} — loading prices…`
             : `${watchlistEntries.length} position${watchlistEntries.length === 1 ? '' : 's'}`;
         panel    = buildWatchlistPanel(watchlistEntries, watchlistPrices);
-        footer   = 'Esc to close · /watchlist show TICKER · /watchlist snapshot';
+        footer   = `Esc to close · /watchlist show TICKER · /watchlist snapshot${watchlistRefreshSuffix()}`;
       }
 
       renderWatchlistView(title, subtitle, panel, footer);

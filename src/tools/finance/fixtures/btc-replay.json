@@ -1,0 +1,122 @@
+[
+  {
+    "date": "2024-05-25",
+    "markets": [
+      {
+        "question": "Will Bitcoin be above $70000 on June 19?",
+        "probability": 0.55,
+        "volume": 1400000,
+        "createdAt": "2024-05-20T00:00:00Z",
+        "endDate": "2024-06-19T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      },
+      {
+        "question": "Will Bitcoin be above $76000 on June 19?",
+        "probability": 0.24,
+        "volume": 900000,
+        "createdAt": "2024-05-20T00:00:00Z",
+        "endDate": "2024-06-19T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      }
+    ]
+  },
+  {
+    "date": "2024-06-01",
+    "markets": [
+      {
+        "question": "Will Bitcoin be above $70000 on June 19?",
+        "probability": 0.62,
+        "volume": 1000000,
+        "createdAt": "2024-05-20T00:00:00Z",
+        "endDate": "2024-06-19T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      },
+      {
+        "question": "Will Bitcoin be above $76000 on June 19?",
+        "probability": 0.28,
+        "volume": 750000,
+        "createdAt": "2024-05-20T00:00:00Z",
+        "endDate": "2024-06-19T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      },
+      {
+        "question": "Will Bitcoin be above $90000 on August 30?",
+        "probability": 0.18,
+        "volume": 850000,
+        "createdAt": "2024-05-20T00:00:00Z",
+        "endDate": "2024-08-30T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      }
+    ]
+  },
+  {
+    "date": "2025-03-05",
+    "markets": [
+      {
+        "question": "Will Bitcoin be above $83000 on March 31?",
+        "probability": 0.57,
+        "volume": 880000,
+        "createdAt": "2025-03-01T00:00:00Z",
+        "endDate": "2025-03-31T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      },
+      {
+        "question": "Will Bitcoin be above $90000 on March 31?",
+        "probability": 0.27,
+        "volume": 640000,
+        "createdAt": "2025-03-01T00:00:00Z",
+        "endDate": "2025-03-31T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      }
+    ]
+  },
+  {
+    "date": "2025-03-15",
+    "markets": [
+      {
+        "question": "Will Bitcoin be above $83000 on March 31?",
+        "probability": 0.58,
+        "volume": 800000,
+        "createdAt": "2025-03-10T00:00:00Z",
+        "endDate": "2025-03-31T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      },
+      {
+        "question": "Will Bitcoin be above $90000 on March 31?",
+        "probability": 0.22,
+        "volume": 600000,
+        "createdAt": "2025-03-10T00:00:00Z",
+        "endDate": "2025-03-31T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      },
+      {
+        "question": "Will Bitcoin be above $98000 on June 30?",
+        "probability": 0.14,
+        "volume": 500000,
+        "createdAt": "2025-03-10T00:00:00Z",
+        "endDate": "2025-06-30T00:00:00Z",
+        "active": true,
+        "closed": false,
+        "enableOrderBook": true
+      }
+    ]
+  }
+]

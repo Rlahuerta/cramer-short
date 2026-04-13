@@ -206,6 +206,29 @@ export function inferDistributionHorizon(query: string): number | null {
   return null;
 }
 
+/**
+ * Detect whether the user explicitly requested a day-by-day trajectory
+ * (as opposed to a single-horizon snapshot).
+ */
+export function inferTrajectoryRequest(query: string): boolean {
+  const lower = query.toLowerCase();
+  return /trajectory|day[- ]by[- ]day|day by day|price path|daily forecast|daily projection/i.test(lower);
+}
+
+export function buildForcedMarkovArgs(query: string): { ticker: string; horizon: number; trajectory?: true; trajectoryDays?: number } | null {
+  const ticker = inferDistributionTicker(query);
+  const horizon = inferDistributionHorizon(query);
+  if (!ticker || !horizon) return null;
+
+  const args: { ticker: string; horizon: number; trajectory?: true; trajectoryDays?: number } = { ticker, horizon };
+  if (inferTrajectoryRequest(query)) {
+    args.trajectory = true;
+    args.trajectoryDays = Math.min(30, horizon);
+  }
+
+  return args;
+}
+
 export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCallRecord[]): boolean {
   return isExplicitTerminalDistributionQuery(query)
     && !toolCalls.some((call) => call.tool === 'markov_distribution');
@@ -759,11 +782,10 @@ export class Agent {
   private async *forceMarkovDistribution(
     ctx: RunContext,
   ): AsyncGenerator<AgentEvent, boolean> {
-    const ticker = inferDistributionTicker(ctx.query);
-    const horizon = inferDistributionHorizon(ctx.query);
-    if (!ticker || !horizon) return false;
+    const args = buildForcedMarkovArgs(ctx.query);
+    if (!args) return false;
 
-    for await (const event of this.toolExecutor.executeTool('markov_distribution', { ticker, horizon }, ctx)) {
+    for await (const event of this.toolExecutor.executeTool('markov_distribution', args, ctx)) {
       yield event;
       if (event.type === 'tool_error' || event.type === 'tool_denied') {
         return false;

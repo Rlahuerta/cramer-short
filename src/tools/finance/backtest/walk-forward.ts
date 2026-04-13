@@ -7,15 +7,17 @@
 
 import {
   computeMarkovDistribution,
+  getAssetProfile,
   type MarkovDistributionResult,
 } from '../markov-distribution.js';
-import type { BacktestStep } from './metrics.js';
+import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface WalkForwardConfig {
+  sidewaysSplit?: boolean;
   /** Ticker symbol for display purposes */
   ticker: string;
   /** Daily close prices, oldest first */
@@ -26,6 +28,34 @@ export interface WalkForwardConfig {
   warmup?: number;
   /** Step forward by this many days between predictions (default: 5) */
   stride?: number;
+  /** Optional override for crypto short-horizon conditional weight (PR3B ablation) */
+  cryptoShortHorizonConditionalWeight?: number;
+  /** Optional override for crypto short-horizon kappa multiplier (PR3B ablation) */
+  cryptoShortHorizonKappaMultiplier?: number;
+  /** Optional flag: use raw P(up) for decision generation (PR3 lever ablation) */
+  cryptoShortHorizonRawDecisionAblation?: boolean;
+  /** Optional flag: use PR3F crypto short-horizon disagreement prior */
+  pr3fCryptoShortHorizonDisagreementPrior?: boolean;
+  /** Optional override for crypto short-horizon pUp floor clamp (PR3 Stage 2 ablation) */
+  cryptoShortHorizonPUpFloor?: number;
+  /** Optional override for crypto short-horizon bear margin multiplier (PR3 Stage 2 ablation) */
+  cryptoShortHorizonBearMarginMultiplier?: number;
+  /** Optional flag: use recency-weighted regime up-rates for crypto short-horizon (PR3G state-model improvement) */
+  pr3gCryptoShortHorizonRecencyWeighting?: boolean;
+  /** Optional explicit decay parameter for PR3G recency-weighted regime up-rates */
+  pr3gCryptoShortHorizonDecay?: number;
+  /** Optional flag: reduce overconfidence in BTC 14d mature bull cases */
+  matureBullCalibration?: boolean;
+  /** Optional flag: replace hard start state with additive mixture over last K states */
+  startStateMixture?: boolean;
+  /** Optional override for transition-matrix decay weighting (Phase 1 ablation) */
+  transitionDecayOverride?: number;
+  /** Optional flag: when a full-window run detects a break, rerun with a shorter window */
+  postBreakShortWindow?: boolean;
+  /** Optional shorter window size used by postBreakShortWindow (default: 60) */
+  postBreakWindowSize?: number;
+  /** Optional flag: keep break confidence penalty only in trending break contexts (Phase 4 ablation) */
+  trendPenaltyOnlyBreakConfidence?: boolean;
 }
 
 export interface WalkForwardResult {
@@ -67,23 +97,84 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     const actualReturn = (realizedPrice - currentPrice) / currentPrice;
 
     try {
-      const result: MarkovDistributionResult = await computeMarkovDistribution({
+      let result: MarkovDistributionResult = await computeMarkovDistribution({
         ticker,
         horizon,
         currentPrice,
         historicalPrices: histPrices,
         polymarketMarkets: [],  // pure Markov, no anchors
+        cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
+        cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
+        pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
+        cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
+        cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
+        cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
+        pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
+        pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
+        matureBullCalibration: config.matureBullCalibration,
+        startStateMixture: config.startStateMixture,
+        sidewaysSplit: config.sidewaysSplit,
+        transitionDecayOverride: config.transitionDecayOverride,
+        trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
       });
 
-      // Find P(>currentPrice) from the distribution by interpolation
+      const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
+      const originalStructuralBreakDivergence = result.metadata.structuralBreakDivergence;
+      let structuralBreakRerunTriggered = false;
+
+      if (config.postBreakShortWindow && result.metadata.structuralBreakDetected) {
+        const shortWindowSize = Math.max(30, config.postBreakWindowSize ?? 60);
+        if (histPrices.length > shortWindowSize) {
+          structuralBreakRerunTriggered = true;
+          result = await computeMarkovDistribution({
+            ticker,
+            horizon,
+            currentPrice,
+            historicalPrices: histPrices.slice(-shortWindowSize),
+            polymarketMarkets: [],
+            cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
+            cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
+            pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
+            cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
+            cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
+            cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
+            pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
+            pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
+            matureBullCalibration: config.matureBullCalibration,
+            startStateMixture: config.startStateMixture,
+            sidewaysSplit: config.sidewaysSplit,
+            transitionDecayOverride: config.transitionDecayOverride,
+            trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
+          });
+        }
+      }
+
+      // Find P(>currentPrice) from the calibrated distribution by interpolation
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);
 
-      // Extract the 90% CI for the median price level
+      // Find raw (pre-calibration) P(>currentPrice) for PR3A diagnostic tracking.
+      // The raw distribution has wider spread and better sign discriminability.
+      const rawPredictedProb = interpolateSurvival(result.rawDistribution, currentPrice);
+
       const { ciLower, ciUpper } = extractCI(result.distribution, currentPrice);
+
+      let decisionSource: DecisionSource = 'default';
+      if (result.metadata.pr3fDisagreementBlendActive) {
+        decisionSource = 'crypto-short-horizon-disagreement-blend';
+      } else if (result.metadata.pr3gRecencyWeightingActive) {
+        decisionSource = 'crypto-short-horizon-recency';
+      } else if (
+        config.cryptoShortHorizonRawDecisionAblation === true &&
+        horizon <= 14 &&
+        getAssetProfile(ticker).type === 'crypto'
+      ) {
+        decisionSource = 'crypto-short-horizon-raw';
+      }
 
       steps.push({
         t,
         predictedProb,
+        rawPredictedProb,
         actualBinary: realizedPrice > currentPrice ? 1 : 0,
         predictedReturn: result.actionSignal.expectedReturn,
         actualReturn,
@@ -101,9 +192,17 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         validationMetric: result.metadata.validationMetric,
         outOfSampleR2: result.metadata.outOfSampleR2,
         structuralBreakDetected: result.metadata.structuralBreakDetected,
+        structuralBreakRerunTriggered,
+        originalStructuralBreakDetected,
         structuralBreakDivergence: result.metadata.structuralBreakDivergence,
+        originalStructuralBreakDivergence,
         hmmConverged: result.metadata.hmm?.converged ?? null,
         ensembleConsensus: result.metadata.ensemble.consensus,
+        probabilitySource: 'calibrated' as ProbabilitySource,
+        decisionSource,
+        sidewaysSplitActive: result.metadata.sidewaysSplitActive,
+        matureBullCalibrationActive: result.metadata.matureBullCalibrationActive,
+        trendPenaltyOnlyBreakConfidenceActive: result.metadata.trendPenaltyOnlyBreakConfidenceActive,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });
@@ -144,10 +243,11 @@ function interpolateSurvival(
 }
 
 /**
- * Extract 90% confidence interval bounds from the distribution.
- * Uses central probability curve with 97.5/2.5 thresholds to account for
- * parameter uncertainty. The extra 2.5pp on each tail provides a
- * conservative buffer against model miscalibration.
+ * Extract a conservative price interval from the survival distribution.
+ *
+ * This is used for backtest coverage diagnostics only. The thresholds are tuned
+ * empirically for stable coverage and are intentionally more conservative than a
+ * literal central 90% interval.
  */
 function extractCI(
   dist: MarkovDistributionResult['distribution'],
@@ -158,8 +258,8 @@ function extractCI(
   let ciLower = dist[0].price;
   let ciUpper = dist[dist.length - 1].price;
 
-  // Use 99.5/0.5 thresholds — the extra margin on each tail absorbs model risk
-  // and parameter estimation error. Empirically calibrated to achieve ~90% coverage.
+  // Use conservative survival thresholds — tuned empirically for coverage rather
+  // than interpreted as literal 5th/95th percentiles.
   const lowerThreshold = 0.995;
   const upperThreshold = 0.005;
 

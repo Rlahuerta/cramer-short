@@ -14,6 +14,7 @@ Cramer-Short's `/watchlist` command is your portfolio tracker and quick-glance m
 | `/watchlist list` | Live-enriched table of all positions |
 | `/watchlist show TICKER` | Compact info card for one ticker |
 | `/watchlist snapshot` | Portfolio dashboard with allocation chart |
+| `/watchlist refresh` | Manually re-fetch live prices and Markov confidence for all watchlist tickers |
 
 ---
 
@@ -47,22 +48,30 @@ Shows all positions with live market data when `FINANCIAL_DATASETS_API_KEY` is s
 | P&L | Unrealised gain/loss in dollars | cost + shares |
 | RETURN | Percentage return vs. cost basis | cost basis |
 | ALLOC | This position as % of total portfolio value | cost + shares |
+| CONF | Markov prediction confidence (✓ ≥0.25, ⚠️ <0.25) | API key |
 
 - **Green** = positive P&L / gain
 - **Red** = negative P&L / loss
+- **✓ (green check)** = High/medium Markov confidence (≥0.25) — ~66% accuracy
+- **⚠️ (yellow warning)** = Low Markov confidence (<0.25) — ~55% accuracy; consider reducing size
 - A **TOTAL** row at the bottom summarises portfolio value and overall return
 - Without an API key, the table falls back to showing stored cost basis and shares
 
 **Example output:**
 ```
-  TICKER    CURRENT    DAY%         P&L    RETURN   ALLOC
-  ────────────────────────────────────────────────────────
-  AMD      $156.20   +1.2%      +$1,910    +32.4%     38%
-  IAU       $41.80   -0.3%        +$720    +11.5%     22%
-  NVDA     $872.50   +2.1%      +$4,725    +18.9%     40%
-  ────────────────────────────────────────────────────────
+  TICKER    CURRENT    DAY%         P&L    RETURN   ALLOC   CONF
+  ──────────────────────────────────────────────────────────────
+  AMD      $156.20   +1.2%      +$1,910    +32.4%     38%     ✓
+  IAU       $41.80   -0.3%        +$720    +11.5%     22%     ✓
+  NVDA     $872.50   +2.1%      +$4,725    +18.9%     40%     ⚠️
+  ──────────────────────────────────────────────────────────────
   TOTAL     $9,870              +$7,355    +28.8%
 ```
+
+**CONF column interpretation:**
+- **✓** = Markov confidence ≥ 0.25 — reliable signal (~66% accuracy)
+- **⚠️** = Markov confidence < 0.25 — weak signal (~55% accuracy); consider reducing position size
+- **—** = No Markov data available (ticker not in canonical coverage)
 
 ---
 
@@ -97,7 +106,21 @@ A compact single-ticker panel fetched directly from the API (no agent call):
 
 ## `/watchlist snapshot` — Portfolio Dashboard
 
-Shows portfolio-level aggregates and an allocation bar chart:
+Shows portfolio-level aggregates and an allocation bar chart with Markov confidence indicators.
+
+### Markov Confidence Indicators
+
+The **CONF** column (list view) and allocation bar icons (snapshot view) show the Markov Chain prediction confidence for each ticker:
+
+| Icon | Confidence | Accuracy | Action |
+|------|------------|----------|--------|
+| **✓** (green) | ≥ 0.25 | ~66% | Reliable signal — use standard position size |
+| **⚠️** (yellow) | < 0.25 | ~55% | Weak signal — reduce position size or skip |
+| **—** (dash) | N/A | N/A | No Markov data (ticker not in canonical coverage) |
+
+**Why this matters:** The 0.25 threshold separates high/low-confidence regimes. Acting only on signals ≥ 0.25 raises aggregate accuracy from ~60% to ~66% (at 44% coverage).
+
+**See also:** [`markov-when-to-use.md`](markov-when-to-use.md) for supported assets and confidence thresholds.
 
 ```
   Portfolio Snapshot — 2026-03-27
@@ -107,9 +130,9 @@ Shows portfolio-level aggregates and an allocation bar chart:
   Total P&L:       +$7,355  (+26.5%)
 
   Allocation:
-  AMD    ████████████████████░░░░░░  38%
-  NVDA   ████████████████░░░░░░░░░░  40%
-  IAU    ████████░░░░░░░░░░░░░░░░░░  22%
+  AMD    ████████████████████░░  38% ✓
+  NVDA   ████████████████░░░░░░  40% ⚠️
+  IAU    ████████░░░░░░░░░░░░░░  22% ✓
 
   Best:  NVDA   +32.4%
   Worst: IAU    +11.5%
@@ -118,6 +141,10 @@ Shows portfolio-level aggregates and an allocation bar chart:
   VALE       $11.40   -0.5%
 ```
 
+**Allocation bar icons:**
+- **✓** = High/medium Markov confidence (≥0.25)
+- **⚠️** = Low Markov confidence (<0.25)
+
 - **Allocation** only includes tickers with both `shares` and `costBasis`
 - **Watching** section shows price + day % for watch-only tickers
 - Without position data, suggests using `/watchlist add TICKER COST SHARES`
@@ -125,6 +152,28 @@ Shows portfolio-level aggregates and an allocation bar chart:
 ---
 
 ## Decision-Making Guide
+
+### Markov Confidence Integration
+
+The watchlist now displays **Markov Chain prediction confidence** alongside price and P&L data. This helps you make confidence-weighted decisions:
+
+| Scenario | Markov CONF | Recommended Action |
+|----------|-------------|-------------------|
+| **High-conviction trade** | ✓ (≥ 0.25) | Use standard position size; confidence supports the setup |
+| **Speculative trade** | ⚠️ (< 0.25) | Reduce position size by 30–50%, or skip and wait for higher confidence |
+| **No data** | — | Use technical/fundamental analysis only; no Markov signal |
+
+**How confidence is calculated:**
+- Fetched automatically when you run `/watchlist list` or `/watchlist show`
+- Based on 14-day Markov distribution forecast
+- Combines regime detection, HMM convergence, and ensemble signal agreement
+- Threshold 0.25 separates reliable (~66% accuracy) from weak (~55% accuracy) signals
+
+**Example workflow:**
+1. Run `/watchlist list` — see all positions with confidence indicators
+2. Identify tickers with ✓ — these have reliable Markov signals
+3. For ⚠️ tickers: either reduce size or run `swing-trade-setup` skill to check if technical setup compensates for low confidence
+4. Use `position-sizing` skill to calculate confidence-adjusted position size
 
 ### What each metric tells you
 
@@ -168,7 +217,23 @@ Watchlist data is stored locally in `~/.cramer-short/watchlist.json`:
 
 ---
 
-## Requirements
+## Auto-Refresh
+
+When a watchlist view (`list`, `show`, or `snapshot`) is open, prices and Markov confidence are re-fetched automatically at the interval configured via `WATCHLIST_REFRESH_INTERVAL_MS`.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `WATCHLIST_REFRESH_INTERVAL_MS` | `0` (disabled) | Polling interval in milliseconds. `0` = no auto-refresh |
+
+**Auto-refresh behavior:**
+- Refresh triggers every `N` ms while the watchlist overlay is open
+- Each refresh re-fetches live prices, P&L, and Markov confidence for all watchlist tickers
+- The overlay footer shows time since last refresh: `· refreshed just now` / `· refreshed 23s ago` / `· refreshed 2m ago`
+- Timer stops automatically when the watchlist overlay closes (Esc, submitting a query, or switching to another view)
+
+**Manual refresh:** `/watchlist refresh` re-fetches immediately without reopening the overlay. Returns an error if no watchlist view is currently open.
+
+
 
 | Feature | Requires |
 |---------|---------|

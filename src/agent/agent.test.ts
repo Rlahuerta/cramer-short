@@ -108,6 +108,8 @@ const {
   inferDistributionTicker,
   inferDistributionHorizon,
   shouldForceMarkovDistribution,
+  inferTrajectoryRequest,
+  buildForcedMarkovArgs,
 } = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
@@ -238,6 +240,41 @@ describe('Agent', () => {
         'What is the probability distribution for BTC-USD in 7 trading days?',
         [{ tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7 }, result: '{"data":{"_tool":"markov_distribution","status":"abstain"}}' }],
       )).toBe(false);
+    });
+
+    it('inferTrajectoryRequest detects explicit trajectory/day-by-day queries', () => {
+      expect(inferTrajectoryRequest('Show me the day-by-day trajectory for NVDA over 14 days')).toBe(true);
+      expect(inferTrajectoryRequest('What is the price path for AAPL over the next 7 trading days?')).toBe(true);
+      expect(inferTrajectoryRequest('Give me a daily forecast for SPY')).toBe(true);
+      expect(inferTrajectoryRequest('daily projection for BTC-USD 30 day horizon')).toBe(true);
+      expect(inferTrajectoryRequest('trajectory analysis for GLD')).toBe(true);
+    });
+
+    it('inferTrajectoryRequest returns false for non-trajectory distribution queries', () => {
+      expect(inferTrajectoryRequest('What is the probability distribution for BTC-USD in 7 days?')).toBe(false);
+      expect(inferTrajectoryRequest('Will NVDA hit $200 in 30 days?')).toBe(false);
+      expect(inferTrajectoryRequest('markov distribution for AAPL')).toBe(false);
+    });
+
+    it('buildForcedMarkovArgs preserves trajectory flags for trajectory queries', () => {
+      expect(buildForcedMarkovArgs('Give me a 7-day price trajectory for AAPL')).toEqual({
+        ticker: 'AAPL',
+        horizon: 7,
+        trajectory: true,
+        trajectoryDays: 7,
+      });
+
+      expect(buildForcedMarkovArgs('Show me a day-by-day trajectory for BTC-USD over 8 weeks')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 40,
+        trajectory: true,
+        trajectoryDays: 30,
+      });
+
+      expect(buildForcedMarkovArgs('What is the probability distribution for BTC-USD in 7 trading days?')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 7,
+      });
     });
   });
 });
