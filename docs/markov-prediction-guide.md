@@ -53,7 +53,7 @@ and packaged into actionable outputs.
 | `distribution` | Array of `{price, probability}` points — a survival curve |
 | `actionSignal` | BUY / HOLD / SELL recommendation with expected return |
 | `predictionConfidence` | 0–1 score for selective prediction filtering |
-| `metadata` | Regime state, HMM info, ensemble consensus, diagnostics |
+| `metadata` | Regime state, HMM info, ensemble consensus, structural-break diagnostics, experimental flags |
 
 ---
 
@@ -165,23 +165,50 @@ bullish markets without strong evidence.
 
 ### Confidence Scoring
 
-The prediction confidence score (0–1) combines five factors:
+The prediction confidence score (0–1) combines five base factors plus a
+base-rate alignment adjustment:
 
 | Factor | Weight | How it works |
 |--------|--------|--------------|
-| Decisiveness | 35% | `|P(up) − 0.5| × 2` — distance from coin flip (uses raw, pre-calibration P(up)) |
-| Ensemble consensus | 20% | Fraction of momentum/MR/crossover signals that agree (0–3 → 0–1) |
-| HMM convergence | 15% | Binary: did Baum-Welch converge? |
-| Regime stability | 20% | Consecutive days in the current regime / 20 (saturates at 20 days) |
+| Decisiveness | 30% | `|P(up) − 0.5| × 2` — distance from coin flip (uses raw, pre-calibration P(up)) |
+| Ensemble consensus | 15% | Fraction of momentum/MR/crossover signals that agree (0–3 → 0–1) |
+| HMM convergence | 10% | Binary: did Baum-Welch converge? |
+| Regime stability | 15% | Consecutive days in the current regime / 20 (saturates at 20 days) |
 | Multi-lookback momentum | 10% | Fraction of lookback windows (10d/20d/40d) agreeing on direction |
+| Base-rate alignment | +20% / −8% | Boost when the calibrated direction agrees with the empirical base rate; mild penalty when it fights the base rate |
 
-Penalties applied after the weighted sum:
+Additional implementation heuristics:
 
-- **Structural break** detected: multiply by 0.6
-- **Crypto** asset type: multiply by 0.7
+- **Short-horizon crypto with near-zero R²** gets a small additive confidence bump
+  before multiplicative penalties.
+
+Penalties / multipliers applied after the weighted sum:
+
+- **Structural break** detected: multiply by 0.6 by default
+- **Short-horizon crypto with ≥2 trusted anchors and non-bad R²**: use a lighter
+  break penalty of 0.8 instead of 0.6
+- **Experimental Phase 4 flag** (`trendPenaltyOnlyBreakConfidence`, backtests only):
+  keep the structural-break penalty only for break+trending windows (`bull` /
+  `bear`) and skip it for break+`sideways` windows. This is **off by default**
+  and does not change the public tool behavior unless explicitly enabled in the
+  backtest pipeline.
+- **Crypto** asset type: multiply by 0.7, or 0.85 for the short-horizon anchored
+  crypto carve-out
+- **Commodity** asset type: multiply by 0.85
 - **ETF** asset type: multiply by 1.1
 - **High volatility** (daily vol > 2%): linear penalty ramping from 1.0 at 2%
   to 0.7 at 8%
+
+The Phase 4 experiment is exposed in metadata as
+`trendPenaltyOnlyBreakConfidenceActive`. In the real walk-forward pipeline
+validation (6 tickers × 3 horizons, `warmup=120`, `stride=5`), enabling the flag
+changed exactly **313 break+sideways** steps and **0 of 874 break+trending**
+steps, which confirms the implementation only touched the intended contexts.
+
+`trendPenaltyOnlyBreakConfidenceActive` is **run-level provenance**: it means the
+experimental policy was enabled for that prediction run. It does **not** imply
+that every flagged step skipped the break penalty; break+trending steps still
+retain the default break penalty under this experiment.
 
 ---
 
@@ -545,6 +572,7 @@ console.log(`Current regime: ${meta.regimeState}`);
 console.log(`HMM converged: ${meta.hmm?.converged}`);
 console.log(`Ensemble consensus: ${meta.ensemble.consensus}/3`);
 console.log(`Structural break: ${meta.structuralBreakDetected}`);
+console.log(`Trend-only break confidence active: ${meta.trendPenaltyOnlyBreakConfidenceActive}`);
 console.log(`Sparse states: ${meta.sparseStates.join(', ') || 'none'}`);
 console.log(`Goodness-of-fit p-value: ${meta.goodnessOfFit?.pValue.toFixed(3)}`);
 console.log(`Out-of-sample R²: ${meta.outOfSampleR2?.toFixed(4)}`);
@@ -604,6 +632,38 @@ adjustment for typical use. Key internal defaults:
   estimation, 120+ daily prices recommended
 - **Monte Carlo simulations:** 1,000 per distribution point (for CI bounds)
 - **Grid:** 20+ price levels spanning approximately ±3σ from current price
+
+### Experimental Backtest Flags
+
+These switches are for research / backtest plumbing, not the public
+`markov_distribution` tool schema. They are disabled unless a caller in the
+backtest harness opts in explicitly.
+
+#### `trendPenaltyOnlyBreakConfidence?: boolean`
+
+- **Default (`false`)**: every structural-break window gets the usual confidence
+  penalty (`×0.6`, or `×0.8` in the short-horizon anchored-crypto carve-out).
+- **Experimental (`true`)**: keep that penalty only when the break window is
+  still trending (`bull` / `bear`). If the break window is `sideways`, skip the
+  structural-break confidence penalty entirely.
+- **Metadata / reporting**: surfaced as
+  `metadata.trendPenaltyOnlyBreakConfidenceActive`, propagated into
+  `BacktestStep.trendPenaltyOnlyBreakConfidenceActive`, and summarized at the
+  report level as run provenance.
+
+**Phase 4 implementation verification (real end-to-end walk-forward, not just
+post-hoc rescoring):**
+
+| Slice | Baseline | `trendPenaltyOnlyBreakConfidence=true` |
+|-------|----------|----------------------------------------|
+| Overall RC @ conf ≥ 0.2 | 64.5% acc / 57.9% cov | **65.4% acc / 65.8% cov** |
+| Overall RC @ conf ≥ 0.3 | 62.6% acc / 15.4% cov | **65.5% acc / 28.3% cov** |
+| Break-context RC @ conf ≥ 0.2 | 64.9% acc / 54.2% cov | **65.9% acc / 62.9% cov** |
+| Break-context RC @ conf ≥ 0.3 | 60.7% acc / 9.4% cov | **65.7% acc / 23.8% cov** |
+
+Those results are directionally consistent with the earlier Phase 3 offline
+ablation, but the feature remains **experimental and non-default** until it is
+explicitly promoted.
 
 ### Polymarket Anchors
 
