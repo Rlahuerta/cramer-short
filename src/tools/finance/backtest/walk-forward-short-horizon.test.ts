@@ -32,6 +32,8 @@ interface VariantDefinition {
   postBreakShortWindow?: boolean;
   postBreakWindowSize?: number;
   trendPenaltyOnlyBreakConfidence?: boolean;
+  regimeSpecificSigma?: boolean;
+  regimeSpecificSigmaThreshold?: number;
 }
 
 interface VariantMetrics {
@@ -69,6 +71,8 @@ async function runVariantForTickerHorizon(
     postBreakShortWindow: variant.postBreakShortWindow,
     postBreakWindowSize: variant.postBreakWindowSize,
     trendPenaltyOnlyBreakConfidence: variant.trendPenaltyOnlyBreakConfidence,
+    regimeSpecificSigma: variant.regimeSpecificSigma,
+    regimeSpecificSigmaThreshold: variant.regimeSpecificSigmaThreshold,
   });
 
   return {
@@ -94,6 +98,9 @@ describe('Walk-forward short-horizon ablation (Phase 1 Discovery B1)', () => {
       { key: 'warmup-60', label: 'warmup=60', warmup: 60 },
       { key: 'decay-095', label: 'warmup=120 decay=0.95', warmup: 120, transitionDecayOverride: 0.95 },
       { key: 'post-break-60', label: 'warmup=120 postBreakShortWindow=60', warmup: 120, postBreakShortWindow: true, postBreakWindowSize: 60 },
+      { key: 'ph7-sigma-t55', label: 'warmup=120 trend+sigma0.55', warmup: 120, trendPenaltyOnlyBreakConfidence: true, regimeSpecificSigma: true, regimeSpecificSigmaThreshold: 0.55 },
+      { key: 'ph7-sigma-t60', label: 'warmup=120 trend+sigma0.60', warmup: 120, trendPenaltyOnlyBreakConfidence: true, regimeSpecificSigma: true, regimeSpecificSigmaThreshold: 0.60 },
+      { key: 'ph7-sigma-t70', label: 'warmup=120 trend+sigma0.70', warmup: 120, trendPenaltyOnlyBreakConfidence: true, regimeSpecificSigma: true, regimeSpecificSigmaThreshold: 0.70 },
     ];
 
     const lines: string[] = ['', '═══ WALK-FORWARD SHORT-HORIZON ABLATION ═══'];
@@ -102,6 +109,8 @@ describe('Walk-forward short-horizon ablation (Phase 1 Discovery B1)', () => {
     let breakSidewaysCount = 0;
     let breakSidewaysChangedCount = 0;
     let breakTrendingCount = 0;
+    let regimeSpecificSigmaProvenanceCount = 0;
+    let regimeSpecificSigmaActiveCount = 0;
     const metricsCache = new Map<string, VariantMetrics>();
 
     const cacheKey = (ticker: string, horizon: number, variant: VariantDefinition) =>
@@ -153,6 +162,22 @@ describe('Walk-forward short-horizon ablation (Phase 1 Discovery B1)', () => {
             expect(experimentStep.confidence).toBeCloseTo(baseStep.confidence, 10);
             if (effectiveBreak && (baseStep.regime === 'bull' || baseStep.regime === 'bear')) {
               breakTrendingCount++;
+            }
+          }
+        }
+
+        // Phase 7: verify regime-specific sigma variants have expected step counts and provenance.
+        // Activation itself is threshold- and universe-dependent; the unit tests cover
+        // that activation can occur when the threshold is low enough.
+        const ph7Variant = metricsByVariant.get('ph7-sigma-t55');
+        if (ph7Variant) {
+          expect(ph7Variant.steps).toHaveLength(baselineSteps.length);
+          for (const step of ph7Variant.steps) {
+            expect(step.trendPenaltyOnlyBreakConfidenceActive).toBe(true);
+            expect(typeof step.regimeSpecificSigmaActive).toBe('boolean');
+            regimeSpecificSigmaProvenanceCount++;
+            if (step.regimeSpecificSigmaActive) {
+              regimeSpecificSigmaActiveCount++;
             }
           }
         }
@@ -213,5 +238,6 @@ describe('Walk-forward short-horizon ablation (Phase 1 Discovery B1)', () => {
     expect(breakSidewaysCount).toBeGreaterThan(0);
     expect(breakSidewaysChangedCount).toBeGreaterThan(0);
     expect(breakTrendingCount).toBeGreaterThan(0);
+    expect(regimeSpecificSigmaProvenanceCount).toBeGreaterThan(0);
   }, TIMEOUT);
 });

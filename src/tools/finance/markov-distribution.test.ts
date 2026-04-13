@@ -4532,3 +4532,99 @@ describe('normalizeSentiment', () => {
     expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 7: regime-specific sigma (backtest-only)
+// ---------------------------------------------------------------------------
+
+describe('computeHorizonDriftVol — regime-specific sigma', () => {
+  const P = buildDefaultMatrix();
+
+  const bullDominantStats: Record<ReturnType<typeof classifyRegimeState>, { meanReturn: number; stdReturn: number }> = {
+    bull:     { meanReturn:  0.003, stdReturn: 0.008 },
+    bear:     { meanReturn: -0.003, stdReturn: 0.015 },
+    sideways: { meanReturn:  0.000, stdReturn: 0.006 },
+  };
+
+  it('uses mixture sigma by default (flag off)', () => {
+    const mixture = computeHorizonDriftVol(10, P, bullDominantStats, 'bull', 0);
+    const regimeMode = computeHorizonDriftVol(10, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.99);
+    // With default matrix, bull row is ~0.6 bull, ~0.2 bear, ~0.2 sideways
+    // The mixture sigma should be larger than any single regime's sigma due to Var(μ)
+    // With flag on but threshold=0.99 (not exceeded), should still use mixture sigma
+    expect(mixture.sigma_n).toBeCloseTo(regimeMode.sigma_n, 10);
+  });
+
+  it('uses dominant regime sigma when threshold is exceeded and flag is on', () => {
+    // With a near-identity matrix, after 1 step from bull, weights ≈ [0.6, 0.2, 0.2]
+    // max weight = 0.6, which exceeds threshold 0.55 but not 0.70
+    const mixture = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, false);
+    const regimeMode = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.55);
+
+    // With regime-specific sigma at threshold 0.55, bull dominates (weight ~0.6 > 0.55)
+    // so sigma should be the bull regime's own stdReturn * sqrt(1) = 0.008
+    // The mixture sigma includes Var(μ) from bear's different mean, so it's larger
+    expect(regimeMode.sigma_n).toBeLessThan(mixture.sigma_n);
+    // Should equal bull's daily vol scaled by sqrt(horizon)
+    expect(regimeMode.sigma_n).toBeCloseTo(0.008, 5);
+  });
+
+  it('falls back to mixture sigma when max weight does not exceed threshold', () => {
+    // threshold=0.99: no regime can reach this with the default matrix in 1 step
+    const mixture = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0);
+    const regimeMode = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.99);
+    expect(regimeMode.sigma_n).toBeCloseTo(mixture.sigma_n, 10);
+  });
+
+  it('drift (mu_n) is unchanged regardless of sigma mode', () => {
+    const mixture = computeHorizonDriftVol(10, P, bullDominantStats, 'bull', 0, undefined, undefined, false);
+    const regimeMode = computeHorizonDriftVol(10, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.55);
+    expect(regimeMode.mu_n).toBeCloseTo(mixture.mu_n, 10);
+  });
+
+  it('default threshold is 0.60 when not specified', () => {
+    // With default matrix at 1 step from bull: max weight ≈ 0.6
+    // Without explicit threshold, default is 0.60 — max weight must EXCEED 0.60
+    // 0.6 is NOT > 0.6, so mixture sigma should be used
+    const mixture = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, false);
+    const regimeModeDefault = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, true);
+    expect(regimeModeDefault.sigma_n).toBeCloseTo(mixture.sigma_n, 10);
+  });
+
+  it('uses mixture sigma for long horizons where weights diffuse', () => {
+    // At horizon=100, the default matrix mixes weights toward uniform
+    // No single regime can dominate → regime-specific sigma should not activate
+    const mixture = computeHorizonDriftVol(100, P, bullDominantStats, 'bull', 0);
+    const regimeMode = computeHorizonDriftVol(100, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.55);
+    expect(regimeMode.sigma_n).toBeCloseTo(mixture.sigma_n, 10);
+  });
+});
+
+describe('computeMarkovDistribution — regime-specific sigma provenance', () => {
+  const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
+
+  it('metadata.regimeSpecificSigmaActive is false when flag is off', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(result.metadata.regimeSpecificSigmaActive).toBeFalsy();
+  });
+
+  it('metadata.regimeSpecificSigmaActive is true when flag is on and weights are concentrated', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      regimeSpecificSigma: true,
+      regimeSpecificSigmaThreshold: 0.30,
+    });
+    // With a threshold of 0.30, at least one regime should dominate
+    expect(result.metadata.regimeSpecificSigmaActive).toBe(true);
+  });
+});
