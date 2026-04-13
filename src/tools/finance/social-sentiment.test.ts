@@ -298,6 +298,32 @@ describe('socialSentimentTool — integration (mocked fetch)', () => {
     expect(text).toContain('No social media posts found');
   });
 
+  it('returns Fear & Greed data for crypto even when no social posts are found', async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlString = String(url);
+      if (urlString.includes('reddit.com')) {
+        return { ok: true, status: 200, json: async () => makeRedditResponse([]) } as Response;
+      }
+      if (urlString.includes('alternative.me')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ value: '72', value_classification: 'Greed' }] }),
+        } as Response;
+      }
+      return { ok: false, status: 403, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+
+    const text = getResultText(
+      await socialSentimentTool.invoke({ ticker: 'BTC', include_fear_greed: true, limit: 5 }),
+    );
+
+    expect(text).toContain('BTC');
+    expect(text).toContain('Fear & Greed');
+    expect(text).toContain('Greed');
+    expect(text).toContain('No Reddit/X posts found');
+  });
+
   it('handles Reddit API failure gracefully (no throw)', async () => {
     globalThis.fetch = (async () => { throw new Error('Network failure'); }) as unknown as typeof fetch;
     const text = getResultText(await socialSentimentTool.invoke({ ticker: 'AAPL', limit: 5 }));
