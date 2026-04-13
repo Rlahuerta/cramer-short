@@ -719,6 +719,125 @@ The strongest tested candidate on the primary target was:
   - result: **FAIL** (did not clear the +2.0pp primary target and exceeded the
     Brier guardrail)
 
+#### `divergencePenaltySchedule?: DivergencePenaltySchedule`
+
+- **Default (`undefined`)**: no divergence-weighted adjustment to break confidence.
+- **Experimental**: provide a schedule to apply regime-conditional divergence-penalty
+  multipliers (mild/medium/high buckets) when a structural break is detected.
+- **Metadata / reporting**:
+  - `metadata.divergenceWeightedBreakConfidenceActive`
+  - `BacktestStep.divergenceWeightedBreakConfidenceActive`
+
+**Phase 6 evaluation result (validated with the current script):** no tested
+candidate passed the approved promotion thresholds against the Phase 4 baseline.
+
+All five divergence-penalty schedules produced identical break+trending directional
+accuracy to the Phase 4 control (62.9%, Δ=+0.0pp), failing the +1.0pp primary
+target.
+
+Summary (validated output):
+
+```text
+Candidate comparison:
+  DW_M080_M070_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+  DW_M085_M075_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+  DW_M090_M075_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+  DW_M090_M080_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+  DW_M095_M080_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+
+Result: No candidate passed all Phase 6 thresholds.
+```
+
+This command writes:
+
+- `.sisyphus/artifacts/phase6-divergence-weighted-confidence.json`
+
+#### `postBreakShortWindow?: boolean`
+
+- **Default (`false`)**: structural-break windows continue to use the full warmup
+  length for the transition matrix.
+- **Experimental (`true`)**: after a structural break is detected, shrink the
+  transition-matrix training window to `postBreakWindowSize` (default: 60) to
+  reduce lookback contamination from pre-break regimes.
+- **Metadata / reporting**:
+  - `metadata.postBreakShortWindowActive`
+  - `BacktestStep.postBreakShortWindowActive`
+
+Historical ablation result: negative. `postBreakShortWindow=60` was broadly
+harmful across all tested configurations and was not promoted. No standalone
+harness file was created; the result is documented here. Phase 8 does not
+revisit this parameter.
+
+#### `regimeSpecificSigma?: boolean`
+
+- **Default (`false`)**: horizon volatility uses the usual regime-mixture
+  variance.
+- **Experimental (`true`)**: when projected regime weights are sufficiently
+  concentrated, use the dominant regime's own sigma instead of the mixture sigma.
+- **Related threshold**: `regimeSpecificSigmaThreshold?: number` (default `0.60`)
+- **Metadata / reporting**:
+  - `metadata.regimeSpecificSigmaActive`
+  - `BacktestStep.regimeSpecificSigmaActive`
+
+**Phase 7 evaluation result:** negative result. The planned thresholds
+(`0.55/0.60/0.70`) were effectively inert in the 6-ticker 7d/14d/30d fixture
+universe, and lower thresholds did not produce a credible win. The strongest
+observed low-threshold variants produced only tiny directional gains while
+slightly worsening Brier and/or coverage, so regime-specific sigma was not
+promoted.
+
+#### Warmup-window tuning
+
+The warmup parameter controls how many historical observations feed the Markov
+transition matrix. Reducing it changes regime detection, break detection, and
+calibration quality at different horizons. Phases 8 and 9 tested warmup
+candidates against the Phase 4 control (warmup=120,
+trendPenaltyOnlyBreakConfidence=true).
+
+**Phase 8 evaluation result (validated with the current script):**
+
+| Candidate | Δdir | Δbrier | ΔciCov | ΔbrkCtx | ΔnonBrk | Result |
+|-----------|------|--------|--------|---------|---------|--------|
+| warmup=90 | +1.4pp | −0.0055 | +0.3pp | +1.4pp | +0.0pp | **PASS** |
+| warmup=60 | +0.9pp | −0.0007 | −0.1pp | +0.9pp | +0.0pp | **FAIL** |
+
+warmup=60 failed on break+sideways RC@0.2 accuracy (−1.2pp < −1.0pp guardrail).
+warmup=90 passed all guardrails and showed per-horizon break-context improvements
+at all three horizons (7d +1.4pp, 14d +1.8pp, 30d +1.1pp).
+
+**Winner: warmup=90**
+
+warmup=90 remains **experimental and non-default** in runtime code. It has not
+been promoted to production defaults.
+
+**Phase 9 promotion confirmation (validated with the current script):**
+
+Phase 9 re-runs the warmup=90 candidate through the same Phase 8 guardrails as a
+standalone confirmation harness, producing a formal promotion verdict artifact.
+
+Validated output:
+
+```text
+Overall deltas vs baseline:
+  warmup-90          | Δdir=+1.4pp | Δbrier=-0.0055 | ΔciCov=+0.3pp | ΔbrkCtx=+1.4pp | ΔnonBrk=+0.0pp | PASS
+
+Per-horizon break-context deltas:
+  warmup-90          | 7d=+1.4pp | 14d=+1.8pp | 30d=+1.1pp
+
+RC@0.2/0.3 deltas (break-context):
+  warmup-90          | Δrc020=+2.2pp/+1.5pp | Δrc030=+2.4pp/+1.9pp
+
+Verdict: PROMOTED — warmup=90 passes all Phase 9 confirmation thresholds.
+  warmup=90 remains experimental / non-default in runtime code.
+```
+
+**Verdict: PROMOTED** (experimental-only confirmation; warmup=90 is not a
+production default change).
+
+This command writes:
+
+- `.sisyphus/artifacts/phase9-warmup90-promotion.json`
+
 ### Validated usage examples for experimental backtests
 
 These commands were run against the current repository state while updating this
@@ -814,6 +933,100 @@ Validated result at the time of writing:
 
 - `hybrid-break-fallback.test.ts`: **11 passing tests**
 - `phase4-trend-penalty-comparison.test.ts`: **1 passing integration test**
+
+#### Phase 6 divergence-weighted confidence report
+
+```bash
+bun run src/tools/finance/backtest/phase6-divergence-weighted-confidence.ts
+```
+
+Validated output summary:
+
+```text
+Candidate comparison:
+  DW_M080_M070_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+  DW_M085_M075_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+  DW_M090_M075_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+  DW_M090_M080_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+  DW_M095_M080_H060            | trend+brk=62.9% | non-brk=59.4% | Δtrend+brk=+0.0pp | Δbrier=0.0000 | FAIL
+
+Result: No candidate passed all Phase 6 thresholds.
+```
+
+This command writes:
+
+- `.sisyphus/artifacts/phase6-divergence-weighted-confidence.json`
+
+#### Phase 8 warmup-window comparison report
+
+```bash
+bun run src/tools/finance/backtest/phase8-warmup-window-comparison.ts
+```
+
+Validated output summary:
+
+```text
+Overall deltas vs baseline:
+  warmup-90        | Δdir=+1.4pp | Δbrier=-0.0055 | ΔciCov=+0.3pp | ΔbrkCtx=+1.4pp | ΔnonBrk=+0.0pp | PASS
+  warmup-60        | Δdir=+0.9pp | Δbrier=-0.0007 | ΔciCov=-0.1pp | ΔbrkCtx=+0.9pp | ΔnonBrk=+0.0pp | FAIL
+    reasons: break+sideways RC@0.2 accuracy -1.2pp < -1.0pp guardrail
+
+Per-horizon break-context deltas:
+  warmup-90        | 7d=+1.4pp | 14d=+1.8pp | 30d=+1.1pp
+  warmup-60        | 7d=+0.5pp | 14d=+0.6pp | 30d=+1.6pp
+
+RC@0.2/0.3 deltas (break-context):
+  warmup-90        | Δrc020=+2.2pp/+1.5pp | Δrc030=+2.4pp/+1.9pp
+  warmup-60        | Δrc020=+1.3pp/+0.9pp | Δrc030=+0.1pp/+2.0pp
+
+Winner: warmup-90
+```
+
+This command writes:
+
+- `.sisyphus/artifacts/phase8-warmup-window-comparison.json`
+
+Phase 8 unit tests:
+
+```bash
+bun test src/tools/finance/backtest/phase8-warmup-window-comparison.test.ts
+```
+
+Validated result: **9 passing tests** (1 integration test filtered by default).
+
+#### Phase 9 warmup=90 promotion confirmation report
+
+```bash
+bun run src/tools/finance/backtest/phase9-warmup90-promotion.ts
+```
+
+Validated output summary:
+
+```text
+Overall deltas vs baseline:
+  warmup-90          | Δdir=+1.4pp | Δbrier=-0.0055 | ΔciCov=+0.3pp | ΔbrkCtx=+1.4pp | ΔnonBrk=+0.0pp | PASS
+
+Per-horizon break-context deltas:
+  warmup-90          | 7d=+1.4pp | 14d=+1.8pp | 30d=+1.1pp
+
+RC@0.2/0.3 deltas (break-context):
+  warmup-90          | Δrc020=+2.2pp/+1.5pp | Δrc030=+2.4pp/+1.9pp
+
+Verdict: PROMOTED — warmup=90 passes all Phase 9 confirmation thresholds.
+  warmup=90 remains experimental / non-default in runtime code.
+```
+
+This command writes:
+
+- `.sisyphus/artifacts/phase9-warmup90-promotion.json`
+
+Phase 9 unit tests:
+
+```bash
+bun test src/tools/finance/backtest/phase9-warmup90-promotion.test.ts
+```
+
+Validated result: **6 passing tests** (1 integration test filtered by default).
 
 ### Polymarket Anchors
 
