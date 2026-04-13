@@ -185,6 +185,14 @@ export interface BacktestStep {
   matureBullCalibrationActive?: boolean;
   /** Run-level provenance: the trend-only break-confidence experiment was enabled for this prediction run. */
   trendPenaltyOnlyBreakConfidenceActive?: boolean;
+  /** Run-level provenance: the divergence-weighted break-confidence experiment was enabled for this prediction run. */
+  divergenceWeightedBreakConfidenceActive?: boolean;
+  /** Phase 5 provenance: which fallback candidate was used for this step (backtest-only). */
+  breakFallbackCandidateId?: string;
+  /** Phase 5 provenance: which fallback mode was applied for this step (backtest-only). */
+  breakFallbackMode?: 'hard' | 'blended' | 'blended_capped';
+  /** Phase 7 provenance: whether regime-specific sigma was active for this step (backtest-only). */
+  regimeSpecificSigmaActive?: boolean;
   structuralBreakDivergence?: number | null;
   /** Structural-break divergence from the pre-rerun full-window pass when applicable. */
   originalStructuralBreakDivergence?: number | null;

@@ -267,7 +267,181 @@ export interface ScenarioProbabilities {
   pUp: number;
 }
 
-export type BreakConfidencePolicy = 'default' | 'trend_penalty_only';
+export type BreakConfidencePolicy = 'default' | 'trend_penalty_only' | 'divergence_weighted';
+
+// ---------------------------------------------------------------------------
+// Phase 6: Divergence-weighted break confidence (backtest-only)
+//
+// When a structural break is detected, the current Phase 4 behavior applies
+// a flat 0.6 penalty to confidence regardless of divergence severity.
+// Phase 6 uses structuralBreakDivergence to select a lighter penalty for
+// mild breaks and the current full penalty for high-divergence breaks.
+// ---------------------------------------------------------------------------
+
+/**
+ * Penalty schedule mapping divergence severity buckets to confidence
+ * multipliers. Lower values = harsher penalty.
+ *
+ * The existing Phase 4 flat penalty is 0.6. Phase 6 schedules allow
+ * lighter penalties for mild breaks while preserving 0.6 for severe ones.
+ */
+export interface DivergencePenaltySchedule {
+  /** Penalty multiplier for mild breaks (divergence ∈ [0.05, 0.10)). Default: 0.80 */
+  mild: number;
+  /** Penalty multiplier for medium breaks (divergence ∈ [0.10, 0.20)). Default: 0.70 */
+  medium: number;
+  /** Penalty multiplier for high breaks (divergence ≥ 0.20). Default: 0.60 (= Phase 4 baseline) */
+  high: number;
+}
+
+/** Default Phase 6 schedule: mildest break → 0.80, medium → 0.70, high → 0.60 */
+export const DEFAULT_DIVERGENCE_PENALTY_SCHEDULE: DivergencePenaltySchedule = {
+  mild: 0.80,
+  medium: 0.70,
+  high: 0.60,
+};
+
+/**
+ * Map a structural break divergence value to a confidence penalty multiplier
+ * using the severity bucket semantics already used elsewhere in the codebase
+ * (same thresholds as computeBlendWeight in Phase 5).
+ *
+ * - divergence < 0.05: no break penalty (no structural break detected or trivial divergence)
+ * - divergence ∈ [0.05, 0.10): mild → schedule.mild
+ * - divergence ∈ [0.10, 0.20): medium → schedule.medium
+ * - divergence ≥ 0.20: high → schedule.high
+ */
+export function computeDivergencePenalty(
+  divergence: number,
+  schedule: DivergencePenaltySchedule,
+): number {
+  if (divergence < 0.05) return 1.0; // no break → no penalty
+  if (divergence < 0.10) return schedule.mild;
+  if (divergence < 0.20) return schedule.medium;
+  return schedule.high;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: Experimental hybrid structural-break fallback candidates
+// ---------------------------------------------------------------------------
+
+/**
+ * Experimental fallback candidate for hybrid structural-break matrix blending.
+ * Backtest-only: these candidates are NOT used in production defaults.
+ *
+ * When a structural break is detected, the current hard-replacement behavior
+ * substitutes the default matrix (diagonal=0.6). A fallback candidate allows
+ * blending between the estimated matrix and a conservative/profile-based matrix,
+ * weighted by the break's divergence severity.
+ */
+export interface BreakFallbackCandidate {
+  /** Unique identifier for this candidate (e.g., 'C55', 'P_BALANCED_LAM050_H025') */
+  id: string;
+  /** How to apply the fallback: hard replacement, blended, or blended with weight cap */
+  mode: 'hard' | 'blended' | 'blended_capped';
+  /** Diagonal value for the generic conservative fallback matrix (off-diag = (1-d)/2) */
+  conservativeDiagonal: number;
+  /** Per-asset-type diagonal values for the profile fallback matrix */
+  profileDiagonals: {
+    equity: number;
+    etf: number;
+    commodity: number;
+    crypto: number;
+  };
+  /** Weight of the conservative matrix in the hybrid: hybrid = λ*conservative + (1-λ)*profile */
+  conservativeWeight: number;
+  /** Severity-dependent blend weights: how much fallback matrix to use, by divergence bucket */
+  severityWeights: {
+    mild: number;    // divergence in [0.05, 0.10)
+    medium: number;  // divergence in [0.10, 0.20)
+    high: number;    // divergence >= 0.20
+  };
+  /** Maximum blend weight cap for blended_capped mode (undefined for other modes) */
+  maxBlendWeight?: number;
+}
+
+/** Build a 3×3 conservative fallback matrix from a diagonal value. */
+export function buildConservativeFallbackMatrix(diagonal: number): TransitionMatrix {
+  const offDiag = (1 - diagonal) / (NUM_STATES - 1);
+  return Array.from({ length: NUM_STATES }, (_, i) =>
+    Array.from({ length: NUM_STATES }, (_, j) => (i === j ? diagonal : offDiag)),
+  );
+}
+
+/** Build a 3×3 profile fallback matrix for a given asset type. */
+export function buildProfileFallbackMatrix(
+  assetType: AssetProfile['type'],
+  profileDiagonals: BreakFallbackCandidate['profileDiagonals'],
+): TransitionMatrix {
+  const diagonal = profileDiagonals[assetType];
+  const offDiag = (1 - diagonal) / (NUM_STATES - 1);
+  return Array.from({ length: NUM_STATES }, (_, i) =>
+    Array.from({ length: NUM_STATES }, (_, j) => (i === j ? diagonal : offDiag)),
+  );
+}
+
+/** Blend two transition matrices: result = λ*A + (1-λ)*B */
+export function blendMatrices(
+  lambda: number,
+  A: TransitionMatrix,
+  B: TransitionMatrix,
+): TransitionMatrix {
+  return A.map((row, i) =>
+    row.map((_, j) => lambda * A[i][j] + (1 - lambda) * B[i][j]),
+  );
+}
+
+/**
+ * Compute the blend weight for a structural-break fallback matrix,
+ * based on the divergence severity bucket.
+ */
+export function computeBlendWeight(
+  divergence: number,
+  severityWeights: BreakFallbackCandidate['severityWeights'],
+): number {
+  if (divergence < 0.05) return 0;
+  if (divergence < 0.10) return severityWeights.mild;
+  if (divergence < 0.20) return severityWeights.medium;
+  return severityWeights.high;
+}
+
+/**
+ * Apply a BreakFallbackCandidate to produce the final transition matrix
+ * for a structural-break window. Returns null if no fallback should be
+ * applied (i.e., the current hard-replacement behavior should be used).
+ *
+ * When a candidate is supplied and a break is detected:
+ * - `hard` mode: replaces the estimated matrix with the hybrid fallback matrix
+ * - `blended` mode: (1-w)*estimated + w*hybridFallback, where w depends on divergence
+ * - `blended_capped` mode: same as blended, but w is capped by maxBlendWeight
+ */
+export function applyBreakFallbackCandidate(
+  estimatedMatrix: TransitionMatrix,
+  divergence: number,
+  candidate: BreakFallbackCandidate,
+  assetType: AssetProfile['type'],
+): TransitionMatrix {
+  const conservativeMatrix = buildConservativeFallbackMatrix(candidate.conservativeDiagonal);
+  const profileMatrix = buildProfileFallbackMatrix(assetType, candidate.profileDiagonals);
+  const hybridFallback = blendMatrices(
+    candidate.conservativeWeight,
+    conservativeMatrix,
+    profileMatrix,
+  );
+
+  const blendWeight = computeBlendWeight(divergence, candidate.severityWeights);
+  const cappedWeight = candidate.mode === 'blended_capped' && candidate.maxBlendWeight !== undefined
+    ? Math.min(blendWeight, candidate.maxBlendWeight)
+    : blendWeight;
+
+  if (candidate.mode === 'hard') {
+    // Hard replacement: use the hybrid fallback matrix entirely
+    return hybridFallback;
+  }
+
+  // Blended or blended_capped: interpolate between estimated and hybrid fallback
+  return blendMatrices(1 - cappedWeight, estimatedMatrix, hybridFallback);
+}
 
 export interface MarkovDistributionResult {
   ticker: string;
@@ -341,6 +515,14 @@ export interface MarkovDistributionResult {
     sidewaysSplitActive?: boolean;
     matureBullCalibrationActive?: boolean;
     trendPenaltyOnlyBreakConfidenceActive?: boolean;
+    /** Phase 6 provenance: whether divergence-weighted break confidence was active (backtest-only) */
+    divergenceWeightedBreakConfidenceActive?: boolean;
+    /** Phase 7 provenance: whether regime-specific sigma was active (backtest-only) */
+    regimeSpecificSigmaActive?: boolean;
+    /** Phase 5 provenance: which fallback candidate was used (backtest-only) */
+    breakFallbackCandidateId?: string;
+    /** Phase 5 provenance: which fallback mode was applied (backtest-only) */
+    breakFallbackMode?: 'hard' | 'blended' | 'blended_capped';
   };
 }
 
@@ -1738,6 +1920,8 @@ export function computeHorizonDriftVol(
   momentumAdjustment = 0,
   hmmOverride?: { drift: number; vol: number; weight: number },
   startMixture?: Record<RegimeState, number>,
+  regimeSpecificSigma?: boolean,
+  regimeSpecificSigmaThreshold?: number,
 ): { mu_n: number; sigma_n: number } {
   const Pn = matPow(P, horizon);
   
@@ -1764,11 +1948,22 @@ export function computeHorizonDriftVol(
   const varOfMeans = REGIME_STATES.reduce(
     (s, state, i) => s + stateWeights[i] * (regimeStats[state].meanReturn - mu_obs) ** 2, 0,
   );
-  const sigma_obs = Math.sqrt(
+  const mixtureSigmaObs = Math.sqrt(
     REGIME_STATES.reduce(
       (s, state, i) => s + stateWeights[i] * regimeStats[state].stdReturn ** 2, 0,
     ) + varOfMeans,
   );
+
+  // Phase 7: when regime weights are concentrated and flag is enabled,
+  // use the dominant regime's own sigma instead of the mixture sigma.
+  // The mixture sigma inflates variance via Var(μ) when weights are mixed,
+  // but when one regime dominates, that regime's own volatility is more appropriate.
+  const maxWeight = Math.max(...stateWeights);
+  const threshold = regimeSpecificSigmaThreshold ?? 0.60;
+  const dominantIdx = stateWeights.indexOf(maxWeight);
+  const dominantSigma = regimeStats[REGIME_STATES[dominantIdx]].stdReturn;
+  const useRegimeSigma = regimeSpecificSigma === true && maxWeight > threshold;
+  const sigma_obs = useRegimeSigma ? dominantSigma : mixtureSigmaObs;
 
   let mu_eff: number;
   let sigma_eff: number;
@@ -1939,6 +2134,8 @@ export function interpolateDistribution(
   dailyVol?: number,
   startMixture?: Record<RegimeState, number>,
   nu = 5,
+  regimeSpecificSigma?: boolean,
+  regimeSpecificSigmaThreshold?: number,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -1975,6 +2172,7 @@ export function interpolateDistribution(
   // Compute regime-weighted drift and vol via shared helper
   const { mu_n, sigma_n } = computeHorizonDriftVol(
     horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold,
   );
 
   // Nearest anchor lookup helper with distance-based dampening.
@@ -2367,7 +2565,13 @@ export function computePredictionConfidence(options: {
   horizonDays?: number;
   outOfSampleR2?: number | null;
   breakConfidencePolicy?: BreakConfidencePolicy;
+  /** Preserve the Phase 4 sideways carve-out even when another break policy is active. */
+  skipSidewaysBreakPenalty?: boolean;
   regimeState?: RegimeState;
+  /** Chi-square divergence between the first/second half transition matrices. Required for 'divergence_weighted' policy. */
+  structuralBreakDivergence?: number;
+  /** Penalty schedule for divergence-weighted mode. Defaults to DEFAULT_DIVERGENCE_PENALTY_SCHEDULE. */
+  divergencePenaltySchedule?: DivergencePenaltySchedule;
 }): number {
   const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
   const cryptoShortHorizon = options.assetType === 'crypto'
@@ -2428,11 +2632,22 @@ export function computePredictionConfidence(options: {
   // Penalty for structural break (regime change mid-window → unreliable)
   if (structuralBreak) {
     const breakConfidencePolicy = options.breakConfidencePolicy ?? 'default';
-    const skipBreakPenalty = breakConfidencePolicy === 'trend_penalty_only'
-      && options.regimeState === 'sideways';
+
+    const skipBreakPenalty = options.regimeState === 'sideways'
+      && (
+        breakConfidencePolicy === 'trend_penalty_only'
+        || options.skipSidewaysBreakPenalty === true
+      );
 
     if (!skipBreakPenalty) {
-      const breakPenalty = cryptoShortHorizon && anchorsHelpful && !r2ClearlyBad ? 0.8 : 0.6;
+      let breakPenalty: number;
+      if (breakConfidencePolicy === 'divergence_weighted') {
+        const divergence = options.structuralBreakDivergence ?? 0.20;
+        const schedule = options.divergencePenaltySchedule ?? DEFAULT_DIVERGENCE_PENALTY_SCHEDULE;
+        breakPenalty = computeDivergencePenalty(divergence, schedule);
+      } else {
+        breakPenalty = cryptoShortHorizon && anchorsHelpful && !r2ClearlyBad ? 0.8 : 0.6;
+      }
       confidence *= breakPenalty;
     }
   }
@@ -2887,6 +3102,16 @@ export async function computeMarkovDistribution(params: {
   transitionDecayOverride?: number;
   /** @deprecated experimental ablation — backtests only */
   trendPenaltyOnlyBreakConfidence?: boolean;
+  /** @internal Phase 5 experimental: hybrid structural-break fallback candidate (backtest-only) */
+  breakFallbackCandidate?: BreakFallbackCandidate;
+  /** Phase 6 experimental: use divergence-weighted break confidence penalties (backtest-only) */
+  divergenceWeightedBreakConfidence?: boolean;
+  /** Phase 6 experimental: penalty schedule for divergence-weighted mode. Defaults to DEFAULT_DIVERGENCE_PENALTY_SCHEDULE. */
+  divergencePenaltySchedule?: DivergencePenaltySchedule;
+  /** Phase 7 experimental: use dominant regime's own sigma instead of mixture sigma when regime weights are concentrated (backtest-only) */
+  regimeSpecificSigma?: boolean;
+  /** Phase 7 experimental: minimum max(stateWeight) to activate regime-specific sigma. Defaults to 0.60. */
+  regimeSpecificSigmaThreshold?: number;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
@@ -2911,6 +3136,11 @@ export async function computeMarkovDistribution(params: {
     matureBullCalibration,
     transitionDecayOverride,
     trendPenaltyOnlyBreakConfidence,
+    breakFallbackCandidate,
+    divergenceWeightedBreakConfidence,
+    divergencePenaltySchedule,
+    regimeSpecificSigma,
+    regimeSpecificSigmaThreshold,
   } = params;
 
   const normalizedSentiment = sentiment === undefined ? undefined : normalizeSentiment(sentiment);
@@ -2949,9 +3179,19 @@ export async function computeMarkovDistribution(params: {
     : { detected: false, divergence: 0, firstHalfMatrix: buildDefaultMatrix(), secondHalfMatrix: buildDefaultMatrix() };
 
   // --- Estimate transition matrix (fall back to default when break detected) ---
-  let P = breakResult.detected
-    ? buildDefaultMatrix()
-    : estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+  let P: TransitionMatrix;
+  if (breakResult.detected) {
+    // Structural break detected: replace or blend the estimated matrix
+    if (breakFallbackCandidate) {
+      // Phase 5: apply hybrid fallback candidate (backtest-only)
+      const estimatedMatrix = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+      P = applyBreakFallbackCandidate(estimatedMatrix, breakResult.divergence, breakFallbackCandidate, assetProfile.type);
+    } else {
+      P = buildDefaultMatrix();
+    }
+  } else {
+    P = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+  }
 
   // --- Goodness-of-fit test (before sentiment adjustment, which is intentional) ---
   const gofResult = breakResult.detected ? null : transitionGoodnessOfFit(regimeSeq, P);
@@ -3205,12 +3445,13 @@ export async function computeMarkovDistribution(params: {
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
     20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, mixture,
-    assetProfile.studentTNu,
+    assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
     horizon, P, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, mixture,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -3365,8 +3606,15 @@ export async function computeMarkovDistribution(params: {
     trustedAnchors: anchorCoverage.trustedAnchors,
     horizonDays: horizon,
     outOfSampleR2: r2os,
-    breakConfidencePolicy: trendPenaltyOnlyBreakConfidence ? 'trend_penalty_only' : 'default',
+    breakConfidencePolicy: divergenceWeightedBreakConfidence
+      ? 'divergence_weighted'
+      : trendPenaltyOnlyBreakConfidence
+        ? 'trend_penalty_only'
+        : 'default',
+    skipSidewaysBreakPenalty: trendPenaltyOnlyBreakConfidence === true,
     regimeState: currentRegime,
+    structuralBreakDivergence: breakResult.divergence,
+    divergencePenaltySchedule,
   });
 
   // --- Trajectory computation (optional day-by-day forecast) ---
@@ -3507,6 +3755,11 @@ export async function computeMarkovDistribution(params: {
       sidewaysSplitActive,
       matureBullCalibrationActive,
       trendPenaltyOnlyBreakConfidenceActive: trendPenaltyOnlyBreakConfidence === true,
+      divergenceWeightedBreakConfidenceActive: divergenceWeightedBreakConfidence === true,
+      regimeSpecificSigmaActive: regimeSpecificSigma === true &&
+        Math.max(...stateWeightsForUp) > (regimeSpecificSigmaThreshold ?? 0.60),
+      breakFallbackCandidateId: breakFallbackCandidate?.id ?? undefined,
+      breakFallbackMode: (breakResult.detected && breakFallbackCandidate) ? breakFallbackCandidate.mode : undefined,
     }
   };
 }

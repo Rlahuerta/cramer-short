@@ -1,5 +1,5 @@
 import { type WalkForwardConfig, type WalkForwardResult, walkForward } from './walk-forward.js';
-import { computeMarkovDistribution, getAssetProfile, type MarkovDistributionResult } from '../markov-distribution.js';
+import { computeMarkovDistribution, getAssetProfile, type MarkovDistributionResult, type BreakFallbackCandidate } from '../markov-distribution.js';
 import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
 
 export interface ReplayMarket {
@@ -188,6 +188,9 @@ export async function walkForwardWithReplay(
         pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
         pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
         trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
+        breakFallbackCandidate: config.breakFallbackCandidate,
+        divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,
+        divergencePenaltySchedule: config.divergencePenaltySchedule,
       });
 
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);
@@ -241,6 +244,9 @@ export async function walkForwardWithReplay(
         probabilitySource: 'calibrated' as ProbabilitySource,
         decisionSource,
         trendPenaltyOnlyBreakConfidenceActive: result.metadata.trendPenaltyOnlyBreakConfidenceActive,
+        divergenceWeightedBreakConfidenceActive: result.metadata.divergenceWeightedBreakConfidenceActive,
+        breakFallbackCandidateId: result.metadata.breakFallbackCandidateId,
+        breakFallbackMode: result.metadata.breakFallbackMode,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });
