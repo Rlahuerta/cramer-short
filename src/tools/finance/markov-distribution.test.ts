@@ -60,6 +60,7 @@ import {
   inferPolymarketSearchPhrase,
   buildPolymarketAnchorQueryVariants,
   normalizeSentiment,
+  buildForecastHint,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 
@@ -3817,6 +3818,121 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.diagnostics).toBeDefined();
     expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
     expect(parsed.data.distribution).toBeNull();
+    expect(parsed.data.forecastHint).toBeNull();
+  });
+
+  it('returns forecastHint for BTC short-horizon abstain without exposing canonical action signal', async () => {
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [],
+    }));
+
+    const { markovDistributionTool: abstainTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await abstainTool.func({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.canonical.actionSignal).toBeNull();
+    expect(parsed.data.forecastHint).toBeDefined();
+    expect(parsed.data.forecastHint.usage).toBe('forecast_only');
+    expect(parsed.data.forecastHint.calibratedDistribution).toBe(false);
+    expect(typeof parsed.data.forecastHint.markovReturn).toBe('number');
+    expect(Number.isFinite(parsed.data.forecastHint.markovReturn)).toBe(true);
+    expect(parsed.data.forecastHint.markovReturn).not.toBe(0);
+  });
+
+  it('still emits forecastHint for BTC short-horizon abstain when a structural break is detected', async () => {
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [],
+    }));
+
+    const { markovDistributionTool: abstainTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 100; i++) {
+      const shock = i > 85 ? 0.04 : Math.sin(i * 0.12) * 0.004;
+      p *= 1 + shock;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await abstainTool.func({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.canonical.diagnostics.structuralBreakDetected).toBe(true);
+    expect(parsed.data.forecastHint).toBeDefined();
+    expect(parsed.data.forecastHint.usage).toBe('forecast_only');
+  });
+
+  it('suppresses forecastHint when BTC short-horizon abstain confidence is too low', () => {
+    const forecastHint = buildForecastHint({
+      canEmitCanonical: false,
+      ticker: 'BTC-USD',
+      horizon: 7,
+      expectedReturn: 0.04,
+      mixingTimeWeight: 0.6,
+      predictionConfidence: 0.08,
+    });
+
+    expect(forecastHint).toBeNull();
+  });
+
+  it('buildForecastHint contract: BTC-only, horizon ≤ 14, and attenuation formula', () => {
+    const base = {
+      canEmitCanonical: false,
+      ticker: 'BTC-USD',
+      horizon: 7,
+      expectedReturn: 0.04,
+      mixingTimeWeight: 0.6,
+      predictionConfidence: 0.20,
+    };
+
+    expect(buildForecastHint({ ...base, ticker: 'ETH-USD' })).toBeNull();
+    expect(buildForecastHint({ ...base, ticker: 'SPY' })).toBeNull();
+
+    expect(buildForecastHint({ ...base, horizon: 15 })).toBeNull();
+    expect(buildForecastHint({ ...base, horizon: 30 })).toBeNull();
+
+    const atBoundary = buildForecastHint({ ...base, horizon: 14 });
+    expect(atBoundary).not.toBeNull();
+
+    expect(buildForecastHint({ ...base, canEmitCanonical: true })).toBeNull();
+
+    const hint = buildForecastHint(base);
+    expect(hint).not.toBeNull();
+    expect(hint!.usage).toBe('forecast_only');
+    expect(hint!.calibratedDistribution).toBe(false);
+    expect(hint!.confidenceScore).toBe(0.20);
+    expect(hint!.markovReturn).toBeCloseTo(0.0096, 10);
+
+    const highConf = buildForecastHint({ ...base, predictionConfidence: 0.30 });
+    expect(highConf).not.toBeNull();
+    expect(highConf!.markovReturn).toBeCloseTo(0.012, 10);
   });
 
   it('returns canonical payload when trusted anchors and positive validation are present', async () => {

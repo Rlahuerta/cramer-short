@@ -116,6 +116,8 @@ const {
   buildForcedMarketDataArgs,
   buildForcedSocialSentimentArgs,
   buildForcedPolymarketForecastArgs,
+  extractMarkovReturnFromToolCalls,
+  shouldRerunPolymarketForecastWithMarkov,
   buildForcedOnchainArgs,
   buildForcedFixedIncomeArgs,
   buildForcedCryptoForecastMarkovArgs,
@@ -326,7 +328,29 @@ describe('Agent', () => {
       expect(buildForcedOnchainArgs('Provide a crypto forecast for the next 7 days')).toBeNull();
     });
 
-    it('extracts current price and sentiment score from prior tool results for forced polymarket args', () => {
+    it('buildForcedCryptoForecastMarkovArgs uses BTC-only next week fallback of 5 trading days', () => {
+      expect(buildForcedCryptoForecastMarkovArgs('Provide a BTC forecast for next week')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 5,
+        trajectory: true,
+        trajectoryDays: 5,
+      });
+
+      expect(buildForcedCryptoForecastMarkovArgs('Give me a BTC prediction over the next week')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 5,
+        trajectory: true,
+        trajectoryDays: 5,
+      });
+
+      // ETH "next week" must not get the BTC-only fallback
+      expect(buildForcedCryptoForecastMarkovArgs('Provide an ETH forecast for next week')).toBeNull();
+
+      // Non-crypto "next week" must not get the fallback
+      expect(buildForcedCryptoForecastMarkovArgs('Provide an AAPL forecast for next week')).toBeNull();
+    });
+
+    it('extracts current price, sentiment score, and Markov return from prior tool results for forced polymarket args', () => {
       const toolCalls = [
         {
           tool: 'get_market_data',
@@ -349,16 +373,122 @@ describe('Agent', () => {
             },
           }),
         },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                actionSignal: {
+                  expectedReturn: 0.04,
+                },
+                diagnostics: {
+                  markovWeight: 0.6,
+                },
+              },
+            },
+          }),
+        },
       ];
 
       expect(extractCurrentPriceFromToolCalls(toolCalls)).toBe(73300);
       expect(extractSentimentScoreFromToolCalls(toolCalls)).toBe(0.42);
+      expect(extractMarkovReturnFromToolCalls(toolCalls)).toBeCloseTo(0.024, 8);
       expect(buildForcedPolymarketForecastArgs('Provide a BTC forecast for the next 7 days', toolCalls)).toEqual({
         ticker: 'BTC',
         horizon_days: 7,
         current_price: 73300,
         sentiment_score: 0.42,
+        markov_return: 0.024,
       });
+    });
+
+    it('ignores Markov return when the structured Markov payload abstains or is missing', () => {
+      expect(extractMarkovReturnFromToolCalls([])).toBeNull();
+
+      expect(extractMarkovReturnFromToolCalls([
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.006,
+                confidenceScore: 0.18,
+                calibratedDistribution: false,
+              },
+              canonical: {
+                actionSignal: null,
+                diagnostics: {
+                  markovWeight: 0.4,
+                },
+              },
+            },
+          }),
+        },
+      ])).toBe(0.006);
+    });
+
+    it('reruns polymarket_forecast only when a Markov signal exists but prior forecast args were not Markov-enriched', () => {
+      const toolCalls = [
+        { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: '{}' },
+        { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: '{}' },
+        { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                actionSignal: { expectedReturn: 0.04 },
+                diagnostics: { markovWeight: 0.6 },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldRerunPolymarketForecastWithMarkov('Provide a BTC forecast for the next 7 days', toolCalls)).toBe(true);
+
+      expect(shouldRerunPolymarketForecastWithMarkov('Provide a BTC forecast for the next 7 days', [
+        toolCalls[0]!,
+        toolCalls[1]!,
+        { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42, markov_return: 0.024 }, result: '{}' },
+        toolCalls[3]!,
+      ])).toBe(false);
+
+      expect(shouldRerunPolymarketForecastWithMarkov('Provide a BTC forecast for the next 7 days', [
+        toolCalls[0]!,
+        toolCalls[1]!,
+        { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.006,
+                confidenceScore: 0.18,
+                calibratedDistribution: false,
+              },
+              canonical: {
+                actionSignal: null,
+                diagnostics: { markovWeight: 0.4 },
+              },
+            },
+          }),
+        },
+      ])).toBe(true);
     });
 
     it('forces crypto forecast tools only when required enrichment is missing', () => {

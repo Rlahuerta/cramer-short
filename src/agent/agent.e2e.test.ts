@@ -9,7 +9,7 @@
  */
 import { describe, expect } from 'bun:test';
 import { e2eIt } from '@/utils/test-guards.js';
-import { runAgentE2E, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
+import { runAgentE2E, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 
 describe('Agent E2E — basic financial query flows', () => {
   e2eIt(
@@ -53,6 +53,22 @@ describe('Agent E2E — basic financial query flows', () => {
 
       // Answer must mention Federal Reserve or interest rates
       expect(result.answer.toLowerCase()).toMatch(/federal reserve|interest rate|fed|fomc/);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'routes BTC 7-day forecast through full six-tool stack',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry('Provide a BTC forecast for the next 7 days');
+
+      const required = ['get_market_data', 'social_sentiment', 'polymarket_forecast', 'get_onchain_crypto', 'get_fixed_income', 'markov_distribution'];
+      for (const tool of required) {
+        expect(result.toolsCalled).toContain(tool);
+      }
+
+      expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
     },
     E2E_TIMEOUT_MS,
   );

@@ -132,6 +132,30 @@ describe('GLD full pipeline — gold safe-haven logic', () => {
   });
 });
 
+describe('runEnsemble × Markov return integration', () => {
+  it('adding markovReturn shifts the forecast while no Markov input preserves the baseline path', () => {
+    const assetClass = inferAssetClass('BTC');
+    const btcMarkets: MarketInput[] = ['regulatory', 'etf_product'].map((cat) => {
+      const impact = lookupImpact(cat, assetClass);
+      return {
+        question: `${cat} signal for BTC`,
+        probability: 0.65,
+        volume24hUsd: 400_000,
+        ageDays: 21,
+        signalTier: 'macro' as const,
+        deltaYes: impact.deltaYes,
+        deltaNo: impact.deltaNo,
+      };
+    });
+
+    const baseline = runEnsemble(70_000, btcMarkets, { sentimentScore: 0.1, horizonDays: 7 });
+    const withMarkov = runEnsemble(70_000, btcMarkets, { sentimentScore: 0.1, markovReturn: 0.03, horizonDays: 7 });
+
+    expect(withMarkov.forecastReturn).not.toBeCloseTo(baseline.forecastReturn, 8);
+    expect(withMarkov.forecastPrice).not.toBeCloseTo(baseline.forecastPrice, 8);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // SPY vs GLD — opposite macro signals
 // ---------------------------------------------------------------------------

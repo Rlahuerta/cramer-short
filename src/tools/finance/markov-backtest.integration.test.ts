@@ -17,6 +17,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
 import { walkForward, type WalkForwardResult } from './backtest/walk-forward.js';
+import { runEnsemble } from '@/utils/ensemble.js';
 import {
   computeFailureDecomposition,
   brierScore,
@@ -877,6 +878,57 @@ describe('Markov distribution walk-forward backtest', () => {
         }
         
         lines.push('═══════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+        expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    integrationIt(
+      'BTC-USD 7d/14d: forecast combiner with/without Markov ablation',
+      async () => {
+        const data = fixture.tickers['BTC-USD'];
+        const horizons = [7, 14] as const;
+        const lines: string[] = ['', '═══ BTC FORECAST COMBINER MARKOV ABLATION ═══'];
+
+        for (const horizon of horizons) {
+          const result = await walkForward({
+            ticker: 'BTC-USD',
+            prices: data.closes,
+            horizon,
+            warmup: WARMUP,
+            stride: STRIDE,
+          });
+
+          expect(result.errors).toHaveLength(0);
+          expect(result.steps.length).toBeGreaterThan(0);
+
+          const deltas = result.steps.map((step) => {
+            const currentPrice = data.closes[step.t]!;
+            const shrunkMarkovReturn = (step.predictedReturn ?? 0) * (step.markovWeight ?? 0);
+            const withMarkov = runEnsemble(currentPrice, [], {
+              horizonDays: horizon,
+              markovReturn: shrunkMarkovReturn,
+            });
+            const withoutMarkov = runEnsemble(currentPrice, [], {
+              horizonDays: horizon,
+            });
+            return {
+              delta: withMarkov.forecastReturn - withoutMarkov.forecastReturn,
+            };
+          });
+
+          const meanAbsDelta = deltas.reduce((sum, entry) => sum + Math.abs(entry.delta), 0) / deltas.length;
+          const nonZeroDeltas = deltas.filter((entry) => Math.abs(entry.delta) > 1e-9).length;
+
+          lines.push(`  BTC-USD ${horizon}d | steps=${deltas.length} | nonZero=${nonZeroDeltas} | mean |Δforecast|=${(meanAbsDelta * 100).toFixed(2)}%`);
+
+          expect(nonZeroDeltas).toBeGreaterThan(0);
+          expect(meanAbsDelta).toBeGreaterThan(0);
+          expect(meanAbsDelta).toBeLessThan(0.05);
+        }
+
+        lines.push('═══════════════════════════════════════════', '');
         console.log(lines.join('\n'));
         expect(true).toBe(true);
       },

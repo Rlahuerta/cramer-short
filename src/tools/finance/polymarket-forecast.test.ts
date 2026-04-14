@@ -119,6 +119,25 @@ describe('polymarketForecastTool', () => {
     expect(parseResult(raw)).toContain('very bullish');
   });
 
+  it('accepts markov_return and shows Markov contribution in output', async () => {
+    const raw = await polymarketForecastTool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000, markov_return: 0.025 },
+      undefined,
+    );
+    const result = parseResult(raw);
+    expect(result).toContain('Markov chain:');
+    expect(result).toContain('+2.50%');
+  });
+
+  it('keeps Markov contribution omitted when markov_return is absent', async () => {
+    const raw = await polymarketForecastTool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    );
+    const result = parseResult(raw);
+    expect(result).toContain('Markov chain:       [signal omitted — not provided]');
+  });
+
   it('grade D when 0 markets returned', async () => {
     // Temporarily override mock to return 0 markets
     mock.module('./polymarket.js', () => ({

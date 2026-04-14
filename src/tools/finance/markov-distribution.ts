@@ -267,6 +267,38 @@ export interface ScenarioProbabilities {
   pUp: number;
 }
 
+export interface ForecastHint {
+  usage: 'forecast_only';
+  markovReturn: number;
+  confidenceScore: number;
+  calibratedDistribution: false;
+}
+
+export function buildForecastHint(params: {
+  canEmitCanonical: boolean;
+  ticker: string;
+  horizon: number;
+  expectedReturn: number;
+  mixingTimeWeight: number;
+  predictionConfidence: number;
+}): ForecastHint | null {
+  const FORECAST_HINT_ABSTAIN_ATTENUATION = 0.5;
+  const FORECAST_HINT_MIN_CONFIDENCE = 0.10;
+
+  if (params.canEmitCanonical) return null;
+  if (params.ticker !== 'BTC-USD' || params.horizon > 14) return null;
+  if (!Number.isFinite(params.expectedReturn) || !Number.isFinite(params.mixingTimeWeight)) return null;
+  if (params.predictionConfidence < FORECAST_HINT_MIN_CONFIDENCE) return null;
+
+  const forecastHintConfidenceScale = Math.min(1, params.predictionConfidence / RECOMMENDED_CONFIDENCE_THRESHOLD);
+  return {
+    usage: 'forecast_only',
+    markovReturn: params.expectedReturn * params.mixingTimeWeight * FORECAST_HINT_ABSTAIN_ATTENUATION * forecastHintConfidenceScale,
+    confidenceScore: params.predictionConfidence,
+    calibratedDistribution: false,
+  };
+}
+
 export type BreakConfidencePolicy = 'default' | 'trend_penalty_only' | 'divergence_weighted';
 
 // ---------------------------------------------------------------------------
@@ -4054,6 +4086,15 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       trajectorySection.push('    The CI range is the honest measure of uncertainty.');
     }
 
+    const forecastHint = buildForecastHint({
+      canEmitCanonical,
+      ticker: result.ticker,
+      horizon: result.horizon,
+      expectedReturn: result.actionSignal.expectedReturn,
+      mixingTimeWeight: m.mixingTimeWeight,
+      predictionConfidence: result.predictionConfidence,
+    });
+
     const report = canEmitCanonical
       ? [
         ...decisionCard,
@@ -4085,6 +4126,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       manualSynthesisForbidden: !canEmitCanonical,
       abstainReasons,
       report,
+      forecastHint,
       canonical: {
         ticker: result.ticker,
         currentPrice: result.currentPrice,
