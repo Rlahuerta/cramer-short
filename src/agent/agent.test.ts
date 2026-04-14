@@ -110,6 +110,16 @@ const {
   shouldForceMarkovDistribution,
   inferTrajectoryRequest,
   buildForcedMarkovArgs,
+  isCryptoForecastQuery,
+  extractCurrentPriceFromToolCalls,
+  extractSentimentScoreFromToolCalls,
+  buildForcedMarketDataArgs,
+  buildForcedSocialSentimentArgs,
+  buildForcedPolymarketForecastArgs,
+  buildForcedOnchainArgs,
+  buildForcedFixedIncomeArgs,
+  buildForcedCryptoForecastMarkovArgs,
+  shouldForceCryptoForecastTools,
 } = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
@@ -275,6 +285,126 @@ describe('Agent', () => {
         ticker: 'BTC-USD',
         horizon: 7,
       });
+    });
+
+    it('detects crypto forecast queries without matching explicit distribution requests', () => {
+      expect(isCryptoForecastQuery('Provide a BTC forecast for the next 7 days')).toBe(true);
+      expect(isCryptoForecastQuery('What will ETH trade at next week?')).toBe(true);
+      expect(isCryptoForecastQuery('What is the market cap of BTC?')).toBe(false);
+      expect(isCryptoForecastQuery('What is the probability distribution for BTC-USD in 7 days?')).toBe(false);
+      expect(isCryptoForecastQuery('Provide an AAPL forecast for the next 7 days')).toBe(false);
+    });
+
+    it('builds forced crypto enrichment args for BTC forecasts', () => {
+      expect(buildForcedMarketDataArgs('Provide a BTC forecast for the next 7 days')).toEqual({
+        query: 'Current crypto price snapshot for BTC',
+      });
+
+      expect(buildForcedSocialSentimentArgs('Provide a BTC forecast for the next 7 days')).toEqual({
+        ticker: 'BTC',
+        include_fear_greed: true,
+        limit: 25,
+      });
+
+      expect(buildForcedOnchainArgs('Provide a BTC forecast for the next 7 days')).toEqual({
+        ticker: 'BTC',
+        metrics: ['market', 'sentiment'],
+      });
+
+      expect(buildForcedFixedIncomeArgs()).toEqual({
+        series: ['treasury_yields', 'yield_curve'],
+      });
+
+      expect(buildForcedCryptoForecastMarkovArgs('Provide a BTC forecast for the next 7 days')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        trajectory: true,
+        trajectoryDays: 7,
+      });
+
+      expect(buildForcedCryptoForecastMarkovArgs('Provide a BTC forecast for the next 30 days')).toBeNull();
+      expect(buildForcedOnchainArgs('Provide a crypto forecast for the next 7 days')).toBeNull();
+    });
+
+    it('extracts current price and sentiment score from prior tool results for forced polymarket args', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: {
+                ticker: 'BTC',
+                price: 73300,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'social_sentiment',
+          args: { ticker: 'BTC', include_fear_greed: true, limit: 25 },
+          result: JSON.stringify({
+            data: {
+              result: '## Overall: 📈 Bullish (score +42/100)',
+            },
+          }),
+        },
+      ];
+
+      expect(extractCurrentPriceFromToolCalls(toolCalls)).toBe(73300);
+      expect(extractSentimentScoreFromToolCalls(toolCalls)).toBe(0.42);
+      expect(buildForcedPolymarketForecastArgs('Provide a BTC forecast for the next 7 days', toolCalls)).toEqual({
+        ticker: 'BTC',
+        horizon_days: 7,
+        current_price: 73300,
+        sentiment_score: 0.42,
+      });
+    });
+
+    it('forces crypto forecast tools only when required enrichment is missing', () => {
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: '{}' },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: '{}' },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: '{}' },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: '{}' },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: '{}' },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: '{}' },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: '{}' },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: '{}' },
+          { tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 }, result: '{}' },
+        ],
+      )).toBe(false);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 30 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: '{}' },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: '{}' },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 30, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: '{}' },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: '{}' },
+        ],
+      )).toBe(false);
+
+      expect(shouldForceCryptoForecastTools(
+        'What is the probability distribution for BTC-USD in 7 days?',
+        [],
+      )).toBe(false);
     });
   });
 });

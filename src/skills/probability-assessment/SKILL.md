@@ -6,7 +6,9 @@ description: >
   a single quantified estimate using weighted log-odds. Use when the user
   wants to know the probability of a future event (earnings beat, rate cut,
   regulatory outcome, recession, FDA approval, etc.) with explicit signal
-  breakdown and uncertainty range.
+  breakdown and uncertainty range. Also suitable for short-horizon asset
+  price forecasts, especially BTC/crypto, when the user needs a full
+  structured probability report.
 ---
 
 # Probability Assessment Workflow
@@ -40,15 +42,15 @@ relevant signal-category search phrases (see default signal maps below).
 
 **Default signal weights by asset type:**
 
-| Asset Type       | Signal 1 (wt)         | Signal 2 (wt)     | Signal 3 (wt)      | Signal 4 (wt)         |
-|------------------|-----------------------|-------------------|--------------------|-----------------------|
-| Tech/Semi        | Earnings (0.35)       | Regulation (0.20) | Fed rates (0.20)   | Recession (0.15)      |
-| Healthcare       | FDA Approval (0.40)   | Earnings (0.25)   | Drug policy (0.20) | Fed rates (0.15)      |
-| Financials       | Fed rates (0.35)      | Earnings (0.30)   | Recession (0.25)   | Regulation (0.10)     |
-| Energy           | OPEC/Oil (0.35)       | Earnings (0.25)   | Geopolitical (0.25)| Recession (0.15)      |
-| Consumer         | Earnings (0.35)       | Recession (0.30)  | Fed rates (0.20)   | Tariffs (0.15)        |
-| Crypto           | SEC/Regulation (0.35) | ETF/Product (0.30)| Fed rates (0.20)   | Recession (0.15)      |
-| Macro (general)  | Fed rates (0.35)      | Recession (0.35)  | Tariffs (0.20)     | Geopolitical (0.10)   |
+| Asset Type       | Signal 1 (wt)         | Signal 2 (wt)      | Signal 3 (wt)          | Signal 4 (wt)       | Signal 5 (wt)     |
+|------------------|-----------------------|--------------------|------------------------|---------------------|-------------------|
+| Tech/Semi        | Earnings (0.35)       | Regulation (0.20)  | Fed rates (0.20)       | Recession (0.15)    |                   |
+| Healthcare       | FDA Approval (0.40)   | Earnings (0.25)    | Drug policy (0.20)     | Fed rates (0.15)    |                   |
+| Financials       | Fed rates (0.35)      | Earnings (0.30)    | Recession (0.25)       | Regulation (0.10)   |                   |
+| Energy           | OPEC/Oil (0.35)       | Earnings (0.25)    | Geopolitical (0.25)    | Recession (0.15)    |                   |
+| Consumer         | Earnings (0.35)       | Recession (0.30)   | Fed rates (0.20)       | Tariffs (0.15)      |                   |
+| Crypto           | SEC/Regulation (0.30) | ETF/Product (0.25) | BTC Price Target (0.20) | Fed rates (0.15)    | Recession (0.10)  |
+| Macro (general)  | Fed rates (0.35)      | Recession (0.35)   | Tariffs (0.20)         | Geopolitical (0.10) |                   |
 
 ---
 
@@ -290,3 +292,42 @@ assessment for a complete short-term outlook.
 - User asks for day-by-day or multi-day outlook
 - Short horizons (1–14 days) where the path matters, not just the endpoint
 - Comparing how uncertainty grows over the forecast window
+
+---
+
+## Step 7 — Crypto-specific enrichment (BTC/crypto forecasts)
+
+When the asset is BTC or another cryptocurrency, enrich the assessment with
+these additional signals before computing log-odds:
+
+| Tool                       | When to use                                         |
+|----------------------------|-----------------------------------------------------|
+| `get_onchain_crypto`       | Always — on-chain metrics, sentiment, developer activity |
+| `get_fixed_income`         | Always — rate/yield-curve context affects crypto    |
+| `get_options_chain`        | Optional — BTC ETF skew when options data is relevant |
+| `geopolitics_search`        | Optional — only when policy/war/trade risk is a live driver |
+| `trump_pressure_index`      | Optional — only when executive-order risk is material    |
+| `markov_distribution`      | Short BTC horizons (≤14 days) — call with `trajectory=true` |
+
+**How to integrate:**
+
+1. **On-chain data** (`get_onchain_crypto`): Use the sentiment score as an
+   additional signal. If sentiment > 70% bullish, weight as 0.60 probability
+   of upside; if < 30% bullish, weight as 0.40. Include developer activity
+   and community metrics in the evidence section.
+
+2. **Rate context** (`get_fixed_income`): Use the 10Y–2Y spread and Fed
+   funds rate as macro context. An inverted yield curve or high real rates
+   are bearish for crypto; an easing cycle is bullish.
+
+3. **Options skew** (`get_options_chain`, optional): If BTC ETF options are
+   available, use put/call ratio and implied volatility to gauge skew.
+   Heavy put skew → bearish signal (weight 0.15).
+
+4. **Markov trajectory** (`markov_distribution` with `trajectory=true`):
+   For short-horizon BTC forecasts (≤14 days), call markov_distribution
+   after gathering Polymarket thresholds and on-chain data. The trajectory
+   output provides day-by-day expected prices and confidence intervals,
+   which you should present alongside the probability assessment summary.
+
+---

@@ -214,6 +214,20 @@ describe('buildSystemPrompt tool guidance', () => {
     expect(prompt).toContain('use markov_distribution FIRST');
     expect(prompt).toContain('only valid source of scenario bucket probabilities');
   });
+
+  it('includes BTC/crypto forecast guidance with onchain and fixed income tools', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('BTC/crypto price forecasts');
+    expect(prompt).toContain('get_onchain_crypto');
+    expect(prompt).toContain('get_fixed_income');
+    expect(prompt).toContain('markov_distribution');
+    expect(prompt).toContain('trajectory=true');
+  });
+
+  it('mentions probability_assessment skill for full structured BTC/crypto forecast reports', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('probability_assessment');
+  });
 });
 
 describe('buildGroupSection', () => {

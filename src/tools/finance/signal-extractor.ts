@@ -107,7 +107,8 @@ export const SIGNAL_KEYWORDS: Record<string, string[]> = {
                  'gold', 'silver', 'copper', 'metal', 'ounce', 'commodity', 'natural gas', 'wheat', 'corn'],
   geopolitical: ['war', 'conflict', 'sanction', 'Middle East', 'Russia', 'China', 'Ukraine'],
   trade_policy: ['tariff', 'trade', 'import', 'export', 'duty'],
-  etf_product:  ['ETF', 'fund', 'approval', 'launch', 'spot'],
+  etf_product:     ['ETF', 'fund', 'approval', 'launch', 'spot'],
+  btc_price_target: ['Bitcoin', 'BTC', 'price target', 'price level', 'reach', 'exceed'],
   supply_chain: ['supply', 'disruption', 'shortage', 'TSMC', 'chip', 'wafer'],
 };
 
@@ -363,10 +364,11 @@ const SIGNAL_MAPS: Record<AssetType, Array<{
     { name: 'Trade / Tariffs',   tpl: 'tariff trade war',     variantTpls: ['tariff', 'trade war'],                weight: 0.15, category: 'trade_policy' },
   ],
   crypto: [
-    { name: 'SEC / Regulation',  tpl: 'crypto regulation',   variantTpls: ['SEC crypto', 'cryptocurrency regulation'], weight: 0.35, category: 'regulatory' },
-    { name: 'ETF / Product',     tpl: '{ticker} ETF',        variantTpls: ['Bitcoin ETF', 'crypto ETF'],               weight: 0.30, category: 'etf_product' },
-    { name: 'Fed Rate Decision', tpl: 'Fed rate cut',        variantTpls: ['Federal Reserve rate', 'FOMC'],            weight: 0.20, category: 'macro_rates' },
-    { name: 'US Recession',      tpl: 'US recession',        variantTpls: ['recession', 'economic recession'],         weight: 0.15, category: 'macro_growth' },
+    { name: 'SEC / Regulation',  tpl: 'crypto regulation',             variantTpls: ['SEC crypto', 'cryptocurrency regulation'],               weight: 0.30, category: 'regulatory' },
+    { name: 'ETF / Product',     tpl: '{ticker} ETF',                  variantTpls: ['Bitcoin ETF', 'crypto ETF'],                               weight: 0.25, category: 'etf_product' },
+    { name: 'BTC Price Target',  tpl: 'Bitcoin price target',          variantTpls: ['Bitcoin reach', 'Bitcoin exceed', 'BTC price level'],      weight: 0.20, category: 'btc_price_target' },
+    { name: 'Fed Rate Decision', tpl: 'Fed rate cut',                 variantTpls: ['Federal Reserve rate', 'FOMC'],                            weight: 0.15, category: 'macro_rates' },
+    { name: 'US Recession',      tpl: 'US recession',                  variantTpls: ['recession', 'economic recession'],                         weight: 0.10, category: 'macro_growth' },
   ],
   commodity: [
     { name: 'Price Level',       tpl: '{ticker} price',        variantTpls: ['{ticker}', 'commodity price'],           weight: 0.45, category: 'commodity' },

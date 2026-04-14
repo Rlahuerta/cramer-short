@@ -139,10 +139,10 @@ describe('extractSignals', () => {
     expect(fda.searchPhrase).not.toContain('PFE');
   });
 
-  it('returns regulatory as first signal for BTC (weight 0.35)', () => {
+  it('returns regulatory as first signal for BTC (weight 0.30)', () => {
     const signals = extractSignals('BTC');
     expect(signals[0].category).toBe('regulatory');
-    expect(signals[0].weight).toBe(0.35);
+    expect(signals[0].weight).toBe(0.30);
   });
 
   it('uses company name (Bitcoin not BTC) in ETF signal search phrase', () => {
@@ -607,5 +607,63 @@ describe('detectAssetType — sector ETF classification', () => {
     const r = detectAssetType('XLI');
     expect(r.type).toBe('industrial');
     expect(r.ticker).toBe('XLI');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BTC crypto signal enrichment — btc_price_target
+// ---------------------------------------------------------------------------
+
+describe('BTC crypto signal enrichment', () => {
+  it('extractSignals for BTC includes btc_price_target category', () => {
+    const signals = extractSignals('BTC');
+    const btcPriceTarget = signals.find((s) => s.category === 'btc_price_target');
+    expect(btcPriceTarget).toBeDefined();
+    expect(btcPriceTarget!.weight).toBe(0.20);
+  });
+
+  it('crypto weights still sum to 1.0 after btc_price_target addition', () => {
+    const sum = extractSignals('BTC').reduce((s, sig) => s + sig.weight, 0);
+    expect(sum).toBeCloseTo(1.0, 5);
+  });
+
+  it('BTC price-target primary search phrase uses Bitcoin wording', () => {
+    const signals = extractSignals('BTC');
+    const btcPriceTarget = signals.find((s) => s.category === 'btc_price_target')!;
+    expect(btcPriceTarget.searchPhrase).toContain('Bitcoin');
+    expect(btcPriceTarget.searchPhrase).not.toContain('BTC');
+  });
+
+  it('BTC price-target query variants are present and placeholder-free', () => {
+    const signals = extractSignals('BTC');
+    const btcPriceTarget = signals.find((s) => s.category === 'btc_price_target')!;
+    expect(btcPriceTarget.queryVariants!.length).toBeGreaterThanOrEqual(2);
+    for (const variant of btcPriceTarget.queryVariants!) {
+      expect(variant.length).toBeGreaterThan(0);
+      expect(variant).not.toContain('{');
+      expect(variant).not.toContain('}');
+    }
+  });
+
+  it('BTC crypto signal order is regulatory > etf_product > btc_price_target > macro_rates > macro_growth', () => {
+    const signals = extractSignals('BTC');
+    const categories = signals.map((s) => s.category);
+    expect(categories).toEqual([
+      'regulatory',
+      'etf_product',
+      'btc_price_target',
+      'macro_rates',
+      'macro_growth',
+    ]);
+  });
+
+  it('BTC crypto weights match the specified values', () => {
+    const signals = extractSignals('BTC');
+    const byCategory = Object.fromEntries(signals.map((s) => [s.category, s.weight]));
+    expect(byCategory['regulatory']).toBe(0.30);
+    expect(byCategory['etf_product']).toBe(0.25);
+    expect(byCategory['btc_price_target']).toBe(0.20);
+    expect(byCategory['macro_rates']).toBe(0.15);
+    expect(byCategory['macro_growth']).toBe(0.10);
   });
 });
