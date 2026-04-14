@@ -48,6 +48,7 @@ export type ProbabilitySource = 'calibrated';
 export type DecisionSource =
   | 'default'
   | 'crypto-short-horizon-raw'
+  | 'crypto-short-horizon-raw-direction-hybrid'
   | 'crypto-short-horizon-disagreement-blend'
   | 'crypto-short-horizon-recency'
   | 'replay-anchor'
@@ -817,6 +818,7 @@ export function generateReport(
     decisionSources: {
       default: 0,
       'crypto-short-horizon-raw': 0,
+      'crypto-short-horizon-raw-direction-hybrid': 0,
       'crypto-short-horizon-disagreement-blend': 0,
       'crypto-short-horizon-recency': 0,
       'replay-anchor': 0,

@@ -191,6 +191,7 @@ export async function walkForwardWithReplay(
         breakFallbackCandidate: config.breakFallbackCandidate,
         divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,
         divergencePenaltySchedule: config.divergencePenaltySchedule,
+        btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
       });
 
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);

@@ -36,6 +36,8 @@ export interface WalkForwardConfig {
   cryptoShortHorizonKappaMultiplier?: number;
   /** Optional flag: use raw P(up) for decision generation (PR3 lever ablation) */
   cryptoShortHorizonRawDecisionAblation?: boolean;
+  /** Optional flag: use raw direction for recommendation while keeping calibrated probabilities/CI (Phase B ablation) */
+  rawDirectionHybrid?: boolean;
   /** Optional flag: use PR3F crypto short-horizon disagreement prior */
   pr3fCryptoShortHorizonDisagreementPrior?: boolean;
   /** Optional override for crypto short-horizon pUp floor clamp (PR3 Stage 2 ablation) */
@@ -68,6 +70,10 @@ export interface WalkForwardConfig {
   regimeSpecificSigma?: boolean;
   /** Phase 7 experimental: minimum max(stateWeight) to activate regime-specific sigma. Defaults to 0.60. */
   regimeSpecificSigmaThreshold?: number;
+  /** Phase D experimental: BTC-only override for regime classification return threshold multiplier */
+  btcReturnThresholdMultiplier?: number;
+  /** Phase C experimental: BTC-only override for structural break divergence threshold */
+  btcBreakDivergenceThreshold?: number;
 }
 
 export interface WalkForwardResult {
@@ -117,6 +123,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         polymarketMarkets: [],  // pure Markov, no anchors
         cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
         cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
+        rawDirectionHybrid: config.rawDirectionHybrid,
         pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
         cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
         cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
@@ -133,6 +140,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         divergencePenaltySchedule: config.divergencePenaltySchedule,
         regimeSpecificSigma: config.regimeSpecificSigma,
         regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
+        btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
+        btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
       });
 
       const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
@@ -151,6 +160,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             polymarketMarkets: [],
             cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
             cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
+            rawDirectionHybrid: config.rawDirectionHybrid,
             pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
             cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
             cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
@@ -167,6 +177,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             divergencePenaltySchedule: config.divergencePenaltySchedule,
             regimeSpecificSigma: config.regimeSpecificSigma,
             regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
+            btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
+            btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
           });
         }
       }
@@ -183,6 +195,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
       let decisionSource: DecisionSource = 'default';
       if (result.metadata.pr3fDisagreementBlendActive) {
         decisionSource = 'crypto-short-horizon-disagreement-blend';
+      } else if (result.metadata.rawDirectionHybridActive) {
+        decisionSource = 'crypto-short-horizon-raw-direction-hybrid';
       } else if (result.metadata.pr3gRecencyWeightingActive) {
         decisionSource = 'crypto-short-horizon-recency';
       } else if (
