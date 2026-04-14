@@ -23,6 +23,7 @@ import { describe, it, expect, mock } from 'bun:test';
 import { integrationIt } from '../../utils/test-guards.js';
 import {
   classifyRegimeState,
+  computeAdaptiveThresholds,
   estimateTransitionMatrix,
   buildDefaultMatrix,
   normalizeRows,
@@ -182,6 +183,29 @@ describe('classifyRegimeState', () => {
   it('boundary: vol parameter is ignored in 3-state model', () => {
     expect(classifyRegimeState(0.015, 0.02)).toBe('bull');
     expect(classifyRegimeState(0.015, 0.05)).toBe('bull'); // same result regardless of vol
+  });
+});
+
+describe('computeAdaptiveThresholds', () => {
+  it('uses half-median absolute return by default', () => {
+    const thresholds = computeAdaptiveThresholds([0.01, -0.02, 0.03, -0.04, 0.05]);
+    expect(thresholds.returnThreshold).toBeCloseTo(0.015, 10);
+    expect(thresholds.volThreshold).toBeCloseTo(0.06, 10);
+  });
+
+  it('applies custom returnThresholdMultiplier without changing volThreshold', () => {
+    const returns = [0.01, -0.02, 0.03, -0.04, 0.05];
+    const baseline = computeAdaptiveThresholds(returns);
+    const widened = computeAdaptiveThresholds(returns, 1.0);
+
+    expect(widened.returnThreshold).toBeCloseTo(0.03, 10);
+    expect(widened.returnThreshold).toBeGreaterThan(baseline.returnThreshold);
+    expect(widened.volThreshold).toBeCloseTo(baseline.volThreshold, 10);
+  });
+
+  it('respects the minimum return threshold floor with tiny multipliers', () => {
+    const thresholds = computeAdaptiveThresholds([0.0004, -0.0004, 0.0002], 0.1);
+    expect(thresholds.returnThreshold).toBe(0.001);
   });
 });
 
@@ -1195,6 +1219,19 @@ describe('Tier 1b — detectStructuralBreak', () => {
     }
   });
 
+  it('respects an explicit divergence threshold override', () => {
+    const states: ReturnType<typeof classifyRegimeState>[] = [
+      ...Array(30).fill('bull'),
+      ...Array(30).fill('bear'),
+    ];
+    const defaultResult = detectStructuralBreak(states);
+    const relaxedResult = detectStructuralBreak(states, defaultResult.divergence + 0.01);
+
+    expect(defaultResult.detected).toBe(true);
+    expect(relaxedResult.detected).toBe(false);
+    expect(relaxedResult.divergence).toBe(defaultResult.divergence);
+  });
+
   it('metadata.structuralBreakDetected reflects detection', async () => {
     // First half: all bull; second half: all bear → should trigger break
     const bullPrices = Array.from({ length: 31 }, (_, i) => 100 * (1 + i * 0.01));  // 30 bull returns
@@ -1776,6 +1813,37 @@ describe('computeActionSignal', () => {
     const sig = computeActionSignal(dist, 100, 0.05, 0.03, 7, 0.04, scenarios, 'equity');
 
     expect(sig.recommendation).toBe('HOLD');
+  });
+
+  it('raw-direction hybrid preserves calibrated output surfaces while enabling BTC short-horizon provenance', async () => {
+    const prices = Array.from({ length: 140 }, (_, i) => 100 + i * 0.15 + Math.sin(i * 0.25) * 2.5);
+    const currentPrice = prices[prices.length - 1]!;
+
+    const baseline = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    const hybrid = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      rawDirectionHybrid: true,
+    });
+
+    expect(hybrid.distribution).toHaveLength(baseline.distribution.length);
+    expect(hybrid.scenarios.expectedPrice).toBeCloseTo(baseline.scenarios.expectedPrice, 8);
+    expect(hybrid.scenarios.expectedReturn).toBeCloseTo(baseline.scenarios.expectedReturn, 8);
+    expect(hybrid.scenarios.pUp).toBeCloseTo(baseline.scenarios.pUp, 8);
+    expect(hybrid.actionSignal.buyProbability).toBeCloseTo(baseline.actionSignal.buyProbability, 10);
+    expect(hybrid.actionSignal.sellProbability).toBeCloseTo(baseline.actionSignal.sellProbability, 10);
+    expect(hybrid.actionSignal.actionLevels).toEqual(baseline.actionSignal.actionLevels);
+    expect(hybrid.metadata.rawDirectionHybridActive).toBe(true);
   });
 
   it('computeMarkovDistribution result includes actionSignal field', async () => {
@@ -3887,6 +3955,36 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.diagnostics.structuralBreakDetected).toBe(true);
     expect(parsed.data.forecastHint).toBeDefined();
     expect(parsed.data.forecastHint.usage).toBe('forecast_only');
+  });
+
+  it('BTC break-threshold override can suppress a detected structural break', async () => {
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 100; i++) {
+      const shock = i > 85 ? 0.04 : Math.sin(i * 0.12) * 0.004;
+      p *= 1 + shock;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const baseline = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    const relaxed = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      btcBreakDivergenceThreshold: 1.0,
+    });
+
+    expect(baseline.metadata.structuralBreakDetected).toBe(true);
+    expect(relaxed.metadata.structuralBreakDetected).toBe(false);
   });
 
   it('suppresses forecastHint when BTC short-horizon abstain confidence is too low', () => {

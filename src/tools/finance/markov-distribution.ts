@@ -543,6 +543,7 @@ export interface MarkovDistributionResult {
     /** Ensemble signal metadata */
     ensemble: { consensus: number; adjustment: number };
     pr3fDisagreementBlendActive: boolean;
+    rawDirectionHybridActive?: boolean;
     pr3gRecencyWeightingActive: boolean;
     sidewaysSplitActive?: boolean;
     matureBullCalibrationActive?: boolean;
@@ -1025,7 +1026,10 @@ export function classifyRegimeState(
  * 2× median for high-volatility detection. This ensures ~30-40% of days
  * are bull, ~30-40% bear, ~20-30% sideways regardless of asset volatility.
  */
-export function computeAdaptiveThresholds(returns: number[]): {
+export function computeAdaptiveThresholds(
+  returns: number[],
+  returnThresholdMultiplier = 0.5,
+): {
   returnThreshold: number;
   volThreshold: number;
 } {
@@ -1033,7 +1037,7 @@ export function computeAdaptiveThresholds(returns: number[]): {
   const absReturns = returns.map(r => Math.abs(r)).sort((a, b) => a - b);
   const medianAbsReturn = absReturns[Math.floor(absReturns.length / 2)];
   return {
-    returnThreshold: Math.max(0.001, 0.5 * medianAbsReturn),
+    returnThreshold: Math.max(0.001, returnThresholdMultiplier * medianAbsReturn),
     volThreshold: Math.max(0.005, 2.0 * medianAbsReturn),
   };
 }
@@ -3115,6 +3119,8 @@ export async function computeMarkovDistribution(params: {
   /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonRawDecisionAblation?: boolean;
   /** @deprecated experimental ablation — backtests only */
+  rawDirectionHybrid?: boolean;
+  /** @deprecated experimental ablation — backtests only */
   pr3fCryptoShortHorizonDisagreementPrior?: boolean;
   /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonPUpFloor?: number;
@@ -3144,6 +3150,10 @@ export async function computeMarkovDistribution(params: {
   regimeSpecificSigma?: boolean;
   /** Phase 7 experimental: minimum max(stateWeight) to activate regime-specific sigma. Defaults to 0.60. */
   regimeSpecificSigmaThreshold?: number;
+  /** Phase D experimental: BTC-only override for regime classification return threshold multiplier (backtest-only). */
+  btcReturnThresholdMultiplier?: number;
+  /** Phase C experimental: BTC-only override for structural break divergence threshold (backtest-only). */
+  btcBreakDivergenceThreshold?: number;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
@@ -3159,6 +3169,7 @@ export async function computeMarkovDistribution(params: {
     sidewaysSplit,
     cryptoShortHorizonKappaMultiplier,
     cryptoShortHorizonRawDecisionAblation,
+    rawDirectionHybrid,
     pr3fCryptoShortHorizonDisagreementPrior,
     cryptoShortHorizonPUpFloor,
     cryptoShortHorizonBearMarginMultiplier,
@@ -3173,6 +3184,8 @@ export async function computeMarkovDistribution(params: {
     divergencePenaltySchedule,
     regimeSpecificSigma,
     regimeSpecificSigmaThreshold,
+    btcReturnThresholdMultiplier,
+    btcBreakDivergenceThreshold,
   } = params;
 
   const normalizedSentiment = sentiment === undefined ? undefined : normalizeSentiment(sentiment);
@@ -3182,6 +3195,8 @@ export async function computeMarkovDistribution(params: {
 
   // --- Asset profile (Idea N): per-asset-class parameter tuning ---
   const assetProfile = getAssetProfile(ticker);
+  const isBtcTicker = ticker === 'BTC' || ticker === 'BTC-USD';
+  const isBtcShortHorizonThresholdDefault = isBtcTicker && assetProfile.type === 'crypto' && horizon <= 14;
 
   // --- Daily returns and volatility ---
   const returns: number[] = [];
@@ -3194,7 +3209,15 @@ export async function computeMarkovDistribution(params: {
   }
 
   // --- Classify regime states with adaptive thresholds ---
-  const { returnThreshold, volThreshold } = computeAdaptiveThresholds(returns);
+  const effectiveReturnThresholdMultiplier = btcReturnThresholdMultiplier !== undefined && isBtcTicker
+    ? btcReturnThresholdMultiplier
+    : isBtcShortHorizonThresholdDefault
+    ? 0.65
+    : 0.5;
+  const { returnThreshold, volThreshold } = computeAdaptiveThresholds(
+    returns,
+    effectiveReturnThresholdMultiplier,
+  );
   const regimeSeq: RegimeState[] = returns.map((r, i) =>
     classifyRegimeState(r, vols[i], returnThreshold, volThreshold),
   );
@@ -3206,8 +3229,12 @@ export async function computeMarkovDistribution(params: {
 
   // --- Tier 1b: Structural break detection ---
   const effectiveTransitionDecay = transitionDecayOverride ?? 0.97;
+  const effectiveBreakDivergenceThreshold = btcBreakDivergenceThreshold !== undefined
+    && isBtcTicker
+    ? btcBreakDivergenceThreshold
+    : 0.05;
   const breakResult = regimeSeq.length >= 20
-    ? detectStructuralBreak(regimeSeq, 0.05, 0.1, effectiveTransitionDecay)
+    ? detectStructuralBreak(regimeSeq, effectiveBreakDivergenceThreshold, 0.1, effectiveTransitionDecay)
     : { detected: false, divergence: 0, firstHalfMatrix: buildDefaultMatrix(), secondHalfMatrix: buildDefaultMatrix() };
 
   // --- Estimate transition matrix (fall back to default when break detected) ---
@@ -3733,8 +3760,16 @@ export async function computeMarkovDistribution(params: {
     !usePr3fBlend
   );
 
+  const useRawDirectionHybrid = Boolean(
+    rawDirectionHybrid &&
+    assetProfile.type === 'crypto' &&
+    horizon <= 14 &&
+    !usePr3fBlend
+  );
+
   let decisionDistribution = distribution;
   let decisionScenarios = scenarios;
+  let rawActionSignal: ActionSignal | null = null;
 
   if (usePr3fBlend) {
     decisionDistribution = distribution.map((d, i) => ({
@@ -3748,6 +3783,26 @@ export async function computeMarkovDistribution(params: {
   } else if (useRawDecision) {
     decisionDistribution = rawDistribution;
     decisionScenarios = computeScenarioProbabilities(rawDistribution, currentPrice);
+  } else if (useRawDirectionHybrid) {
+    rawActionSignal = computeActionSignal(
+      rawDistribution,
+      currentPrice,
+      undefined,
+      undefined,
+      horizon,
+      recentDailyVol,
+      computeScenarioProbabilities(rawDistribution, currentPrice),
+      assetProfile.type,
+    );
+  }
+
+  const actionSignal = computeActionSignal(
+    decisionDistribution, currentPrice, undefined, undefined, horizon,
+    recentDailyVol, decisionScenarios, assetProfile.type,
+  );
+
+  if (useRawDirectionHybrid && rawActionSignal) {
+    actionSignal.recommendation = rawActionSignal.recommendation;
   }
 
   return {
@@ -3756,10 +3811,7 @@ export async function computeMarkovDistribution(params: {
     horizon,
     distribution,
     rawDistribution,
-    actionSignal: computeActionSignal(
-      decisionDistribution, currentPrice, undefined, undefined, horizon,
-      recentDailyVol, decisionScenarios, assetProfile.type
-    ),
+    actionSignal,
     scenarios,
     predictionConfidence,
     trajectory: trajectoryResult,
@@ -3783,6 +3835,7 @@ export async function computeMarkovDistribution(params: {
       hmm: hmmMeta ?? null,
       ensemble,
       pr3fDisagreementBlendActive: usePr3fBlend,
+      rawDirectionHybridActive: useRawDirectionHybrid,
       pr3gRecencyWeightingActive: pr3gDecayRate !== undefined,
       sidewaysSplitActive,
       matureBullCalibrationActive,
