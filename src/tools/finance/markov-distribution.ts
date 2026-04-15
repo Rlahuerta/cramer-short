@@ -2923,7 +2923,7 @@ export function computeActionSignal(
       if (pUp > 0.50) {
         recommendation = 'HOLD';
       }
-      // Upside scenarios exceed downside by >5pp → bullish tilt → downgrade
+      // Mirror: upside scenarios exceed downside by >5pp → bullish tilt → downgrade
       else if (upScenarios > downScenarios + 0.05) {
         recommendation = 'HOLD';
       }
