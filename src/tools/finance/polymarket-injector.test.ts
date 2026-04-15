@@ -48,7 +48,8 @@ describe('injectPolymarketContext', () => {
     expect(result).toContain('🎯');
     expect(result).toContain('Prediction Markets');
     expect(result).toContain('NVDA beats Q1 2026?');
-    expect(result).toContain('74%');
+    expect(result).toContain('74% YES');
+    expect(result).toContain('($100K volume)');
   });
 
   it('original prompt appears after the injected block', async () => {
@@ -124,13 +125,13 @@ describe('injectPolymarketContext', () => {
     expect(result).toContain('Exactly threshold earnings?');
   });
 
-  it('displays probabilities as whole percentages (no decimals)', async () => {
+  it('displays probabilities with at most one decimal place', async () => {
     const deps: PolymarketInjectorDeps = {
       extractSignals: () => [twoSignals[0]],
       fetchMarkets: async () => [market('Precise earnings market?', 0.6789)],
     };
     const result = await injectPolymarketContext('NVDA', 'p', deps);
-    expect(result).toContain('68%'); // Math.round(67.89) = 68
+    expect(result).toContain('67.9% YES');
     expect(result).not.toContain('67.89');
   });
 
