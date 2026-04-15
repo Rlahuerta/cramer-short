@@ -17,6 +17,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
 import { walkForward, type WalkForwardResult } from './backtest/walk-forward.js';
+import { formatFailureAnalysisReport, rankFailureBuckets } from './backtest/btc-failure-analysis.js';
 import { runEnsemble } from '@/utils/ensemble.js';
 import {
   computeFailureDecomposition,
@@ -823,6 +824,40 @@ describe('Markov distribution walk-forward backtest', () => {
         }
 
         lines.push('═════════════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+        expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    integrationIt(
+      'BTC-USD 7d/14d: failure-slice weakness ranking (informational)',
+      async () => {
+        const lines: string[] = ['', '═══ BTC FAILURE-SLICE WEAKNESS RANKING ═══'];
+        const data = fixture.tickers['BTC-USD'];
+        let reportedHorizons = 0;
+
+        for (const horizon of btcHorizons) {
+          let result = btcResults.get(horizon);
+          if (!result) {
+            result = await walkForward({
+              ticker: 'BTC-USD',
+              prices: data.closes,
+              horizon,
+              warmup: WARMUP,
+              stride: STRIDE,
+            });
+            btcResults.set(horizon, result);
+          }
+
+          expect(result.errors).toHaveLength(0);
+          expect(result.steps.length).toBeGreaterThan(0);
+          lines.push(...formatFailureAnalysisReport(rankFailureBuckets(result.steps, horizon)));
+          reportedHorizons++;
+        }
+
+        expect(reportedHorizons).toBe(btcHorizons.length);
+        lines.push('════════════════════════════════════════════', '');
         console.log(lines.join('\n'));
         expect(true).toBe(true);
       },
@@ -2263,4 +2298,5 @@ describe('Markov distribution walk-forward backtest', () => {
       TIMEOUT,
     );
   });
+
 });
