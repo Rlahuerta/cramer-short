@@ -292,6 +292,7 @@ describe('Agent', () => {
     it('detects crypto forecast queries without matching explicit distribution requests', () => {
       expect(isCryptoForecastQuery('Provide a BTC forecast for the next 7 days')).toBe(true);
       expect(isCryptoForecastQuery('What will ETH trade at next week?')).toBe(true);
+      expect(isCryptoForecastQuery('Use the probability_assessment skill for BTC price movement in the next 30 days')).toBe(false);
       expect(isCryptoForecastQuery('What is the market cap of BTC?')).toBe(false);
       expect(isCryptoForecastQuery('What is the probability distribution for BTC-USD in 7 days?')).toBe(false);
       expect(isCryptoForecastQuery('Provide an AAPL forecast for the next 7 days')).toBe(false);

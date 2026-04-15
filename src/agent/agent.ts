@@ -237,6 +237,8 @@ export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCall
 export function isCryptoForecastQuery(query: string): boolean {
   if (isExplicitTerminalDistributionQuery(query)) return false;
 
+  if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;
+
   const detected = detectAssetType(query);
   if (detected.type !== 'crypto' || !detected.ticker) return false;
 
