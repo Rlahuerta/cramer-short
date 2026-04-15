@@ -4344,6 +4344,7 @@ describe('PR3F Lever: short-horizon crypto disagreement prior', () => {
       currentPrice,
       historicalPrices: prices,
       polymarketMarkets,
+      btcReturnThresholdMultiplier: 0.5,
     });
     
     const pr3fResult = await computeMarkovDistribution({
@@ -4353,6 +4354,7 @@ describe('PR3F Lever: short-horizon crypto disagreement prior', () => {
       historicalPrices: prices,
       polymarketMarkets,
       pr3fCryptoShortHorizonDisagreementPrior: true,
+      btcReturnThresholdMultiplier: 0.5,
     });
 
     // The prices array creates a strong trend, causing high raw P(up). 
@@ -4593,6 +4595,7 @@ describe('PR3 Post-Experiment: matureBullCalibration', () => {
       currentPrice,
       historicalPrices: prices,
       polymarketMarkets: [],
+      btcReturnThresholdMultiplier: 0.5,
     });
 
     const experimentResult = await computeMarkovDistribution({
@@ -4602,6 +4605,7 @@ describe('PR3 Post-Experiment: matureBullCalibration', () => {
       historicalPrices: prices,
       polymarketMarkets: [],
       matureBullCalibration: true,
+      btcReturnThresholdMultiplier: 0.5,
     });
 
     expect(experimentResult).toBeDefined();
