@@ -191,6 +191,7 @@ export async function walkForwardWithReplay(
         breakFallbackCandidate: config.breakFallbackCandidate,
         divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,
         divergencePenaltySchedule: config.divergencePenaltySchedule,
+        btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
         btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
       });
 

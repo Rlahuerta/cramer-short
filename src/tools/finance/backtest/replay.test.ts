@@ -204,5 +204,74 @@ describe('Replay Module', () => {
         expect(step.trustedAnchors).toBe(0);
       }
     });
+
+    test('forwards btcReturnThresholdMultiplier through replay path', async () => {
+      const prices = [
+        100,
+        101.2,
+        102.412,
+        103.640944,
+        104.884635328,
+        106.143250951936,
+        107.416970, 
+        108.706, 
+        107.61994,
+        106.5437406,
+        105.478303194,
+        104.42352016206,
+      ];
+      const dates = [
+        '2024-06-01',
+        '2024-06-02',
+        '2024-06-03',
+        '2024-06-04',
+        '2024-06-05',
+        '2024-06-06',
+        '2024-06-07',
+        '2024-06-08',
+        '2024-06-09',
+        '2024-06-10',
+        '2024-06-11',
+        '2024-06-12',
+      ];
+
+      const defaultReplay = await walkForwardWithReplay({
+        ticker: 'BTC-USD',
+        prices,
+        dates,
+        horizon: 1,
+        warmup: 8,
+        stride: 1,
+        replaySnapshots: [{ date: '2024-06-09', markets: [] }],
+      });
+
+      const widenedThresholdReplay = await walkForwardWithReplay({
+        ticker: 'BTC-USD',
+        prices,
+        dates,
+        horizon: 1,
+        warmup: 8,
+        stride: 1,
+        replaySnapshots: [{ date: '2024-06-09', markets: [] }],
+        btcReturnThresholdMultiplier: 1.0,
+      });
+
+      expect(defaultReplay.errors).toHaveLength(0);
+      expect(widenedThresholdReplay.errors).toHaveLength(0);
+      expect(defaultReplay.steps).toHaveLength(widenedThresholdReplay.steps.length);
+      expect(defaultReplay.steps.length).toBeGreaterThan(0);
+
+      const changedSteps = widenedThresholdReplay.steps.filter((step, index) => {
+        const baseline = defaultReplay.steps[index];
+        if (!baseline) return false;
+        return (
+          Math.abs(step.predictedProb - baseline.predictedProb) > 1e-9 ||
+          step.regime !== baseline.regime ||
+          step.recommendation !== baseline.recommendation
+        );
+      }).length;
+
+      expect(changedSteps).toBeGreaterThan(0);
+    });
   });
 });
