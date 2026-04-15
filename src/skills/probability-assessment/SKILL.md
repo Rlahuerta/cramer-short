@@ -29,6 +29,11 @@ Restate the binary or probabilistic question you are answering, e.g.:
 Identify the **asset type** (tech_semiconductor, healthcare, financials, energy,
 consumer, crypto, macro) so you know which signal categories to prioritise.
 
+If the query is about an **asset price** or price movement, call `get_market_data`
+for the asset now to anchor the analysis with the current spot price before you
+compute probabilities. Include that live dollar price explicitly in **Signal
+Evidence** (for example: `Current BTC spot: $84,532`).
+
 ---
 
 ## Step 2 — Check pre-injected Polymarket context
@@ -36,6 +41,9 @@ consumer, crypto, macro) so you know which signal categories to prioritise.
 Look in the system prompt for the **🎯 Prediction Markets** block. If it is
 present, read the crowd-implied probabilities and their signal categories
 directly — do **not** make redundant Polymarket API calls for the same queries.
+When you later write **Signal Evidence**, copy at least one relevant market line
+verbatim from that block, preserving the raw question text, dollar threshold,
+and `% YES` formatting instead of paraphrasing it away.
 
 If the block is absent or incomplete, call `polymarket_search` using the most
 relevant signal-category search phrases (see default signal maps below).
@@ -79,6 +87,8 @@ For each such market, record `{price, probability}` where:
    Polymarket, immediately before the summary table.
 4. If you have fewer than 2 price levels, note "No chart: fewer than 2 price
    thresholds available" in the Polymarket evidence section and continue.
+   Even without a chart, keep the raw threshold market lines with their `% YES`
+   values in the Polymarket evidence block.
 
 > ⚠️ **Do NOT skip `price_distribution_chart` when you have ≥2 price levels.**
 > The chart is the most informative visual in the entire output — it shows the
