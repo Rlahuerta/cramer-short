@@ -19,6 +19,7 @@
 
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
 import { baumWelch, predict as hmmPredict, type HMMParams } from './hmm.js';
 import { api } from './api.js';
@@ -701,7 +702,7 @@ export function getAssetProfile(ticker: string): AssetProfile {
     'CT', 'KC', 'SB', 'CC', 'OJ',    // softs: cotton, coffee, sugar, cocoa, OJ
     'LE', 'HE', 'GF',                 // livestock: live cattle, lean hogs, feeder cattle
     'WTICOUSD', 'BRENTUSD',           // spot oil aliases
-    'GOLD', 'SILVER', 'COPPER',       // common names for precious/base metals
+    'SILVER', 'COPPER',               // common names for precious/base metals
     'XAUUSD', 'XAGUSD',              // forex-style spot metal symbols
     'NATGAS', 'CRUDE', 'OIL',        // informal energy names
   ]);
@@ -859,20 +860,26 @@ export function extractPriceThresholds(
   return Array.from(seen.values()).sort((a, b) => a.price - b.price);
 }
 
+function normalizeSearchIdentityPhrase(ticker: string, phrase: string): string {
+  const identity = resolveTickerSearchIdentity(ticker);
+  const shouldReplaceTicker = identity.searchQuery === identity.canonicalTicker;
+  return normalizeForPolymarket(phrase, shouldReplaceTicker ? identity.canonicalTicker : null);
+}
+
 export function inferPolymarketSearchPhrase(ticker: string): string {
-  const normalized = ticker.trim().toUpperCase().replace(/-USD$/, '');
-  return normalizeForPolymarket(`${normalized} price`, normalized);
+  const identity = resolveTickerSearchIdentity(ticker);
+  return normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} price`);
 }
 
 export function buildPolymarketAnchorQueryVariants(ticker: string): string[] {
-  const normalized = ticker.trim().toUpperCase().replace(/-USD$/, '');
+  const identity = resolveTickerSearchIdentity(ticker);
   const primary = inferPolymarketSearchPhrase(ticker);
   const manual = [
-    normalizeForPolymarket(normalized, normalized),
-    normalizeForPolymarket(`${normalized} above`, normalized),
-    normalizeForPolymarket(`${normalized} below`, normalized),
+    normalizeSearchIdentityPhrase(ticker, identity.searchQuery),
+    normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} above`),
+    normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} below`),
   ];
-  const extracted = extractSignals(normalized)
+  const extracted = extractSignals(identity.searchQuery)
     .flatMap((signal) => [signal.searchPhrase, ...(signal.queryVariants ?? [])]);
 
   return Array.from(new Set([primary, ...manual, ...extracted].filter(Boolean)));

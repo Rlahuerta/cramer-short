@@ -3179,6 +3179,10 @@ describe('getAssetProfile', () => {
     expect(getAssetProfile('GLD').type).toBe('commodity');
   });
 
+  it('classifies SLV as commodity', () => {
+    expect(getAssetProfile('SLV').type).toBe('commodity');
+  });
+
   it('classifies CL as commodity', () => {
     expect(getAssetProfile('CL').type).toBe('commodity');
   });
@@ -3195,8 +3199,8 @@ describe('getAssetProfile', () => {
     expect(getAssetProfile('USO').type).toBe('commodity');
   });
 
-  it('classifies GOLD as commodity', () => {
-    expect(getAssetProfile('GOLD').type).toBe('commodity');
+  it('classifies GOLD as equity', () => {
+    expect(getAssetProfile('GOLD').type).toBe('equity');
   });
 
   it('classifies XAUUSD as commodity', () => {
@@ -3829,12 +3833,31 @@ describe('markov_distribution anchor query strategy', () => {
     expect(inferPolymarketSearchPhrase('BTC-USD')).toBe('Bitcoin price');
   });
 
+  it('normalizes GLD search phrase to gold price', () => {
+    expect(inferPolymarketSearchPhrase('GLD')).toBe('gold price');
+  });
+
+  it('normalizes SLV search phrase to silver price', () => {
+    expect(inferPolymarketSearchPhrase('SLV')).toBe('silver price');
+  });
+
+  it('keeps explicit GOLD ticker search phrase Barrick-specific', () => {
+    expect(inferPolymarketSearchPhrase('GOLD')).toBe('Barrick Gold price');
+  });
+
   it('builds richer Bitcoin anchor query variants', () => {
     const variants = buildPolymarketAnchorQueryVariants('BTC-USD');
     expect(variants).toContain('Bitcoin price');
     expect(variants).toContain('Bitcoin');
     expect(variants).toContain('Bitcoin above');
     expect(variants).toContain('Bitcoin below');
+  });
+
+  it('builds Barrick-specific anchor query variants for GOLD', () => {
+    const variants = buildPolymarketAnchorQueryVariants('GOLD');
+    expect(variants).toContain('Barrick Gold price');
+    expect(variants).toContain('Barrick Gold');
+    expect(variants).not.toContain('gold price');
   });
 });
 
