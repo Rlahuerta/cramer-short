@@ -14,6 +14,7 @@ import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import { fetchPolymarketMarkets } from './polymarket.js';
 import { extractSignals } from './signal-extractor.js';
+import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { lookupImpact, inferAssetClass } from './impact-map.js';
 import { runEnsemble, computePolymarketSignal, computeEnsemble, computeConditionalReturn, adjustYesBias, type MarketInput } from '../../utils/ensemble.js';
 import { buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
@@ -254,10 +255,11 @@ export const polymarketForecastTool = new DynamicStructuredTool({
       const horizonDays = input.horizon_days ?? 7;
       const currentPrice = input.current_price;
       const basePrice = currentPrice ?? 100;
-      const assetClass = inferAssetClass(ticker);
+      const searchIdentity = resolveTickerSearchIdentity(ticker);
+      const assetClass = inferAssetClass(searchIdentity.canonicalTicker);
 
       // Step 1: Extract signals for this ticker (up to 5)
-      const signals = extractSignals(ticker).slice(0, 5);
+      const signals = extractSignals(searchIdentity.canonicalTicker).slice(0, 5);
 
       // Step 2: Fetch Polymarket markets for each signal (up to 3 per signal)
       const allResults = await Promise.allSettled(

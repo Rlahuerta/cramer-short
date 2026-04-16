@@ -2,6 +2,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
+import { resolveTickerSearchIdentity } from './asset-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Description (injected into system prompt)
@@ -243,7 +244,7 @@ function extractCanonicalNames(ticker: string): string[] {
     XRP: ['ripple', 'xrp'],
     ADA: ['cardano', 'ada'],
   };
-  return known[normalized] ?? [normalized.toLowerCase()];
+  return known[normalized] ?? resolveTickerSearchIdentity(normalized).canonicalNames;
 }
 
 export function scoreAnchorMarketRelevance(
@@ -254,13 +255,16 @@ export function scoreAnchorMarketRelevance(
 ): number {
   const lower = question.toLowerCase();
   let score = 0;
+  const identity = resolveTickerSearchIdentity(ticker);
 
   if (/\$[\d,]+(?:\.\d+)?(?:[KkMm])?/.test(question)) score += 3;
   if (/\b(above|below|less than|more than|greater than|under|over)\b/.test(lower)) score += 2;
   if (/\b(on|at)\b/.test(lower)) score += 1;
 
   const names = extractCanonicalNames(ticker);
-  if (names.some((name) => lower.includes(name))) score += 2;
+  const hasCanonicalMatch = names.some((name) => lower.includes(name));
+  if (identity.strictQuestionMatch && !hasCanonicalMatch) return 0;
+  if (hasCanonicalMatch) score += 2;
 
   if (/\b(reach|hit|dip to|between|up or down|first)\b/.test(lower)) score -= 3;
   if (/\b(election|sports|game|match|player|team|president|candidate)\b/.test(lower)) score -= 5;

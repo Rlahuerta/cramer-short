@@ -194,6 +194,24 @@ describe('scoreAnchorMarketRelevance', () => {
     );
     expect(threshold).toBeGreaterThan(barrier);
   });
+
+  it('requires Barrick-specific wording for explicit GOLD ticker matches', () => {
+    const barrick = scoreAnchorMarketRelevance(
+      'Will Barrick Gold close above $25 by June?',
+      'GOLD',
+      30,
+      new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    );
+    const genericGold = scoreAnchorMarketRelevance(
+      'Will gold exceed $3500 by June?',
+      'GOLD',
+      30,
+      new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    );
+
+    expect(barrick).toBeGreaterThan(0);
+    expect(genericGold).toBe(0);
+  });
 });
 
 describe('fetchPolymarketAnchorMarkets', () => {
