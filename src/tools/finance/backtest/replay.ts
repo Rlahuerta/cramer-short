@@ -187,6 +187,7 @@ export async function walkForwardWithReplay(
         cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
         pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
         pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
+        startStateMixture: config.startStateMixture,
         trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
         breakFallbackCandidate: config.breakFallbackCandidate,
         divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,

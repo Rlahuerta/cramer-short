@@ -273,5 +273,92 @@ describe('Replay Module', () => {
 
       expect(changedSteps).toBeGreaterThan(0);
     });
+
+    test('forwards startStateMixture through replay path', async () => {
+      const prices = [
+        100,
+        101.2,
+        102.412,
+        103.640944,
+        104.884635328,
+        106.143250951936,
+        107.416970,
+        108.706,
+        107.61994,
+        106.5437406,
+        105.478303194,
+        104.42352016206,
+      ];
+      const dates = [
+        '2024-06-01',
+        '2024-06-02',
+        '2024-06-03',
+        '2024-06-04',
+        '2024-06-05',
+        '2024-06-06',
+        '2024-06-07',
+        '2024-06-08',
+        '2024-06-09',
+        '2024-06-10',
+        '2024-06-11',
+        '2024-06-12',
+      ];
+
+      const promotedDefaultReplay = await walkForwardWithReplay({
+        ticker: 'BTC-USD',
+        prices,
+        dates,
+        horizon: 1,
+        warmup: 8,
+        stride: 1,
+        replaySnapshots: [{ date: '2024-06-09', markets: [] }],
+      });
+
+      const legacyControlReplay = await walkForwardWithReplay({
+        ticker: 'BTC-USD',
+        prices,
+        dates,
+        horizon: 1,
+        warmup: 8,
+        stride: 1,
+        replaySnapshots: [{ date: '2024-06-09', markets: [] }],
+        startStateMixture: false,
+      });
+
+      const explicitPromotedReplay = await walkForwardWithReplay({
+        ticker: 'BTC-USD',
+        prices,
+        dates,
+        horizon: 1,
+        warmup: 8,
+        stride: 1,
+        replaySnapshots: [{ date: '2024-06-09', markets: [] }],
+        startStateMixture: true,
+      });
+
+      expect(promotedDefaultReplay.errors).toHaveLength(0);
+      expect(legacyControlReplay.errors).toHaveLength(0);
+      expect(explicitPromotedReplay.errors).toHaveLength(0);
+      expect(promotedDefaultReplay.steps).toHaveLength(legacyControlReplay.steps.length);
+      expect(promotedDefaultReplay.steps).toHaveLength(explicitPromotedReplay.steps.length);
+      expect(promotedDefaultReplay.steps.length).toBeGreaterThan(0);
+
+      const changedSteps = promotedDefaultReplay.steps.filter((step, index) => {
+        const legacy = legacyControlReplay.steps[index];
+        const explicit = explicitPromotedReplay.steps[index];
+        if (!legacy || !explicit) return false;
+        return (
+          Math.abs(step.predictedProb - legacy.predictedProb) > 1e-9 ||
+          step.regime !== legacy.regime ||
+          step.recommendation !== legacy.recommendation
+        ) && (
+          Math.abs(step.predictedProb - explicit.predictedProb) <= 1e-9 &&
+          step.regime === explicit.regime &&
+          step.recommendation === explicit.recommendation
+        );
+      }).length;
+
+      expect(changedSteps).toBeGreaterThan(0);
+    });
   });
 });
