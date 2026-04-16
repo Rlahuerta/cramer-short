@@ -7,6 +7,8 @@
  * fallback query variants, and a weight for the log-odds probability combiner.
  */
 
+import { resolveAssetIntent } from './asset-resolver.js';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -86,10 +88,11 @@ export const TICKER_TO_COMPANY_NAME: Record<string, string> = {
   SPY: 'S&P 500', VOO: 'S&P 500', IVV: 'S&P 500', VTI: 'US stock market', DIA: 'Dow Jones',
   // Crypto
   BTC: 'Bitcoin', ETH: 'Ethereum', SOL: 'Solana',
-  // Commodities — use lowercase common name for Polymarket text matching
-  GOLD: 'gold', SILVER: 'silver', COPPER: 'copper', PLATINUM: 'platinum',
+  // Commodities — proxy tickers map to commodity names; explicit GOLD ticker is Barrick Gold equity
+  GOLD: 'Barrick Gold', SILVER: 'silver', COPPER: 'copper', PLATINUM: 'platinum',
   PALLADIUM: 'palladium', OIL: 'oil', CRUDE: 'oil', NATGAS: 'natural gas',
   WHEAT: 'wheat', CORN: 'corn', SOYBEAN: 'soybeans', COFFEE: 'coffee', SUGAR: 'sugar',
+  GLD: 'gold', IAU: 'gold', SLV: 'silver', XAUUSD: 'gold', XAGUSD: 'silver',
 };
 
 // ---------------------------------------------------------------------------
@@ -157,6 +160,10 @@ const SECTOR_MAP: Record<string, AssetType> = {
   // Materials / Metals ETFs
   SLX: 'materials', XME: 'materials', XLB: 'materials', GDX: 'materials', GDXJ: 'materials',
   PICK: 'materials', REMX: 'materials',
+  // Commodity proxy ETFs route through commodity signals (not equity)
+  GLD: 'commodity', IAU: 'commodity', SLV: 'commodity',
+  // Barrick Gold routes through materials (equity, not commodity)
+  GOLD: 'materials',
   // Industrials ETFs
   XLI: 'industrial', VIS: 'industrial', PAVE: 'industrial', GWX: 'industrial',
   // Financials ETFs (KRE, KBE, XLF, etc.)
@@ -195,8 +202,10 @@ const MACRO_KEYWORDS = [
  */
 const COMMODITY_KEYWORD_MAP: Array<[keyword: string, ticker: string]> = [
   ['natural gas', 'NATGAS'],
-  ['gold',        'GOLD'],
-  ['silver',      'SILVER'],
+  ['xauusd',       'GOLD'],
+  ['xagusd',       'SILVER'],
+  ['gold',         'GOLD'],
+  ['silver',       'SILVER'],
   ['copper',      'COPPER'],
   ['platinum',    'PLATINUM'],
   ['palladium',   'PALLADIUM'],
@@ -266,8 +275,15 @@ export function scoreMarketRelevance(question: string, category: string): number
 // Detection
 // ---------------------------------------------------------------------------
 
+const BARRICK_MINER_RE = /\bbarrick\b|\bgold\s+(?:stock|equity|shares|company|earnings|revenue|miner|mining)\b|\$gold\b/i;
+
 export function detectAssetType(query: string): { type: AssetType; ticker: string | null } {
   const lower = query.toLowerCase();
+
+  // 0. Barrick Gold / gold-miner disambiguation (must precede commodity gold match)
+  if (BARRICK_MINER_RE.test(query)) {
+    return { type: 'materials', ticker: 'GOLD' };
+  }
 
   // 1. Crypto keywords (check before ticker scan to avoid false positives)
   if (CRYPTO_KEYWORDS.some((kw) => lower.includes(kw))) {
@@ -281,6 +297,8 @@ export function detectAssetType(query: string): { type: AssetType; ticker: strin
   const dollarMatch = query.match(/\$([A-Z]{1,5})\b/);
   if (dollarMatch) {
     const ticker = dollarMatch[1];
+    // $GOLD = Barrick Gold equity, not commodity gold
+    if (ticker === 'GOLD') return { type: 'materials', ticker: 'GOLD' };
     const type: AssetType = SECTOR_MAP[ticker] ?? 'tech_general';
     return { type, ticker };
   }
@@ -423,20 +441,24 @@ const SIGNAL_MAPS: Record<AssetType, Array<{
 
 /**
  * Returns prioritised signal categories for the asset(s) found in `query`.
- * Template placeholders are substituted with the detected ticker, then each
- * phrase is normalised for Polymarket's keyword search API (company name,
- * no year/quarter tokens, max 4 words).
+ * Uses the asset-intent resolver to disambiguate commodity vs equity intent
+ * (e.g., "gold" → GLD commodity proxy, "Barrick GOLD" → materials equity).
+ * Template placeholders are substituted with the resolved ticker/display name,
+ * then each phrase is normalised for Polymarket's keyword search API.
  */
 export function extractSignals(query: string): SignalCategory[] {
   const { type, ticker } = detectAssetType(query);
+  const resolved = resolveAssetIntent(query, ticker);
   const templates = SIGNAL_MAPS[type];
-  const tickerStr = ticker ?? 'asset';
+  // For commodity proxies, use the proxy label (GLD/SLV) as the ticker in templates
+  // so Polymarket search phrases resolve correctly. For equity, use original ticker.
+  const effectiveTicker = resolved.proxyLabel ?? resolved.resolvedTicker ?? ticker ?? 'asset';
 
   return templates.map((t) => {
-    const rawPhrase = substituteTemplates(t.tpl, tickerStr);
-    const searchPhrase = normalizeForPolymarket(rawPhrase, ticker);
+    const rawPhrase = substituteTemplates(t.tpl, effectiveTicker);
+    const searchPhrase = normalizeForPolymarket(rawPhrase, effectiveTicker);
     const queryVariants = t.variantTpls.map((vTpl) =>
-      normalizeForPolymarket(substituteTemplates(vTpl, tickerStr), ticker),
+      normalizeForPolymarket(substituteTemplates(vTpl, effectiveTicker), effectiveTicker),
     );
     return { name: t.name, searchPhrase, queryVariants, weight: t.weight, category: t.category };
   });

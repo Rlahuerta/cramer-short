@@ -362,10 +362,16 @@ describe('inferAssetClass — sector ETFs', () => {
 describe('inferAssetClass — gold ETFs', () => {
   it('GLD → gold', () => expect(inferAssetClass('GLD')).toBe('gold'));
   it('IAU → gold', () => expect(inferAssetClass('IAU')).toBe('gold'));
+  it('GOLD → materials (Barrick equity, not commodity gold)', () => expect(inferAssetClass('GOLD')).toBe('materials'));
   // Critical: GLD must NOT fall through to equity (prevents using generic equity impacts for gold)
   it('GLD is NOT equity (bug guard: gold ETF must get gold-specific safe-haven impacts)', () => {
     expect(inferAssetClass('GLD')).not.toBe('equity');
   });
+});
+
+describe('inferAssetClass — silver ETFs', () => {
+  it('SLV → silver', () => expect(inferAssetClass('SLV')).toBe('silver'));
+  it('SIVR → silver', () => expect(inferAssetClass('SIVR')).toBe('silver'));
 });
 
 describe('inferAssetClass — crypto', () => {

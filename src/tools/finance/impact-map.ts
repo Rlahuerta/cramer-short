@@ -16,7 +16,7 @@
  * the default entry, producing identical forecasts for all assets.
  *
  * assetClass is a broad tag produced by inferAssetClass().
- * Asset classes: 'semiconductor', 'tech', 'energy', 'gold', 'bond', 'defense',
+ * Asset classes: 'semiconductor', 'tech', 'energy', 'gold', 'silver', 'bond', 'defense',
  *   'airline', 'consumer', 'biotech', 'usd', 'crypto', 'materials', 'industrial',
  *   'financial', 'small_cap', 'equity' (catch-all)
  */
@@ -42,7 +42,7 @@ export interface ImpactEntry {
  * (e.g. 'macro_rates', 'macro_growth', 'trade_policy', 'geopolitical') plus any
  * specific event names used elsewhere (e.g. 'fed_rate_cut', 'recession').
  *
- * Asset class columns: 'semiconductor', 'tech', 'energy', 'gold', 'bond', 'defense',
+ * Asset class columns: 'semiconductor', 'tech', 'energy', 'gold', 'silver', 'bond', 'defense',
  *   'airline', 'consumer', 'biotech', 'usd', 'crypto', 'materials', 'industrial',
  *   'financial', 'small_cap', 'equity', 'default'
  */
@@ -65,6 +65,7 @@ export const IMPACT_MAP: Record<string, Record<string, ImpactEntry>> = {
     usd:          { deltaYes: -0.02, deltaNo:  0.01, tier: 'macro' },
     crypto:       { deltaYes:  0.03, deltaNo: -0.01, tier: 'macro' },
     gold:         { deltaYes:  0.02, deltaNo: -0.01, tier: 'macro' },
+    silver:       { deltaYes:  0.02, deltaNo: -0.01, tier: 'macro' },  // safe-haven like gold
     default:      { deltaYes:  0.02, deltaNo: -0.01, tier: 'macro' },
   },
 
@@ -80,6 +81,7 @@ export const IMPACT_MAP: Record<string, Record<string, ImpactEntry>> = {
     energy:       { deltaYes: -0.08, deltaNo:  0.01, tier: 'macro' },
     consumer:     { deltaYes: -0.10, deltaNo:  0.02, tier: 'macro' },
     gold:         { deltaYes:  0.06, deltaNo: -0.01, tier: 'macro' },  // safe haven
+    silver:       { deltaYes:  0.04, deltaNo: -0.01, tier: 'macro' },  // dual safe-haven/industrial
     bond:         { deltaYes:  0.04, deltaNo: -0.02, tier: 'macro' },  // flight to quality
     defense:      { deltaYes: -0.04, deltaNo:  0.01, tier: 'macro' },  // govt contracts stable
     biotech:      { deltaYes: -0.06, deltaNo:  0.01, tier: 'macro' },
@@ -109,6 +111,7 @@ export const IMPACT_MAP: Record<string, Record<string, ImpactEntry>> = {
     defense:      { deltaYes:  0.05, deltaNo: -0.01, tier: 'geopolitical' },
     energy:       { deltaYes:  0.06, deltaNo: -0.02, tier: 'geopolitical' },
     gold:         { deltaYes:  0.05, deltaNo: -0.01, tier: 'geopolitical' },
+    silver:       { deltaYes:  0.04, deltaNo: -0.01, tier: 'geopolitical' },
     materials:    { deltaYes:  0.03, deltaNo: -0.01, tier: 'geopolitical' },  // supply disruption → higher prices
     airline:      { deltaYes: -0.06, deltaNo:  0.02, tier: 'geopolitical' },
     equity:       { deltaYes: -0.02, deltaNo:  0.01, tier: 'geopolitical' },
@@ -139,6 +142,7 @@ export const IMPACT_MAP: Record<string, Record<string, ImpactEntry>> = {
     energy:       { deltaYes:  0.05, deltaNo: -0.02, tier: 'macro' },
     materials:    { deltaYes:  0.05, deltaNo: -0.02, tier: 'macro' },
     gold:         { deltaYes:  0.04, deltaNo: -0.02, tier: 'macro' },
+    silver:       { deltaYes:  0.04, deltaNo: -0.02, tier: 'macro' },
     airline:      { deltaYes: -0.06, deltaNo:  0.03, tier: 'macro' },
     consumer:     { deltaYes: -0.02, deltaNo:  0.01, tier: 'macro' },
     industrial:   { deltaYes: -0.02, deltaNo:  0.01, tier: 'macro' },
@@ -251,6 +255,7 @@ export const IMPACT_MAP: Record<string, Record<string, ImpactEntry>> = {
     financial:  { deltaYes: -0.16, deltaNo:  0.02, tier: 'macro' },
     small_cap:  { deltaYes: -0.16, deltaNo:  0.03, tier: 'macro' },
     gold:       { deltaYes:  0.06, deltaNo: -0.01, tier: 'macro' },
+    silver:     { deltaYes:  0.04, deltaNo: -0.01, tier: 'macro' },
     bond:       { deltaYes:  0.04, deltaNo: -0.02, tier: 'macro' },
     defense:    { deltaYes: -0.04, deltaNo:  0.01, tier: 'macro' },
     default:    { deltaYes: -0.08, deltaNo:  0.01, tier: 'macro' },
@@ -259,6 +264,7 @@ export const IMPACT_MAP: Record<string, Record<string, ImpactEntry>> = {
     defense:    { deltaYes:  0.04, deltaNo: -0.01, tier: 'geopolitical' },
     energy:     { deltaYes:  0.06, deltaNo: -0.02, tier: 'geopolitical' },
     gold:       { deltaYes:  0.05, deltaNo: -0.01, tier: 'geopolitical' },
+    silver:     { deltaYes:  0.04, deltaNo: -0.01, tier: 'geopolitical' },
     materials:  { deltaYes:  0.03, deltaNo: -0.01, tier: 'geopolitical' },
     airline:    { deltaYes: -0.05, deltaNo:  0.02, tier: 'geopolitical' },
     financial:  { deltaYes: -0.03, deltaNo:  0.01, tier: 'geopolitical' },
@@ -338,6 +344,7 @@ const ENERGY_TICKERS = new Set([
   'USO', 'UCO',  // oil ETFs
 ]);
 const GOLD_TICKERS = new Set(['GLD', 'IAU', 'XAUUSD', 'GOLD']);
+const SILVER_TICKERS = new Set(['SLV', 'SIVR', 'XAGUSD']);
 const BOND_TICKERS = new Set(['TLT', 'IEF', 'SHY', 'AGG', 'BND', 'LQD', 'HYG', 'JNK', 'BNDX']);
 const DEFENSE_TICKERS = new Set(['LMT', 'RTX', 'NOC', 'GD', 'ITA', 'BA', 'HII', 'L3H', 'LHX', 'LDOS', 'HEI', 'KTOS']);
 const AIRLINE_TICKERS = new Set(['UAL', 'DAL', 'AAL', 'LUV', 'JETS', 'ALK', 'SAVE', 'RYAAY', 'HA']);
@@ -363,6 +370,8 @@ const MATERIALS_TICKERS = new Set([
   // Gold miners (different from physical gold)
   'GDX',   // VanEck Gold Miners
   'GDXJ',  // VanEck Junior Gold Miners
+  // Barrick Gold — equity, not commodity gold
+  'GOLD',
   // Individual materials/steel stocks
   'NUE', 'STLD', 'CLF', 'X',   // US steel producers
   'FCX', 'AA', 'VALE', 'RIO',   // metals/mining
@@ -402,7 +411,7 @@ const SMALL_CAP_TICKERS = new Set([
 
 /**
  * Infer a broad asset-class tag from a ticker or keyword.
- * Returns one of: 'semiconductor', 'tech', 'energy', 'gold', 'bond', 'defense',
+ * Returns one of: 'semiconductor', 'tech', 'energy', 'gold', 'silver', 'bond', 'defense',
  *   'airline', 'consumer', 'biotech', 'usd', 'crypto', 'materials', 'industrial',
  *   'financial', 'small_cap', 'equity'
  *
@@ -418,6 +427,7 @@ export function inferAssetClass(ticker: string): string {
   if (SMALL_CAP_TICKERS.has(t)) return 'small_cap';
   if (ENERGY_TICKERS.has(t)) return 'energy';
   if (GOLD_TICKERS.has(t)) return 'gold';
+  if (SILVER_TICKERS.has(t)) return 'silver';
   if (BOND_TICKERS.has(t)) return 'bond';
   if (DEFENSE_TICKERS.has(t)) return 'defense';
   if (AIRLINE_TICKERS.has(t)) return 'airline';

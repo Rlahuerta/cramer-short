@@ -316,6 +316,10 @@ describe('normalizeForPolymarket', () => {
   it('BTC → Bitcoin in phrase', () => {
     expect(normalizeForPolymarket('BTC ETF', 'BTC')).toBe('Bitcoin ETF');
   });
+
+  it('GOLD → Barrick Gold in phrase', () => {
+    expect(normalizeForPolymarket('GOLD price', 'GOLD')).toBe('Barrick Gold price');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -430,6 +434,12 @@ describe('detectAssetType — commodity detection', () => {
 
   it('does NOT misclassify "gold" as macro', () => {
     expect(detectAssetType('gold price prediction').type).not.toBe('macro');
+  });
+
+  it('detects XAGUSD as silver commodity alias', () => {
+    const result = detectAssetType('XAGUSD forecast next month');
+    expect(result.type).toBe('commodity');
+    expect(result.ticker).toBe('SILVER');
   });
 });
 
