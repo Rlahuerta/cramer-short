@@ -18,6 +18,7 @@ import { injectMemoryContext } from './memory-injection.js';
 import { extractTickers as extractTickersFn } from '../memory/ticker-extractor.js';
 import { injectPolymarketContext } from '../tools/finance/polymarket-injector.js';
 import { detectAssetType, extractSignals as extractSignalsFn } from '../tools/finance/signal-extractor.js';
+import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { fetchPolymarketMarkets } from '../tools/finance/polymarket.js';
 import { resolveProvider } from '../providers.js';
 import type { ToolCallRecord } from './scratchpad.js';
@@ -176,6 +177,15 @@ export function isExplicitTerminalDistributionQuery(query: string): boolean {
 }
 
 export function inferDistributionTicker(query: string): string | null {
+  const resolved = resolveAssetIntent(query, extractTickersFn(query)[0] ?? null);
+  if (resolved.resolvedTicker) {
+    if (resolved.assetClass === 'ticker' && /^[A-Z]{2,5}$/.test(resolved.resolvedTicker)) {
+      const detected = detectAssetType(query);
+      if (detected.type === 'crypto') return `${resolved.resolvedTicker}-USD`;
+    }
+    return resolved.resolvedTicker;
+  }
+
   const extracted = extractTickersFn(query);
   if (extracted.length > 0) {
     const first = extracted[0]!;

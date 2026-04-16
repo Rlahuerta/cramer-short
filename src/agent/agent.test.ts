@@ -242,6 +242,19 @@ describe('Agent', () => {
       expect(inferDistributionHorizon('What is the probability distribution for BTC-USD in 7 trading days?')).toBe(7);
     });
 
+    it('self-corrects commodity gold and silver distribution queries to proxy tickers', () => {
+      expect(inferDistributionTicker('What is the probability distribution for gold price in 30 trading days?')).toBe('GLD');
+      expect(inferDistributionTicker('What is the probability distribution for silver price in 30 trading days?')).toBe('SLV');
+      expect(buildForcedMarkovArgs('What is the probability distribution for silver price in 30 trading days?')).toEqual({
+        ticker: 'SLV',
+        horizon: 30,
+      });
+    });
+
+    it('preserves explicit Barrick Gold equity queries as GOLD ticker', () => {
+      expect(inferDistributionTicker('What is the probability distribution for Barrick Gold stock in 30 trading days?')).toBe('GOLD');
+    });
+
     it('flags explicit terminal distribution queries for forced markov routing', () => {
       expect(shouldForceMarkovDistribution(
         'What is the probability distribution for BTC-USD in 7 trading days? Use the Markov distribution methodology with terminal threshold markets only.',

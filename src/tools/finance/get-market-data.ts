@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
 import { getCurrentDate } from '../../agent/prompts.js';
+import { resolveAssetIntent } from './asset-resolver.js';
 
 /**
  * Rich description for the get_market_data tool.
@@ -75,7 +76,12 @@ const COMPANY_TICKERS: Record<string, string> = {
 };
 
 /** Extract the first resolvable ticker from a natural language query. */
-function extractFirstTicker(query: string): string | null {
+export function extractFirstTicker(query: string): string | null {
+  const explicitTickerMatch = query.match(/\$?\b([A-Z]{1,5})\b/);
+  const explicitTicker = explicitTickerMatch?.[1] ?? null;
+  const resolved = resolveAssetIntent(query, explicitTicker);
+  if (resolved.resolvedTicker) return resolved.resolvedTicker;
+
   const q = query.toLowerCase();
   for (const [name, ticker] of Object.entries(COMPANY_TICKERS)) {
     if (q.includes(name)) return ticker;
@@ -136,6 +142,7 @@ Given a user's natural language query about market data, call the appropriate to
    - Google/Alphabet → GOOGL, Meta/Facebook → META, Nvidia → NVDA
    - Bitcoin → BTC, Ethereum → ETH, Solana → SOL
    - Gold/GOLD/XAUUSD → GLD (ETF that tracks gold price)
+   - Barrick Gold / GOLD stock / $GOLD → GOLD (Barrick equity)
    - Silver/SILVER/XAGUSD → SLV, Crude Oil/OIL/WTICOUSD → USO
    - Natural Gas → UNG, Copper → CPER, Wheat → WEAT
    - For commodities, prefer the liquid ETF ticker (GLD, SLV, USO) over futures (GC, SI, CL) — ETFs have better daily price data availability
