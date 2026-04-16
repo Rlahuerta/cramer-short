@@ -2233,15 +2233,17 @@ describe('Markov distribution walk-forward backtest', () => {
 
   describe('PR3 experiment: startStateMixture', () => {
     integrationIt(
-      'BTC-USD 7d/14d: PR3G baseline vs new startStateMixture experiment',
+      'BTC-USD 7d/14d: promoted start-state mixture default vs legacy control',
       async () => {
         const prices = fixture.tickers['BTC-USD'].closes;
         const horizons = [7, 14] as const;
+        const formatSignedPp = (value: number) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}pp`;
+        const formatSignedDelta = (value: number, digits = 4) => `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
 
-        const lines: string[] = ['', '═══ BTC SHORT-HORIZON PR3 MIXTURE EXPERIMENT ═══'];
+        const lines: string[] = ['', '═══ PROMOTED BTC START-STATE MIXTURE VS LEGACY CONTROL ═══'];
 
         for (const horizon of horizons) {
-          const baseline = await walkForward({
+          const promoted = await walkForward({
             ticker: 'BTC-USD',
             prices,
             horizon,
@@ -2251,7 +2253,7 @@ describe('Markov distribution walk-forward backtest', () => {
             pr3gCryptoShortHorizonDecay: 0.98,
           });
 
-          const experiment = await walkForward({
+          const legacy = await walkForward({
             ticker: 'BTC-USD',
             prices,
             horizon,
@@ -2259,41 +2261,36 @@ describe('Markov distribution walk-forward backtest', () => {
             stride: STRIDE,
             pr3gCryptoShortHorizonRecencyWeighting: true,
             pr3gCryptoShortHorizonDecay: 0.98,
-            startStateMixture: true,
+            startStateMixture: false,
           });
 
-          const baseDir = directionalAccuracy(baseline.steps);
-          const basePUp = calibratedPUpDirectionalAccuracy(baseline.steps);
-          const baseBrier = brierScore(baseline.steps);
-          
-          const expDir = directionalAccuracy(experiment.steps);
-          const expPUp = calibratedPUpDirectionalAccuracy(experiment.steps);
-          const expBrier = brierScore(experiment.steps);
+          expect(promoted.errors).toHaveLength(0);
+          expect(legacy.errors).toHaveLength(0);
+          expect(promoted.steps.length).toBeGreaterThan(0);
+          expect(promoted.steps.length).toBe(legacy.steps.length);
 
-          lines.push(`\n[${horizon}d Horizon]`);
-          lines.push(`  Baseline (PR3G ceiling):`);
-          lines.push(`    Dir Acc:    ${(baseDir * 100).toFixed(1)}%`);
-          lines.push(`    Cal P(up):  ${(basePUp * 100).toFixed(1)}%`);
-          lines.push(`    Brier:      ${baseBrier.toFixed(4)}`);
-          lines.push(`  Experiment (startStateMixture):`);
-          lines.push(`    Dir Acc:    ${(expDir * 100).toFixed(1)}%`);
-          lines.push(`    Cal P(up):  ${(expPUp * 100).toFixed(1)}%`);
-          lines.push(`    Brier:      ${expBrier.toFixed(4)}`);
+          const promotedDir = directionalAccuracy(promoted.steps);
+          const legacyDir = directionalAccuracy(legacy.steps);
+          const promotedCalPUp = calibratedPUpDirectionalAccuracy(promoted.steps);
+          const legacyCalPUp = calibratedPUpDirectionalAccuracy(legacy.steps);
+          const promotedBrier = brierScore(promoted.steps);
+          const legacyBrier = brierScore(legacy.steps);
+          const promotedCov = ciCoverage(promoted.steps);
+          const legacyCov = ciCoverage(legacy.steps);
 
-          const dirAccDelta = expDir - baseDir;
-          const calPUpDelta = expPUp - basePUp;
-          const brierDelta = expBrier - baseBrier;
-
-          lines.push(`  Diff (Exp - Base):`);
-          lines.push(`    Dir Acc:    ${dirAccDelta > 0 ? '+' : ''}${(dirAccDelta * 100).toFixed(2)}pp`);
-          lines.push(`    Cal P(up):  ${calPUpDelta > 0 ? '+' : ''}${(calPUpDelta * 100).toFixed(2)}pp`);
-          lines.push(`    Brier:      ${brierDelta > 0 ? '+' : ''}${brierDelta.toFixed(4)} ${brierDelta < 0 ? '(better)' : '(worse)'}`);
+          lines.push(
+            `  BTC-USD ${horizon}d | `
+            + `dir ${(legacyDir * 100).toFixed(1)}% -> ${(promotedDir * 100).toFixed(1)}% (${formatSignedPp(promotedDir - legacyDir)}) | `
+            + `calPUp ${(legacyCalPUp * 100).toFixed(1)}% -> ${(promotedCalPUp * 100).toFixed(1)}% (${formatSignedPp(promotedCalPUp - legacyCalPUp)}) | `
+            + `brier ${legacyBrier.toFixed(4)} -> ${promotedBrier.toFixed(4)} (${formatSignedDelta(promotedBrier - legacyBrier)}) | `
+            + `CI ${(legacyCov * 100).toFixed(0)}% -> ${(promotedCov * 100).toFixed(0)}% (${formatSignedPp(promotedCov - legacyCov)})`,
+          );
         }
 
-        lines.push('═══════════════════════════════════════════════', '');
+        lines.push('══════════════════════════════════════════════════════════════════', '');
         console.log(lines.join('\n'));
 
-        expect(lines.length).toBeGreaterThan(5);
+        expect(true).toBe(true);
       },
       TIMEOUT,
     );

@@ -346,6 +346,50 @@ describe('markov_distribution integration — structural break', () => {
     expect(promotedDefault.metadata.structuralBreakDetected).toBe(explicit.metadata.structuralBreakDetected);
   });
 
+  it('BTC short-horizon default enables start-state mixture and explicit false restores legacy control', async () => {
+    const prices = makeTrendingPrices(151, 65000, 0.0015, 0.03);
+    const current = prices[prices.length - 1];
+
+    const promotedDefault = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: true,
+      pr3gCryptoShortHorizonDecay: 0.98,
+    });
+
+    const legacyControl = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: true,
+      pr3gCryptoShortHorizonDecay: 0.98,
+      startStateMixture: false,
+    });
+
+    const explicitPromoted = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: true,
+      pr3gCryptoShortHorizonDecay: 0.98,
+      startStateMixture: true,
+    });
+
+    expect(promotedDefault.metadata.startStateMixtureActive).toBe(true);
+    expect(explicitPromoted.metadata.startStateMixtureActive).toBe(true);
+    expect(legacyControl.metadata.startStateMixtureActive).toBe(false);
+
+    expect(promotedDefault.actionSignal.expectedReturn).toBe(explicitPromoted.actionSignal.expectedReturn);
+    expect(promotedDefault.actionSignal.expectedReturn).not.toBe(legacyControl.actionSignal.expectedReturn);
+  });
+
   it('BTC-only return-threshold multiplier is ignored for non-BTC tickers', async () => {
     const returns = Array.from({ length: 60 }, (_, i) => [0.009, -0.009, 0.015, -0.015, 0.03, -0.03][i % 6]);
     const prices = makePricesFromReturns(returns, 3500);

@@ -545,6 +545,7 @@ export interface MarkovDistributionResult {
     pr3fDisagreementBlendActive: boolean;
     rawDirectionHybridActive?: boolean;
     pr3gRecencyWeightingActive: boolean;
+    startStateMixtureActive?: boolean;
     sidewaysSplitActive?: boolean;
     matureBullCalibrationActive?: boolean;
     trendPenaltyOnlyBreakConfidenceActive?: boolean;
@@ -3132,7 +3133,7 @@ export async function computeMarkovDistribution(params: {
   pr3gCryptoShortHorizonDecay?: number;
   /** @deprecated experimental ablation — backtests only */
   referenceTimeMs?: number;
-  /** @deprecated experimental ablation — backtests only */
+  /** BTC short-horizon default-on: explicit false disables the promoted start-state mixture; explicit true preserves opt-in for other crypto short horizons (backtests only). */
   startStateMixture?: boolean;
   /** @deprecated experimental ablation — backtests only */
   matureBullCalibration?: boolean;
@@ -3492,7 +3493,8 @@ export async function computeMarkovDistribution(params: {
   }
 
   // --- Distribution ---
-  const useStartStateMixture = startStateMixture && assetProfile.type === 'crypto' && horizon <= 14;
+  const useStartStateMixture = assetProfile.type === 'crypto' && horizon <= 14
+    && (startStateMixture === true || (startStateMixture !== false && isBtcTicker));
   const mixture = useStartStateMixture && regimeSeq.length >= 5
     ? computeStartStateMixture(regimeSeq.slice(-5))
     : undefined;
@@ -3837,6 +3839,7 @@ export async function computeMarkovDistribution(params: {
       pr3fDisagreementBlendActive: usePr3fBlend,
       rawDirectionHybridActive: useRawDirectionHybrid,
       pr3gRecencyWeightingActive: pr3gDecayRate !== undefined,
+      startStateMixtureActive: useStartStateMixture,
       sidewaysSplitActive,
       matureBullCalibrationActive,
       trendPenaltyOnlyBreakConfidenceActive: trendPenaltyOnlyBreakConfidence === true,

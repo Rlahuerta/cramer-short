@@ -4488,11 +4488,11 @@ describe('PR3 experiment: startStateMixture', () => {
     expect(mixtureResult.mu_n).toBeLessThan(hardResult.mu_n - 0.001);
   });
 
-  it('preserves default behavior when flag absent', async () => {
+  it('promotes BTC short-horizon start-state mixture by default and preserves legacy behavior with explicit false', async () => {
     const prices = Array.from({ length: 150 }, (_, i) => 50000 + i * 100 + (Math.sin(i / 5) * 2000));
     const currentPrice = prices[prices.length - 1];
 
-    const defaultResult = await computeMarkovDistribution({
+    const promotedDefault = await computeMarkovDistribution({
       ticker: 'BTC-USD',
       horizon: 7,
       currentPrice,
@@ -4500,7 +4500,7 @@ describe('PR3 experiment: startStateMixture', () => {
       polymarketMarkets: [],
     });
     
-    const mixtureResult = await computeMarkovDistribution({
+    const explicitPromoted = await computeMarkovDistribution({
       ticker: 'BTC-USD',
       horizon: 7,
       currentPrice,
@@ -4509,7 +4509,20 @@ describe('PR3 experiment: startStateMixture', () => {
       startStateMixture: true,
     });
 
-    expect(mixtureResult.actionSignal.expectedReturn).not.toBe(defaultResult.actionSignal.expectedReturn);
+    const legacyControl = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      startStateMixture: false,
+    });
+
+    expect(promotedDefault.metadata.startStateMixtureActive).toBe(true);
+    expect(explicitPromoted.metadata.startStateMixtureActive).toBe(true);
+    expect(legacyControl.metadata.startStateMixtureActive).toBe(false);
+    expect(promotedDefault.actionSignal.expectedReturn).toBe(explicitPromoted.actionSignal.expectedReturn);
+    expect(promotedDefault.actionSignal.expectedReturn).not.toBe(legacyControl.actionSignal.expectedReturn);
   });
 });
 
