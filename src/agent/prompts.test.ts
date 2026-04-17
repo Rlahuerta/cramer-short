@@ -200,6 +200,13 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('MUST clearly warn');
   });
 
+  it('adds commodity proxy framing for gold fallback prompts after Markov abstains', () => {
+    const results = '### markov_distribution(ticker=GLD)\n{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null}}}';
+    const prompt = buildIterationPrompt('Provide a GOLD forecast based on markov chain for the next 30 days', results);
+    expect(prompt).toContain('GLD is only the data proxy for Gold');
+    expect(prompt).toContain('Frame the final answer in terms of the underlying commodity');
+  });
+
   it('does not inject canonical markov guard for non-markov tool output', () => {
     const results = '### get_market_data(query=BTC)\n{"data":{"ticker":"BTC-USD"}}';
     const prompt = buildIterationPrompt('BTC query', results);

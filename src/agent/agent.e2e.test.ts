@@ -28,6 +28,15 @@ function findToolEndEvent(result: { events: unknown[] }, tool: string): ToolEndE
   });
 }
 
+function extractToolResultText(result: string): string {
+  try {
+    const payload = JSON.parse(result) as { data?: { result?: string; error?: string } };
+    return payload.data?.result ?? payload.data?.error ?? result;
+  } catch {
+    return result;
+  }
+}
+
 describe('Agent E2E — basic financial query flows', () => {
   e2eIt(
     'looks up AAPL stock price and returns a numeric value',
@@ -103,6 +112,16 @@ describe('Agent E2E — basic financial query flows', () => {
       expect(markovStart).toBeDefined();
       expect(markovStart?.args.ticker).toBe('GLD');
       expect(markovStart?.args.horizon).toBe(30);
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+      const forecastStart = findToolStartEvent(result, 'polymarket_forecast');
+      expect(forecastStart).toBeDefined();
+      expect(forecastStart?.args.ticker).toBe('GLD');
+      expect(forecastStart?.args.horizon_days).toBe(30);
+      const forecastEnd = findToolEndEvent(result, 'polymarket_forecast');
+      expect(forecastEnd).toBeDefined();
+      const forecastText = extractToolResultText(forecastEnd!.result).toLowerCase();
+      expect(forecastText).toContain('polymarket forecast: gold (gld)');
+      expect(forecastText).not.toMatch(/\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|cryptocurrency)\b/i);
       expect(result.answer.toLowerCase()).toMatch(/gold|gld/);
       expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
     },
@@ -122,6 +141,16 @@ describe('Agent E2E — basic financial query flows', () => {
       expect(markovStart).toBeDefined();
       expect(markovStart?.args.ticker).toBe('SLV');
       expect(markovStart?.args.horizon).toBe(30);
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+      const forecastStart = findToolStartEvent(result, 'polymarket_forecast');
+      expect(forecastStart).toBeDefined();
+      expect(forecastStart?.args.ticker).toBe('SLV');
+      expect(forecastStart?.args.horizon_days).toBe(30);
+      const forecastEnd = findToolEndEvent(result, 'polymarket_forecast');
+      expect(forecastEnd).toBeDefined();
+      const forecastText = extractToolResultText(forecastEnd!.result).toLowerCase();
+      expect(forecastText).toContain('polymarket forecast: silver (slv)');
+      expect(forecastText).not.toMatch(/\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|cryptocurrency)\b/i);
       expect(result.answer.toLowerCase()).toMatch(/silver|slv/);
       expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
     },

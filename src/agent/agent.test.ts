@@ -553,6 +553,80 @@ describe('Agent', () => {
       });
     });
 
+    it('accepts Robinhood-style lastTradePrice strings for non-crypto fallback price enrichment', () => {
+      const query = 'Provide a GOLD forecast for next month';
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'GLD current price' },
+          result: JSON.stringify({
+            data: {
+              get_stock_price_GLD: {
+                symbol: 'GLD',
+                lastTradePrice: '295.00',
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'GLD', horizon: 21 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.012,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls)).toEqual({
+        ticker: 'GLD',
+        horizon_days: 21,
+        current_price: 295,
+        markov_return: 0.012,
+      });
+    });
+
+    it('falls back to abstaining Markov currentPrice after an explicit current-price query returned no usable price', () => {
+      const query = 'Provide a GOLD forecast for next month';
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'GLD current price' },
+          result: JSON.stringify({ data: {} }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'GLD', horizon: 21 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              canonical: {
+                currentPrice: 294.87,
+              },
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.012,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls)).toEqual({
+        ticker: 'GLD',
+        horizon_days: 21,
+        current_price: 294.87,
+        markov_return: 0.012,
+      });
+    });
+
     it('ignores Markov return when the structured Markov payload abstains or is missing', () => {
       expect(extractMarkovReturnFromToolCalls([])).toBeNull();
 
@@ -897,7 +971,7 @@ describe('Agent', () => {
         )).toBe(false);
       });
 
-      it('returns true when an explicit current-price query ran but still produced no usable price', () => {
+      it('returns false when an explicit current-price query ran but still produced no usable price', () => {
         expect(shouldForceNonCryptoForecastFallback(
           'Provide an NVDA forecast for the next 7 days',
           [
@@ -905,7 +979,65 @@ describe('Agent', () => {
             { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: {} }) },
             { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7 }, result: '{"data":{}}' },
           ],
-        )).toBe(true);
+        )).toBe(false);
+      });
+
+      it('returns false when a prior explicit current-price query failed but Markov diagnostics already provide currentPrice coverage', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide a GOLD forecast for next month',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'GLD', horizon: 21 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                  canonical: {
+                    currentPrice: 294.87,
+                  },
+                  forecastHint: {
+                    usage: 'forecast_only',
+                    markovReturn: 0.012,
+                  },
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'GLD current price' }, result: JSON.stringify({ data: {} }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'GLD', horizon_days: 21, current_price: 294.87, markov_return: 0.012 }, result: '{"data":{}}' },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns false when Robinhood-style lastTradePrice already satisfies the explicit current-price enrichment', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide a GOLD forecast for next month',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'GLD', horizon: 21 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                },
+              }),
+            },
+            {
+              tool: 'get_market_data',
+              args: { query: 'GLD current price' },
+              result: JSON.stringify({
+                data: {
+                  get_stock_price_GLD: {
+                    symbol: 'GLD',
+                    lastTradePrice: '295.00',
+                  },
+                },
+              }),
+            },
+            { tool: 'polymarket_forecast', args: { ticker: 'GLD', horizon_days: 21, current_price: 295 }, result: '{"data":{}}' },
+          ],
+        )).toBe(false);
       });
 
       it('returns true when a matching polymarket_forecast call only recorded an error result', () => {

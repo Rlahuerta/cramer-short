@@ -213,6 +213,11 @@ const TEXT_FILTER_STOP_WORDS = new Set([
   'how', 'what', 'that', 'this', 'its', 'from', 'with',
 ]);
 
+const WEAK_QUERY_WORDS = new Set([
+  'price', 'prices', 'market', 'markets', 'commodity', 'commodities',
+  'forecast', 'forecasts', 'current', 'target', 'targets',
+]);
+
 /**
  * Returns true if the Polymarket question (or event title) contains at least
  * one significant word from the search query.
@@ -229,9 +234,15 @@ export function questionMatchesQuery(text: string, query: string): boolean {
     .split(/[\s\-_/]+/)
     .map((w) => w.replace(/[^a-z0-9]/g, ''))
     .filter((w) => w.length >= 3 && !TEXT_FILTER_STOP_WORDS.has(w));
+
   if (words.length === 0) return true;
+
+  const anchorWords = words.filter((word) => !WEAK_QUERY_WORDS.has(word));
+  if (words.length > 0 && anchorWords.length === 0) return false;
+
+  const candidateWords = anchorWords.length > 0 ? anchorWords : words;
   const lower = text.toLowerCase();
-  return words.some((word) => lower.includes(word));
+  return candidateWords.some((word) => lower.includes(word));
 }
 
 function extractCanonicalNames(ticker: string): string[] {

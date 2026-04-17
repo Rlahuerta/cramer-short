@@ -387,11 +387,10 @@ export function shouldForceNonCryptoForecastFallback(query: string, toolCalls: T
 
   const marketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
   const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls);
-  const currentPrice = marketDataArgs
-    ? extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query)
-    : null;
+  const currentPrice = extractCurrentPriceForNonCryptoQuery(query, toolCalls);
+  const marketDataAttempted = marketDataArgs !== null && hasMarketDataQuery(toolCalls, marketDataArgs.query);
 
-  const needsCurrentPriceFetch = marketDataArgs !== null && currentPrice === null;
+  const needsCurrentPriceFetch = marketDataArgs !== null && currentPrice === null && !marketDataAttempted;
 
   const needsForecastRun = forecastArgs !== null
     && !hasPolymarketForecastCoverage(toolCalls, forecastArgs);
@@ -419,24 +418,56 @@ function hasNonEmptyParsedToolData(call: ToolCallRecord): boolean {
   return data !== null && Object.keys(data).length > 0;
 }
 
+function extractPositiveNumericValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
 function extractPriceFromPayload(value: unknown): number | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
 
-  const directPrice = record['price'];
-  if (typeof directPrice === 'number' && Number.isFinite(directPrice) && directPrice > 0) {
+  const directPrice = extractPositiveNumericValue(record['price']);
+  if (directPrice !== null) {
     return directPrice;
+  }
+
+  const closePrice = extractPositiveNumericValue(record['close']);
+  if (closePrice !== null) {
+    return closePrice;
+  }
+
+  const lastTradePrice = extractPositiveNumericValue(record['lastTradePrice']);
+  if (lastTradePrice !== null) {
+    return lastTradePrice;
   }
 
   const snapshot = record['snapshot'];
   if (snapshot && typeof snapshot === 'object') {
-    const snapshotPrice = (snapshot as Record<string, unknown>)['price'];
-    if (typeof snapshotPrice === 'number' && Number.isFinite(snapshotPrice) && snapshotPrice > 0) {
+    const snapshotRecord = snapshot as Record<string, unknown>;
+    const snapshotPrice = extractPositiveNumericValue(snapshotRecord['price'])
+      ?? extractPositiveNumericValue(snapshotRecord['close'])
+      ?? extractPositiveNumericValue(snapshotRecord['lastTradePrice']);
+    if (snapshotPrice !== null) {
       return snapshotPrice;
     }
   }
 
   return null;
+}
+
+function hasMarketDataQuery(toolCalls: ToolCallRecord[], query: string): boolean {
+  return toolCalls.some((call) => call.tool === 'get_market_data' && call.args['query'] === query);
 }
 
 function extractCurrentPriceFromMarketDataQuery(toolCalls: ToolCallRecord[], query: string): number | null {
@@ -454,6 +485,30 @@ function extractCurrentPriceFromMarketDataQuery(toolCalls: ToolCallRecord[], que
       if (!key.startsWith('get_crypto_price_snapshot_') && !key.startsWith('get_stock_price_')) continue;
       const extracted = extractPriceFromPayload(value);
       if (extracted !== null) return extracted;
+    }
+  }
+
+  return null;
+}
+
+function extractCurrentPriceFromAbstainingMarkovQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
+  const desiredTicker = inferDistributionTicker(query);
+  const desiredHorizon = inferDistributionHorizon(query);
+
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (call.tool !== 'markov_distribution') continue;
+    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
+
+    const data = parseToolCallData(call);
+    if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'abstain') continue;
+
+    const canonical = data['canonical'];
+    if (!canonical || typeof canonical !== 'object') continue;
+
+    const currentPrice = extractPositiveNumericValue((canonical as Record<string, unknown>)['currentPrice']);
+    if (currentPrice !== null) {
+      return currentPrice;
     }
   }
 
@@ -500,6 +555,18 @@ function extractCurrentPriceForCryptoQuery(query: string, toolCalls: ToolCallRec
   return marketDataArgs
     ? extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query)
     : null;
+}
+
+function extractCurrentPriceForNonCryptoQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
+  const marketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
+  if (!marketDataArgs) return null;
+
+  const marketDataPrice = extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query);
+  if (marketDataPrice !== null) return marketDataPrice;
+
+  if (!hasMarketDataQuery(toolCalls, marketDataArgs.query)) return null;
+
+  return extractCurrentPriceFromAbstainingMarkovQuery(query, toolCalls);
 }
 
 export function extractSentimentScoreFromToolCalls(toolCalls: ToolCallRecord[]): number | null {
@@ -726,10 +793,7 @@ export function buildForcedNonCryptoPolymarketForecastArgs(
     horizon_days: inferDistributionHorizon(query) ?? 7,
   };
 
-  const marketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
-  const currentPrice = marketDataArgs
-    ? extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query)
-    : null;
+  const currentPrice = extractCurrentPriceForNonCryptoQuery(query, toolCalls);
   if (currentPrice !== null) args.current_price = currentPrice;
 
   const markovReturn = extractMarkovReturnFromToolCalls(toolCalls);
@@ -1672,7 +1736,7 @@ export class Agent {
     const marketDataArgs = buildForcedNonCryptoMarketDataArgs(ctx.query);
     if (
       marketDataArgs
-      && extractCurrentPriceFromMarketDataQuery(getToolCalls(), marketDataArgs.query) === null
+      && !hasMarketDataQuery(getToolCalls(), marketDataArgs.query)
     ) {
       let ok = true;
       for await (const event of this.toolExecutor.executeTool('get_market_data', marketDataArgs, ctx)) {

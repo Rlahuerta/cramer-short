@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
-import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache, scoreAnchorMarketRelevance, fetchPolymarketAnchorMarkets } from './polymarket.js';
+import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache, scoreAnchorMarketRelevance, fetchPolymarketAnchorMarkets, fetchPolymarketMarkets } from './polymarket.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
+import type { PolymarketMarketResult } from './polymarket.js';
 
 // Disable retry delays in tests to avoid timeouts
 let originalDelays: number[];
@@ -100,6 +101,18 @@ describe('questionMatchesQuery', () => {
 
   it('returns false for a sports market when querying Fed rates', () => {
     expect(questionMatchesQuery('Will Team A win the Super Bowl?', 'Fed rate cut')).toBe(false);
+  });
+
+  it('does not let weak price words make gold queries match bitcoin markets', () => {
+    expect(questionMatchesQuery('Will Bitcoin price exceed $100K in 2026?', 'gold price')).toBe(false);
+  });
+
+  it('matches anchored gold questions even when the query includes weak words', () => {
+    expect(questionMatchesQuery('Will gold reach $3,000 per ounce by June?', 'gold price')).toBe(true);
+  });
+
+  it('does not match weak-only commodity price queries against bitcoin markets', () => {
+    expect(questionMatchesQuery('Will Bitcoin price exceed $100K in 2026?', 'commodity price')).toBe(false);
   });
 
   it('returns true for empty query words (no filtering)', () => {
@@ -367,6 +380,53 @@ describe('inferTagSlugs — commodity coverage (regression)', () => {
   });
   it('maps wheat to commodities', () => {
     expect(inferTagSlugs('wheat supply chain')).toContain('commodities');
+  });
+});
+
+describe('polymarket commodity search filtering (regression)', () => {
+  beforeEach(() => { clearPolymarketCache(); });
+
+  it('filters bitcoin price markets out of gold price searches while preserving gold markets', async () => {
+    globalThis.fetch = mockFetch([
+      {
+        id: 'gold-and-btc',
+        title: 'Commodity markets',
+        markets: [
+          {
+            id: 'gold-market',
+            question: 'Will gold reach $3,000 per ounce by June?',
+            outcomes: '["Yes","No"]',
+            outcomePrices: '["0.41","0.59"]',
+            endDateIso: '2026-06-30',
+            volume24hr: 600_000,
+            volumeNum: 2_000_000,
+            liquidityNum: 500_000,
+            active: true,
+            closed: false,
+          },
+          {
+            id: 'btc-market',
+            question: 'Will Bitcoin price exceed $100K in 2026?',
+            outcomes: '["Yes","No"]',
+            outcomePrices: '["0.65","0.35"]',
+            endDateIso: '2026-12-31',
+            volume24hr: 3_000_000,
+            volumeNum: 10_000_000,
+            liquidityNum: 1_500_000,
+            active: true,
+            closed: false,
+          },
+        ],
+      },
+    ], []) as typeof fetch;
+
+    const { fetchPolymarketMarkets: isolatedFetchPolymarketMarkets } = await import(`./polymarket.js?commodity-regression=${Date.now()}`) as {
+      fetchPolymarketMarkets: (query: string, limit: number) => Promise<PolymarketMarketResult[]>;
+    };
+    const results = await isolatedFetchPolymarketMarkets('gold price', 5);
+
+    expect(results.map((m) => m.question)).toContain('Will gold reach $3,000 per ounce by June?');
+    expect(results.map((m) => m.question)).not.toContain('Will Bitcoin price exceed $100K in 2026?');
   });
 });
 

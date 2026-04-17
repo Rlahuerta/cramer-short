@@ -59,6 +59,14 @@ describe('polymarketForecastTool', () => {
     expect(parseResult(raw)).toContain('NVDA');
   });
 
+  it('uses commodity display label alongside proxy ticker for GLD', async () => {
+    const raw = await polymarketForecastTool.func(
+      { ticker: 'GLD', horizon_days: 30, current_price: 440.08 },
+      undefined,
+    );
+    expect(parseResult(raw)).toContain('Polymarket Forecast: GOLD (GLD)');
+  });
+
   it('forecastPrice > 0', async () => {
     const raw = await polymarketForecastTool.func(
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
@@ -85,6 +93,43 @@ describe('polymarketForecastTool', () => {
       undefined,
     );
     expect(parseResult(raw)).toContain('Will NVIDIA beat Q2 earnings?');
+  });
+
+  it('filters out markets that are irrelevant to the selected signal category', async () => {
+    mock.module('./polymarket.js', () => ({
+      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
+        { question: 'Will ETH be above $2,000 by April 30?', probability: 0.61, volume24h: 150_000, ageDays: 1 },
+      ],
+    }));
+
+    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const raw = await freshTool.func(
+      { ticker: 'GLD', horizon_days: 30, current_price: 440.08 },
+      undefined,
+    );
+    const result = parseResult(raw);
+
+    expect(result).not.toContain('Will ETH be above $2,000 by April 30?');
+    expect(result).toContain('[No Polymarket markets found for this asset]');
+  });
+
+  it('filters bitcoin price markets out of GLD output while preserving gold markets', async () => {
+    mock.module('./polymarket.js', () => ({
+      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
+        { question: 'Will gold reach $3,000 per ounce by June?', probability: 0.44, volume24h: 240_000, ageDays: 1 },
+        { question: 'Will Bitcoin price exceed $100K in 2026?', probability: 0.65, volume24h: 1_500_000, ageDays: 1 },
+      ],
+    }));
+
+    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const raw = await freshTool.func(
+      { ticker: 'GLD', horizon_days: 30, current_price: 440.08 },
+      undefined,
+    );
+    const result = parseResult(raw);
+
+    expect(result).toContain('Will gold reach $3,000 per ounce by June?');
+    expect(result).not.toContain('Will Bitcoin price exceed $100K in 2026?');
   });
 
   it('includes 95% CI in output', async () => {

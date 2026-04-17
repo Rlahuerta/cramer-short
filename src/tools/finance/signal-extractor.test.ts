@@ -7,6 +7,7 @@ import {
   TICKER_TO_COMPANY_NAME,
   SIGNAL_KEYWORDS,
 } from './signal-extractor.js';
+import { resolveAssetIntent } from './asset-resolver.js';
 
 // ---------------------------------------------------------------------------
 // detectAssetType
@@ -360,6 +361,22 @@ describe('scoreMarketRelevance', () => {
     const one  = scoreMarketRelevance('Fed decision', 'macro_rates');
     expect(many).toBeGreaterThan(one);
   });
+
+  it('rejects bitcoin price markets for commodity relevance', () => {
+    expect(scoreMarketRelevance('Will Bitcoin price exceed $100K in 2026?', 'commodity')).toBe(0);
+  });
+
+  it('rejects ethereum markets for commodity relevance', () => {
+    expect(scoreMarketRelevance('Will Ethereum price exceed $5,000 this year?', 'commodity')).toBe(0);
+  });
+
+  it('keeps genuine gold questions relevant for commodity scoring', () => {
+    expect(scoreMarketRelevance('Will gold reach $3,000 per ounce by June?', 'commodity')).toBeGreaterThan(0);
+  });
+
+  it('does not block bitcoin-specific categories when the question is about bitcoin', () => {
+    expect(scoreMarketRelevance('Will Bitcoin price exceed $100K in 2026?', 'btc_price_target')).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -454,11 +471,39 @@ describe('extractSignals — commodity signals', () => {
     expect(primary.searchPhrase.toLowerCase()).toContain('gold');
   });
 
+  it('gold commodity signal variants keep the direct gold anchor available', () => {
+    const signals = extractSignals('gold price forecast next month');
+    expect(signals[0]?.queryVariants).toContain('gold');
+  });
+
   it('commodity signals do NOT default to "commodity supply" generic phrase', () => {
     const signals = extractSignals('gold price');
     const phrases = signals.map((s) => s.searchPhrase.toLowerCase());
     // The old broken template produced "commodity supply" — regression guard
     expect(phrases).not.toContain('commodity supply');
+  });
+
+  it('uppercase GOLD forecast queries use commodity signal routing when intent resolves to GLD', () => {
+    const intent = resolveAssetIntent('Provide a GOLD forecast based on markov chain for the next 30 days', 'GOLD');
+    expect(intent.assetClass).toBe('commodity_gold');
+    expect(intent.resolvedTicker).toBe('GLD');
+
+    const categories = extractSignals('Provide a GOLD forecast based on markov chain for the next 30 days').map((s) => s.category);
+    expect(categories[0]).toBe('commodity');
+    expect(categories).toContain('geopolitical');
+    expect(categories).not.toContain('tariff_increase');
+  });
+
+  it('GLD ticker queries retain commodity signal routing', () => {
+    const categories = extractSignals('GLD').map((s) => s.category);
+    expect(categories[0]).toBe('commodity');
+    expect(categories).toContain('macro_growth');
+  });
+
+  it('Barrick Gold stock queries still route through materials signals', () => {
+    const categories = extractSignals('Barrick Gold stock earnings').map((s) => s.category);
+    expect(categories[0]).toBe('tariff_increase');
+    expect(categories).toContain('commodity');
   });
 });
 

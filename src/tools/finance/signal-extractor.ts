@@ -7,7 +7,7 @@
  * fallback query variants, and a weight for the log-odds probability combiner.
  */
 
-import { resolveAssetIntent } from './asset-resolver.js';
+import { resolveAssetIntent, type ResolvedAssetClass } from './asset-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,6 +114,8 @@ export const SIGNAL_KEYWORDS: Record<string, string[]> = {
   btc_price_target: ['Bitcoin', 'BTC', 'price target', 'price level', 'reach', 'exceed'],
   supply_chain: ['supply', 'disruption', 'shortage', 'TSMC', 'chip', 'wafer'],
 };
+
+const COMMODITY_CRYPTO_MARKER_RE = /\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|cryptocurrency)\b/i;
 
 // ---------------------------------------------------------------------------
 // Sector map (top ~80 tickers → AssetType)
@@ -267,6 +269,11 @@ export function scoreMarketRelevance(question: string, category: string): number
   const keywords = SIGNAL_KEYWORDS[category];
   if (!keywords || keywords.length === 0) return 1;
   const lower = question.toLowerCase();
+
+  if (category === 'commodity' && COMMODITY_CRYPTO_MARKER_RE.test(question)) {
+    return 0;
+  }
+
   const matches = keywords.filter((kw) => lower.includes(kw.toLowerCase())).length;
   return matches / keywords.length;
 }
@@ -449,7 +456,8 @@ const SIGNAL_MAPS: Record<AssetType, Array<{
 export function extractSignals(query: string): SignalCategory[] {
   const { type, ticker } = detectAssetType(query);
   const resolved = resolveAssetIntent(query, ticker);
-  const templates = SIGNAL_MAPS[type];
+  const signalType = resolveSignalType(resolved.assetClass, type);
+  const templates = SIGNAL_MAPS[signalType];
   // For commodity proxies, use the proxy label (GLD/SLV) as the ticker in templates
   // so Polymarket search phrases resolve correctly. For equity, use original ticker.
   const effectiveTicker = resolved.proxyLabel ?? resolved.resolvedTicker ?? ticker ?? 'asset';
@@ -462,4 +470,10 @@ export function extractSignals(query: string): SignalCategory[] {
     );
     return { name: t.name, searchPhrase, queryVariants, weight: t.weight, category: t.category };
   });
+}
+
+function resolveSignalType(assetClass: ResolvedAssetClass | null, fallbackType: AssetType): AssetType {
+  if (assetClass === 'commodity_gold' || assetClass === 'commodity_silver') return 'commodity';
+  if (assetClass === 'gold_miner') return 'materials';
+  return fallbackType;
 }

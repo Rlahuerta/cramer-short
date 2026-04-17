@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import { fetchPolymarketMarkets, type PolymarketMarketResult } from './polymarket.js';
-import { extractSignals } from './signal-extractor.js';
+import { extractSignals, scoreMarketRelevance } from './signal-extractor.js';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { lookupImpact, inferAssetClass } from './impact-map.js';
 import { runEnsemble, computePolymarketSignal, computeEnsemble, computeConditionalReturn, adjustYesBias, type MarketInput } from '../../utils/ensemble.js';
@@ -272,6 +272,7 @@ export const polymarketForecastTool = new DynamicStructuredTool({
             settledVariants
               .filter((r): r is PromiseFulfilledResult<PolymarketMarketResult[]> => r.status === 'fulfilled')
               .flatMap((r) => r.value)
+              .filter((m) => scoreMarketRelevance(m.question, sig.category) > 0)
               .map((m) => ({ ...m, signalCategory: sig.category })),
           );
         }),
@@ -328,9 +329,10 @@ export const polymarketForecastTool = new DynamicStructuredTool({
       const pmWeightPct = (result.pmEffectiveWeight * 100).toFixed(1);
       const avgQualityStr = result.avgMarketQuality.toFixed(3);
       let thresholdChartWarning: string | null = null;
+      const displayLabel = searchIdentity.canonicalNames[0]?.toUpperCase() ?? ticker;
 
       const lines: string[] = [
-        `📊 Polymarket Forecast: ${ticker}  |  Horizon: ${horizonDays} days  |  Grade: ${result.qualityGrade} (${result.qualityScore}/100)`,
+        `📊 Polymarket Forecast: ${displayLabel} (${ticker})  |  Horizon: ${horizonDays} days  |  Grade: ${result.qualityGrade} (${result.qualityScore}/100)`,
       ];
 
       if (currentPrice === undefined) {
