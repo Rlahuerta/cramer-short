@@ -860,6 +860,90 @@ export function extractPriceThresholds(
   return Array.from(seen.values()).sort((a, b) => a.price - b.price);
 }
 
+// ---------------------------------------------------------------------------
+// 1b. Crypto terminal-anchor fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * Market object shape for fallback extraction (matches Polymarket candidate type).
+ */
+interface FallbackMarket {
+  question: string;
+  probability: number;
+  volume?: number;
+  createdAt?: string | number;
+  endDate?: string | null;
+}
+
+/**
+ * For crypto assets only: when strict-horizon candidate filtering yields
+ * zero terminal anchors (because all near-horizon markets are barrier-style
+ * like "reach $80K" or "dip to $65K"), fall back to the nearest earlier
+ * usable terminal-threshold markets ("above $X on April 17").
+ *
+ * Each fallback anchor receives a date-gap discount that reduces its
+ * probability proportional to how far its endDate is from the target horizon:
+ *   discount = 1 − 0.03 × max(0, |daysOffset| − 2)
+ * clamped to [0.5, 1.0].
+ *
+ * Gate: only activates for crypto assets (`getAssetProfile(ticker).type === 'crypto'`)
+ *       and only when `strictAnchors` is empty.
+ *
+ * Preserves the distinction between terminal anchors and barrier/path questions —
+ * barrier matches from BARRIER_PATTERNS are never included by `extractPriceThresholds`.
+ */
+export function applyCryptoTerminalAnchorFallback(
+  allMarkets: FallbackMarket[],
+  strictAnchors: PriceThreshold[],
+  ticker: string,
+  horizon: number,
+  referenceTimeMs?: number,
+): PriceThreshold[] {
+  if (getAssetProfile(ticker).type !== 'crypto') return strictAnchors;
+  if (strictAnchors.length > 0) return strictAnchors;
+  if (allMarkets.length === 0) return strictAnchors;
+
+  const fallbackRaw = extractPriceThresholds(allMarkets, { ticker, horizonDays: horizon, referenceTimeMs });
+  if (fallbackRaw.length === 0) return strictAnchors;
+
+  const now = referenceTimeMs ?? Date.now();
+  const HORIZON_TOLERANCE_DAYS = 2;
+  const DISCOUNT_PER_DAY = 0.03;
+  const MIN_DISCOUNT = 0.5;
+
+  const discounted: PriceThreshold[] = fallbackRaw.map((anchor) => {
+    if (anchor.endDate == null) {
+      return { ...anchor, trustScore: 'low' } satisfies PriceThreshold;
+    }
+
+    const endMs = Date.parse(anchor.endDate);
+    if (Number.isNaN(endMs)) {
+      return { ...anchor, trustScore: 'low' } satisfies PriceThreshold;
+    }
+
+    const daysUntilResolution = (endMs - now) / 86_400_000;
+    const daysOffset = Math.abs(daysUntilResolution - horizon);
+
+    if (daysOffset <= HORIZON_TOLERANCE_DAYS) {
+      return anchor;
+    }
+
+    const discount = Math.max(
+      MIN_DISCOUNT,
+      1 - DISCOUNT_PER_DAY * (daysOffset - HORIZON_TOLERANCE_DAYS),
+    );
+    const adjustedProbability = Math.max(0, Math.min(1, anchor.probability * discount));
+
+    return {
+      ...anchor,
+      probability: adjustedProbability,
+      trustScore: 'low' as const,
+    } satisfies PriceThreshold;
+  });
+
+  return discounted.sort((a, b) => a.price - b.price);
+}
+
 function normalizeSearchIdentityPhrase(ticker: string, phrase: string): string {
   const identity = resolveTickerSearchIdentity(ticker);
   const shouldReplaceTicker = identity.searchQuery === identity.canonicalTicker;
@@ -947,10 +1031,27 @@ async function fetchCandidatePolymarketAnchors(
       return true;
     });
 
-  return sortMarketsByHorizonCloseness(
-    filterMarketsToHorizon(combined, horizonDays),
-    horizonDays,
-  );
+  const isCrypto = getAssetProfile(ticker).type === 'crypto';
+  let filtered = filterMarketsToHorizon(combined, horizonDays);
+
+  // Crypto fallback: when strict-horizon filter yields only barrier-style markets,
+  // also include earlier-dated terminal-anchor-compatible markets so the fallback
+  // in computeMarkovDistribution can recover usable anchors.
+  if (isCrypto) {
+    const strictAnchors = extractPriceThresholds(filtered, { ticker, horizonDays });
+    if (strictAnchors.length === 0) {
+      const broader = combined.filter((m) => {
+        if (!m.endDate) return true;
+        const endMs = Date.parse(m.endDate);
+        if (Number.isNaN(endMs)) return true;
+        const daysUntil = (endMs - Date.now()) / 86_400_000;
+        return daysUntil > 0 && daysUntil <= horizonDays * 2;
+      });
+      filtered = broader.length > filtered.length ? broader : filtered;
+    }
+  }
+
+  return sortMarketsByHorizonCloseness(filtered, horizonDays);
 }
 
 /**
@@ -3287,9 +3388,22 @@ export async function computeMarkovDistribution(params: {
   // These carry no predictive signal — they just confirm what the current price already implies.
   polymarketAnchors = polymarketAnchors.filter(a => {
     const dist = (a.price - currentPrice) / currentPrice;
-    // Anchor below current price with very high survival prob → trivially true
     if (dist < -0.05 && a.probability > 0.90) return false;
-    // Anchor far above current price with very low survival prob → trivially false
+    if (dist > 0.50 && a.probability < 0.05) return false;
+    return true;
+  });
+
+  // Crypto fallback: when strict-horizon markets are all barrier-style and yield
+  // zero terminal anchors, re-extract from the full unfiltered market list with
+  // a date-gap discount on off-horizon anchors.
+  polymarketAnchors = applyCryptoTerminalAnchorFallback(
+    polymarketMarkets, polymarketAnchors, ticker, horizon, params.referenceTimeMs,
+  );
+  // Re-apply triviality filter on fallback anchors (e.g., off-horizon anchors may
+  // now be trivially true/false relative to current price)
+  polymarketAnchors = polymarketAnchors.filter(a => {
+    const dist = (a.price - currentPrice) / currentPrice;
+    if (dist < -0.05 && a.probability > 0.90) return false;
     if (dist > 0.50 && a.probability < 0.05) return false;
     return true;
   });

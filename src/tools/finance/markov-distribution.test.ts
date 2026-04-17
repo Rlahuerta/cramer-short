@@ -62,6 +62,7 @@ import {
   buildPolymarketAnchorQueryVariants,
   normalizeSentiment,
   buildForecastHint,
+  applyCryptoTerminalAnchorFallback,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 
@@ -515,6 +516,123 @@ describe('extractPriceThresholds', () => {
     expect(high.probability).toBeCloseTo(0.40 * 0.95, 4);
     // CDF monotonicity: P(>4200) > P(>5500)
     expect(low.probability).toBeGreaterThan(high.probability);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Crypto terminal-anchor fallback
+// ---------------------------------------------------------------------------
+
+describe('applyCryptoTerminalAnchorFallback', () => {
+  const REF_TIME = new Date('2025-04-15T12:00:00Z').getTime();
+  const DAY_MS = 86_400_000;
+
+  it('returns strict anchors unchanged for non-crypto tickers', () => {
+    const strictAnchors: PriceThreshold[] = [
+      { price: 200, rawProbability: 0.6, probability: 0.57, trustScore: 'high', source: 'polymarket', endDate: null },
+    ];
+    const result = applyCryptoTerminalAnchorFallback(
+      [], strictAnchors, 'SPY', 14, REF_TIME,
+    );
+    expect(result).toBe(strictAnchors);
+  });
+
+  it('returns strict anchors unchanged when already non-empty for crypto', () => {
+    const strictAnchors: PriceThreshold[] = [
+      { price: 85000, rawProbability: 0.5, probability: 0.475, trustScore: 'high', source: 'polymarket', endDate: `2025-04-29` },
+    ];
+    const result = applyCryptoTerminalAnchorFallback(
+      [], strictAnchors, 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toBe(strictAnchors);
+  });
+
+  it('returns empty anchors unchanged when allMarkets is empty', () => {
+    const result = applyCryptoTerminalAnchorFallback(
+      [], [], 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(0);
+  });
+
+  it('recovers terminal anchors from earlier-dated markets when strict set is empty for BTC', () => {
+    const markets = [
+      // Barrier-style (near-horizon) — rejected by extractPriceThresholds
+      { question: 'Will Bitcoin reach $80,000 in April?', probability: 0.3, volume: 50000, endDate: '2025-04-29' },
+      { question: 'Will Bitcoin dip to $65,000 in April?', probability: 0.15, volume: 40000, endDate: '2025-04-29' },
+      // Terminal-style (earlier-dated) — parseable by extractPriceThresholds
+      { question: 'Will the price of Bitcoin be above $84000 on April 17?', probability: 0.45, volume: 30000, createdAt: REF_TIME - 5 * DAY_MS, endDate: '2025-04-17' },
+      { question: 'Will the price of Bitcoin be above $80000 on April 18?', probability: 0.65, volume: 25000, createdAt: REF_TIME - 3 * DAY_MS, endDate: '2025-04-18' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'BTC-USD', 14, REF_TIME,
+    );
+    // Should recover the 2 terminal anchors from earlier-dated markets
+    expect(result.length).toBeGreaterThanOrEqual(2);
+    // Check that prices are in ascending order
+    for (let i = 1; i < result.length; i++) {
+      expect(result[i].price).toBeGreaterThanOrEqual(result[i - 1].price);
+    }
+  });
+
+  it('applies date-gap discount to off-horizon anchors', () => {
+    // Horizon=14, reference date April 15 → target resolution April 29
+    // Anchor with endDate April 17 is 12 days before the target → 10 days off-horizon beyond tolerance
+    const markets = [
+      { question: 'Will the price of Bitcoin be above $84000 on April 17?', probability: 0.50, volume: 30000, createdAt: REF_TIME - 5 * DAY_MS, endDate: '2025-04-17' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(1);
+
+    // April 17 endDate → daysUntil = (Apr 17 - Apr 15) = 2 days
+    // horizon=14 → |2 - 14| = 12 days offset
+    // Beyond tolerance of 2 → discount = 1 - 0.03*(12-2) = 1 - 0.30 = 0.70
+    // adjusted probability = 0.50 * 0.95 * 0.70 ≈ 0.3325
+    expect(result[0].probability).toBeLessThan(0.5);
+    expect(result[0].probability).toBeGreaterThan(0);
+    expect(result[0].trustScore).toBe('low');
+  });
+
+  it('does not discount anchors within horizon tolerance', () => {
+    // Anchor endDate April 29 → exactly at 14-day horizon
+    const markets = [
+      { question: 'Will the price of Bitcoin be above $84000 on April 29?', probability: 0.50, volume: 30000, createdAt: REF_TIME - 5 * DAY_MS, endDate: '2025-04-29' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(1);
+    // No discount — within ±2 day tolerance
+    expect(result[0].trustScore).toBe('high');
+  });
+
+  it('does not activate for non-crypto tickers even with zero anchors', () => {
+    const markets = [
+      { question: 'Will SPY be above $500 on April 17?', probability: 0.6, volume: 10000, endDate: '2025-04-17' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'SPY', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(0);
+  });
+
+  it('clamps date-gap discount to minimum 0.5', () => {
+    // Anchor endDate far from horizon → extreme offset discount
+    const markets = [
+      { question: 'Will the price of Bitcoin be below $60000 on April 16?', probability: 0.75, volume: 20000, createdAt: REF_TIME - 10 * DAY_MS, endDate: '2025-04-16' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(1);
+    // Ensure probability is still > 0 (clamped)
+    expect(result[0].probability).toBeGreaterThan(0);
   });
 });
 
@@ -3885,6 +4003,71 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data._tool).toBe('markov_distribution');
     expect(parsed.data.canonical?.diagnostics?.totalAnchors).toBeGreaterThan(0);
     expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBeGreaterThan(0);
+  });
+
+  it('recovers earlier BTC terminal anchors when strict 14-day auto-fetch results are barrier-only', async () => {
+    const now = Date.now();
+    const day = 86_400_000;
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [
+        { question: 'Will Bitcoin reach $80,000 in April?', probability: 0.30, volume24h: 50000, ageDays: 5, endDate: new Date(now + 14 * day).toISOString() },
+        { question: 'Will Bitcoin reach $150,000 in April?', probability: 0.02, volume24h: 10000, ageDays: 5, endDate: new Date(now + 14 * day).toISOString() },
+        { question: 'Will Bitcoin dip to $65,000 in April?', probability: 0.15, volume24h: 40000, ageDays: 5, endDate: new Date(now + 14 * day).toISOString() },
+        { question: 'Will the price of Bitcoin be above $84,000 on April 17?', probability: 0.50, volume24h: 30000, ageDays: 5, endDate: new Date(now + 2 * day).toISOString() },
+        { question: 'Will the price of Bitcoin be above $80,000 on April 18?', probability: 0.62, volume24h: 25000, ageDays: 5, endDate: new Date(now + 3 * day).toISOString() },
+        { question: 'Will the price of Bitcoin be below $78,000 on April 19?', probability: 0.25, volume24h: 20000, ageDays: 5, endDate: new Date(now + 4 * day).toISOString() },
+      ],
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data._tool).toBe('markov_distribution');
+    expect(parsed.data.canonical?.diagnostics?.totalAnchors).toBeGreaterThan(0);
+    expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBeGreaterThan(0);
+    expect(parsed.data.canonical?.diagnostics?.anchorQuality).not.toBe('none');
+  });
+
+  integrationIt('auto-fetches usable BTC 14-day Polymarket anchors after terminal-anchor fallback', async () => {
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const parsedInput = freshTool.schema.parse({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const result = await freshTool.func(parsedInput);
+    const parsed = JSON.parse(result);
+    expect(parsed.data._tool).toBe('markov_distribution');
+    expect(parsed.data.canonical?.diagnostics?.totalAnchors).toBeGreaterThan(0);
+    expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBeGreaterThan(0);
+    expect(parsed.data.canonical?.diagnostics?.anchorQuality).not.toBe('none');
   });
 
   it('returns abstain payload when anchors or validation are insufficient', async () => {
