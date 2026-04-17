@@ -158,4 +158,50 @@ describe('Agent E2E — basic financial query flows', () => {
     },
     E2E_TIMEOUT_MS,
   );
+
+  e2eIt(
+    'uses Markov-enriched polymarket forecast args for a BTC 7-day forecast when live Markov succeeds',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide a BTC forecast for the next 7 days',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      const required = ['get_market_data', 'social_sentiment', 'polymarket_forecast', 'get_onchain_crypto', 'get_fixed_income', 'markov_distribution'];
+      for (const tool of required) {
+        expect(result.toolsCalled).toContain(tool);
+      }
+
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('BTC-USD');
+      expect(markovStart?.args.horizon).toBe(7);
+
+      const markovEnd = findToolEndEvent(result, 'markov_distribution');
+      expect(markovEnd).toBeDefined();
+      const markovPayload = JSON.parse(markovEnd!.result) as { data?: { status?: string } };
+      expect(['ok', 'abstain']).toContain(markovPayload?.data?.status ?? '');
+
+      const polymarketStarts = result.events.filter((event): event is ToolStartEvent => {
+        if (!event || typeof event !== 'object') return false;
+        const candidate = event as { type?: string; tool?: string };
+        return candidate.type === 'tool_start' && candidate.tool === 'polymarket_forecast';
+      });
+
+      if (markovPayload?.data?.status === 'ok') {
+        expect(polymarketStarts.length).toBeGreaterThanOrEqual(1);
+        const hasMarkovEnrichedForecast = polymarketStarts.some((start) =>
+          typeof start.args['markov_return'] === 'number'
+          && Number.isFinite(start.args['markov_return'] as number),
+        );
+        expect(hasMarkovEnrichedForecast).toBe(true);
+      } else {
+        expect(polymarketStarts.length).toBeGreaterThanOrEqual(1);
+      }
+
+      expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
 });
