@@ -107,6 +107,7 @@ const { Agent } = await import('./agent.js');
 const {
   inferDistributionTicker,
   inferDistributionHorizon,
+  isExplicitTerminalDistributionQuery,
   shouldForceMarkovDistribution,
   inferTrajectoryRequest,
    buildForcedMarkovArgs,
@@ -306,6 +307,12 @@ describe('Agent', () => {
       )).toBe(false);
     });
 
+    it('treats markov chain forecast wording as a forecast rather than an explicit distribution query', () => {
+      expect(isExplicitTerminalDistributionQuery('Provide an NVDA forecast based on markov chain for the next 7 days')).toBe(true);
+      expect(isNonCryptoForecastQuery('Provide an NVDA forecast based on markov chain for the next 7 days')).toBe(true);
+      expect(shouldForceMarkovDistribution('Provide an NVDA forecast based on markov chain for the next 7 days', [])).toBe(true);
+    });
+
     it('inferTrajectoryRequest detects explicit trajectory/day-by-day queries', () => {
       expect(inferTrajectoryRequest('Show me the day-by-day trajectory for NVDA over 14 days')).toBe(true);
       expect(inferTrajectoryRequest('What is the price path for AAPL over the next 7 trading days?')).toBe(true);
@@ -458,6 +465,51 @@ describe('Agent', () => {
       });
     });
 
+    it('scopes crypto forced polymarket args to the resolved asset and horizon', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for ETH' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_ETH: {
+                ticker: 'ETH',
+                price: 3900,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'social_sentiment',
+          args: { ticker: 'ETH', include_fear_greed: true, limit: 25 },
+          result: JSON.stringify({
+            data: {
+              result: '## Overall: 📈 Bullish (score +42/100)',
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'ETH-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                actionSignal: { expectedReturn: 0.08 },
+                diagnostics: { markovWeight: 0.5 },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedPolymarketForecastArgs('Provide a BTC forecast for the next 7 days', toolCalls)).toEqual({
+        ticker: 'BTC',
+        horizon_days: 7,
+      });
+    });
+
     it('builds stable non-crypto forced args from resolved asset identity and explicit market-data query', () => {
       const query = 'Provide a GOLD forecast for next month';
       const toolCalls = [
@@ -607,23 +659,90 @@ describe('Agent', () => {
       expect(shouldForceCryptoForecastTools(
         'Provide a BTC forecast for the next 7 days',
         [
-          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: '{}' },
-          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: '{}' },
-          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
-          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: '{}' },
-          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: '{}' },
-          { tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 }, result: '{}' },
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for ETH' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_ETH: { price: 3900 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'ETH', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'ETH', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'ETH', metrics: { activeAddresses: 650000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+          { tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok', canonical: { actionSignal: {}, diagnostics: {} } } }) },
         ],
       )).toBe(false);
 
       expect(shouldForceCryptoForecastTools(
         'Provide a BTC forecast for the next 30 days',
         [
-          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: '{}' },
-          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: '{}' },
-          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 30, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
-          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: '{}' },
-          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: '{}' },
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 30, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 78100 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(false);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 30, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 75250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: 'Error: rate limit' },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.35 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: 'Error: upstream failed' },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+          { tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
         ],
       )).toBe(false);
 

@@ -335,8 +335,6 @@ export function isCryptoForecastQuery(query: string): boolean {
  * a forced get_market_data + polymarket_forecast fallback.
  */
 export function isNonCryptoForecastQuery(query: string): boolean {
-  if (isExplicitTerminalDistributionQuery(query)) return false;
-
   if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;
 
   // Exclude crypto — that path has its own dedicated forcing
@@ -345,6 +343,11 @@ export function isNonCryptoForecastQuery(query: string): boolean {
   if (!detected.ticker) return false;
 
   const lower = query.toLowerCase();
+  const isHardDistributionQuery = isDistributionQuery(query)
+    || lower.includes('markov distribution')
+    || lower.includes('terminal threshold');
+  if (isHardDistributionQuery) return false;
+
   const hasForecastLanguage = /\bforecast\b|\bpredict(?:ion)?\b|\boutlook\b|\bprice target\b|where .* headed|what will .* trade|how .* move|price of|will .* (?:beat|hit|reach|drop|rise|fall|exceed|go above|go below)/.test(lower);
   const hasFutureHorizon = /over the next\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|next\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|in\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|\bnext\s+month\b|\bnext\s+quarter\b|\b(?:by\s+)?end\s+of\s+q[1-4](?:\s+\d{4})?\b|\bthrough\s+q[1-4](?:\s+\d{4})?\b/.test(lower);
 
@@ -355,6 +358,14 @@ type ForcedNonCryptoPolymarketForecastArgs = {
   ticker: string;
   horizon_days: number;
   current_price?: number;
+  markov_return?: number;
+};
+
+type ForecastCoverageArgs = {
+  ticker: string;
+  horizon_days?: number;
+  current_price?: number;
+  sentiment_score?: number;
   markov_return?: number;
 };
 
@@ -397,6 +408,15 @@ function parseToolCallData(call: ToolCallRecord): Record<string, unknown> | null
   } catch {
     return null;
   }
+}
+
+function hasErrorLikeToolResult(result: string): boolean {
+  return /^Error:/i.test(result) || /"error"\s*:/i.test(result);
+}
+
+function hasNonEmptyParsedToolData(call: ToolCallRecord): boolean {
+  const data = parseToolCallData(call);
+  return data !== null && Object.keys(data).length > 0;
 }
 
 function extractPriceFromPayload(value: unknown): number | null {
@@ -475,10 +495,42 @@ export function extractCurrentPriceFromToolCalls(toolCalls: ToolCallRecord[]): n
   return null;
 }
 
+function extractCurrentPriceForCryptoQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
+  const marketDataArgs = buildForcedMarketDataArgs(query);
+  return marketDataArgs
+    ? extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query)
+    : null;
+}
+
 export function extractSentimentScoreFromToolCalls(toolCalls: ToolCallRecord[]): number | null {
   for (let i = toolCalls.length - 1; i >= 0; i--) {
     const call = toolCalls[i];
     if (call.tool !== 'social_sentiment') continue;
+
+    const data = parseToolCallData(call);
+    const report = data?.['result'];
+    if (typeof report !== 'string') continue;
+
+    const match = report.match(/score\s*([+-]?\d+)\/100/i);
+    if (!match) continue;
+
+    const parsedScore = parseInt(match[1]!, 10) / 100;
+    if (Number.isFinite(parsedScore)) {
+      return Math.max(-1, Math.min(1, parsedScore));
+    }
+  }
+
+  return null;
+}
+
+function extractSentimentScoreForCryptoQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
+  const desired = buildForcedSocialSentimentArgs(query);
+  if (!desired) return null;
+
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (call.tool !== 'social_sentiment') continue;
+    if (call.args['ticker'] !== desired.ticker) continue;
 
     const data = parseToolCallData(call);
     const report = data?.['result'];
@@ -536,6 +588,52 @@ export function extractMarkovReturnFromToolCalls(toolCalls: ToolCallRecord[]): n
     if (usage !== 'forecast_only') continue;
     if (typeof markovReturn === 'number' && Number.isFinite(markovReturn)) {
       return markovReturn;
+    }
+  }
+
+  return null;
+}
+
+function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
+  const desiredTicker = inferDistributionTicker(query);
+  const desiredHorizon = inferDistributionHorizon(query);
+
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (call.tool !== 'markov_distribution') continue;
+    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
+
+    const data = parseToolCallData(call);
+    if (!data || data['_tool'] !== 'markov_distribution') continue;
+
+    if (data['status'] === 'ok') {
+      const canonical = data['canonical'];
+      if (!canonical || typeof canonical !== 'object') continue;
+
+      const actionSignal = (canonical as Record<string, unknown>)['actionSignal'];
+      const diagnostics = (canonical as Record<string, unknown>)['diagnostics'];
+      if (!actionSignal || typeof actionSignal !== 'object' || !diagnostics || typeof diagnostics !== 'object') continue;
+
+      const expectedReturn = (actionSignal as Record<string, unknown>)['expectedReturn'];
+      const markovWeight = (diagnostics as Record<string, unknown>)['markovWeight'];
+      if (
+        typeof expectedReturn === 'number' && Number.isFinite(expectedReturn)
+        && typeof markovWeight === 'number' && Number.isFinite(markovWeight)
+      ) {
+        return expectedReturn * markovWeight;
+      }
+    }
+
+    if (data['status'] === 'abstain') {
+      const forecastHint = data['forecastHint'];
+      if (!forecastHint || typeof forecastHint !== 'object') continue;
+
+      const usage = (forecastHint as Record<string, unknown>)['usage'];
+      const markovReturn = (forecastHint as Record<string, unknown>)['markovReturn'];
+      if (usage !== 'forecast_only') continue;
+      if (typeof markovReturn === 'number' && Number.isFinite(markovReturn)) {
+        return markovReturn;
+      }
     }
   }
 
@@ -602,13 +700,13 @@ export function buildForcedPolymarketForecastArgs(query: string, toolCalls: Tool
   const horizon = inferDistributionHorizon(query);
   if (horizon) args.horizon_days = horizon;
 
-  const currentPrice = extractCurrentPriceFromToolCalls(toolCalls);
+  const currentPrice = extractCurrentPriceForCryptoQuery(query, toolCalls);
   if (currentPrice !== null) args.current_price = currentPrice;
 
-  const sentimentScore = extractSentimentScoreFromToolCalls(toolCalls);
+  const sentimentScore = extractSentimentScoreForCryptoQuery(query, toolCalls);
   if (sentimentScore !== null) args.sentiment_score = sentimentScore;
 
-  const markovReturn = extractMarkovReturnFromToolCalls(toolCalls);
+  const markovReturn = extractMarkovReturnForQuery(query, toolCalls);
   if (markovReturn !== null) args.markov_return = markovReturn;
 
   return args;
@@ -691,22 +789,61 @@ function hasAbstainingMarkovDistributionForQuery(query: string, toolCalls: ToolC
   return hasMarkovDistributionStatusForQuery(query, toolCalls, 'abstain');
 }
 
+function hasCompletedMarkovDistributionForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
+  return hasSuccessfulMarkovDistributionForQuery(query, toolCalls)
+    || hasAbstainingMarkovDistributionForQuery(query, toolCalls);
+}
+
+function hasUsableOnchainResultForCryptoQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
+  const desired = buildForcedOnchainArgs(query);
+  if (!desired) return false;
+
+  return toolCalls.some((call) =>
+    call.tool === 'get_onchain_crypto'
+    && call.args['ticker'] === desired.ticker
+    && !hasErrorLikeToolResult(call.result)
+    && hasNonEmptyParsedToolData(call),
+  );
+}
+
+function hasUsableFixedIncomeResult(toolCalls: ToolCallRecord[]): boolean {
+  const desired = buildForcedFixedIncomeArgs();
+  return toolCalls.some((call) =>
+    call.tool === 'get_fixed_income'
+    && JSON.stringify(call.args['series']) === JSON.stringify(desired.series)
+    && !hasErrorLikeToolResult(call.result)
+    && hasNonEmptyParsedToolData(call),
+  );
+}
+
+function hasUsableStructuredToolResult(toolCalls: ToolCallRecord[], toolName: string): boolean {
+  return toolCalls.some((call) =>
+    call.tool === toolName
+    && !hasErrorLikeToolResult(call.result)
+    && hasNonEmptyParsedToolData(call),
+  );
+}
+
 function hasPolymarketForecastCoverage(
   toolCalls: ToolCallRecord[],
-  desired: ForcedNonCryptoPolymarketForecastArgs,
+  desired: ForecastCoverageArgs,
 ): boolean {
   return toolCalls.some((call) => {
     if (call.tool !== 'polymarket_forecast') return false;
-    if (/^Error:/i.test(call.result) || /"error"\s*:/i.test(call.result)) return false;
+    if (hasErrorLikeToolResult(call.result)) return false;
 
     const existingTicker = typeof call.args['ticker'] === 'string'
       ? call.args['ticker'].toUpperCase()
       : null;
     if (existingTicker !== desired.ticker.toUpperCase()) return false;
 
-    if (getForecastHorizonArg(call.args) !== desired.horizon_days) return false;
+    if (desired.horizon_days !== undefined && getForecastHorizonArg(call.args) !== desired.horizon_days) return false;
 
     if (desired.current_price !== undefined && !numbersApproximatelyMatch(call.args['current_price'], desired.current_price)) {
+      return false;
+    }
+
+    if (desired.sentiment_score !== undefined && !numbersApproximatelyMatch(call.args['sentiment_score'], desired.sentiment_score)) {
       return false;
     }
 
@@ -718,6 +855,11 @@ function hasPolymarketForecastCoverage(
   });
 }
 
+function hasCryptoPolymarketForecastCoverage(query: string, toolCalls: ToolCallRecord[]): boolean {
+  const desired = buildForcedPolymarketForecastArgs(query, toolCalls);
+  return desired !== null && hasPolymarketForecastCoverage(toolCalls, desired);
+}
+
 function hasPolymarketForecastWithMarkovReturn(toolCalls: ToolCallRecord[]): boolean {
   return toolCalls.some((call) => call.tool === 'polymarket_forecast'
     && isFiniteNumber(call.args['markov_return']));
@@ -727,8 +869,8 @@ export function shouldRerunPolymarketForecastWithMarkov(query: string, toolCalls
   if (!isCryptoForecastQuery(query)) return false;
   if (buildForcedCryptoForecastMarkovArgs(query) === null) return false;
   if (!toolCalls.some((call) => call.tool === 'polymarket_forecast')) return false;
-  if (extractMarkovReturnFromToolCalls(toolCalls) === null) return false;
-  return !hasPolymarketForecastWithMarkovReturn(toolCalls);
+  if (extractMarkovReturnForQuery(query, toolCalls) === null) return false;
+  return !hasCryptoPolymarketForecastCoverage(query, toolCalls);
 }
 
 export function buildForcedOnchainArgs(query: string): { ticker: string; metrics: string[] } | null {
@@ -776,13 +918,15 @@ export function buildForcedCryptoForecastMarkovArgs(query: string): {
 export function shouldForceCryptoForecastTools(query: string, toolCalls: ToolCallRecord[]): boolean {
   if (!isCryptoForecastQuery(query)) return false;
 
-  const hasMarketData = toolCalls.some((call) => call.tool === 'get_market_data');
-  const hasSocialSentiment = toolCalls.some((call) => call.tool === 'social_sentiment');
-  const hasPolymarketForecast = toolCalls.some((call) => call.tool === 'polymarket_forecast');
-  const hasOnchain = toolCalls.some((call) => call.tool === 'get_onchain_crypto');
-  const hasFixedIncome = toolCalls.some((call) => call.tool === 'get_fixed_income');
+  const marketDataArgs = buildForcedMarketDataArgs(query);
+  const hasMarketData = marketDataArgs !== null
+    && extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query) !== null;
+  const hasSocialSentiment = extractSentimentScoreForCryptoQuery(query, toolCalls) !== null;
+  const hasPolymarketForecast = hasCryptoPolymarketForecastCoverage(query, toolCalls);
+  const hasOnchain = hasUsableOnchainResultForCryptoQuery(query, toolCalls);
+  const hasFixedIncome = hasUsableFixedIncomeResult(toolCalls);
   const needsMarkov = buildForcedCryptoForecastMarkovArgs(query) !== null
-    && !toolCalls.some((call) => call.tool === 'markov_distribution');
+    && !hasCompletedMarkovDistributionForQuery(query, toolCalls);
   const needsPolymarketRerun = shouldRerunPolymarketForecastWithMarkov(query, toolCalls);
 
   return !hasMarketData || !hasSocialSentiment || !hasPolymarketForecast || !hasOnchain || !hasFixedIncome || needsMarkov || needsPolymarketRerun;
@@ -1406,11 +1550,14 @@ export class Agent {
   ): AsyncGenerator<AgentEvent, boolean> {
     let forcedAny = false;
 
-    const hasTool = (toolName: string) =>
-      ctx.scratchpad.getToolCallRecords().some((call) => call.tool === toolName);
+    const getToolCalls = () => ctx.scratchpad.getToolCallRecords();
 
-    if (!hasTool('get_market_data')) {
-      const args = buildForcedMarketDataArgs(ctx.query);
+    const marketDataArgs = buildForcedMarketDataArgs(ctx.query);
+    if (
+      marketDataArgs
+      && extractCurrentPriceFromMarketDataQuery(getToolCalls(), marketDataArgs.query) === null
+    ) {
+      const args = marketDataArgs;
       if (args) {
         let ok = true;
         for await (const event of this.toolExecutor.executeTool('get_market_data', args, ctx)) {
@@ -1424,7 +1571,7 @@ export class Agent {
       }
     }
 
-    if (!hasTool('social_sentiment')) {
+    if (extractSentimentScoreFromToolCalls(getToolCalls()) === null) {
       const args = buildForcedSocialSentimentArgs(ctx.query);
       if (args) {
         let ok = true;
@@ -1439,7 +1586,7 @@ export class Agent {
       }
     }
 
-    if (!hasTool('markov_distribution')) {
+    if (!hasCompletedMarkovDistributionForQuery(ctx.query, getToolCalls())) {
       const args = buildForcedCryptoForecastMarkovArgs(ctx.query);
       if (args) {
         let ok = true;
@@ -1454,8 +1601,8 @@ export class Agent {
       }
     }
 
-    if (!hasTool('polymarket_forecast')) {
-      const args = buildForcedPolymarketForecastArgs(ctx.query, ctx.scratchpad.getToolCallRecords());
+    if (!hasCryptoPolymarketForecastCoverage(ctx.query, getToolCalls())) {
+      const args = buildForcedPolymarketForecastArgs(ctx.query, getToolCalls());
       if (args) {
         let ok = true;
         for await (const event of this.toolExecutor.executeTool('polymarket_forecast', args, ctx)) {
@@ -1469,8 +1616,8 @@ export class Agent {
       }
     }
 
-    if (shouldRerunPolymarketForecastWithMarkov(ctx.query, ctx.scratchpad.getToolCallRecords())) {
-      const args = buildForcedPolymarketForecastArgs(ctx.query, ctx.scratchpad.getToolCallRecords());
+    if (shouldRerunPolymarketForecastWithMarkov(ctx.query, getToolCalls())) {
+      const args = buildForcedPolymarketForecastArgs(ctx.query, getToolCalls());
       if (args) {
         let ok = true;
         for await (const event of this.toolExecutor.executeTool('polymarket_forecast', args, ctx)) {
@@ -1484,7 +1631,7 @@ export class Agent {
       }
     }
 
-    if (!hasTool('get_onchain_crypto')) {
+    if (!hasUsableOnchainResultForCryptoQuery(ctx.query, getToolCalls())) {
       const args = buildForcedOnchainArgs(ctx.query);
       if (args) {
         let ok = true;
@@ -1499,7 +1646,7 @@ export class Agent {
       }
     }
 
-    if (!hasTool('get_fixed_income')) {
+    if (!hasUsableFixedIncomeResult(getToolCalls())) {
       const args = buildForcedFixedIncomeArgs();
       let ok = true;
       for await (const event of this.toolExecutor.executeTool('get_fixed_income', args, ctx)) {
