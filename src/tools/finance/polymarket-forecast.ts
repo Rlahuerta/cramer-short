@@ -12,7 +12,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
-import { fetchPolymarketMarkets } from './polymarket.js';
+import { fetchPolymarketMarkets, type PolymarketMarketResult } from './polymarket.js';
 import { extractSignals } from './signal-extractor.js';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { lookupImpact, inferAssetClass } from './impact-map.js';
@@ -261,22 +261,33 @@ export const polymarketForecastTool = new DynamicStructuredTool({
       // Step 1: Extract signals for this ticker (up to 5)
       const signals = extractSignals(searchIdentity.canonicalTicker).slice(0, 5);
 
-      // Step 2: Fetch Polymarket markets for each signal (up to 3 per signal)
+      // Step 2: Fetch Polymarket markets for each signal using primary phrase
+      // AND query variants to deepen retrieval, up to 5 per query
       const allResults = await Promise.allSettled(
-        signals.map((sig) => fetchPolymarketMarkets(sig.searchPhrase, 3)),
+        signals.map((sig) => {
+          const phrases = [sig.searchPhrase, ...(sig.queryVariants ?? [])];
+          return Promise.allSettled(
+            phrases.map((phrase) => fetchPolymarketMarkets(phrase, 5)),
+          ).then((settledVariants) =>
+            settledVariants
+              .filter((r): r is PromiseFulfilledResult<PolymarketMarketResult[]> => r.status === 'fulfilled')
+              .flatMap((r) => r.value)
+              .map((m) => ({ ...m, signalCategory: sig.category })),
+          );
+        }),
       );
 
-      // Deduplicate by question string
+      // Deduplicate by question string across all signals and variants,
+      // preserving the signal category from whichever signal first found it
       const seen = new Set<string>();
       const rawMarkets: RawMarket[] = [];
       for (let i = 0; i < signals.length; i++) {
         const result = allResults[i];
         if (result.status !== 'fulfilled') continue;
-        const sig = signals[i]!;
         for (const m of result.value) {
           if (seen.has(m.question)) continue;
           seen.add(m.question);
-          rawMarkets.push({ ...m, signalCategory: sig.category });
+          rawMarkets.push({ question: m.question, probability: m.probability, volume24h: m.volume24h, ageDays: m.ageDays, endDate: m.endDate, signalCategory: m.signalCategory });
         }
       }
 
