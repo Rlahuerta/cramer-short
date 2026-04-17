@@ -10,13 +10,21 @@
 import { describe, expect } from 'bun:test';
 import { e2eIt } from '@/utils/test-guards.js';
 import { runAgentE2E, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
-import type { ToolStartEvent } from '@/agent/types.js';
+import type { ToolStartEvent, ToolEndEvent } from '@/agent/types.js';
 
 function findToolStartEvent(result: { events: unknown[] }, tool: string): ToolStartEvent | undefined {
   return result.events.find((event): event is ToolStartEvent => {
     if (!event || typeof event !== 'object') return false;
     const candidate = event as { type?: string; tool?: string };
     return candidate.type === 'tool_start' && candidate.tool === tool;
+  });
+}
+
+function findToolEndEvent(result: { events: unknown[] }, tool: string): ToolEndEvent | undefined {
+  return result.events.find((event): event is ToolEndEvent => {
+    if (!event || typeof event !== 'object') return false;
+    const candidate = event as { type?: string; tool?: string };
+    return candidate.type === 'tool_end' && candidate.tool === tool;
   });
 }
 
@@ -115,6 +123,37 @@ describe('Agent E2E — basic financial query flows', () => {
       expect(markovStart?.args.ticker).toBe('SLV');
       expect(markovStart?.args.horizon).toBe(30);
       expect(result.answer.toLowerCase()).toMatch(/silver|slv/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'uses deeper fallback tools after a non-crypto Markov abstain path for NVDA forecasts',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide an NVDA forecast based on markov chain for the next 7 days',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      expect(result.toolsCalled).toContain('get_market_data');
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('NVDA');
+      expect(markovStart?.args.horizon).toBe(7);
+
+      const markovEnd = findToolEndEvent(result, 'markov_distribution');
+      expect(markovEnd).toBeDefined();
+      const payload = JSON.parse(markovEnd!.result) as { data?: { status?: string } };
+      expect(payload?.data?.status).toBe('abstain');
+
+      expect(result.answer.toLowerCase()).toMatch(/nvda|nvidia/);
+      const mentionsAbstainLimit = /abstain|no calibrated markov|confidence interval|point estimate/i.test(result.answer);
+      const hasPriceFigure = /\$[\d,]+(\.\d+)?|\d+\.\d{2}/.test(result.answer);
+      expect(mentionsAbstainLimit || hasPriceFigure).toBe(true);
       expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
     },
     E2E_TIMEOUT_MS,
