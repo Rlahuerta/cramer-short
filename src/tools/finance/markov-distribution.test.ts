@@ -4114,6 +4114,202 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.diagnostics.outOfSampleR2).not.toBeNull();
     expect(parsed.data.status).toBe('ok');
   });
+
+  // -----------------------------------------------------------------------
+  // Commodity model-only bypass tests
+  // -----------------------------------------------------------------------
+  describe('commodity model-only bypass', () => {
+    it('emits canonical for commodity with zero anchors when thresholds pass', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      const prices: number[] = [];
+      let p = 180;
+      for (let i = 0; i < 120; i++) {
+        p *= 1.001 + Math.sin(i * 0.1) * 0.001;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+      expect(parsed.data.canonical.diagnostics.calibrationMode).toBe('model_only');
+      expect(parsed.data.canonical.diagnostics.anchorBypassApplied).toBe(true);
+      expect(parsed.data.canonical.diagnostics.totalAnchors).toBe(0);
+      expect(parsed.data.canonical.diagnostics.trustedAnchors).toBe(0);
+    });
+
+    it('abstains for commodity when R² is too low', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      // Deterministic oscillating series that produces strongly negative R² without a structural break.
+      const prices: number[] = [];
+      let p = 200;
+      for (let i = 0; i < 95; i++) {
+        const shock = Math.sin(i * 0.15) * 0.004;
+        p *= 1 + shock;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('abstain');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
+    });
+
+    it('abstains for commodity when confidence is too low', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      // Very short series (25 prices) to get low predictionConfidence
+      const prices: number[] = [];
+      let p = 200;
+      for (let i = 0; i < 25; i++) {
+        p *= 1 + Math.sin(i * 0.3) * 0.005;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('abstain');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
+    });
+
+    it('abstains for commodity on structural break', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      // Generate prices with sharp break after index 85
+      const prices: number[] = [];
+      let p = 200;
+      for (let i = 0; i < 100; i++) {
+        const shock = i > 85 ? 0.05 : Math.sin(i * 0.12) * 0.004;
+        p *= 1 + shock;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('abstain');
+      expect(parsed.data.canonical.diagnostics.structuralBreakDetected).toBe(true);
+    });
+
+    it('exposes calibrationMode and anchorBypassApplied in diagnostics', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      const prices: number[] = [];
+      let p = 180;
+      for (let i = 0; i < 120; i++) {
+        p *= 1.001 + Math.sin(i * 0.1) * 0.001;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.calibrationMode).toBe('model_only');
+      expect(parsed.data.canonical.diagnostics.anchorBypassApplied).toBe(true);
+    });
+
+    it('uses markovWeight=1 and anchorWeight=0 for model-only emission', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      const prices: number[] = [];
+      let p = 180;
+      for (let i = 0; i < 120; i++) {
+        p *= 1.001 + Math.sin(i * 0.1) * 0.001;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.markovWeight).toBe(1);
+      expect(parsed.data.canonical.diagnostics.anchorWeight).toBe(0);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

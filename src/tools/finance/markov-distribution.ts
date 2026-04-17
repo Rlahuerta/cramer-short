@@ -3731,9 +3731,21 @@ export async function computeMarkovDistribution(params: {
   // --- Scenario probabilities (derived from calibrated CDF) ---
   const scenarios = computeScenarioProbabilities(distribution, currentPrice);
 
+  const COMMODITY_MODEL_ONLY_MIN_R2 = -0.02;
+  const COMMODITY_MODEL_ONLY_MIN_CONFIDENCE = 0.15;
+
   const validationAcceptable = assetProfile.type === 'crypto' && horizon <= 14 && (r2os ?? 0) >= -0.05
     ? true
     : (r2os ?? 0) >= 0;
+
+  // Commodity model-only path: allow emission when no anchors exist but model meets minimum quality bar.
+  const commodityModelOnlyAllowed =
+    assetProfile.type === 'commodity' &&
+    anchorCoverage.trustedAnchors === 0 &&
+    typeof r2os === 'number' &&
+    Number.isFinite(r2os) &&
+    r2os >= COMMODITY_MODEL_ONLY_MIN_R2 &&
+    predictionConfidence >= COMMODITY_MODEL_ONLY_MIN_CONFIDENCE;
   
   const anchorBasedDiag =
     anchorCoverage.trustedAnchors > 0 &&
@@ -3749,7 +3761,12 @@ export async function computeMarkovDistribution(params: {
     validationAcceptable &&
     !breakResult.detected;
 
-  const diagnosticsPass = anchorBasedDiag || priceOnlyCryptoDiag;
+  // Commodity model-only diagnostics: allow when commodity model-only conditions are met and no structural break.
+  const commodityModelOnlyDiag =
+    commodityModelOnlyAllowed &&
+    !breakResult.detected;
+
+  const diagnosticsPass = anchorBasedDiag || priceOnlyCryptoDiag || commodityModelOnlyDiag;
 
   const rawPUpForBlend = interpolateSurvival(rawDistribution, currentPrice);
   const calPUpForBlend = interpolateSurvival(distribution, currentPrice);
@@ -4001,15 +4018,30 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       && m.outOfSampleR2 >= -0.04;
     const hasPositiveR2 = typeof m.outOfSampleR2 === 'number' && Number.isFinite(m.outOfSampleR2) && m.outOfSampleR2 > 0;
     const validationAcceptable = hasPositiveR2 || r2NeutralForCrypto;
+
+    const COMMODITY_WRAPPER_MIN_R2 = -0.02;
+    const COMMODITY_WRAPPER_MIN_CONFIDENCE = 0.15;
+    const assetProfile = getAssetProfile(result.ticker);
+    const commodityModelOnly =
+      assetProfile.type === 'commodity' &&
+      m.anchorCoverage.trustedAnchors === 0 &&
+      typeof m.outOfSampleR2 === 'number' &&
+      Number.isFinite(m.outOfSampleR2) &&
+      m.outOfSampleR2 >= COMMODITY_WRAPPER_MIN_R2 &&
+      result.predictionConfidence >= COMMODITY_WRAPPER_MIN_CONFIDENCE &&
+      !m.structuralBreakDetected;
+
     const abstainReasons: string[] = [];
 
-    if (m.anchorCoverage.trustedAnchors === 0) {
+    if (m.anchorCoverage.trustedAnchors === 0 && !commodityModelOnly) {
       abstainReasons.push('No trusted terminal prediction-market anchors are available for this horizon.');
+    } else if (m.anchorCoverage.trustedAnchors === 0 && commodityModelOnly) {
+      // No abstain reason for anchors — commodity model-only bypass applies.
     } else if (m.anchorCoverage.quality !== 'good') {
       abstainReasons.push(`Prediction-market anchor coverage is ${m.anchorCoverage.quality}, so calibrated scenario buckets would be overly model-driven.`);
     }
 
-    if (!validationAcceptable) {
+    if (!validationAcceptable && !commodityModelOnly) {
       if (m.outOfSampleR2 === null || !Number.isFinite(m.outOfSampleR2)) {
         abstainReasons.push('Out-of-sample Markov validation is unavailable for this run.');
       } else {
@@ -4018,9 +4050,13 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     }
 
     const canEmitCanonical =
-      m.anchorCoverage.trustedAnchors > 0
-      && m.anchorCoverage.quality === 'good'
-      && validationAcceptable;
+      (m.anchorCoverage.trustedAnchors > 0
+        && m.anchorCoverage.quality === 'good'
+        && validationAcceptable)
+      || commodityModelOnly;
+
+    const calibrationMode: 'anchored' | 'model_only' = commodityModelOnly ? 'model_only' : 'anchored';
+    const anchorBypassApplied = commodityModelOnly;
 
     // --- Section 1: Decision Card (FIRST — most important) ---
     const decisionCard = [
@@ -4080,15 +4116,20 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     const anchorCount = m.polymarketAnchors;
     const methodNote = anchorCount > 0
       ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history) blended with ${anchorCount} Polymarket anchor(s). Probabilities from calibrated survival function with Monte Carlo confidence intervals.`
-      : `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history). Probabilities from calibrated survival function with Monte Carlo confidence intervals. No prediction market anchors available.`;
+      : commodityModelOnly
+        ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history), model-only commodity emission. No prediction market anchors — distribution is 100% Markov-model driven.`
+        : `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history). Probabilities from calibrated survival function with Monte Carlo confidence intervals. No prediction market anchors available.`;
 
     // --- Section 4: Header and metadata ---
+    const mixingLine = commodityModelOnly
+      ? 'Calibration: model-only (commodity bypass, no anchors)'
+      : `Mixing: ${pct(m.mixingTimeWeight)}% Markov / ${pct(1 - m.mixingTimeWeight)}% Anchors`;
     const header = [
       '',
       `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
       `Current: $${fmt(result.currentPrice)} | Regime: ${m.regimeState}`,
       `Anchors: ${m.polymarketAnchors} trusted | Anchor quality: ${m.anchorCoverage.quality.toUpperCase()}`,
-      `Mixing: ${pct(m.mixingTimeWeight)}% Markov / ${pct(1 - m.mixingTimeWeight)}% Anchors`,
+      mixingLine,
     ];
 
     // --- Section 4: Warnings ---
@@ -4204,13 +4245,15 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           anchorWarning: m.anchorCoverage.warning || null,
           regimeState: m.regimeState,
           mixingTimeWeight: m.mixingTimeWeight,
-          markovWeight: m.mixingTimeWeight,
-          anchorWeight: 1 - m.mixingTimeWeight,
+          markovWeight: commodityModelOnly ? 1 : m.mixingTimeWeight,
+          anchorWeight: commodityModelOnly ? 0 : 1 - m.mixingTimeWeight,
           outOfSampleR2: m.outOfSampleR2,
           structuralBreakDetected: m.structuralBreakDetected,
           structuralBreakDivergence: m.structuralBreakDivergence,
           ciWidened: m.ciWidened,
           predictionConfidence: result.predictionConfidence,
+          calibrationMode,
+          anchorBypassApplied,
           status: canEmitCanonical ? 'ok' : 'abstain',
           canEmitCanonical,
           manualSynthesisForbidden: !canEmitCanonical,
