@@ -3,7 +3,7 @@
  * model and returns a structured result for assertion.
  *
  * Environment variables:
- *   E2E_MODEL      — Ollama model to use (default: 'ollama:nemotron-3-nano:30b-cloud')
+ *   E2E_MODEL      — Ollama model to use (default: 'ollama:minimax-m2.7:cloud')
  *   OLLAMA_BASE_URL — Ollama endpoint (default: 'http://127.0.0.1:11434')
  *   E2E_TIMEOUT_MS  — Hard timeout in ms (default: 360 000)
  */
@@ -12,7 +12,7 @@ import type { AgentEvent, DoneEvent } from '../agent/types.js';
 import { isTimeoutError } from './errors.js';
 import { withRetry } from './retry.js';
 
-export const E2E_MODEL = process.env.E2E_MODEL ?? 'ollama:nemotron-3-nano:30b-cloud';
+export const E2E_MODEL = process.env.E2E_MODEL ?? 'ollama:minimax-m2.7:cloud';
 export const E2E_TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS ?? '360000', 10);
 
 export interface E2EResult {
