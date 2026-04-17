@@ -516,7 +516,9 @@ IMPORTANT: markov_distribution results are present. Treat the canonical Markov p
   if (hasAbstainingMarkovOutput) {
     prompt += `
 
-IMPORTANT: markov_distribution explicitly abstained. Its diagnostics are authoritative, but no calibrated scenario distribution is available. You may explain the abstain reasons and discuss market-quality limitations, and you MAY provide fallback analysis such as a point forecast or confidence interval if another tool explicitly supports it. However, you MUST clearly warn that no calibrated Markov terminal distribution was available, and you MUST NOT create, correct, extrapolate, interpolate, renormalize, or manually synthesize replacement scenario buckets or probability percentages from later polymarket_search results. Numeric scenario distributions are only allowed when copied directly from a non-abstaining canonical Markov payload.`;
+IMPORTANT: markov_distribution explicitly abstained. Its diagnostics are authoritative, but no calibrated scenario distribution is available. You may explain the abstain reasons and discuss market-quality limitations, and you MAY provide fallback analysis such as a point forecast or confidence interval if another tool explicitly supports it. However, you MUST clearly warn that no calibrated Markov terminal distribution was available, and you MUST NOT create, correct, extrapolate, interpolate, renormalize, or manually synthesize replacement scenario buckets or probability percentages from later polymarket_search results. Numeric scenario distributions are only allowed when copied directly from a non-abstaining canonical Markov payload.
+
+For non-crypto forecast queries with a specific asset target (stocks, ETFs, commodities): after Markov abstains, call get_market_data for the current price and then polymarket_forecast for a point estimate with confidence interval. This combination provides the best available fallback. Do NOT stop after a shallow polymarket_search — polymarket_forecast performs a deeper, signal-weighted retrieval that produces a calibrated forecast. Macro-only questions without a specific asset target are handled separately.`;
   }
 
   prompt += `
