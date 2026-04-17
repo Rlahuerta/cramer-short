@@ -141,7 +141,7 @@ Given a user's natural language query about market data, call the appropriate to
    - Apple → AAPL, Tesla → TSLA, Microsoft → MSFT, Amazon → AMZN
    - Google/Alphabet → GOOGL, Meta/Facebook → META, Nvidia → NVDA
    - Bitcoin → BTC, Ethereum → ETH, Solana → SOL
-   - Gold/GOLD/XAUUSD → GLD (ETF that tracks gold price)
+   - Gold/XAUUSD → GLD (ETF that tracks gold price)
    - Barrick Gold / GOLD stock / $GOLD → GOLD (Barrick equity)
    - Silver/SILVER/XAGUSD → SLV, Crude Oil/OIL/WTICOUSD → USO
    - Natural Gas → UNG, Copper → CPER, Wheat → WEAT

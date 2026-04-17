@@ -57,6 +57,7 @@ describe('extractFirstTicker — commodity proxy routing', () => {
   test('routes gold price queries to GLD proxy', () => {
     expect(extractFirstTicker('gold price forecast')).toBe('GLD');
     expect(extractFirstTicker('GOLD 30-day forecast')).toBe('GLD');
+    expect(extractFirstTicker('Provide a GOLD forecast based on markov chain for the next 30 days')).toBe('GLD');
   });
 
   test('routes explicit Barrick context to GOLD equity', () => {
@@ -68,6 +69,7 @@ describe('extractFirstTicker — commodity proxy routing', () => {
     expect(extractFirstTicker('silver price outlook')).toBe('SLV');
     expect(extractFirstTicker('SILVER forecast')).toBe('SLV');
     expect(extractFirstTicker('XAGUSD 30-day forecast')).toBe('SLV');
+    expect(extractFirstTicker('Provide a SILVER forecast based on markov chain for the next 30 days')).toBe('SLV');
   });
 
   test('keeps explicit non-GOLD miner tickers ahead of Barrick wording heuristics', () => {

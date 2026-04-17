@@ -251,6 +251,20 @@ describe('Agent', () => {
       });
     });
 
+    it('routes the open-ended GOLD and SILVER markov prompt shape through commodity proxies', () => {
+      expect(inferDistributionTicker('Provide a GOLD forecast based on markov chain for the next 30 days')).toBe('GLD');
+      expect(buildForcedMarkovArgs('Provide a GOLD forecast based on markov chain for the next 30 days')).toEqual({
+        ticker: 'GLD',
+        horizon: 30,
+      });
+
+      expect(inferDistributionTicker('Provide a SILVER forecast based on markov chain for the next 30 days')).toBe('SLV');
+      expect(buildForcedMarkovArgs('Provide a SILVER forecast based on markov chain for the next 30 days')).toEqual({
+        ticker: 'SLV',
+        horizon: 30,
+      });
+    });
+
     it('preserves explicit Barrick Gold equity queries as GOLD ticker', () => {
       expect(inferDistributionTicker('What is the probability distribution for Barrick Gold stock in 30 trading days?')).toBe('GOLD');
     });

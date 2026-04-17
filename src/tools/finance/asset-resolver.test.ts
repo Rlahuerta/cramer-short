@@ -15,6 +15,12 @@ describe('resolveAssetIntent', () => {
     expect(result.assetClass).toBe('commodity_gold');
   });
 
+  it('routes open-ended GOLD markov prompts to the commodity proxy path', () => {
+    const result = resolveAssetIntent('Provide a GOLD forecast based on markov chain for the next 30 days', 'GOLD');
+    expect(result.resolvedTicker).toBe('GLD');
+    expect(result.assetClass).toBe('commodity_gold');
+  });
+
   it('routes explicit Barrick context to GOLD equity', () => {
     const result = resolveAssetIntent('Barrick Gold stock forecast', 'GOLD');
     expect(result.resolvedTicker).toBe('GOLD');
@@ -23,6 +29,12 @@ describe('resolveAssetIntent', () => {
 
   it('routes silver commodity queries to SLV proxy', () => {
     const result = resolveAssetIntent('silver price outlook');
+    expect(result.resolvedTicker).toBe('SLV');
+    expect(result.assetClass).toBe('commodity_silver');
+  });
+
+  it('routes open-ended SILVER markov prompts to the commodity proxy path', () => {
+    const result = resolveAssetIntent('Provide a SILVER forecast based on markov chain for the next 30 days', 'SILVER');
     expect(result.resolvedTicker).toBe('SLV');
     expect(result.assetClass).toBe('commodity_silver');
   });

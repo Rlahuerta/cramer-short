@@ -3871,10 +3871,11 @@ export const MARKOV_DISTRIBUTION_DESCRIPTION = `
 - You want to interpolate between Polymarket anchors using regime-aware Markov transitions
 
 **Commodity tickers:** For commodities, always use the liquid ETF ticker:
-- Gold/GOLD/XAUUSD → use **GLD** (ETF that tracks gold spot price)
+- Gold/XAUUSD → use **GLD** (ETF that tracks gold spot price)
 - Silver/SILVER/XAGUSD → use **SLV**
 - Oil/Crude/WTICOUSD → use **USO**
 - Natural Gas → use **UNG**
+ - Barrick Gold / GOLD stock / $GOLD → use **GOLD** (Barrick equity)
 GLD, SLV, USO etc. are ETFs that replicate the underlying commodity price.
 
 **What it does:**
@@ -3908,8 +3909,8 @@ $50K", or "stay above $60K through March" — those are path-dependent, not
 P(price > X at horizon).
 
 IMPORTANT — Commodity tickers: For commodities, use the liquid ETF ticker for best data availability:
-  Gold → GLD, Silver → SLV, Oil → USO, Natural Gas → UNG, Copper → CPER.
-  GLD is an ETF that replicates the price of gold — querying "GLD" and "gold" should yield the same prediction.
+  Gold/XAUUSD → GLD, Silver/SILVER/XAGUSD → SLV, Oil → USO, Natural Gas → UNG, Copper → CPER.
+  Use GOLD only for Barrick Gold equity; GLD is the commodity-gold proxy.
 
 Set trajectory=true for a day-by-day price forecast with expected price, 90% CI, and P(up) at each day.
 Use trajectoryDays to control the number of days (1–30, default=horizon).
