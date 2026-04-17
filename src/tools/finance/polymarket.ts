@@ -288,6 +288,19 @@ export function scoreAnchorMarketRelevance(
     }
   }
 
+  // Crypto-specific: barrier/path patterns ("reach $X", "dip to $Y") are
+  // not terminal anchors — they describe a price path reaching/touching a
+  // level, not the price being above/below at a specific future date.
+  // Down-weight aggressively so they don't dominate the candidate pipeline
+  // and crowd out true terminal-anchor markets like "above $X on April 17".
+  const isCrypto = /(BTC|ETH|SOL|DOGE|XRP|ADA)[-\/]?USD/i.test(ticker)
+    || /^(BTC|ETH|SOL|DOGE|XRP|ADA)$/i.test(ticker)
+    || /CRYPTO/i.test(ticker);
+  if (isCrypto) {
+    if (/\b(reach|hit|dip to|drop to|fall to|surpass|touch)\b/.test(lower)) score -= 4;
+    if (/\babove\b.*\$\d|\bbelow\b.*\$\d/.test(lower) && /\b(on|at)\b/.test(lower)) score += 2;
+  }
+
   return score;
 }
 

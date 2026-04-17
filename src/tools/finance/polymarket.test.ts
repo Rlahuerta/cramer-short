@@ -225,6 +225,56 @@ describe('scoreAnchorMarketRelevance', () => {
     expect(barrick).toBeGreaterThan(0);
     expect(genericGold).toBe(0);
   });
+
+  it('penalizes barrier-style questions more heavily for crypto tickers', () => {
+    const cryptoBarrier = scoreAnchorMarketRelevance(
+      'Will Bitcoin reach $80,000 in April?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    const equityBarrier = scoreAnchorMarketRelevance(
+      'Will NVDA reach $200 in April?',
+      'NVDA',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    expect(cryptoBarrier).toBeLessThan(equityBarrier);
+  });
+
+  it('boosts terminal-style "above $X on date" questions for crypto tickers', () => {
+    const cryptoTerminal = scoreAnchorMarketRelevance(
+      'Will the price of Bitcoin be above $84,000 on April 17?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 2 * 86_400_000).toISOString(),
+    );
+    const cryptoBarrier = scoreAnchorMarketRelevance(
+      'Will Bitcoin dip to $65,000 in April?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    expect(cryptoTerminal).toBeGreaterThan(cryptoBarrier);
+  });
+
+  it('does not apply crypto penalty to non-crypto tickers', () => {
+    const spyReach = scoreAnchorMarketRelevance(
+      'Will SPY reach $600 in April?',
+      'SPY',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    // SPY should get the generic -3 penalty, not the extra crypto -4
+    // Total score should be higher than the same question for BTC-USD
+    const btcReach = scoreAnchorMarketRelevance(
+      'Will Bitcoin reach $80,000 in April?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    expect(spyReach).toBeGreaterThan(btcReach);
+  });
 });
 
 describe('fetchPolymarketAnchorMarkets', () => {
