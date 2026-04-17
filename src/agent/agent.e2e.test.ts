@@ -1,15 +1,24 @@
 /**
  * E2E tests — basic agent flows with the configured Ollama model.
  *
- * Run with:  RUN_E2E=1 bun test --filter e2e
+ * Run with:  bun run test:e2e
  * Skipped in normal `bun test` / CI runs.
  *
- * Model: ollama:nemotron-3-nano:30b-cloud (override via E2E_MODEL env var)
- * Timeout: 300 s per test
+ * Model: ollama:minimax-m2.7:cloud (override via E2E_MODEL env var)
+ * Timeout: 360 s per test
  */
 import { describe, expect } from 'bun:test';
 import { e2eIt } from '@/utils/test-guards.js';
 import { runAgentE2E, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
+import type { ToolStartEvent } from '@/agent/types.js';
+
+function findToolStartEvent(result: { events: unknown[] }, tool: string): ToolStartEvent | undefined {
+  return result.events.find((event): event is ToolStartEvent => {
+    if (!event || typeof event !== 'object') return false;
+    const candidate = event as { type?: string; tool?: string };
+    return candidate.type === 'tool_start' && candidate.tool === tool;
+  });
+}
 
 describe('Agent E2E — basic financial query flows', () => {
   e2eIt(
@@ -68,6 +77,44 @@ describe('Agent E2E — basic financial query flows', () => {
       }
 
       expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'routes the open-ended GOLD markov prompt through the commodity proxy path',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide a GOLD forecast based on markov chain for the next 30 days',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('GLD');
+      expect(markovStart?.args.horizon).toBe(30);
+      expect(result.answer.toLowerCase()).toMatch(/gold|gld/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'routes the open-ended SILVER markov prompt through the silver proxy path',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide a SILVER forecast based on markov chain for the next 30 days',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('SLV');
+      expect(markovStart?.args.horizon).toBe(30);
+      expect(result.answer.toLowerCase()).toMatch(/silver|slv/);
       expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
     },
     E2E_TIMEOUT_MS,
