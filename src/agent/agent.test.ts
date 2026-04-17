@@ -109,9 +109,13 @@ const {
   inferDistributionHorizon,
   shouldForceMarkovDistribution,
   inferTrajectoryRequest,
-  buildForcedMarkovArgs,
-  isCryptoForecastQuery,
-  extractCurrentPriceFromToolCalls,
+   buildForcedMarkovArgs,
+   isCryptoForecastQuery,
+   isNonCryptoForecastQuery,
+   buildForcedNonCryptoMarketDataArgs,
+   buildForcedNonCryptoPolymarketForecastArgs,
+   shouldForceNonCryptoForecastFallback,
+   extractCurrentPriceFromToolCalls,
   extractSentimentScoreFromToolCalls,
   buildForcedMarketDataArgs,
   buildForcedSocialSentimentArgs,
@@ -240,6 +244,27 @@ describe('Agent', () => {
     it('infers ticker and horizon for explicit terminal distribution queries', () => {
       expect(inferDistributionTicker('What is the probability distribution for BTC-USD in 7 trading days?')).toBe('BTC-USD');
       expect(inferDistributionHorizon('What is the probability distribution for BTC-USD in 7 trading days?')).toBe(7);
+    });
+
+    it('infers month and quarter horizons for non-crypto forecast phrasing', () => {
+      expect(inferDistributionHorizon('SPY price target next month')).toBe(21);
+      expect(inferDistributionHorizon('Will GLD rally next quarter?')).toBe(63);
+      expect(inferDistributionHorizon('Where will oil prices be in 2 months?')).toBe(42);
+      expect(inferDistributionHorizon('QQQ outlook in 2 quarters')).toBe(126);
+    });
+
+    it('infers quarter-end horizons relative to a provided reference date', () => {
+      const referenceDate = new Date('2026-04-17T00:00:00.000Z');
+
+      expect(inferDistributionHorizon('Will silver hit $30 by end of Q2?', referenceDate)).toBe(52);
+      expect(inferDistributionHorizon('Where will SPY trade through Q3 2026?', referenceDate)).toBe(118);
+    });
+
+    it('treats same-day quarter-end requests as a 1-day horizon instead of falling through', () => {
+      const referenceDate = new Date('2026-06-30T00:00:00.000Z');
+
+      expect(inferDistributionHorizon('Will silver hit $30 by end of Q2?', referenceDate)).toBe(1);
+      expect(inferDistributionHorizon('Will silver hit $30 by end of Q2 2026?', referenceDate)).toBe(1);
     });
 
     it('self-corrects commodity gold and silver distribution queries to proxy tickers', () => {
@@ -433,6 +458,49 @@ describe('Agent', () => {
       });
     });
 
+    it('builds stable non-crypto forced args from resolved asset identity and explicit market-data query', () => {
+      const query = 'Provide a GOLD forecast for next month';
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'GLD current price' },
+          result: JSON.stringify({
+            data: {
+              get_stock_price_GLD: {
+                ticker: 'GLD',
+                price: 312.45,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'GLD', horizon: 21 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.012,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedNonCryptoMarketDataArgs(query)).toEqual({
+        query: 'GLD current price',
+      });
+
+      expect(buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls)).toEqual({
+        ticker: 'GLD',
+        horizon_days: 21,
+        current_price: 312.45,
+        markov_return: 0.012,
+      });
+    });
+
     it('ignores Markov return when the structured Markov payload abstains or is missing', () => {
       expect(extractMarkovReturnFromToolCalls([])).toBeNull();
 
@@ -563,6 +631,255 @@ describe('Agent', () => {
         'What is the probability distribution for BTC-USD in 7 days?',
         [],
       )).toBe(false);
+    });
+
+    describe('isNonCryptoForecastQuery', () => {
+      it('matches stock forecast queries', () => {
+        expect(isNonCryptoForecastQuery('Provide an NVDA forecast for the next 7 days')).toBe(true);
+        expect(isNonCryptoForecastQuery('What will AAPL trade at next week?')).toBe(true);
+        expect(isNonCryptoForecastQuery('Where is SPY headed?')).toBe(true);
+        expect(isNonCryptoForecastQuery('SPY price target next month')).toBe(true);
+      });
+
+      it('matches commodity forecast queries (gold, silver, oil)', () => {
+        expect(isNonCryptoForecastQuery('Gold forecast for the next 30 days')).toBe(true);
+        expect(isNonCryptoForecastQuery('Will silver hit $30 by end of Q2?')).toBe(true);
+        expect(isNonCryptoForecastQuery('Where will oil prices be in 2 weeks')).toBe(true);
+      });
+
+      it('matches ETF forecast queries', () => {
+        expect(isNonCryptoForecastQuery('QQQ outlook over the next 14 days')).toBe(true);
+      });
+
+      it('rejects crypto forecast queries (handled by isCryptoForecastQuery)', () => {
+        expect(isNonCryptoForecastQuery('Provide a BTC forecast for the next 7 days')).toBe(false);
+        expect(isNonCryptoForecastQuery('What will ETH trade at next week?')).toBe(false);
+      });
+
+      it('rejects explicit markov distribution queries', () => {
+        expect(isNonCryptoForecastQuery('What is the probability distribution for SPY in 30 days?')).toBe(false);
+      });
+
+      it('rejects probability_assessment skill invocations', () => {
+        expect(isNonCryptoForecastQuery('Use the probability_assessment skill for NVDA')).toBe(false);
+      });
+
+      it('rejects non-forecast non-crypto queries', () => {
+        expect(isNonCryptoForecastQuery('What is AAPL revenue?')).toBe(false);
+        expect(isNonCryptoForecastQuery('NVDA P/E ratio')).toBe(false);
+      });
+
+      it('rejects macro-only forecast queries without a price ticker target', () => {
+        expect(isNonCryptoForecastQuery('Fed rate prediction next meeting')).toBe(false);
+      });
+    });
+
+    describe('shouldForceNonCryptoForecastFallback', () => {
+      it('returns false before Markov has run at all', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [],
+        )).toBe(false);
+      });
+
+      it('returns true when get_market_data is missing after Markov abstains', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when polymarket_forecast is missing after Markov abstains', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns false when both get_market_data and polymarket_forecast already cover the needed enrichment', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13 }, result: '{"data":{}}' },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns false when Markov produced a successful result', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok', canonical: { actionSignal: {}, diagnostics: {} } } }) },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns true when Markov abstained (status=abstain)', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when forecast rerun is needed to add current_price after market data landed later', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7 }, result: '{"data":{}}' },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when forecast rerun is needed to add markov_return after abstain hint is available', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                  forecastHint: {
+                    usage: 'forecast_only',
+                    markovReturn: 0.009,
+                  },
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns false when a prior generic market-data query exists but the explicit current-price query already succeeded', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'get_market_data', args: { query: 'NVDA' }, result: '{"data":{}}' },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13 }, result: '{"data":{}}' },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns true when an explicit current-price query ran but still produced no usable price', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: {} }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when a matching polymarket_forecast call only recorded an error result', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                  forecastHint: {
+                    usage: 'forecast_only',
+                    markovReturn: 0.009,
+                  },
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13, markov_return: 0.009 }, result: 'Error: upstream failed' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when a prior forecast used the wrong current_price value', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 900.0 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when a prior forecast used the wrong markov_return value', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                  forecastHint: {
+                    usage: 'forecast_only',
+                    markovReturn: 0.009,
+                  },
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13, markov_return: 0.005 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('does not let an unrelated successful Markov call suppress the target fallback', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'SPY', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok', canonical: { actionSignal: {}, diagnostics: {} } } }) },
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns false for crypto forecast queries', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide a BTC forecast for the next 7 days',
+          [],
+        )).toBe(false);
+      });
+
+      it('returns false for non-forecast queries', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'What is AAPL revenue?',
+          [],
+        )).toBe(false);
+      });
     });
   });
 });

@@ -201,7 +201,64 @@ export function inferDistributionTicker(query: string): string | null {
   return detected.ticker;
 }
 
-export function inferDistributionHorizon(query: string): number | null {
+const TRADING_DAYS_PER_WEEK = 5;
+const TRADING_DAYS_PER_MONTH = 21;
+const TRADING_DAYS_PER_QUARTER = TRADING_DAYS_PER_MONTH * 3;
+const QUARTER_END_MONTHS: Record<1 | 2 | 3 | 4, number> = {
+  1: 3,
+  2: 6,
+  3: 9,
+  4: 12,
+};
+
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function countWeekdaysUntil(targetDate: Date, referenceDate: Date): number | null {
+  const start = startOfUtcDay(referenceDate);
+  const target = startOfUtcDay(targetDate);
+  if (target <= start) return null;
+
+  let count = 0;
+  const cursor = new Date(start);
+  while (cursor < target) {
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    const weekday = cursor.getUTCDay();
+    if (weekday !== 0 && weekday !== 6) count++;
+  }
+
+  return count > 0 ? count : null;
+}
+
+function inferQuarterEndTradingDays(query: string, referenceDate: Date): number | null {
+  const quarterEndMatch = query.match(/\b(?:by\s+)?end\s+of\s+q([1-4])(?:\s+(\d{4}))?\b/i)
+    ?? query.match(/\bthrough\s+q([1-4])(?:\s+(\d{4}))?\b/i);
+  if (!quarterEndMatch) return null;
+
+  const quarter = parseInt(quarterEndMatch[1]!, 10) as 1 | 2 | 3 | 4;
+  const hasExplicitYear = Boolean(quarterEndMatch[2]);
+  let year = quarterEndMatch[2]
+    ? parseInt(quarterEndMatch[2]!, 10)
+    : referenceDate.getUTCFullYear();
+
+  const buildQuarterEndDate = (targetYear: number) =>
+    new Date(Date.UTC(targetYear, QUARTER_END_MONTHS[quarter], 0));
+
+  const start = startOfUtcDay(referenceDate);
+  let targetDate = buildQuarterEndDate(year);
+  if (!hasExplicitYear && targetDate < start) {
+    year += 1;
+    targetDate = buildQuarterEndDate(year);
+  }
+
+  if (targetDate.getTime() === start.getTime()) return 1;
+  if (targetDate < start) return null;
+
+  return countWeekdaysUntil(targetDate, referenceDate);
+}
+
+export function inferDistributionHorizon(query: string, referenceDate: Date = new Date()): number | null {
   const lower = query.toLowerCase();
 
   const tradingDaysMatch = lower.match(/(\d+)\s+trading\s+days?/i);
@@ -211,7 +268,19 @@ export function inferDistributionHorizon(query: string): number | null {
   if (dayMatch) return parseInt(dayMatch[1]!, 10);
 
   const weekMatch = lower.match(/(\d+)[-\s]weeks?\b/i);
-  if (weekMatch) return parseInt(weekMatch[1]!, 10) * 5;
+   if (weekMatch) return parseInt(weekMatch[1]!, 10) * TRADING_DAYS_PER_WEEK;
+
+  const monthMatch = lower.match(/(\d+)[-\s]months?\b/i);
+  if (monthMatch) return parseInt(monthMatch[1]!, 10) * TRADING_DAYS_PER_MONTH;
+
+  const quarterMatch = lower.match(/(\d+)[-\s]quarters?\b/i);
+  if (quarterMatch) return parseInt(quarterMatch[1]!, 10) * TRADING_DAYS_PER_QUARTER;
+
+  if (/\bnext\s+month\b/i.test(lower)) return TRADING_DAYS_PER_MONTH;
+  if (/\bnext\s+quarter\b/i.test(lower)) return TRADING_DAYS_PER_QUARTER;
+
+  const quarterEndTradingDays = inferQuarterEndTradingDays(query, referenceDate);
+  if (quarterEndTradingDays !== null) return quarterEndTradingDays;
 
   return null;
 }
@@ -259,6 +328,66 @@ export function isCryptoForecastQuery(query: string): boolean {
   return hasForecastLanguage || hasFutureHorizon;
 }
 
+/**
+ * Detect non-crypto asset forecast-like queries (stocks, ETFs, commodities).
+ * Returns true when the query asks about future price/forecast/outlook for a
+ * non-crypto asset — exactly the cases where Markov abstention should trigger
+ * a forced get_market_data + polymarket_forecast fallback.
+ */
+export function isNonCryptoForecastQuery(query: string): boolean {
+  if (isExplicitTerminalDistributionQuery(query)) return false;
+
+  if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;
+
+  // Exclude crypto — that path has its own dedicated forcing
+  const detected = detectAssetType(query);
+  if (detected.type === 'crypto') return false;
+  if (!detected.ticker) return false;
+
+  const lower = query.toLowerCase();
+  const hasForecastLanguage = /\bforecast\b|\bpredict(?:ion)?\b|\boutlook\b|\bprice target\b|where .* headed|what will .* trade|how .* move|price of|will .* (?:beat|hit|reach|drop|rise|fall|exceed|go above|go below)/.test(lower);
+  const hasFutureHorizon = /over the next\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|next\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|in\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|\bnext\s+month\b|\bnext\s+quarter\b|\b(?:by\s+)?end\s+of\s+q[1-4](?:\s+\d{4})?\b|\bthrough\s+q[1-4](?:\s+\d{4})?\b/.test(lower);
+
+  return hasForecastLanguage || hasFutureHorizon;
+}
+
+type ForcedNonCryptoPolymarketForecastArgs = {
+  ticker: string;
+  horizon_days: number;
+  current_price?: number;
+  markov_return?: number;
+};
+
+/**
+ * Returns true when a non-crypto forecast query has had markov_distribution
+ * abstain and is still missing get_market_data and/or
+ * polymarket_forecast — the two tools that should be forced as a fallback.
+ */
+export function shouldForceNonCryptoForecastFallback(query: string, toolCalls: ToolCallRecord[]): boolean {
+  if (!isNonCryptoForecastQuery(query)) return false;
+
+  // If Markov already produced a non-abstain result, don't force fallback.
+  if (hasSuccessfulMarkovDistributionForQuery(query, toolCalls)) return false;
+
+  // This fallback is only for the post-abstain path. If Markov never ran,
+  // let the normal model/tool flow decide whether to invoke it first.
+  const hasAbstainingMarkov = hasAbstainingMarkovDistributionForQuery(query, toolCalls);
+  if (!hasAbstainingMarkov) return false;
+
+  const marketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
+  const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls);
+  const currentPrice = marketDataArgs
+    ? extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query)
+    : null;
+
+  const needsCurrentPriceFetch = marketDataArgs !== null && currentPrice === null;
+
+  const needsForecastRun = forecastArgs !== null
+    && !hasPolymarketForecastCoverage(toolCalls, forecastArgs);
+
+  return needsCurrentPriceFetch || needsForecastRun;
+}
+
 function parseToolCallData(call: ToolCallRecord): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(call.result) as { data?: unknown };
@@ -288,6 +417,41 @@ function extractPriceFromPayload(value: unknown): number | null {
   }
 
   return null;
+}
+
+function extractCurrentPriceFromMarketDataQuery(toolCalls: ToolCallRecord[], query: string): number | null {
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (call.tool !== 'get_market_data' || call.args['query'] !== query) continue;
+
+    const data = parseToolCallData(call);
+    if (!data) continue;
+
+    const direct = extractPriceFromPayload(data);
+    if (direct !== null) return direct;
+
+    for (const [key, value] of Object.entries(data)) {
+      if (!key.startsWith('get_crypto_price_snapshot_') && !key.startsWith('get_stock_price_')) continue;
+      const extracted = extractPriceFromPayload(value);
+      if (extracted !== null) return extracted;
+    }
+  }
+
+  return null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isFinitePositiveNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && value > 0;
+}
+
+function numbersApproximatelyMatch(actual: unknown, expected: number): boolean {
+  if (!isFiniteNumber(actual)) return false;
+  const tolerance = Math.max(1e-6, Math.abs(expected) * 1e-6);
+  return Math.abs(actual - expected) <= tolerance;
 }
 
 export function extractCurrentPriceFromToolCalls(toolCalls: ToolCallRecord[]): number | null {
@@ -387,6 +551,17 @@ export function buildForcedMarketDataArgs(query: string): { query: string } | nu
   };
 }
 
+export function buildForcedNonCryptoMarketDataArgs(query: string): { query: string } | null {
+  if (!isNonCryptoForecastQuery(query)) return null;
+
+  const ticker = inferDistributionTicker(query);
+  if (!ticker) return null;
+
+  return {
+    query: `${ticker} current price`,
+  };
+}
+
 export function buildForcedSocialSentimentArgs(query: string): {
   ticker: string;
   include_fear_greed: true;
@@ -439,10 +614,113 @@ export function buildForcedPolymarketForecastArgs(query: string, toolCalls: Tool
   return args;
 }
 
+export function buildForcedNonCryptoPolymarketForecastArgs(
+  query: string,
+  toolCalls: ToolCallRecord[],
+): ForcedNonCryptoPolymarketForecastArgs | null {
+  if (!isNonCryptoForecastQuery(query)) return null;
+
+  const ticker = inferDistributionTicker(query);
+  if (!ticker) return null;
+
+  const args: ForcedNonCryptoPolymarketForecastArgs = {
+    ticker,
+    horizon_days: inferDistributionHorizon(query) ?? 7,
+  };
+
+  const marketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
+  const currentPrice = marketDataArgs
+    ? extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query)
+    : null;
+  if (currentPrice !== null) args.current_price = currentPrice;
+
+  const markovReturn = extractMarkovReturnFromToolCalls(toolCalls);
+  if (markovReturn !== null) args.markov_return = markovReturn;
+
+  return args;
+}
+
+function getForecastHorizonArg(args: Record<string, unknown>): number {
+  return isFinitePositiveNumber(args['horizon_days']) ? Math.trunc(args['horizon_days']) : 7;
+}
+
+function getPositiveIntegerArg(args: Record<string, unknown>, key: string): number | null {
+  return isFinitePositiveNumber(args[key]) ? Math.trunc(args[key]) : null;
+}
+
+function matchesTickerAndOptionalHorizon(
+  args: Record<string, unknown>,
+  ticker: string | null,
+  horizonKey: string,
+  horizon: number | null,
+): boolean {
+  if (ticker) {
+    const existingTicker = typeof args['ticker'] === 'string' ? args['ticker'].toUpperCase() : null;
+    if (existingTicker !== ticker.toUpperCase()) return false;
+  }
+
+  if (horizon !== null && getPositiveIntegerArg(args, horizonKey) !== horizon) {
+    return false;
+  }
+
+  return true;
+}
+
+function hasMarkovDistributionStatusForQuery(
+  query: string,
+  toolCalls: ToolCallRecord[],
+  status: 'ok' | 'abstain',
+): boolean {
+  const desiredTicker = inferDistributionTicker(query);
+  const desiredHorizon = inferDistributionHorizon(query);
+
+  return toolCalls.some((call) => {
+    if (call.tool !== 'markov_distribution') return false;
+    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) return false;
+
+    const data = parseToolCallData(call);
+    return data?._tool === 'markov_distribution' && data.status === status;
+  });
+}
+
+function hasSuccessfulMarkovDistributionForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
+  return hasMarkovDistributionStatusForQuery(query, toolCalls, 'ok');
+}
+
+function hasAbstainingMarkovDistributionForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
+  return hasMarkovDistributionStatusForQuery(query, toolCalls, 'abstain');
+}
+
+function hasPolymarketForecastCoverage(
+  toolCalls: ToolCallRecord[],
+  desired: ForcedNonCryptoPolymarketForecastArgs,
+): boolean {
+  return toolCalls.some((call) => {
+    if (call.tool !== 'polymarket_forecast') return false;
+    if (/^Error:/i.test(call.result) || /"error"\s*:/i.test(call.result)) return false;
+
+    const existingTicker = typeof call.args['ticker'] === 'string'
+      ? call.args['ticker'].toUpperCase()
+      : null;
+    if (existingTicker !== desired.ticker.toUpperCase()) return false;
+
+    if (getForecastHorizonArg(call.args) !== desired.horizon_days) return false;
+
+    if (desired.current_price !== undefined && !numbersApproximatelyMatch(call.args['current_price'], desired.current_price)) {
+      return false;
+    }
+
+    if (desired.markov_return !== undefined && !numbersApproximatelyMatch(call.args['markov_return'], desired.markov_return)) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 function hasPolymarketForecastWithMarkovReturn(toolCalls: ToolCallRecord[]): boolean {
   return toolCalls.some((call) => call.tool === 'polymarket_forecast'
-    && typeof call.args['markov_return'] === 'number'
-    && Number.isFinite(call.args['markov_return']));
+    && isFiniteNumber(call.args['markov_return']));
 }
 
 export function shouldRerunPolymarketForecastWithMarkov(query: string, toolCalls: ToolCallRecord[]): boolean {
@@ -928,6 +1206,19 @@ export class Agent {
           }
         }
 
+        if (shouldForceNonCryptoForecastFallback(query, ctx.scratchpad.getToolCallRecords())) {
+          const forced = yield* this.forceNonCryptoForecastFallback(ctx);
+          if (forced) {
+            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
+            currentPrompt = buildIterationPrompt(
+              query,
+              ctx.scratchpad.getToolResults(),
+              ctx.scratchpad.formatToolUsageForPrompt(),
+            );
+            continue;
+          }
+        }
+
         if (shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
           const forced = yield* this.forceMarkovDistribution(ctx);
           if (forced) {
@@ -987,6 +1278,19 @@ export class Agent {
 
       if (sequentialThinkingUsed && shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
         const forced = yield* this.forceCryptoForecastTools(ctx);
+        if (forced) {
+          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
+          currentPrompt = buildIterationPrompt(
+            query,
+            ctx.scratchpad.getToolResults(),
+            ctx.scratchpad.formatToolUsageForPrompt(),
+          );
+          continue;
+        }
+      }
+
+      if (sequentialThinkingUsed && shouldForceNonCryptoForecastFallback(query, ctx.scratchpad.getToolCallRecords())) {
+        const forced = yield* this.forceNonCryptoForecastFallback(ctx);
         if (forced) {
           yield* this.manageContextThreshold(ctx, query, memoryFlushState);
           currentPrompt = buildIterationPrompt(
@@ -1204,6 +1508,39 @@ export class Agent {
           ok = false;
           break;
         }
+      }
+      forcedAny = forcedAny || ok;
+    }
+
+    return forcedAny;
+  }
+
+  /** Force get_market_data + polymarket_forecast for non-crypto forecast asks after Markov abstains. */
+  private async *forceNonCryptoForecastFallback(
+    ctx: RunContext,
+  ): AsyncGenerator<AgentEvent, boolean> {
+    let forcedAny = false;
+    const getToolCalls = () => ctx.scratchpad.getToolCallRecords();
+
+    const marketDataArgs = buildForcedNonCryptoMarketDataArgs(ctx.query);
+    if (
+      marketDataArgs
+      && extractCurrentPriceFromMarketDataQuery(getToolCalls(), marketDataArgs.query) === null
+    ) {
+      let ok = true;
+      for await (const event of this.toolExecutor.executeTool('get_market_data', marketDataArgs, ctx)) {
+        yield event;
+        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
+      }
+      forcedAny = forcedAny || ok;
+    }
+
+    const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(ctx.query, getToolCalls());
+    if (forecastArgs && !hasPolymarketForecastCoverage(getToolCalls(), forecastArgs)) {
+      let ok = true;
+      for await (const event of this.toolExecutor.executeTool('polymarket_forecast', forecastArgs, ctx)) {
+        yield event;
+        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
       }
       forcedAny = forcedAny || ok;
     }
