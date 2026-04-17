@@ -4130,8 +4130,15 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       && typeof m.outOfSampleR2 === 'number'
       && Number.isFinite(m.outOfSampleR2)
       && m.outOfSampleR2 >= -0.04;
+    const sparseCryptoAnchorAllowed = cryptoShortHorizon
+      && m.validationMetric === 'horizon_return'
+      && m.anchorCoverage.quality === 'sparse'
+      && m.anchorCoverage.trustedAnchors >= 1
+      && typeof m.outOfSampleR2 === 'number'
+      && Number.isFinite(m.outOfSampleR2)
+      && m.outOfSampleR2 >= -0.05;
     const hasPositiveR2 = typeof m.outOfSampleR2 === 'number' && Number.isFinite(m.outOfSampleR2) && m.outOfSampleR2 > 0;
-    const validationAcceptable = hasPositiveR2 || r2NeutralForCrypto;
+    const validationAcceptable = hasPositiveR2 || r2NeutralForCrypto || sparseCryptoAnchorAllowed;
 
     const COMMODITY_WRAPPER_MIN_R2 = -0.02;
     const COMMODITY_WRAPPER_MIN_CONFIDENCE = 0.15;
@@ -4151,7 +4158,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       abstainReasons.push('No trusted terminal prediction-market anchors are available for this horizon.');
     } else if (m.anchorCoverage.trustedAnchors === 0 && commodityModelOnly) {
       // No abstain reason for anchors — commodity model-only bypass applies.
-    } else if (m.anchorCoverage.quality !== 'good') {
+    } else if (m.anchorCoverage.quality !== 'good' && !sparseCryptoAnchorAllowed) {
       abstainReasons.push(`Prediction-market anchor coverage is ${m.anchorCoverage.quality}, so calibrated scenario buckets would be overly model-driven.`);
     }
 
@@ -4167,6 +4174,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       (m.anchorCoverage.trustedAnchors > 0
         && m.anchorCoverage.quality === 'good'
         && validationAcceptable)
+      || sparseCryptoAnchorAllowed
       || commodityModelOnly;
 
     const calibrationMode: 'anchored' | 'model_only' = commodityModelOnly ? 'model_only' : 'anchored';

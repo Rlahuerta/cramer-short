@@ -4040,9 +4040,51 @@ describe('markov_distribution tool output envelope', () => {
 
     const parsed = JSON.parse(result);
     expect(parsed.data._tool).toBe('markov_distribution');
+    expect(parsed.data.status).toBe('ok');
     expect(parsed.data.canonical?.diagnostics?.totalAnchors).toBeGreaterThan(0);
     expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBeGreaterThan(0);
     expect(parsed.data.canonical?.diagnostics?.anchorQuality).not.toBe('none');
+    expect(parsed.data.canonical?.diagnostics?.canEmitCanonical).toBe(true);
+    expect(parsed.data.distribution).not.toBeNull();
+  });
+
+  it('emits via sparse crypto anchor wrapper path when BTC 14-day has exactly one trusted anchor', async () => {
+    const now = Date.now();
+    const day = 86_400_000;
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [
+        { question: 'Will Bitcoin reach $90,000 in April?', probability: 0.30, volume24h: 50000, ageDays: 5, endDate: new Date(now + 14 * day).toISOString() },
+        { question: `Will the price of Bitcoin be above $84,000 on ${new Date(now + 14 * day).toISOString().slice(0, 10)}?`, probability: 0.50, volume24h: 30000, ageDays: 10, endDate: new Date(now + 14 * day).toISOString() },
+      ],
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(parsed.data.status).toBe('ok');
+    expect(parsed.data.manualSynthesisForbidden).toBe(false);
+    expect(diagnostics?.anchorQuality).toBe('sparse');
+    expect(diagnostics?.trustedAnchors).toBe(1);
+    expect(diagnostics?.canEmitCanonical).toBe(true);
+    expect(parsed.data.distribution).not.toBeNull();
   });
 
   integrationIt('auto-fetches usable BTC 14-day Polymarket anchors after terminal-anchor fallback', async () => {
