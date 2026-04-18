@@ -536,6 +536,167 @@ describe('markov_distribution integration — sentiment adjustment', () => {
 });
 
 // ---------------------------------------------------------------------------
+// BTC short-horizon PR3G recency weighting promotion
+// ---------------------------------------------------------------------------
+
+describe('markov_distribution integration — PR3G recency weighting promotion', () => {
+  it('BTC 7d default activates recency weighting with 0.98 decay', async () => {
+    const prices = makeTrendingPrices(151, 65000, 0.0015, 0.03);
+    const current = prices[prices.length - 1];
+
+    const promotedDefault = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    const explicitPr3g098 = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: true,
+      pr3gCryptoShortHorizonDecay: 0.98,
+    });
+
+    expect(promotedDefault.metadata.pr3gRecencyWeightingActive).toBe(true);
+    expect(explicitPr3g098.metadata.pr3gRecencyWeightingActive).toBe(true);
+    expect(promotedDefault.actionSignal.expectedReturn).toBe(explicitPr3g098.actionSignal.expectedReturn);
+  });
+
+  it('BTC 14d default activates recency weighting with 0.98 decay', async () => {
+    const prices = makeTrendingPrices(151, 65000, 0.0015, 0.03);
+    const current = prices[prices.length - 1];
+
+    const promotedDefault = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    const explicitPr3g098 = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: true,
+      pr3gCryptoShortHorizonDecay: 0.98,
+    });
+
+    expect(promotedDefault.metadata.pr3gRecencyWeightingActive).toBe(true);
+    expect(explicitPr3g098.metadata.pr3gRecencyWeightingActive).toBe(true);
+    expect(promotedDefault.actionSignal.expectedReturn).toBe(explicitPr3g098.actionSignal.expectedReturn);
+  });
+
+  it('explicit false restores legacy control for BTC 7d/14d', async () => {
+    const prices = makeTrendingPrices(151, 65000, 0.0015, 0.03);
+    const current = prices[prices.length - 1];
+
+    const promotedDefault = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    const legacyControl = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: false,
+    });
+
+    expect(promotedDefault.metadata.pr3gRecencyWeightingActive).toBe(true);
+    expect(legacyControl.metadata.pr3gRecencyWeightingActive).toBe(false);
+  });
+
+  it('other BTC short horizons do not activate recency weighting by default', async () => {
+    const prices = makeTrendingPrices(151, 65000, 0.0015, 0.03);
+    const current = prices[prices.length - 1];
+
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 10,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    expect(result.metadata.pr3gRecencyWeightingActive).toBe(false);
+  });
+
+  it('non-BTC crypto does not activate recency weighting by default', async () => {
+    const prices = makeTrendingPrices(151, 3500, 0.0015, 0.03);
+    const current = prices[prices.length - 1];
+
+    const result = await computeMarkovDistribution({
+      ticker: 'ETH-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    expect(result.metadata.pr3gRecencyWeightingActive).toBe(false);
+  });
+
+  it('explicit true activates recency weighting for non-BTC crypto short horizons', async () => {
+    const prices = makeTrendingPrices(151, 3500, 0.0015, 0.03);
+    const current = prices[prices.length - 1];
+
+    const result = await computeMarkovDistribution({
+      ticker: 'ETH-USD',
+      horizon: 7,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: true,
+    });
+
+    expect(result.metadata.pr3gRecencyWeightingActive).toBe(true);
+  });
+
+  it('BTC long horizon (>14d) does not activate recency weighting by default', async () => {
+    const prices = makeTrendingPrices(151, 65000, 0.0015, 0.03);
+    const current = prices[prices.length - 1];
+
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 30,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    expect(result.metadata.pr3gRecencyWeightingActive).toBe(false);
+  });
+
+  it('BTC 14d horizon activates recency weighting by default', async () => {
+    const prices = makeTrendingPrices(151, 65000, 0.0015, 0.03);
+    const current = prices[prices.length - 1];
+
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: current,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    expect(result.metadata.pr3gRecencyWeightingActive).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tool description export
 // ---------------------------------------------------------------------------
 

@@ -38,6 +38,7 @@ import {
   computePredictionConfidence,
   getAssetProfile,
   computeRegimeUpRates,
+  shouldApplyBtc14dBearishBreakSellGate,
   logNormalSurvival,
   estimateRegimeStats,
   matPow,
@@ -5263,7 +5264,7 @@ describe('PR3G Lever: Recency-Weighted Regime Up-Rates', () => {
     50000 + i * 100 + (Math.sin(i / 5) * 2000)
   );
 
-  it('preserves default behavior when PR3G flag is absent', async () => {
+  it('BTC 7d default activates recency weighting', async () => {
     const defaultResult = await computeMarkovDistribution({
       ticker: 'BTC-USD',
       horizon: 7,
@@ -5271,7 +5272,52 @@ describe('PR3G Lever: Recency-Weighted Regime Up-Rates', () => {
       historicalPrices: prices,
       polymarketMarkets: [],
     });
-    expect(defaultResult.metadata.pr3gRecencyWeightingActive).toBe(false);
+    expect(defaultResult.metadata.pr3gRecencyWeightingActive).toBe(true);
+  });
+
+  it('BTC 14d default activates recency weighting', async () => {
+    const defaultResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(defaultResult.metadata.pr3gRecencyWeightingActive).toBe(true);
+  });
+
+  it('explicit false restores legacy control for BTC 7d/14d', async () => {
+    const legacyResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: false,
+    });
+    expect(legacyResult.metadata.pr3gRecencyWeightingActive).toBe(false);
+  });
+
+  it('other BTC short horizons do not activate recency weighting by default', async () => {
+    const nonPromotedResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 10,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(nonPromotedResult.metadata.pr3gRecencyWeightingActive).toBe(false);
+  });
+
+  it('non-BTC crypto does not activate recency weighting by default', async () => {
+    const nonBtcResult = await computeMarkovDistribution({
+      ticker: 'ETH-USD',
+      horizon: 7,
+      currentPrice: 3500,
+      historicalPrices: Array.from({ length: 150 }, (_, i) => 3000 + i * 5 + (Math.sin(i / 5) * 100)),
+      polymarketMarkets: [],
+    });
+    expect(nonBtcResult.metadata.pr3gRecencyWeightingActive).toBe(false);
   });
 
   it('applies deterministic effect of a milder decay vs a more aggressive decay', async () => {
@@ -5298,6 +5344,113 @@ describe('PR3G Lever: Recency-Weighted Regime Up-Rates', () => {
     expect(aggressiveResult.metadata.pr3gRecencyWeightingActive).toBe(true);
     expect(milderResult.metadata.pr3gRecencyWeightingActive).toBe(true);
     expect(aggressiveResult.actionSignal.expectedReturn).not.toBe(milderResult.actionSignal.expectedReturn);
+  });
+});
+
+describe('BTC 14d bearish-break SELL gate', () => {
+  it('fires for the measured low-confidence bearish structural-break slice', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'sideways',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(true);
+  });
+
+  it('does not fire outside BTC 14d', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'sideways',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire in bull regime', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'bull',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire above the low-confidence cap', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'bear',
+      predictionConfidence: 0.091,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire without a structural break', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: false,
+      regimeState: 'bear',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire when the raw side is not SELL', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'BUY',
+      structuralBreakDetected: true,
+      regimeState: 'bear',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire for non-BTC tickers', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'ETH-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'sideways',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
   });
 });
 

@@ -240,6 +240,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         matureBullCalibrationActive: result.metadata.matureBullCalibrationActive,
         trendPenaltyOnlyBreakConfidenceActive: result.metadata.trendPenaltyOnlyBreakConfidenceActive,
         divergenceWeightedBreakConfidenceActive: result.metadata.divergenceWeightedBreakConfidenceActive,
+        bearishBreakRecommendationGateActive: result.metadata.bearishBreakRecommendationGateActive,
         breakFallbackCandidateId: result.metadata.breakFallbackCandidateId,
         breakFallbackMode: result.metadata.breakFallbackMode,
         regimeSpecificSigmaActive: result.metadata.regimeSpecificSigmaActive,

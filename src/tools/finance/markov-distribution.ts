@@ -552,6 +552,8 @@ export interface MarkovDistributionResult {
     trendPenaltyOnlyBreakConfidenceActive?: boolean;
     /** Phase 6 provenance: whether divergence-weighted break confidence was active (backtest-only) */
     divergenceWeightedBreakConfidenceActive?: boolean;
+    /** Phase 6 provenance: whether the BTC 14d bearish-break selective SELL gate fired. */
+    bearishBreakRecommendationGateActive?: boolean;
     /** Phase 7 provenance: whether regime-specific sigma was active (backtest-only) */
     regimeSpecificSigmaActive?: boolean;
     /** Phase 5 provenance: which fallback candidate was used (backtest-only) */
@@ -3436,6 +3438,32 @@ export function buildBtcShortHorizonThinAnchorWarning(options: {
   return '';
 }
 
+export function shouldApplyBtc14dBearishBreakSellGate(options: {
+  ticker: string;
+  horizon: number;
+  recommendation: 'BUY' | 'HOLD' | 'SELL';
+  rawRecommendation: 'BUY' | 'HOLD' | 'SELL' | null;
+  structuralBreakDetected: boolean;
+  regimeState: RegimeState;
+  predictionConfidence: number;
+  rawPredictedProb: number;
+  predictedProb: number;
+  expectedReturn: number;
+}): boolean {
+  const isTargetSlice = (options.ticker === 'BTC' || options.ticker === 'BTC-USD')
+    && options.horizon === 14;
+
+  return isTargetSlice
+    && options.recommendation === 'BUY'
+    && options.rawRecommendation === 'SELL'
+    && options.structuralBreakDetected
+    && options.regimeState !== 'bull'
+    && options.predictionConfidence <= 0.09
+    && options.rawPredictedProb <= 0.50
+    && options.predictedProb <= 0.54
+    && options.expectedReturn <= 0.025;
+}
+
 /**
  * Assess Polymarket anchor quality: how well do anchors cover the relevant price range?
  * Sparse anchors = large gaps = less reliable blending.
@@ -3572,9 +3600,15 @@ export async function computeMarkovDistribution(params: {
   cryptoShortHorizonPUpFloor?: number;
   /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonBearMarginMultiplier?: number;
-  /** @deprecated experimental ablation — backtests only */
+  /** BTC 7d/14d default-on: activates PR3G recency weighting for BTC/BTC-USD
+   *  on 7d and 14d horizons by default. Explicit false disables it for BTC 7d/14d
+   *  (restoring legacy control). Explicit true opts in for other crypto short horizons.
+   *  For the promoted BTC path, decay defaults to 0.98 unless pr3gCryptoShortHorizonDecay
+   *  is explicitly overridden. */
   pr3gCryptoShortHorizonRecencyWeighting?: boolean;
-  /** @deprecated experimental ablation — backtests only */
+  /** Decay rate for PR3G recency-weighted regime-conditional P(up). Defaults to 0.98
+   *  for the promoted BTC short-horizon path, or the asset profile's decayRate for
+   *  other crypto, or no recency weighting at all when recency weighting is inactive. */
   pr3gCryptoShortHorizonDecay?: number;
   /** @deprecated experimental ablation — backtests only */
   referenceTimeMs?: number;
@@ -3643,6 +3677,17 @@ export async function computeMarkovDistribution(params: {
   const assetProfile = getAssetProfile(ticker);
   const isBtcTicker = ticker === 'BTC' || ticker === 'BTC-USD';
   const isBtcShortHorizonThresholdDefault = isBtcTicker && assetProfile.type === 'crypto' && horizon <= 14;
+  const isBtcPhase5PromotedHorizon = isBtcTicker && (horizon === 7 || horizon === 14);
+  // Phase 5 promotion: BTC/BTC-USD 7d/14d defaults PR3G recency weighting on.
+  // Explicit false disables; explicit true opts in for other crypto short horizons.
+  // Raw-decision ablation is an explicit opt-out: it disables promoted PR3G provenance
+  // so that the raw-decision ablation provenance is not masked by promoted recency.
+  const pr3gDisabledByRawDecisionAblation = cryptoShortHorizonRawDecisionAblation === true;
+  const usePr3gRecency = assetProfile.type === 'crypto' && horizon <= 14
+    && !pr3gDisabledByRawDecisionAblation
+    && (pr3gCryptoShortHorizonRecencyWeighting === true || (pr3gCryptoShortHorizonRecencyWeighting !== false && isBtcPhase5PromotedHorizon));
+  const pr3gDefaultDecay = usePr3gRecency && isBtcPhase5PromotedHorizon && pr3gCryptoShortHorizonDecay === undefined
+    ? 0.98 : undefined;
 
   // --- Daily returns and volatility ---
   const returns: number[] = [];
@@ -3907,8 +3952,8 @@ export async function computeMarkovDistribution(params: {
       weights3_experiment = [w4[0], w4[1], w4[2] + w4[3]];
 
       // Compute conditional up rates using the 4-state sequence
-      const pr3gDecayRate = (pr3gCryptoShortHorizonRecencyWeighting && assetProfile.type === 'crypto' && horizon <= 14)
-        ? (pr3gCryptoShortHorizonDecay ?? assetProfile.decayRate)
+      const pr3gDecayRate = usePr3gRecency
+        ? (pr3gCryptoShortHorizonDecay ?? pr3gDefaultDecay ?? assetProfile.decayRate)
         : undefined;
 
       const upHits = { bull: 0, bear: 0, sideways_coil: 0, sideways_chop: 0 };
@@ -3981,8 +4026,8 @@ export async function computeMarkovDistribution(params: {
     : 0.5;
 
   // --- Regime-conditional P(up) (Idea T, Round 4) ---
-  const pr3gDecayRate = (pr3gCryptoShortHorizonRecencyWeighting && assetProfile.type === 'crypto' && horizon <= 14)
-    ? (pr3gCryptoShortHorizonDecay ?? assetProfile.decayRate)
+  const pr3gDecayRate = usePr3gRecency
+    ? (pr3gCryptoShortHorizonDecay ?? pr3gDefaultDecay ?? assetProfile.decayRate)
     : undefined;
   const regimeUpRates = computeRegimeUpRates(regimeSeq, returns, horizon, pr3gDecayRate);
   const Pn = matPow(P, horizon);
@@ -4247,6 +4292,7 @@ export async function computeMarkovDistribution(params: {
   let decisionDistribution = distribution;
   let decisionScenarios = scenarios;
   let rawActionSignal: ActionSignal | null = null;
+  let bearishBreakRecommendationGateActive = false;
 
   if (usePr3fBlend) {
     decisionDistribution = distribution.map((d, i) => ({
@@ -4273,6 +4319,19 @@ export async function computeMarkovDistribution(params: {
     );
   }
 
+  if (!rawActionSignal && assetProfile.type === 'crypto' && horizon <= 14) {
+    rawActionSignal = computeActionSignal(
+      rawDistribution,
+      currentPrice,
+      undefined,
+      undefined,
+      horizon,
+      recentDailyVol,
+      computeScenarioProbabilities(rawDistribution, currentPrice),
+      assetProfile.type,
+    );
+  }
+
   const actionSignal = computeActionSignal(
     decisionDistribution, currentPrice, undefined, undefined, horizon,
     recentDailyVol, decisionScenarios, assetProfile.type,
@@ -4286,6 +4345,22 @@ export async function computeMarkovDistribution(params: {
     predictionConfidence,
     confidence: actionSignal.confidence,
   });
+
+  if (rawActionSignal && shouldApplyBtc14dBearishBreakSellGate({
+    ticker,
+    horizon,
+    recommendation: actionSignal.recommendation,
+    rawRecommendation: rawActionSignal.recommendation,
+    structuralBreakDetected: breakResult.detected,
+    regimeState: currentRegime,
+    predictionConfidence,
+    rawPredictedProb: rawPUp,
+    predictedProb: calPUp,
+    expectedReturn: actionSignal.expectedReturn,
+  })) {
+    actionSignal.recommendation = 'SELL';
+    bearishBreakRecommendationGateActive = true;
+  }
 
   if (useRawDirectionHybrid && rawActionSignal) {
     actionSignal.recommendation = rawActionSignal.recommendation;
@@ -4336,6 +4411,7 @@ export async function computeMarkovDistribution(params: {
       matureBullCalibrationActive,
       trendPenaltyOnlyBreakConfidenceActive: trendPenaltyOnlyBreakConfidence ? true : undefined,
       divergenceWeightedBreakConfidenceActive: divergenceWeightedBreakConfidence ? true : undefined,
+      bearishBreakRecommendationGateActive: bearishBreakRecommendationGateActive || undefined,
       regimeSpecificSigmaActive: regimeSpecificSigma === true &&
         Math.max(...stateWeightsForUp) > (regimeSpecificSigmaThreshold ?? 0.60),
       breakFallbackCandidateId: breakFallbackCandidate?.id ?? undefined,

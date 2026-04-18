@@ -1682,12 +1682,13 @@ describe('Markov distribution walk-forward backtest', () => {
           expect(step.probabilitySource).toBe('calibrated');
         }
 
-        // PR3E provenance: default steps use 'default', ablation steps use 'crypto-short-horizon-raw'
+        // PR3E provenance: default steps now use 'crypto-short-horizon-recency' for BTC short horizon
+        // (promoted default-on PR3G recency weighting), ablation steps use 'crypto-short-horizon-raw'
         for (const step of btc7dDefault.steps) {
-          expect(step.decisionSource).toBe('default');
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
         }
         for (const step of btc14dDefault.steps) {
-          expect(step.decisionSource).toBe('default');
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
         }
         for (const step of btc7dAblation.steps) {
           expect(step.decisionSource).toBe('crypto-short-horizon-raw');
@@ -1699,7 +1700,7 @@ describe('Markov distribution walk-forward backtest', () => {
         // PR3E: aggregate provenance via generateReport
         const report7dDefault = generateReport('BTC-USD', 7, btc7dDefault.steps);
         expect(report7dDefault.provenanceSummary).toBeDefined();
-        expect(report7dDefault.provenanceSummary!.decisionSources.default).toBe(btc7dDefault.steps.length);
+        expect(report7dDefault.provenanceSummary!.decisionSources['crypto-short-horizon-recency']).toBe(btc7dDefault.steps.length);
         expect(report7dDefault.provenanceSummary!.probabilitySources.calibrated).toBe(btc7dDefault.steps.length);
 
         const report7dAblation = generateReport('BTC-USD', 7, btc7dAblation.steps);
@@ -1781,12 +1782,12 @@ describe('Markov distribution walk-forward backtest', () => {
           expect(pr3f.ciUpper).toBe(def.ciUpper);
         }
 
-        // PR3E provenance
+        // PR3E provenance: default steps use 'crypto-short-horizon-recency' (promoted PR3G)
         for (const step of btc7dDefault.steps) {
-          expect(step.decisionSource).toBe('default');
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
         }
         for (const step of btc14dDefault.steps) {
-          expect(step.decisionSource).toBe('default');
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
         }
         
         // PR3F shouldn't be active on *every* step due to conditional checks, 
@@ -1807,7 +1808,7 @@ describe('Markov distribution walk-forward backtest', () => {
       async () => {
         const prices = fixture.tickers['BTC-USD'].closes;
 
-        // 7d Default
+        // 7d Default (promoted BTC short-horizon PR3G 0.98)
         const btc7dDefault = await walkForward({
           ticker: 'BTC-USD',
           prices,
@@ -1816,7 +1817,7 @@ describe('Markov distribution walk-forward backtest', () => {
           stride: STRIDE,
         });
 
-        // 7d PR3G (default decay 0.94)
+        // 7d PR3G (explicit 0.94 legacy decay)
         const btc7dPr3g = await walkForward({
           ticker: 'BTC-USD',
           prices,
@@ -1824,9 +1825,10 @@ describe('Markov distribution walk-forward backtest', () => {
           warmup: WARMUP,
           stride: STRIDE,
           pr3gCryptoShortHorizonRecencyWeighting: true,
+          pr3gCryptoShortHorizonDecay: 0.94,
         });
 
-        // 7d PR3G (milder decay 0.98)
+        // 7d PR3G (explicit promoted decay 0.98)
         const btc7dPr3gMilder = await walkForward({
           ticker: 'BTC-USD',
           prices,
@@ -1837,7 +1839,7 @@ describe('Markov distribution walk-forward backtest', () => {
           pr3gCryptoShortHorizonDecay: 0.98,
         });
 
-        // 14d Default
+        // 14d Default (promoted BTC short-horizon PR3G 0.98)
         const btc14dDefault = await walkForward({
           ticker: 'BTC-USD',
           prices,
@@ -1846,7 +1848,7 @@ describe('Markov distribution walk-forward backtest', () => {
           stride: STRIDE,
         });
 
-        // 14d PR3G (default decay 0.94)
+        // 14d PR3G (explicit 0.94 legacy decay)
         const btc14dPr3g = await walkForward({
           ticker: 'BTC-USD',
           prices,
@@ -1854,9 +1856,10 @@ describe('Markov distribution walk-forward backtest', () => {
           warmup: WARMUP,
           stride: STRIDE,
           pr3gCryptoShortHorizonRecencyWeighting: true,
+          pr3gCryptoShortHorizonDecay: 0.94,
         });
 
-        // 14d PR3G (milder decay 0.98)
+        // 14d PR3G (explicit promoted decay 0.98)
         const btc14dPr3gMilder = await walkForward({
           ticker: 'BTC-USD',
           prices,
@@ -1900,10 +1903,10 @@ describe('Markov distribution walk-forward backtest', () => {
         };
 
         console.log('\n--- PR3G Lever Ablation ---');
-        logRun('BTC 7d Default', btc7dDefault.steps);
+        logRun('BTC 7d Default (0.98)', btc7dDefault.steps);
         logRun('BTC 7d PR3G (0.94)', btc7dPr3g.steps);
         logRun('BTC 7d PR3G (0.98)', btc7dPr3gMilder.steps);
-        logRun('BTC 14d Default', btc14dDefault.steps);
+        logRun('BTC 14d Default (0.98)', btc14dDefault.steps);
         logRun('BTC 14d PR3G (0.94)', btc14dPr3g.steps);
         logRun('BTC 14d PR3G (0.98)', btc14dPr3gMilder.steps);
 
@@ -1921,12 +1924,12 @@ describe('Markov distribution walk-forward backtest', () => {
           expect(pr3g.probabilitySource).toBe('calibrated');
         }
 
-        // PR3E provenance
+        // PR3E provenance: default steps use 'crypto-short-horizon-recency' (promoted PR3G)
         for (const step of btc7dDefault.steps) {
-          expect(step.decisionSource).toBe('default');
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
         }
         for (const step of btc14dDefault.steps) {
-          expect(step.decisionSource).toBe('default');
+          expect(step.decisionSource).toBe('crypto-short-horizon-recency');
         }
         for (const step of btc7dPr3g.steps) {
           expect(step.decisionSource).toBe('crypto-short-horizon-recency');
@@ -1948,6 +1951,37 @@ describe('Markov distribution walk-forward backtest', () => {
         expect(report14dPr3g.provenanceSummary?.decisionSources['crypto-short-horizon-recency']).toBe(btc14dPr3g.steps.length);
       },
       TIMEOUT
+    );
+  });
+
+  describe('BTC 14d bearish-break SELL gate', () => {
+    integrationIt(
+      'BTC-USD 14d: selective SELL gate surfaces provenance and improves the down slice',
+      async () => {
+        const prices = fixture.tickers['BTC-USD'].closes;
+
+        const baseline = await walkForward({
+          ticker: 'BTC-USD',
+          prices,
+          horizon: 14,
+          warmup: WARMUP,
+          stride: STRIDE,
+        });
+
+        expect(baseline.errors).toHaveLength(0);
+        expect(baseline.steps.length).toBeGreaterThan(0);
+
+        const gatedCount = baseline.steps.filter(step => step.bearishBreakRecommendationGateActive === true).length;
+        expect(gatedCount).toBeGreaterThan(0);
+
+        const downSteps = baseline.steps.filter(step => step.actualReturn < -0.03);
+        const downDirectional = downSteps.filter(step => step.recommendation === 'SELL').length / downSteps.length;
+        expect(downDirectional).toBeGreaterThanOrEqual(0.23);
+
+        const report = generateReport('BTC-USD', 14, baseline.steps);
+        expect(report.bearishBreakRecommendationGateActive).toBe(true);
+      },
+      TIMEOUT,
     );
   });
 

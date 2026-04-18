@@ -248,6 +248,7 @@ export async function walkForwardWithReplay(
         decisionSource,
         trendPenaltyOnlyBreakConfidenceActive: result.metadata.trendPenaltyOnlyBreakConfidenceActive,
         divergenceWeightedBreakConfidenceActive: result.metadata.divergenceWeightedBreakConfidenceActive,
+        bearishBreakRecommendationGateActive: result.metadata.bearishBreakRecommendationGateActive,
         breakFallbackCandidateId: result.metadata.breakFallbackCandidateId,
         breakFallbackMode: result.metadata.breakFallbackMode,
       });
