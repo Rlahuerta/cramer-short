@@ -128,7 +128,7 @@ mock.module('../memory/index.js', () => ({
 // ---------------------------------------------------------------------------
 // Dynamic import AFTER mocks are registered.
 // ---------------------------------------------------------------------------
-const { Agent, buildAbstainingMarkovAnswer, buildDistributionWarningPrefix } = await import('./agent.js');
+const { Agent, buildAbstainingMarkovAnswer, buildDistributionWarningPrefix, buildForecastDisagreementPrefix } = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
 // Test environment helpers
@@ -395,6 +395,69 @@ describe('buildDistributionWarningPrefix', () => {
     expect(
       buildDistributionWarningPrefix(
         'What is the bitcoin probability distribution in 7 days?',
+        scratchpad.getToolCallRecords(),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('buildForecastDisagreementPrefix', () => {
+  it('returns a mixed-evidence warning for BTC short-horizon disagreement', () => {
+    const scratchpad = new Scratchpad('btc disagreement test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 14 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'ok',
+          canonical: {
+            actionSignal: { recommendation: 'BUY', expectedReturn: 0.032 },
+            diagnostics: { markovWeight: 1 },
+          },
+        },
+      }),
+    );
+    scratchpad.addToolResult(
+      'polymarket_forecast',
+      { ticker: 'BTC-USD', horizon_days: 14 },
+      JSON.stringify({ data: { result: 'Forecast return: -0.4%\nGrade: B' } }),
+    );
+
+    const prefix = buildForecastDisagreementPrefix(
+      'Provide a BTC forecast for the next 14 days',
+      scratchpad.getToolCallRecords(),
+    );
+
+    expect(prefix).toContain('BTC short-horizon signals are mixed');
+    expect(prefix).toContain('moderated confidence');
+  });
+
+  it('returns null when BTC short-horizon signals do not disagree', () => {
+    const scratchpad = new Scratchpad('btc aligned test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 7 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'ok',
+          canonical: {
+            actionSignal: { recommendation: 'BUY', expectedReturn: 0.025 },
+            diagnostics: { markovWeight: 1 },
+          },
+        },
+      }),
+    );
+    scratchpad.addToolResult(
+      'polymarket_forecast',
+      { ticker: 'BTC-USD', horizon_days: 7 },
+      JSON.stringify({ data: { result: 'Forecast return: +1.2%\nGrade: B' } }),
+    );
+
+    expect(
+      buildForecastDisagreementPrefix(
+        'Provide a BTC forecast for the next 7 days',
         scratchpad.getToolCallRecords(),
       ),
     ).toBeNull();

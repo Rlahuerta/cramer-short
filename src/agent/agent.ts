@@ -1079,6 +1079,83 @@ export function buildDistributionWarningPrefix(query: string, toolCalls: ToolCal
   ].join('\n');
 }
 
+function extractPolymarketForecastReturnForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
+  const desiredTicker = inferDistributionTicker(query);
+  const desiredHorizon = inferDistributionHorizon(query);
+
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (call.tool !== 'polymarket_forecast') continue;
+    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon_days', desiredHorizon)) continue;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(call.result);
+    } catch {
+      continue;
+    }
+
+    const data = parsed && typeof parsed === 'object' ? (parsed as { data?: unknown }).data : null;
+    if (!data || typeof data !== 'object') continue;
+    const payload = data as Record<string, unknown>;
+
+    const directForecastReturn = payload['forecastReturn'];
+    if (typeof directForecastReturn === 'number' && Number.isFinite(directForecastReturn)) {
+      return directForecastReturn;
+    }
+
+    const resultText = payload['result'];
+    if (typeof resultText !== 'string') continue;
+    const match = resultText.match(/(?:forecast return|expected return)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)%/i);
+    if (!match) continue;
+    const parsedPct = Number.parseFloat(match[1]!);
+    if (Number.isFinite(parsedPct)) return parsedPct / 100;
+  }
+
+  return null;
+}
+
+function detectBtcShortHorizonDisagreement(query: string, toolCalls: ToolCallRecord[]): boolean {
+  if (!isCryptoForecastQuery(query)) return false;
+  const ticker = inferDistributionTicker(query);
+  const horizon = inferDistributionHorizon(query);
+  if ((ticker !== 'BTC' && ticker !== 'BTC-USD') || horizon === null || horizon > 14) return false;
+
+  const markovReturn = extractMarkovReturnForQuery(query, toolCalls);
+  const polymarketReturn = extractPolymarketForecastReturnForQuery(query, toolCalls);
+  if (markovReturn === null || polymarketReturn === null) return false;
+
+  return markovReturn > 0.01 && polymarketReturn <= 0;
+}
+
+export function buildForecastDisagreementPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
+  if (!detectBtcShortHorizonDisagreement(query, toolCalls)) return null;
+
+  return [
+    '## Warning: BTC short-horizon signals are mixed',
+    '',
+    'Markov and Polymarket are pointing in different directions for this BTC short-horizon forecast. Read any directional takeaway below as mixed evidence with moderated confidence, not a high-conviction signal.',
+    '',
+    '---',
+    '',
+  ].join('\n');
+}
+
+export function shouldInjectBtcShortHorizonMixedEvidencePrompt(
+  query: string,
+  fullToolResults: string,
+): boolean {
+  const ticker = inferDistributionTicker(query);
+  const horizon = inferDistributionHorizon(query);
+  if ((ticker !== 'BTC' && ticker !== 'BTC-USD') || horizon === null || horizon > 14) return false;
+
+  const markovBullish = /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"expectedReturn"\s*:\s*(0\.0*[1-9]\d*|0\.[1-9]\d*|[1-9]\d*(?:\.\d+)?)/.test(fullToolResults);
+  const polymarketFlatOrBearish = /forecast return\s*:\s*-\d+(?:\.\d+)?%/i.test(fullToolResults)
+    || /forecast return\s*:\s*[+]?(?:0|0\.0+)%/i.test(fullToolResults);
+
+  return markovBullish && polymarketFlatOrBearish;
+}
+
 // ============================================================================
 // Context summary helpers (exported for unit tests)
 // ============================================================================
@@ -1783,8 +1860,9 @@ export class Agent {
 
     const toolCalls = ctx.scratchpad.getToolCallRecords();
     const warningPrefix = buildDistributionWarningPrefix(ctx.query, toolCalls);
+    const disagreementPrefix = buildForecastDisagreementPrefix(ctx.query, toolCalls);
     const baseText = stripThinkingTags(fallbackText);
-    const text = warningPrefix ? `${warningPrefix}${baseText}` : baseText;
+    const text = `${warningPrefix ?? ''}${disagreementPrefix ?? ''}${baseText}`;
 
     if (text) {
       // We already have the answer from the non-streaming callLlm response.

@@ -62,6 +62,8 @@ import {
   buildPolymarketAnchorQueryVariants,
   normalizeSentiment,
   buildForecastHint,
+  buildBtcShortHorizonThinAnchorWarning,
+  capBtcShortHorizonConfidence,
   applyCryptoTerminalAnchorFallback,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
@@ -4352,6 +4354,245 @@ describe('markov_distribution tool output envelope', () => {
     const highConf = buildForecastHint({ ...base, predictionConfidence: 0.30 });
     expect(highConf).not.toBeNull();
     expect(highConf!.markovReturn).toBeCloseTo(0.012, 10);
+  });
+
+  describe('BTC short-horizon confidence cap', () => {
+    it('caps HIGH confidence to MEDIUM for BTC short-horizon outputs with structural break and weak diagnostics', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+    });
+
+    it('does not change LOW confidence even when BTC short-horizon diagnostics are weak', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'LOW',
+      })).toBe('LOW');
+    });
+
+    it('does not cap when structural break is absent', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        structuralBreakDetected: false,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('does not cap BTC long-horizon confidence', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 30,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('recognizes BTC ticker alias directly', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.03,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+    });
+
+    it('does not cap non-BTC assets', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'AAPL',
+        horizon: 7,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('does not treat null R² as weak by itself', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: null,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('does not cap when both diagnostics are above threshold', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.10,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('does not cap at the exact R² and prediction-confidence boundaries', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.05,
+        predictionConfidence: 0.40,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('caps at horizon 14 but not 15', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.03,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 15,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.03,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('caps when prediction confidence alone is weak', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.10,
+        predictionConfidence: 0.38,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+    });
+
+    it('caps when validation alone is weak', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.03,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+    });
+  });
+
+  describe('BTC short-horizon thin-anchor caveat', () => {
+    it('emits a thin-anchor warning for BTC short-horizon good-quality coverage with 2 trusted anchors', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC-USD',
+        horizonDays: 7,
+        trustedAnchors: 2,
+        quality: 'good',
+      })).toContain('thin anchor coverage');
+    });
+
+    it('does not emit the caveat for BTC short-horizon when anchor count is above 3', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC-USD',
+        horizonDays: 7,
+        trustedAnchors: 4,
+        quality: 'good',
+      })).toBe('');
+    });
+
+    it('does not emit the caveat for BTC long-horizon coverage', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC-USD',
+        horizonDays: 30,
+        trustedAnchors: 3,
+        quality: 'good',
+      })).toBe('');
+    });
+
+    it('emits the caveat for the BTC ticker alias directly', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC',
+        horizonDays: 14,
+        trustedAnchors: 3,
+        quality: 'good',
+      })).toContain('thin anchor coverage');
+    });
+
+    it('does not emit the caveat for non-BTC assets', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'ETH-USD',
+        horizonDays: 7,
+        trustedAnchors: 2,
+        quality: 'good',
+      })).toBe('');
+    });
+
+    it('does not emit the caveat when quality is not good', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC-USD',
+        horizonDays: 14,
+        trustedAnchors: 3,
+        quality: 'sparse',
+      })).toBe('');
+    });
+
+    it('preserves good quality while adding the BTC short-horizon caveat', () => {
+      const coverage = assessAnchorCoverage([
+        { price: 62000, probability: 0.72, rawProbability: 0.72, trustScore: 'high', source: 'polymarket', endDate: '2026-04-25' },
+        { price: 66000, probability: 0.38, rawProbability: 0.38, trustScore: 'high', source: 'polymarket', endDate: '2026-04-25' },
+      ], 64000, { ticker: 'BTC-USD', horizonDays: 14 });
+
+      expect(coverage.quality).toBe('good');
+      expect(coverage.trustedAnchors).toBe(2);
+      expect(coverage.warning).toContain('thin anchor coverage');
+    });
+
+    it('propagates the caveat through markovDistributionTool while keeping good quality and canonical output', async () => {
+      const prices: number[] = [];
+      let p = 65000;
+      for (let i = 0; i < 120; i++) {
+        p *= 1 + Math.sin(i * 0.12) * 0.004;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const currentPrice = prices[prices.length - 1];
+      const result = await markovDistributionTool.func({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        currentPrice,
+        historicalPrices: prices,
+        polymarketMarkets: [
+          { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.98)} on April 25?`, probability: 0.68, volume: 5000, createdAt: Date.now() - 86400000 * 4 },
+          { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.02)} on April 25?`, probability: 0.34, volume: 5000, createdAt: Date.now() - 86400000 * 4 },
+        ],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.anchorQuality).toBe('good');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+      expect(parsed.data.canonical.diagnostics.anchorWarning).toContain('thin anchor coverage');
+      expect(parsed.data.report).toContain('thin anchor coverage');
+    });
   });
 
   it('emits undefined provenance flags when break-confidence flags are off', async () => {

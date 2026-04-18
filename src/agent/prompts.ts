@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getChannelProfile } from './channels.js';
+import { shouldInjectBtcShortHorizonMixedEvidencePrompt } from './agent.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { cramerShortPath } from '../utils/paths.js';
 
@@ -509,6 +510,12 @@ IMPORTANT: One or more data tools returned an error or empty result. Per your Fi
     prompt += `
 
 IMPORTANT: markov_distribution results are present. Treat the canonical Markov payload as authoritative. Use the reported scenario bucket probabilities and diagnostics verbatim. Do NOT recompute, sum, or infer scenario probabilities from raw Polymarket titles, threshold questions, or price_distribution_chart output — those are inputs/visual aids, not the canonical distribution.`;
+  }
+
+  if (shouldInjectBtcShortHorizonMixedEvidencePrompt(originalQuery, fullToolResults)) {
+    prompt += `
+
+IMPORTANT: BTC short-horizon signals are mixed. markov_distribution is bullish, but polymarket_forecast is flat or bearish. You MUST explicitly describe this as mixed evidence, and you MUST downgrade the narrative confidence rather than presenting the bullish Markov result as a high-conviction standalone signal.`;
   }
 
   const hasAbstainingMarkovOutput =

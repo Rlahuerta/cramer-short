@@ -619,7 +619,7 @@ export interface AnchorCoverageDiagnostic {
   maxGapPct: number;
   /** Whether anchor coverage is adequate for reliable blending */
   quality: 'good' | 'sparse' | 'none';
-  /** Human-readable warning (empty if quality is 'good') */
+  /** Human-readable warning or caveat (may be non-empty even when quality is 'good') */
   warning: string;
 }
 
@@ -3386,6 +3386,56 @@ export function computeActionLevels(
   };
 }
 
+export function capBtcShortHorizonConfidence(options: {
+  ticker: string;
+  horizon: number;
+  structuralBreakDetected: boolean;
+  outOfSampleR2: number | null;
+  predictionConfidence: number;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+}): 'HIGH' | 'MEDIUM' | 'LOW' {
+  const isBtcShortHorizon = (options.ticker === 'BTC' || options.ticker === 'BTC-USD')
+    && options.horizon <= 14;
+  const weakValidation = (
+    typeof options.outOfSampleR2 === 'number'
+    && Number.isFinite(options.outOfSampleR2)
+    && options.outOfSampleR2 < 0.05
+  ) || options.predictionConfidence < 0.40;
+
+  if (
+    isBtcShortHorizon
+    && options.structuralBreakDetected
+    && weakValidation
+    && options.confidence === 'HIGH'
+  ) {
+    return 'MEDIUM';
+  }
+
+  return options.confidence;
+}
+
+export function buildBtcShortHorizonThinAnchorWarning(options: {
+  ticker?: string;
+  horizonDays?: number;
+  trustedAnchors: number;
+  quality: 'good' | 'sparse' | 'none';
+}): string {
+  const isBtcShortHorizon = (options.ticker === 'BTC' || options.ticker === 'BTC-USD')
+    && options.horizonDays !== undefined
+    && options.horizonDays <= 14;
+
+  if (
+    isBtcShortHorizon
+    && options.quality === 'good'
+    && options.trustedAnchors > 0
+    && options.trustedAnchors <= 3
+  ) {
+    return `BTC short-horizon with thin anchor coverage (${options.trustedAnchors} trusted) — distribution is anchor-calibrated but still sensitive to anchor movement`;
+  }
+
+  return '';
+}
+
 /**
  * Assess Polymarket anchor quality: how well do anchors cover the relevant price range?
  * Sparse anchors = large gaps = less reliable blending.
@@ -3431,7 +3481,14 @@ export function assessAnchorCoverage(
     : trusted.length >= 1 ? 'sparse'
     : 'none';
 
-  const warning = quality === 'good' ? ''
+  const thinAnchorWarning = buildBtcShortHorizonThinAnchorWarning({
+    ticker: options?.ticker,
+    horizonDays: options?.horizonDays,
+    trustedAnchors: trusted.length,
+    quality,
+  });
+
+  const warning = quality === 'good' ? thinAnchorWarning
     : quality === 'sparse'
       ? `Sparse anchors (${trusted.length} trusted, max gap ${maxGapPct.toFixed(0)}%) — interpolation between anchors is model-driven`
       : 'No trusted anchors';
@@ -4221,8 +4278,25 @@ export async function computeMarkovDistribution(params: {
     recentDailyVol, decisionScenarios, assetProfile.type,
   );
 
+  actionSignal.confidence = capBtcShortHorizonConfidence({
+    ticker,
+    horizon,
+    structuralBreakDetected: breakResult.detected,
+    outOfSampleR2: r2os,
+    predictionConfidence,
+    confidence: actionSignal.confidence,
+  });
+
   if (useRawDirectionHybrid && rawActionSignal) {
     actionSignal.recommendation = rawActionSignal.recommendation;
+    rawActionSignal.confidence = capBtcShortHorizonConfidence({
+      ticker,
+      horizon,
+      structuralBreakDetected: breakResult.detected,
+      outOfSampleR2: r2os,
+      predictionConfidence,
+      confidence: rawActionSignal.confidence,
+    });
   }
 
   return {

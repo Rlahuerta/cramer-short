@@ -120,9 +120,10 @@ const {
   extractSentimentScoreFromToolCalls,
   buildForcedMarketDataArgs,
   buildForcedSocialSentimentArgs,
-  buildForcedPolymarketForecastArgs,
-  extractMarkovReturnFromToolCalls,
-  shouldRerunPolymarketForecastWithMarkov,
+   buildForcedPolymarketForecastArgs,
+   extractMarkovReturnFromToolCalls,
+   shouldInjectBtcShortHorizonMixedEvidencePrompt,
+   shouldRerunPolymarketForecastWithMarkov,
   buildForcedOnchainArgs,
   buildForcedFixedIncomeArgs,
   buildForcedCryptoForecastMarkovArgs,
@@ -245,6 +246,58 @@ describe('Agent', () => {
     it('infers ticker and horizon for explicit terminal distribution queries', () => {
       expect(inferDistributionTicker('What is the probability distribution for BTC-USD in 7 trading days?')).toBe('BTC-USD');
       expect(inferDistributionHorizon('What is the probability distribution for BTC-USD in 7 trading days?')).toBe(7);
+    });
+
+    describe('shouldInjectBtcShortHorizonMixedEvidencePrompt', () => {
+      it('returns true for BTC short-horizon disagreement', () => {
+        const results = [
+          '### markov_distribution(ticker=BTC-USD)',
+          '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+          '### polymarket_forecast(ticker=BTC-USD)',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 14 days', results)).toBe(true);
+      });
+
+      it('returns false for non-BTC assets', () => {
+        const results = [
+          '### markov_distribution(ticker=ETH-USD)',
+          '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+          '### polymarket_forecast(ticker=ETH-USD)',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide an ETH forecast for the next 14 days', results)).toBe(false);
+      });
+
+      it('returns false for BTC horizons above 14 days', () => {
+        const results = [
+          '### markov_distribution(ticker=BTC-USD)',
+          '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+          '### polymarket_forecast(ticker=BTC-USD)',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 30 days', results)).toBe(false);
+      });
+
+      it('returns false for unrelated BUY text without bullish Markov payload', () => {
+        const results = [
+          '### some_other_tool()',
+          '{"recommendation":"BUY"}',
+          '### polymarket_forecast(ticker=BTC-USD)',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 7 days', results)).toBe(false);
+      });
+
+      it('returns false for unrelated bearish forecast text without matching BTC disagreement', () => {
+        const results = [
+          '### markov_distribution(ticker=BTC-USD)',
+          '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"SELL","expectedReturn":-0.012}}}}',
+          '### unrelated_text()',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 7 days', results)).toBe(false);
+      });
     });
 
     it('infers month and quarter horizons for non-crypto forecast phrasing', () => {
