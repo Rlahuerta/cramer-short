@@ -24,7 +24,7 @@ import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
 import { baumWelch, predict as hmmPredict, type HMMParams } from './hmm.js';
 import { api } from './api.js';
 import { fetchBinanceDailyCloses } from './binance.js';
-import { fetchPolymarketAnchorMarkets } from './polymarket.js';
+import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
 import { extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
 
@@ -788,6 +788,14 @@ export function extractPriceThresholds(
 
   for (const market of markets) {
     if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question))) {
+      anchorTrace('extract_market', {
+        ticker: options?.ticker ?? null,
+        horizonDays: options?.horizonDays ?? null,
+        question: market.question,
+        endDate: market.endDate ?? null,
+        volume: market.volume ?? 0,
+        excluded: 'barrier_pattern',
+      });
       continue;
     }
 
@@ -814,8 +822,29 @@ export function extractPriceThresholds(
         }
       }
     }
-    if (matched === null) continue;
-    if (isNaN(matched) || matched <= 0) continue;
+    if (matched === null) {
+      anchorTrace('extract_market', {
+        ticker: options?.ticker ?? null,
+        horizonDays: options?.horizonDays ?? null,
+        question: market.question,
+        endDate: market.endDate ?? null,
+        volume: market.volume ?? 0,
+        excluded: 'no_terminal_threshold_match',
+      });
+      continue;
+    }
+    if (isNaN(matched) || matched <= 0) {
+      anchorTrace('extract_market', {
+        ticker: options?.ticker ?? null,
+        horizonDays: options?.horizonDays ?? null,
+        question: market.question,
+        endDate: market.endDate ?? null,
+        volume: market.volume ?? 0,
+        matchedPrice: matched,
+        excluded: 'invalid_threshold',
+      });
+      continue;
+    }
 
     const isYoung =
       market.createdAt != null &&
@@ -857,6 +886,22 @@ export function extractPriceThresholds(
       source: 'polymarket',
       endDate: market.endDate ?? null,
     };
+
+    anchorTrace('extract_market', {
+      ticker: options?.ticker ?? null,
+      horizonDays: options?.horizonDays ?? null,
+      question: market.question,
+      endDate: market.endDate ?? null,
+      volume: market.volume ?? 0,
+      matchedPrice: matched,
+      isBelow,
+      hasVolume,
+      isYoung,
+      isNearTargetResolution,
+      trustScore,
+      rawProbability,
+      correctedProbability: corrected.probability,
+    });
 
     const existing = seen.get(matched);
     if (!existing || rawProbability > existing.rawProbability) {
@@ -957,6 +1002,10 @@ function normalizeSearchIdentityPhrase(ticker: string, phrase: string): string {
   return normalizeForPolymarket(phrase, shouldReplaceTicker ? identity.canonicalTicker : null);
 }
 
+const anchorTrace = process.env.DEBUG_ANCHORS
+  ? (...args: unknown[]) => console.error('[ANCHOR_TRACE]', ...args)
+  : (..._args: unknown[]) => {};
+
 export function inferPolymarketSearchPhrase(ticker: string): string {
   const identity = resolveTickerSearchIdentity(ticker);
   return normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} price`);
@@ -989,7 +1038,14 @@ export function buildPolymarketAnchorQueryVariants(
   const extracted = orderedSignals
     .flatMap((signal) => [signal.searchPhrase, ...(signal.queryVariants ?? [])]);
 
-  return Array.from(new Set([primary, ...manual, ...extracted].filter(Boolean)));
+  const variants = Array.from(new Set([primary, ...manual, ...extracted].filter(Boolean)));
+  anchorTrace('query_variants', {
+    ticker,
+    horizonDays: options?.horizonDays ?? null,
+    variants,
+    frontSlice: variants.slice(0, 6),
+  });
+  return variants;
 }
 
 /**
@@ -1070,9 +1126,119 @@ async function fetchCandidatePolymarketAnchors(
     };
   }
 
-  const settled = await Promise.allSettled(
-    queries.slice(0, 6).map((query) => fetchPolymarketAnchorMarkets(query, 40, { ticker, horizonDays, endDateFilter })),
+  const frontQueries = queries.slice(0, 6);
+
+  anchorTrace('fetch_candidates_start', {
+    ticker,
+    horizonDays,
+    isCrypto,
+    isLongHorizonCrypto,
+    endDateFilter: endDateFilter ?? null,
+    queries: frontQueries,
+  });
+
+  let settled = await Promise.allSettled(
+    frontQueries.map((query) => fetchPolymarketAnchorMarkets(query, 40, { ticker, horizonDays, endDateFilter })),
   );
+
+  settled.forEach((result, index) => {
+    const query = frontQueries[index];
+    if (result.status === 'fulfilled') {
+      anchorTrace('fetch_candidates_query_result', {
+        ticker,
+        horizonDays,
+        query,
+        returnedCount: result.value.length,
+        markets: result.value.map((market) => ({
+          question: market.question,
+          volume24h: market.volume24h,
+          ageDays: market.ageDays ?? null,
+          endDate: market.endDate ?? null,
+        })),
+      });
+    } else {
+      anchorTrace('fetch_candidates_query_result', {
+        ticker,
+        horizonDays,
+        query,
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    }
+  });
+
+  if (
+    isLongHorizonCrypto
+    && endDateFilter
+    && settled.every((result) => result.status !== 'fulfilled' || result.value.length === 0)
+    && queries.length > frontQueries.length
+  ) {
+    const retryQueries = queries.slice(frontQueries.length);
+    anchorTrace('fetch_candidates_date_retry', {
+      ticker,
+      horizonDays,
+      endDateFilter,
+      retryQueries,
+    });
+    const retryMarkets = await fetchPolymarketAnchorMarketsWithQueries(
+      retryQueries,
+      40,
+      { ticker, horizonDays, endDateFilter },
+    );
+    anchorTrace('fetch_candidates_date_retry_result', {
+      ticker,
+      horizonDays,
+      retryQueries,
+      returnedCount: retryMarkets.length,
+      markets: retryMarkets.map((market) => ({
+        question: market.question,
+        volume24h: market.volume24h,
+        ageDays: market.ageDays ?? null,
+        endDate: market.endDate ?? null,
+      })),
+    });
+    settled = [
+      ...settled,
+      {
+        status: 'fulfilled',
+        value: retryMarkets,
+      } satisfies PromiseFulfilledResult<Awaited<ReturnType<typeof fetchPolymarketAnchorMarketsWithQueries>>>,
+    ];
+  }
+
+  if (
+    isLongHorizonCrypto
+    && endDateFilter
+    && settled.every((result) => result.status !== 'fulfilled' || result.value.length === 0)
+  ) {
+    anchorTrace('fetch_candidates_undated_fallback', {
+      ticker,
+      horizonDays,
+      queries: frontQueries,
+    });
+    const fallbackMarkets = await fetchPolymarketAnchorMarketsWithQueries(
+      frontQueries,
+      40,
+      { ticker, horizonDays },
+    );
+    anchorTrace('fetch_candidates_undated_fallback_result', {
+      ticker,
+      horizonDays,
+      returnedCount: fallbackMarkets.length,
+      markets: fallbackMarkets.map((market) => ({
+        question: market.question,
+        volume24h: market.volume24h,
+        ageDays: market.ageDays ?? null,
+        endDate: market.endDate ?? null,
+      })),
+    });
+    settled = [
+      ...settled,
+      {
+        status: 'fulfilled',
+        value: fallbackMarkets,
+      } satisfies PromiseFulfilledResult<Awaited<ReturnType<typeof fetchPolymarketAnchorMarketsWithQueries>>>,
+    ];
+  }
 
   const seen = new Set<string>();
   const combined = settled
@@ -1091,13 +1257,46 @@ async function fetchCandidatePolymarketAnchors(
       return true;
     });
 
+  anchorTrace('fetch_candidates_combined', {
+    ticker,
+    horizonDays,
+    combinedCount: combined.length,
+    combinedMarkets: combined.map((market) => ({
+      question: market.question,
+      volume: market.volume ?? 0,
+      createdAt: market.createdAt ?? null,
+      endDate: market.endDate ?? null,
+    })),
+  });
+
   let filtered = filterMarketsToHorizon(combined, horizonDays);
+  anchorTrace('fetch_candidates_horizon_filter', {
+    ticker,
+    horizonDays,
+    filteredCount: filtered.length,
+    filteredMarkets: filtered.map((market) => ({
+      question: market.question,
+      volume: market.volume ?? 0,
+      endDate: market.endDate ?? null,
+    })),
+  });
 
   // Crypto fallback: when strict-horizon filter yields only barrier-style markets,
   // also include earlier-dated terminal-anchor-compatible markets so the fallback
   // in computeMarkovDistribution can recover usable anchors.
   if (isCrypto) {
     const strictAnchors = extractPriceThresholds(filtered, { ticker, horizonDays });
+    anchorTrace('fetch_candidates_strict_anchors', {
+      ticker,
+      horizonDays,
+      strictAnchorCount: strictAnchors.length,
+      strictAnchors: strictAnchors.map((anchor) => ({
+        price: anchor.price,
+        probability: anchor.probability,
+        trustScore: anchor.trustScore,
+        endDate: anchor.endDate ?? null,
+      })),
+    });
     if (strictAnchors.length === 0) {
       const broader = combined.filter((m) => {
         if (!m.endDate) return true;
@@ -1106,11 +1305,33 @@ async function fetchCandidatePolymarketAnchors(
         const daysUntil = (endMs - Date.now()) / 86_400_000;
         return daysUntil > 0 && daysUntil <= horizonDays * 2;
       });
+      anchorTrace('fetch_candidates_broader_fallback', {
+        ticker,
+        horizonDays,
+        broaderCount: broader.length,
+        broaderMarkets: broader.map((market) => ({
+          question: market.question,
+          volume: market.volume ?? 0,
+          endDate: market.endDate ?? null,
+        })),
+      });
       filtered = broader.length > filtered.length ? broader : filtered;
     }
   }
 
-  return sortMarketsByHorizonCloseness(filtered, horizonDays);
+  const sorted = sortMarketsByHorizonCloseness(filtered, horizonDays);
+  anchorTrace('fetch_candidates_final', {
+    ticker,
+    horizonDays,
+    finalCount: sorted.length,
+    finalMarkets: sorted.map((market) => ({
+      question: market.question,
+      volume: market.volume ?? 0,
+      endDate: market.endDate ?? null,
+    })),
+  });
+
+  return sorted;
 }
 
 /**

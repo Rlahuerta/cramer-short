@@ -4412,6 +4412,71 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.distribution).toBeNull();
   });
 
+  it('uses undated fallback only after date-windowed front slice and retry queries are exhausted', async () => {
+    const callOptions: Array<{ endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [],
+      fetchPolymarketAnchorMarketsWithQueries: async (
+        queries: string[],
+        _limit: number,
+        options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+      ) => {
+        callOptions.push({ endDateFilter: options.endDateFilter });
+        if (options.endDateFilter) {
+          return [];
+        }
+        expect(queries).toEqual([
+          'Bitcoin price',
+          'Bitcoin',
+          'Bitcoin above',
+          'Bitcoin below',
+          'Bitcoin ETF',
+          'crypto ETF',
+        ]);
+        return [
+          {
+            question: 'Will the price of Bitcoin be above $76,000 on April 24?',
+            probability: 0.5,
+            volume24h: 5000,
+            ageDays: 0,
+            endDate: '2026-04-24',
+          },
+        ];
+      },
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 30,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(callOptions).toHaveLength(2);
+    expect(callOptions[0].endDateFilter).toEqual({
+      end_date_min: expect.any(String),
+      end_date_max: expect.any(String),
+    });
+    expect(callOptions[1].endDateFilter).toBeUndefined();
+    expect(parsed.data.status).toBe('abstain');
+    expect(diagnostics?.totalAnchors).toBe(1);
+    expect(diagnostics?.trustedAnchors).toBe(0);
+  });
+
   it('returns canonical payload when trusted anchors and positive validation are present', async () => {
     const prices: number[] = [];
     let p = 100;

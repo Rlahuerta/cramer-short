@@ -590,6 +590,10 @@ function formatResults(markets: FormattedMarket[], query: string, warnings: stri
   return lines.join('\n').trim();
 }
 
+const anchorTrace = process.env.DEBUG_ANCHORS
+  ? (...args: unknown[]) => console.error('[ANCHOR_TRACE]', ...args)
+  : (..._args: unknown[]) => {};
+
 // ---------------------------------------------------------------------------
 // Anchor-acquisition search with optional end-date filtering
 // ---------------------------------------------------------------------------
@@ -612,28 +616,45 @@ async function searchEventsForAnchors(
   if (cached) return cached;
 
   const slugs = inferTagSlugs(query);
+  const uniqueSlugs = Array.from(new Set(slugs));
   const fetchLimit = Math.min(limit * 8, 80);
 
-  const fetchEvents = async (extraParams?: URLSearchParams): Promise<FormattedMarket[]> => {
+  const fetchEvents = async (tagSlugOverride?: string, extraParams?: URLSearchParams): Promise<FormattedMarket[]> => {
     try {
       return await fetchWithRetry(async () => {
+        const resolvedTagSlug = tagSlugOverride ?? uniqueSlugs[0];
         const params = new URLSearchParams({
           limit: String(fetchLimit),
           active: 'true',
           closed: 'false',
           order: 'volume24hr',
           ascending: 'false',
-          ...(slugs.length > 0 ? { tag_slug: slugs[0] } : {}),
+          ...(resolvedTagSlug ? { tag_slug: resolvedTagSlug } : {}),
         });
         if (extraParams) {
           for (const [k, v] of extraParams) params.set(k, v);
         }
+        anchorTrace('search_events_for_anchors_request', {
+          query,
+          limit,
+          slugs,
+          params: Object.fromEntries(params.entries()),
+        });
         const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
           headers: { 'Accept': 'application/json' },
           signal: AbortSignal.timeout(12_000),
         });
         if (!res.ok) throw new Error(`Gamma API ${res.status}`);
         const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
+        anchorTrace('search_events_for_anchors_response', {
+          query,
+          limit,
+          eventCount: events.length,
+          eventTitles: events.slice(0, 20).map((event) => ({
+            title: event.title ?? null,
+            marketCount: event.markets?.length ?? 0,
+          })),
+        });
         const results: FormattedMarket[] = [];
         const seen = new Set<string>();
         for (const event of events) {
@@ -653,6 +674,17 @@ async function searchEventsForAnchors(
             if (results.length >= limit) return results;
           }
         }
+        anchorTrace('search_events_for_anchors_results', {
+          query,
+          limit,
+          resultCount: results.length,
+          results: results.map((market) => ({
+            question: market.question,
+            volume24h: market.volume24h,
+            ageDays: market.ageDays ?? null,
+            endDate: market.endDate ?? null,
+          })),
+        });
         return results;
       });
     } catch {
@@ -667,15 +699,85 @@ async function searchEventsForAnchors(
       end_date_min: dateFilter.end_date_min,
       end_date_max: dateFilter.end_date_max,
     });
-    results = await fetchEvents(dateParams);
+    const slugsToTry = uniqueSlugs.length > 0 ? uniqueSlugs : [undefined];
+    const seen = new Set<string>();
+    const perSlugCounts: Array<{ tagSlug: string | null; resultCount: number }> = [];
+
+    for (const tagSlug of slugsToTry) {
+      const slugResults = await fetchEvents(tagSlug, dateParams);
+      perSlugCounts.push({ tagSlug: tagSlug ?? null, resultCount: slugResults.length });
+      for (const market of slugResults) {
+        if (seen.has(market.question)) continue;
+        seen.add(market.question);
+        results.push(market);
+        if (results.length >= limit) break;
+      }
+      if (results.length >= limit) break;
+    }
+
+    anchorTrace('search_events_for_anchors_date_filter_attempt', {
+      query,
+      limit,
+      dateFilter,
+      slugsTried: slugsToTry.map((tagSlug) => tagSlug ?? null),
+      perSlugCounts,
+      resultCount: results.length,
+    });
   }
 
-  if (results.length === 0) {
+  if (results.length === 0 && !dateFilter) {
+    anchorTrace('search_events_for_anchors_fallback', {
+      query,
+      limit,
+      dateFilter: dateFilter ?? null,
+      reason: dateFilter ? 'date_filter_empty' : 'no_date_filter',
+    });
     results = await fetchEvents();
   }
 
   if (results.length > 0) setCache(key, results);
   return results;
+}
+
+export async function fetchPolymarketAnchorMarketsWithQueries(
+  queries: string[],
+  limit: number,
+  options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+): Promise<PolymarketMarketResult[]> {
+  const dedupedQueries = Array.from(new Set(queries.filter(Boolean)));
+  const seen = new Set<string>();
+  const scored: Array<{ market: PolymarketMarketResult; score: number }> = [];
+
+  const settled = await Promise.allSettled(
+    dedupedQueries.map((query) => (
+      options.endDateFilter
+        ? searchEventsForAnchors(query, Math.max(limit * 3, 24), options.endDateFilter)
+        : searchEvents(query, Math.max(limit * 3, 24))
+    )),
+  );
+
+  settled.forEach((result) => {
+    if (result.status !== 'fulfilled') return;
+    for (const market of result.value.map(toStructuredMarketResult)) {
+      if (seen.has(market.question)) continue;
+      seen.add(market.question);
+      const score = scoreAnchorMarketRelevance(
+        market.question,
+        options.ticker,
+        options.horizonDays,
+        market.endDate,
+      );
+      if (score > 0) scored.push({ market, score });
+    }
+  });
+
+  return scored
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      return b.market.volume24h - a.market.volume24h;
+    })
+    .slice(0, limit)
+    .map(({ market }) => market);
 }
 
 // ---------------------------------------------------------------------------
@@ -736,27 +838,7 @@ export async function fetchPolymarketAnchorMarkets(
   limit: number,
   options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
 ): Promise<PolymarketMarketResult[]> {
-  const markets = options.endDateFilter
-    ? await searchEventsForAnchors(query, Math.max(limit * 3, 24), options.endDateFilter)
-    : await searchEvents(query, Math.max(limit * 3, 24));
-  return markets
-    .map(toStructuredMarketResult)
-    .map((market) => ({
-      market,
-      score: scoreAnchorMarketRelevance(
-        market.question,
-        options.ticker,
-        options.horizonDays,
-        market.endDate,
-      ),
-    }))
-    .filter(({ score }) => score > 0)
-    .sort((a, b) => {
-      if (a.score !== b.score) return b.score - a.score;
-      return b.market.volume24h - a.market.volume24h;
-    })
-    .slice(0, limit)
-    .map(({ market }) => market);
+  return fetchPolymarketAnchorMarketsWithQueries([query], limit, options);
 }
 
 // ---------------------------------------------------------------------------
