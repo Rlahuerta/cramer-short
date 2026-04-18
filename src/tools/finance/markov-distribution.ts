@@ -824,15 +824,22 @@ export function extractPriceThresholds(
         : market.createdAt) < 48 * 60 * 60 * 1000;
 
     const hasVolume = (market.volume ?? 0) > 0;
-    const isShortHorizonCrypto = options?.ticker != null
-      && getAssetProfile(options.ticker).type === 'crypto'
+    const isCrypto = options?.ticker != null
+      && getAssetProfile(options.ticker).type === 'crypto';
+    const isShortHorizonCrypto = isCrypto
       && options?.horizonDays != null
       && options.horizonDays <= 14;
+    const isLongHorizonCrypto = isCrypto
+      && options?.horizonDays != null
+      && options.horizonDays > 14;
     const isNearTargetResolution = options?.horizonDays != null && market.endDate
       ? Math.abs((Date.parse(market.endDate) - now) / 86_400_000 - options.horizonDays) <= 2
       : false;
     const trustScore: 'high' | 'low' =
-      hasVolume && (!isYoung || (isShortHorizonCrypto && isNearTargetResolution)) ? 'high' : 'low';
+      hasVolume && (
+        (isLongHorizonCrypto && !isYoung && isNearTargetResolution)
+        || (!isLongHorizonCrypto && (!isYoung || (isShortHorizonCrypto && isNearTargetResolution)))
+      ) ? 'high' : 'low';
 
     const rawProbability = market.probability;
     const correctedRaw = rawProbability * YES_BIAS_MULTIPLIER;
@@ -955,7 +962,10 @@ export function inferPolymarketSearchPhrase(ticker: string): string {
   return normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} price`);
 }
 
-export function buildPolymarketAnchorQueryVariants(ticker: string): string[] {
+export function buildPolymarketAnchorQueryVariants(
+  ticker: string,
+  options?: { horizonDays?: number },
+): string[] {
   const identity = resolveTickerSearchIdentity(ticker);
   const primary = inferPolymarketSearchPhrase(ticker);
   const manual = [
@@ -963,10 +973,43 @@ export function buildPolymarketAnchorQueryVariants(ticker: string): string[] {
     normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} above`),
     normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} below`),
   ];
-  const extracted = extractSignals(identity.searchQuery)
+
+  const signals = extractSignals(identity.searchQuery);
+  const isLongHorizonCrypto = options?.horizonDays != null
+    && options.horizonDays > 14
+    && getAssetProfile(ticker).type === 'crypto';
+
+  // For longer-horizon crypto anchor acquisition, price-target signals must
+  // outrank regulatory/macro signals so fetchCandidatePolymarketAnchors'
+  // front-6 query slice isn't consumed by "crypto regulation" / "SEC crypto".
+  const orderedSignals = isLongHorizonCrypto
+    ? reorderCryptoSignalsForAnchorAcquisition(signals)
+    : signals;
+
+  const extracted = orderedSignals
     .flatMap((signal) => [signal.searchPhrase, ...(signal.queryVariants ?? [])]);
 
   return Array.from(new Set([primary, ...manual, ...extracted].filter(Boolean)));
+}
+
+/**
+ * Reorders crypto signal categories to prioritize price-target and
+ * threshold-oriented queries for anchor acquisition. Price-target signals
+ * (btc_price_target, etf_product) are promoted ahead of regulatory and
+ * macro signals which rarely produce price-anchor-compatible markets.
+ */
+function reorderCryptoSignalsForAnchorAcquisition(signals: import('./signal-extractor.js').SignalCategory[]): import('./signal-extractor.js').SignalCategory[] {
+  const priorityCategories = new Set(['btc_price_target', 'etf_product']);
+  const front: typeof signals = [];
+  const back: typeof signals = [];
+  for (const signal of signals) {
+    if (priorityCategories.has(signal.category)) {
+      front.push(signal);
+    } else {
+      back.push(signal);
+    }
+  }
+  return [...front, ...back];
 }
 
 function sortMarketsByHorizonCloseness<T extends { endDate?: string | null; volume?: number }>(
@@ -1009,9 +1052,26 @@ async function fetchCandidatePolymarketAnchors(
   createdAt?: string | number;
   endDate?: string | null;
 }>> {
-  const queries = buildPolymarketAnchorQueryVariants(ticker);
+  const queries = buildPolymarketAnchorQueryVariants(ticker, { horizonDays });
+  const isCrypto = getAssetProfile(ticker).type === 'crypto';
+  const isLongHorizonCrypto = isCrypto && horizonDays > 14;
+
+  // For long-horizon crypto, constrain API to markets resolving near the target horizon
+  // via end_date_min/end_date_max so near-term markets don't crowd out 30-day anchors.
+  let endDateFilter: { end_date_min: string; end_date_max: string } | undefined;
+  if (isLongHorizonCrypto) {
+    const now = Date.now();
+    const toleranceDays = Math.max(5, horizonDays * 0.5);
+    const minDate = new Date(now + (horizonDays - toleranceDays) * 86_400_000);
+    const maxDate = new Date(now + (horizonDays + toleranceDays) * 86_400_000);
+    endDateFilter = {
+      end_date_min: minDate.toISOString().slice(0, 10),
+      end_date_max: maxDate.toISOString().slice(0, 10),
+    };
+  }
+
   const settled = await Promise.allSettled(
-    queries.slice(0, 6).map((query) => fetchPolymarketAnchorMarkets(query, 40, { ticker, horizonDays })),
+    queries.slice(0, 6).map((query) => fetchPolymarketAnchorMarkets(query, 40, { ticker, horizonDays, endDateFilter })),
   );
 
   const seen = new Set<string>();
@@ -1031,7 +1091,6 @@ async function fetchCandidatePolymarketAnchors(
       return true;
     });
 
-  const isCrypto = getAssetProfile(ticker).type === 'crypto';
   let filtered = filterMarketsToHorizon(combined, horizonDays);
 
   // Crypto fallback: when strict-horizon filter yields only barrier-style markets,
@@ -3980,8 +4039,8 @@ export async function computeMarkovDistribution(params: {
       startStateMixtureActive: useStartStateMixture,
       sidewaysSplitActive,
       matureBullCalibrationActive,
-      trendPenaltyOnlyBreakConfidenceActive: trendPenaltyOnlyBreakConfidence === true,
-      divergenceWeightedBreakConfidenceActive: divergenceWeightedBreakConfidence === true,
+      trendPenaltyOnlyBreakConfidenceActive: trendPenaltyOnlyBreakConfidence ? true : undefined,
+      divergenceWeightedBreakConfidenceActive: divergenceWeightedBreakConfidence ? true : undefined,
       regimeSpecificSigmaActive: regimeSpecificSigma === true &&
         Math.max(...stateWeightsForUp) > (regimeSpecificSigmaThreshold ?? 0.60),
       breakFallbackCandidateId: breakFallbackCandidate?.id ?? undefined,

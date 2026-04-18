@@ -591,6 +591,94 @@ function formatResults(markets: FormattedMarket[], query: string, warnings: stri
 }
 
 // ---------------------------------------------------------------------------
+// Anchor-acquisition search with optional end-date filtering
+// ---------------------------------------------------------------------------
+
+/**
+ * Search Polymarket events with an end-date window constraint.
+ * Used exclusively by anchor acquisition to find markets resolving within
+ * a target horizon. The Gamma API supports `end_date_min` / `end_date_max`
+ * on the /events endpoint, which filters to events with end dates inside
+ * the specified range.
+ */
+async function searchEventsForAnchors(
+  query: string,
+  limit: number,
+  dateFilter?: { end_date_min: string; end_date_max: string },
+): Promise<FormattedMarket[]> {
+  const keySuffix = dateFilter ? `:${dateFilter.end_date_min}:${dateFilter.end_date_max}` : '';
+  const key = `${query.toLowerCase().trim()}:${limit}${keySuffix}`;
+  const cached = getCached(key);
+  if (cached) return cached;
+
+  const slugs = inferTagSlugs(query);
+  const fetchLimit = Math.min(limit * 8, 80);
+
+  const fetchEvents = async (extraParams?: URLSearchParams): Promise<FormattedMarket[]> => {
+    try {
+      return await fetchWithRetry(async () => {
+        const params = new URLSearchParams({
+          limit: String(fetchLimit),
+          active: 'true',
+          closed: 'false',
+          order: 'volume24hr',
+          ascending: 'false',
+          ...(slugs.length > 0 ? { tag_slug: slugs[0] } : {}),
+        });
+        if (extraParams) {
+          for (const [k, v] of extraParams) params.set(k, v);
+        }
+        const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (!res.ok) throw new Error(`Gamma API ${res.status}`);
+        const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
+        const results: FormattedMarket[] = [];
+        const seen = new Set<string>();
+        for (const event of events) {
+          if (!event.markets?.length) continue;
+          const titleMatches = questionMatchesQuery(event.title ?? '', query);
+          const sorted = [...event.markets]
+            .filter((m) => m.active && !m.closed)
+            .sort((a, b) => (b.volume24hr ?? 0) - (a.volume24hr ?? 0))
+            .slice(0, 4);
+          for (const m of sorted) {
+            if (!titleMatches && !questionMatchesQuery(m.question, query)) continue;
+            const fmt = formatMarket(m);
+            if (fmt && !seen.has(fmt.question)) {
+              seen.add(fmt.question);
+              results.push(fmt);
+            }
+            if (results.length >= limit) return results;
+          }
+        }
+        return results;
+      });
+    } catch {
+      return [];
+    }
+  };
+
+  let results: FormattedMarket[] = [];
+
+  if (dateFilter) {
+    const dateParams = new URLSearchParams({
+      end_date_min: dateFilter.end_date_min,
+      end_date_max: dateFilter.end_date_max,
+    });
+    results = await fetchEvents(dateParams);
+  }
+
+  if (results.length === 0) {
+    results = await fetchEvents();
+  }
+
+  if (results.length > 0) setCache(key, results);
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Structured fetch (for programmatic use by polymarket-injector)
 // ---------------------------------------------------------------------------
 
@@ -646,9 +734,11 @@ export async function fetchPolymarketMarkets(
 export async function fetchPolymarketAnchorMarkets(
   query: string,
   limit: number,
-  options: { ticker: string; horizonDays?: number },
+  options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
 ): Promise<PolymarketMarketResult[]> {
-  const markets = await searchEvents(query, Math.max(limit * 3, 24));
+  const markets = options.endDateFilter
+    ? await searchEventsForAnchors(query, Math.max(limit * 3, 24), options.endDateFilter)
+    : await searchEvents(query, Math.max(limit * 3, 24));
   return markets
     .map(toStructuredMarketResult)
     .map((market) => ({

@@ -318,6 +318,101 @@ describe('fetchPolymarketAnchorMarkets', () => {
     const results = await fetchPolymarketAnchorMarkets('Bitcoin above', 5, { ticker: 'BTC-USD', horizonDays: 7 });
     expect(results[0]?.question).toContain('be above $70,000 on April 9');
   });
+
+  it('passes endDateFilter to constrain anchor search for long-horizon crypto', async () => {
+    const now = Date.now();
+    const thirtyDayEvent = {
+      id: 'btc-30d',
+      title: 'Bitcoin 30-day',
+      markets: [
+        {
+          id: '3',
+          question: 'Will the price of Bitcoin be above $85000 on May 18?',
+          outcomes: '["Yes","No"]',
+          outcomePrices: '["0.55","0.45"]',
+          endDateIso: new Date(now + 30 * 86_400_000).toISOString(),
+          volume24hr: 500000,
+          volumeNum: 500000,
+          liquidityNum: 200000,
+          active: true,
+          closed: false,
+          createdAt: new Date(now - 5 * 86_400_000).toISOString(),
+        },
+      ],
+    };
+
+    let capturedUrl = '';
+    globalThis.fetch = (async (url: string | URL) => {
+      capturedUrl = String(url);
+      const body = thirtyDayEvent;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [body],
+      } as Response;
+    }) as typeof fetch;
+
+    const toleranceDays = Math.max(5, 30 * 0.5);
+    const minDate = new Date(now + (30 - toleranceDays) * 86_400_000).toISOString().slice(0, 10);
+    const maxDate = new Date(now + (30 + toleranceDays) * 86_400_000).toISOString().slice(0, 10);
+
+    await fetchPolymarketAnchorMarkets('Bitcoin above', 5, {
+      ticker: 'BTC-USD',
+      horizonDays: 30,
+      endDateFilter: { end_date_min: minDate, end_date_max: maxDate },
+    });
+
+    expect(capturedUrl).toContain('end_date_min=');
+    expect(capturedUrl).toContain('end_date_max=');
+  });
+
+  it('falls back to undated search when endDateFilter returns no results', async () => {
+    const event = {
+      id: 'btc-fallback',
+      title: 'Bitcoin markets',
+      markets: [
+        {
+          id: '4',
+          question: 'Will the price of Bitcoin be above $90000 in June?',
+          outcomes: '["Yes","No"]',
+          outcomePrices: '["0.40","0.60"]',
+          endDateIso: new Date(Date.now() + 60 * 86_400_000).toISOString(),
+          volume24hr: 200000,
+          volumeNum: 200000,
+          liquidityNum: 80000,
+          active: true,
+          closed: false,
+          createdAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+        },
+      ],
+    };
+
+    let fetchCount = 0;
+    globalThis.fetch = (async (url: string | URL) => {
+      fetchCount++;
+      const urlStr = String(url);
+      const hasDateFilter = urlStr.includes('end_date_min');
+      const body = hasDateFilter ? [] : [event];
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+      } as Response;
+    }) as typeof fetch;
+
+    const now = Date.now();
+    const results = await fetchPolymarketAnchorMarkets('Bitcoin price target', 5, {
+      ticker: 'BTC-USD',
+      horizonDays: 30,
+      endDateFilter: {
+        end_date_min: new Date(now + 15 * 86_400_000).toISOString().slice(0, 10),
+        end_date_max: new Date(now + 45 * 86_400_000).toISOString().slice(0, 10),
+      },
+    });
+
+    expect(fetchCount).toBeGreaterThanOrEqual(2);
+    expect(results.length).toBeGreaterThan(0);
+  });
 });
 
 describe('polymarketTool', () => {

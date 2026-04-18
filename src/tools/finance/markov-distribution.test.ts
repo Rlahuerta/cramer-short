@@ -610,6 +610,50 @@ describe('applyCryptoTerminalAnchorFallback', () => {
     expect(result[0].trustScore).toBe('high');
   });
 
+  it('keeps mature near-target BTC 30-day anchors trusted in direct extraction', () => {
+    const result = extractPriceThresholds([
+      {
+        question: 'Will the price of Bitcoin be above $84000 on May 15?',
+        probability: 0.50,
+        volume: 30000,
+        createdAt: REF_TIME - 5 * DAY_MS,
+        endDate: '2025-05-15',
+      },
+    ], { ticker: 'BTC-USD', horizonDays: 30, referenceTimeMs: REF_TIME });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].trustScore).toBe('high');
+  });
+
+  it('keeps off-window BTC 30-day anchors at low trust even when mature', () => {
+    const result = extractPriceThresholds([
+      {
+        question: 'Will the price of Bitcoin be above $84000 on April 19?',
+        probability: 0.50,
+        volume: 30000,
+        createdAt: REF_TIME - 5 * DAY_MS,
+        endDate: '2025-04-19',
+      },
+    ], { ticker: 'BTC-USD', horizonDays: 30, referenceTimeMs: REF_TIME });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].trustScore).toBe('low');
+  });
+
+  it('keeps undated BTC 30-day anchors at low trust even when mature', () => {
+    const result = extractPriceThresholds([
+      {
+        question: 'Will the price of Bitcoin be above $84000 in May?',
+        probability: 0.50,
+        volume: 30000,
+        createdAt: REF_TIME - 5 * DAY_MS,
+      },
+    ], { ticker: 'BTC-USD', horizonDays: 30, referenceTimeMs: REF_TIME });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].trustScore).toBe('low');
+  });
+
   it('does not activate for non-crypto tickers even with zero anchors', () => {
     const markets = [
       { question: 'Will SPY be above $500 on April 17?', probability: 0.6, volume: 10000, endDate: '2025-04-17' },
@@ -3971,6 +4015,35 @@ describe('markov_distribution anchor query strategy', () => {
     expect(variants).toContain('Bitcoin below');
   });
 
+  it('prioritises price-target queries for BTC 30-day anchor acquisition', () => {
+    const variants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 30 });
+    const frontSlice = variants.slice(0, 6);
+    const priceTargetQueries = ['Bitcoin price target', 'Bitcoin reach', 'Bitcoin exceed', 'BTC price level', 'Bitcoin ETF', 'crypto ETF'];
+    const regulatoryQueries = ['crypto regulation', 'SEC crypto', 'cryptocurrency regulation'];
+    const frontHasPriceTarget = frontSlice.some((q) => priceTargetQueries.some((pt) => q.includes(pt) || q === pt));
+    const frontHasRegulatory = frontSlice.some((q) => regulatoryQueries.some((rq) => q.includes(rq) || q === rq));
+    expect(frontHasPriceTarget).toBe(true);
+    expect(frontHasRegulatory).toBe(false);
+  });
+
+  it('does not reorder queries for BTC 14-day (short-horizon intact)', () => {
+    const defaultVariants = buildPolymarketAnchorQueryVariants('BTC-USD');
+    const shortHorizonVariants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 14 });
+    expect(shortHorizonVariants).toEqual(defaultVariants);
+  });
+
+  it('keeps primary and manual queries first for BTC 30-day', () => {
+    const variants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 30 });
+    expect(variants[0]).toBe('Bitcoin price');
+    expect(variants.slice(0, 4)).toEqual(['Bitcoin price', 'Bitcoin', 'Bitcoin above', 'Bitcoin below']);
+  });
+
+  it('does not reorder queries for non-crypto tickers even with long horizon', () => {
+    const defaultVariants = buildPolymarketAnchorQueryVariants('AAPL');
+    const longHorizonVariants = buildPolymarketAnchorQueryVariants('AAPL', { horizonDays: 30 });
+    expect(longHorizonVariants).toEqual(defaultVariants);
+  });
+
   it('builds Barrick-specific anchor query variants for GOLD', () => {
     const variants = buildPolymarketAnchorQueryVariants('GOLD');
     expect(variants).toContain('Barrick Gold price');
@@ -4279,6 +4352,64 @@ describe('markov_distribution tool output envelope', () => {
     const highConf = buildForecastHint({ ...base, predictionConfidence: 0.30 });
     expect(highConf).not.toBeNull();
     expect(highConf!.markovReturn).toBeCloseTo(0.012, 10);
+  });
+
+  it('emits undefined provenance flags when break-confidence flags are off', async () => {
+    const simplePrices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: simplePrices,
+      polymarketMarkets: [],
+    });
+
+    expect(result.metadata.trendPenaltyOnlyBreakConfidenceActive).toBeUndefined();
+    expect(result.metadata.divergenceWeightedBreakConfidenceActive).toBeUndefined();
+  });
+
+  it('keeps BTC 30-day off-window fallback candidates from enabling canonical emission', async () => {
+    const now = Date.now();
+    const day = 86_400_000;
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [
+        {
+          question: 'Will the price of Bitcoin be above $84,000 on April 24?',
+          probability: 0.50,
+          volume24h: 30000,
+          ageDays: 10,
+          endDate: new Date(now + 6 * day).toISOString(),
+        },
+      ],
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 30,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(parsed.data.status).toBe('abstain');
+    expect(diagnostics?.totalAnchors).toBeGreaterThan(0);
+    expect(diagnostics?.trustedAnchors).toBe(0);
+    expect(diagnostics?.anchorQuality).toBe('none');
+    expect(diagnostics?.canEmitCanonical).toBe(false);
+    expect(parsed.data.distribution).toBeNull();
   });
 
   it('returns canonical payload when trusted anchors and positive validation are present', async () => {
