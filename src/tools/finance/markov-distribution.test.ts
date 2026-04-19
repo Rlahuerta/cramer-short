@@ -4029,10 +4029,36 @@ describe('markov_distribution anchor query strategy', () => {
     expect(frontHasRegulatory).toBe(false);
   });
 
-  it('does not reorder queries for BTC 14-day (short-horizon intact)', () => {
+  it('BTC 14-day includes month-name variants not present in default', () => {
     const defaultVariants = buildPolymarketAnchorQueryVariants('BTC-USD');
     const shortHorizonVariants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 14 });
-    expect(shortHorizonVariants).toEqual(defaultVariants);
+    const targetMonth = new Date(Date.now() + 14 * 86_400_000)
+      .toLocaleString('en-US', { month: 'long' });
+    expect(shortHorizonVariants.length).toBeGreaterThan(defaultVariants.length);
+    expect(shortHorizonVariants).toContain(`Bitcoin ${targetMonth}`);
+    expect(shortHorizonVariants).toContain(`Bitcoin above ${targetMonth}`);
+    expect(defaultVariants).not.toContain(`Bitcoin ${targetMonth}`);
+  });
+
+  it('keeps BTC 14-day query ordering with month-name variants in front slice', () => {
+    const variants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 14 });
+    const targetMonth = new Date(Date.now() + 14 * 86_400_000)
+      .toLocaleString('en-US', { month: 'long' });
+    expect(variants.slice(0, 6)).toEqual([
+      'Bitcoin price',
+      'Bitcoin',
+      'Bitcoin above',
+      'Bitcoin below',
+      `Bitcoin ${targetMonth}`,
+      `Bitcoin above ${targetMonth}`,
+    ]);
+  });
+
+  it('does not inject month-name variants for BTC 30-day', () => {
+    const variants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 30 });
+    const targetMonth = new Date(Date.now() + 30 * 86_400_000)
+      .toLocaleString('en-US', { month: 'long' });
+    expect(variants.slice(0, 6).some((variant) => variant.includes(targetMonth))).toBe(false);
   });
 
   it('keeps primary and manual queries first for BTC 30-day', () => {
@@ -4163,7 +4189,190 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.distribution).not.toBeNull();
   });
 
-  integrationIt('auto-fetches usable BTC 14-day Polymarket anchors after terminal-anchor fallback', async () => {
+  it('retries later BTC 14-day query variants when front-slice anchors are all low-trust', async () => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const targetMonth = new Date(now + 14 * day)
+      .toLocaleString('en-US', { month: 'long' });
+    const frontQueries = new Set([
+      'Bitcoin price',
+      'Bitcoin',
+      'Bitcoin above',
+      'Bitcoin below',
+      `Bitcoin ${targetMonth}`,
+      `Bitcoin above ${targetMonth}`,
+    ]);
+    const retryCalls: string[][] = [];
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async (query: string) => {
+        if (!frontQueries.has(query)) return [];
+        return [
+          {
+            question: 'Will the price of Bitcoin be above $74,000 on April 24?',
+            probability: 0.45,
+            volume24h: 20000,
+            ageDays: 0,
+            endDate: new Date(now + 5 * day).toISOString(),
+          },
+          {
+            question: 'Will the price of Bitcoin be above $78,000 on April 25?',
+            probability: 0.25,
+            volume24h: 18000,
+            ageDays: 0,
+            endDate: new Date(now + 6 * day).toISOString(),
+          },
+        ];
+      },
+      fetchPolymarketAnchorMarketsWithQueries: async (queries: string[]) => {
+        retryCalls.push([...queries]);
+        return [
+          {
+            question: `Will the price of Bitcoin be above $76,000 on ${new Date(now + 14 * day).toISOString().slice(0, 10)}?`,
+            probability: 0.48,
+            volume24h: 50000,
+            ageDays: 7,
+            endDate: new Date(now + 14 * day).toISOString(),
+          },
+          {
+            question: `Will the price of Bitcoin be above $80,000 on ${new Date(now + 14 * day).toISOString().slice(0, 10)}?`,
+            probability: 0.22,
+            volume24h: 42000,
+            ageDays: 7,
+            endDate: new Date(now + 14 * day).toISOString(),
+          },
+        ];
+      },
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(retryCalls).toHaveLength(1);
+    expect(retryCalls[0]).toEqual([
+      'crypto regulation',
+      'SEC crypto',
+      'cryptocurrency regulation',
+      'Bitcoin ETF',
+      'crypto ETF',
+      'Bitcoin price target',
+      'Bitcoin reach',
+      'Bitcoin exceed',
+      'Bitcoin price level',
+      'Fed rate cut',
+      'Federal Reserve rate',
+      'FOMC',
+      'US recession',
+      'recession',
+      'economic recession',
+    ]);
+    expect(parsed.data.status).toBe('ok');
+    expect(diagnostics?.trustedAnchors).toBeGreaterThan(0);
+    expect(diagnostics?.anchorQuality).not.toBe('none');
+    expect(diagnostics?.canEmitCanonical).toBe(true);
+    expect(parsed.data.distribution).not.toBeNull();
+  });
+
+  it('uses a date-windowed search for BTC 14-day anchor auto-fetch before later-query retry', async () => {
+    const frontCalls: Array<{ query: string; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
+    const retryCalls: Array<{ queries: string[]; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
+    const targetMonth = new Date(Date.now() + 14 * 86_400_000)
+      .toLocaleString('en-US', { month: 'long' });
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async (
+        query: string,
+        _limit: number,
+        options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+      ) => {
+        frontCalls.push({ query, endDateFilter: options.endDateFilter });
+        return [];
+      },
+      fetchPolymarketAnchorMarketsWithQueries: async (
+        queries: string[],
+        _limit: number,
+        options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+      ) => {
+        retryCalls.push({ queries: [...queries], endDateFilter: options.endDateFilter });
+        return [];
+      },
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(frontCalls).toHaveLength(6);
+    expect(frontCalls.map((call) => call.query)).toEqual([
+      'Bitcoin price',
+      'Bitcoin',
+      'Bitcoin above',
+      'Bitcoin below',
+      `Bitcoin ${targetMonth}`,
+      `Bitcoin above ${targetMonth}`,
+    ]);
+    expect(frontCalls.every((call) => call.endDateFilter?.end_date_min && call.endDateFilter?.end_date_max)).toBe(true);
+    expect(retryCalls).toHaveLength(1);
+    expect(retryCalls[0].queries).toEqual([
+      'crypto regulation',
+      'SEC crypto',
+      'cryptocurrency regulation',
+      'Bitcoin ETF',
+      'crypto ETF',
+      'Bitcoin price target',
+      'Bitcoin reach',
+      'Bitcoin exceed',
+      'Bitcoin price level',
+      'Fed rate cut',
+      'Federal Reserve rate',
+      'FOMC',
+      'US recession',
+      'recession',
+      'economic recession',
+    ]);
+    expect(retryCalls[0].endDateFilter).toEqual({
+      end_date_min: expect.any(String),
+      end_date_max: expect.any(String),
+    });
+    expect(parsed.data.status).toBe('abstain');
+    expect(diagnostics?.trustedAnchors).toBe(0);
+    expect(diagnostics?.canEmitCanonical).toBe(false);
+  });
+
+  integrationIt('auto-fetches BTC 14-day Polymarket anchors and cleanly abstains when dated threshold inventory is unavailable', async () => {
     const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
     const prices: number[] = [];
     let p = 65000;
@@ -4183,9 +4392,10 @@ describe('markov_distribution tool output envelope', () => {
     const result = await freshTool.func(parsedInput);
     const parsed = JSON.parse(result);
     expect(parsed.data._tool).toBe('markov_distribution');
-    expect(parsed.data.canonical?.diagnostics?.totalAnchors).toBeGreaterThan(0);
-    expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBeGreaterThan(0);
-    expect(parsed.data.canonical?.diagnostics?.anchorQuality).not.toBe('none');
+    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBe(0);
+    expect(parsed.data.canonical?.diagnostics?.anchorQuality).toBe('none');
+    expect(parsed.data.canonical?.diagnostics?.canEmitCanonical).toBe(false);
   });
 
   it('returns abstain payload when anchors or validation are insufficient', async () => {
@@ -4655,8 +4865,7 @@ describe('markov_distribution tool output envelope', () => {
   });
 
   it('uses undated fallback only after date-windowed front slice and retry queries are exhausted', async () => {
-    const callOptions: Array<{ endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
-
+    const callOptions: Array<{ queries: string[]; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
     mock.module('./polymarket.js', () => ({
       ...realPolymarketModule,
       fetchPolymarketMarkets: async () => [],
@@ -4666,7 +4875,7 @@ describe('markov_distribution tool output envelope', () => {
         _limit: number,
         options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
       ) => {
-        callOptions.push({ endDateFilter: options.endDateFilter });
+        callOptions.push({ queries: [...queries], endDateFilter: options.endDateFilter });
         if (options.endDateFilter) {
           return [];
         }

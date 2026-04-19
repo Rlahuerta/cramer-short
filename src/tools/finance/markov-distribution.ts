@@ -1018,12 +1018,26 @@ export function buildPolymarketAnchorQueryVariants(
   options?: { horizonDays?: number },
 ): string[] {
   const identity = resolveTickerSearchIdentity(ticker);
+  const upperTicker = ticker.toUpperCase();
+  const isBtc14d = getAssetProfile(ticker).type === 'crypto'
+    && (upperTicker === 'BTC' || upperTicker === 'BTC-USD')
+    && options?.horizonDays === 14;
   const primary = inferPolymarketSearchPhrase(ticker);
   const manual = [
     normalizeSearchIdentityPhrase(ticker, identity.searchQuery),
     normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} above`),
     normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} below`),
   ];
+  const monthVariants = isBtc14d
+    ? (() => {
+        const monthName = new Date(Date.now() + 14 * 86_400_000)
+          .toLocaleString('en-US', { month: 'long' });
+        return [
+          normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} ${monthName}`),
+          normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} above ${monthName}`),
+        ];
+      })()
+    : [];
 
   const signals = extractSignals(identity.searchQuery);
   const isLongHorizonCrypto = options?.horizonDays != null
@@ -1040,7 +1054,7 @@ export function buildPolymarketAnchorQueryVariants(
   const extracted = orderedSignals
     .flatMap((signal) => [signal.searchPhrase, ...(signal.queryVariants ?? [])]);
 
-  const variants = Array.from(new Set([primary, ...manual, ...extracted].filter(Boolean)));
+  const variants = Array.from(new Set([primary, ...manual, ...monthVariants, ...extracted].filter(Boolean)));
   anchorTrace('query_variants', {
     ticker,
     horizonDays: options?.horizonDays ?? null,
@@ -1112,14 +1126,19 @@ async function fetchCandidatePolymarketAnchors(
 }>> {
   const queries = buildPolymarketAnchorQueryVariants(ticker, { horizonDays });
   const isCrypto = getAssetProfile(ticker).type === 'crypto';
+  const upperTicker = ticker.toUpperCase();
+  const isBtc14d = isCrypto && (upperTicker === 'BTC' || upperTicker === 'BTC-USD') && horizonDays === 14;
   const isLongHorizonCrypto = isCrypto && horizonDays > 14;
+  const useDatedAnchorSearch = isLongHorizonCrypto || isBtc14d;
 
   // For long-horizon crypto, constrain API to markets resolving near the target horizon
   // via end_date_min/end_date_max so near-term markets don't crowd out 30-day anchors.
   let endDateFilter: { end_date_min: string; end_date_max: string } | undefined;
-  if (isLongHorizonCrypto) {
+  if (useDatedAnchorSearch) {
     const now = Date.now();
-    const toleranceDays = Math.max(5, horizonDays * 0.5);
+    const toleranceDays = isBtc14d
+      ? Math.max(7, Math.ceil(horizonDays * 0.65))
+      : Math.max(5, horizonDays * 0.5);
     const minDate = new Date(now + (horizonDays - toleranceDays) * 86_400_000);
     const maxDate = new Date(now + (horizonDays + toleranceDays) * 86_400_000);
     endDateFilter = {
@@ -1129,12 +1148,15 @@ async function fetchCandidatePolymarketAnchors(
   }
 
   const frontQueries = queries.slice(0, 6);
+  const retryQueries = queries.slice(frontQueries.length);
 
   anchorTrace('fetch_candidates_start', {
     ticker,
     horizonDays,
     isCrypto,
+    isBtc14d,
     isLongHorizonCrypto,
+    useDatedAnchorSearch,
     endDateFilter: endDateFilter ?? null,
     queries: frontQueries,
   });
@@ -1172,9 +1194,8 @@ async function fetchCandidatePolymarketAnchors(
     isLongHorizonCrypto
     && endDateFilter
     && settled.every((result) => result.status !== 'fulfilled' || result.value.length === 0)
-    && queries.length > frontQueries.length
+    && retryQueries.length > 0
   ) {
-    const retryQueries = queries.slice(frontQueries.length);
     anchorTrace('fetch_candidates_date_retry', {
       ticker,
       horizonDays,
@@ -1243,7 +1264,7 @@ async function fetchCandidatePolymarketAnchors(
   }
 
   const seen = new Set<string>();
-  const combined = settled
+  let combined = settled
     .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof fetchPolymarketAnchorMarkets>>> => result.status === 'fulfilled')
     .flatMap((result) => result.value)
     .map((market) => ({
@@ -1287,7 +1308,7 @@ async function fetchCandidatePolymarketAnchors(
   // also include earlier-dated terminal-anchor-compatible markets so the fallback
   // in computeMarkovDistribution can recover usable anchors.
   if (isCrypto) {
-    const strictAnchors = extractPriceThresholds(filtered, { ticker, horizonDays });
+    let strictAnchors = extractPriceThresholds(filtered, { ticker, horizonDays });
     anchorTrace('fetch_candidates_strict_anchors', {
       ticker,
       horizonDays,
@@ -1299,6 +1320,78 @@ async function fetchCandidatePolymarketAnchors(
         endDate: anchor.endDate ?? null,
       })),
     });
+
+    const shouldRetryLowTrustBtc14dAnchors =
+      isBtc14d
+      && retryQueries.length > 0
+      && (strictAnchors.length === 0 || strictAnchors.every((anchor) => anchor.trustScore === 'low'));
+
+    if (shouldRetryLowTrustBtc14dAnchors) {
+      anchorTrace('fetch_candidates_low_trust_retry', {
+        ticker,
+        horizonDays,
+        retryQueries,
+      });
+      const retryMarkets = await fetchPolymarketAnchorMarketsWithQueries(
+        retryQueries,
+        40,
+        { ticker, horizonDays, endDateFilter },
+      );
+      anchorTrace('fetch_candidates_low_trust_retry_result', {
+        ticker,
+        horizonDays,
+        retryQueries,
+        returnedCount: retryMarkets.length,
+        markets: retryMarkets.map((market) => ({
+          question: market.question,
+          volume24h: market.volume24h,
+          ageDays: market.ageDays ?? null,
+          endDate: market.endDate ?? null,
+        })),
+      });
+
+      const retryCombined = retryMarkets
+        .map((market) => ({
+          question: market.question,
+          probability: market.probability,
+          volume: market.volume24h,
+          createdAt: market.ageDays != null ? Date.now() - market.ageDays * 86_400_000 : undefined,
+          endDate: market.endDate ?? null,
+        }))
+        .filter((market) => {
+          if (seen.has(market.question)) return false;
+          seen.add(market.question);
+          return true;
+        });
+
+      if (retryCombined.length > 0) {
+        combined = [...combined, ...retryCombined];
+        filtered = filterMarketsToHorizon(combined, horizonDays);
+        anchorTrace('fetch_candidates_horizon_filter_after_retry', {
+          ticker,
+          horizonDays,
+          filteredCount: filtered.length,
+          filteredMarkets: filtered.map((market) => ({
+            question: market.question,
+            volume: market.volume ?? 0,
+            endDate: market.endDate ?? null,
+          })),
+        });
+        strictAnchors = extractPriceThresholds(filtered, { ticker, horizonDays });
+        anchorTrace('fetch_candidates_strict_anchors_after_retry', {
+          ticker,
+          horizonDays,
+          strictAnchorCount: strictAnchors.length,
+          strictAnchors: strictAnchors.map((anchor) => ({
+            price: anchor.price,
+            probability: anchor.probability,
+            trustScore: anchor.trustScore,
+            endDate: anchor.endDate ?? null,
+          })),
+        });
+      }
+    }
+
     if (strictAnchors.length === 0) {
       const broader = combined.filter((m) => {
         if (!m.endDate) return true;
