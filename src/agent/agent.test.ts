@@ -128,6 +128,7 @@ const {
   buildForcedFixedIncomeArgs,
   buildForcedCryptoForecastMarkovArgs,
   shouldForceCryptoForecastTools,
+  shouldPreserveAbstainingBtcShortHorizonForecast,
 } = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
@@ -876,6 +877,111 @@ describe('Agent', () => {
       expect(shouldForceCryptoForecastTools(
         'What is the probability distribution for BTC-USD in 7 days?',
         [],
+      )).toBe(false);
+    });
+
+    it('preserves BTC short-horizon abstention once markov_distribution has abstained', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 14,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 5,
+                  anchorQuality: 'none',
+                },
+              },
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.0103,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Provide a BTC forecast for the next 14 days',
+        toolCalls,
+      )).toBe(true);
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 14 days',
+        toolCalls,
+      )).toBe(true);
+    });
+
+    it('preserves BTC next-week abstention once markov_distribution has abstained', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 5, trajectory: true, trajectoryDays: 5 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 5,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 3,
+                  anchorQuality: 'none',
+                },
+              },
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.009,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Provide a BTC forecast for next week',
+        toolCalls,
+      )).toBe(true);
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for next week',
+        toolCalls,
+      )).toBe(true);
+    });
+
+    it('does not treat a non-5-day BTC abstain as matching a next-week query', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 14,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 5,
+                  anchorQuality: 'none',
+                },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Provide a BTC forecast for next week',
+        toolCalls,
       )).toBe(false);
     });
 
