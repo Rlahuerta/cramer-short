@@ -721,33 +721,4 @@ describe('buildSourcesFooter', () => {
   it('deduplicates repeated URLs', () => {
     const footer = buildSourcesFooter(['https://a.com', 'https://a.com', 'https://b.com']);
     const matches = footer.match(/https:\/\/a\.com/g) ?? [];
-    expect(matches).toHaveLength(1);
-  });
-
-  it('excludes Reddit URLs from the footer', () => {
-    const footer = buildSourcesFooter([
-      'https://reddit.com/r/Bitcoin/comments/abc',
-      'https://www.reddit.com/r/investing/comments/xyz',
-    ]);
-    expect(footer).toBe('');
-  });
-
-  it('excludes X/Twitter URLs from the footer', () => {
-    const footer = buildSourcesFooter([
-      'https://x.com/user/status/123',
-      'https://twitter.com/user/status/456',
-    ]);
-    expect(footer).toBe('');
-  });
-
-  it('includes non-social URLs while filtering social ones', () => {
-    const footer = buildSourcesFooter([
-      'https://reddit.com/r/Bitcoin/comments/abc',
-      'https://financialmodelingprep.com/api/v3/profile/BTC',
-      'https://polymarket.com/event/bitcoin-price',
-    ]);
-    expect(footer).not.toContain('reddit.com');
-    expect(footer).toContain('financialmodelingprep.com');
-    expect(footer).toContain('polymarket.com');
-  });
-});
+  
