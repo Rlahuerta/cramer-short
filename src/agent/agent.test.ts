@@ -1271,3 +1271,25 @@ describe('Agent', () => {
         expect(shouldForceNonCryptoForecastFallback(
           'Provide an NVDA forecast for the next 7 days',
           [
+            { tool: 'markov_distribution', args: { ticker: 'SPY', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok', canonical: { actionSignal: {}, diagnostics: {} } } }) },
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns false for crypto forecast queries', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide a BTC forecast for the next 7 days',
+          [],
+        )).toBe(false);
+      });
+
+      it('returns false for non-forecast queries', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'What is AAPL revenue?',
+          [],
+        )).toBe(false);
+      });
+    });
+  });
+});
