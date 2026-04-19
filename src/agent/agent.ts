@@ -164,6 +164,52 @@ export function buildAbstainingMarkovAnswer(toolCalls: ToolCallRecord[]): string
   return null;
 }
 
+function inferBtcShortHorizonForecastHorizon(query: string): number | null {
+  const ticker = inferDistributionTicker(query);
+  if (ticker !== 'BTC' && ticker !== 'BTC-USD') return null;
+
+  const horizon = inferDistributionHorizon(query);
+  if (horizon !== null) return horizon;
+  if (/\bnext\s+week\b/i.test(query)) return TRADING_DAYS_PER_WEEK;
+
+  return null;
+}
+
+function inferMarkovQueryHorizon(query: string): number | null {
+  return inferDistributionHorizon(query) ?? inferBtcShortHorizonForecastHorizon(query);
+}
+
+function isBtcShortHorizonForecastQuery(query: string): boolean {
+  if (!isCryptoForecastQuery(query)) return false;
+  const horizon = inferBtcShortHorizonForecastHorizon(query);
+  return horizon !== null && horizon <= 14;
+}
+
+export function shouldPreserveAbstainingBtcShortHorizonForecast(
+  query: string,
+  toolCalls: ToolCallRecord[],
+): boolean {
+  return isBtcShortHorizonForecastQuery(query)
+    && hasAbstainingMarkovDistributionForQuery(query, toolCalls);
+}
+
+export function buildAbstainingBtcShortHorizonForecastAnswer(
+  query: string,
+  toolCalls: ToolCallRecord[],
+): string | null {
+  if (!shouldPreserveAbstainingBtcShortHorizonForecast(query, toolCalls)) return null;
+
+  const diagnostics = buildAbstainingMarkovAnswer(toolCalls);
+  if (!diagnostics) return null;
+
+  return [
+    diagnostics,
+    '',
+    '## Decision guidance',
+    'Treat this horizon as no-trade / no-calibrated-edge unless new horizon-matched terminal threshold markets appear. Any later fallback tools may still be useful for context, but they do not replace the abstained Markov forecast for BTC short horizons.',
+  ].join('\n');
+}
+
 function isDistributionQuery(query: string): boolean {
   return /probability distribution|price distribution|full distribution|distribution for .*price/i.test(query);
 }
@@ -663,7 +709,7 @@ export function extractMarkovReturnFromToolCalls(toolCalls: ToolCallRecord[]): n
 
 function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
   const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferDistributionHorizon(query);
+  const desiredHorizon = inferMarkovQueryHorizon(query);
 
   for (let i = toolCalls.length - 1; i >= 0; i--) {
     const call = toolCalls[i];
@@ -834,7 +880,7 @@ function hasMarkovDistributionStatusForQuery(
   status: 'ok' | 'abstain',
 ): boolean {
   const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferDistributionHorizon(query);
+  const desiredHorizon = inferMarkovQueryHorizon(query);
 
   return toolCalls.some((call) => {
     if (call.tool !== 'markov_distribution') return false;
@@ -964,9 +1010,8 @@ export function buildForcedCryptoForecastMarkovArgs(query: string): {
   const ticker = inferDistributionTicker(query);
   let horizon = inferDistributionHorizon(query);
 
-  const BTC_NEXT_WEEK_TRADING_DAYS = 5;
-  if (!horizon && ticker === 'BTC-USD' && /\bnext\s+week\b/i.test(query)) {
-    horizon = BTC_NEXT_WEEK_TRADING_DAYS;
+  if (!horizon && ticker === 'BTC-USD') {
+    horizon = inferBtcShortHorizonForecastHorizon(query);
   }
 
   if (!ticker || !horizon || horizon > 14) return null;
@@ -1478,6 +1523,15 @@ export class Agent {
 
       // No tool calls = final answer is in this response
       if (typeof response === 'string' || !hasToolCalls(response)) {
+        const abstainingBtcForecastAnswer = buildAbstainingBtcShortHorizonForecastAnswer(
+          query,
+          ctx.scratchpad.getToolCallRecords(),
+        );
+        if (abstainingBtcForecastAnswer) {
+          yield* this.handleDirectResponse(abstainingBtcForecastAnswer, ctx, currentPrompt);
+          return;
+        }
+
         if (shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
           const forced = yield* this.forceCryptoForecastTools(ctx);
           if (forced) {
@@ -1638,6 +1692,15 @@ export class Agent {
     // rather than yielding a bare failure message. Any data collected is still useful.
     const toolResults = ctx.scratchpad.getToolResults().trim();
     const hasMeaningfulResearch = toolResults.length > 50;
+
+    const abstainingBtcForecastAnswer = buildAbstainingBtcShortHorizonForecastAnswer(
+      query,
+      ctx.scratchpad.getToolCallRecords(),
+    );
+    if (abstainingBtcForecastAnswer) {
+      yield* this.handleDirectResponse(abstainingBtcForecastAnswer, ctx, currentPrompt);
+      return;
+    }
 
     const synthesisPrompt = hasMeaningfulResearch
       ? buildIterationPrompt(

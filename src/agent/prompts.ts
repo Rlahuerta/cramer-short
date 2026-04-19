@@ -523,6 +523,10 @@ IMPORTANT: BTC short-horizon signals are mixed. markov_distribution is bullish, 
     && /"status"\s*:\s*"abstain"/.test(fullToolResults);
   if (hasAbstainingMarkovOutput) {
     const assetIntent = resolveAssetIntent(originalQuery, null);
+    const btcShortHorizonForecast = /\b(?:btc|bitcoin)\b/i.test(originalQuery)
+      && /\b(?:7|14)\s*(?:day|days)\b/i.test(originalQuery)
+      && /\bforecast|outlook|prediction|price target|price outlook\b/i.test(originalQuery)
+      && !/probability distribution|price distribution|full distribution|distribution for .*price/i.test(originalQuery);
     const commodityProxyFraming =
       assetIntent.assetClass === 'commodity_gold' || assetIntent.assetClass === 'commodity_silver'
         ? `
@@ -532,7 +536,9 @@ IMPORTANT: ${assetIntent.resolvedTicker} is only the data proxy for ${assetInten
 
     prompt += `
 
-IMPORTANT: markov_distribution explicitly abstained. Its diagnostics are authoritative, but no calibrated scenario distribution is available. You may explain the abstain reasons and discuss market-quality limitations, and you MAY provide fallback analysis such as a point forecast or confidence interval if another tool explicitly supports it. However, you MUST clearly warn that no calibrated Markov terminal distribution was available, and you MUST NOT create, correct, extrapolate, interpolate, renormalize, or manually synthesize replacement scenario buckets or probability percentages from later polymarket_search results. Numeric scenario distributions are only allowed when copied directly from a non-abstaining canonical Markov payload.
+IMPORTANT: markov_distribution explicitly abstained. Its diagnostics are authoritative, but no calibrated scenario distribution is available.${btcShortHorizonForecast
+      ? ' For BTC short-horizon forecast queries (7-day or 14-day), you MUST preserve the abstention in the final answer. You MUST NOT provide a point forecast, confidence interval, forecast grade, or bull/base/bear scenario probabilities after this abstention. Give a concise diagnostics-led no-trade / insufficient-edge answer instead.'
+      : ' You may explain the abstain reasons and discuss market-quality limitations, and you MAY provide fallback analysis such as a point forecast or confidence interval if another tool explicitly supports it.'} However, you MUST clearly warn that no calibrated Markov terminal distribution was available, and you MUST NOT create, correct, extrapolate, interpolate, renormalize, or manually synthesize replacement scenario buckets or probability percentages from later polymarket_search results. Numeric scenario distributions are only allowed when copied directly from a non-abstaining canonical Markov payload.
 
 For non-crypto forecast queries with a specific asset target (stocks, ETFs, commodities): after Markov abstains, call get_market_data for the current price and then polymarket_forecast for a point estimate with confidence interval. This combination provides the best available fallback. Do NOT stop after a shallow polymarket_search — polymarket_forecast performs a deeper, signal-weighted retrieval that produces a calibrated forecast. Macro-only questions without a specific asset target are handled separately.${commodityProxyFraming}`;
   }
