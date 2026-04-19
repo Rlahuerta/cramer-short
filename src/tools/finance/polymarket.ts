@@ -258,6 +258,8 @@ function extractCanonicalNames(ticker: string): string[] {
   return known[normalized] ?? resolveTickerSearchIdentity(normalized).canonicalNames;
 }
 
+const CRYPTO_BARRIER_PATTERN = /\b(?:reach|hit|surpass|touch)\b|\b(?:go|move)\s+to\b|\bgo\s+(?:above|below|over|under)\b|\b(?:remain|trade|stay)\s+(?:above|below|over|under)\b|\b(?:dip|drop|fall|sink|decline|decrease)s?\s+to\b/i;
+
 export function scoreAnchorMarketRelevance(
   question: string,
   ticker: string,
@@ -267,14 +269,20 @@ export function scoreAnchorMarketRelevance(
   const lower = question.toLowerCase();
   let score = 0;
   const identity = resolveTickerSearchIdentity(ticker);
+  const isCrypto = /(BTC|ETH|SOL|DOGE|XRP|ADA)[-\/]?USD/i.test(ticker)
+    || /^(BTC|ETH|SOL|DOGE|XRP|ADA)$/i.test(ticker)
+    || /CRYPTO/i.test(ticker);
+  const hasDollarPrice = /\$[\d,]+(?:\.\d+)?(?:[KkMm])?/.test(question);
 
-  if (/\$[\d,]+(?:\.\d+)?(?:[KkMm])?/.test(question)) score += 3;
+  if (hasDollarPrice) score += 3;
   if (/\b(above|below|less than|more than|greater than|under|over)\b/.test(lower)) score += 2;
   if (/\b(on|at)\b/.test(lower)) score += 1;
 
   const names = extractCanonicalNames(ticker);
   const hasCanonicalMatch = names.some((name) => lower.includes(name));
   if (identity.strictQuestionMatch && !hasCanonicalMatch) return 0;
+  if (isCrypto && (!hasCanonicalMatch || !hasDollarPrice)) return 0;
+  if (isCrypto && CRYPTO_BARRIER_PATTERN.test(lower)) return 0;
   if (hasCanonicalMatch) score += 2;
 
   if (/\b(reach|hit|dip to|between|up or down|first)\b/.test(lower)) score -= 3;
@@ -291,13 +299,8 @@ export function scoreAnchorMarketRelevance(
   // Crypto-specific: barrier/path patterns ("reach $X", "dip to $Y") are
   // not terminal anchors — they describe a price path reaching/touching a
   // level, not the price being above/below at a specific future date.
-  // Down-weight aggressively so they don't dominate the candidate pipeline
-  // and crowd out true terminal-anchor markets like "above $X on April 17".
-  const isCrypto = /(BTC|ETH|SOL|DOGE|XRP|ADA)[-\/]?USD/i.test(ticker)
-    || /^(BTC|ETH|SOL|DOGE|XRP|ADA)$/i.test(ticker)
-    || /CRYPTO/i.test(ticker);
+  // Reject them outright so they do not enter the ranked candidate pool.
   if (isCrypto) {
-    if (/\b(reach|hit|dip to|drop to|fall to|surpass|touch)\b/.test(lower)) score -= 4;
     if (/\babove\b.*\$\d|\bbelow\b.*\$\d/.test(lower) && /\b(on|at)\b/.test(lower)) score += 2;
   }
 

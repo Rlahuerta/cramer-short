@@ -205,6 +205,7 @@ describe('scoreAnchorMarketRelevance', () => {
       7,
       new Date(Date.now() + 7 * 86_400_000).toISOString(),
     );
+    expect(barrier).toBe(0);
     expect(threshold).toBeGreaterThan(barrier);
   });
 
@@ -226,7 +227,7 @@ describe('scoreAnchorMarketRelevance', () => {
     expect(genericGold).toBe(0);
   });
 
-  it('penalizes barrier-style questions more heavily for crypto tickers', () => {
+  it('rejects barrier-style questions for crypto tickers', () => {
     const cryptoBarrier = scoreAnchorMarketRelevance(
       'Will Bitcoin reach $80,000 in April?',
       'BTC-USD',
@@ -239,7 +240,8 @@ describe('scoreAnchorMarketRelevance', () => {
       14,
       new Date(Date.now() + 14 * 86_400_000).toISOString(),
     );
-    expect(cryptoBarrier).toBeLessThan(equityBarrier);
+    expect(cryptoBarrier).toBe(0);
+    expect(equityBarrier).toBeGreaterThan(cryptoBarrier);
   });
 
   it('boosts terminal-style "above $X on date" questions for crypto tickers', () => {
@@ -255,7 +257,48 @@ describe('scoreAnchorMarketRelevance', () => {
       14,
       new Date(Date.now() + 14 * 86_400_000).toISOString(),
     );
+    expect(cryptoBarrier).toBe(0);
     expect(cryptoTerminal).toBeGreaterThan(cryptoBarrier);
+  });
+
+  it('rejects other crypto barrier/path phrasings that extractor skips', () => {
+    const stayAbove = scoreAnchorMarketRelevance(
+      'Will Bitcoin stay above $70,000 through April 17?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    const moveTo = scoreAnchorMarketRelevance(
+      'Will Bitcoin move to $80,000 in April?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+
+    expect(stayAbove).toBe(0);
+    expect(moveTo).toBe(0);
+  });
+
+  it('rejects cross-crypto threshold markets for BTC scoring', () => {
+    const ethThreshold = scoreAnchorMarketRelevance(
+      'Will the price of Ethereum be above $4,000 on May 18?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+
+    expect(ethThreshold).toBe(0);
+  });
+
+  it('rejects Bitcoin-named non-threshold crypto markets with no price anchor', () => {
+    const bitcoinEtf = scoreAnchorMarketRelevance(
+      'Will the SEC approve a Bitcoin ETF by May 18?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+
+    expect(bitcoinEtf).toBe(0);
   });
 
   it('does not apply crypto penalty to non-crypto tickers', () => {
