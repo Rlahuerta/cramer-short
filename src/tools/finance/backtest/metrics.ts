@@ -48,6 +48,7 @@ export type ProbabilitySource = 'calibrated';
 export type DecisionSource =
   | 'default'
   | 'crypto-short-horizon-raw'
+  | 'crypto-short-horizon-raw-direction-hybrid'
   | 'crypto-short-horizon-disagreement-blend'
   | 'crypto-short-horizon-recency'
   | 'replay-anchor'
@@ -185,6 +186,16 @@ export interface BacktestStep {
   matureBullCalibrationActive?: boolean;
   /** Run-level provenance: the trend-only break-confidence experiment was enabled for this prediction run. */
   trendPenaltyOnlyBreakConfidenceActive?: boolean;
+  /** Run-level provenance: the divergence-weighted break-confidence experiment was enabled for this prediction run. */
+  divergenceWeightedBreakConfidenceActive?: boolean;
+  /** Run-level provenance: the BTC 14d bearish-break selective SELL gate fired for this step. */
+  bearishBreakRecommendationGateActive?: boolean;
+  /** Phase 5 provenance: which fallback candidate was used for this step (backtest-only). */
+  breakFallbackCandidateId?: string;
+  /** Phase 5 provenance: which fallback mode was applied for this step (backtest-only). */
+  breakFallbackMode?: 'hard' | 'blended' | 'blended_capped';
+  /** Phase 7 provenance: whether regime-specific sigma was active for this step (backtest-only). */
+  regimeSpecificSigmaActive?: boolean;
   structuralBreakDivergence?: number | null;
   /** Structural-break divergence from the pre-rerun full-window pass when applicable. */
   originalStructuralBreakDivergence?: number | null;
@@ -232,6 +243,8 @@ export interface BacktestReport {
   provenanceSummary?: ProvenanceSummary;
   /** Whether any step in this report came from a run with the trend-only break-confidence experiment enabled. */
   trendPenaltyOnlyBreakConfidenceActive?: boolean;
+  /** Whether any step in this report came from a run where the BTC 14d bearish-break SELL gate fired. */
+  bearishBreakRecommendationGateActive?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -809,6 +822,7 @@ export function generateReport(
     decisionSources: {
       default: 0,
       'crypto-short-horizon-raw': 0,
+      'crypto-short-horizon-raw-direction-hybrid': 0,
       'crypto-short-horizon-disagreement-blend': 0,
       'crypto-short-horizon-recency': 0,
       'replay-anchor': 0,
@@ -848,6 +862,9 @@ export function generateReport(
     provenanceSummary,
     trendPenaltyOnlyBreakConfidenceActive: steps.some(
       step => step.trendPenaltyOnlyBreakConfidenceActive === true,
+    ),
+    bearishBreakRecommendationGateActive: steps.some(
+      step => step.bearishBreakRecommendationGateActive === true,
     ),
   };
 }

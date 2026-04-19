@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
-import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache, scoreAnchorMarketRelevance, fetchPolymarketAnchorMarkets } from './polymarket.js';
+import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache, scoreAnchorMarketRelevance, fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
+import type { PolymarketMarketResult } from './polymarket.js';
 
 // Disable retry delays in tests to avoid timeouts
 let originalDelays: number[];
@@ -102,6 +103,18 @@ describe('questionMatchesQuery', () => {
     expect(questionMatchesQuery('Will Team A win the Super Bowl?', 'Fed rate cut')).toBe(false);
   });
 
+  it('does not let weak price words make gold queries match bitcoin markets', () => {
+    expect(questionMatchesQuery('Will Bitcoin price exceed $100K in 2026?', 'gold price')).toBe(false);
+  });
+
+  it('matches anchored gold questions even when the query includes weak words', () => {
+    expect(questionMatchesQuery('Will gold reach $3,000 per ounce by June?', 'gold price')).toBe(true);
+  });
+
+  it('does not match weak-only commodity price queries against bitcoin markets', () => {
+    expect(questionMatchesQuery('Will Bitcoin price exceed $100K in 2026?', 'commodity price')).toBe(false);
+  });
+
   it('returns true for empty query words (no filtering)', () => {
     expect(questionMatchesQuery('Anything goes here', '')).toBe(true);
   });
@@ -192,7 +205,118 @@ describe('scoreAnchorMarketRelevance', () => {
       7,
       new Date(Date.now() + 7 * 86_400_000).toISOString(),
     );
+    expect(barrier).toBe(0);
     expect(threshold).toBeGreaterThan(barrier);
+  });
+
+  it('requires Barrick-specific wording for explicit GOLD ticker matches', () => {
+    const barrick = scoreAnchorMarketRelevance(
+      'Will Barrick Gold close above $25 by June?',
+      'GOLD',
+      30,
+      new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    );
+    const genericGold = scoreAnchorMarketRelevance(
+      'Will gold exceed $3500 by June?',
+      'GOLD',
+      30,
+      new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    );
+
+    expect(barrick).toBeGreaterThan(0);
+    expect(genericGold).toBe(0);
+  });
+
+  it('rejects barrier-style questions for crypto tickers', () => {
+    const cryptoBarrier = scoreAnchorMarketRelevance(
+      'Will Bitcoin reach $80,000 in April?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    const equityBarrier = scoreAnchorMarketRelevance(
+      'Will NVDA reach $200 in April?',
+      'NVDA',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    expect(cryptoBarrier).toBe(0);
+    expect(equityBarrier).toBeGreaterThan(cryptoBarrier);
+  });
+
+  it('boosts terminal-style "above $X on date" questions for crypto tickers', () => {
+    const cryptoTerminal = scoreAnchorMarketRelevance(
+      'Will the price of Bitcoin be above $84,000 on April 17?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 2 * 86_400_000).toISOString(),
+    );
+    const cryptoBarrier = scoreAnchorMarketRelevance(
+      'Will Bitcoin dip to $65,000 in April?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    expect(cryptoBarrier).toBe(0);
+    expect(cryptoTerminal).toBeGreaterThan(cryptoBarrier);
+  });
+
+  it('rejects other crypto barrier/path phrasings that extractor skips', () => {
+    const stayAbove = scoreAnchorMarketRelevance(
+      'Will Bitcoin stay above $70,000 through April 17?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    const moveTo = scoreAnchorMarketRelevance(
+      'Will Bitcoin move to $80,000 in April?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+
+    expect(stayAbove).toBe(0);
+    expect(moveTo).toBe(0);
+  });
+
+  it('rejects cross-crypto threshold markets for BTC scoring', () => {
+    const ethThreshold = scoreAnchorMarketRelevance(
+      'Will the price of Ethereum be above $4,000 on May 18?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+
+    expect(ethThreshold).toBe(0);
+  });
+
+  it('rejects Bitcoin-named non-threshold crypto markets with no price anchor', () => {
+    const bitcoinEtf = scoreAnchorMarketRelevance(
+      'Will the SEC approve a Bitcoin ETF by May 18?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+
+    expect(bitcoinEtf).toBe(0);
+  });
+
+  it('does not apply crypto penalty to non-crypto tickers', () => {
+    const spyReach = scoreAnchorMarketRelevance(
+      'Will SPY reach $600 in April?',
+      'SPY',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    // SPY should get the generic -3 penalty, not the extra crypto -4
+    // Total score should be higher than the same question for BTC-USD
+    const btcReach = scoreAnchorMarketRelevance(
+      'Will Bitcoin reach $80,000 in April?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    expect(spyReach).toBeGreaterThan(btcReach);
   });
 });
 
@@ -236,6 +360,101 @@ describe('fetchPolymarketAnchorMarkets', () => {
     globalThis.fetch = mockFetch([event], []) as typeof fetch;
     const results = await fetchPolymarketAnchorMarkets('Bitcoin above', 5, { ticker: 'BTC-USD', horizonDays: 7 });
     expect(results[0]?.question).toContain('be above $70,000 on April 9');
+  });
+
+  it('passes endDateFilter to constrain anchor search for long-horizon crypto', async () => {
+    const now = Date.now();
+    const thirtyDayEvent = {
+      id: 'btc-30d',
+      title: 'Bitcoin 30-day',
+      markets: [
+        {
+          id: '3',
+          question: 'Will the price of Bitcoin be above $85000 on May 18?',
+          outcomes: '["Yes","No"]',
+          outcomePrices: '["0.55","0.45"]',
+          endDateIso: new Date(now + 30 * 86_400_000).toISOString(),
+          volume24hr: 500000,
+          volumeNum: 500000,
+          liquidityNum: 200000,
+          active: true,
+          closed: false,
+          createdAt: new Date(now - 5 * 86_400_000).toISOString(),
+        },
+      ],
+    };
+
+    let capturedUrl = '';
+    globalThis.fetch = (async (url: string | URL) => {
+      capturedUrl = String(url);
+      const body = thirtyDayEvent;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [body],
+      } as Response;
+    }) as typeof fetch;
+
+    const toleranceDays = Math.max(5, 30 * 0.5);
+    const minDate = new Date(now + (30 - toleranceDays) * 86_400_000).toISOString().slice(0, 10);
+    const maxDate = new Date(now + (30 + toleranceDays) * 86_400_000).toISOString().slice(0, 10);
+
+    await fetchPolymarketAnchorMarkets('Bitcoin above', 5, {
+      ticker: 'BTC-USD',
+      horizonDays: 30,
+      endDateFilter: { end_date_min: minDate, end_date_max: maxDate },
+    });
+
+    expect(capturedUrl).toContain('end_date_min=');
+    expect(capturedUrl).toContain('end_date_max=');
+  });
+
+  it('falls back to undated search when endDateFilter returns no results', async () => {
+    const event = {
+      id: 'btc-fallback',
+      title: 'Bitcoin markets',
+      markets: [
+        {
+          id: '4',
+          question: 'Will the price of Bitcoin be above $90000 in June?',
+          outcomes: '["Yes","No"]',
+          outcomePrices: '["0.40","0.60"]',
+          endDateIso: new Date(Date.now() + 60 * 86_400_000).toISOString(),
+          volume24hr: 200000,
+          volumeNum: 200000,
+          liquidityNum: 80000,
+          active: true,
+          closed: false,
+          createdAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+        },
+      ],
+    };
+
+    let fetchCount = 0;
+    globalThis.fetch = (async (url: string | URL) => {
+      fetchCount++;
+      const urlStr = String(url);
+      const hasDateFilter = urlStr.includes('end_date_min');
+      const body = hasDateFilter ? [] : [event];
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+      } as Response;
+    }) as typeof fetch;
+
+    const now = Date.now();
+    const results = await fetchPolymarketAnchorMarkets('Bitcoin price target', 5, {
+      ticker: 'BTC-USD',
+      horizonDays: 30,
+      endDateFilter: {
+        end_date_min: new Date(now + 15 * 86_400_000).toISOString().slice(0, 10),
+        end_date_max: new Date(now + 45 * 86_400_000).toISOString().slice(0, 10),
+      },
+    });
+
+    expect(fetchCount).toBe(3);
+    expect(results).toHaveLength(0);
   });
 });
 
@@ -349,6 +568,53 @@ describe('inferTagSlugs — commodity coverage (regression)', () => {
   });
   it('maps wheat to commodities', () => {
     expect(inferTagSlugs('wheat supply chain')).toContain('commodities');
+  });
+});
+
+describe('polymarket commodity search filtering (regression)', () => {
+  beforeEach(() => { clearPolymarketCache(); });
+
+  it('filters bitcoin price markets out of gold price searches while preserving gold markets', async () => {
+    globalThis.fetch = mockFetch([
+      {
+        id: 'gold-and-btc',
+        title: 'Commodity markets',
+        markets: [
+          {
+            id: 'gold-market',
+            question: 'Will gold reach $3,000 per ounce by June?',
+            outcomes: '["Yes","No"]',
+            outcomePrices: '["0.41","0.59"]',
+            endDateIso: '2026-06-30',
+            volume24hr: 600_000,
+            volumeNum: 2_000_000,
+            liquidityNum: 500_000,
+            active: true,
+            closed: false,
+          },
+          {
+            id: 'btc-market',
+            question: 'Will Bitcoin price exceed $100K in 2026?',
+            outcomes: '["Yes","No"]',
+            outcomePrices: '["0.65","0.35"]',
+            endDateIso: '2026-12-31',
+            volume24hr: 3_000_000,
+            volumeNum: 10_000_000,
+            liquidityNum: 1_500_000,
+            active: true,
+            closed: false,
+          },
+        ],
+      },
+    ], []) as typeof fetch;
+
+    const { fetchPolymarketMarkets: isolatedFetchPolymarketMarkets } = await import(`./polymarket.js?commodity-regression=${Date.now()}`) as {
+      fetchPolymarketMarkets: (query: string, limit: number) => Promise<PolymarketMarketResult[]>;
+    };
+    const results = await isolatedFetchPolymarketMarkets('gold price', 5);
+
+    expect(results.map((m) => m.question)).toContain('Will gold reach $3,000 per ounce by June?');
+    expect(results.map((m) => m.question)).not.toContain('Will Bitcoin price exceed $100K in 2026?');
   });
 });
 
@@ -631,5 +897,176 @@ describe('ageDays population', () => {
     const text = typeof result === 'string' ? result : JSON.stringify(result);
     expect(text).toContain('Ethereum');
     expect(text).toContain('50.0%');
+  });
+});
+
+describe('fetchPolymarketAnchorMarketsWithQueries', () => {
+  let savedFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    savedFetch = globalThis.fetch;
+    clearPolymarketCache();
+    polymarketBreaker.reset();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = savedFetch;
+  });
+
+  it('can recover dated BTC anchors from later query variants while keeping the date window', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlStr = String(url);
+      calls.push(urlStr);
+      const parsed = new URL(urlStr);
+      const endDateMin = parsed.searchParams.get('end_date_min');
+      const tagSlug = parsed.searchParams.get('tag_slug');
+
+      if (endDateMin && tagSlug === 'bitcoin' && urlStr.includes('limit=80')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{
+            id: 'e-btc-2026',
+            title: 'What price will Bitcoin hit in 2026?',
+            volume24hr: 1000,
+            markets: [{
+              id: 'm-btc-2026-1',
+              question: 'Will the price of Bitcoin be above $90,000 on May 18?',
+              outcomes: '["Yes","No"]',
+              outcomePrices: '["0.35","0.65"]',
+              endDateIso: '2026-05-18',
+              volume24hr: 125000,
+              volumeNum: 125000,
+              liquidityNum: 50000,
+              active: true,
+              closed: false,
+              createdAt: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+            }],
+          }],
+        } as Response;
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [],
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const result = await fetchPolymarketAnchorMarketsWithQueries(
+      ['Bitcoin ETF', 'Bitcoin price target'],
+      10,
+      {
+        ticker: 'BTC-USD',
+        horizonDays: 30,
+        endDateFilter: {
+          end_date_min: '2026-05-03',
+          end_date_max: '2026-06-02',
+        },
+      },
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].question).toContain('May 18');
+    expect(result[0].endDate).toBe('2026-05-18');
+    expect(calls.length).toBe(6);
+    expect(calls.every((url) => url.includes('end_date_min=2026-05-03'))).toBe(true);
+    expect(calls.every((url) => url.includes('end_date_max=2026-06-02'))).toBe(true);
+  });
+
+  it('does not fall back to undated search when a dated anchor query returns empty', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlStr = String(url);
+      calls.push(urlStr);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [],
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const result = await fetchPolymarketAnchorMarketsWithQueries(
+      ['Bitcoin price'],
+      10,
+      {
+        ticker: 'BTC-USD',
+        horizonDays: 30,
+        endDateFilter: {
+          end_date_min: '2026-05-03',
+          end_date_max: '2026-06-02',
+        },
+      },
+    );
+
+    expect(result).toHaveLength(0);
+    expect(calls).toHaveLength(3);
+    expect(calls.every((url) => url.includes('end_date_min=2026-05-03'))).toBe(true);
+    expect(calls.every((url) => url.includes('end_date_max=2026-06-02'))).toBe(true);
+  });
+
+  it('fans out dated anchor searches across inferred slugs before giving up', async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlStr = String(url);
+      calls.push(urlStr);
+      const parsed = new URL(urlStr);
+      const tagSlug = parsed.searchParams.get('tag_slug');
+      const hasDateWindow = parsed.searchParams.has('end_date_min');
+
+      if (hasDateWindow && tagSlug === 'bitcoin') {
+        return { ok: true, status: 200, json: async () => [] } as Response;
+      }
+
+      if (hasDateWindow && tagSlug === 'crypto-prices') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{
+            id: 'e-btc-windowed',
+            title: 'What price will Bitcoin hit in 2026?',
+            volume24hr: 1000,
+            markets: [{
+              id: 'm-btc-windowed-1',
+              question: 'Will the price of Bitcoin be above $88,000 on May 20?',
+              outcomes: '["Yes","No"]',
+              outcomePrices: '["0.32","0.68"]',
+              endDateIso: '2026-05-20',
+              volume24hr: 140000,
+              volumeNum: 140000,
+              liquidityNum: 60000,
+              active: true,
+              closed: false,
+              createdAt: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+            }],
+          }],
+        } as Response;
+      }
+
+      return { ok: true, status: 200, json: async () => [] } as Response;
+    }) as unknown as typeof fetch;
+
+    const result = await fetchPolymarketAnchorMarketsWithQueries(
+      ['Bitcoin price'],
+      10,
+      {
+        ticker: 'BTC-USD',
+        horizonDays: 30,
+        endDateFilter: {
+          end_date_min: '2026-05-03',
+          end_date_max: '2026-06-02',
+        },
+      },
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].question).toContain('May 20');
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toContain('tag_slug=bitcoin');
+    expect(calls[1]).toContain('tag_slug=crypto-prices');
+    expect(calls[2]).toContain('tag_slug=crypto');
+    expect(calls.every((url) => url.includes('end_date_min=2026-05-03'))).toBe(true);
+    expect(calls.every((url) => url.includes('end_date_max=2026-06-02'))).toBe(true);
   });
 });

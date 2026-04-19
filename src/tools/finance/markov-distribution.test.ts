@@ -23,6 +23,7 @@ import { describe, it, expect, mock } from 'bun:test';
 import { integrationIt } from '../../utils/test-guards.js';
 import {
   classifyRegimeState,
+  computeAdaptiveThresholds,
   estimateTransitionMatrix,
   buildDefaultMatrix,
   normalizeRows,
@@ -37,6 +38,7 @@ import {
   computePredictionConfidence,
   getAssetProfile,
   computeRegimeUpRates,
+  shouldApplyBtc14dBearishBreakSellGate,
   logNormalSurvival,
   estimateRegimeStats,
   matPow,
@@ -60,6 +62,10 @@ import {
   inferPolymarketSearchPhrase,
   buildPolymarketAnchorQueryVariants,
   normalizeSentiment,
+  buildForecastHint,
+  buildBtcShortHorizonThinAnchorWarning,
+  capBtcShortHorizonConfidence,
+  applyCryptoTerminalAnchorFallback,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 
@@ -181,6 +187,29 @@ describe('classifyRegimeState', () => {
   it('boundary: vol parameter is ignored in 3-state model', () => {
     expect(classifyRegimeState(0.015, 0.02)).toBe('bull');
     expect(classifyRegimeState(0.015, 0.05)).toBe('bull'); // same result regardless of vol
+  });
+});
+
+describe('computeAdaptiveThresholds', () => {
+  it('uses half-median absolute return by default', () => {
+    const thresholds = computeAdaptiveThresholds([0.01, -0.02, 0.03, -0.04, 0.05]);
+    expect(thresholds.returnThreshold).toBeCloseTo(0.015, 10);
+    expect(thresholds.volThreshold).toBeCloseTo(0.06, 10);
+  });
+
+  it('applies custom returnThresholdMultiplier without changing volThreshold', () => {
+    const returns = [0.01, -0.02, 0.03, -0.04, 0.05];
+    const baseline = computeAdaptiveThresholds(returns);
+    const widened = computeAdaptiveThresholds(returns, 1.0);
+
+    expect(widened.returnThreshold).toBeCloseTo(0.03, 10);
+    expect(widened.returnThreshold).toBeGreaterThan(baseline.returnThreshold);
+    expect(widened.volThreshold).toBeCloseTo(baseline.volThreshold, 10);
+  });
+
+  it('respects the minimum return threshold floor with tiny multipliers', () => {
+    const thresholds = computeAdaptiveThresholds([0.0004, -0.0004, 0.0002], 0.1);
+    expect(thresholds.returnThreshold).toBe(0.001);
   });
 });
 
@@ -490,6 +519,167 @@ describe('extractPriceThresholds', () => {
     expect(high.probability).toBeCloseTo(0.40 * 0.95, 4);
     // CDF monotonicity: P(>4200) > P(>5500)
     expect(low.probability).toBeGreaterThan(high.probability);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Crypto terminal-anchor fallback
+// ---------------------------------------------------------------------------
+
+describe('applyCryptoTerminalAnchorFallback', () => {
+  const REF_TIME = new Date('2025-04-15T12:00:00Z').getTime();
+  const DAY_MS = 86_400_000;
+
+  it('returns strict anchors unchanged for non-crypto tickers', () => {
+    const strictAnchors: PriceThreshold[] = [
+      { price: 200, rawProbability: 0.6, probability: 0.57, trustScore: 'high', source: 'polymarket', endDate: null },
+    ];
+    const result = applyCryptoTerminalAnchorFallback(
+      [], strictAnchors, 'SPY', 14, REF_TIME,
+    );
+    expect(result).toBe(strictAnchors);
+  });
+
+  it('returns strict anchors unchanged when already non-empty for crypto', () => {
+    const strictAnchors: PriceThreshold[] = [
+      { price: 85000, rawProbability: 0.5, probability: 0.475, trustScore: 'high', source: 'polymarket', endDate: `2025-04-29` },
+    ];
+    const result = applyCryptoTerminalAnchorFallback(
+      [], strictAnchors, 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toBe(strictAnchors);
+  });
+
+  it('returns empty anchors unchanged when allMarkets is empty', () => {
+    const result = applyCryptoTerminalAnchorFallback(
+      [], [], 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(0);
+  });
+
+  it('recovers terminal anchors from earlier-dated markets when strict set is empty for BTC', () => {
+    const markets = [
+      // Barrier-style (near-horizon) — rejected by extractPriceThresholds
+      { question: 'Will Bitcoin reach $80,000 in April?', probability: 0.3, volume: 50000, endDate: '2025-04-29' },
+      { question: 'Will Bitcoin dip to $65,000 in April?', probability: 0.15, volume: 40000, endDate: '2025-04-29' },
+      // Terminal-style (earlier-dated) — parseable by extractPriceThresholds
+      { question: 'Will the price of Bitcoin be above $84000 on April 17?', probability: 0.45, volume: 30000, createdAt: REF_TIME - 5 * DAY_MS, endDate: '2025-04-17' },
+      { question: 'Will the price of Bitcoin be above $80000 on April 18?', probability: 0.65, volume: 25000, createdAt: REF_TIME - 3 * DAY_MS, endDate: '2025-04-18' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'BTC-USD', 14, REF_TIME,
+    );
+    // Should recover the 2 terminal anchors from earlier-dated markets
+    expect(result.length).toBeGreaterThanOrEqual(2);
+    // Check that prices are in ascending order
+    for (let i = 1; i < result.length; i++) {
+      expect(result[i].price).toBeGreaterThanOrEqual(result[i - 1].price);
+    }
+  });
+
+  it('applies date-gap discount to off-horizon anchors', () => {
+    // Horizon=14, reference date April 15 → target resolution April 29
+    // Anchor with endDate April 17 is 12 days before the target → 10 days off-horizon beyond tolerance
+    const markets = [
+      { question: 'Will the price of Bitcoin be above $84000 on April 17?', probability: 0.50, volume: 30000, createdAt: REF_TIME - 5 * DAY_MS, endDate: '2025-04-17' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(1);
+
+    // April 17 endDate → daysUntil = (Apr 17 - Apr 15) = 2 days
+    // horizon=14 → |2 - 14| = 12 days offset
+    // Beyond tolerance of 2 → discount = 1 - 0.03*(12-2) = 1 - 0.30 = 0.70
+    // adjusted probability = 0.50 * 0.95 * 0.70 ≈ 0.3325
+    expect(result[0].probability).toBeLessThan(0.5);
+    expect(result[0].probability).toBeGreaterThan(0);
+    expect(result[0].trustScore).toBe('low');
+  });
+
+  it('does not discount anchors within horizon tolerance', () => {
+    // Anchor endDate April 29 → exactly at 14-day horizon
+    const markets = [
+      { question: 'Will the price of Bitcoin be above $84000 on April 29?', probability: 0.50, volume: 30000, createdAt: REF_TIME - 5 * DAY_MS, endDate: '2025-04-29' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(1);
+    // No discount — within ±2 day tolerance
+    expect(result[0].trustScore).toBe('high');
+  });
+
+  it('keeps mature near-target BTC 30-day anchors trusted in direct extraction', () => {
+    const result = extractPriceThresholds([
+      {
+        question: 'Will the price of Bitcoin be above $84000 on May 15?',
+        probability: 0.50,
+        volume: 30000,
+        createdAt: REF_TIME - 5 * DAY_MS,
+        endDate: '2025-05-15',
+      },
+    ], { ticker: 'BTC-USD', horizonDays: 30, referenceTimeMs: REF_TIME });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].trustScore).toBe('high');
+  });
+
+  it('keeps off-window BTC 30-day anchors at low trust even when mature', () => {
+    const result = extractPriceThresholds([
+      {
+        question: 'Will the price of Bitcoin be above $84000 on April 19?',
+        probability: 0.50,
+        volume: 30000,
+        createdAt: REF_TIME - 5 * DAY_MS,
+        endDate: '2025-04-19',
+      },
+    ], { ticker: 'BTC-USD', horizonDays: 30, referenceTimeMs: REF_TIME });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].trustScore).toBe('low');
+  });
+
+  it('keeps undated BTC 30-day anchors at low trust even when mature', () => {
+    const result = extractPriceThresholds([
+      {
+        question: 'Will the price of Bitcoin be above $84000 in May?',
+        probability: 0.50,
+        volume: 30000,
+        createdAt: REF_TIME - 5 * DAY_MS,
+      },
+    ], { ticker: 'BTC-USD', horizonDays: 30, referenceTimeMs: REF_TIME });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].trustScore).toBe('low');
+  });
+
+  it('does not activate for non-crypto tickers even with zero anchors', () => {
+    const markets = [
+      { question: 'Will SPY be above $500 on April 17?', probability: 0.6, volume: 10000, endDate: '2025-04-17' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'SPY', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(0);
+  });
+
+  it('clamps date-gap discount to minimum 0.5', () => {
+    // Anchor endDate far from horizon → extreme offset discount
+    const markets = [
+      { question: 'Will the price of Bitcoin be below $60000 on April 16?', probability: 0.75, volume: 20000, createdAt: REF_TIME - 10 * DAY_MS, endDate: '2025-04-16' },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'BTC-USD', 14, REF_TIME,
+    );
+    expect(result).toHaveLength(1);
+    // Ensure probability is still > 0 (clamped)
+    expect(result[0].probability).toBeGreaterThan(0);
   });
 });
 
@@ -1194,6 +1384,19 @@ describe('Tier 1b — detectStructuralBreak', () => {
     }
   });
 
+  it('respects an explicit divergence threshold override', () => {
+    const states: ReturnType<typeof classifyRegimeState>[] = [
+      ...Array(30).fill('bull'),
+      ...Array(30).fill('bear'),
+    ];
+    const defaultResult = detectStructuralBreak(states);
+    const relaxedResult = detectStructuralBreak(states, defaultResult.divergence + 0.01);
+
+    expect(defaultResult.detected).toBe(true);
+    expect(relaxedResult.detected).toBe(false);
+    expect(relaxedResult.divergence).toBe(defaultResult.divergence);
+  });
+
   it('metadata.structuralBreakDetected reflects detection', async () => {
     // First half: all bull; second half: all bear → should trigger break
     const bullPrices = Array.from({ length: 31 }, (_, i) => 100 * (1 + i * 0.01));  // 30 bull returns
@@ -1775,6 +1978,37 @@ describe('computeActionSignal', () => {
     const sig = computeActionSignal(dist, 100, 0.05, 0.03, 7, 0.04, scenarios, 'equity');
 
     expect(sig.recommendation).toBe('HOLD');
+  });
+
+  it('raw-direction hybrid preserves calibrated output surfaces while enabling BTC short-horizon provenance', async () => {
+    const prices = Array.from({ length: 140 }, (_, i) => 100 + i * 0.15 + Math.sin(i * 0.25) * 2.5);
+    const currentPrice = prices[prices.length - 1]!;
+
+    const baseline = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    const hybrid = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      rawDirectionHybrid: true,
+    });
+
+    expect(hybrid.distribution).toHaveLength(baseline.distribution.length);
+    expect(hybrid.scenarios.expectedPrice).toBeCloseTo(baseline.scenarios.expectedPrice, 8);
+    expect(hybrid.scenarios.expectedReturn).toBeCloseTo(baseline.scenarios.expectedReturn, 8);
+    expect(hybrid.scenarios.pUp).toBeCloseTo(baseline.scenarios.pUp, 8);
+    expect(hybrid.actionSignal.buyProbability).toBeCloseTo(baseline.actionSignal.buyProbability, 10);
+    expect(hybrid.actionSignal.sellProbability).toBeCloseTo(baseline.actionSignal.sellProbability, 10);
+    expect(hybrid.actionSignal.actionLevels).toEqual(baseline.actionSignal.actionLevels);
+    expect(hybrid.metadata.rawDirectionHybridActive).toBe(true);
   });
 
   it('computeMarkovDistribution result includes actionSignal field', async () => {
@@ -3110,6 +3344,10 @@ describe('getAssetProfile', () => {
     expect(getAssetProfile('GLD').type).toBe('commodity');
   });
 
+  it('classifies SLV as commodity', () => {
+    expect(getAssetProfile('SLV').type).toBe('commodity');
+  });
+
   it('classifies CL as commodity', () => {
     expect(getAssetProfile('CL').type).toBe('commodity');
   });
@@ -3126,8 +3364,8 @@ describe('getAssetProfile', () => {
     expect(getAssetProfile('USO').type).toBe('commodity');
   });
 
-  it('classifies GOLD as commodity', () => {
-    expect(getAssetProfile('GOLD').type).toBe('commodity');
+  it('classifies GOLD as equity', () => {
+    expect(getAssetProfile('GOLD').type).toBe('equity');
   });
 
   it('classifies XAUUSD as commodity', () => {
@@ -3760,12 +3998,86 @@ describe('markov_distribution anchor query strategy', () => {
     expect(inferPolymarketSearchPhrase('BTC-USD')).toBe('Bitcoin price');
   });
 
+  it('normalizes GLD search phrase to gold price', () => {
+    expect(inferPolymarketSearchPhrase('GLD')).toBe('gold price');
+  });
+
+  it('normalizes SLV search phrase to silver price', () => {
+    expect(inferPolymarketSearchPhrase('SLV')).toBe('silver price');
+  });
+
+  it('keeps explicit GOLD ticker search phrase Barrick-specific', () => {
+    expect(inferPolymarketSearchPhrase('GOLD')).toBe('Barrick Gold price');
+  });
+
   it('builds richer Bitcoin anchor query variants', () => {
     const variants = buildPolymarketAnchorQueryVariants('BTC-USD');
     expect(variants).toContain('Bitcoin price');
     expect(variants).toContain('Bitcoin');
     expect(variants).toContain('Bitcoin above');
     expect(variants).toContain('Bitcoin below');
+  });
+
+  it('prioritises price-target queries for BTC 30-day anchor acquisition', () => {
+    const variants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 30 });
+    const frontSlice = variants.slice(0, 6);
+    const priceTargetQueries = ['Bitcoin price target', 'Bitcoin reach', 'Bitcoin exceed', 'BTC price level', 'Bitcoin ETF', 'crypto ETF'];
+    const regulatoryQueries = ['crypto regulation', 'SEC crypto', 'cryptocurrency regulation'];
+    const frontHasPriceTarget = frontSlice.some((q) => priceTargetQueries.some((pt) => q.includes(pt) || q === pt));
+    const frontHasRegulatory = frontSlice.some((q) => regulatoryQueries.some((rq) => q.includes(rq) || q === rq));
+    expect(frontHasPriceTarget).toBe(true);
+    expect(frontHasRegulatory).toBe(false);
+  });
+
+  it('BTC 14-day includes month-name variants not present in default', () => {
+    const defaultVariants = buildPolymarketAnchorQueryVariants('BTC-USD');
+    const shortHorizonVariants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 14 });
+    const targetMonth = new Date(Date.now() + 14 * 86_400_000)
+      .toLocaleString('en-US', { month: 'long' });
+    expect(shortHorizonVariants.length).toBeGreaterThan(defaultVariants.length);
+    expect(shortHorizonVariants).toContain(`Bitcoin ${targetMonth}`);
+    expect(shortHorizonVariants).toContain(`Bitcoin above ${targetMonth}`);
+    expect(defaultVariants).not.toContain(`Bitcoin ${targetMonth}`);
+  });
+
+  it('keeps BTC 14-day query ordering with month-name variants in front slice', () => {
+    const variants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 14 });
+    const targetMonth = new Date(Date.now() + 14 * 86_400_000)
+      .toLocaleString('en-US', { month: 'long' });
+    expect(variants.slice(0, 6)).toEqual([
+      'Bitcoin price',
+      'Bitcoin',
+      'Bitcoin above',
+      'Bitcoin below',
+      `Bitcoin ${targetMonth}`,
+      `Bitcoin above ${targetMonth}`,
+    ]);
+  });
+
+  it('does not inject month-name variants for BTC 30-day', () => {
+    const variants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 30 });
+    const targetMonth = new Date(Date.now() + 30 * 86_400_000)
+      .toLocaleString('en-US', { month: 'long' });
+    expect(variants.slice(0, 6).some((variant) => variant.includes(targetMonth))).toBe(false);
+  });
+
+  it('keeps primary and manual queries first for BTC 30-day', () => {
+    const variants = buildPolymarketAnchorQueryVariants('BTC-USD', { horizonDays: 30 });
+    expect(variants[0]).toBe('Bitcoin price');
+    expect(variants.slice(0, 4)).toEqual(['Bitcoin price', 'Bitcoin', 'Bitcoin above', 'Bitcoin below']);
+  });
+
+  it('does not reorder queries for non-crypto tickers even with long horizon', () => {
+    const defaultVariants = buildPolymarketAnchorQueryVariants('AAPL');
+    const longHorizonVariants = buildPolymarketAnchorQueryVariants('AAPL', { horizonDays: 30 });
+    expect(longHorizonVariants).toEqual(defaultVariants);
+  });
+
+  it('builds Barrick-specific anchor query variants for GOLD', () => {
+    const variants = buildPolymarketAnchorQueryVariants('GOLD');
+    expect(variants).toContain('Barrick Gold price');
+    expect(variants).toContain('Barrick Gold');
+    expect(variants).not.toContain('gold price');
   });
 });
 
@@ -3795,6 +4107,297 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBeGreaterThan(0);
   });
 
+  it('recovers earlier BTC terminal anchors when strict 14-day auto-fetch results are barrier-only', async () => {
+    const now = Date.now();
+    const day = 86_400_000;
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [
+        { question: 'Will Bitcoin reach $80,000 in April?', probability: 0.30, volume24h: 50000, ageDays: 5, endDate: new Date(now + 14 * day).toISOString() },
+        { question: 'Will Bitcoin reach $150,000 in April?', probability: 0.02, volume24h: 10000, ageDays: 5, endDate: new Date(now + 14 * day).toISOString() },
+        { question: 'Will Bitcoin dip to $65,000 in April?', probability: 0.15, volume24h: 40000, ageDays: 5, endDate: new Date(now + 14 * day).toISOString() },
+        { question: 'Will the price of Bitcoin be above $84,000 on April 17?', probability: 0.50, volume24h: 30000, ageDays: 5, endDate: new Date(now + 2 * day).toISOString() },
+        { question: 'Will the price of Bitcoin be above $80,000 on April 18?', probability: 0.62, volume24h: 25000, ageDays: 5, endDate: new Date(now + 3 * day).toISOString() },
+        { question: 'Will the price of Bitcoin be below $78,000 on April 19?', probability: 0.25, volume24h: 20000, ageDays: 5, endDate: new Date(now + 4 * day).toISOString() },
+      ],
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data._tool).toBe('markov_distribution');
+    expect(parsed.data.status).toBe('ok');
+    expect(parsed.data.canonical?.diagnostics?.totalAnchors).toBeGreaterThan(0);
+    expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBeGreaterThan(0);
+    expect(parsed.data.canonical?.diagnostics?.anchorQuality).not.toBe('none');
+    expect(parsed.data.canonical?.diagnostics?.canEmitCanonical).toBe(true);
+    expect(parsed.data.distribution).not.toBeNull();
+  });
+
+  it('emits via sparse crypto anchor wrapper path when BTC 14-day has exactly one trusted anchor', async () => {
+    const now = Date.now();
+    const day = 86_400_000;
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [
+        { question: 'Will Bitcoin reach $90,000 in April?', probability: 0.30, volume24h: 50000, ageDays: 5, endDate: new Date(now + 14 * day).toISOString() },
+        { question: `Will the price of Bitcoin be above $84,000 on ${new Date(now + 14 * day).toISOString().slice(0, 10)}?`, probability: 0.50, volume24h: 30000, ageDays: 10, endDate: new Date(now + 14 * day).toISOString() },
+      ],
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(parsed.data.status).toBe('ok');
+    expect(parsed.data.manualSynthesisForbidden).toBe(false);
+    expect(diagnostics?.anchorQuality).toBe('sparse');
+    expect(diagnostics?.trustedAnchors).toBe(1);
+    expect(diagnostics?.canEmitCanonical).toBe(true);
+    expect(parsed.data.distribution).not.toBeNull();
+  });
+
+  it('retries later BTC 14-day query variants when front-slice anchors are all low-trust', async () => {
+    const now = Date.now();
+    const day = 86_400_000;
+    const targetMonth = new Date(now + 14 * day)
+      .toLocaleString('en-US', { month: 'long' });
+    const frontQueries = new Set([
+      'Bitcoin price',
+      'Bitcoin',
+      'Bitcoin above',
+      'Bitcoin below',
+      `Bitcoin ${targetMonth}`,
+      `Bitcoin above ${targetMonth}`,
+    ]);
+    const retryCalls: string[][] = [];
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async (query: string) => {
+        if (!frontQueries.has(query)) return [];
+        return [
+          {
+            question: 'Will the price of Bitcoin be above $74,000 on April 24?',
+            probability: 0.45,
+            volume24h: 20000,
+            ageDays: 0,
+            endDate: new Date(now + 5 * day).toISOString(),
+          },
+          {
+            question: 'Will the price of Bitcoin be above $78,000 on April 25?',
+            probability: 0.25,
+            volume24h: 18000,
+            ageDays: 0,
+            endDate: new Date(now + 6 * day).toISOString(),
+          },
+        ];
+      },
+      fetchPolymarketAnchorMarketsWithQueries: async (queries: string[]) => {
+        retryCalls.push([...queries]);
+        return [
+          {
+            question: `Will the price of Bitcoin be above $76,000 on ${new Date(now + 14 * day).toISOString().slice(0, 10)}?`,
+            probability: 0.48,
+            volume24h: 50000,
+            ageDays: 7,
+            endDate: new Date(now + 14 * day).toISOString(),
+          },
+          {
+            question: `Will the price of Bitcoin be above $80,000 on ${new Date(now + 14 * day).toISOString().slice(0, 10)}?`,
+            probability: 0.22,
+            volume24h: 42000,
+            ageDays: 7,
+            endDate: new Date(now + 14 * day).toISOString(),
+          },
+        ];
+      },
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(retryCalls).toHaveLength(1);
+    expect(retryCalls[0]).toEqual([
+      'crypto regulation',
+      'SEC crypto',
+      'cryptocurrency regulation',
+      'Bitcoin ETF',
+      'crypto ETF',
+      'Bitcoin price target',
+      'Bitcoin reach',
+      'Bitcoin exceed',
+      'Bitcoin price level',
+      'Fed rate cut',
+      'Federal Reserve rate',
+      'FOMC',
+      'US recession',
+      'recession',
+      'economic recession',
+    ]);
+    expect(parsed.data.status).toBe('ok');
+    expect(diagnostics?.trustedAnchors).toBeGreaterThan(0);
+    expect(diagnostics?.anchorQuality).not.toBe('none');
+    expect(diagnostics?.canEmitCanonical).toBe(true);
+    expect(parsed.data.distribution).not.toBeNull();
+  });
+
+  it('uses a date-windowed search for BTC 14-day anchor auto-fetch before later-query retry', async () => {
+    const frontCalls: Array<{ query: string; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
+    const retryCalls: Array<{ queries: string[]; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
+    const targetMonth = new Date(Date.now() + 14 * 86_400_000)
+      .toLocaleString('en-US', { month: 'long' });
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async (
+        query: string,
+        _limit: number,
+        options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+      ) => {
+        frontCalls.push({ query, endDateFilter: options.endDateFilter });
+        return [];
+      },
+      fetchPolymarketAnchorMarketsWithQueries: async (
+        queries: string[],
+        _limit: number,
+        options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+      ) => {
+        retryCalls.push({ queries: [...queries], endDateFilter: options.endDateFilter });
+        return [];
+      },
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(frontCalls).toHaveLength(6);
+    expect(frontCalls.map((call) => call.query)).toEqual([
+      'Bitcoin price',
+      'Bitcoin',
+      'Bitcoin above',
+      'Bitcoin below',
+      `Bitcoin ${targetMonth}`,
+      `Bitcoin above ${targetMonth}`,
+    ]);
+    expect(frontCalls.every((call) => call.endDateFilter?.end_date_min && call.endDateFilter?.end_date_max)).toBe(true);
+    expect(retryCalls).toHaveLength(1);
+    expect(retryCalls[0].queries).toEqual([
+      'crypto regulation',
+      'SEC crypto',
+      'cryptocurrency regulation',
+      'Bitcoin ETF',
+      'crypto ETF',
+      'Bitcoin price target',
+      'Bitcoin reach',
+      'Bitcoin exceed',
+      'Bitcoin price level',
+      'Fed rate cut',
+      'Federal Reserve rate',
+      'FOMC',
+      'US recession',
+      'recession',
+      'economic recession',
+    ]);
+    expect(retryCalls[0].endDateFilter).toEqual({
+      end_date_min: expect.any(String),
+      end_date_max: expect.any(String),
+    });
+    expect(parsed.data.status).toBe('abstain');
+    expect(diagnostics?.trustedAnchors).toBe(0);
+    expect(diagnostics?.canEmitCanonical).toBe(false);
+  });
+
+  integrationIt('auto-fetches BTC 14-day Polymarket anchors and cleanly abstains when dated threshold inventory is unavailable', async () => {
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const parsedInput = freshTool.schema.parse({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const result = await freshTool.func(parsedInput);
+    const parsed = JSON.parse(result);
+    expect(parsed.data._tool).toBe('markov_distribution');
+    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBe(0);
+    expect(parsed.data.canonical?.diagnostics?.anchorQuality).toBe('none');
+    expect(parsed.data.canonical?.diagnostics?.canEmitCanonical).toBe(false);
+  });
+
   it('returns abstain payload when anchors or validation are insufficient', async () => {
     const result = await markovDistributionTool.func({
       ticker: 'SPY',
@@ -3817,6 +4420,512 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.diagnostics).toBeDefined();
     expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
     expect(parsed.data.distribution).toBeNull();
+    expect(parsed.data.forecastHint).toBeNull();
+  });
+
+  it('returns forecastHint for BTC short-horizon abstain without exposing canonical action signal', async () => {
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [],
+    }));
+
+    const { markovDistributionTool: abstainTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await abstainTool.func({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.canonical.actionSignal).toBeNull();
+    expect(parsed.data.forecastHint).toBeDefined();
+    expect(parsed.data.forecastHint.usage).toBe('forecast_only');
+    expect(parsed.data.forecastHint.calibratedDistribution).toBe(false);
+    expect(typeof parsed.data.forecastHint.markovReturn).toBe('number');
+    expect(Number.isFinite(parsed.data.forecastHint.markovReturn)).toBe(true);
+    expect(parsed.data.forecastHint.markovReturn).not.toBe(0);
+  });
+
+  it('still emits forecastHint for BTC short-horizon abstain when a structural break is detected', async () => {
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [],
+    }));
+
+    const { markovDistributionTool: abstainTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 100; i++) {
+      const shock = i > 85 ? 0.04 : Math.sin(i * 0.12) * 0.004;
+      p *= 1 + shock;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await abstainTool.func({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.canonical.diagnostics.structuralBreakDetected).toBe(true);
+    expect(parsed.data.forecastHint).toBeDefined();
+    expect(parsed.data.forecastHint.usage).toBe('forecast_only');
+  });
+
+  it('BTC break-threshold override can suppress a detected structural break', async () => {
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 100; i++) {
+      const shock = i > 85 ? 0.04 : Math.sin(i * 0.12) * 0.004;
+      p *= 1 + shock;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const baseline = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    const relaxed = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      btcBreakDivergenceThreshold: 1.0,
+    });
+
+    expect(baseline.metadata.structuralBreakDetected).toBe(true);
+    expect(relaxed.metadata.structuralBreakDetected).toBe(false);
+  });
+
+  it('suppresses forecastHint when BTC short-horizon abstain confidence is too low', () => {
+    const forecastHint = buildForecastHint({
+      canEmitCanonical: false,
+      ticker: 'BTC-USD',
+      horizon: 7,
+      expectedReturn: 0.04,
+      mixingTimeWeight: 0.6,
+      predictionConfidence: 0.08,
+    });
+
+    expect(forecastHint).toBeNull();
+  });
+
+  it('buildForecastHint contract: BTC-only, horizon ≤ 14, and attenuation formula', () => {
+    const base = {
+      canEmitCanonical: false,
+      ticker: 'BTC-USD',
+      horizon: 7,
+      expectedReturn: 0.04,
+      mixingTimeWeight: 0.6,
+      predictionConfidence: 0.20,
+    };
+
+    expect(buildForecastHint({ ...base, ticker: 'ETH-USD' })).toBeNull();
+    expect(buildForecastHint({ ...base, ticker: 'SPY' })).toBeNull();
+
+    expect(buildForecastHint({ ...base, horizon: 15 })).toBeNull();
+    expect(buildForecastHint({ ...base, horizon: 30 })).toBeNull();
+
+    const atBoundary = buildForecastHint({ ...base, horizon: 14 });
+    expect(atBoundary).not.toBeNull();
+
+    expect(buildForecastHint({ ...base, canEmitCanonical: true })).toBeNull();
+
+    const hint = buildForecastHint(base);
+    expect(hint).not.toBeNull();
+    expect(hint!.usage).toBe('forecast_only');
+    expect(hint!.calibratedDistribution).toBe(false);
+    expect(hint!.confidenceScore).toBe(0.20);
+    expect(hint!.markovReturn).toBeCloseTo(0.0096, 10);
+
+    const highConf = buildForecastHint({ ...base, predictionConfidence: 0.30 });
+    expect(highConf).not.toBeNull();
+    expect(highConf!.markovReturn).toBeCloseTo(0.012, 10);
+  });
+
+  describe('BTC short-horizon confidence cap', () => {
+    it('caps HIGH confidence to MEDIUM for BTC short-horizon outputs with structural break and weak diagnostics', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+    });
+
+    it('does not change LOW confidence even when BTC short-horizon diagnostics are weak', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'LOW',
+      })).toBe('LOW');
+    });
+
+    it('does not cap when structural break is absent', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        structuralBreakDetected: false,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('does not cap BTC long-horizon confidence', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 30,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('recognizes BTC ticker alias directly', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.03,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+    });
+
+    it('does not cap non-BTC assets', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'AAPL',
+        horizon: 7,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.02,
+        predictionConfidence: 0.35,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('does not treat null R² as weak by itself', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: null,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('does not cap when both diagnostics are above threshold', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.10,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('does not cap at the exact R² and prediction-confidence boundaries', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.05,
+        predictionConfidence: 0.40,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('caps at horizon 14 but not 15', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.03,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 15,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.03,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('HIGH');
+    });
+
+    it('caps when prediction confidence alone is weak', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.10,
+        predictionConfidence: 0.38,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+    });
+
+    it('caps when validation alone is weak', () => {
+      expect(capBtcShortHorizonConfidence({
+        ticker: 'BTC-USD',
+        horizon: 14,
+        structuralBreakDetected: true,
+        outOfSampleR2: 0.03,
+        predictionConfidence: 0.50,
+        confidence: 'HIGH',
+      })).toBe('MEDIUM');
+    });
+  });
+
+  describe('BTC short-horizon thin-anchor caveat', () => {
+    it('emits a thin-anchor warning for BTC short-horizon good-quality coverage with 2 trusted anchors', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC-USD',
+        horizonDays: 7,
+        trustedAnchors: 2,
+        quality: 'good',
+      })).toContain('thin anchor coverage');
+    });
+
+    it('does not emit the caveat for BTC short-horizon when anchor count is above 3', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC-USD',
+        horizonDays: 7,
+        trustedAnchors: 4,
+        quality: 'good',
+      })).toBe('');
+    });
+
+    it('does not emit the caveat for BTC long-horizon coverage', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC-USD',
+        horizonDays: 30,
+        trustedAnchors: 3,
+        quality: 'good',
+      })).toBe('');
+    });
+
+    it('emits the caveat for the BTC ticker alias directly', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC',
+        horizonDays: 14,
+        trustedAnchors: 3,
+        quality: 'good',
+      })).toContain('thin anchor coverage');
+    });
+
+    it('does not emit the caveat for non-BTC assets', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'ETH-USD',
+        horizonDays: 7,
+        trustedAnchors: 2,
+        quality: 'good',
+      })).toBe('');
+    });
+
+    it('does not emit the caveat when quality is not good', () => {
+      expect(buildBtcShortHorizonThinAnchorWarning({
+        ticker: 'BTC-USD',
+        horizonDays: 14,
+        trustedAnchors: 3,
+        quality: 'sparse',
+      })).toBe('');
+    });
+
+    it('preserves good quality while adding the BTC short-horizon caveat', () => {
+      const coverage = assessAnchorCoverage([
+        { price: 62000, probability: 0.72, rawProbability: 0.72, trustScore: 'high', source: 'polymarket', endDate: '2026-04-25' },
+        { price: 66000, probability: 0.38, rawProbability: 0.38, trustScore: 'high', source: 'polymarket', endDate: '2026-04-25' },
+      ], 64000, { ticker: 'BTC-USD', horizonDays: 14 });
+
+      expect(coverage.quality).toBe('good');
+      expect(coverage.trustedAnchors).toBe(2);
+      expect(coverage.warning).toContain('thin anchor coverage');
+    });
+
+    it('propagates the caveat through markovDistributionTool while keeping good quality and canonical output', async () => {
+      const prices: number[] = [];
+      let p = 65000;
+      for (let i = 0; i < 120; i++) {
+        p *= 1 + Math.sin(i * 0.12) * 0.004;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const currentPrice = prices[prices.length - 1];
+      const result = await markovDistributionTool.func({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        currentPrice,
+        historicalPrices: prices,
+        polymarketMarkets: [
+          { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.98)} on April 25?`, probability: 0.68, volume: 5000, createdAt: Date.now() - 86400000 * 4 },
+          { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.02)} on April 25?`, probability: 0.34, volume: 5000, createdAt: Date.now() - 86400000 * 4 },
+        ],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.anchorQuality).toBe('good');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+      expect(parsed.data.canonical.diagnostics.anchorWarning).toContain('thin anchor coverage');
+      expect(parsed.data.report).toContain('thin anchor coverage');
+    });
+  });
+
+  it('emits undefined provenance flags when break-confidence flags are off', async () => {
+    const simplePrices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: simplePrices,
+      polymarketMarkets: [],
+    });
+
+    expect(result.metadata.trendPenaltyOnlyBreakConfidenceActive).toBeUndefined();
+    expect(result.metadata.divergenceWeightedBreakConfidenceActive).toBeUndefined();
+  });
+
+  it('keeps BTC 30-day off-window fallback candidates from enabling canonical emission', async () => {
+    const now = Date.now();
+    const day = 86_400_000;
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [
+        {
+          question: 'Will the price of Bitcoin be above $84,000 on April 24?',
+          probability: 0.50,
+          volume24h: 30000,
+          ageDays: 10,
+          endDate: new Date(now + 6 * day).toISOString(),
+        },
+      ],
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 30,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(parsed.data.status).toBe('abstain');
+    expect(diagnostics?.totalAnchors).toBeGreaterThan(0);
+    expect(diagnostics?.trustedAnchors).toBe(0);
+    expect(diagnostics?.anchorQuality).toBe('none');
+    expect(diagnostics?.canEmitCanonical).toBe(false);
+    expect(parsed.data.distribution).toBeNull();
+  });
+
+  it('uses undated fallback only after date-windowed front slice and retry queries are exhausted', async () => {
+    const callOptions: Array<{ queries: string[]; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [],
+      fetchPolymarketAnchorMarketsWithQueries: async (
+        queries: string[],
+        _limit: number,
+        options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+      ) => {
+        callOptions.push({ queries: [...queries], endDateFilter: options.endDateFilter });
+        if (options.endDateFilter) {
+          return [];
+        }
+        expect(queries).toEqual([
+          'Bitcoin price',
+          'Bitcoin',
+          'Bitcoin above',
+          'Bitcoin below',
+          'Bitcoin ETF',
+          'crypto ETF',
+        ]);
+        return [
+          {
+            question: 'Will the price of Bitcoin be above $76,000 on April 24?',
+            probability: 0.5,
+            volume24h: 5000,
+            ageDays: 0,
+            endDate: '2026-04-24',
+          },
+        ];
+      },
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 30,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    expect(callOptions).toHaveLength(2);
+    expect(callOptions[0].endDateFilter).toEqual({
+      end_date_min: expect.any(String),
+      end_date_max: expect.any(String),
+    });
+    expect(callOptions[1].endDateFilter).toBeUndefined();
+    expect(parsed.data.status).toBe('abstain');
+    expect(diagnostics?.totalAnchors).toBe(1);
+    expect(diagnostics?.trustedAnchors).toBe(0);
   });
 
   it('returns canonical payload when trusted anchors and positive validation are present', async () => {
@@ -3876,6 +4985,202 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.diagnostics.trustedAnchors).toBeGreaterThanOrEqual(2);
     expect(parsed.data.canonical.diagnostics.outOfSampleR2).not.toBeNull();
     expect(parsed.data.status).toBe('ok');
+  });
+
+  // -----------------------------------------------------------------------
+  // Commodity model-only bypass tests
+  // -----------------------------------------------------------------------
+  describe('commodity model-only bypass', () => {
+    it('emits canonical for commodity with zero anchors when thresholds pass', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      const prices: number[] = [];
+      let p = 180;
+      for (let i = 0; i < 120; i++) {
+        p *= 1.001 + Math.sin(i * 0.1) * 0.001;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+      expect(parsed.data.canonical.diagnostics.calibrationMode).toBe('model_only');
+      expect(parsed.data.canonical.diagnostics.anchorBypassApplied).toBe(true);
+      expect(parsed.data.canonical.diagnostics.totalAnchors).toBe(0);
+      expect(parsed.data.canonical.diagnostics.trustedAnchors).toBe(0);
+    });
+
+    it('abstains for commodity when R² is too low', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      // Deterministic oscillating series that produces strongly negative R² without a structural break.
+      const prices: number[] = [];
+      let p = 200;
+      for (let i = 0; i < 95; i++) {
+        const shock = Math.sin(i * 0.15) * 0.004;
+        p *= 1 + shock;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('abstain');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
+    });
+
+    it('abstains for commodity when confidence is too low', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      // Very short series (25 prices) to get low predictionConfidence
+      const prices: number[] = [];
+      let p = 200;
+      for (let i = 0; i < 25; i++) {
+        p *= 1 + Math.sin(i * 0.3) * 0.005;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('abstain');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
+    });
+
+    it('abstains for commodity on structural break', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      // Generate prices with sharp break after index 85
+      const prices: number[] = [];
+      let p = 200;
+      for (let i = 0; i < 100; i++) {
+        const shock = i > 85 ? 0.05 : Math.sin(i * 0.12) * 0.004;
+        p *= 1 + shock;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('abstain');
+      expect(parsed.data.canonical.diagnostics.structuralBreakDetected).toBe(true);
+    });
+
+    it('exposes calibrationMode and anchorBypassApplied in diagnostics', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      const prices: number[] = [];
+      let p = 180;
+      for (let i = 0; i < 120; i++) {
+        p *= 1.001 + Math.sin(i * 0.1) * 0.001;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.calibrationMode).toBe('model_only');
+      expect(parsed.data.canonical.diagnostics.anchorBypassApplied).toBe(true);
+    });
+
+    it('uses markovWeight=1 and anchorWeight=0 for model-only emission', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      const prices: number[] = [];
+      let p = 180;
+      for (let i = 0; i < 120; i++) {
+        p *= 1.001 + Math.sin(i * 0.1) * 0.001;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.markovWeight).toBe(1);
+      expect(parsed.data.canonical.diagnostics.anchorWeight).toBe(0);
+    });
   });
 });
 
@@ -4130,6 +5435,7 @@ describe('PR3F Lever: short-horizon crypto disagreement prior', () => {
       currentPrice,
       historicalPrices: prices,
       polymarketMarkets,
+      btcReturnThresholdMultiplier: 0.5,
     });
     
     const pr3fResult = await computeMarkovDistribution({
@@ -4139,6 +5445,7 @@ describe('PR3F Lever: short-horizon crypto disagreement prior', () => {
       historicalPrices: prices,
       polymarketMarkets,
       pr3fCryptoShortHorizonDisagreementPrior: true,
+      btcReturnThresholdMultiplier: 0.5,
     });
 
     // The prices array creates a strong trend, causing high raw P(up). 
@@ -4166,7 +5473,7 @@ describe('PR3G Lever: Recency-Weighted Regime Up-Rates', () => {
     50000 + i * 100 + (Math.sin(i / 5) * 2000)
   );
 
-  it('preserves default behavior when PR3G flag is absent', async () => {
+  it('BTC 7d default activates recency weighting', async () => {
     const defaultResult = await computeMarkovDistribution({
       ticker: 'BTC-USD',
       horizon: 7,
@@ -4174,7 +5481,52 @@ describe('PR3G Lever: Recency-Weighted Regime Up-Rates', () => {
       historicalPrices: prices,
       polymarketMarkets: [],
     });
-    expect(defaultResult.metadata.pr3gRecencyWeightingActive).toBe(false);
+    expect(defaultResult.metadata.pr3gRecencyWeightingActive).toBe(true);
+  });
+
+  it('BTC 14d default activates recency weighting', async () => {
+    const defaultResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(defaultResult.metadata.pr3gRecencyWeightingActive).toBe(true);
+  });
+
+  it('explicit false restores legacy control for BTC 7d/14d', async () => {
+    const legacyResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      pr3gCryptoShortHorizonRecencyWeighting: false,
+    });
+    expect(legacyResult.metadata.pr3gRecencyWeightingActive).toBe(false);
+  });
+
+  it('other BTC short horizons do not activate recency weighting by default', async () => {
+    const nonPromotedResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 10,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(nonPromotedResult.metadata.pr3gRecencyWeightingActive).toBe(false);
+  });
+
+  it('non-BTC crypto does not activate recency weighting by default', async () => {
+    const nonBtcResult = await computeMarkovDistribution({
+      ticker: 'ETH-USD',
+      horizon: 7,
+      currentPrice: 3500,
+      historicalPrices: Array.from({ length: 150 }, (_, i) => 3000 + i * 5 + (Math.sin(i / 5) * 100)),
+      polymarketMarkets: [],
+    });
+    expect(nonBtcResult.metadata.pr3gRecencyWeightingActive).toBe(false);
   });
 
   it('applies deterministic effect of a milder decay vs a more aggressive decay', async () => {
@@ -4201,6 +5553,113 @@ describe('PR3G Lever: Recency-Weighted Regime Up-Rates', () => {
     expect(aggressiveResult.metadata.pr3gRecencyWeightingActive).toBe(true);
     expect(milderResult.metadata.pr3gRecencyWeightingActive).toBe(true);
     expect(aggressiveResult.actionSignal.expectedReturn).not.toBe(milderResult.actionSignal.expectedReturn);
+  });
+});
+
+describe('BTC 14d bearish-break SELL gate', () => {
+  it('fires for the measured low-confidence bearish structural-break slice', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'sideways',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(true);
+  });
+
+  it('does not fire outside BTC 14d', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'sideways',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire in bull regime', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'bull',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire above the low-confidence cap', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'bear',
+      predictionConfidence: 0.091,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire without a structural break', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: false,
+      regimeState: 'bear',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire when the raw side is not SELL', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'BUY',
+      structuralBreakDetected: true,
+      regimeState: 'bear',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
+  });
+
+  it('does not fire for non-BTC tickers', () => {
+    expect(shouldApplyBtc14dBearishBreakSellGate({
+      ticker: 'ETH-USD',
+      horizon: 14,
+      recommendation: 'BUY',
+      rawRecommendation: 'SELL',
+      structuralBreakDetected: true,
+      regimeState: 'sideways',
+      predictionConfidence: 0.09,
+      rawPredictedProb: 0.50,
+      predictedProb: 0.54,
+      expectedReturn: 0.025,
+    })).toBe(false);
   });
 });
 
@@ -4272,11 +5731,11 @@ describe('PR3 experiment: startStateMixture', () => {
     expect(mixtureResult.mu_n).toBeLessThan(hardResult.mu_n - 0.001);
   });
 
-  it('preserves default behavior when flag absent', async () => {
+  it('promotes BTC short-horizon start-state mixture by default and preserves legacy behavior with explicit false', async () => {
     const prices = Array.from({ length: 150 }, (_, i) => 50000 + i * 100 + (Math.sin(i / 5) * 2000));
     const currentPrice = prices[prices.length - 1];
 
-    const defaultResult = await computeMarkovDistribution({
+    const promotedDefault = await computeMarkovDistribution({
       ticker: 'BTC-USD',
       horizon: 7,
       currentPrice,
@@ -4284,7 +5743,7 @@ describe('PR3 experiment: startStateMixture', () => {
       polymarketMarkets: [],
     });
     
-    const mixtureResult = await computeMarkovDistribution({
+    const explicitPromoted = await computeMarkovDistribution({
       ticker: 'BTC-USD',
       horizon: 7,
       currentPrice,
@@ -4293,7 +5752,20 @@ describe('PR3 experiment: startStateMixture', () => {
       startStateMixture: true,
     });
 
-    expect(mixtureResult.actionSignal.expectedReturn).not.toBe(defaultResult.actionSignal.expectedReturn);
+    const legacyControl = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      startStateMixture: false,
+    });
+
+    expect(promotedDefault.metadata.startStateMixtureActive).toBe(true);
+    expect(explicitPromoted.metadata.startStateMixtureActive).toBe(true);
+    expect(legacyControl.metadata.startStateMixtureActive).toBe(false);
+    expect(promotedDefault.actionSignal.expectedReturn).toBe(explicitPromoted.actionSignal.expectedReturn);
+    expect(promotedDefault.actionSignal.expectedReturn).not.toBe(legacyControl.actionSignal.expectedReturn);
   });
 });
 
@@ -4379,6 +5851,7 @@ describe('PR3 Post-Experiment: matureBullCalibration', () => {
       currentPrice,
       historicalPrices: prices,
       polymarketMarkets: [],
+      btcReturnThresholdMultiplier: 0.5,
     });
 
     const experimentResult = await computeMarkovDistribution({
@@ -4388,6 +5861,7 @@ describe('PR3 Post-Experiment: matureBullCalibration', () => {
       historicalPrices: prices,
       polymarketMarkets: [],
       matureBullCalibration: true,
+      btcReturnThresholdMultiplier: 0.5,
     });
 
     expect(experimentResult).toBeDefined();
@@ -4530,5 +6004,101 @@ describe('normalizeSentiment', () => {
 
     expect(parsed.data._tool).toBe('markov_distribution');
     expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 7: regime-specific sigma (backtest-only)
+// ---------------------------------------------------------------------------
+
+describe('computeHorizonDriftVol — regime-specific sigma', () => {
+  const P = buildDefaultMatrix();
+
+  const bullDominantStats: Record<ReturnType<typeof classifyRegimeState>, { meanReturn: number; stdReturn: number }> = {
+    bull:     { meanReturn:  0.003, stdReturn: 0.008 },
+    bear:     { meanReturn: -0.003, stdReturn: 0.015 },
+    sideways: { meanReturn:  0.000, stdReturn: 0.006 },
+  };
+
+  it('uses mixture sigma by default (flag off)', () => {
+    const mixture = computeHorizonDriftVol(10, P, bullDominantStats, 'bull', 0);
+    const regimeMode = computeHorizonDriftVol(10, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.99);
+    // With default matrix, bull row is ~0.6 bull, ~0.2 bear, ~0.2 sideways
+    // The mixture sigma should be larger than any single regime's sigma due to Var(μ)
+    // With flag on but threshold=0.99 (not exceeded), should still use mixture sigma
+    expect(mixture.sigma_n).toBeCloseTo(regimeMode.sigma_n, 10);
+  });
+
+  it('uses dominant regime sigma when threshold is exceeded and flag is on', () => {
+    // With a near-identity matrix, after 1 step from bull, weights ≈ [0.6, 0.2, 0.2]
+    // max weight = 0.6, which exceeds threshold 0.55 but not 0.70
+    const mixture = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, false);
+    const regimeMode = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.55);
+
+    // With regime-specific sigma at threshold 0.55, bull dominates (weight ~0.6 > 0.55)
+    // so sigma should be the bull regime's own stdReturn * sqrt(1) = 0.008
+    // The mixture sigma includes Var(μ) from bear's different mean, so it's larger
+    expect(regimeMode.sigma_n).toBeLessThan(mixture.sigma_n);
+    // Should equal bull's daily vol scaled by sqrt(horizon)
+    expect(regimeMode.sigma_n).toBeCloseTo(0.008, 5);
+  });
+
+  it('falls back to mixture sigma when max weight does not exceed threshold', () => {
+    // threshold=0.99: no regime can reach this with the default matrix in 1 step
+    const mixture = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0);
+    const regimeMode = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.99);
+    expect(regimeMode.sigma_n).toBeCloseTo(mixture.sigma_n, 10);
+  });
+
+  it('drift (mu_n) is unchanged regardless of sigma mode', () => {
+    const mixture = computeHorizonDriftVol(10, P, bullDominantStats, 'bull', 0, undefined, undefined, false);
+    const regimeMode = computeHorizonDriftVol(10, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.55);
+    expect(regimeMode.mu_n).toBeCloseTo(mixture.mu_n, 10);
+  });
+
+  it('default threshold is 0.60 when not specified', () => {
+    // With default matrix at 1 step from bull: max weight ≈ 0.6
+    // Without explicit threshold, default is 0.60 — max weight must EXCEED 0.60
+    // 0.6 is NOT > 0.6, so mixture sigma should be used
+    const mixture = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, false);
+    const regimeModeDefault = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, true);
+    expect(regimeModeDefault.sigma_n).toBeCloseTo(mixture.sigma_n, 10);
+  });
+
+  it('uses mixture sigma for long horizons where weights diffuse', () => {
+    // At horizon=100, the default matrix mixes weights toward uniform
+    // No single regime can dominate → regime-specific sigma should not activate
+    const mixture = computeHorizonDriftVol(100, P, bullDominantStats, 'bull', 0);
+    const regimeMode = computeHorizonDriftVol(100, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.55);
+    expect(regimeMode.sigma_n).toBeCloseTo(mixture.sigma_n, 10);
+  });
+});
+
+describe('computeMarkovDistribution — regime-specific sigma provenance', () => {
+  const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
+
+  it('metadata.regimeSpecificSigmaActive is false when flag is off', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(result.metadata.regimeSpecificSigmaActive).toBeFalsy();
+  });
+
+  it('metadata.regimeSpecificSigmaActive is true when flag is on and weights are concentrated', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      regimeSpecificSigma: true,
+      regimeSpecificSigmaThreshold: 0.30,
+    });
+    // With a threshold of 0.30, at least one regime should dominate
+    expect(result.metadata.regimeSpecificSigmaActive).toBe(true);
   });
 });

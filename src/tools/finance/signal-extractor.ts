@@ -7,6 +7,8 @@
  * fallback query variants, and a weight for the log-odds probability combiner.
  */
 
+import { resolveAssetIntent, type ResolvedAssetClass } from './asset-resolver.js';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -86,10 +88,11 @@ export const TICKER_TO_COMPANY_NAME: Record<string, string> = {
   SPY: 'S&P 500', VOO: 'S&P 500', IVV: 'S&P 500', VTI: 'US stock market', DIA: 'Dow Jones',
   // Crypto
   BTC: 'Bitcoin', ETH: 'Ethereum', SOL: 'Solana',
-  // Commodities — use lowercase common name for Polymarket text matching
-  GOLD: 'gold', SILVER: 'silver', COPPER: 'copper', PLATINUM: 'platinum',
+  // Commodities — proxy tickers map to commodity names; explicit GOLD ticker is Barrick Gold equity
+  GOLD: 'Barrick Gold', SILVER: 'silver', COPPER: 'copper', PLATINUM: 'platinum',
   PALLADIUM: 'palladium', OIL: 'oil', CRUDE: 'oil', NATGAS: 'natural gas',
   WHEAT: 'wheat', CORN: 'corn', SOYBEAN: 'soybeans', COFFEE: 'coffee', SUGAR: 'sugar',
+  GLD: 'gold', IAU: 'gold', SLV: 'silver', XAUUSD: 'gold', XAGUSD: 'silver',
 };
 
 // ---------------------------------------------------------------------------
@@ -107,9 +110,12 @@ export const SIGNAL_KEYWORDS: Record<string, string[]> = {
                  'gold', 'silver', 'copper', 'metal', 'ounce', 'commodity', 'natural gas', 'wheat', 'corn'],
   geopolitical: ['war', 'conflict', 'sanction', 'Middle East', 'Russia', 'China', 'Ukraine'],
   trade_policy: ['tariff', 'trade', 'import', 'export', 'duty'],
-  etf_product:  ['ETF', 'fund', 'approval', 'launch', 'spot'],
+  etf_product:     ['ETF', 'fund', 'approval', 'launch', 'spot'],
+  btc_price_target: ['Bitcoin', 'BTC', 'price target', 'price level', 'reach', 'exceed'],
   supply_chain: ['supply', 'disruption', 'shortage', 'TSMC', 'chip', 'wafer'],
 };
+
+const COMMODITY_CRYPTO_MARKER_RE = /\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|cryptocurrency)\b/i;
 
 // ---------------------------------------------------------------------------
 // Sector map (top ~80 tickers → AssetType)
@@ -156,6 +162,10 @@ const SECTOR_MAP: Record<string, AssetType> = {
   // Materials / Metals ETFs
   SLX: 'materials', XME: 'materials', XLB: 'materials', GDX: 'materials', GDXJ: 'materials',
   PICK: 'materials', REMX: 'materials',
+  // Commodity proxy ETFs route through commodity signals (not equity)
+  GLD: 'commodity', IAU: 'commodity', SLV: 'commodity',
+  // Barrick Gold routes through materials (equity, not commodity)
+  GOLD: 'materials',
   // Industrials ETFs
   XLI: 'industrial', VIS: 'industrial', PAVE: 'industrial', GWX: 'industrial',
   // Financials ETFs (KRE, KBE, XLF, etc.)
@@ -194,8 +204,10 @@ const MACRO_KEYWORDS = [
  */
 const COMMODITY_KEYWORD_MAP: Array<[keyword: string, ticker: string]> = [
   ['natural gas', 'NATGAS'],
-  ['gold',        'GOLD'],
-  ['silver',      'SILVER'],
+  ['xauusd',       'GOLD'],
+  ['xagusd',       'SILVER'],
+  ['gold',         'GOLD'],
+  ['silver',       'SILVER'],
   ['copper',      'COPPER'],
   ['platinum',    'PLATINUM'],
   ['palladium',   'PALLADIUM'],
@@ -257,6 +269,11 @@ export function scoreMarketRelevance(question: string, category: string): number
   const keywords = SIGNAL_KEYWORDS[category];
   if (!keywords || keywords.length === 0) return 1;
   const lower = question.toLowerCase();
+
+  if (category === 'commodity' && COMMODITY_CRYPTO_MARKER_RE.test(question)) {
+    return 0;
+  }
+
   const matches = keywords.filter((kw) => lower.includes(kw.toLowerCase())).length;
   return matches / keywords.length;
 }
@@ -265,8 +282,15 @@ export function scoreMarketRelevance(question: string, category: string): number
 // Detection
 // ---------------------------------------------------------------------------
 
+const BARRICK_MINER_RE = /\bbarrick\b|\bgold\s+(?:stock|equity|shares|company|earnings|revenue|miner|mining)\b|\$gold\b/i;
+
 export function detectAssetType(query: string): { type: AssetType; ticker: string | null } {
   const lower = query.toLowerCase();
+
+  // 0. Barrick Gold / gold-miner disambiguation (must precede commodity gold match)
+  if (BARRICK_MINER_RE.test(query)) {
+    return { type: 'materials', ticker: 'GOLD' };
+  }
 
   // 1. Crypto keywords (check before ticker scan to avoid false positives)
   if (CRYPTO_KEYWORDS.some((kw) => lower.includes(kw))) {
@@ -280,6 +304,8 @@ export function detectAssetType(query: string): { type: AssetType; ticker: strin
   const dollarMatch = query.match(/\$([A-Z]{1,5})\b/);
   if (dollarMatch) {
     const ticker = dollarMatch[1];
+    // $GOLD = Barrick Gold equity, not commodity gold
+    if (ticker === 'GOLD') return { type: 'materials', ticker: 'GOLD' };
     const type: AssetType = SECTOR_MAP[ticker] ?? 'tech_general';
     return { type, ticker };
   }
@@ -363,10 +389,11 @@ const SIGNAL_MAPS: Record<AssetType, Array<{
     { name: 'Trade / Tariffs',   tpl: 'tariff trade war',     variantTpls: ['tariff', 'trade war'],                weight: 0.15, category: 'trade_policy' },
   ],
   crypto: [
-    { name: 'SEC / Regulation',  tpl: 'crypto regulation',   variantTpls: ['SEC crypto', 'cryptocurrency regulation'], weight: 0.35, category: 'regulatory' },
-    { name: 'ETF / Product',     tpl: '{ticker} ETF',        variantTpls: ['Bitcoin ETF', 'crypto ETF'],               weight: 0.30, category: 'etf_product' },
-    { name: 'Fed Rate Decision', tpl: 'Fed rate cut',        variantTpls: ['Federal Reserve rate', 'FOMC'],            weight: 0.20, category: 'macro_rates' },
-    { name: 'US Recession',      tpl: 'US recession',        variantTpls: ['recession', 'economic recession'],         weight: 0.15, category: 'macro_growth' },
+    { name: 'SEC / Regulation',  tpl: 'crypto regulation',             variantTpls: ['SEC crypto', 'cryptocurrency regulation'],               weight: 0.30, category: 'regulatory' },
+    { name: 'ETF / Product',     tpl: '{ticker} ETF',                  variantTpls: ['Bitcoin ETF', 'crypto ETF'],                               weight: 0.25, category: 'etf_product' },
+    { name: 'BTC Price Target',  tpl: 'Bitcoin price target',          variantTpls: ['Bitcoin reach', 'Bitcoin exceed', 'BTC price level'],      weight: 0.20, category: 'btc_price_target' },
+    { name: 'Fed Rate Decision', tpl: 'Fed rate cut',                 variantTpls: ['Federal Reserve rate', 'FOMC'],                            weight: 0.15, category: 'macro_rates' },
+    { name: 'US Recession',      tpl: 'US recession',                  variantTpls: ['recession', 'economic recession'],                         weight: 0.10, category: 'macro_growth' },
   ],
   commodity: [
     { name: 'Price Level',       tpl: '{ticker} price',        variantTpls: ['{ticker}', 'commodity price'],           weight: 0.45, category: 'commodity' },
@@ -421,21 +448,32 @@ const SIGNAL_MAPS: Record<AssetType, Array<{
 
 /**
  * Returns prioritised signal categories for the asset(s) found in `query`.
- * Template placeholders are substituted with the detected ticker, then each
- * phrase is normalised for Polymarket's keyword search API (company name,
- * no year/quarter tokens, max 4 words).
+ * Uses the asset-intent resolver to disambiguate commodity vs equity intent
+ * (e.g., "gold" → GLD commodity proxy, "Barrick GOLD" → materials equity).
+ * Template placeholders are substituted with the resolved ticker/display name,
+ * then each phrase is normalised for Polymarket's keyword search API.
  */
 export function extractSignals(query: string): SignalCategory[] {
   const { type, ticker } = detectAssetType(query);
-  const templates = SIGNAL_MAPS[type];
-  const tickerStr = ticker ?? 'asset';
+  const resolved = resolveAssetIntent(query, ticker);
+  const signalType = resolveSignalType(resolved.assetClass, type);
+  const templates = SIGNAL_MAPS[signalType];
+  // For commodity proxies, use the proxy label (GLD/SLV) as the ticker in templates
+  // so Polymarket search phrases resolve correctly. For equity, use original ticker.
+  const effectiveTicker = resolved.proxyLabel ?? resolved.resolvedTicker ?? ticker ?? 'asset';
 
   return templates.map((t) => {
-    const rawPhrase = substituteTemplates(t.tpl, tickerStr);
-    const searchPhrase = normalizeForPolymarket(rawPhrase, ticker);
+    const rawPhrase = substituteTemplates(t.tpl, effectiveTicker);
+    const searchPhrase = normalizeForPolymarket(rawPhrase, effectiveTicker);
     const queryVariants = t.variantTpls.map((vTpl) =>
-      normalizeForPolymarket(substituteTemplates(vTpl, tickerStr), ticker),
+      normalizeForPolymarket(substituteTemplates(vTpl, effectiveTicker), effectiveTicker),
     );
     return { name: t.name, searchPhrase, queryVariants, weight: t.weight, category: t.category };
   });
+}
+
+function resolveSignalType(assetClass: ResolvedAssetClass | null, fallbackType: AssetType): AssetType {
+  if (assetClass === 'commodity_gold' || assetClass === 'commodity_silver') return 'commodity';
+  if (assetClass === 'gold_miner') return 'materials';
+  return fallbackType;
 }

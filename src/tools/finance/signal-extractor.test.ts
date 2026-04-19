@@ -7,6 +7,7 @@ import {
   TICKER_TO_COMPANY_NAME,
   SIGNAL_KEYWORDS,
 } from './signal-extractor.js';
+import { resolveAssetIntent } from './asset-resolver.js';
 
 // ---------------------------------------------------------------------------
 // detectAssetType
@@ -139,10 +140,10 @@ describe('extractSignals', () => {
     expect(fda.searchPhrase).not.toContain('PFE');
   });
 
-  it('returns regulatory as first signal for BTC (weight 0.35)', () => {
+  it('returns regulatory as first signal for BTC (weight 0.30)', () => {
     const signals = extractSignals('BTC');
     expect(signals[0].category).toBe('regulatory');
-    expect(signals[0].weight).toBe(0.35);
+    expect(signals[0].weight).toBe(0.30);
   });
 
   it('uses company name (Bitcoin not BTC) in ETF signal search phrase', () => {
@@ -316,6 +317,10 @@ describe('normalizeForPolymarket', () => {
   it('BTC → Bitcoin in phrase', () => {
     expect(normalizeForPolymarket('BTC ETF', 'BTC')).toBe('Bitcoin ETF');
   });
+
+  it('GOLD → Barrick Gold in phrase', () => {
+    expect(normalizeForPolymarket('GOLD price', 'GOLD')).toBe('Barrick Gold price');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -355,6 +360,22 @@ describe('scoreMarketRelevance', () => {
     const many = scoreMarketRelevance('Fed FOMC rate cut hike', 'macro_rates');
     const one  = scoreMarketRelevance('Fed decision', 'macro_rates');
     expect(many).toBeGreaterThan(one);
+  });
+
+  it('rejects bitcoin price markets for commodity relevance', () => {
+    expect(scoreMarketRelevance('Will Bitcoin price exceed $100K in 2026?', 'commodity')).toBe(0);
+  });
+
+  it('rejects ethereum markets for commodity relevance', () => {
+    expect(scoreMarketRelevance('Will Ethereum price exceed $5,000 this year?', 'commodity')).toBe(0);
+  });
+
+  it('keeps genuine gold questions relevant for commodity scoring', () => {
+    expect(scoreMarketRelevance('Will gold reach $3,000 per ounce by June?', 'commodity')).toBeGreaterThan(0);
+  });
+
+  it('does not block bitcoin-specific categories when the question is about bitcoin', () => {
+    expect(scoreMarketRelevance('Will Bitcoin price exceed $100K in 2026?', 'btc_price_target')).toBeGreaterThan(0);
   });
 });
 
@@ -431,6 +452,12 @@ describe('detectAssetType — commodity detection', () => {
   it('does NOT misclassify "gold" as macro', () => {
     expect(detectAssetType('gold price prediction').type).not.toBe('macro');
   });
+
+  it('detects XAGUSD as silver commodity alias', () => {
+    const result = detectAssetType('XAGUSD forecast next month');
+    expect(result.type).toBe('commodity');
+    expect(result.ticker).toBe('SILVER');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -444,11 +471,39 @@ describe('extractSignals — commodity signals', () => {
     expect(primary.searchPhrase.toLowerCase()).toContain('gold');
   });
 
+  it('gold commodity signal variants keep the direct gold anchor available', () => {
+    const signals = extractSignals('gold price forecast next month');
+    expect(signals[0]?.queryVariants).toContain('gold');
+  });
+
   it('commodity signals do NOT default to "commodity supply" generic phrase', () => {
     const signals = extractSignals('gold price');
     const phrases = signals.map((s) => s.searchPhrase.toLowerCase());
     // The old broken template produced "commodity supply" — regression guard
     expect(phrases).not.toContain('commodity supply');
+  });
+
+  it('uppercase GOLD forecast queries use commodity signal routing when intent resolves to GLD', () => {
+    const intent = resolveAssetIntent('Provide a GOLD forecast based on markov chain for the next 30 days', 'GOLD');
+    expect(intent.assetClass).toBe('commodity_gold');
+    expect(intent.resolvedTicker).toBe('GLD');
+
+    const categories = extractSignals('Provide a GOLD forecast based on markov chain for the next 30 days').map((s) => s.category);
+    expect(categories[0]).toBe('commodity');
+    expect(categories).toContain('geopolitical');
+    expect(categories).not.toContain('tariff_increase');
+  });
+
+  it('GLD ticker queries retain commodity signal routing', () => {
+    const categories = extractSignals('GLD').map((s) => s.category);
+    expect(categories[0]).toBe('commodity');
+    expect(categories).toContain('macro_growth');
+  });
+
+  it('Barrick Gold stock queries still route through materials signals', () => {
+    const categories = extractSignals('Barrick Gold stock earnings').map((s) => s.category);
+    expect(categories[0]).toBe('tariff_increase');
+    expect(categories).toContain('commodity');
   });
 });
 
@@ -607,5 +662,63 @@ describe('detectAssetType — sector ETF classification', () => {
     const r = detectAssetType('XLI');
     expect(r.type).toBe('industrial');
     expect(r.ticker).toBe('XLI');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BTC crypto signal enrichment — btc_price_target
+// ---------------------------------------------------------------------------
+
+describe('BTC crypto signal enrichment', () => {
+  it('extractSignals for BTC includes btc_price_target category', () => {
+    const signals = extractSignals('BTC');
+    const btcPriceTarget = signals.find((s) => s.category === 'btc_price_target');
+    expect(btcPriceTarget).toBeDefined();
+    expect(btcPriceTarget!.weight).toBe(0.20);
+  });
+
+  it('crypto weights still sum to 1.0 after btc_price_target addition', () => {
+    const sum = extractSignals('BTC').reduce((s, sig) => s + sig.weight, 0);
+    expect(sum).toBeCloseTo(1.0, 5);
+  });
+
+  it('BTC price-target primary search phrase uses Bitcoin wording', () => {
+    const signals = extractSignals('BTC');
+    const btcPriceTarget = signals.find((s) => s.category === 'btc_price_target')!;
+    expect(btcPriceTarget.searchPhrase).toContain('Bitcoin');
+    expect(btcPriceTarget.searchPhrase).not.toContain('BTC');
+  });
+
+  it('BTC price-target query variants are present and placeholder-free', () => {
+    const signals = extractSignals('BTC');
+    const btcPriceTarget = signals.find((s) => s.category === 'btc_price_target')!;
+    expect(btcPriceTarget.queryVariants!.length).toBeGreaterThanOrEqual(2);
+    for (const variant of btcPriceTarget.queryVariants!) {
+      expect(variant.length).toBeGreaterThan(0);
+      expect(variant).not.toContain('{');
+      expect(variant).not.toContain('}');
+    }
+  });
+
+  it('BTC crypto signal order is regulatory > etf_product > btc_price_target > macro_rates > macro_growth', () => {
+    const signals = extractSignals('BTC');
+    const categories = signals.map((s) => s.category);
+    expect(categories).toEqual([
+      'regulatory',
+      'etf_product',
+      'btc_price_target',
+      'macro_rates',
+      'macro_growth',
+    ]);
+  });
+
+  it('BTC crypto weights match the specified values', () => {
+    const signals = extractSignals('BTC');
+    const byCategory = Object.fromEntries(signals.map((s) => [s.category, s.weight]));
+    expect(byCategory['regulatory']).toBe(0.30);
+    expect(byCategory['etf_product']).toBe(0.25);
+    expect(byCategory['btc_price_target']).toBe(0.20);
+    expect(byCategory['macro_rates']).toBe(0.15);
+    expect(byCategory['macro_growth']).toBe(0.10);
   });
 });

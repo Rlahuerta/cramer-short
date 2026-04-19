@@ -1,15 +1,41 @@
 /**
  * E2E tests — basic agent flows with the configured Ollama model.
  *
- * Run with:  RUN_E2E=1 bun test --filter e2e
+ * Run with:  bun run test:e2e
  * Skipped in normal `bun test` / CI runs.
  *
- * Model: ollama:nemotron-3-nano:30b-cloud (override via E2E_MODEL env var)
- * Timeout: 300 s per test
+ * Model: ollama:minimax-m2.7:cloud (override via E2E_MODEL env var)
+ * Timeout: 360 s per test
  */
 import { describe, expect } from 'bun:test';
 import { e2eIt } from '@/utils/test-guards.js';
-import { runAgentE2E, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
+import { runAgentE2E, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
+import type { ToolStartEvent, ToolEndEvent } from '@/agent/types.js';
+
+function findToolStartEvent(result: { events: unknown[] }, tool: string): ToolStartEvent | undefined {
+  return result.events.find((event): event is ToolStartEvent => {
+    if (!event || typeof event !== 'object') return false;
+    const candidate = event as { type?: string; tool?: string };
+    return candidate.type === 'tool_start' && candidate.tool === tool;
+  });
+}
+
+function findToolEndEvent(result: { events: unknown[] }, tool: string): ToolEndEvent | undefined {
+  return result.events.find((event): event is ToolEndEvent => {
+    if (!event || typeof event !== 'object') return false;
+    const candidate = event as { type?: string; tool?: string };
+    return candidate.type === 'tool_end' && candidate.tool === tool;
+  });
+}
+
+function extractToolResultText(result: string): string {
+  try {
+    const payload = JSON.parse(result) as { data?: { result?: string; error?: string } };
+    return payload.data?.result ?? payload.data?.error ?? result;
+  } catch {
+    return result;
+  }
+}
 
 describe('Agent E2E — basic financial query flows', () => {
   e2eIt(
@@ -53,6 +79,157 @@ describe('Agent E2E — basic financial query flows', () => {
 
       // Answer must mention Federal Reserve or interest rates
       expect(result.answer.toLowerCase()).toMatch(/federal reserve|interest rate|fed|fomc/);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'routes BTC 7-day forecast through full six-tool stack',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry('Provide a BTC forecast for the next 7 days');
+
+      const required = ['get_market_data', 'social_sentiment', 'polymarket_forecast', 'get_onchain_crypto', 'get_fixed_income', 'markov_distribution'];
+      for (const tool of required) {
+        expect(result.toolsCalled).toContain(tool);
+      }
+
+      expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'routes the open-ended GOLD markov prompt through the commodity proxy path',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide a GOLD forecast based on markov chain for the next 30 days',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('GLD');
+      expect(markovStart?.args.horizon).toBe(30);
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+      const forecastStart = findToolStartEvent(result, 'polymarket_forecast');
+      expect(forecastStart).toBeDefined();
+      expect(forecastStart?.args.ticker).toBe('GLD');
+      expect(forecastStart?.args.horizon_days).toBe(30);
+      const forecastEnd = findToolEndEvent(result, 'polymarket_forecast');
+      expect(forecastEnd).toBeDefined();
+      const forecastText = extractToolResultText(forecastEnd!.result).toLowerCase();
+      expect(forecastText).toContain('polymarket forecast: gold (gld)');
+      expect(forecastText).not.toMatch(/\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|cryptocurrency)\b/i);
+      expect(result.answer.toLowerCase()).toMatch(/gold|gld/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'routes the open-ended SILVER markov prompt through the silver proxy path',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide a SILVER forecast based on markov chain for the next 30 days',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('SLV');
+      expect(markovStart?.args.horizon).toBe(30);
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+      const forecastStart = findToolStartEvent(result, 'polymarket_forecast');
+      expect(forecastStart).toBeDefined();
+      expect(forecastStart?.args.ticker).toBe('SLV');
+      expect(forecastStart?.args.horizon_days).toBe(30);
+      const forecastEnd = findToolEndEvent(result, 'polymarket_forecast');
+      expect(forecastEnd).toBeDefined();
+      const forecastText = extractToolResultText(forecastEnd!.result).toLowerCase();
+      expect(forecastText).toContain('polymarket forecast: silver (slv)');
+      expect(forecastText).not.toMatch(/\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|cryptocurrency)\b/i);
+      expect(result.answer.toLowerCase()).toMatch(/silver|slv/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'uses deeper fallback tools after a non-crypto Markov abstain path for NVDA forecasts',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide an NVDA forecast based on markov chain for the next 7 days',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      expect(result.toolsCalled).toContain('get_market_data');
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('NVDA');
+      expect(markovStart?.args.horizon).toBe(7);
+
+      const markovEnd = findToolEndEvent(result, 'markov_distribution');
+      expect(markovEnd).toBeDefined();
+      const payload = JSON.parse(markovEnd!.result) as { data?: { status?: string } };
+      expect(payload?.data?.status).toBe('abstain');
+
+      expect(result.answer.toLowerCase()).toMatch(/nvda|nvidia/);
+      const mentionsAbstainLimit = /abstain|no calibrated markov|confidence interval|point estimate/i.test(result.answer);
+      const hasPriceFigure = /\$[\d,]+(\.\d+)?|\d+\.\d{2}/.test(result.answer);
+      expect(mentionsAbstainLimit || hasPriceFigure).toBe(true);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'uses Markov-enriched polymarket forecast args for a BTC 7-day forecast when live Markov succeeds',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide a BTC forecast for the next 7 days',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      const required = ['get_market_data', 'social_sentiment', 'polymarket_forecast', 'get_onchain_crypto', 'get_fixed_income', 'markov_distribution'];
+      for (const tool of required) {
+        expect(result.toolsCalled).toContain(tool);
+      }
+
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('BTC-USD');
+      expect(markovStart?.args.horizon).toBe(7);
+
+      const markovEnd = findToolEndEvent(result, 'markov_distribution');
+      expect(markovEnd).toBeDefined();
+      const markovPayload = JSON.parse(markovEnd!.result) as { data?: { status?: string } };
+      expect(['ok', 'abstain']).toContain(markovPayload?.data?.status ?? '');
+
+      const polymarketStarts = result.events.filter((event): event is ToolStartEvent => {
+        if (!event || typeof event !== 'object') return false;
+        const candidate = event as { type?: string; tool?: string };
+        return candidate.type === 'tool_start' && candidate.tool === 'polymarket_forecast';
+      });
+
+      if (markovPayload?.data?.status === 'ok') {
+        expect(polymarketStarts.length).toBeGreaterThanOrEqual(1);
+        const hasMarkovEnrichedForecast = polymarketStarts.some((start) =>
+          typeof start.args['markov_return'] === 'number'
+          && Number.isFinite(start.args['markov_return'] as number),
+        );
+        expect(hasMarkovEnrichedForecast).toBe(true);
+      } else {
+        expect(polymarketStarts.length).toBeGreaterThanOrEqual(1);
+      }
+
+      expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
     },
     E2E_TIMEOUT_MS,
   );

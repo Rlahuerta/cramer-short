@@ -200,6 +200,69 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('MUST clearly warn');
   });
 
+  it('injects mixed-evidence guard when BTC short-horizon Markov and Polymarket disagree', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+      '### polymarket_forecast(ticker=BTC-USD)',
+      'Forecast return: -0.4%\nGrade: B',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
+    expect(prompt).toContain('BTC short-horizon signals are mixed');
+    expect(prompt).toContain('downgrade the narrative confidence');
+  });
+
+  it('does not inject mixed-evidence guard for BTC horizons above 14 days', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+      '### polymarket_forecast(ticker=BTC-USD)',
+      'Forecast return: -0.4%\nGrade: B',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 30 days', results);
+    expect(prompt).not.toContain('BTC short-horizon signals are mixed');
+  });
+
+  it('does not inject mixed-evidence guard for non-BTC assets', () => {
+    const results = [
+      '### markov_distribution(ticker=ETH-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+      '### polymarket_forecast(ticker=ETH-USD)',
+      'Forecast return: -0.4%\nGrade: B',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide an ETH forecast for the next 14 days', results);
+    expect(prompt).not.toContain('BTC short-horizon signals are mixed');
+  });
+
+  it('does not inject mixed-evidence guard for unrelated BUY text or unrelated bearish forecast text', () => {
+    const results = [
+      '### some_other_tool()',
+      '{"recommendation":"BUY"}',
+      '### unrelated_text()',
+      'Forecast return: -0.4%\nGrade: B',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 7 days', results);
+    expect(prompt).not.toContain('BTC short-horizon signals are mixed');
+  });
+
+  it('recognizes BTC-USD phrasing for mixed-evidence guard', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+      '### polymarket_forecast(ticker=BTC-USD)',
+      'Forecast return: -0.4%\nGrade: B',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide a BTC-USD forecast for the next 7 days', results);
+    expect(prompt).toContain('BTC short-horizon signals are mixed');
+  });
+
+  it('adds commodity proxy framing for gold fallback prompts after Markov abstains', () => {
+    const results = '### markov_distribution(ticker=GLD)\n{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null}}}';
+    const prompt = buildIterationPrompt('Provide a GOLD forecast based on markov chain for the next 30 days', results);
+    expect(prompt).toContain('GLD is only the data proxy for Gold');
+    expect(prompt).toContain('Frame the final answer in terms of the underlying commodity');
+  });
+
   it('does not inject canonical markov guard for non-markov tool output', () => {
     const results = '### get_market_data(query=BTC)\n{"data":{"ticker":"BTC-USD"}}';
     const prompt = buildIterationPrompt('BTC query', results);
@@ -213,6 +276,20 @@ describe('buildSystemPrompt tool guidance', () => {
     expect(prompt).toContain('For terminal price probability distributions');
     expect(prompt).toContain('use markov_distribution FIRST');
     expect(prompt).toContain('only valid source of scenario bucket probabilities');
+  });
+
+  it('includes BTC/crypto forecast guidance with onchain and fixed income tools', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('BTC/crypto price forecasts');
+    expect(prompt).toContain('get_onchain_crypto');
+    expect(prompt).toContain('get_fixed_income');
+    expect(prompt).toContain('markov_distribution');
+    expect(prompt).toContain('trajectory=true');
+  });
+
+  it('mentions probability_assessment skill for full structured BTC/crypto forecast reports', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('probability_assessment');
   });
 });
 

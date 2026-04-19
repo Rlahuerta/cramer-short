@@ -2,6 +2,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
+import { resolveTickerSearchIdentity } from './asset-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Description (injected into system prompt)
@@ -212,6 +213,11 @@ const TEXT_FILTER_STOP_WORDS = new Set([
   'how', 'what', 'that', 'this', 'its', 'from', 'with',
 ]);
 
+const WEAK_QUERY_WORDS = new Set([
+  'price', 'prices', 'market', 'markets', 'commodity', 'commodities',
+  'forecast', 'forecasts', 'current', 'target', 'targets',
+]);
+
 /**
  * Returns true if the Polymarket question (or event title) contains at least
  * one significant word from the search query.
@@ -228,9 +234,15 @@ export function questionMatchesQuery(text: string, query: string): boolean {
     .split(/[\s\-_/]+/)
     .map((w) => w.replace(/[^a-z0-9]/g, ''))
     .filter((w) => w.length >= 3 && !TEXT_FILTER_STOP_WORDS.has(w));
+
   if (words.length === 0) return true;
+
+  const anchorWords = words.filter((word) => !WEAK_QUERY_WORDS.has(word));
+  if (words.length > 0 && anchorWords.length === 0) return false;
+
+  const candidateWords = anchorWords.length > 0 ? anchorWords : words;
   const lower = text.toLowerCase();
-  return words.some((word) => lower.includes(word));
+  return candidateWords.some((word) => lower.includes(word));
 }
 
 function extractCanonicalNames(ticker: string): string[] {
@@ -243,8 +255,10 @@ function extractCanonicalNames(ticker: string): string[] {
     XRP: ['ripple', 'xrp'],
     ADA: ['cardano', 'ada'],
   };
-  return known[normalized] ?? [normalized.toLowerCase()];
+  return known[normalized] ?? resolveTickerSearchIdentity(normalized).canonicalNames;
 }
+
+const CRYPTO_BARRIER_PATTERN = /\b(?:reach|hit|surpass|touch)\b|\b(?:go|move)\s+to\b|\bgo\s+(?:above|below|over|under)\b|\b(?:remain|trade|stay)\s+(?:above|below|over|under)\b|\b(?:dip|drop|fall|sink|decline|decrease)s?\s+to\b/i;
 
 export function scoreAnchorMarketRelevance(
   question: string,
@@ -254,13 +268,22 @@ export function scoreAnchorMarketRelevance(
 ): number {
   const lower = question.toLowerCase();
   let score = 0;
+  const identity = resolveTickerSearchIdentity(ticker);
+  const isCrypto = /(BTC|ETH|SOL|DOGE|XRP|ADA)[-\/]?USD/i.test(ticker)
+    || /^(BTC|ETH|SOL|DOGE|XRP|ADA)$/i.test(ticker)
+    || /CRYPTO/i.test(ticker);
+  const hasDollarPrice = /\$[\d,]+(?:\.\d+)?(?:[KkMm])?/.test(question);
 
-  if (/\$[\d,]+(?:\.\d+)?(?:[KkMm])?/.test(question)) score += 3;
+  if (hasDollarPrice) score += 3;
   if (/\b(above|below|less than|more than|greater than|under|over)\b/.test(lower)) score += 2;
   if (/\b(on|at)\b/.test(lower)) score += 1;
 
   const names = extractCanonicalNames(ticker);
-  if (names.some((name) => lower.includes(name))) score += 2;
+  const hasCanonicalMatch = names.some((name) => lower.includes(name));
+  if (identity.strictQuestionMatch && !hasCanonicalMatch) return 0;
+  if (isCrypto && (!hasCanonicalMatch || !hasDollarPrice)) return 0;
+  if (isCrypto && CRYPTO_BARRIER_PATTERN.test(lower)) return 0;
+  if (hasCanonicalMatch) score += 2;
 
   if (/\b(reach|hit|dip to|between|up or down|first)\b/.test(lower)) score -= 3;
   if (/\b(election|sports|game|match|player|team|president|candidate)\b/.test(lower)) score -= 5;
@@ -271,6 +294,14 @@ export function scoreAnchorMarketRelevance(
       const daysUntilResolution = Math.abs((endMs - Date.now()) / 86_400_000 - horizonDays);
       score += Math.max(0, 4 - Math.min(4, daysUntilResolution));
     }
+  }
+
+  // Crypto-specific: barrier/path patterns ("reach $X", "dip to $Y") are
+  // not terminal anchors — they describe a price path reaching/touching a
+  // level, not the price being above/below at a specific future date.
+  // Reject them outright so they do not enter the ranked candidate pool.
+  if (isCrypto) {
+    if (/\babove\b.*\$\d|\bbelow\b.*\$\d/.test(lower) && /\b(on|at)\b/.test(lower)) score += 2;
   }
 
   return score;
@@ -562,6 +593,196 @@ function formatResults(markets: FormattedMarket[], query: string, warnings: stri
   return lines.join('\n').trim();
 }
 
+const anchorTrace = process.env.DEBUG_ANCHORS
+  ? (...args: unknown[]) => console.error('[ANCHOR_TRACE]', ...args)
+  : (..._args: unknown[]) => {};
+
+// ---------------------------------------------------------------------------
+// Anchor-acquisition search with optional end-date filtering
+// ---------------------------------------------------------------------------
+
+/**
+ * Search Polymarket events with an end-date window constraint.
+ * Used exclusively by anchor acquisition to find markets resolving within
+ * a target horizon. The Gamma API supports `end_date_min` / `end_date_max`
+ * on the /events endpoint, which filters to events with end dates inside
+ * the specified range.
+ */
+async function searchEventsForAnchors(
+  query: string,
+  limit: number,
+  dateFilter?: { end_date_min: string; end_date_max: string },
+): Promise<FormattedMarket[]> {
+  const keySuffix = dateFilter ? `:${dateFilter.end_date_min}:${dateFilter.end_date_max}` : '';
+  const key = `${query.toLowerCase().trim()}:${limit}${keySuffix}`;
+  const cached = getCached(key);
+  if (cached) return cached;
+
+  const slugs = inferTagSlugs(query);
+  const uniqueSlugs = Array.from(new Set(slugs));
+  const fetchLimit = Math.min(limit * 8, 80);
+
+  const fetchEvents = async (tagSlugOverride?: string, extraParams?: URLSearchParams): Promise<FormattedMarket[]> => {
+    try {
+      return await fetchWithRetry(async () => {
+        const resolvedTagSlug = tagSlugOverride ?? uniqueSlugs[0];
+        const params = new URLSearchParams({
+          limit: String(fetchLimit),
+          active: 'true',
+          closed: 'false',
+          order: 'volume24hr',
+          ascending: 'false',
+          ...(resolvedTagSlug ? { tag_slug: resolvedTagSlug } : {}),
+        });
+        if (extraParams) {
+          for (const [k, v] of extraParams) params.set(k, v);
+        }
+        anchorTrace('search_events_for_anchors_request', {
+          query,
+          limit,
+          slugs,
+          params: Object.fromEntries(params.entries()),
+        });
+        const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (!res.ok) throw new Error(`Gamma API ${res.status}`);
+        const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
+        anchorTrace('search_events_for_anchors_response', {
+          query,
+          limit,
+          eventCount: events.length,
+          eventTitles: events.slice(0, 20).map((event) => ({
+            title: event.title ?? null,
+            marketCount: event.markets?.length ?? 0,
+          })),
+        });
+        const results: FormattedMarket[] = [];
+        const seen = new Set<string>();
+        for (const event of events) {
+          if (!event.markets?.length) continue;
+          const titleMatches = questionMatchesQuery(event.title ?? '', query);
+          const sorted = [...event.markets]
+            .filter((m) => m.active && !m.closed)
+            .sort((a, b) => (b.volume24hr ?? 0) - (a.volume24hr ?? 0))
+            .slice(0, 4);
+          for (const m of sorted) {
+            if (!titleMatches && !questionMatchesQuery(m.question, query)) continue;
+            const fmt = formatMarket(m);
+            if (fmt && !seen.has(fmt.question)) {
+              seen.add(fmt.question);
+              results.push(fmt);
+            }
+            if (results.length >= limit) return results;
+          }
+        }
+        anchorTrace('search_events_for_anchors_results', {
+          query,
+          limit,
+          resultCount: results.length,
+          results: results.map((market) => ({
+            question: market.question,
+            volume24h: market.volume24h,
+            ageDays: market.ageDays ?? null,
+            endDate: market.endDate ?? null,
+          })),
+        });
+        return results;
+      });
+    } catch {
+      return [];
+    }
+  };
+
+  let results: FormattedMarket[] = [];
+
+  if (dateFilter) {
+    const dateParams = new URLSearchParams({
+      end_date_min: dateFilter.end_date_min,
+      end_date_max: dateFilter.end_date_max,
+    });
+    const slugsToTry = uniqueSlugs.length > 0 ? uniqueSlugs : [undefined];
+    const seen = new Set<string>();
+    const perSlugCounts: Array<{ tagSlug: string | null; resultCount: number }> = [];
+
+    for (const tagSlug of slugsToTry) {
+      const slugResults = await fetchEvents(tagSlug, dateParams);
+      perSlugCounts.push({ tagSlug: tagSlug ?? null, resultCount: slugResults.length });
+      for (const market of slugResults) {
+        if (seen.has(market.question)) continue;
+        seen.add(market.question);
+        results.push(market);
+        if (results.length >= limit) break;
+      }
+      if (results.length >= limit) break;
+    }
+
+    anchorTrace('search_events_for_anchors_date_filter_attempt', {
+      query,
+      limit,
+      dateFilter,
+      slugsTried: slugsToTry.map((tagSlug) => tagSlug ?? null),
+      perSlugCounts,
+      resultCount: results.length,
+    });
+  }
+
+  if (results.length === 0 && !dateFilter) {
+    anchorTrace('search_events_for_anchors_fallback', {
+      query,
+      limit,
+      dateFilter: dateFilter ?? null,
+      reason: dateFilter ? 'date_filter_empty' : 'no_date_filter',
+    });
+    results = await fetchEvents();
+  }
+
+  if (results.length > 0) setCache(key, results);
+  return results;
+}
+
+export async function fetchPolymarketAnchorMarketsWithQueries(
+  queries: string[],
+  limit: number,
+  options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+): Promise<PolymarketMarketResult[]> {
+  const dedupedQueries = Array.from(new Set(queries.filter(Boolean)));
+  const seen = new Set<string>();
+  const scored: Array<{ market: PolymarketMarketResult; score: number }> = [];
+
+  const settled = await Promise.allSettled(
+    dedupedQueries.map((query) => (
+      options.endDateFilter
+        ? searchEventsForAnchors(query, Math.max(limit * 3, 24), options.endDateFilter)
+        : searchEvents(query, Math.max(limit * 3, 24))
+    )),
+  );
+
+  settled.forEach((result) => {
+    if (result.status !== 'fulfilled') return;
+    for (const market of result.value.map(toStructuredMarketResult)) {
+      if (seen.has(market.question)) continue;
+      seen.add(market.question);
+      const score = scoreAnchorMarketRelevance(
+        market.question,
+        options.ticker,
+        options.horizonDays,
+        market.endDate,
+      );
+      if (score > 0) scored.push({ market, score });
+    }
+  });
+
+  return scored
+    .sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      return b.market.volume24h - a.market.volume24h;
+    })
+    .slice(0, limit)
+    .map(({ market }) => market);
+}
+
 // ---------------------------------------------------------------------------
 // Structured fetch (for programmatic use by polymarket-injector)
 // ---------------------------------------------------------------------------
@@ -618,27 +839,9 @@ export async function fetchPolymarketMarkets(
 export async function fetchPolymarketAnchorMarkets(
   query: string,
   limit: number,
-  options: { ticker: string; horizonDays?: number },
+  options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
 ): Promise<PolymarketMarketResult[]> {
-  const markets = await searchEvents(query, Math.max(limit * 3, 24));
-  return markets
-    .map(toStructuredMarketResult)
-    .map((market) => ({
-      market,
-      score: scoreAnchorMarketRelevance(
-        market.question,
-        options.ticker,
-        options.horizonDays,
-        market.endDate,
-      ),
-    }))
-    .filter(({ score }) => score > 0)
-    .sort((a, b) => {
-      if (a.score !== b.score) return b.score - a.score;
-      return b.market.volume24h - a.market.volume24h;
-    })
-    .slice(0, limit)
-    .map(({ market }) => market);
+  return fetchPolymarketAnchorMarketsWithQueries([query], limit, options);
 }
 
 // ---------------------------------------------------------------------------

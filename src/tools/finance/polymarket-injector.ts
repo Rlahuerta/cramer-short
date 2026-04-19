@@ -57,6 +57,23 @@ export async function fetchWithFallback(
   return [];
 }
 
+function formatYesProbability(probability: number): string {
+  const pct = Math.round(probability * 1000) / 10;
+  return Number.isInteger(pct) ? pct.toFixed(0) : pct.toFixed(1);
+}
+
+function formatVolume(volume24h: number): string {
+  if (volume24h >= 1_000_000) {
+    const value = Math.round((volume24h / 1_000_000) * 10) / 10;
+    return `$${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}M`;
+  }
+  if (volume24h >= 1_000) {
+    const value = Math.round((volume24h / 1_000) * 10) / 10;
+    return `$${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}K`;
+  }
+  return `$${Math.round(volume24h).toLocaleString('en-US')}`;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -112,7 +129,10 @@ export async function injectPolymarketContext(
       if (visible.length === 0) continue;
 
       const lines = visible
-        .map((m) => `  • "${m.question}" → ${Math.round(m.probability * 100)}% YES`)
+        .map((m) => {
+          const volumeSuffix = m.volume24h > 0 ? `  (${formatVolume(m.volume24h)} volume)` : '';
+          return `  • "${m.question}" → ${formatYesProbability(m.probability)}% YES${volumeSuffix}`;
+        })
         .join('\n');
 
       const dash = '─'.repeat(Math.max(2, 40 - signal.name.length));

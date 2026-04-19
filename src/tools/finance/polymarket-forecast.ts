@@ -12,8 +12,9 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
-import { fetchPolymarketMarkets } from './polymarket.js';
-import { extractSignals } from './signal-extractor.js';
+import { fetchPolymarketMarkets, type PolymarketMarketResult } from './polymarket.js';
+import { extractSignals, scoreMarketRelevance } from './signal-extractor.js';
+import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { lookupImpact, inferAssetClass } from './impact-map.js';
 import { runEnsemble, computePolymarketSignal, computeEnsemble, computeConditionalReturn, adjustYesBias, type MarketInput } from '../../utils/ensemble.js';
 import { buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
@@ -148,6 +149,8 @@ const schema = z.object({
     .describe('Current asset price. If omitted, tool uses a placeholder and notes it.'),
   sentiment_score: z.number().min(-1).max(1).optional()
     .describe('News/social sentiment: -1 bearish, 0 neutral, +1 bullish. Pass if already retrieved.'),
+  markov_return: z.number().optional()
+    .describe('Markov-chain expected return over the forecast horizon as a decimal, pre-shrunk by Markov weight. Pass from a prior successful markov_distribution result when available.'),
   fundamental_return: z.number().optional()
     .describe('Analyst 1-year price target implied return as decimal (e.g. 0.15 for +15%). Pass if known.'),
   options_skew: z.number().min(-1).max(1).optional()
@@ -238,7 +241,7 @@ export const polymarketForecastTool = new DynamicStructuredTool({
   name: 'polymarket_forecast',
   description:
     'Generate a prediction-market-weighted ensemble price forecast for an asset over any horizon (1–365 days), ' +
-    'combining Polymarket probabilities (markets span 1 day to 12 months) with optional sentiment, fundamental, and options signals.',
+    'combining Polymarket probabilities (markets span 1 day to 12 months) with optional sentiment, Markov, fundamental, and options signals.',
   schema,
   func: async (input) => {
     if (polymarketBreaker.isOpen()) {
@@ -252,27 +255,40 @@ export const polymarketForecastTool = new DynamicStructuredTool({
       const horizonDays = input.horizon_days ?? 7;
       const currentPrice = input.current_price;
       const basePrice = currentPrice ?? 100;
-      const assetClass = inferAssetClass(ticker);
+      const searchIdentity = resolveTickerSearchIdentity(ticker);
+      const assetClass = inferAssetClass(searchIdentity.canonicalTicker);
 
       // Step 1: Extract signals for this ticker (up to 5)
-      const signals = extractSignals(ticker).slice(0, 5);
+      const signals = extractSignals(searchIdentity.canonicalTicker).slice(0, 5);
 
-      // Step 2: Fetch Polymarket markets for each signal (up to 3 per signal)
+      // Step 2: Fetch Polymarket markets for each signal using primary phrase
+      // AND query variants to deepen retrieval, up to 5 per query
       const allResults = await Promise.allSettled(
-        signals.map((sig) => fetchPolymarketMarkets(sig.searchPhrase, 3)),
+        signals.map((sig) => {
+          const phrases = [sig.searchPhrase, ...(sig.queryVariants ?? [])];
+          return Promise.allSettled(
+            phrases.map((phrase) => fetchPolymarketMarkets(phrase, 5)),
+          ).then((settledVariants) =>
+            settledVariants
+              .filter((r): r is PromiseFulfilledResult<PolymarketMarketResult[]> => r.status === 'fulfilled')
+              .flatMap((r) => r.value)
+              .filter((m) => scoreMarketRelevance(m.question, sig.category) > 0)
+              .map((m) => ({ ...m, signalCategory: sig.category })),
+          );
+        }),
       );
 
-      // Deduplicate by question string
+      // Deduplicate by question string across all signals and variants,
+      // preserving the signal category from whichever signal first found it
       const seen = new Set<string>();
       const rawMarkets: RawMarket[] = [];
       for (let i = 0; i < signals.length; i++) {
         const result = allResults[i];
         if (result.status !== 'fulfilled') continue;
-        const sig = signals[i]!;
         for (const m of result.value) {
           if (seen.has(m.question)) continue;
           seen.add(m.question);
-          rawMarkets.push({ ...m, signalCategory: sig.category });
+          rawMarkets.push({ question: m.question, probability: m.probability, volume24h: m.volume24h, ageDays: m.ageDays, endDate: m.endDate, signalCategory: m.signalCategory });
         }
       }
 
@@ -294,6 +310,7 @@ export const polymarketForecastTool = new DynamicStructuredTool({
       // Step 4: Run ensemble — also capture intermediate values for display
       const otherSignals = {
         sentimentScore: input.sentiment_score,
+        markovReturn: input.markov_return,
         fundamentalReturn: input.fundamental_return,
         optionsSkew: input.options_skew,
         horizonDays,
@@ -312,9 +329,10 @@ export const polymarketForecastTool = new DynamicStructuredTool({
       const pmWeightPct = (result.pmEffectiveWeight * 100).toFixed(1);
       const avgQualityStr = result.avgMarketQuality.toFixed(3);
       let thresholdChartWarning: string | null = null;
+      const displayLabel = searchIdentity.canonicalNames[0]?.toUpperCase() ?? ticker;
 
       const lines: string[] = [
-        `📊 Polymarket Forecast: ${ticker}  |  Horizon: ${horizonDays} days  |  Grade: ${result.qualityGrade} (${result.qualityScore}/100)`,
+        `📊 Polymarket Forecast: ${displayLabel} (${ticker})  |  Horizon: ${horizonDays} days  |  Grade: ${result.qualityGrade} (${result.qualityScore}/100)`,
       ];
 
       if (currentPrice === undefined) {
@@ -414,6 +432,7 @@ export const polymarketForecastTool = new DynamicStructuredTool({
       lines.push('── Other Signals ──────────────────────────────────────────────────────────');
 
       const wSent = weights['sentiment'];
+      const wMarkov = weights['markov'];
       const wFund = weights['fundamental'];
       const wOpt = weights['options'];
 
@@ -429,6 +448,13 @@ export const polymarketForecastTool = new DynamicStructuredTool({
         lines.push(`  Fundamentals:       ${fundContrib}%  (weight: ${((wFund ?? 0) * 100).toFixed(1)}%)`);
       } else {
         lines.push('  Fundamentals:       [signal omitted — not provided]');
+      }
+
+      if (input.markov_return !== undefined) {
+        const markovContrib = pct(input.markov_return);
+        lines.push(`  Markov chain:       ${markovContrib}%  (weight: ${((wMarkov ?? 0) * 100).toFixed(1)}%)`);
+      } else {
+        lines.push('  Markov chain:       [signal omitted — not provided]');
       }
 
       if (input.options_skew !== undefined) {

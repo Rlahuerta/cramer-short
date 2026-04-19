@@ -1,5 +1,5 @@
 import { type WalkForwardConfig, type WalkForwardResult, walkForward } from './walk-forward.js';
-import { computeMarkovDistribution, getAssetProfile, type MarkovDistributionResult } from '../markov-distribution.js';
+import { computeMarkovDistribution, getAssetProfile, type MarkovDistributionResult, type BreakFallbackCandidate } from '../markov-distribution.js';
 import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
 
 export interface ReplayMarket {
@@ -187,7 +187,13 @@ export async function walkForwardWithReplay(
         cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
         pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
         pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
+        startStateMixture: config.startStateMixture,
         trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
+        breakFallbackCandidate: config.breakFallbackCandidate,
+        divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,
+        divergencePenaltySchedule: config.divergencePenaltySchedule,
+        btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
+        btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
       });
 
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);
@@ -241,6 +247,10 @@ export async function walkForwardWithReplay(
         probabilitySource: 'calibrated' as ProbabilitySource,
         decisionSource,
         trendPenaltyOnlyBreakConfidenceActive: result.metadata.trendPenaltyOnlyBreakConfidenceActive,
+        divergenceWeightedBreakConfidenceActive: result.metadata.divergenceWeightedBreakConfidenceActive,
+        bearishBreakRecommendationGateActive: result.metadata.bearishBreakRecommendationGateActive,
+        breakFallbackCandidateId: result.metadata.breakFallbackCandidateId,
+        breakFallbackMode: result.metadata.breakFallbackMode,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });

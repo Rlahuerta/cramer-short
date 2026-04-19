@@ -16,7 +16,7 @@
  *   6. Disclaimer        — market-implied-odds caveat at end of output
  *   7. Live BTC price    — dollar figure appears in answer (via get_market_data, markov auto-fetch, or pre-injected context)
  *
- * Model: nemotron-3-nano:30b-cloud (thinking model — recognised via isThinkingModel)
+ * Model: minimax-m2.7:cloud by default (override via E2E_MODEL env var)
  * Timeout: E2E_TIMEOUT_MS (default 300 s) for the single beforeAll call
  */
 import { describe, expect, beforeAll } from 'bun:test';

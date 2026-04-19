@@ -59,6 +59,14 @@ describe('polymarketForecastTool', () => {
     expect(parseResult(raw)).toContain('NVDA');
   });
 
+  it('uses commodity display label alongside proxy ticker for GLD', async () => {
+    const raw = await polymarketForecastTool.func(
+      { ticker: 'GLD', horizon_days: 30, current_price: 440.08 },
+      undefined,
+    );
+    expect(parseResult(raw)).toContain('Polymarket Forecast: GOLD (GLD)');
+  });
+
   it('forecastPrice > 0', async () => {
     const raw = await polymarketForecastTool.func(
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
@@ -85,6 +93,43 @@ describe('polymarketForecastTool', () => {
       undefined,
     );
     expect(parseResult(raw)).toContain('Will NVIDIA beat Q2 earnings?');
+  });
+
+  it('filters out markets that are irrelevant to the selected signal category', async () => {
+    mock.module('./polymarket.js', () => ({
+      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
+        { question: 'Will ETH be above $2,000 by April 30?', probability: 0.61, volume24h: 150_000, ageDays: 1 },
+      ],
+    }));
+
+    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const raw = await freshTool.func(
+      { ticker: 'GLD', horizon_days: 30, current_price: 440.08 },
+      undefined,
+    );
+    const result = parseResult(raw);
+
+    expect(result).not.toContain('Will ETH be above $2,000 by April 30?');
+    expect(result).toContain('[No Polymarket markets found for this asset]');
+  });
+
+  it('filters bitcoin price markets out of GLD output while preserving gold markets', async () => {
+    mock.module('./polymarket.js', () => ({
+      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
+        { question: 'Will gold reach $3,000 per ounce by June?', probability: 0.44, volume24h: 240_000, ageDays: 1 },
+        { question: 'Will Bitcoin price exceed $100K in 2026?', probability: 0.65, volume24h: 1_500_000, ageDays: 1 },
+      ],
+    }));
+
+    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const raw = await freshTool.func(
+      { ticker: 'GLD', horizon_days: 30, current_price: 440.08 },
+      undefined,
+    );
+    const result = parseResult(raw);
+
+    expect(result).toContain('Will gold reach $3,000 per ounce by June?');
+    expect(result).not.toContain('Will Bitcoin price exceed $100K in 2026?');
   });
 
   it('includes 95% CI in output', async () => {
@@ -117,6 +162,25 @@ describe('polymarketForecastTool', () => {
       undefined,
     );
     expect(parseResult(raw)).toContain('very bullish');
+  });
+
+  it('accepts markov_return and shows Markov contribution in output', async () => {
+    const raw = await polymarketForecastTool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000, markov_return: 0.025 },
+      undefined,
+    );
+    const result = parseResult(raw);
+    expect(result).toContain('Markov chain:');
+    expect(result).toContain('+2.50%');
+  });
+
+  it('keeps Markov contribution omitted when markov_return is absent', async () => {
+    const raw = await polymarketForecastTool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    );
+    const result = parseResult(raw);
+    expect(result).toContain('Markov chain:       [signal omitted — not provided]');
   });
 
   it('grade D when 0 markets returned', async () => {
@@ -593,6 +657,94 @@ describe('different asset classes produce distinct conditional returns', () => {
 // Restore module mocks so they do not leak into other test files.
 // mock.restore() only handles function mocks; module mocks must be
 // explicitly re-registered with their original implementations.
+// ---------------------------------------------------------------------------
+// Query variant expansion — verify that queryVariants are actually queried
+// alongside primary phrases when fetching Polymarket markets.
+// ---------------------------------------------------------------------------
+
+describe('queryVariant expansion in polymarket_forecast', () => {
+  it('queries both searchPhrase and queryVariants per signal', async () => {
+    const queriedPhrases: string[] = [];
+
+    mock.module('./polymarket.js', () => ({
+      fetchPolymarketMarkets: async (query: string, _limit: number): Promise<PolymarketMarketResult[]> => {
+        queriedPhrases.push(query);
+        return mockMarkets;
+      },
+    }));
+
+    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    await freshTool.func(
+      { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
+      undefined,
+    );
+
+    // NVDA extracts signals like { searchPhrase: 'NVIDIA earnings', queryVariants: ['NVIDIA', 'semiconductor earnings'] }
+    // and { searchPhrase: 'chip export controls', queryVariants: ['semiconductor export', 'chip export'] }
+    // We must see at least one searchPhrase AND at least one queryVariant in the queried phrases
+    expect(queriedPhrases.length).toBeGreaterThan(0);
+
+    // Verify per-query limit is 5 (not the old 3)
+    // We can't directly check the limit parameter in this test structure,
+    // but we verify variants are present
+    const hasSearchPhrase = queriedPhrases.some(q => q.includes('earnings') || q.includes('Fed') || q.includes('export'));
+    const hasVariant = queriedPhrases.some(q => q.includes('semiconductor') || q.includes('NVIDIA') || q.includes('FOMC'));
+    expect(hasSearchPhrase).toBe(true);
+    expect(hasVariant).toBe(true);
+  });
+
+  it('deduplicates by question across variant results', async () => {
+    let callCount = 0;
+    const sameQuestion = 'Will NVIDIA beat Q2 earnings?';
+
+    mock.module('./polymarket.js', () => ({
+      fetchPolymarketMarkets: async (_query: string, _limit: number): Promise<PolymarketMarketResult[]> => {
+        callCount++;
+        return [
+          { question: sameQuestion, probability: 0.72, volume24h: 500_000, ageDays: 0 },
+          { question: `Unique result ${callCount}`, probability: 0.6, volume24h: 200_000, ageDays: 0 },
+        ];
+      },
+    }));
+
+    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const raw = await freshTool.func(
+      { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
+      undefined,
+    );
+    const result = parseResult(raw);
+
+    // The same question should appear only once despite being returned by multiple queries
+    const matchCount = (result.match(new RegExp(sameQuestion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    expect(matchCount).toBeLessThanOrEqual(1);
+  });
+
+  it('returns results even when primary phrase returns empty but variant has results', async () => {
+    const primaryResults: PolymarketMarketResult[] = [];
+    const variantResults: PolymarketMarketResult[] = [
+      { question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000, ageDays: 0 },
+    ];
+
+    mock.module('./polymarket.js', () => ({
+      fetchPolymarketMarkets: async (query: string, _limit: number): Promise<PolymarketMarketResult[]> => {
+        // Primary phrase (first call per signal) returns empty, variant returns results
+        const isPrimary = query.includes('earnings') || query.includes('Fed') || query.includes('export') || query.includes('recession');
+        return isPrimary ? primaryResults : variantResults;
+      },
+    }));
+
+    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const raw = await freshTool.func(
+      { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
+      undefined,
+    );
+    const result = parseResult(raw);
+
+    // Should still produce a valid forecast (variant results fill in)
+    expect(result).toContain('Polymarket Forecast');
+  });
+});
+
 afterAll(() => {
   mock.module('./polymarket.js', () => realPolymarket);
 });

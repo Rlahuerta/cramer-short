@@ -19,11 +19,12 @@
 
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
 import { baumWelch, predict as hmmPredict, type HMMParams } from './hmm.js';
 import { api } from './api.js';
 import { fetchBinanceDailyCloses } from './binance.js';
-import { fetchPolymarketAnchorMarkets } from './polymarket.js';
+import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
 import { extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
 
@@ -267,7 +268,213 @@ export interface ScenarioProbabilities {
   pUp: number;
 }
 
-export type BreakConfidencePolicy = 'default' | 'trend_penalty_only';
+export interface ForecastHint {
+  usage: 'forecast_only';
+  markovReturn: number;
+  confidenceScore: number;
+  calibratedDistribution: false;
+}
+
+export function buildForecastHint(params: {
+  canEmitCanonical: boolean;
+  ticker: string;
+  horizon: number;
+  expectedReturn: number;
+  mixingTimeWeight: number;
+  predictionConfidence: number;
+}): ForecastHint | null {
+  const FORECAST_HINT_ABSTAIN_ATTENUATION = 0.5;
+  const FORECAST_HINT_MIN_CONFIDENCE = 0.10;
+
+  if (params.canEmitCanonical) return null;
+  if (params.ticker !== 'BTC-USD' || params.horizon > 14) return null;
+  if (!Number.isFinite(params.expectedReturn) || !Number.isFinite(params.mixingTimeWeight)) return null;
+  if (params.predictionConfidence < FORECAST_HINT_MIN_CONFIDENCE) return null;
+
+  const forecastHintConfidenceScale = Math.min(1, params.predictionConfidence / RECOMMENDED_CONFIDENCE_THRESHOLD);
+  return {
+    usage: 'forecast_only',
+    markovReturn: params.expectedReturn * params.mixingTimeWeight * FORECAST_HINT_ABSTAIN_ATTENUATION * forecastHintConfidenceScale,
+    confidenceScore: params.predictionConfidence,
+    calibratedDistribution: false,
+  };
+}
+
+export type BreakConfidencePolicy = 'default' | 'trend_penalty_only' | 'divergence_weighted';
+
+// ---------------------------------------------------------------------------
+// Phase 6: Divergence-weighted break confidence (backtest-only)
+//
+// When a structural break is detected, the current Phase 4 behavior applies
+// a flat 0.6 penalty to confidence regardless of divergence severity.
+// Phase 6 uses structuralBreakDivergence to select a lighter penalty for
+// mild breaks and the current full penalty for high-divergence breaks.
+// ---------------------------------------------------------------------------
+
+/**
+ * Penalty schedule mapping divergence severity buckets to confidence
+ * multipliers. Lower values = harsher penalty.
+ *
+ * The existing Phase 4 flat penalty is 0.6. Phase 6 schedules allow
+ * lighter penalties for mild breaks while preserving 0.6 for severe ones.
+ */
+export interface DivergencePenaltySchedule {
+  /** Penalty multiplier for mild breaks (divergence ∈ [0.05, 0.10)). Default: 0.80 */
+  mild: number;
+  /** Penalty multiplier for medium breaks (divergence ∈ [0.10, 0.20)). Default: 0.70 */
+  medium: number;
+  /** Penalty multiplier for high breaks (divergence ≥ 0.20). Default: 0.60 (= Phase 4 baseline) */
+  high: number;
+}
+
+/** Default Phase 6 schedule: mildest break → 0.80, medium → 0.70, high → 0.60 */
+export const DEFAULT_DIVERGENCE_PENALTY_SCHEDULE: DivergencePenaltySchedule = {
+  mild: 0.80,
+  medium: 0.70,
+  high: 0.60,
+};
+
+/**
+ * Map a structural break divergence value to a confidence penalty multiplier
+ * using the severity bucket semantics already used elsewhere in the codebase
+ * (same thresholds as computeBlendWeight in Phase 5).
+ *
+ * - divergence < 0.05: no break penalty (no structural break detected or trivial divergence)
+ * - divergence ∈ [0.05, 0.10): mild → schedule.mild
+ * - divergence ∈ [0.10, 0.20): medium → schedule.medium
+ * - divergence ≥ 0.20: high → schedule.high
+ */
+export function computeDivergencePenalty(
+  divergence: number,
+  schedule: DivergencePenaltySchedule,
+): number {
+  if (divergence < 0.05) return 1.0; // no break → no penalty
+  if (divergence < 0.10) return schedule.mild;
+  if (divergence < 0.20) return schedule.medium;
+  return schedule.high;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: Experimental hybrid structural-break fallback candidates
+// ---------------------------------------------------------------------------
+
+/**
+ * Experimental fallback candidate for hybrid structural-break matrix blending.
+ * Backtest-only: these candidates are NOT used in production defaults.
+ *
+ * When a structural break is detected, the current hard-replacement behavior
+ * substitutes the default matrix (diagonal=0.6). A fallback candidate allows
+ * blending between the estimated matrix and a conservative/profile-based matrix,
+ * weighted by the break's divergence severity.
+ */
+export interface BreakFallbackCandidate {
+  /** Unique identifier for this candidate (e.g., 'C55', 'P_BALANCED_LAM050_H025') */
+  id: string;
+  /** How to apply the fallback: hard replacement, blended, or blended with weight cap */
+  mode: 'hard' | 'blended' | 'blended_capped';
+  /** Diagonal value for the generic conservative fallback matrix (off-diag = (1-d)/2) */
+  conservativeDiagonal: number;
+  /** Per-asset-type diagonal values for the profile fallback matrix */
+  profileDiagonals: {
+    equity: number;
+    etf: number;
+    commodity: number;
+    crypto: number;
+  };
+  /** Weight of the conservative matrix in the hybrid: hybrid = λ*conservative + (1-λ)*profile */
+  conservativeWeight: number;
+  /** Severity-dependent blend weights: how much fallback matrix to use, by divergence bucket */
+  severityWeights: {
+    mild: number;    // divergence in [0.05, 0.10)
+    medium: number;  // divergence in [0.10, 0.20)
+    high: number;    // divergence >= 0.20
+  };
+  /** Maximum blend weight cap for blended_capped mode (undefined for other modes) */
+  maxBlendWeight?: number;
+}
+
+/** Build a 3×3 conservative fallback matrix from a diagonal value. */
+export function buildConservativeFallbackMatrix(diagonal: number): TransitionMatrix {
+  const offDiag = (1 - diagonal) / (NUM_STATES - 1);
+  return Array.from({ length: NUM_STATES }, (_, i) =>
+    Array.from({ length: NUM_STATES }, (_, j) => (i === j ? diagonal : offDiag)),
+  );
+}
+
+/** Build a 3×3 profile fallback matrix for a given asset type. */
+export function buildProfileFallbackMatrix(
+  assetType: AssetProfile['type'],
+  profileDiagonals: BreakFallbackCandidate['profileDiagonals'],
+): TransitionMatrix {
+  const diagonal = profileDiagonals[assetType];
+  const offDiag = (1 - diagonal) / (NUM_STATES - 1);
+  return Array.from({ length: NUM_STATES }, (_, i) =>
+    Array.from({ length: NUM_STATES }, (_, j) => (i === j ? diagonal : offDiag)),
+  );
+}
+
+/** Blend two transition matrices: result = λ*A + (1-λ)*B */
+export function blendMatrices(
+  lambda: number,
+  A: TransitionMatrix,
+  B: TransitionMatrix,
+): TransitionMatrix {
+  return A.map((row, i) =>
+    row.map((_, j) => lambda * A[i][j] + (1 - lambda) * B[i][j]),
+  );
+}
+
+/**
+ * Compute the blend weight for a structural-break fallback matrix,
+ * based on the divergence severity bucket.
+ */
+export function computeBlendWeight(
+  divergence: number,
+  severityWeights: BreakFallbackCandidate['severityWeights'],
+): number {
+  if (divergence < 0.05) return 0;
+  if (divergence < 0.10) return severityWeights.mild;
+  if (divergence < 0.20) return severityWeights.medium;
+  return severityWeights.high;
+}
+
+/**
+ * Apply a BreakFallbackCandidate to produce the final transition matrix
+ * for a structural-break window. Returns null if no fallback should be
+ * applied (i.e., the current hard-replacement behavior should be used).
+ *
+ * When a candidate is supplied and a break is detected:
+ * - `hard` mode: replaces the estimated matrix with the hybrid fallback matrix
+ * - `blended` mode: (1-w)*estimated + w*hybridFallback, where w depends on divergence
+ * - `blended_capped` mode: same as blended, but w is capped by maxBlendWeight
+ */
+export function applyBreakFallbackCandidate(
+  estimatedMatrix: TransitionMatrix,
+  divergence: number,
+  candidate: BreakFallbackCandidate,
+  assetType: AssetProfile['type'],
+): TransitionMatrix {
+  const conservativeMatrix = buildConservativeFallbackMatrix(candidate.conservativeDiagonal);
+  const profileMatrix = buildProfileFallbackMatrix(assetType, candidate.profileDiagonals);
+  const hybridFallback = blendMatrices(
+    candidate.conservativeWeight,
+    conservativeMatrix,
+    profileMatrix,
+  );
+
+  const blendWeight = computeBlendWeight(divergence, candidate.severityWeights);
+  const cappedWeight = candidate.mode === 'blended_capped' && candidate.maxBlendWeight !== undefined
+    ? Math.min(blendWeight, candidate.maxBlendWeight)
+    : blendWeight;
+
+  if (candidate.mode === 'hard') {
+    // Hard replacement: use the hybrid fallback matrix entirely
+    return hybridFallback;
+  }
+
+  // Blended or blended_capped: interpolate between estimated and hybrid fallback
+  return blendMatrices(1 - cappedWeight, estimatedMatrix, hybridFallback);
+}
 
 export interface MarkovDistributionResult {
   ticker: string;
@@ -337,10 +544,22 @@ export interface MarkovDistributionResult {
     /** Ensemble signal metadata */
     ensemble: { consensus: number; adjustment: number };
     pr3fDisagreementBlendActive: boolean;
+    rawDirectionHybridActive?: boolean;
     pr3gRecencyWeightingActive: boolean;
+    startStateMixtureActive?: boolean;
     sidewaysSplitActive?: boolean;
     matureBullCalibrationActive?: boolean;
     trendPenaltyOnlyBreakConfidenceActive?: boolean;
+    /** Phase 6 provenance: whether divergence-weighted break confidence was active (backtest-only) */
+    divergenceWeightedBreakConfidenceActive?: boolean;
+    /** Phase 6 provenance: whether the BTC 14d bearish-break selective SELL gate fired. */
+    bearishBreakRecommendationGateActive?: boolean;
+    /** Phase 7 provenance: whether regime-specific sigma was active (backtest-only) */
+    regimeSpecificSigmaActive?: boolean;
+    /** Phase 5 provenance: which fallback candidate was used (backtest-only) */
+    breakFallbackCandidateId?: string;
+    /** Phase 5 provenance: which fallback mode was applied (backtest-only) */
+    breakFallbackMode?: 'hard' | 'blended' | 'blended_capped';
   };
 }
 
@@ -402,7 +621,7 @@ export interface AnchorCoverageDiagnostic {
   maxGapPct: number;
   /** Whether anchor coverage is adequate for reliable blending */
   quality: 'good' | 'sparse' | 'none';
-  /** Human-readable warning (empty if quality is 'good') */
+  /** Human-readable warning or caveat (may be non-empty even when quality is 'good') */
   warning: string;
 }
 
@@ -485,7 +704,7 @@ export function getAssetProfile(ticker: string): AssetProfile {
     'CT', 'KC', 'SB', 'CC', 'OJ',    // softs: cotton, coffee, sugar, cocoa, OJ
     'LE', 'HE', 'GF',                 // livestock: live cattle, lean hogs, feeder cattle
     'WTICOUSD', 'BRENTUSD',           // spot oil aliases
-    'GOLD', 'SILVER', 'COPPER',       // common names for precious/base metals
+    'SILVER', 'COPPER',               // common names for precious/base metals
     'XAUUSD', 'XAGUSD',              // forex-style spot metal symbols
     'NATGAS', 'CRUDE', 'OIL',        // informal energy names
   ]);
@@ -571,6 +790,14 @@ export function extractPriceThresholds(
 
   for (const market of markets) {
     if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question))) {
+      anchorTrace('extract_market', {
+        ticker: options?.ticker ?? null,
+        horizonDays: options?.horizonDays ?? null,
+        question: market.question,
+        endDate: market.endDate ?? null,
+        volume: market.volume ?? 0,
+        excluded: 'barrier_pattern',
+      });
       continue;
     }
 
@@ -597,8 +824,29 @@ export function extractPriceThresholds(
         }
       }
     }
-    if (matched === null) continue;
-    if (isNaN(matched) || matched <= 0) continue;
+    if (matched === null) {
+      anchorTrace('extract_market', {
+        ticker: options?.ticker ?? null,
+        horizonDays: options?.horizonDays ?? null,
+        question: market.question,
+        endDate: market.endDate ?? null,
+        volume: market.volume ?? 0,
+        excluded: 'no_terminal_threshold_match',
+      });
+      continue;
+    }
+    if (isNaN(matched) || matched <= 0) {
+      anchorTrace('extract_market', {
+        ticker: options?.ticker ?? null,
+        horizonDays: options?.horizonDays ?? null,
+        question: market.question,
+        endDate: market.endDate ?? null,
+        volume: market.volume ?? 0,
+        matchedPrice: matched,
+        excluded: 'invalid_threshold',
+      });
+      continue;
+    }
 
     const isYoung =
       market.createdAt != null &&
@@ -607,15 +855,22 @@ export function extractPriceThresholds(
         : market.createdAt) < 48 * 60 * 60 * 1000;
 
     const hasVolume = (market.volume ?? 0) > 0;
-    const isShortHorizonCrypto = options?.ticker != null
-      && getAssetProfile(options.ticker).type === 'crypto'
+    const isCrypto = options?.ticker != null
+      && getAssetProfile(options.ticker).type === 'crypto';
+    const isShortHorizonCrypto = isCrypto
       && options?.horizonDays != null
       && options.horizonDays <= 14;
+    const isLongHorizonCrypto = isCrypto
+      && options?.horizonDays != null
+      && options.horizonDays > 14;
     const isNearTargetResolution = options?.horizonDays != null && market.endDate
       ? Math.abs((Date.parse(market.endDate) - now) / 86_400_000 - options.horizonDays) <= 2
       : false;
     const trustScore: 'high' | 'low' =
-      hasVolume && (!isYoung || (isShortHorizonCrypto && isNearTargetResolution)) ? 'high' : 'low';
+      hasVolume && (
+        (isLongHorizonCrypto && !isYoung && isNearTargetResolution)
+        || (!isLongHorizonCrypto && (!isYoung || (isShortHorizonCrypto && isNearTargetResolution)))
+      ) ? 'high' : 'low';
 
     const rawProbability = market.probability;
     const correctedRaw = rawProbability * YES_BIAS_MULTIPLIER;
@@ -634,6 +889,22 @@ export function extractPriceThresholds(
       endDate: market.endDate ?? null,
     };
 
+    anchorTrace('extract_market', {
+      ticker: options?.ticker ?? null,
+      horizonDays: options?.horizonDays ?? null,
+      question: market.question,
+      endDate: market.endDate ?? null,
+      volume: market.volume ?? 0,
+      matchedPrice: matched,
+      isBelow,
+      hasVolume,
+      isYoung,
+      isNearTargetResolution,
+      trustScore,
+      rawProbability,
+      correctedProbability: corrected.probability,
+    });
+
     const existing = seen.get(matched);
     if (!existing || rawProbability > existing.rawProbability) {
       seen.set(matched, corrected);
@@ -643,23 +914,174 @@ export function extractPriceThresholds(
   return Array.from(seen.values()).sort((a, b) => a.price - b.price);
 }
 
-export function inferPolymarketSearchPhrase(ticker: string): string {
-  const normalized = ticker.trim().toUpperCase().replace(/-USD$/, '');
-  return normalizeForPolymarket(`${normalized} price`, normalized);
+// ---------------------------------------------------------------------------
+// 1b. Crypto terminal-anchor fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * Market object shape for fallback extraction (matches Polymarket candidate type).
+ */
+interface FallbackMarket {
+  question: string;
+  probability: number;
+  volume?: number;
+  createdAt?: string | number;
+  endDate?: string | null;
 }
 
-export function buildPolymarketAnchorQueryVariants(ticker: string): string[] {
-  const normalized = ticker.trim().toUpperCase().replace(/-USD$/, '');
+/**
+ * For crypto assets only: when strict-horizon candidate filtering yields
+ * zero terminal anchors (because all near-horizon markets are barrier-style
+ * like "reach $80K" or "dip to $65K"), fall back to the nearest earlier
+ * usable terminal-threshold markets ("above $X on April 17").
+ *
+ * Each fallback anchor receives a date-gap discount that reduces its
+ * probability proportional to how far its endDate is from the target horizon:
+ *   discount = 1 − 0.03 × max(0, |daysOffset| − 2)
+ * clamped to [0.5, 1.0].
+ *
+ * Gate: only activates for crypto assets (`getAssetProfile(ticker).type === 'crypto'`)
+ *       and only when `strictAnchors` is empty.
+ *
+ * Preserves the distinction between terminal anchors and barrier/path questions —
+ * barrier matches from BARRIER_PATTERNS are never included by `extractPriceThresholds`.
+ */
+export function applyCryptoTerminalAnchorFallback(
+  allMarkets: FallbackMarket[],
+  strictAnchors: PriceThreshold[],
+  ticker: string,
+  horizon: number,
+  referenceTimeMs?: number,
+): PriceThreshold[] {
+  if (getAssetProfile(ticker).type !== 'crypto') return strictAnchors;
+  if (strictAnchors.length > 0) return strictAnchors;
+  if (allMarkets.length === 0) return strictAnchors;
+
+  const fallbackRaw = extractPriceThresholds(allMarkets, { ticker, horizonDays: horizon, referenceTimeMs });
+  if (fallbackRaw.length === 0) return strictAnchors;
+
+  const now = referenceTimeMs ?? Date.now();
+  const HORIZON_TOLERANCE_DAYS = 2;
+  const DISCOUNT_PER_DAY = 0.03;
+  const MIN_DISCOUNT = 0.5;
+
+  const discounted: PriceThreshold[] = fallbackRaw.map((anchor) => {
+    if (anchor.endDate == null) {
+      return { ...anchor, trustScore: 'low' } satisfies PriceThreshold;
+    }
+
+    const endMs = Date.parse(anchor.endDate);
+    if (Number.isNaN(endMs)) {
+      return { ...anchor, trustScore: 'low' } satisfies PriceThreshold;
+    }
+
+    const daysUntilResolution = (endMs - now) / 86_400_000;
+    const daysOffset = Math.abs(daysUntilResolution - horizon);
+
+    if (daysOffset <= HORIZON_TOLERANCE_DAYS) {
+      return anchor;
+    }
+
+    const discount = Math.max(
+      MIN_DISCOUNT,
+      1 - DISCOUNT_PER_DAY * (daysOffset - HORIZON_TOLERANCE_DAYS),
+    );
+    const adjustedProbability = Math.max(0, Math.min(1, anchor.probability * discount));
+
+    return {
+      ...anchor,
+      probability: adjustedProbability,
+      trustScore: 'low' as const,
+    } satisfies PriceThreshold;
+  });
+
+  return discounted.sort((a, b) => a.price - b.price);
+}
+
+function normalizeSearchIdentityPhrase(ticker: string, phrase: string): string {
+  const identity = resolveTickerSearchIdentity(ticker);
+  const shouldReplaceTicker = identity.searchQuery === identity.canonicalTicker;
+  return normalizeForPolymarket(phrase, shouldReplaceTicker ? identity.canonicalTicker : null);
+}
+
+const anchorTrace = process.env.DEBUG_ANCHORS
+  ? (...args: unknown[]) => console.error('[ANCHOR_TRACE]', ...args)
+  : (..._args: unknown[]) => {};
+
+export function inferPolymarketSearchPhrase(ticker: string): string {
+  const identity = resolveTickerSearchIdentity(ticker);
+  return normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} price`);
+}
+
+export function buildPolymarketAnchorQueryVariants(
+  ticker: string,
+  options?: { horizonDays?: number },
+): string[] {
+  const identity = resolveTickerSearchIdentity(ticker);
+  const upperTicker = ticker.toUpperCase();
+  const isBtc14d = getAssetProfile(ticker).type === 'crypto'
+    && (upperTicker === 'BTC' || upperTicker === 'BTC-USD')
+    && options?.horizonDays === 14;
   const primary = inferPolymarketSearchPhrase(ticker);
   const manual = [
-    normalizeForPolymarket(normalized, normalized),
-    normalizeForPolymarket(`${normalized} above`, normalized),
-    normalizeForPolymarket(`${normalized} below`, normalized),
+    normalizeSearchIdentityPhrase(ticker, identity.searchQuery),
+    normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} above`),
+    normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} below`),
   ];
-  const extracted = extractSignals(normalized)
+  const monthVariants = isBtc14d
+    ? (() => {
+        const monthName = new Date(Date.now() + 14 * 86_400_000)
+          .toLocaleString('en-US', { month: 'long' });
+        return [
+          normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} ${monthName}`),
+          normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} above ${monthName}`),
+        ];
+      })()
+    : [];
+
+  const signals = extractSignals(identity.searchQuery);
+  const isLongHorizonCrypto = options?.horizonDays != null
+    && options.horizonDays > 14
+    && getAssetProfile(ticker).type === 'crypto';
+
+  // For longer-horizon crypto anchor acquisition, price-target signals must
+  // outrank regulatory/macro signals so fetchCandidatePolymarketAnchors'
+  // front-6 query slice isn't consumed by "crypto regulation" / "SEC crypto".
+  const orderedSignals = isLongHorizonCrypto
+    ? reorderCryptoSignalsForAnchorAcquisition(signals)
+    : signals;
+
+  const extracted = orderedSignals
     .flatMap((signal) => [signal.searchPhrase, ...(signal.queryVariants ?? [])]);
 
-  return Array.from(new Set([primary, ...manual, ...extracted].filter(Boolean)));
+  const variants = Array.from(new Set([primary, ...manual, ...monthVariants, ...extracted].filter(Boolean)));
+  anchorTrace('query_variants', {
+    ticker,
+    horizonDays: options?.horizonDays ?? null,
+    variants,
+    frontSlice: variants.slice(0, 6),
+  });
+  return variants;
+}
+
+/**
+ * Reorders crypto signal categories to prioritize price-target and
+ * threshold-oriented queries for anchor acquisition. Price-target signals
+ * (btc_price_target, etf_product) are promoted ahead of regulatory and
+ * macro signals which rarely produce price-anchor-compatible markets.
+ */
+function reorderCryptoSignalsForAnchorAcquisition(signals: import('./signal-extractor.js').SignalCategory[]): import('./signal-extractor.js').SignalCategory[] {
+  const priorityCategories = new Set(['btc_price_target', 'etf_product']);
+  const front: typeof signals = [];
+  const back: typeof signals = [];
+  for (const signal of signals) {
+    if (priorityCategories.has(signal.category)) {
+      front.push(signal);
+    } else {
+      back.push(signal);
+    }
+  }
+  return [...front, ...back];
 }
 
 function sortMarketsByHorizonCloseness<T extends { endDate?: string | null; volume?: number }>(
@@ -702,13 +1124,147 @@ async function fetchCandidatePolymarketAnchors(
   createdAt?: string | number;
   endDate?: string | null;
 }>> {
-  const queries = buildPolymarketAnchorQueryVariants(ticker);
-  const settled = await Promise.allSettled(
-    queries.slice(0, 6).map((query) => fetchPolymarketAnchorMarkets(query, 40, { ticker, horizonDays })),
+  const queries = buildPolymarketAnchorQueryVariants(ticker, { horizonDays });
+  const isCrypto = getAssetProfile(ticker).type === 'crypto';
+  const upperTicker = ticker.toUpperCase();
+  const isBtc14d = isCrypto && (upperTicker === 'BTC' || upperTicker === 'BTC-USD') && horizonDays === 14;
+  const isLongHorizonCrypto = isCrypto && horizonDays > 14;
+  const useDatedAnchorSearch = isLongHorizonCrypto || isBtc14d;
+
+  // For long-horizon crypto, constrain API to markets resolving near the target horizon
+  // via end_date_min/end_date_max so near-term markets don't crowd out 30-day anchors.
+  let endDateFilter: { end_date_min: string; end_date_max: string } | undefined;
+  if (useDatedAnchorSearch) {
+    const now = Date.now();
+    const toleranceDays = isBtc14d
+      ? Math.max(7, Math.ceil(horizonDays * 0.65))
+      : Math.max(5, horizonDays * 0.5);
+    const minDate = new Date(now + (horizonDays - toleranceDays) * 86_400_000);
+    const maxDate = new Date(now + (horizonDays + toleranceDays) * 86_400_000);
+    endDateFilter = {
+      end_date_min: minDate.toISOString().slice(0, 10),
+      end_date_max: maxDate.toISOString().slice(0, 10),
+    };
+  }
+
+  const frontQueries = queries.slice(0, 6);
+  const retryQueries = queries.slice(frontQueries.length);
+
+  anchorTrace('fetch_candidates_start', {
+    ticker,
+    horizonDays,
+    isCrypto,
+    isBtc14d,
+    isLongHorizonCrypto,
+    useDatedAnchorSearch,
+    endDateFilter: endDateFilter ?? null,
+    queries: frontQueries,
+  });
+
+  let settled = await Promise.allSettled(
+    frontQueries.map((query) => fetchPolymarketAnchorMarkets(query, 40, { ticker, horizonDays, endDateFilter })),
   );
 
+  settled.forEach((result, index) => {
+    const query = frontQueries[index];
+    if (result.status === 'fulfilled') {
+      anchorTrace('fetch_candidates_query_result', {
+        ticker,
+        horizonDays,
+        query,
+        returnedCount: result.value.length,
+        markets: result.value.map((market) => ({
+          question: market.question,
+          volume24h: market.volume24h,
+          ageDays: market.ageDays ?? null,
+          endDate: market.endDate ?? null,
+        })),
+      });
+    } else {
+      anchorTrace('fetch_candidates_query_result', {
+        ticker,
+        horizonDays,
+        query,
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    }
+  });
+
+  if (
+    isLongHorizonCrypto
+    && endDateFilter
+    && settled.every((result) => result.status !== 'fulfilled' || result.value.length === 0)
+    && retryQueries.length > 0
+  ) {
+    anchorTrace('fetch_candidates_date_retry', {
+      ticker,
+      horizonDays,
+      endDateFilter,
+      retryQueries,
+    });
+    const retryMarkets = await fetchPolymarketAnchorMarketsWithQueries(
+      retryQueries,
+      40,
+      { ticker, horizonDays, endDateFilter },
+    );
+    anchorTrace('fetch_candidates_date_retry_result', {
+      ticker,
+      horizonDays,
+      retryQueries,
+      returnedCount: retryMarkets.length,
+      markets: retryMarkets.map((market) => ({
+        question: market.question,
+        volume24h: market.volume24h,
+        ageDays: market.ageDays ?? null,
+        endDate: market.endDate ?? null,
+      })),
+    });
+    settled = [
+      ...settled,
+      {
+        status: 'fulfilled',
+        value: retryMarkets,
+      } satisfies PromiseFulfilledResult<Awaited<ReturnType<typeof fetchPolymarketAnchorMarketsWithQueries>>>,
+    ];
+  }
+
+  if (
+    isLongHorizonCrypto
+    && endDateFilter
+    && settled.every((result) => result.status !== 'fulfilled' || result.value.length === 0)
+  ) {
+    anchorTrace('fetch_candidates_undated_fallback', {
+      ticker,
+      horizonDays,
+      queries: frontQueries,
+    });
+    const fallbackMarkets = await fetchPolymarketAnchorMarketsWithQueries(
+      frontQueries,
+      40,
+      { ticker, horizonDays },
+    );
+    anchorTrace('fetch_candidates_undated_fallback_result', {
+      ticker,
+      horizonDays,
+      returnedCount: fallbackMarkets.length,
+      markets: fallbackMarkets.map((market) => ({
+        question: market.question,
+        volume24h: market.volume24h,
+        ageDays: market.ageDays ?? null,
+        endDate: market.endDate ?? null,
+      })),
+    });
+    settled = [
+      ...settled,
+      {
+        status: 'fulfilled',
+        value: fallbackMarkets,
+      } satisfies PromiseFulfilledResult<Awaited<ReturnType<typeof fetchPolymarketAnchorMarketsWithQueries>>>,
+    ];
+  }
+
   const seen = new Set<string>();
-  const combined = settled
+  let combined = settled
     .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof fetchPolymarketAnchorMarkets>>> => result.status === 'fulfilled')
     .flatMap((result) => result.value)
     .map((market) => ({
@@ -724,10 +1280,153 @@ async function fetchCandidatePolymarketAnchors(
       return true;
     });
 
-  return sortMarketsByHorizonCloseness(
-    filterMarketsToHorizon(combined, horizonDays),
+  anchorTrace('fetch_candidates_combined', {
+    ticker,
     horizonDays,
-  );
+    combinedCount: combined.length,
+    combinedMarkets: combined.map((market) => ({
+      question: market.question,
+      volume: market.volume ?? 0,
+      createdAt: market.createdAt ?? null,
+      endDate: market.endDate ?? null,
+    })),
+  });
+
+  let filtered = filterMarketsToHorizon(combined, horizonDays);
+  anchorTrace('fetch_candidates_horizon_filter', {
+    ticker,
+    horizonDays,
+    filteredCount: filtered.length,
+    filteredMarkets: filtered.map((market) => ({
+      question: market.question,
+      volume: market.volume ?? 0,
+      endDate: market.endDate ?? null,
+    })),
+  });
+
+  // Crypto fallback: when strict-horizon filter yields only barrier-style markets,
+  // also include earlier-dated terminal-anchor-compatible markets so the fallback
+  // in computeMarkovDistribution can recover usable anchors.
+  if (isCrypto) {
+    let strictAnchors = extractPriceThresholds(filtered, { ticker, horizonDays });
+    anchorTrace('fetch_candidates_strict_anchors', {
+      ticker,
+      horizonDays,
+      strictAnchorCount: strictAnchors.length,
+      strictAnchors: strictAnchors.map((anchor) => ({
+        price: anchor.price,
+        probability: anchor.probability,
+        trustScore: anchor.trustScore,
+        endDate: anchor.endDate ?? null,
+      })),
+    });
+
+    const shouldRetryLowTrustBtc14dAnchors =
+      isBtc14d
+      && retryQueries.length > 0
+      && (strictAnchors.length === 0 || strictAnchors.every((anchor) => anchor.trustScore === 'low'));
+
+    if (shouldRetryLowTrustBtc14dAnchors) {
+      anchorTrace('fetch_candidates_low_trust_retry', {
+        ticker,
+        horizonDays,
+        retryQueries,
+      });
+      const retryMarkets = await fetchPolymarketAnchorMarketsWithQueries(
+        retryQueries,
+        40,
+        { ticker, horizonDays, endDateFilter },
+      );
+      anchorTrace('fetch_candidates_low_trust_retry_result', {
+        ticker,
+        horizonDays,
+        retryQueries,
+        returnedCount: retryMarkets.length,
+        markets: retryMarkets.map((market) => ({
+          question: market.question,
+          volume24h: market.volume24h,
+          ageDays: market.ageDays ?? null,
+          endDate: market.endDate ?? null,
+        })),
+      });
+
+      const retryCombined = retryMarkets
+        .map((market) => ({
+          question: market.question,
+          probability: market.probability,
+          volume: market.volume24h,
+          createdAt: market.ageDays != null ? Date.now() - market.ageDays * 86_400_000 : undefined,
+          endDate: market.endDate ?? null,
+        }))
+        .filter((market) => {
+          if (seen.has(market.question)) return false;
+          seen.add(market.question);
+          return true;
+        });
+
+      if (retryCombined.length > 0) {
+        combined = [...combined, ...retryCombined];
+        filtered = filterMarketsToHorizon(combined, horizonDays);
+        anchorTrace('fetch_candidates_horizon_filter_after_retry', {
+          ticker,
+          horizonDays,
+          filteredCount: filtered.length,
+          filteredMarkets: filtered.map((market) => ({
+            question: market.question,
+            volume: market.volume ?? 0,
+            endDate: market.endDate ?? null,
+          })),
+        });
+        strictAnchors = extractPriceThresholds(filtered, { ticker, horizonDays });
+        anchorTrace('fetch_candidates_strict_anchors_after_retry', {
+          ticker,
+          horizonDays,
+          strictAnchorCount: strictAnchors.length,
+          strictAnchors: strictAnchors.map((anchor) => ({
+            price: anchor.price,
+            probability: anchor.probability,
+            trustScore: anchor.trustScore,
+            endDate: anchor.endDate ?? null,
+          })),
+        });
+      }
+    }
+
+    if (strictAnchors.length === 0) {
+      const broader = combined.filter((m) => {
+        if (!m.endDate) return true;
+        const endMs = Date.parse(m.endDate);
+        if (Number.isNaN(endMs)) return true;
+        const daysUntil = (endMs - Date.now()) / 86_400_000;
+        return daysUntil > 0 && daysUntil <= horizonDays * 2;
+      });
+      anchorTrace('fetch_candidates_broader_fallback', {
+        ticker,
+        horizonDays,
+        broaderCount: broader.length,
+        broaderMarkets: broader.map((market) => ({
+          question: market.question,
+          volume: market.volume ?? 0,
+          endDate: market.endDate ?? null,
+        })),
+      });
+      filtered = broader.length > filtered.length ? broader : filtered;
+    }
+  }
+
+  const sorted = sortMarketsByHorizonCloseness(filtered, horizonDays);
+  anchorTrace('fetch_candidates_final', {
+    ticker,
+    horizonDays,
+    finalCount: sorted.length,
+    finalMarkets: sorted.map((market) => ({
+      question: market.question,
+      volume: market.volume ?? 0,
+      endDate: market.endDate ?? null,
+    })),
+  });
+
+  return sorted;
 }
 
 /**
@@ -811,7 +1510,10 @@ export function classifyRegimeState(
  * 2× median for high-volatility detection. This ensures ~30-40% of days
  * are bull, ~30-40% bear, ~20-30% sideways regardless of asset volatility.
  */
-export function computeAdaptiveThresholds(returns: number[]): {
+export function computeAdaptiveThresholds(
+  returns: number[],
+  returnThresholdMultiplier = 0.5,
+): {
   returnThreshold: number;
   volThreshold: number;
 } {
@@ -819,7 +1521,7 @@ export function computeAdaptiveThresholds(returns: number[]): {
   const absReturns = returns.map(r => Math.abs(r)).sort((a, b) => a - b);
   const medianAbsReturn = absReturns[Math.floor(absReturns.length / 2)];
   return {
-    returnThreshold: Math.max(0.001, 0.5 * medianAbsReturn),
+    returnThreshold: Math.max(0.001, returnThresholdMultiplier * medianAbsReturn),
     volThreshold: Math.max(0.005, 2.0 * medianAbsReturn),
   };
 }
@@ -1738,6 +2440,8 @@ export function computeHorizonDriftVol(
   momentumAdjustment = 0,
   hmmOverride?: { drift: number; vol: number; weight: number },
   startMixture?: Record<RegimeState, number>,
+  regimeSpecificSigma?: boolean,
+  regimeSpecificSigmaThreshold?: number,
 ): { mu_n: number; sigma_n: number } {
   const Pn = matPow(P, horizon);
   
@@ -1764,11 +2468,22 @@ export function computeHorizonDriftVol(
   const varOfMeans = REGIME_STATES.reduce(
     (s, state, i) => s + stateWeights[i] * (regimeStats[state].meanReturn - mu_obs) ** 2, 0,
   );
-  const sigma_obs = Math.sqrt(
+  const mixtureSigmaObs = Math.sqrt(
     REGIME_STATES.reduce(
       (s, state, i) => s + stateWeights[i] * regimeStats[state].stdReturn ** 2, 0,
     ) + varOfMeans,
   );
+
+  // Phase 7: when regime weights are concentrated and flag is enabled,
+  // use the dominant regime's own sigma instead of the mixture sigma.
+  // The mixture sigma inflates variance via Var(μ) when weights are mixed,
+  // but when one regime dominates, that regime's own volatility is more appropriate.
+  const maxWeight = Math.max(...stateWeights);
+  const threshold = regimeSpecificSigmaThreshold ?? 0.60;
+  const dominantIdx = stateWeights.indexOf(maxWeight);
+  const dominantSigma = regimeStats[REGIME_STATES[dominantIdx]].stdReturn;
+  const useRegimeSigma = regimeSpecificSigma === true && maxWeight > threshold;
+  const sigma_obs = useRegimeSigma ? dominantSigma : mixtureSigmaObs;
 
   let mu_eff: number;
   let sigma_eff: number;
@@ -1939,6 +2654,8 @@ export function interpolateDistribution(
   dailyVol?: number,
   startMixture?: Record<RegimeState, number>,
   nu = 5,
+  regimeSpecificSigma?: boolean,
+  regimeSpecificSigmaThreshold?: number,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -1975,6 +2692,7 @@ export function interpolateDistribution(
   // Compute regime-weighted drift and vol via shared helper
   const { mu_n, sigma_n } = computeHorizonDriftVol(
     horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold,
   );
 
   // Nearest anchor lookup helper with distance-based dampening.
@@ -2367,7 +3085,13 @@ export function computePredictionConfidence(options: {
   horizonDays?: number;
   outOfSampleR2?: number | null;
   breakConfidencePolicy?: BreakConfidencePolicy;
+  /** Preserve the Phase 4 sideways carve-out even when another break policy is active. */
+  skipSidewaysBreakPenalty?: boolean;
   regimeState?: RegimeState;
+  /** Chi-square divergence between the first/second half transition matrices. Required for 'divergence_weighted' policy. */
+  structuralBreakDivergence?: number;
+  /** Penalty schedule for divergence-weighted mode. Defaults to DEFAULT_DIVERGENCE_PENALTY_SCHEDULE. */
+  divergencePenaltySchedule?: DivergencePenaltySchedule;
 }): number {
   const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
   const cryptoShortHorizon = options.assetType === 'crypto'
@@ -2428,11 +3152,22 @@ export function computePredictionConfidence(options: {
   // Penalty for structural break (regime change mid-window → unreliable)
   if (structuralBreak) {
     const breakConfidencePolicy = options.breakConfidencePolicy ?? 'default';
-    const skipBreakPenalty = breakConfidencePolicy === 'trend_penalty_only'
-      && options.regimeState === 'sideways';
+
+    const skipBreakPenalty = options.regimeState === 'sideways'
+      && (
+        breakConfidencePolicy === 'trend_penalty_only'
+        || options.skipSidewaysBreakPenalty === true
+      );
 
     if (!skipBreakPenalty) {
-      const breakPenalty = cryptoShortHorizon && anchorsHelpful && !r2ClearlyBad ? 0.8 : 0.6;
+      let breakPenalty: number;
+      if (breakConfidencePolicy === 'divergence_weighted') {
+        const divergence = options.structuralBreakDivergence ?? 0.20;
+        const schedule = options.divergencePenaltySchedule ?? DEFAULT_DIVERGENCE_PENALTY_SCHEDULE;
+        breakPenalty = computeDivergencePenalty(divergence, schedule);
+      } else {
+        breakPenalty = cryptoShortHorizon && anchorsHelpful && !r2ClearlyBad ? 0.8 : 0.6;
+      }
       confidence *= breakPenalty;
     }
   }
@@ -2672,7 +3407,7 @@ export function computeActionSignal(
       if (pUp > 0.50) {
         recommendation = 'HOLD';
       }
-      // Upside scenarios exceed downside by >5pp → bullish tilt → downgrade
+      // Mirror: upside scenarios exceed downside by >5pp → bullish tilt → downgrade
       else if (upScenarios > downScenarios + 0.05) {
         recommendation = 'HOLD';
       }
@@ -2746,6 +3481,82 @@ export function computeActionLevels(
   };
 }
 
+export function capBtcShortHorizonConfidence(options: {
+  ticker: string;
+  horizon: number;
+  structuralBreakDetected: boolean;
+  outOfSampleR2: number | null;
+  predictionConfidence: number;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+}): 'HIGH' | 'MEDIUM' | 'LOW' {
+  const isBtcShortHorizon = (options.ticker === 'BTC' || options.ticker === 'BTC-USD')
+    && options.horizon <= 14;
+  const weakValidation = (
+    typeof options.outOfSampleR2 === 'number'
+    && Number.isFinite(options.outOfSampleR2)
+    && options.outOfSampleR2 < 0.05
+  ) || options.predictionConfidence < 0.40;
+
+  if (
+    isBtcShortHorizon
+    && options.structuralBreakDetected
+    && weakValidation
+    && options.confidence === 'HIGH'
+  ) {
+    return 'MEDIUM';
+  }
+
+  return options.confidence;
+}
+
+export function buildBtcShortHorizonThinAnchorWarning(options: {
+  ticker?: string;
+  horizonDays?: number;
+  trustedAnchors: number;
+  quality: 'good' | 'sparse' | 'none';
+}): string {
+  const isBtcShortHorizon = (options.ticker === 'BTC' || options.ticker === 'BTC-USD')
+    && options.horizonDays !== undefined
+    && options.horizonDays <= 14;
+
+  if (
+    isBtcShortHorizon
+    && options.quality === 'good'
+    && options.trustedAnchors > 0
+    && options.trustedAnchors <= 3
+  ) {
+    return `BTC short-horizon with thin anchor coverage (${options.trustedAnchors} trusted) — distribution is anchor-calibrated but still sensitive to anchor movement`;
+  }
+
+  return '';
+}
+
+export function shouldApplyBtc14dBearishBreakSellGate(options: {
+  ticker: string;
+  horizon: number;
+  recommendation: 'BUY' | 'HOLD' | 'SELL';
+  rawRecommendation: 'BUY' | 'HOLD' | 'SELL' | null;
+  structuralBreakDetected: boolean;
+  regimeState: RegimeState;
+  predictionConfidence: number;
+  rawPredictedProb: number;
+  predictedProb: number;
+  expectedReturn: number;
+}): boolean {
+  const isTargetSlice = (options.ticker === 'BTC' || options.ticker === 'BTC-USD')
+    && options.horizon === 14;
+
+  return isTargetSlice
+    && options.recommendation === 'BUY'
+    && options.rawRecommendation === 'SELL'
+    && options.structuralBreakDetected
+    && options.regimeState !== 'bull'
+    && options.predictionConfidence <= 0.09
+    && options.rawPredictedProb <= 0.50
+    && options.predictedProb <= 0.54
+    && options.expectedReturn <= 0.025;
+}
+
 /**
  * Assess Polymarket anchor quality: how well do anchors cover the relevant price range?
  * Sparse anchors = large gaps = less reliable blending.
@@ -2791,7 +3602,14 @@ export function assessAnchorCoverage(
     : trusted.length >= 1 ? 'sparse'
     : 'none';
 
-  const warning = quality === 'good' ? ''
+  const thinAnchorWarning = buildBtcShortHorizonThinAnchorWarning({
+    ticker: options?.ticker,
+    horizonDays: options?.horizonDays,
+    trustedAnchors: trusted.length,
+    quality,
+  });
+
+  const warning = quality === 'good' ? thinAnchorWarning
     : quality === 'sparse'
       ? `Sparse anchors (${trusted.length} trusted, max gap ${maxGapPct.toFixed(0)}%) — interpolation between anchors is model-driven`
       : 'No trusted anchors';
@@ -2868,18 +3686,26 @@ export async function computeMarkovDistribution(params: {
   /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonRawDecisionAblation?: boolean;
   /** @deprecated experimental ablation — backtests only */
+  rawDirectionHybrid?: boolean;
+  /** @deprecated experimental ablation — backtests only */
   pr3fCryptoShortHorizonDisagreementPrior?: boolean;
   /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonPUpFloor?: number;
   /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonBearMarginMultiplier?: number;
-  /** @deprecated experimental ablation — backtests only */
+  /** BTC 7d/14d default-on: activates PR3G recency weighting for BTC/BTC-USD
+   *  on 7d and 14d horizons by default. Explicit false disables it for BTC 7d/14d
+   *  (restoring legacy control). Explicit true opts in for other crypto short horizons.
+   *  For the promoted BTC path, decay defaults to 0.98 unless pr3gCryptoShortHorizonDecay
+   *  is explicitly overridden. */
   pr3gCryptoShortHorizonRecencyWeighting?: boolean;
-  /** @deprecated experimental ablation — backtests only */
+  /** Decay rate for PR3G recency-weighted regime-conditional P(up). Defaults to 0.98
+   *  for the promoted BTC short-horizon path, or the asset profile's decayRate for
+   *  other crypto, or no recency weighting at all when recency weighting is inactive. */
   pr3gCryptoShortHorizonDecay?: number;
   /** @deprecated experimental ablation — backtests only */
   referenceTimeMs?: number;
-  /** @deprecated experimental ablation — backtests only */
+  /** BTC short-horizon default-on: explicit false disables the promoted start-state mixture; explicit true preserves opt-in for other crypto short horizons (backtests only). */
   startStateMixture?: boolean;
   /** @deprecated experimental ablation — backtests only */
   matureBullCalibration?: boolean;
@@ -2887,6 +3713,20 @@ export async function computeMarkovDistribution(params: {
   transitionDecayOverride?: number;
   /** @deprecated experimental ablation — backtests only */
   trendPenaltyOnlyBreakConfidence?: boolean;
+  /** @internal Phase 5 experimental: hybrid structural-break fallback candidate (backtest-only) */
+  breakFallbackCandidate?: BreakFallbackCandidate;
+  /** Phase 6 experimental: use divergence-weighted break confidence penalties (backtest-only) */
+  divergenceWeightedBreakConfidence?: boolean;
+  /** Phase 6 experimental: penalty schedule for divergence-weighted mode. Defaults to DEFAULT_DIVERGENCE_PENALTY_SCHEDULE. */
+  divergencePenaltySchedule?: DivergencePenaltySchedule;
+  /** Phase 7 experimental: use dominant regime's own sigma instead of mixture sigma when regime weights are concentrated (backtest-only) */
+  regimeSpecificSigma?: boolean;
+  /** Phase 7 experimental: minimum max(stateWeight) to activate regime-specific sigma. Defaults to 0.60. */
+  regimeSpecificSigmaThreshold?: number;
+  /** Phase D experimental: BTC-only override for regime classification return threshold multiplier (backtest-only). */
+  btcReturnThresholdMultiplier?: number;
+  /** Phase C experimental: BTC-only override for structural break divergence threshold (backtest-only). */
+  btcBreakDivergenceThreshold?: number;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
@@ -2902,6 +3742,7 @@ export async function computeMarkovDistribution(params: {
     sidewaysSplit,
     cryptoShortHorizonKappaMultiplier,
     cryptoShortHorizonRawDecisionAblation,
+    rawDirectionHybrid,
     pr3fCryptoShortHorizonDisagreementPrior,
     cryptoShortHorizonPUpFloor,
     cryptoShortHorizonBearMarginMultiplier,
@@ -2911,6 +3752,13 @@ export async function computeMarkovDistribution(params: {
     matureBullCalibration,
     transitionDecayOverride,
     trendPenaltyOnlyBreakConfidence,
+    breakFallbackCandidate,
+    divergenceWeightedBreakConfidence,
+    divergencePenaltySchedule,
+    regimeSpecificSigma,
+    regimeSpecificSigmaThreshold,
+    btcReturnThresholdMultiplier,
+    btcBreakDivergenceThreshold,
   } = params;
 
   const normalizedSentiment = sentiment === undefined ? undefined : normalizeSentiment(sentiment);
@@ -2920,6 +3768,19 @@ export async function computeMarkovDistribution(params: {
 
   // --- Asset profile (Idea N): per-asset-class parameter tuning ---
   const assetProfile = getAssetProfile(ticker);
+  const isBtcTicker = ticker === 'BTC' || ticker === 'BTC-USD';
+  const isBtcShortHorizonThresholdDefault = isBtcTicker && assetProfile.type === 'crypto' && horizon <= 14;
+  const isBtcPhase5PromotedHorizon = isBtcTicker && (horizon === 7 || horizon === 14);
+  // Phase 5 promotion: BTC/BTC-USD 7d/14d defaults PR3G recency weighting on.
+  // Explicit false disables; explicit true opts in for other crypto short horizons.
+  // Raw-decision ablation is an explicit opt-out: it disables promoted PR3G provenance
+  // so that the raw-decision ablation provenance is not masked by promoted recency.
+  const pr3gDisabledByRawDecisionAblation = cryptoShortHorizonRawDecisionAblation === true;
+  const usePr3gRecency = assetProfile.type === 'crypto' && horizon <= 14
+    && !pr3gDisabledByRawDecisionAblation
+    && (pr3gCryptoShortHorizonRecencyWeighting === true || (pr3gCryptoShortHorizonRecencyWeighting !== false && isBtcPhase5PromotedHorizon));
+  const pr3gDefaultDecay = usePr3gRecency && isBtcPhase5PromotedHorizon && pr3gCryptoShortHorizonDecay === undefined
+    ? 0.98 : undefined;
 
   // --- Daily returns and volatility ---
   const returns: number[] = [];
@@ -2932,7 +3793,15 @@ export async function computeMarkovDistribution(params: {
   }
 
   // --- Classify regime states with adaptive thresholds ---
-  const { returnThreshold, volThreshold } = computeAdaptiveThresholds(returns);
+  const effectiveReturnThresholdMultiplier = btcReturnThresholdMultiplier !== undefined && isBtcTicker
+    ? btcReturnThresholdMultiplier
+    : isBtcShortHorizonThresholdDefault
+    ? 0.65
+    : 0.5;
+  const { returnThreshold, volThreshold } = computeAdaptiveThresholds(
+    returns,
+    effectiveReturnThresholdMultiplier,
+  );
   const regimeSeq: RegimeState[] = returns.map((r, i) =>
     classifyRegimeState(r, vols[i], returnThreshold, volThreshold),
   );
@@ -2944,14 +3813,28 @@ export async function computeMarkovDistribution(params: {
 
   // --- Tier 1b: Structural break detection ---
   const effectiveTransitionDecay = transitionDecayOverride ?? 0.97;
+  const effectiveBreakDivergenceThreshold = btcBreakDivergenceThreshold !== undefined
+    && isBtcTicker
+    ? btcBreakDivergenceThreshold
+    : 0.05;
   const breakResult = regimeSeq.length >= 20
-    ? detectStructuralBreak(regimeSeq, 0.05, 0.1, effectiveTransitionDecay)
+    ? detectStructuralBreak(regimeSeq, effectiveBreakDivergenceThreshold, 0.1, effectiveTransitionDecay)
     : { detected: false, divergence: 0, firstHalfMatrix: buildDefaultMatrix(), secondHalfMatrix: buildDefaultMatrix() };
 
   // --- Estimate transition matrix (fall back to default when break detected) ---
-  let P = breakResult.detected
-    ? buildDefaultMatrix()
-    : estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+  let P: TransitionMatrix;
+  if (breakResult.detected) {
+    // Structural break detected: replace or blend the estimated matrix
+    if (breakFallbackCandidate) {
+      // Phase 5: apply hybrid fallback candidate (backtest-only)
+      const estimatedMatrix = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+      P = applyBreakFallbackCandidate(estimatedMatrix, breakResult.divergence, breakFallbackCandidate, assetProfile.type);
+    } else {
+      P = buildDefaultMatrix();
+    }
+  } else {
+    P = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+  }
 
   // --- Goodness-of-fit test (before sentiment adjustment, which is intentional) ---
   const gofResult = breakResult.detected ? null : transitionGoodnessOfFit(regimeSeq, P);
@@ -2980,9 +3863,22 @@ export async function computeMarkovDistribution(params: {
   // These carry no predictive signal — they just confirm what the current price already implies.
   polymarketAnchors = polymarketAnchors.filter(a => {
     const dist = (a.price - currentPrice) / currentPrice;
-    // Anchor below current price with very high survival prob → trivially true
     if (dist < -0.05 && a.probability > 0.90) return false;
-    // Anchor far above current price with very low survival prob → trivially false
+    if (dist > 0.50 && a.probability < 0.05) return false;
+    return true;
+  });
+
+  // Crypto fallback: when strict-horizon markets are all barrier-style and yield
+  // zero terminal anchors, re-extract from the full unfiltered market list with
+  // a date-gap discount on off-horizon anchors.
+  polymarketAnchors = applyCryptoTerminalAnchorFallback(
+    polymarketMarkets, polymarketAnchors, ticker, horizon, params.referenceTimeMs,
+  );
+  // Re-apply triviality filter on fallback anchors (e.g., off-horizon anchors may
+  // now be trivially true/false relative to current price)
+  polymarketAnchors = polymarketAnchors.filter(a => {
+    const dist = (a.price - currentPrice) / currentPrice;
+    if (dist < -0.05 && a.probability > 0.90) return false;
     if (dist > 0.50 && a.probability < 0.05) return false;
     return true;
   });
@@ -3149,8 +4045,8 @@ export async function computeMarkovDistribution(params: {
       weights3_experiment = [w4[0], w4[1], w4[2] + w4[3]];
 
       // Compute conditional up rates using the 4-state sequence
-      const pr3gDecayRate = (pr3gCryptoShortHorizonRecencyWeighting && assetProfile.type === 'crypto' && horizon <= 14)
-        ? (pr3gCryptoShortHorizonDecay ?? assetProfile.decayRate)
+      const pr3gDecayRate = usePr3gRecency
+        ? (pr3gCryptoShortHorizonDecay ?? pr3gDefaultDecay ?? assetProfile.decayRate)
         : undefined;
 
       const upHits = { bull: 0, bear: 0, sideways_coil: 0, sideways_chop: 0 };
@@ -3193,7 +4089,8 @@ export async function computeMarkovDistribution(params: {
   }
 
   // --- Distribution ---
-  const useStartStateMixture = startStateMixture && assetProfile.type === 'crypto' && horizon <= 14;
+  const useStartStateMixture = assetProfile.type === 'crypto' && horizon <= 14
+    && (startStateMixture === true || (startStateMixture !== false && isBtcTicker));
   const mixture = useStartStateMixture && regimeSeq.length >= 5
     ? computeStartStateMixture(regimeSeq.slice(-5))
     : undefined;
@@ -3205,12 +4102,13 @@ export async function computeMarkovDistribution(params: {
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
     20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, mixture,
-    assetProfile.studentTNu,
+    assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
     horizon, P, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, mixture,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -3221,8 +4119,8 @@ export async function computeMarkovDistribution(params: {
     : 0.5;
 
   // --- Regime-conditional P(up) (Idea T, Round 4) ---
-  const pr3gDecayRate = (pr3gCryptoShortHorizonRecencyWeighting && assetProfile.type === 'crypto' && horizon <= 14)
-    ? (pr3gCryptoShortHorizonDecay ?? assetProfile.decayRate)
+  const pr3gDecayRate = usePr3gRecency
+    ? (pr3gCryptoShortHorizonDecay ?? pr3gDefaultDecay ?? assetProfile.decayRate)
     : undefined;
   const regimeUpRates = computeRegimeUpRates(regimeSeq, returns, horizon, pr3gDecayRate);
   const Pn = matPow(P, horizon);
@@ -3365,8 +4263,15 @@ export async function computeMarkovDistribution(params: {
     trustedAnchors: anchorCoverage.trustedAnchors,
     horizonDays: horizon,
     outOfSampleR2: r2os,
-    breakConfidencePolicy: trendPenaltyOnlyBreakConfidence ? 'trend_penalty_only' : 'default',
+    breakConfidencePolicy: divergenceWeightedBreakConfidence
+      ? 'divergence_weighted'
+      : trendPenaltyOnlyBreakConfidence
+        ? 'trend_penalty_only'
+        : 'default',
+    skipSidewaysBreakPenalty: trendPenaltyOnlyBreakConfidence === true,
     regimeState: currentRegime,
+    structuralBreakDivergence: breakResult.divergence,
+    divergencePenaltySchedule,
   });
 
   // --- Trajectory computation (optional day-by-day forecast) ---
@@ -3415,9 +4320,21 @@ export async function computeMarkovDistribution(params: {
   // --- Scenario probabilities (derived from calibrated CDF) ---
   const scenarios = computeScenarioProbabilities(distribution, currentPrice);
 
+  const COMMODITY_MODEL_ONLY_MIN_R2 = -0.02;
+  const COMMODITY_MODEL_ONLY_MIN_CONFIDENCE = 0.15;
+
   const validationAcceptable = assetProfile.type === 'crypto' && horizon <= 14 && (r2os ?? 0) >= -0.05
     ? true
     : (r2os ?? 0) >= 0;
+
+  // Commodity model-only path: allow emission when no anchors exist but model meets minimum quality bar.
+  const commodityModelOnlyAllowed =
+    assetProfile.type === 'commodity' &&
+    anchorCoverage.trustedAnchors === 0 &&
+    typeof r2os === 'number' &&
+    Number.isFinite(r2os) &&
+    r2os >= COMMODITY_MODEL_ONLY_MIN_R2 &&
+    predictionConfidence >= COMMODITY_MODEL_ONLY_MIN_CONFIDENCE;
   
   const anchorBasedDiag =
     anchorCoverage.trustedAnchors > 0 &&
@@ -3433,7 +4350,12 @@ export async function computeMarkovDistribution(params: {
     validationAcceptable &&
     !breakResult.detected;
 
-  const diagnosticsPass = anchorBasedDiag || priceOnlyCryptoDiag;
+  // Commodity model-only diagnostics: allow when commodity model-only conditions are met and no structural break.
+  const commodityModelOnlyDiag =
+    commodityModelOnlyAllowed &&
+    !breakResult.detected;
+
+  const diagnosticsPass = anchorBasedDiag || priceOnlyCryptoDiag || commodityModelOnlyDiag;
 
   const rawPUpForBlend = interpolateSurvival(rawDistribution, currentPrice);
   const calPUpForBlend = interpolateSurvival(distribution, currentPrice);
@@ -3453,8 +4375,17 @@ export async function computeMarkovDistribution(params: {
     !usePr3fBlend
   );
 
+  const useRawDirectionHybrid = Boolean(
+    rawDirectionHybrid &&
+    assetProfile.type === 'crypto' &&
+    horizon <= 14 &&
+    !usePr3fBlend
+  );
+
   let decisionDistribution = distribution;
   let decisionScenarios = scenarios;
+  let rawActionSignal: ActionSignal | null = null;
+  let bearishBreakRecommendationGateActive = false;
 
   if (usePr3fBlend) {
     decisionDistribution = distribution.map((d, i) => ({
@@ -3468,6 +4399,72 @@ export async function computeMarkovDistribution(params: {
   } else if (useRawDecision) {
     decisionDistribution = rawDistribution;
     decisionScenarios = computeScenarioProbabilities(rawDistribution, currentPrice);
+  } else if (useRawDirectionHybrid) {
+    rawActionSignal = computeActionSignal(
+      rawDistribution,
+      currentPrice,
+      undefined,
+      undefined,
+      horizon,
+      recentDailyVol,
+      computeScenarioProbabilities(rawDistribution, currentPrice),
+      assetProfile.type,
+    );
+  }
+
+  if (!rawActionSignal && assetProfile.type === 'crypto' && horizon <= 14) {
+    rawActionSignal = computeActionSignal(
+      rawDistribution,
+      currentPrice,
+      undefined,
+      undefined,
+      horizon,
+      recentDailyVol,
+      computeScenarioProbabilities(rawDistribution, currentPrice),
+      assetProfile.type,
+    );
+  }
+
+  const actionSignal = computeActionSignal(
+    decisionDistribution, currentPrice, undefined, undefined, horizon,
+    recentDailyVol, decisionScenarios, assetProfile.type,
+  );
+
+  actionSignal.confidence = capBtcShortHorizonConfidence({
+    ticker,
+    horizon,
+    structuralBreakDetected: breakResult.detected,
+    outOfSampleR2: r2os,
+    predictionConfidence,
+    confidence: actionSignal.confidence,
+  });
+
+  if (rawActionSignal && shouldApplyBtc14dBearishBreakSellGate({
+    ticker,
+    horizon,
+    recommendation: actionSignal.recommendation,
+    rawRecommendation: rawActionSignal.recommendation,
+    structuralBreakDetected: breakResult.detected,
+    regimeState: currentRegime,
+    predictionConfidence,
+    rawPredictedProb: rawPUp,
+    predictedProb: calPUp,
+    expectedReturn: actionSignal.expectedReturn,
+  })) {
+    actionSignal.recommendation = 'SELL';
+    bearishBreakRecommendationGateActive = true;
+  }
+
+  if (useRawDirectionHybrid && rawActionSignal) {
+    actionSignal.recommendation = rawActionSignal.recommendation;
+    rawActionSignal.confidence = capBtcShortHorizonConfidence({
+      ticker,
+      horizon,
+      structuralBreakDetected: breakResult.detected,
+      outOfSampleR2: r2os,
+      predictionConfidence,
+      confidence: rawActionSignal.confidence,
+    });
   }
 
   return {
@@ -3476,10 +4473,7 @@ export async function computeMarkovDistribution(params: {
     horizon,
     distribution,
     rawDistribution,
-    actionSignal: computeActionSignal(
-      decisionDistribution, currentPrice, undefined, undefined, horizon,
-      recentDailyVol, decisionScenarios, assetProfile.type
-    ),
+    actionSignal,
     scenarios,
     predictionConfidence,
     trajectory: trajectoryResult,
@@ -3503,10 +4497,18 @@ export async function computeMarkovDistribution(params: {
       hmm: hmmMeta ?? null,
       ensemble,
       pr3fDisagreementBlendActive: usePr3fBlend,
+      rawDirectionHybridActive: useRawDirectionHybrid,
       pr3gRecencyWeightingActive: pr3gDecayRate !== undefined,
+      startStateMixtureActive: useStartStateMixture,
       sidewaysSplitActive,
       matureBullCalibrationActive,
-      trendPenaltyOnlyBreakConfidenceActive: trendPenaltyOnlyBreakConfidence === true,
+      trendPenaltyOnlyBreakConfidenceActive: trendPenaltyOnlyBreakConfidence ? true : undefined,
+      divergenceWeightedBreakConfidenceActive: divergenceWeightedBreakConfidence ? true : undefined,
+      bearishBreakRecommendationGateActive: bearishBreakRecommendationGateActive || undefined,
+      regimeSpecificSigmaActive: regimeSpecificSigma === true &&
+        Math.max(...stateWeightsForUp) > (regimeSpecificSigmaThreshold ?? 0.60),
+      breakFallbackCandidateId: breakFallbackCandidate?.id ?? undefined,
+      breakFallbackMode: (breakResult.detected && breakFallbackCandidate) ? breakFallbackCandidate.mode : undefined,
     }
   };
 }
@@ -3523,10 +4525,11 @@ export const MARKOV_DISTRIBUTION_DESCRIPTION = `
 - You want to interpolate between Polymarket anchors using regime-aware Markov transitions
 
 **Commodity tickers:** For commodities, always use the liquid ETF ticker:
-- Gold/GOLD/XAUUSD → use **GLD** (ETF that tracks gold spot price)
+- Gold/XAUUSD → use **GLD** (ETF that tracks gold spot price)
 - Silver/SILVER/XAGUSD → use **SLV**
 - Oil/Crude/WTICOUSD → use **USO**
 - Natural Gas → use **UNG**
+ - Barrick Gold / GOLD stock / $GOLD → use **GOLD** (Barrick equity)
 GLD, SLV, USO etc. are ETFs that replicate the underlying commodity price.
 
 **What it does:**
@@ -3560,8 +4563,8 @@ $50K", or "stay above $60K through March" — those are path-dependent, not
 P(price > X at horizon).
 
 IMPORTANT — Commodity tickers: For commodities, use the liquid ETF ticker for best data availability:
-  Gold → GLD, Silver → SLV, Oil → USO, Natural Gas → UNG, Copper → CPER.
-  GLD is an ETF that replicates the price of gold — querying "GLD" and "gold" should yield the same prediction.
+  Gold/XAUUSD → GLD, Silver/SILVER/XAGUSD → SLV, Oil → USO, Natural Gas → UNG, Copper → CPER.
+  Use GOLD only for Barrick Gold equity; GLD is the commodity-gold proxy.
 
 Set trajectory=true for a day-by-day price forecast with expected price, 90% CI, and P(up) at each day.
 Use trajectoryDays to control the number of days (1–30, default=horizon).
@@ -3650,17 +4653,39 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       && typeof m.outOfSampleR2 === 'number'
       && Number.isFinite(m.outOfSampleR2)
       && m.outOfSampleR2 >= -0.04;
+    const sparseCryptoAnchorAllowed = cryptoShortHorizon
+      && m.validationMetric === 'horizon_return'
+      && m.anchorCoverage.quality === 'sparse'
+      && m.anchorCoverage.trustedAnchors >= 1
+      && typeof m.outOfSampleR2 === 'number'
+      && Number.isFinite(m.outOfSampleR2)
+      && m.outOfSampleR2 >= -0.05;
     const hasPositiveR2 = typeof m.outOfSampleR2 === 'number' && Number.isFinite(m.outOfSampleR2) && m.outOfSampleR2 > 0;
-    const validationAcceptable = hasPositiveR2 || r2NeutralForCrypto;
+    const validationAcceptable = hasPositiveR2 || r2NeutralForCrypto || sparseCryptoAnchorAllowed;
+
+    const COMMODITY_WRAPPER_MIN_R2 = -0.02;
+    const COMMODITY_WRAPPER_MIN_CONFIDENCE = 0.15;
+    const assetProfile = getAssetProfile(result.ticker);
+    const commodityModelOnly =
+      assetProfile.type === 'commodity' &&
+      m.anchorCoverage.trustedAnchors === 0 &&
+      typeof m.outOfSampleR2 === 'number' &&
+      Number.isFinite(m.outOfSampleR2) &&
+      m.outOfSampleR2 >= COMMODITY_WRAPPER_MIN_R2 &&
+      result.predictionConfidence >= COMMODITY_WRAPPER_MIN_CONFIDENCE &&
+      !m.structuralBreakDetected;
+
     const abstainReasons: string[] = [];
 
-    if (m.anchorCoverage.trustedAnchors === 0) {
+    if (m.anchorCoverage.trustedAnchors === 0 && !commodityModelOnly) {
       abstainReasons.push('No trusted terminal prediction-market anchors are available for this horizon.');
-    } else if (m.anchorCoverage.quality !== 'good') {
+    } else if (m.anchorCoverage.trustedAnchors === 0 && commodityModelOnly) {
+      // No abstain reason for anchors — commodity model-only bypass applies.
+    } else if (m.anchorCoverage.quality !== 'good' && !sparseCryptoAnchorAllowed) {
       abstainReasons.push(`Prediction-market anchor coverage is ${m.anchorCoverage.quality}, so calibrated scenario buckets would be overly model-driven.`);
     }
 
-    if (!validationAcceptable) {
+    if (!validationAcceptable && !commodityModelOnly) {
       if (m.outOfSampleR2 === null || !Number.isFinite(m.outOfSampleR2)) {
         abstainReasons.push('Out-of-sample Markov validation is unavailable for this run.');
       } else {
@@ -3669,9 +4694,14 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     }
 
     const canEmitCanonical =
-      m.anchorCoverage.trustedAnchors > 0
-      && m.anchorCoverage.quality === 'good'
-      && validationAcceptable;
+      (m.anchorCoverage.trustedAnchors > 0
+        && m.anchorCoverage.quality === 'good'
+        && validationAcceptable)
+      || sparseCryptoAnchorAllowed
+      || commodityModelOnly;
+
+    const calibrationMode: 'anchored' | 'model_only' = commodityModelOnly ? 'model_only' : 'anchored';
+    const anchorBypassApplied = commodityModelOnly;
 
     // --- Section 1: Decision Card (FIRST — most important) ---
     const decisionCard = [
@@ -3731,15 +4761,20 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     const anchorCount = m.polymarketAnchors;
     const methodNote = anchorCount > 0
       ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history) blended with ${anchorCount} Polymarket anchor(s). Probabilities from calibrated survival function with Monte Carlo confidence intervals.`
-      : `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history). Probabilities from calibrated survival function with Monte Carlo confidence intervals. No prediction market anchors available.`;
+      : commodityModelOnly
+        ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history), model-only commodity emission. No prediction market anchors — distribution is 100% Markov-model driven.`
+        : `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history). Probabilities from calibrated survival function with Monte Carlo confidence intervals. No prediction market anchors available.`;
 
     // --- Section 4: Header and metadata ---
+    const mixingLine = commodityModelOnly
+      ? 'Calibration: model-only (commodity bypass, no anchors)'
+      : `Mixing: ${pct(m.mixingTimeWeight)}% Markov / ${pct(1 - m.mixingTimeWeight)}% Anchors`;
     const header = [
       '',
       `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
       `Current: $${fmt(result.currentPrice)} | Regime: ${m.regimeState}`,
       `Anchors: ${m.polymarketAnchors} trusted | Anchor quality: ${m.anchorCoverage.quality.toUpperCase()}`,
-      `Mixing: ${pct(m.mixingTimeWeight)}% Markov / ${pct(1 - m.mixingTimeWeight)}% Anchors`,
+      mixingLine,
     ];
 
     // --- Section 4: Warnings ---
@@ -3801,6 +4836,15 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       trajectorySection.push('    The CI range is the honest measure of uncertainty.');
     }
 
+    const forecastHint = buildForecastHint({
+      canEmitCanonical,
+      ticker: result.ticker,
+      horizon: result.horizon,
+      expectedReturn: result.actionSignal.expectedReturn,
+      mixingTimeWeight: m.mixingTimeWeight,
+      predictionConfidence: result.predictionConfidence,
+    });
+
     const report = canEmitCanonical
       ? [
         ...decisionCard,
@@ -3832,6 +4876,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       manualSynthesisForbidden: !canEmitCanonical,
       abstainReasons,
       report,
+      forecastHint,
       canonical: {
         ticker: result.ticker,
         currentPrice: result.currentPrice,
@@ -3845,13 +4890,15 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           anchorWarning: m.anchorCoverage.warning || null,
           regimeState: m.regimeState,
           mixingTimeWeight: m.mixingTimeWeight,
-          markovWeight: m.mixingTimeWeight,
-          anchorWeight: 1 - m.mixingTimeWeight,
+          markovWeight: commodityModelOnly ? 1 : m.mixingTimeWeight,
+          anchorWeight: commodityModelOnly ? 0 : 1 - m.mixingTimeWeight,
           outOfSampleR2: m.outOfSampleR2,
           structuralBreakDetected: m.structuralBreakDetected,
           structuralBreakDivergence: m.structuralBreakDivergence,
           ciWidened: m.ciWidened,
           predictionConfidence: result.predictionConfidence,
+          calibrationMode,
+          anchorBypassApplied,
           status: canEmitCanonical ? 'ok' : 'abstain',
           canEmitCanonical,
           manualSynthesisForbidden: !canEmitCanonical,

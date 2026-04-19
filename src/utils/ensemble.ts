@@ -24,6 +24,7 @@ export interface OtherSignals {
   sentimentScore?: number;    // -1 to +1 (-1=bearish, 0=neutral, +1=bullish)
   fundamentalReturn?: number; // analyst 1yr return scaled to horizon (decimal)
   optionsSkew?: number;       // -1/0/+1 (bearish/neutral/bullish put-call skew)
+  markovReturn?: number;      // Markov expected return over the horizon (decimal)
   horizonDays?: number;       // for scaling fundamentalReturn (default 7)
 }
 
@@ -213,6 +214,13 @@ export function computeEnsemble(
     };
   }
 
+  if (others.markovReturn !== undefined && !Number.isNaN(others.markovReturn)) {
+    available['markov'] = {
+      weight: 0.20,
+      signal: others.markovReturn,
+    };
+  }
+
   // Normalise weights to sum to 1.
   const totalRaw = Object.values(available).reduce((acc, e) => acc + e.weight, 0);
   const weights: Record<string, number> = {};
@@ -362,7 +370,8 @@ export function runEnsemble(
     (markets.length > 0 ? 1 : 0) +
     (others.sentimentScore !== undefined && !Number.isNaN(others.sentimentScore) ? 1 : 0) +
     (others.fundamentalReturn !== undefined && !Number.isNaN(others.fundamentalReturn) ? 1 : 0) +
-    (others.optionsSkew !== undefined && !Number.isNaN(others.optionsSkew) ? 1 : 0);
+    (others.optionsSkew !== undefined && !Number.isNaN(others.optionsSkew) ? 1 : 0) +
+    (others.markovReturn !== undefined && !Number.isNaN(others.markovReturn) ? 1 : 0);
 
   // Step 7: Whale count.
   const whaleCount = markets.filter((m) => m.priceSpikeDetected).length;

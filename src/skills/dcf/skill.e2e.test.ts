@@ -7,7 +7,7 @@
  * The agent is invoked ONCE via beforeAll; all tests share the same result
  * to avoid paying the LLM cost multiple times.
  *
- * Model: ollama:nemotron-3-nano:30b-cloud (override via E2E_MODEL env var)
+ * Model: ollama:minimax-m2.7:cloud (override via E2E_MODEL env var)
  * Timeout: E2E_TIMEOUT_MS (default 300 s)
  */
 import { describe, expect, beforeAll } from 'bun:test';

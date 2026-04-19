@@ -239,6 +239,33 @@ describe('computeEnsemble', () => {
     expect(weights['pm']).toBeCloseTo(1, 5);
     expect(forecastReturn).toBeCloseTo(0.03, 5);
   });
+
+  it('includes Markov return as an auxiliary signal when provided', () => {
+    const others: OtherSignals = {
+      markovReturn: 0.03,
+      horizonDays: 7,
+    };
+
+    const { forecastReturn, weights } = computeEnsemble(0.02, 1.0, others);
+    expect(weights['markov']).toBeDefined();
+    expect(weights['pm']).toBeDefined();
+    expect(Object.values(weights).reduce((a, b) => a + b, 0)).toBeCloseTo(1, 5);
+    expect(forecastReturn).toBeGreaterThan(0.02);
+  });
+
+  it('matches current behavior when markovReturn is absent', () => {
+    const others: OtherSignals = {
+      sentimentScore: 0.5,
+      fundamentalReturn: 0.12,
+      optionsSkew: 1,
+      horizonDays: 7,
+    };
+
+    const withoutMarkov = computeEnsemble(0.02, 1.0, others);
+    const withUndefinedMarkov = computeEnsemble(0.02, 1.0, { ...others, markovReturn: undefined });
+    expect(withUndefinedMarkov.forecastReturn).toBeCloseTo(withoutMarkov.forecastReturn, 8);
+    expect(withUndefinedMarkov.weights).toEqual(withoutMarkov.weights);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -404,6 +431,17 @@ describe('runEnsemble', () => {
       : { signal: 0 };
     const { pmSignal } = runEnsemble(100, markets, others);
     expect(pmSignal).toBeCloseTo(signal, 5);
+  });
+
+  it('runEnsemble reflects Markov contribution when markovReturn is present', () => {
+    const withoutMarkov = runEnsemble(100, markets, others);
+    const withMarkov = runEnsemble(100, markets, {
+      ...others,
+      markovReturn: 0.025,
+    });
+
+    expect(withMarkov.forecastReturn).not.toBeCloseTo(withoutMarkov.forecastReturn, 8);
+    expect(withMarkov.qualityScore).toBeGreaterThan(withoutMarkov.qualityScore);
   });
 });
 

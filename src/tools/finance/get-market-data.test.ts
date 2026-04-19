@@ -20,6 +20,7 @@ mock.module('../../agent/prompts.js', () => ({
 
 const { createGetMarketData } = await import('./get-market-data.js');
 const { api } = await import('./api.js');
+const { extractFirstTicker } = await import('./get-market-data.js');
 
 function makeToolCallResponse(name: string, args: Record<string, unknown>) {
   return {
@@ -49,6 +50,30 @@ describe('createGetMarketData', () => {
   test('returns a tool with name get_market_data', () => {
     const tool = createGetMarketData('test-model');
     expect(tool.name).toBe('get_market_data');
+  });
+});
+
+describe('extractFirstTicker — commodity proxy routing', () => {
+  test('routes gold price queries to GLD proxy', () => {
+    expect(extractFirstTicker('gold price forecast')).toBe('GLD');
+    expect(extractFirstTicker('GOLD 30-day forecast')).toBe('GLD');
+    expect(extractFirstTicker('Provide a GOLD forecast based on markov chain for the next 30 days')).toBe('GLD');
+  });
+
+  test('routes explicit Barrick context to GOLD equity', () => {
+    expect(extractFirstTicker('Barrick Gold stock forecast')).toBe('GOLD');
+    expect(extractFirstTicker('$GOLD earnings outlook')).toBe('GOLD');
+  });
+
+  test('routes silver intent to SLV proxy', () => {
+    expect(extractFirstTicker('silver price outlook')).toBe('SLV');
+    expect(extractFirstTicker('SILVER forecast')).toBe('SLV');
+    expect(extractFirstTicker('XAGUSD 30-day forecast')).toBe('SLV');
+    expect(extractFirstTicker('Provide a SILVER forecast based on markov chain for the next 30 days')).toBe('SLV');
+  });
+
+  test('keeps explicit non-GOLD miner tickers ahead of Barrick wording heuristics', () => {
+    expect(extractFirstTicker('GDX gold miner ETF forecast')).toBe('GDX');
   });
 });
 

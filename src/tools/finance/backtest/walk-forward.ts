@@ -9,6 +9,8 @@ import {
   computeMarkovDistribution,
   getAssetProfile,
   type MarkovDistributionResult,
+  type BreakFallbackCandidate,
+  type DivergencePenaltySchedule,
 } from '../markov-distribution.js';
 import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
 
@@ -34,6 +36,8 @@ export interface WalkForwardConfig {
   cryptoShortHorizonKappaMultiplier?: number;
   /** Optional flag: use raw P(up) for decision generation (PR3 lever ablation) */
   cryptoShortHorizonRawDecisionAblation?: boolean;
+  /** Optional flag: use raw direction for recommendation while keeping calibrated probabilities/CI (Phase B ablation) */
+  rawDirectionHybrid?: boolean;
   /** Optional flag: use PR3F crypto short-horizon disagreement prior */
   pr3fCryptoShortHorizonDisagreementPrior?: boolean;
   /** Optional override for crypto short-horizon pUp floor clamp (PR3 Stage 2 ablation) */
@@ -56,6 +60,20 @@ export interface WalkForwardConfig {
   postBreakWindowSize?: number;
   /** Optional flag: keep break confidence penalty only in trending break contexts (Phase 4 ablation) */
   trendPenaltyOnlyBreakConfidence?: boolean;
+  /** Phase 5 experimental: hybrid structural-break fallback candidate (backtest-only) */
+  breakFallbackCandidate?: BreakFallbackCandidate;
+  /** Phase 6 experimental: use divergence-weighted break confidence penalties (backtest-only) */
+  divergenceWeightedBreakConfidence?: boolean;
+  /** Phase 6 experimental: penalty schedule for divergence-weighted mode. Defaults to DEFAULT_DIVERGENCE_PENALTY_SCHEDULE. */
+  divergencePenaltySchedule?: DivergencePenaltySchedule;
+  /** Phase 7 experimental: use dominant regime's own sigma instead of mixture sigma when regime weights are concentrated (backtest-only) */
+  regimeSpecificSigma?: boolean;
+  /** Phase 7 experimental: minimum max(stateWeight) to activate regime-specific sigma. Defaults to 0.60. */
+  regimeSpecificSigmaThreshold?: number;
+  /** Phase D experimental: BTC-only override for regime classification return threshold multiplier */
+  btcReturnThresholdMultiplier?: number;
+  /** Phase C experimental: BTC-only override for structural break divergence threshold */
+  btcBreakDivergenceThreshold?: number;
 }
 
 export interface WalkForwardResult {
@@ -105,6 +123,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         polymarketMarkets: [],  // pure Markov, no anchors
         cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
         cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
+        rawDirectionHybrid: config.rawDirectionHybrid,
         pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
         cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
         cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
@@ -116,6 +135,13 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         sidewaysSplit: config.sidewaysSplit,
         transitionDecayOverride: config.transitionDecayOverride,
         trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
+        breakFallbackCandidate: config.breakFallbackCandidate,
+        divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,
+        divergencePenaltySchedule: config.divergencePenaltySchedule,
+        regimeSpecificSigma: config.regimeSpecificSigma,
+        regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
+        btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
+        btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
       });
 
       const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
@@ -134,6 +160,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             polymarketMarkets: [],
             cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
             cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
+            rawDirectionHybrid: config.rawDirectionHybrid,
             pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
             cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
             cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
@@ -145,6 +172,13 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             sidewaysSplit: config.sidewaysSplit,
             transitionDecayOverride: config.transitionDecayOverride,
             trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
+            breakFallbackCandidate: config.breakFallbackCandidate,
+            divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,
+            divergencePenaltySchedule: config.divergencePenaltySchedule,
+            regimeSpecificSigma: config.regimeSpecificSigma,
+            regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
+            btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
+            btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
           });
         }
       }
@@ -161,6 +195,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
       let decisionSource: DecisionSource = 'default';
       if (result.metadata.pr3fDisagreementBlendActive) {
         decisionSource = 'crypto-short-horizon-disagreement-blend';
+      } else if (result.metadata.rawDirectionHybridActive) {
+        decisionSource = 'crypto-short-horizon-raw-direction-hybrid';
       } else if (result.metadata.pr3gRecencyWeightingActive) {
         decisionSource = 'crypto-short-horizon-recency';
       } else if (
@@ -203,6 +239,11 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         sidewaysSplitActive: result.metadata.sidewaysSplitActive,
         matureBullCalibrationActive: result.metadata.matureBullCalibrationActive,
         trendPenaltyOnlyBreakConfidenceActive: result.metadata.trendPenaltyOnlyBreakConfidenceActive,
+        divergenceWeightedBreakConfidenceActive: result.metadata.divergenceWeightedBreakConfidenceActive,
+        bearishBreakRecommendationGateActive: result.metadata.bearishBreakRecommendationGateActive,
+        breakFallbackCandidateId: result.metadata.breakFallbackCandidateId,
+        breakFallbackMode: result.metadata.breakFallbackMode,
+        regimeSpecificSigmaActive: result.metadata.regimeSpecificSigmaActive,
       });
     } catch (err) {
       errors.push({ t, error: String(err) });

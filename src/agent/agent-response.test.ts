@@ -27,6 +27,13 @@ import { Scratchpad } from './scratchpad.js';
 // ---------------------------------------------------------------------------
 // Mutable mock state — reset before each test.
 // ---------------------------------------------------------------------------
+type MockToolCall = {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  type: 'tool_call';
+};
+
 const mockState = {
   /** Number of times streamCallLlm was called. Key regression metric. */
   streamCallCount: 0,
@@ -47,7 +54,7 @@ const mockState = {
    * a second mock.module() call — which would permanently contaminate the
    * module registry for subsequent test files in the same Bun worker.
    */
-  callLlmQueue: [] as Array<{ content: string; toolCalls: typeof ST_TOOL_CALL[] }>,
+  callLlmQueue: [] as Array<{ content: string; toolCalls: MockToolCall[] }>,
 };
 
 const ST_TOOL_CALL = {
@@ -125,10 +132,52 @@ mock.module('../memory/index.js', () => ({
   },
 }));
 
+mock.module('../tools/registry.js', () => {
+  const sequentialThinkingTool = {
+    name: 'sequential_thinking',
+    invoke: async () => JSON.stringify({ ok: true }),
+  };
+
+  const markovDistributionTool = {
+    name: 'markov_distribution',
+    invoke: async () => JSON.stringify({
+      data: {
+        _tool: 'markov_distribution',
+        status: 'abstain',
+        abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
+        canonical: {
+          ticker: 'BTC-USD',
+          horizon: 14,
+          diagnostics: {
+            trustedAnchors: 0,
+            totalAnchors: 5,
+            anchorQuality: 'none',
+          },
+        },
+        forecastHint: {
+          usage: 'forecast_only',
+          markovReturn: 0.0103,
+        },
+      },
+    }),
+  };
+
+  return {
+    getTools: () => [sequentialThinkingTool, markovDistributionTool],
+    buildToolDescriptions: () => 'mock tool descriptions',
+  };
+});
+
 // ---------------------------------------------------------------------------
 // Dynamic import AFTER mocks are registered.
 // ---------------------------------------------------------------------------
-const { Agent, buildAbstainingMarkovAnswer, buildDistributionWarningPrefix } = await import('./agent.js');
+const {
+  Agent,
+  buildAbstainingMarkovAnswer,
+  buildAbstainingBtcShortHorizonForecastAnswer,
+  buildDistributionWarningPrefix,
+  buildForecastDisagreementPrefix,
+} = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
 // Test environment helpers
@@ -246,6 +295,33 @@ describe('Agent — streamCallLlm used for max-iterations synthesis', () => {
     const done = events.find((e) => e.type === 'done') as DoneEvent | undefined;
     expect(done?.answer).toContain('synthesis output for max iterations');
   });
+
+  it('uses the BTC abstain-preserving answer instead of synthesis output at max iterations', async () => {
+    mockState.callLlmQueue = [
+      { content: '', toolCalls: [ST_TOOL_CALL] },
+      {
+        content: '',
+        toolCalls: [
+          {
+            id: 'm1',
+            name: 'markov_distribution',
+            args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+            type: 'tool_call' as const,
+          },
+        ],
+      },
+    ];
+    mockState.streamChunks = ['this synthesis output should be bypassed'];
+    mockState.streamShouldThrow = true;
+
+    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 1, memoryEnabled: false });
+    const events = await collectEvents(agent.run('Provide a BTC forecast for the next 14 days'));
+    const done = events.find((e) => e.type === 'done') as DoneEvent | undefined;
+
+    expect(done?.answer).toContain('Model Abstained');
+    expect(done?.answer).toContain('Decision guidance');
+    expect(done?.answer).not.toContain('this synthesis output should be bypassed');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -338,6 +414,109 @@ describe('buildAbstainingMarkovAnswer', () => {
   });
 });
 
+describe('buildAbstainingBtcShortHorizonForecastAnswer', () => {
+  it('returns a no-trade abstain answer for BTC short-horizon forecast queries', () => {
+    const scratchpad = new Scratchpad('btc short-horizon abstain test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 14 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'abstain',
+          abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
+          canonical: {
+            ticker: 'BTC-USD',
+            horizon: 14,
+            currentPrice: 75785,
+            diagnostics: {
+              trustedAnchors: 0,
+              totalAnchors: 5,
+              anchorQuality: 'none',
+              outOfSampleR2: 0.162,
+              structuralBreakDetected: true,
+              structuralBreakDivergence: 0.346,
+              predictionConfidence: 0.19,
+            },
+          },
+        },
+      }),
+    );
+
+    const answer = buildAbstainingBtcShortHorizonForecastAnswer(
+      'Provide a BTC forecast for the next 14 days',
+      scratchpad.getToolCallRecords(),
+    );
+
+    expect(answer).toContain('BTC-USD 14-Day Probability Distribution: Model Abstained');
+    expect(answer).toContain('Decision guidance');
+    expect(answer).toContain('no-trade / no-calibrated-edge');
+    expect(answer).not.toContain('point forecast');
+  });
+
+  it('returns null for non-BTC or longer-horizon forecast queries', () => {
+    const scratchpad = new Scratchpad('non-btc abstain test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'ETH-USD', horizon: 14 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'abstain',
+          canonical: {
+            ticker: 'ETH-USD',
+            horizon: 14,
+            diagnostics: {
+              trustedAnchors: 0,
+              totalAnchors: 0,
+              anchorQuality: 'none',
+            },
+          },
+        },
+      }),
+    );
+
+    expect(
+      buildAbstainingBtcShortHorizonForecastAnswer(
+        'Provide an ETH forecast for the next 14 days',
+        scratchpad.getToolCallRecords(),
+      ),
+    ).toBeNull();
+  });
+
+  it('treats BTC next-week forecast phrasing as a short-horizon abstain case', () => {
+    const scratchpad = new Scratchpad('btc next week abstain test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 5 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'abstain',
+          abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
+          canonical: {
+            ticker: 'BTC-USD',
+            horizon: 5,
+            diagnostics: {
+              trustedAnchors: 0,
+              totalAnchors: 3,
+              anchorQuality: 'none',
+            },
+          },
+        },
+      }),
+    );
+
+    const answer = buildAbstainingBtcShortHorizonForecastAnswer(
+      'Provide a BTC forecast for next week',
+      scratchpad.getToolCallRecords(),
+    );
+
+    expect(answer).toContain('Model Abstained');
+    expect(answer).toContain('Decision guidance');
+  });
+});
+
 describe('buildDistributionWarningPrefix', () => {
   it('returns warning prefix for distribution queries without successful markov output', () => {
     const answer = buildDistributionWarningPrefix(
@@ -395,6 +574,69 @@ describe('buildDistributionWarningPrefix', () => {
     expect(
       buildDistributionWarningPrefix(
         'What is the bitcoin probability distribution in 7 days?',
+        scratchpad.getToolCallRecords(),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('buildForecastDisagreementPrefix', () => {
+  it('returns a mixed-evidence warning for BTC short-horizon disagreement', () => {
+    const scratchpad = new Scratchpad('btc disagreement test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 14 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'ok',
+          canonical: {
+            actionSignal: { recommendation: 'BUY', expectedReturn: 0.032 },
+            diagnostics: { markovWeight: 1 },
+          },
+        },
+      }),
+    );
+    scratchpad.addToolResult(
+      'polymarket_forecast',
+      { ticker: 'BTC-USD', horizon_days: 14 },
+      JSON.stringify({ data: { result: 'Forecast return: -0.4%\nGrade: B' } }),
+    );
+
+    const prefix = buildForecastDisagreementPrefix(
+      'Provide a BTC forecast for the next 14 days',
+      scratchpad.getToolCallRecords(),
+    );
+
+    expect(prefix).toContain('BTC short-horizon signals are mixed');
+    expect(prefix).toContain('moderated confidence');
+  });
+
+  it('returns null when BTC short-horizon signals do not disagree', () => {
+    const scratchpad = new Scratchpad('btc aligned test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 7 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'ok',
+          canonical: {
+            actionSignal: { recommendation: 'BUY', expectedReturn: 0.025 },
+            diagnostics: { markovWeight: 1 },
+          },
+        },
+      }),
+    );
+    scratchpad.addToolResult(
+      'polymarket_forecast',
+      { ticker: 'BTC-USD', horizon_days: 7 },
+      JSON.stringify({ data: { result: 'Forecast return: +1.2%\nGrade: B' } }),
+    );
+
+    expect(
+      buildForecastDisagreementPrefix(
+        'Provide a BTC forecast for the next 7 days',
         scratchpad.getToolCallRecords(),
       ),
     ).toBeNull();

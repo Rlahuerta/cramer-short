@@ -107,9 +107,28 @@ const { Agent } = await import('./agent.js');
 const {
   inferDistributionTicker,
   inferDistributionHorizon,
+  isExplicitTerminalDistributionQuery,
   shouldForceMarkovDistribution,
   inferTrajectoryRequest,
-  buildForcedMarkovArgs,
+   buildForcedMarkovArgs,
+   isCryptoForecastQuery,
+   isNonCryptoForecastQuery,
+   buildForcedNonCryptoMarketDataArgs,
+   buildForcedNonCryptoPolymarketForecastArgs,
+   shouldForceNonCryptoForecastFallback,
+   extractCurrentPriceFromToolCalls,
+  extractSentimentScoreFromToolCalls,
+  buildForcedMarketDataArgs,
+  buildForcedSocialSentimentArgs,
+   buildForcedPolymarketForecastArgs,
+   extractMarkovReturnFromToolCalls,
+   shouldInjectBtcShortHorizonMixedEvidencePrompt,
+   shouldRerunPolymarketForecastWithMarkov,
+  buildForcedOnchainArgs,
+  buildForcedFixedIncomeArgs,
+  buildForcedCryptoForecastMarkovArgs,
+  shouldForceCryptoForecastTools,
+  shouldPreserveAbstainingBtcShortHorizonForecast,
 } = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
@@ -230,6 +249,106 @@ describe('Agent', () => {
       expect(inferDistributionHorizon('What is the probability distribution for BTC-USD in 7 trading days?')).toBe(7);
     });
 
+    describe('shouldInjectBtcShortHorizonMixedEvidencePrompt', () => {
+      it('returns true for BTC short-horizon disagreement', () => {
+        const results = [
+          '### markov_distribution(ticker=BTC-USD)',
+          '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+          '### polymarket_forecast(ticker=BTC-USD)',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 14 days', results)).toBe(true);
+      });
+
+      it('returns false for non-BTC assets', () => {
+        const results = [
+          '### markov_distribution(ticker=ETH-USD)',
+          '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+          '### polymarket_forecast(ticker=ETH-USD)',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide an ETH forecast for the next 14 days', results)).toBe(false);
+      });
+
+      it('returns false for BTC horizons above 14 days', () => {
+        const results = [
+          '### markov_distribution(ticker=BTC-USD)',
+          '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032}}}}',
+          '### polymarket_forecast(ticker=BTC-USD)',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 30 days', results)).toBe(false);
+      });
+
+      it('returns false for unrelated BUY text without bullish Markov payload', () => {
+        const results = [
+          '### some_other_tool()',
+          '{"recommendation":"BUY"}',
+          '### polymarket_forecast(ticker=BTC-USD)',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 7 days', results)).toBe(false);
+      });
+
+      it('returns false for unrelated bearish forecast text without matching BTC disagreement', () => {
+        const results = [
+          '### markov_distribution(ticker=BTC-USD)',
+          '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"SELL","expectedReturn":-0.012}}}}',
+          '### unrelated_text()',
+          'Forecast return: -0.4%\nGrade: B',
+        ].join('\n');
+        expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 7 days', results)).toBe(false);
+      });
+    });
+
+    it('infers month and quarter horizons for non-crypto forecast phrasing', () => {
+      expect(inferDistributionHorizon('SPY price target next month')).toBe(21);
+      expect(inferDistributionHorizon('Will GLD rally next quarter?')).toBe(63);
+      expect(inferDistributionHorizon('Where will oil prices be in 2 months?')).toBe(42);
+      expect(inferDistributionHorizon('QQQ outlook in 2 quarters')).toBe(126);
+    });
+
+    it('infers quarter-end horizons relative to a provided reference date', () => {
+      const referenceDate = new Date('2026-04-17T00:00:00.000Z');
+
+      expect(inferDistributionHorizon('Will silver hit $30 by end of Q2?', referenceDate)).toBe(52);
+      expect(inferDistributionHorizon('Where will SPY trade through Q3 2026?', referenceDate)).toBe(118);
+    });
+
+    it('treats same-day quarter-end requests as a 1-day horizon instead of falling through', () => {
+      const referenceDate = new Date('2026-06-30T00:00:00.000Z');
+
+      expect(inferDistributionHorizon('Will silver hit $30 by end of Q2?', referenceDate)).toBe(1);
+      expect(inferDistributionHorizon('Will silver hit $30 by end of Q2 2026?', referenceDate)).toBe(1);
+    });
+
+    it('self-corrects commodity gold and silver distribution queries to proxy tickers', () => {
+      expect(inferDistributionTicker('What is the probability distribution for gold price in 30 trading days?')).toBe('GLD');
+      expect(inferDistributionTicker('What is the probability distribution for silver price in 30 trading days?')).toBe('SLV');
+      expect(buildForcedMarkovArgs('What is the probability distribution for silver price in 30 trading days?')).toEqual({
+        ticker: 'SLV',
+        horizon: 30,
+      });
+    });
+
+    it('routes the open-ended GOLD and SILVER markov prompt shape through commodity proxies', () => {
+      expect(inferDistributionTicker('Provide a GOLD forecast based on markov chain for the next 30 days')).toBe('GLD');
+      expect(buildForcedMarkovArgs('Provide a GOLD forecast based on markov chain for the next 30 days')).toEqual({
+        ticker: 'GLD',
+        horizon: 30,
+      });
+
+      expect(inferDistributionTicker('Provide a SILVER forecast based on markov chain for the next 30 days')).toBe('SLV');
+      expect(buildForcedMarkovArgs('Provide a SILVER forecast based on markov chain for the next 30 days')).toEqual({
+        ticker: 'SLV',
+        horizon: 30,
+      });
+    });
+
+    it('preserves explicit Barrick Gold equity queries as GOLD ticker', () => {
+      expect(inferDistributionTicker('What is the probability distribution for Barrick Gold stock in 30 trading days?')).toBe('GOLD');
+    });
+
     it('flags explicit terminal distribution queries for forced markov routing', () => {
       expect(shouldForceMarkovDistribution(
         'What is the probability distribution for BTC-USD in 7 trading days? Use the Markov distribution methodology with terminal threshold markets only.',
@@ -240,6 +359,12 @@ describe('Agent', () => {
         'What is the probability distribution for BTC-USD in 7 trading days?',
         [{ tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7 }, result: '{"data":{"_tool":"markov_distribution","status":"abstain"}}' }],
       )).toBe(false);
+    });
+
+    it('treats markov chain forecast wording as a forecast rather than an explicit distribution query', () => {
+      expect(isExplicitTerminalDistributionQuery('Provide an NVDA forecast based on markov chain for the next 7 days')).toBe(true);
+      expect(isNonCryptoForecastQuery('Provide an NVDA forecast based on markov chain for the next 7 days')).toBe(true);
+      expect(shouldForceMarkovDistribution('Provide an NVDA forecast based on markov chain for the next 7 days', [])).toBe(true);
     });
 
     it('inferTrajectoryRequest detects explicit trajectory/day-by-day queries', () => {
@@ -274,6 +399,896 @@ describe('Agent', () => {
       expect(buildForcedMarkovArgs('What is the probability distribution for BTC-USD in 7 trading days?')).toEqual({
         ticker: 'BTC-USD',
         horizon: 7,
+      });
+    });
+
+    it('detects crypto forecast queries without matching explicit distribution requests', () => {
+      expect(isCryptoForecastQuery('Provide a BTC forecast for the next 7 days')).toBe(true);
+      expect(isCryptoForecastQuery('What will ETH trade at next week?')).toBe(true);
+      expect(isCryptoForecastQuery('Use the probability_assessment skill for BTC price movement in the next 30 days')).toBe(false);
+      expect(isCryptoForecastQuery('What is the market cap of BTC?')).toBe(false);
+      expect(isCryptoForecastQuery('What is the probability distribution for BTC-USD in 7 days?')).toBe(false);
+      expect(isCryptoForecastQuery('Provide an AAPL forecast for the next 7 days')).toBe(false);
+    });
+
+    it('builds forced crypto enrichment args for BTC forecasts', () => {
+      expect(buildForcedMarketDataArgs('Provide a BTC forecast for the next 7 days')).toEqual({
+        query: 'Current crypto price snapshot for BTC',
+      });
+
+      expect(buildForcedSocialSentimentArgs('Provide a BTC forecast for the next 7 days')).toEqual({
+        ticker: 'BTC',
+        include_fear_greed: true,
+        limit: 25,
+      });
+
+      expect(buildForcedOnchainArgs('Provide a BTC forecast for the next 7 days')).toEqual({
+        ticker: 'BTC',
+        metrics: ['market', 'sentiment'],
+      });
+
+      expect(buildForcedFixedIncomeArgs()).toEqual({
+        series: ['treasury_yields', 'yield_curve'],
+      });
+
+      expect(buildForcedCryptoForecastMarkovArgs('Provide a BTC forecast for the next 7 days')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        trajectory: true,
+        trajectoryDays: 7,
+      });
+
+      expect(buildForcedCryptoForecastMarkovArgs('Provide a BTC forecast for the next 30 days')).toBeNull();
+      expect(buildForcedOnchainArgs('Provide a crypto forecast for the next 7 days')).toBeNull();
+    });
+
+    it('buildForcedCryptoForecastMarkovArgs uses BTC-only next week fallback of 5 trading days', () => {
+      expect(buildForcedCryptoForecastMarkovArgs('Provide a BTC forecast for next week')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 5,
+        trajectory: true,
+        trajectoryDays: 5,
+      });
+
+      expect(buildForcedCryptoForecastMarkovArgs('Give me a BTC prediction over the next week')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 5,
+        trajectory: true,
+        trajectoryDays: 5,
+      });
+
+      // ETH "next week" must not get the BTC-only fallback
+      expect(buildForcedCryptoForecastMarkovArgs('Provide an ETH forecast for next week')).toBeNull();
+
+      // Non-crypto "next week" must not get the fallback
+      expect(buildForcedCryptoForecastMarkovArgs('Provide an AAPL forecast for next week')).toBeNull();
+    });
+
+    it('extracts current price, sentiment score, and Markov return from prior tool results for forced polymarket args', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: {
+                ticker: 'BTC',
+                price: 73300,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'social_sentiment',
+          args: { ticker: 'BTC', include_fear_greed: true, limit: 25 },
+          result: JSON.stringify({
+            data: {
+              result: '## Overall: 📈 Bullish (score +42/100)',
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                actionSignal: {
+                  expectedReturn: 0.04,
+                },
+                diagnostics: {
+                  markovWeight: 0.6,
+                },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(extractCurrentPriceFromToolCalls(toolCalls)).toBe(73300);
+      expect(extractSentimentScoreFromToolCalls(toolCalls)).toBe(0.42);
+      expect(extractMarkovReturnFromToolCalls(toolCalls)).toBeCloseTo(0.024, 8);
+      expect(buildForcedPolymarketForecastArgs('Provide a BTC forecast for the next 7 days', toolCalls)).toEqual({
+        ticker: 'BTC',
+        horizon_days: 7,
+        current_price: 73300,
+        sentiment_score: 0.42,
+        markov_return: 0.024,
+      });
+    });
+
+    it('scopes crypto forced polymarket args to the resolved asset and horizon', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for ETH' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_ETH: {
+                ticker: 'ETH',
+                price: 3900,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'social_sentiment',
+          args: { ticker: 'ETH', include_fear_greed: true, limit: 25 },
+          result: JSON.stringify({
+            data: {
+              result: '## Overall: 📈 Bullish (score +42/100)',
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'ETH-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                actionSignal: { expectedReturn: 0.08 },
+                diagnostics: { markovWeight: 0.5 },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedPolymarketForecastArgs('Provide a BTC forecast for the next 7 days', toolCalls)).toEqual({
+        ticker: 'BTC',
+        horizon_days: 7,
+      });
+    });
+
+    it('builds stable non-crypto forced args from resolved asset identity and explicit market-data query', () => {
+      const query = 'Provide a GOLD forecast for next month';
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'GLD current price' },
+          result: JSON.stringify({
+            data: {
+              get_stock_price_GLD: {
+                ticker: 'GLD',
+                price: 312.45,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'GLD', horizon: 21 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.012,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedNonCryptoMarketDataArgs(query)).toEqual({
+        query: 'GLD current price',
+      });
+
+      expect(buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls)).toEqual({
+        ticker: 'GLD',
+        horizon_days: 21,
+        current_price: 312.45,
+        markov_return: 0.012,
+      });
+    });
+
+    it('accepts Robinhood-style lastTradePrice strings for non-crypto fallback price enrichment', () => {
+      const query = 'Provide a GOLD forecast for next month';
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'GLD current price' },
+          result: JSON.stringify({
+            data: {
+              get_stock_price_GLD: {
+                symbol: 'GLD',
+                lastTradePrice: '295.00',
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'GLD', horizon: 21 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.012,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls)).toEqual({
+        ticker: 'GLD',
+        horizon_days: 21,
+        current_price: 295,
+        markov_return: 0.012,
+      });
+    });
+
+    it('falls back to abstaining Markov currentPrice after an explicit current-price query returned no usable price', () => {
+      const query = 'Provide a GOLD forecast for next month';
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'GLD current price' },
+          result: JSON.stringify({ data: {} }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'GLD', horizon: 21 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              canonical: {
+                currentPrice: 294.87,
+              },
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.012,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls)).toEqual({
+        ticker: 'GLD',
+        horizon_days: 21,
+        current_price: 294.87,
+        markov_return: 0.012,
+      });
+    });
+
+    it('ignores Markov return when the structured Markov payload abstains or is missing', () => {
+      expect(extractMarkovReturnFromToolCalls([])).toBeNull();
+
+      expect(extractMarkovReturnFromToolCalls([
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.006,
+                confidenceScore: 0.18,
+                calibratedDistribution: false,
+              },
+              canonical: {
+                actionSignal: null,
+                diagnostics: {
+                  markovWeight: 0.4,
+                },
+              },
+            },
+          }),
+        },
+      ])).toBe(0.006);
+    });
+
+    it('reruns polymarket_forecast only when a Markov signal exists but prior forecast args were not Markov-enriched', () => {
+      const toolCalls = [
+        { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: '{}' },
+        { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: '{}' },
+        { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                actionSignal: { expectedReturn: 0.04 },
+                diagnostics: { markovWeight: 0.6 },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldRerunPolymarketForecastWithMarkov('Provide a BTC forecast for the next 7 days', toolCalls)).toBe(true);
+
+      expect(shouldRerunPolymarketForecastWithMarkov('Provide a BTC forecast for the next 7 days', [
+        toolCalls[0]!,
+        toolCalls[1]!,
+        { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42, markov_return: 0.024 }, result: '{}' },
+        toolCalls[3]!,
+      ])).toBe(false);
+
+      expect(shouldRerunPolymarketForecastWithMarkov('Provide a BTC forecast for the next 7 days', [
+        toolCalls[0]!,
+        toolCalls[1]!,
+        { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.006,
+                confidenceScore: 0.18,
+                calibratedDistribution: false,
+              },
+              canonical: {
+                actionSignal: null,
+                diagnostics: { markovWeight: 0.4 },
+              },
+            },
+          }),
+        },
+      ])).toBe(true);
+    });
+
+    it('forces crypto forecast tools only when required enrichment is missing', () => {
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: '{}' },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: '{}' },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: '{}' },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: '{}' },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for ETH' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_ETH: { price: 3900 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'ETH', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'ETH', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'ETH', metrics: { activeAddresses: 650000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+          { tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok', canonical: { actionSignal: {}, diagnostics: {} } } }) },
+        ],
+      )).toBe(false);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 30 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 30, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 78100 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(false);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 30, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 75250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: 'Error: rate limit' },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.35 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: 'Error: upstream failed' },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+        ],
+      )).toBe(true);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+          { tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+        ],
+      )).toBe(false);
+
+      expect(shouldForceCryptoForecastTools(
+        'What is the probability distribution for BTC-USD in 7 days?',
+        [],
+      )).toBe(false);
+    });
+
+    it('preserves BTC short-horizon abstention once markov_distribution has abstained', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 14,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 5,
+                  anchorQuality: 'none',
+                },
+              },
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.0103,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Provide a BTC forecast for the next 14 days',
+        toolCalls,
+      )).toBe(true);
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 14 days',
+        toolCalls,
+      )).toBe(true);
+    });
+
+    it('preserves BTC next-week abstention once markov_distribution has abstained', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 5, trajectory: true, trajectoryDays: 5 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 5,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 3,
+                  anchorQuality: 'none',
+                },
+              },
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.009,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Provide a BTC forecast for next week',
+        toolCalls,
+      )).toBe(true);
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for next week',
+        toolCalls,
+      )).toBe(true);
+    });
+
+    it('does not treat a non-5-day BTC abstain as matching a next-week query', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 14,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 5,
+                  anchorQuality: 'none',
+                },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Provide a BTC forecast for next week',
+        toolCalls,
+      )).toBe(false);
+    });
+
+    describe('isNonCryptoForecastQuery', () => {
+      it('matches stock forecast queries', () => {
+        expect(isNonCryptoForecastQuery('Provide an NVDA forecast for the next 7 days')).toBe(true);
+        expect(isNonCryptoForecastQuery('What will AAPL trade at next week?')).toBe(true);
+        expect(isNonCryptoForecastQuery('Where is SPY headed?')).toBe(true);
+        expect(isNonCryptoForecastQuery('SPY price target next month')).toBe(true);
+      });
+
+      it('matches commodity forecast queries (gold, silver, oil)', () => {
+        expect(isNonCryptoForecastQuery('Gold forecast for the next 30 days')).toBe(true);
+        expect(isNonCryptoForecastQuery('Will silver hit $30 by end of Q2?')).toBe(true);
+        expect(isNonCryptoForecastQuery('Where will oil prices be in 2 weeks')).toBe(true);
+      });
+
+      it('matches ETF forecast queries', () => {
+        expect(isNonCryptoForecastQuery('QQQ outlook over the next 14 days')).toBe(true);
+      });
+
+      it('rejects crypto forecast queries (handled by isCryptoForecastQuery)', () => {
+        expect(isNonCryptoForecastQuery('Provide a BTC forecast for the next 7 days')).toBe(false);
+        expect(isNonCryptoForecastQuery('What will ETH trade at next week?')).toBe(false);
+      });
+
+      it('rejects explicit markov distribution queries', () => {
+        expect(isNonCryptoForecastQuery('What is the probability distribution for SPY in 30 days?')).toBe(false);
+      });
+
+      it('rejects probability_assessment skill invocations', () => {
+        expect(isNonCryptoForecastQuery('Use the probability_assessment skill for NVDA')).toBe(false);
+      });
+
+      it('rejects non-forecast non-crypto queries', () => {
+        expect(isNonCryptoForecastQuery('What is AAPL revenue?')).toBe(false);
+        expect(isNonCryptoForecastQuery('NVDA P/E ratio')).toBe(false);
+      });
+
+      it('rejects macro-only forecast queries without a price ticker target', () => {
+        expect(isNonCryptoForecastQuery('Fed rate prediction next meeting')).toBe(false);
+      });
+    });
+
+    describe('shouldForceNonCryptoForecastFallback', () => {
+      it('returns false before Markov has run at all', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [],
+        )).toBe(false);
+      });
+
+      it('returns true when get_market_data is missing after Markov abstains', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when polymarket_forecast is missing after Markov abstains', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns false when both get_market_data and polymarket_forecast already cover the needed enrichment', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13 }, result: '{"data":{}}' },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns false when Markov produced a successful result', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok', canonical: { actionSignal: {}, diagnostics: {} } } }) },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns true when Markov abstained (status=abstain)', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when forecast rerun is needed to add current_price after market data landed later', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7 }, result: '{"data":{}}' },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when forecast rerun is needed to add markov_return after abstain hint is available', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                  forecastHint: {
+                    usage: 'forecast_only',
+                    markovReturn: 0.009,
+                  },
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns false when a prior generic market-data query exists but the explicit current-price query already succeeded', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'get_market_data', args: { query: 'NVDA' }, result: '{"data":{}}' },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13 }, result: '{"data":{}}' },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns false when an explicit current-price query ran but still produced no usable price', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: {} }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7 }, result: '{"data":{}}' },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns false when a prior explicit current-price query failed but Markov diagnostics already provide currentPrice coverage', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide a GOLD forecast for next month',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'GLD', horizon: 21 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                  canonical: {
+                    currentPrice: 294.87,
+                  },
+                  forecastHint: {
+                    usage: 'forecast_only',
+                    markovReturn: 0.012,
+                  },
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'GLD current price' }, result: JSON.stringify({ data: {} }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'GLD', horizon_days: 21, current_price: 294.87, markov_return: 0.012 }, result: '{"data":{}}' },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns false when Robinhood-style lastTradePrice already satisfies the explicit current-price enrichment', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide a GOLD forecast for next month',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'GLD', horizon: 21 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                },
+              }),
+            },
+            {
+              tool: 'get_market_data',
+              args: { query: 'GLD current price' },
+              result: JSON.stringify({
+                data: {
+                  get_stock_price_GLD: {
+                    symbol: 'GLD',
+                    lastTradePrice: '295.00',
+                  },
+                },
+              }),
+            },
+            { tool: 'polymarket_forecast', args: { ticker: 'GLD', horizon_days: 21, current_price: 295 }, result: '{"data":{}}' },
+          ],
+        )).toBe(false);
+      });
+
+      it('returns true when a matching polymarket_forecast call only recorded an error result', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                  forecastHint: {
+                    usage: 'forecast_only',
+                    markovReturn: 0.009,
+                  },
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13, markov_return: 0.009 }, result: 'Error: upstream failed' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when a prior forecast used the wrong current_price value', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 900.0 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when a prior forecast used the wrong markov_return value', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                  forecastHint: {
+                    usage: 'forecast_only',
+                    markovReturn: 0.009,
+                  },
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13, markov_return: 0.005 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('does not let an unrelated successful Markov call suppress the target fallback', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'SPY', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok', canonical: { actionSignal: {}, diagnostics: {} } } }) },
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns false for crypto forecast queries', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide a BTC forecast for the next 7 days',
+          [],
+        )).toBe(false);
+      });
+
+      it('returns false for non-forecast queries', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'What is AAPL revenue?',
+          [],
+        )).toBe(false);
       });
     });
   });
