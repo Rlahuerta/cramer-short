@@ -64,3 +64,4 @@ cramer-short-export-*.json
 cramer-short-export-*.md
 CODE_REVIEW_REPORT.md
 TEST_COVERAGE_VERIFICATION.md
+*.pile
