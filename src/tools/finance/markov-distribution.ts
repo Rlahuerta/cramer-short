@@ -4667,4 +4667,154 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     // --- Section 3b: Methodology note ---
     const anchorCount = m.polymarketAnchors;
     const methodNote = anchorCount > 0
-      ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history) blended with ${anchorCount} Polymarket anchor(s). Probabilities from calibrated survival function with Monte Carlo confidence intervals.
+      ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history) blended with ${anchorCount} Polymarket anchor(s). Probabilities from calibrated survival function with Monte Carlo confidence intervals.`
+      : commodityModelOnly
+        ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history), model-only commodity emission. No prediction market anchors — distribution is 100% Markov-model driven.`
+        : `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history). Probabilities from calibrated survival function with Monte Carlo confidence intervals. No prediction market anchors available.`;
+
+    // --- Section 4: Header and metadata ---
+    const mixingLine = commodityModelOnly
+      ? 'Calibration: model-only (commodity bypass, no anchors)'
+      : `Mixing: ${pct(m.mixingTimeWeight)}% Markov / ${pct(1 - m.mixingTimeWeight)}% Anchors`;
+    const header = [
+      '',
+      `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
+      `Current: $${fmt(result.currentPrice)} | Regime: ${m.regimeState}`,
+      `Anchors: ${m.polymarketAnchors} trusted | Anchor quality: ${m.anchorCoverage.quality.toUpperCase()}`,
+      mixingLine,
+    ];
+
+    // --- Section 4: Warnings ---
+    const warnings: string[] = [];
+    if (m.anchorCoverage.warning) warnings.push(`⚠️ ${m.anchorCoverage.warning}`);
+    if (m.structuralBreakDetected)
+      warnings.push(`⚠️ Structural break detected (divergence=${m.structuralBreakDivergence.toFixed(3)}); CI widened 50%`);
+    if (m.sparseStates.length > 0)
+      warnings.push(`⚠️ Sparse states (<5 obs): ${m.sparseStates.join(', ')} — transitions prior-dominated`);
+    if (m.anchorDivergenceWarnings.length > 0)
+      warnings.push(`⚠️ Cross-platform divergence: ${m.anchorDivergenceWarnings.map(w => `$${w.price} (${w.divergencePp.toFixed(1)}pp)`).join(', ')}`);
+    if (m.outOfSampleR2 !== null)
+      warnings.push(`R²_OS: ${m.outOfSampleR2.toFixed(3)} (>0 = Markov adds value over mean)`);
+    if (m.goodnessOfFit && !m.goodnessOfFit.passes)
+      warnings.push(`⚠️ Markov fit test failed (χ²=${m.goodnessOfFit.chiSquared.toFixed(1)}, p=${m.goodnessOfFit.pValue.toFixed(3)}) — transitions may not follow Markov property`);
+    if (m.goodnessOfFit?.passes)
+      warnings.push(`✓ Markov fit test passed (p=${m.goodnessOfFit.pValue.toFixed(3)})`);
+    if (result.predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD)
+      warnings.push(`⚠️ Low confidence (${result.predictionConfidence.toFixed(2)} < ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)}): accuracy drops to ~55% below this threshold; consider waiting for higher-confidence signal`);
+
+    // --- Section 5: Full distribution table ---
+    const table = [
+      '',
+      'Price         P(>price)    90% CI                 Source',
+      '─'.repeat(60),
+      ...result.distribution.map(d =>
+        `$${d.price.toFixed(2).padStart(9)}   ${(d.probability * 100).toFixed(1).padStart(5)}%   `
+        + `[${(d.lowerBound * 100).toFixed(1)}%–${(d.upperBound * 100).toFixed(1)}%]   ${d.source}`,
+      ),
+    ];
+
+    // --- Section 6: Trajectory table (if requested) ---
+    const trajectorySection: string[] = [];
+    if (result.trajectory && result.trajectory.length > 0) {
+      const trajDays = result.trajectory.length;
+      trajectorySection.push('');
+      trajectorySection.push(`═══ ${trajDays}-DAY PRICE TRAJECTORY: ${result.ticker} ═══`);
+      trajectorySection.push(`Current: $${fmt(result.currentPrice)} | Regime: ${m.regimeState} | Confidence: ${result.predictionConfidence.toFixed(2)}`);
+      trajectorySection.push('');
+      trajectorySection.push('Day │ Expected │     90% CI Range    │ P(up) │ Return');
+      trajectorySection.push('────┼──────────┼─────────────────────┼───────┼────────');
+      for (const pt of result.trajectory) {
+        const dayStr = String(pt.day).padStart(3);
+        const expStr = `$${fmt(pt.expectedPrice)}`.padStart(8);
+        const loStr = `$${fmt(pt.lowerBound)}`;
+        const hiStr = `$${fmt(pt.upperBound)}`;
+        const ciStr = `${loStr} – ${hiStr}`.padStart(19);
+        const pUpStr = `${(pt.pUp * 100).toFixed(0)}%`.padStart(5);
+        trajectorySection.push(`${dayStr} │ ${expStr} │ ${ciStr} │ ${pUpStr} │ ${pt.cumulativeReturn}`);
+      }
+      // Trend summary
+      const first = result.trajectory[0];
+      const last = result.trajectory[result.trajectory.length - 1];
+      const ciWidenPerDay = ((last.upperBound - last.lowerBound) - (first.upperBound - first.lowerBound)) / (last.day - first.day || 1);
+      const trendDir = last.pUp > 0.55 ? '📈 Trend: Bullish drift' : last.pUp < 0.45 ? '📉 Trend: Bearish drift' : '➡️  Trend: Sideways';
+      trajectorySection.push('');
+      trajectorySection.push(`${trendDir}, CI widens ~$${ciWidenPerDay.toFixed(2)}/day`);
+      trajectorySection.push('⚠️  Point estimates are probability-weighted means, not forecasts.');
+      trajectorySection.push('    The CI range is the honest measure of uncertainty.');
+    }
+
+    const forecastHint = buildForecastHint({
+      canEmitCanonical,
+      ticker: result.ticker,
+      horizon: result.horizon,
+      expectedReturn: result.actionSignal.expectedReturn,
+      mixingTimeWeight: m.mixingTimeWeight,
+      predictionConfidence: result.predictionConfidence,
+    });
+
+    const report = canEmitCanonical
+      ? [
+        ...decisionCard,
+        ...actionPlan,
+        ...whatToDo,
+        ...scenarioSection,
+        '',
+        methodNote,
+        ...header,
+        ...(warnings.length > 0 ? ['', ...warnings] : []),
+        ...table,
+        ...trajectorySection,
+      ].filter(l => l !== undefined).join('\n')
+      : [
+        '🚫 Diagnostics-only Markov output',
+        '',
+        `No calibrated scenario distribution was emitted for ${result.ticker} at the ${result.horizon}-day horizon.`,
+        '',
+        'Why this abstained:',
+        ...abstainReasons.map((reason) => `- ${reason}`),
+        '',
+        ...header,
+        ...(warnings.length > 0 ? ['', ...warnings] : []),
+      ].filter(l => l !== undefined).join('\n');
+
+    return formatToolResult({
+      _tool: 'markov_distribution',
+      status: canEmitCanonical ? 'ok' : 'abstain',
+      manualSynthesisForbidden: !canEmitCanonical,
+      abstainReasons,
+      report,
+      forecastHint,
+      canonical: {
+        ticker: result.ticker,
+        currentPrice: result.currentPrice,
+        horizon: result.horizon,
+        scenarios: canEmitCanonical ? result.scenarios : null,
+        actionSignal: canEmitCanonical ? result.actionSignal : null,
+        diagnostics: {
+          totalAnchors: m.anchorCoverage.totalAnchors,
+          trustedAnchors: m.anchorCoverage.trustedAnchors,
+          anchorQuality: m.anchorCoverage.quality,
+          anchorWarning: m.anchorCoverage.warning || null,
+          regimeState: m.regimeState,
+          mixingTimeWeight: m.mixingTimeWeight,
+          markovWeight: commodityModelOnly ? 1 : m.mixingTimeWeight,
+          anchorWeight: commodityModelOnly ? 0 : 1 - m.mixingTimeWeight,
+          outOfSampleR2: m.outOfSampleR2,
+          structuralBreakDetected: m.structuralBreakDetected,
+          structuralBreakDivergence: m.structuralBreakDivergence,
+          ciWidened: m.ciWidened,
+          predictionConfidence: result.predictionConfidence,
+          calibrationMode,
+          anchorBypassApplied,
+          status: canEmitCanonical ? 'ok' : 'abstain',
+          canEmitCanonical,
+          manualSynthesisForbidden: !canEmitCanonical,
+          abstainReasons,
+          warnings,
+        },
+      },
+      distribution: canEmitCanonical ? result.distribution : null,
+      trajectory: canEmitCanonical ? (result.trajectory ?? null) : null,
+    });
+  },
+});

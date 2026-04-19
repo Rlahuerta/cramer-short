@@ -286,4 +286,8 @@ function extractCI(dist: MarkovDistributionResult['distribution'], currentPrice:
     }
     if (dist[i].probability >= upperThreshold && dist[i + 1].probability < upperThreshold) {
       const frac = (upperThreshold - dist[i + 1].probability) / (dist[i].probability - dist[i + 1].probability);
-      ciUpper = dist[i 
+      ciUpper = dist[i + 1].price + frac * (dist[i].price - dist[i + 1].price);
+    }
+  }
+  return { ciLower, ciUpper };
+}

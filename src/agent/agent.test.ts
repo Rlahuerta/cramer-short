@@ -1119,4 +1119,71 @@ describe('Agent', () => {
 
       it('returns true when a prior forecast used the wrong current_price value', () => {
         expect(shouldForceNonCryptoForecastFallback(
-          'Provide a
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 900.0 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns true when a prior forecast used the wrong markov_return value', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            {
+              tool: 'markov_distribution',
+              args: { ticker: 'NVDA', horizon: 7 },
+              result: JSON.stringify({
+                data: {
+                  _tool: 'markov_distribution',
+                  status: 'abstain',
+                  forecastHint: {
+                    usage: 'forecast_only',
+                    markovReturn: 0.009,
+                  },
+                },
+              }),
+            },
+            { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
+            { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13, markov_return: 0.005 }, result: '{"data":{}}' },
+          ],
+        )).toBe(true);
+      });
+
+      it('does not let an unrelated successful Markov call suppress the target fallback', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide an NVDA forecast for the next 7 days',
+          [
+            { tool: 'markov_distribution', args: { ticker: 'SPY', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok', canonical: { actionSignal: {}, diagnostics: {} } } }) },
+            { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+          ],
+        )).toBe(true);
+      });
+
+      it('returns false for crypto forecast queries', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'Provide a BTC forecast for the next 7 days',
+          [],
+        )).toBe(false);
+      });
+
+      it('returns false for non-forecast queries', () => {
+        expect(shouldForceNonCryptoForecastFallback(
+          'What is AAPL revenue?',
+          [],
+        )).toBe(false);
+      });
+    });
+  });
+});

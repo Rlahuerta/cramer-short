@@ -259,4 +259,76 @@ describe('buildIterationPrompt', () => {
   it('adds commodity proxy framing for gold fallback prompts after Markov abstains', () => {
     const results = '### markov_distribution(ticker=GLD)\n{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null}}}';
     const prompt = buildIterationPrompt('Provide a GOLD forecast based on markov chain for the next 30 days', results);
-    expect(prompt).toContain('GLD is only th
+    expect(prompt).toContain('GLD is only the data proxy for Gold');
+    expect(prompt).toContain('Frame the final answer in terms of the underlying commodity');
+  });
+
+  it('does not inject canonical markov guard for non-markov tool output', () => {
+    const results = '### get_market_data(query=BTC)\n{"data":{"ticker":"BTC-USD"}}';
+    const prompt = buildIterationPrompt('BTC query', results);
+    expect(prompt).not.toContain('markov_distribution results are present');
+  });
+});
+
+describe('buildSystemPrompt tool guidance', () => {
+  it('prioritizes markov_distribution for terminal price distributions', async () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('For terminal price probability distributions');
+    expect(prompt).toContain('use markov_distribution FIRST');
+    expect(prompt).toContain('only valid source of scenario bucket probabilities');
+  });
+
+  it('includes BTC/crypto forecast guidance with onchain and fixed income tools', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('BTC/crypto price forecasts');
+    expect(prompt).toContain('get_onchain_crypto');
+    expect(prompt).toContain('get_fixed_income');
+    expect(prompt).toContain('markov_distribution');
+    expect(prompt).toContain('trajectory=true');
+  });
+
+  it('mentions probability_assessment skill for full structured BTC/crypto forecast reports', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('probability_assessment');
+  });
+});
+
+describe('buildGroupSection', () => {
+  it('includes the group name when provided', () => {
+    const section = buildGroupSection({
+      groupName: 'Stock Traders',
+      activationMode: 'mention',
+    });
+    expect(section).toContain('Stock Traders');
+  });
+
+  it('handles missing group name gracefully', () => {
+    const section = buildGroupSection({ activationMode: 'mention' });
+    expect(section).toContain('WhatsApp group chat');
+    expect(section).not.toContain('undefined');
+  });
+
+  it('includes members list when provided', () => {
+    const section = buildGroupSection({
+      activationMode: 'mention',
+      membersList: 'Alice, Bob, Charlie',
+    });
+    expect(section).toContain('Alice, Bob, Charlie');
+    expect(section).toContain('Group members');
+  });
+
+  it('includes activation mode mention text', () => {
+    const section = buildGroupSection({ activationMode: 'mention' });
+    expect(section).toContain('@-mentioned');
+  });
+
+  it('always includes ## Group Chat header', () => {
+    const section = buildGroupSection({ activationMode: 'mention' });
+    expect(section).toContain('## Group Chat');
+  });
+
+  it('includes group behavior guidelines', () => {
+    const section = buildGroupSection({ activationMode: 'mention' });
+    expect(section).toContain('Group behavior');
+  });
+});

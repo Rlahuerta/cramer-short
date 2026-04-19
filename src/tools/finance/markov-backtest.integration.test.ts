@@ -2296,4 +2296,38 @@ describe('Markov distribution walk-forward backtest', () => {
             pr3gCryptoShortHorizonRecencyWeighting: true,
             pr3gCryptoShortHorizonDecay: 0.98,
             startStateMixture: false,
-          
+          });
+
+          expect(promoted.errors).toHaveLength(0);
+          expect(legacy.errors).toHaveLength(0);
+          expect(promoted.steps.length).toBeGreaterThan(0);
+          expect(promoted.steps.length).toBe(legacy.steps.length);
+
+          const promotedDir = directionalAccuracy(promoted.steps);
+          const legacyDir = directionalAccuracy(legacy.steps);
+          const promotedCalPUp = calibratedPUpDirectionalAccuracy(promoted.steps);
+          const legacyCalPUp = calibratedPUpDirectionalAccuracy(legacy.steps);
+          const promotedBrier = brierScore(promoted.steps);
+          const legacyBrier = brierScore(legacy.steps);
+          const promotedCov = ciCoverage(promoted.steps);
+          const legacyCov = ciCoverage(legacy.steps);
+
+          lines.push(
+            `  BTC-USD ${horizon}d | `
+            + `dir ${(legacyDir * 100).toFixed(1)}% -> ${(promotedDir * 100).toFixed(1)}% (${formatSignedPp(promotedDir - legacyDir)}) | `
+            + `calPUp ${(legacyCalPUp * 100).toFixed(1)}% -> ${(promotedCalPUp * 100).toFixed(1)}% (${formatSignedPp(promotedCalPUp - legacyCalPUp)}) | `
+            + `brier ${legacyBrier.toFixed(4)} -> ${promotedBrier.toFixed(4)} (${formatSignedDelta(promotedBrier - legacyBrier)}) | `
+            + `CI ${(legacyCov * 100).toFixed(0)}% -> ${(promotedCov * 100).toFixed(0)}% (${formatSignedPp(promotedCov - legacyCov)})`,
+          );
+        }
+
+        lines.push('══════════════════════════════════════════════════════════════════', '');
+        console.log(lines.join('\n'));
+
+        expect(true).toBe(true);
+      },
+      TIMEOUT,
+    );
+  });
+
+});

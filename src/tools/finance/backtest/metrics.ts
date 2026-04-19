@@ -1099,4 +1099,19 @@ export function selectiveRawPUpAccuracy(
   const selected = steps.filter(s => s.confidence >= minConfidence);
   if (selected.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: steps.length };
 
-  const co
+  const correct = selected.filter(s => {
+    const rawProb = s.rawPredictedProb ?? s.predictedProb;
+    return (
+      (rawProb > 0.5 && s.actualBinary === 1) ||
+      (rawProb < 0.5 && s.actualBinary === 0) ||
+      (rawProb === 0.5 && s.actualBinary === 1)
+    );
+  });
+
+  return {
+    accuracy: correct.length / selected.length,
+    coverage: selected.length / steps.length,
+    selected: selected.length,
+    total: steps.length,
+  };
+}

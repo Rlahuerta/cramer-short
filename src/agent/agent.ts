@@ -1940,4 +1940,98 @@ export class Agent {
 
     if (estimatedContextTokens > getContextThreshold()) {
       if (
-        this.memoryEnab
+        this.memoryEnabled &&
+        shouldRunMemoryFlush({
+          estimatedContextTokens,
+          alreadyFlushed: memoryFlushState.alreadyFlushed,
+        })
+      ) {
+        yield { type: 'memory_flush', phase: 'start' };
+        const flushResult = await runMemoryFlush({
+          model: this.model,
+          systemPrompt: this.systemPrompt,
+          query,
+          toolResults: fullToolResults,
+          signal: this.signal,
+        }).catch(() => ({ flushed: false, written: false as const }));
+        memoryFlushState.alreadyFlushed = flushResult.flushed;
+        yield {
+          type: 'memory_flush',
+          phase: 'end',
+          filesWritten: flushResult.written ? [`${new Date().toISOString().slice(0, 10)}.md`] : [],
+        };
+      }
+
+      this.injectContextSummaryBeforeClearing(ctx, getKeepToolUses());
+      const clearedCount = ctx.scratchpad.clearOldestToolResults(getKeepToolUses());
+      if (clearedCount > 0) {
+        memoryFlushState.alreadyFlushed = false;
+        yield { type: 'context_cleared', clearedCount, keptCount: getKeepToolUses() };
+      }
+    }
+  }
+
+  /**
+   * Builds a compact rule-based summary of tool results that are about to be
+   * dropped from context and injects it as a context_summary entry so the LLM
+   * doesn't lose analysis continuity without incurring an extra LLM call.
+   *
+   * If a context_summary already exists it merges the new facts into it
+   * (via buildContextSummaryText) to prevent multiple summaries stacking up.
+   */
+  private injectContextSummaryBeforeClearing(ctx: RunContext, keepCount: number): void {
+    const toSummarise = ctx.scratchpad.getContentToBeCleared(keepCount);
+    if (toSummarise.length === 0) return;
+
+    const existingSummary = ctx.scratchpad.getLatestContextSummary();
+    const summary = buildContextSummaryText(toSummarise, existingSummary);
+    if (summary) ctx.scratchpad.addContextSummary(summary);
+  }
+  /**
+   * Periodic auto-save: flush research findings to long-term memory every
+   * PERIODIC_FLUSH_INTERVAL iterations, independent of context size.
+   * This prevents total data loss if the session crashes mid-research.
+   */
+  private async *runPeriodicMemoryFlush(
+    ctx: RunContext,
+    query: string,
+    state: { lastFlushedIteration: number },
+  ): AsyncGenerator<AgentEvent, void> {
+    state.lastFlushedIteration = ctx.iteration;
+    yield { type: 'memory_flush', phase: 'start' };
+    const flushResult = await runMemoryFlush({
+      model: this.model,
+      systemPrompt: this.systemPrompt,
+      query,
+      toolResults: ctx.scratchpad.getToolResults(),
+      signal: this.signal,
+    }).catch(() => ({ flushed: false, written: false as const }));
+    yield {
+      type: 'memory_flush',
+      phase: 'end',
+      filesWritten: flushResult.written ? [`${new Date().toISOString().slice(0, 10)}.md`] : [],
+    };
+  }
+
+  /**
+   * Build initial prompt with conversation history context if available
+   */
+  private buildInitialPrompt(
+    query: string,
+    inMemoryChatHistory?: InMemoryChatHistory
+  ): string {
+    if (!inMemoryChatHistory?.hasMessages()) {
+      return query;
+    }
+
+    const recentTurns = inMemoryChatHistory.getRecentTurns();
+    if (recentTurns.length === 0) {
+      return query;
+    }
+
+    return buildHistoryContext({
+      entries: recentTurns,
+      currentMessage: query,
+    });
+  }
+}

@@ -830,4 +830,43 @@ export async function fetchPolymarketMarkets(
   limit: number,
 ): Promise<PolymarketMarketResult[]> {
   const markets = await searchEvents(query, limit);
-  return markets.map(toStructuredMarketR
+  return markets.map(toStructuredMarketResult);
+}
+
+export async function fetchPolymarketAnchorMarkets(
+  query: string,
+  limit: number,
+  options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+): Promise<PolymarketMarketResult[]> {
+  return fetchPolymarketAnchorMarketsWithQueries([query], limit, options);
+}
+
+// ---------------------------------------------------------------------------
+// Tool
+// ---------------------------------------------------------------------------
+
+export const polymarketTool = new DynamicStructuredTool({
+  name: 'polymarket_search',
+  description: 'Search Polymarket prediction markets for crowd-sourced probability estimates on macro, geopolitical, and financial events.',
+  schema: z.object({
+    query: z.string().describe(
+      'Natural language search query, e.g. "Fed rate cut 2026", "US recession", "tariffs", "OPEC oil production"',
+    ),
+    limit: z.number().optional().default(8).describe(
+      'Max number of markets to return (default 8)',
+    ),
+  }),
+  func: async ({ query, limit = 8 }, _config?: unknown) => {
+    if (polymarketBreaker.isOpen()) {
+      return formatToolResult({ error: 'Polymarket API is temporarily unavailable (circuit open). Try again in a few minutes.' });
+    }
+    try {
+      const markets = await searchEvents(query, limit);
+      const warnings = drainSearchWarnings();
+      return formatToolResult({ result: formatResults(markets, query, warnings) });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return formatToolResult({ error: `Polymarket search failed: ${msg}` });
+    }
+  },
+});
