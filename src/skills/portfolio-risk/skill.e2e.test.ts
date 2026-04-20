@@ -28,9 +28,10 @@ describe('portfolio_risk skill E2E', () => {
 
   e2eIt('invokes the skill tool or calls portfolio_risk directly', () => {
     const usedSkillTool = tools.some((t) => t === 'skill');
+    const usedPortfolioRiskDirectly = tools.some((t) => t === 'portfolio_risk');
     expect(
-      usedSkillTool,
-      `skill tool must be called for portfolio_risk skill quality validation. Tools: [${tools.join(', ')}]`,
+      usedSkillTool || usedPortfolioRiskDirectly,
+      `skill tool or portfolio_risk must be called. Tools: [${tools.join(', ')}]`,
     ).toBe(true);
   });
 

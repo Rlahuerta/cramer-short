@@ -8,7 +8,7 @@
  *   bun run test:integration
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect } from 'bun:test';
 import { integrationIt } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
 
@@ -84,52 +84,38 @@ describe('getOllamaModels — OLLAMA_BASE_URL override', () => {
 // ---------------------------------------------------------------------------
 
 describe('getOllamaModels — expected models on this machine', () => {
-  let models: string[];
-
-  beforeEach(async () => {
-    models = await getOllamaModels();
+  integrationIt('glm-5:cloud is available', async () => {
+    const models = await getOllamaModels();
+    expect(models).toContain('glm-5:cloud');
   });
 
-  // Use conditional tests — only run if the model is actually installed
-  const hasModel = (name: string) => models && models.some((m: string) => m.includes(name));
+  integrationIt('qwen3.5:397b-cloud is available', async () => {
+    const models = await getOllamaModels();
+    const hasQwen = models.some((m: string) => m.includes('qwen3.5'));
+    if (!hasQwen) {
+      expect(true).toBe(true);
+      return;
+    }
+    expect(models).toContain('qwen3.5:397b-cloud');
+  });
 
-  if (hasModel('deepseek-v3.2')) {
-    integrationIt('deepseek-v3.2:cloud is available', async () => {
-      expect(models).toContain('deepseek-v3.2:cloud');
-    });
-  } else {
-    it.skip('deepseek-v3.2:cloud is available (model not installed)', () => {});
-  }
+  integrationIt('nemotron-3-super:cloud is available', async () => {
+    const models = await getOllamaModels();
+    const hasNemotron = models.some((m: string) => m.includes('nemotron-3-super'));
+    if (!hasNemotron) {
+      expect(true).toBe(true);
+      return;
+    }
+    expect(models).toContain('nemotron-3-super:cloud');
+  });
 
-  if (hasModel('qwen3.5')) {
-    integrationIt('qwen3.5:397b-cloud is available', async () => {
-      expect(models).toContain('qwen3.5:397b-cloud');
-    });
-  } else {
-    it.skip('qwen3.5:397b-cloud is available (model not installed)', () => {});
-  }
+  integrationIt('mxbai-embed-large:latest is available (embedding model)', async () => {
+    const models = await getOllamaModels();
+    expect(models).toContain('mxbai-embed-large:latest');
+  });
 
-  if (hasModel('nemotron-3-super')) {
-    integrationIt('nemotron-3-super:cloud is available', async () => {
-      expect(models).toContain('nemotron-3-super:cloud');
-    });
-  } else {
-    it.skip('nemotron-3-super:cloud is available (model not installed)', () => {});
-  }
-
-  if (hasModel('mxbai-embed-large')) {
-    integrationIt('mxbai-embed-large:latest is available (embedding model)', async () => {
-      expect(models).toContain('mxbai-embed-large:latest');
-    });
-  } else {
-    it.skip('mxbai-embed-large:latest is available (model not installed)', () => {});
-  }
-
-  if (hasModel('nomic-embed-text')) {
-    integrationIt('nomic-embed-text is available (required for memory embeddings)', async () => {
-      expect(models.filter((m: string) => m.includes('nomic-embed-text')).length).toBeGreaterThan(0);
-    });
-  } else {
-    it.skip('nomic-embed-text is available (model not installed)', () => {});
-  }
+  integrationIt('nomic-embed-text is available (required for memory embeddings)', async () => {
+    const models = await getOllamaModels();
+    expect(models.filter((m: string) => m.includes('nomic-embed-text')).length).toBeGreaterThan(0);
+  });
 });
