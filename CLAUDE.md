@@ -2,11 +2,70 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+## 5. Project Overview
 
 Cramer-Short is an AI-powered financial research agent with a terminal UI (TUI). It uses LangChain to orchestrate LLM calls and provides tools for financial data retrieval, web search, and research synthesis.
 
-## Development Commands
+## 6. Development Commands
 
 ```bash
 # Run the TUI
@@ -38,7 +97,7 @@ bun run gateway:login  # Link account
 bun run gateway        # Start gateway
 ```
 
-## Architecture
+## 7. Architecture
 
 ### Core Flow
 - `src/index.tsx` → TUI entry point
@@ -71,7 +130,7 @@ Pre-built research workflows: `dcf`, `full-analysis`, `short-thesis`, `earnings-
 ### TUI (`@mariozechner/pi-tui`)
 Terminal UI with components in `src/components/`. Key views: chat history, tool output, scratchpad, help panel.
 
-## Environment Variables
+## 8. Environment Variables
 
 Required: **one** LLM provider key. Optional: financial data, web search, LangSmith.
 
@@ -91,7 +150,7 @@ EXASEARCH_API_KEY=...
 TAVILY_API_KEY=...
 ```
 
-## Test Structure
+## 9. Test Structure
 
 Three tiers separated by file suffix:
 - `*.test.ts` — Unit tests (default)
@@ -100,7 +159,7 @@ Three tiers separated by file suffix:
 
 Run a single test file: `bun test src/path/to/file.test.ts`
 
-## Key Files
+## 10. Key Files
 
 | File | Purpose |
 |------|---------|
@@ -111,7 +170,7 @@ Run a single test file: `bun test src/path/to/file.test.ts`
 | `src/memory/dream.ts` | Background consolidation logic |
 | `src/skills/loader.ts` | Skill loading and parameter injection |
 
-## Circuit Breaker Pattern
+## 10. Circuit Breaker Pattern
 
 `src/agent/tool-executor.ts` implements circuit breaker for external API calls. On repeated failures, tool is temporarily disabled. Check `src/utils/circuit-breaker.ts` for state management.
 
@@ -119,7 +178,7 @@ Run a single test file: `bun test src/path/to/file.test.ts`
 
 Ticker→API routing persisted in `.cramer-short/api-routing.json`. After discovering a ticker works better with FMP vs Yahoo Finance, that preference is cached and reused.
 
-## Session Files
+## 11. Session Files
 
 - `.cramer-short/settings.json` — Runtime config (`maxIterations`, `contextThreshold`, etc.)
 - `.cramer-short/schedules.json` — Scheduled research jobs
@@ -127,7 +186,7 @@ Ticker→API routing persisted in `.cramer-short/api-routing.json`. After discov
 - `.cramer-short/memory/` — Persistent Markdown memory
 - `.cramer-short/api-routing.json` — Ticker→API mappings (30-day TTL)
 
-## Documentation
+## 12. Documentation
 
 - `docs/memory.md` — Memory system architecture
 - `docs/features.md` — Feature documentation
