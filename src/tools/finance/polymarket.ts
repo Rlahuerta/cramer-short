@@ -260,6 +260,16 @@ function extractCanonicalNames(ticker: string): string[] {
 
 const CRYPTO_BARRIER_PATTERN = /\b(?:reach|hit|surpass|touch)\b|\b(?:go|move)\s+to\b|\bgo\s+(?:above|below|over|under)\b|\b(?:remain|trade|stay)\s+(?:above|below|over|under)\b|\b(?:dip|drop|fall|sink|decline|decrease)s?\s+to\b/i;
 
+// Month names for date-anchored trade pattern validation
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+
+// Strict narrow exemption: only accept date-anchored trade phrases with actual dates
+// Rejects non-date anchors like "at expiry", "at close", "at open"
+const DATE_ANCHORED_TRADE_PATTERN = new RegExp(
+  `\\btrade\\s+(?:above|below|over|under)\\b.*\\b(?:on|at)\\s+(?:\\d{1,2}[\\/\\-]|(?:${MONTH_NAMES.join('|')})\\b)`,
+  'i'
+);
+
 export function scoreAnchorMarketRelevance(
   question: string,
   ticker: string,
@@ -282,7 +292,8 @@ export function scoreAnchorMarketRelevance(
   const hasCanonicalMatch = names.some((name) => lower.includes(name));
   if (identity.strictQuestionMatch && !hasCanonicalMatch) return 0;
   if (isCrypto && (!hasCanonicalMatch || !hasDollarPrice)) return 0;
-  if (isCrypto && CRYPTO_BARRIER_PATTERN.test(lower)) return 0;
+  // Narrow exemption: accept date-anchored trade phrases, reject other barrier patterns
+  if (isCrypto && CRYPTO_BARRIER_PATTERN.test(lower) && !DATE_ANCHORED_TRADE_PATTERN.test(lower)) return 0;
   if (hasCanonicalMatch) score += 2;
 
   if (/\b(reach|hit|dip to|between|up or down|first)\b/.test(lower)) score -= 3;

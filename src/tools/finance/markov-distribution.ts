@@ -761,6 +761,16 @@ const BARRIER_PATTERNS = [
   /\b(?:dip|drop|fall|sink|decline|decrease)s?\s+to\b/i,
 ];
 
+// Month names for date-anchored trade pattern validation
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+
+// Strict date-anchored trade pattern: only accept when followed by an actual date (month name)
+// Rejects non-date anchors like "at expiry", "at close", "at open"
+const DATE_ANCHORED_TRADE_PATTERN = new RegExp(
+  `\\btrade\\s+(?:above|below|over|under)\\b.*\\b(?:on|at)\\s+(?:\\d{1,2}[\\/\\-]|(?:${MONTH_NAMES.join('|')})\\b)`,
+  'i'
+);
+
 /** Parse a price string like "$70K" or "$1,234.56" into a number. */
 function parsePrice(raw: string): number {
   const cleaned = raw.replace(/,/g, '');
@@ -789,7 +799,8 @@ export function extractPriceThresholds(
   const now = options?.referenceTimeMs ?? Date.now();
 
   for (const market of markets) {
-    if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question))) {
+    const isDateAnchoredTrade = DATE_ANCHORED_TRADE_PATTERN.test(market.question);
+    if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question)) && !isDateAnchoredTrade) {
       anchorTrace('extract_market', {
         ticker: options?.ticker ?? null,
         horizonDays: options?.horizonDays ?? null,
@@ -1229,7 +1240,7 @@ async function fetchCandidatePolymarketAnchors(
   }
 
   if (
-    isLongHorizonCrypto
+    (isLongHorizonCrypto || isBtc14d)
     && endDateFilter
     && settled.every((result) => result.status !== 'fulfilled' || result.value.length === 0)
   ) {

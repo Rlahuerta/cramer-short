@@ -53,6 +53,7 @@ export type DecisionSource =
   | 'crypto-short-horizon-recency'
   | 'replay-anchor'
   | 'crypto-short-horizon-raw+replay-anchor'
+  | 'crypto-short-horizon-raw-direction-hybrid+replay-anchor'
   | 'crypto-short-horizon-disagreement-blend+replay-anchor'
   | 'crypto-short-horizon-recency+replay-anchor';
 
@@ -827,6 +828,7 @@ export function generateReport(
       'crypto-short-horizon-recency': 0,
       'replay-anchor': 0,
       'crypto-short-horizon-raw+replay-anchor': 0,
+      'crypto-short-horizon-raw-direction-hybrid+replay-anchor': 0,
       'crypto-short-horizon-disagreement-blend+replay-anchor': 0,
       'crypto-short-horizon-recency+replay-anchor': 0,
     },

@@ -301,5 +301,5 @@ Show conservative/base/aggressive options:
 
 **Integration with other skills:**
 - Combine with `swing-trade-setup` for entry-specific sizing
-- Combine with `portfolio-risk` for full portfolio optimization
-- Combine with `dcf` for fundamental conviction overlay
+- Combine with `portfolio_risk` for full portfolio optimization
+- Combine with `dcf-valuation` for fundamental conviction overlay

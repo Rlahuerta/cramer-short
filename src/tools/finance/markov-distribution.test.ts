@@ -19,7 +19,7 @@
  *  Add 5  — Dirichlet default 0.1 (merged with Fix 6)
  */
 
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { integrationIt } from '../../utils/test-guards.js';
 import {
   classifyRegimeState,
@@ -69,75 +69,85 @@ import {
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 
-const realPolymarketModule = await import('./polymarket.js');
-
-mock.module('./polymarket.js', () => ({
-  ...realPolymarketModule,
-  fetchPolymarketMarkets: async (_query: string, _limit: number) => [
-    {
-      question: 'Will the price of Bitcoin be above $64000 on April 9?',
-      probability: 0.78,
-      volume24h: 250000,
-      ageDays: 5,
-      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    },
-    {
-      question: 'Will the price of Bitcoin be above $66000 on April 9?',
-      probability: 0.54,
-      volume24h: 220000,
-      ageDays: 5,
-      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    },
-    {
-      question: 'Will the price of Bitcoin be above $68000 on April 9?',
-      probability: 0.31,
-      volume24h: 190000,
-      ageDays: 5,
-      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    },
-    {
-      question: 'Will Bitcoin reach $70000 this week?',
-      probability: 0.22,
-      volume24h: 180000,
-      ageDays: 5,
-      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    },
-  ],
-  fetchPolymarketAnchorMarkets: async (_query: string, _limit: number, _options: unknown) => [
-    {
-      question: 'Will the price of Bitcoin be above $62000 by end of week?',
-      probability: 0.85,
-      volume24h: 300000,
-      ageDays: 7,
-      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    },
-    {
-      question: 'Will the price of Bitcoin be above $65000 by end of week?',
-      probability: 0.62,
-      volume24h: 260000,
-      ageDays: 6,
-      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    },
-    {
-      question: 'Will the price of Bitcoin be above $68000 by end of week?',
-      probability: 0.38,
-      volume24h: 210000,
-      ageDays: 5,
-      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    },
-    {
-      question: 'Will the price of Bitcoin fall below $63000 by end of week?',
-      probability: 0.25,
-      volume24h: 190000,
-      ageDays: 5,
-      endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    },
-  ],
-}));
+const realPolymarketModule = { ...(await import('./polymarket.js')) };
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Install default Polymarket mock for auto-fetch tests that fresh-import
+ * markov-distribution.js and depend on default anchor data.
+ */
+function installDefaultPolymarketMock(): void {
+  mock.module('./polymarket.js', () => ({
+    ...realPolymarketModule,
+    fetchPolymarketMarkets: async (_query: string, _limit: number) => [
+      {
+        question: 'Will the price of Bitcoin be above $64000 on April 9?',
+        probability: 0.78,
+        volume24h: 250000,
+        ageDays: 5,
+        endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      {
+        question: 'Will the price of Bitcoin be above $66000 on April 9?',
+        probability: 0.54,
+        volume24h: 220000,
+        ageDays: 5,
+        endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      {
+        question: 'Will the price of Bitcoin be above $68000 on April 9?',
+        probability: 0.31,
+        volume24h: 190000,
+        ageDays: 5,
+        endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      {
+        question: 'Will Bitcoin reach $70000 this week?',
+        probability: 0.22,
+        volume24h: 180000,
+        ageDays: 5,
+        endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+    ],
+    fetchPolymarketAnchorMarkets: async (_query: string, _limit: number, _options: unknown) => [
+      {
+        question: 'Will the price of Bitcoin be above $62000 by end of week?',
+        probability: 0.85,
+        volume24h: 300000,
+        ageDays: 7,
+        endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      {
+        question: 'Will the price of Bitcoin be above $65000 by end of week?',
+        probability: 0.62,
+        volume24h: 260000,
+        ageDays: 6,
+        endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      {
+        question: 'Will the price of Bitcoin be above $68000 by end of week?',
+        probability: 0.38,
+        volume24h: 210000,
+        ageDays: 5,
+        endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+      {
+        question: 'Will the price of Bitcoin fall below $63000 by end of week?',
+        probability: 0.25,
+        volume24h: 190000,
+        ageDays: 5,
+        endDate: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      },
+    ],
+  }));
+}
+
+afterEach(() => {
+  mock.module('./polymarket.js', () => realPolymarketModule);
+});
 
 function rowSums(m: number[][]): number[] {
   return m.map(row => row.reduce((s, v) => s + v, 0));
@@ -462,6 +472,47 @@ describe('extractPriceThresholds', () => {
     ]);
     expect(result).toHaveLength(1);
     expect(result[0].price).toBe(70_000);
+  });
+
+  it('accepts date-anchored "trade above/below/over/under ... on/at <date>" markets', () => {
+    const above = extractPriceThresholds([
+      { question: 'Will BTC trade above $70000 on April 17?', probability: 0.4, volume: 1000, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    const below = extractPriceThresholds([
+      { question: 'Will BTC trade below $65000 at April 17?', probability: 0.3, volume: 1000, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(above).toHaveLength(1);
+    expect(above[0].price).toBe(70_000);
+    expect(below).toHaveLength(1);
+    expect(below[0].price).toBe(65_000);
+  });
+
+  it('rejects "trade above/below ... at expiry" (non-date anchor)', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will BTC trade above $70000 at expiry?', probability: 0.4, volume: 1000, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('rejects "trade above/below ... at close" (non-date anchor)', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will BTC trade above $70000 at close?', probability: 0.4, volume: 1000, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('rejects undated "trade above/below" markets (no date)', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will BTC trade above $70000?', probability: 0.4, volume: 1000 },
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('rejects path-style "stay above ... through <date>" markets', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will Bitcoin stay above $70,000 through April 17?', probability: 0.3, volume: 1000 },
+    ]);
+    expect(result).toHaveLength(0);
   });
 
   it('sorts results by price ascending', () => {
@@ -4083,6 +4134,7 @@ describe('markov_distribution anchor query strategy', () => {
 
 describe('markov_distribution tool output envelope', () => {
   integrationIt('auto-fetches candidate Polymarket anchors when polymarketMarkets are omitted', async () => {
+    installDefaultPolymarketMock();
     const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
     const prices: number[] = [];
     let p = 65000;
@@ -4345,8 +4397,10 @@ describe('markov_distribution tool output envelope', () => {
       `Bitcoin above ${targetMonth}`,
     ]);
     expect(frontCalls.every((call) => call.endDateFilter?.end_date_min && call.endDateFilter?.end_date_max)).toBe(true);
-    expect(retryCalls).toHaveLength(1);
-    expect(retryCalls[0].queries).toEqual([
+    expect(retryCalls.length).toBeGreaterThanOrEqual(1);
+    const datedRetryCall = retryCalls.find((call) => call.endDateFilter !== undefined);
+    expect(datedRetryCall).toBeDefined();
+    expect(datedRetryCall!.queries).toEqual([
       'crypto regulation',
       'SEC crypto',
       'cryptocurrency regulation',
@@ -4363,16 +4417,33 @@ describe('markov_distribution tool output envelope', () => {
       'recession',
       'economic recession',
     ]);
-    expect(retryCalls[0].endDateFilter).toEqual({
+    expect(datedRetryCall!.endDateFilter).toEqual({
       end_date_min: expect.any(String),
       end_date_max: expect.any(String),
     });
+
+    const undatedFallbackCall = retryCalls.find((call) => call.endDateFilter === undefined);
+    expect(undatedFallbackCall).toBeDefined();
+    expect(undatedFallbackCall!.queries).toEqual([
+      'Bitcoin price',
+      'Bitcoin',
+      'Bitcoin above',
+      'Bitcoin below',
+      `Bitcoin ${targetMonth}`,
+      `Bitcoin above ${targetMonth}`,
+    ]);
     expect(parsed.data.status).toBe('abstain');
     expect(diagnostics?.trustedAnchors).toBe(0);
     expect(diagnostics?.canEmitCanonical).toBe(false);
   });
 
   integrationIt('auto-fetches BTC 14-day Polymarket anchors and cleanly abstains when dated threshold inventory is unavailable', async () => {
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [],
+      fetchPolymarketAnchorMarketsWithQueries: async () => [],
+    }));
     const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
     const prices: number[] = [];
     let p = 65000;
@@ -4923,6 +4994,92 @@ describe('markov_distribution tool output envelope', () => {
       end_date_max: expect.any(String),
     });
     expect(callOptions[1].endDateFilter).toBeUndefined();
+    expect(parsed.data.status).toBe('abstain');
+    expect(diagnostics?.totalAnchors).toBe(1);
+    expect(diagnostics?.trustedAnchors).toBe(0);
+  });
+
+  it('BTC 14d uses undated fallback when date-windowed queries return empty', async () => {
+    const frontCalls: Array<{ query: string; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
+    const fallbackCalls: Array<{ queries: string[]; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
+    const targetMonth = new Date(Date.now() + 14 * 86_400_000)
+      .toLocaleString('en-US', { month: 'long' });
+
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+
+      fetchPolymarketAnchorMarkets: async (
+        query: string,
+        _limit: number,
+        options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+      ) => {
+        frontCalls.push({ query, endDateFilter: options.endDateFilter });
+        return [];
+      },
+
+      fetchPolymarketAnchorMarketsWithQueries: async (
+        queries: string[],
+        _limit: number,
+        options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+      ) => {
+        fallbackCalls.push({ queries: [...queries], endDateFilter: options.endDateFilter });
+        if (options.endDateFilter) {
+          return [];
+        }
+        return [
+          {
+            question: 'Will the price of Bitcoin be above $76,000 on June 1?',
+            probability: 0.52,
+            volume24h: 8000,
+            ageDays: 0,
+            endDate: '2026-06-01',
+          },
+        ];
+      },
+    }));
+
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await freshTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+
+    expect(frontCalls).toHaveLength(6);
+    expect(frontCalls.map((call) => call.query)).toEqual([
+      'Bitcoin price',
+      'Bitcoin',
+      'Bitcoin above',
+      'Bitcoin below',
+      `Bitcoin ${targetMonth}`,
+      `Bitcoin above ${targetMonth}`,
+    ]);
+    expect(frontCalls.every((call) => call.endDateFilter?.end_date_min && call.endDateFilter?.end_date_max)).toBe(true);
+
+    expect(fallbackCalls.length).toBeGreaterThanOrEqual(1);
+    const undatedFallbackCall = fallbackCalls.find((call) => call.endDateFilter === undefined);
+    expect(undatedFallbackCall).toBeDefined();
+    expect(undatedFallbackCall!.queries).toEqual([
+      'Bitcoin price',
+      'Bitcoin',
+      'Bitcoin above',
+      'Bitcoin below',
+      `Bitcoin ${targetMonth}`,
+      `Bitcoin above ${targetMonth}`,
+    ]);
     expect(parsed.data.status).toBe('abstain');
     expect(diagnostics?.totalAnchors).toBe(1);
     expect(diagnostics?.trustedAnchors).toBe(0);

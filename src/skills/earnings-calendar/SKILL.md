@@ -17,7 +17,7 @@ Research upcoming earnings events with consensus estimates and event context.
 
 Parse tickers from the user query.
 
-If no tickers are specified and `.dexter/watchlist.json` exists, use the
+If no tickers are specified and `.cramer-short/watchlist.json` exists, use the
 tickers from the watchlist as the default scope.
 
 If a sector or index is mentioned (e.g. "tech earnings", "S&P earnings"),

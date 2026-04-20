@@ -261,6 +261,43 @@ describe('scoreAnchorMarketRelevance', () => {
     expect(cryptoTerminal).toBeGreaterThan(cryptoBarrier);
   });
 
+  it('accepts date-anchored "trade above/below/over/under ... on/at <date>" for crypto', () => {
+    const tradeAbove = scoreAnchorMarketRelevance(
+      'Will Bitcoin trade above $70,000 on April 17?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 2 * 86_400_000).toISOString(),
+    );
+    const tradeBelow = scoreAnchorMarketRelevance(
+      'Will Bitcoin trade below $65,000 at April 17?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 2 * 86_400_000).toISOString(),
+    );
+    expect(tradeAbove).toBeGreaterThan(0);
+    expect(tradeBelow).toBeGreaterThan(0);
+  });
+
+  it('rejects "trade above/below ... at expiry" for crypto (non-date anchor)', () => {
+    const result = scoreAnchorMarketRelevance(
+      'Will Bitcoin trade above $70,000 at expiry?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    expect(result).toBe(0);
+  });
+
+  it('rejects "trade above/below ... at close" for crypto (non-date anchor)', () => {
+    const result = scoreAnchorMarketRelevance(
+      'Will Bitcoin trade above $70,000 at close?',
+      'BTC-USD',
+      14,
+      new Date(Date.now() + 14 * 86_400_000).toISOString(),
+    );
+    expect(result).toBe(0);
+  });
+
   it('rejects other crypto barrier/path phrasings that extractor skips', () => {
     const stayAbove = scoreAnchorMarketRelevance(
       'Will Bitcoin stay above $70,000 through April 17?',
