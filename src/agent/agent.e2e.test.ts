@@ -158,6 +158,35 @@ describe('Agent E2E — basic financial query flows', () => {
   );
 
   e2eIt(
+    'routes the exact OIL markov + polymarket prompt through the oil proxy path',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide a OIL price forecast based on markov chain and polymarket for the next 14 days',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('USO');
+      expect(markovStart?.args.horizon).toBe(14);
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+      const forecastStart = findToolStartEvent(result, 'polymarket_forecast');
+      expect(forecastStart).toBeDefined();
+      expect(forecastStart?.args.ticker).toBe('USO');
+      expect(forecastStart?.args.horizon_days).toBe(14);
+      const forecastEnd = findToolEndEvent(result, 'polymarket_forecast');
+      expect(forecastEnd).toBeDefined();
+      const forecastText = extractToolResultText(forecastEnd!.result).toLowerCase();
+      expect(forecastText).toMatch(/oil|uso/);
+      expect(forecastText).not.toMatch(/\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|cryptocurrency)\b/i);
+      expect(result.answer.toLowerCase()).toMatch(/oil|uso/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
     'uses deeper fallback tools after a non-crypto Markov abstain path for NVDA forecasts',
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(

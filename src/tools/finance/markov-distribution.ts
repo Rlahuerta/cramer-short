@@ -67,6 +67,18 @@ async function fetchYahooChartPrices(
   }
 }
 
+function normalizeHistoricalPriceTicker(ticker: string): string {
+  const upper = ticker.trim().toUpperCase();
+  switch (upper) {
+    case 'OIL':
+    case 'WTICOUSD':
+    case 'CRUDE':
+      return 'USO';
+    default:
+      return ticker;
+  }
+}
+
 /**
  * Fetch daily close prices. Tries Financial Datasets API first (fast, high quality),
  * then falls back to Yahoo Finance chart API (free, works for ETFs/commodities).
@@ -76,6 +88,7 @@ export async function fetchHistoricalPrices(
   ticker: string,
   days = 120,
 ): Promise<number[]> {
+  const normalizedTicker = normalizeHistoricalPriceTicker(ticker);
   const endDate = new Date().toISOString().slice(0, 10);
   const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -84,7 +97,7 @@ export async function fetchHistoricalPrices(
   // Try Financial Datasets API first
   try {
     const { data } = await api.get('/prices/', {
-      ticker,
+      ticker: normalizedTicker,
       interval: 'day',
       start_date: startDate,
       end_date: endDate,
@@ -99,11 +112,11 @@ export async function fetchHistoricalPrices(
     // Financial Datasets failed (premium required, rate limit, etc.) — fall through
   }
 
-  const binanceCloses = await fetchBinanceDailyCloses(ticker, days);
+  const binanceCloses = await fetchBinanceDailyCloses(normalizedTicker, days);
   if (binanceCloses.length >= 10) return binanceCloses;
 
   // Fallback: Yahoo Finance chart API (works for ETFs, commodities, most tickers)
-  return fetchYahooChartPrices(ticker, days);
+  return fetchYahooChartPrices(normalizedTicker, days);
 }
 
 // ---------------------------------------------------------------------------

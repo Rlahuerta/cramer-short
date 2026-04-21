@@ -345,6 +345,22 @@ describe('Agent', () => {
       });
     });
 
+    it('routes open-ended OIL markov prompts through the oil commodity proxy path', () => {
+      expect(inferDistributionTicker('Provide a OIL price forecast based on markov chain and polymarket for the next 14 days')).toBe('USO');
+      expect(buildForcedMarkovArgs('Provide a OIL price forecast based on markov chain and polymarket for the next 14 days')).toEqual({
+        ticker: 'USO',
+        horizon: 14,
+      });
+    });
+
+    it('routes WTI crude oil markov prompts through the oil commodity proxy path', () => {
+      expect(inferDistributionTicker('Provide a WTI crude oil forecast based on markov chain for the next 14 days')).toBe('USO');
+      expect(buildForcedMarkovArgs('Provide a WTI crude oil forecast based on markov chain for the next 14 days')).toEqual({
+        ticker: 'USO',
+        horizon: 14,
+      });
+    });
+
     it('preserves explicit Barrick Gold equity queries as GOLD ticker', () => {
       expect(inferDistributionTicker('What is the probability distribution for Barrick Gold stock in 30 trading days?')).toBe('GOLD');
     });

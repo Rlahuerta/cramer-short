@@ -1,4 +1,4 @@
-export type ResolvedAssetClass = 'commodity_gold' | 'commodity_silver' | 'gold_miner' | 'ticker';
+export type ResolvedAssetClass = 'commodity_gold' | 'commodity_silver' | 'commodity_oil' | 'gold_miner' | 'ticker';
 
 export interface ResolvedAssetIntent {
   rawQuery: string;
@@ -21,8 +21,10 @@ export interface ResolvedTickerSearchIdentity {
 const BARRICK_CONTEXT_RE = /\bbarrick\b|\bgold\s+(?:stock|equity|shares|company|earnings|revenue|miner|mining)\b|\$gold\b/i;
 const GOLD_COMMODITY_RE = /\bgold\b|\bxauusd\b/i;
 const SILVER_COMMODITY_RE = /\bsilver\b|\bxagusd\b/i;
+const OIL_COMMODITY_RE = /\boil\b|\bcrude\b|\bwti\b|\bwticousd\b/i;
 const GOLD_PROXY_TICKERS = new Set(['GLD', 'IAU', 'SGOL', 'XAUUSD']);
 const SILVER_PROXY_TICKERS = new Set(['SLV', 'SIVR', 'XAGUSD', 'SILVER']);
+const OIL_PROXY_TICKERS = new Set(['USO', 'BNO', 'OIL', 'WTICOUSD', 'CRUDE']);
 
 function normalizeExplicitTicker(explicitTicker?: string | null): string | null {
   const value = explicitTicker?.trim().toUpperCase();
@@ -49,6 +51,16 @@ export function resolveTickerSearchIdentity(ticker: string): ResolvedTickerSearc
       canonicalTicker: 'SLV',
       searchQuery: 'silver',
       canonicalNames: ['silver', 'slv'],
+      strictQuestionMatch: false,
+    };
+  }
+
+  if (OIL_PROXY_TICKERS.has(bareTicker)) {
+    return {
+      rawTicker: normalized,
+      canonicalTicker: 'USO',
+      searchQuery: 'oil',
+      canonicalNames: ['oil', 'uso'],
       strictQuestionMatch: false,
     };
   }
@@ -148,6 +160,18 @@ export function resolveAssetIntent(query: string, explicitTicker?: string | null
     };
   }
 
+  if (normalizedTicker === 'OIL' || normalizedTicker === 'USO' || normalizedTicker === 'WTICOUSD' || normalizedTicker === 'CRUDE' || OIL_COMMODITY_RE.test(query)) {
+    return {
+      rawQuery: query,
+      rawTicker: normalizedTicker,
+      resolvedTicker: 'USO',
+      assetClass: 'commodity_oil',
+      displayName: 'Oil (USO proxy)',
+      proxyLabel: 'USO',
+      needsClarification: false,
+    };
+  }
+
   if (normalizedTicker) {
     return {
       rawQuery: query,
@@ -188,5 +212,9 @@ export function assertAssetConsistency(
 
   if (intent.assetClass === 'commodity_silver' && normalized === 'SILVER' && toolName !== 'get_stock_tickers') {
     throw new Error('Commodity silver intent cannot use SILVER pseudo-ticker directly; use SLV proxy instead.');
+  }
+
+  if (intent.assetClass === 'commodity_oil' && normalized === 'OIL' && toolName !== 'get_stock_tickers') {
+    throw new Error('Commodity oil intent cannot use OIL pseudo-ticker directly; use USO proxy instead.');
   }
 }
