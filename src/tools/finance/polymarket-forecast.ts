@@ -13,20 +13,147 @@ import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import { fetchPolymarketMarkets, type PolymarketMarketResult } from './polymarket.js';
+import { findSnapshotInWindow, readSnapshotRecords } from './polymarket-snapshots.js';
 import { extractSignals, scoreMarketRelevance } from './signal-extractor.js';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { lookupImpact, inferAssetClass } from './impact-map.js';
 import { runEnsemble, computePolymarketSignal, computeEnsemble, computeConditionalReturn, adjustYesBias, type MarketInput } from '../../utils/ensemble.js';
 import { buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
+import type { PolymarketSnapshotRecord } from './polymarket-snapshots.js';
 
 type RawMarket = {
+  marketId?: string;
   question: string;
   probability: number;
   volume24h: number;
   ageDays: number | undefined;
   signalCategory: string;
   endDate?: string | null;
+  priceSpikeDetected: boolean;
+  transitoryMove: boolean;
 };
+
+type ForecastHistoryReader = typeof readSnapshotRecords;
+type ForecastMarketFetcher = typeof fetchPolymarketMarkets;
+
+type ForecastToolDependencies = {
+  fetchMarkets?: ForecastMarketFetcher;
+  readRecords?: ForecastHistoryReader;
+};
+
+type HistoryFlags = {
+  priceSpikeDetected: boolean;
+  transitoryMove: boolean;
+  warnings: string[];
+};
+
+const TWO_HOURS_MS = 2 * 3_600_000;
+const FOUR_HOURS_MS = 4 * 3_600_000;
+const TWENTY_FOUR_HOURS_MS = 24 * 3_600_000;
+const FORTY_EIGHT_HOURS_MS = 48 * 3_600_000;
+
+export function evaluateMarketHistory(
+  market: Pick<PolymarketMarketResult, 'marketId' | 'probability' | 'volume24h'>,
+  records: PolymarketSnapshotRecord[],
+  nowMs: number,
+): {
+  priceSpikeDetected: boolean;
+  transitoryMove: boolean;
+  warnings: string[];
+} {
+  if (!market.marketId) {
+    return {
+      priceSpikeDetected: false,
+      transitoryMove: false,
+      warnings: [],
+    };
+  }
+  const warnings: string[] = [];
+
+  const spikeSnapshot = findSnapshotInWindow(
+    records,
+    market.marketId,
+    nowMs - FOUR_HOURS_MS,
+    nowMs - TWO_HOURS_MS,
+  );
+
+  const persistenceSnapshot = findSnapshotInWindow(
+    records,
+    market.marketId,
+    nowMs - FORTY_EIGHT_HOURS_MS,
+    nowMs - TWENTY_FOUR_HOURS_MS,
+  );
+
+  let priceSpikeDetected = false;
+  let transitoryMove = false;
+
+  if (spikeSnapshot) {
+    const absDelta = Math.abs(market.probability - spikeSnapshot.probability);
+    priceSpikeDetected = absDelta > 0.08 && market.volume24h < 100_000;
+  } else {
+    warnings.push(`Spike detection unavailable: no prior snapshot found for market ${market.marketId}`);
+  }
+
+  if (persistenceSnapshot) {
+  } else {
+    warnings.push(
+      `Persistence test unavailable: no prior snapshot found for market ${market.marketId} in 24-48h window`,
+    );
+  }
+
+  if (spikeSnapshot && persistenceSnapshot) {
+    const originalMove = spikeSnapshot.probability - persistenceSnapshot.probability;
+    const originalMoveMagnitude = Math.abs(originalMove);
+    const movedTowardBaseline =
+      Math.abs(market.probability - persistenceSnapshot.probability)
+      < Math.abs(spikeSnapshot.probability - persistenceSnapshot.probability);
+    const reversalAmount = Math.abs(spikeSnapshot.probability - market.probability);
+    transitoryMove =
+      originalMoveMagnitude > 0.10
+      && movedTowardBaseline
+      && reversalAmount > originalMoveMagnitude * 0.5;
+  }
+
+  return {
+    priceSpikeDetected,
+    transitoryMove,
+    warnings,
+  };
+}
+
+export function evaluateHistoryFlags(
+  market: PolymarketMarketResult,
+  nowMs: number,
+  snapshotFilePath?: string,
+): HistoryFlags {
+  return evaluateHistoryFlagsWithReader(market, nowMs, snapshotFilePath, readSnapshotRecords);
+}
+
+function evaluateHistoryFlagsWithReader(
+  market: PolymarketMarketResult,
+  nowMs: number,
+  snapshotFilePath: string | undefined,
+  readRecords: ForecastHistoryReader,
+): HistoryFlags {
+  if (!market.marketId) {
+    return {
+      priceSpikeDetected: false,
+      transitoryMove: false,
+      warnings: [],
+    };
+  }
+
+  try {
+    const records = readRecords(snapshotFilePath, market.marketId);
+    return evaluateMarketHistory(market, records, nowMs);
+  } catch {
+    return {
+      priceSpikeDetected: false,
+      transitoryMove: false,
+      warnings: ['Snapshot history unavailable due to filesystem error'],
+    };
+  }
+}
 
 function daysUntilEndDate(endDate: string | null | undefined): number | null {
   if (!endDate) return null;
@@ -237,273 +364,291 @@ function optionsLabel(skew: number): string {
 // Tool
 // ---------------------------------------------------------------------------
 
-export const polymarketForecastTool = new DynamicStructuredTool({
-  name: 'polymarket_forecast',
-  description:
-    'Generate a prediction-market-weighted ensemble price forecast for an asset over any horizon (1–365 days), ' +
-    'combining Polymarket probabilities (markets span 1 day to 12 months) with optional sentiment, Markov, fundamental, and options signals.',
-  schema,
-  func: async (input) => {
-    if (polymarketBreaker.isOpen()) {
-      return formatToolResult({
-        error: 'Polymarket API is temporarily unavailable (circuit open). Try again in a few minutes.',
-      });
-    }
+export function createPolymarketForecastTool(dependencies: ForecastToolDependencies = {}) {
+  const fetchMarkets = dependencies.fetchMarkets ?? fetchPolymarketMarkets;
+  const readRecords = dependencies.readRecords ?? readSnapshotRecords;
 
-    try {
-      const ticker = input.ticker.trim().toUpperCase();
-      const horizonDays = input.horizon_days ?? 7;
-      const currentPrice = input.current_price;
-      const basePrice = currentPrice ?? 100;
-      const searchIdentity = resolveTickerSearchIdentity(ticker);
-      const assetClass = inferAssetClass(searchIdentity.canonicalTicker);
+  return new DynamicStructuredTool({
+    name: 'polymarket_forecast',
+    description:
+      'Generate a prediction-market-weighted ensemble price forecast for an asset over any horizon (1–365 days), ' +
+      'combining Polymarket probabilities (markets span 1 day to 12 months) with optional sentiment, Markov, fundamental, and options signals.',
+    schema,
+    func: async (input) => {
+      if (polymarketBreaker.isOpen()) {
+        return formatToolResult({
+          error: 'Polymarket API is temporarily unavailable (circuit open). Try again in a few minutes.',
+        });
+      }
 
-      // Step 1: Extract signals for this ticker (up to 5)
-      const signals = extractSignals(searchIdentity.canonicalTicker).slice(0, 5);
+      try {
+        const ticker = input.ticker.trim().toUpperCase();
+        const horizonDays = input.horizon_days ?? 7;
+        const currentPrice = input.current_price;
+        const basePrice = currentPrice ?? 100;
+        const searchIdentity = resolveTickerSearchIdentity(ticker);
+        const assetClass = inferAssetClass(searchIdentity.canonicalTicker);
+        const historyWarnings: string[] = [];
+        const nowMs = Date.now();
 
-      // Step 2: Fetch Polymarket markets for each signal using primary phrase
-      // AND query variants to deepen retrieval, up to 5 per query
-      const allResults = await Promise.allSettled(
-        signals.map((sig) => {
-          const phrases = [sig.searchPhrase, ...(sig.queryVariants ?? [])];
-          return Promise.allSettled(
-            phrases.map((phrase) => fetchPolymarketMarkets(phrase, 5)),
-          ).then((settledVariants) =>
-            settledVariants
-              .filter((r): r is PromiseFulfilledResult<PolymarketMarketResult[]> => r.status === 'fulfilled')
-              .flatMap((r) => r.value)
-              .filter((m) => scoreMarketRelevance(m.question, sig.category) > 0)
-              .map((m) => ({ ...m, signalCategory: sig.category })),
-          );
-        }),
-      );
+        // Step 1: Extract signals for this ticker (up to 5)
+        const signals = extractSignals(searchIdentity.canonicalTicker).slice(0, 5);
 
-      // Deduplicate by question string across all signals and variants,
-      // preserving the signal category from whichever signal first found it
-      const seen = new Set<string>();
-      const rawMarkets: RawMarket[] = [];
-      for (let i = 0; i < signals.length; i++) {
-        const result = allResults[i];
-        if (result.status !== 'fulfilled') continue;
-        for (const m of result.value) {
-          if (seen.has(m.question)) continue;
-          seen.add(m.question);
-          rawMarkets.push({ question: m.question, probability: m.probability, volume24h: m.volume24h, ageDays: m.ageDays, endDate: m.endDate, signalCategory: m.signalCategory });
+        // Step 2: Fetch Polymarket markets for each signal using primary phrase
+        // AND query variants to deepen retrieval, up to 5 per query
+        const allResults = await Promise.allSettled(
+          signals.map((sig) => {
+            const phrases = [sig.searchPhrase, ...(sig.queryVariants ?? [])];
+            return Promise.allSettled(
+              phrases.map((phrase) => fetchMarkets(phrase, 5)),
+            ).then((settledVariants) =>
+              settledVariants
+                .filter((r): r is PromiseFulfilledResult<PolymarketMarketResult[]> => r.status === 'fulfilled')
+                .flatMap((r) => r.value)
+                .filter((m) => scoreMarketRelevance(m.question, sig.category) > 0)
+                .map((m) => ({ ...m, signalCategory: sig.category })),
+            );
+          }),
+        );
+
+        // Deduplicate by question string across all signals and variants,
+        // preserving the signal category from whichever signal first found it
+        const seen = new Set<string>();
+        const rawMarkets: RawMarket[] = [];
+        for (let i = 0; i < signals.length; i++) {
+          const result = allResults[i];
+          if (result.status !== 'fulfilled') continue;
+          for (const m of result.value) {
+            if (seen.has(m.question)) continue;
+            seen.add(m.question);
+            const history = evaluateHistoryFlagsWithReader(m, nowMs, undefined, readRecords);
+            historyWarnings.push(...history.warnings);
+            rawMarkets.push({
+              marketId: m.marketId,
+              question: m.question,
+              probability: m.probability,
+              volume24h: m.volume24h,
+              ageDays: m.ageDays,
+              endDate: m.endDate,
+              signalCategory: m.signalCategory,
+              priceSpikeDetected: history.priceSpikeDetected,
+              transitoryMove: history.transitoryMove,
+            });
+          }
         }
-      }
 
-      // Step 3: Build MarketInput array
-      const markets: MarketInput[] = rawMarkets.map((m) => {
-        const mImpact = lookupImpact(m.signalCategory, assetClass);
-        return {
-          question: m.question,
-          probability: m.probability,
-          volume24hUsd: m.volume24h,
-          ageDays: m.ageDays,
-          priceSpikeDetected: false,
-          signalTier: categoryToTier(m.signalCategory),
-          deltaYes: mImpact.deltaYes,
-          deltaNo: mImpact.deltaNo,
-        };
-      });
-
-      // Step 4: Run ensemble — also capture intermediate values for display
-      const otherSignals = {
-        sentimentScore: input.sentiment_score,
-        markovReturn: input.markov_return,
-        fundamentalReturn: input.fundamental_return,
-        optionsSkew: input.options_skew,
-        horizonDays,
-      };
-
-      const { signal: pmSignal, avgQuality, warnings: pmWarnings } = computePolymarketSignal(markets);
-      const { weights } = computeEnsemble(pmSignal, avgQuality, otherSignals);
-      const result = runEnsemble(basePrice, markets, otherSignals);
-
-      // Step 5: Format output
-      const returnPct = (result.forecastReturn * 100).toFixed(2);
-      const sigmaPct = (result.sigma * 100).toFixed(2);
-      const ciLow = result.ciLow95;
-      const ciHigh = result.ciHigh95;
-      const pmPct = pct(result.pmSignal);
-      const pmWeightPct = (result.pmEffectiveWeight * 100).toFixed(1);
-      const avgQualityStr = result.avgMarketQuality.toFixed(3);
-      let thresholdChartWarning: string | null = null;
-      const displayLabel = searchIdentity.canonicalNames[0]?.toUpperCase() ?? ticker;
-
-      const lines: string[] = [
-        `📊 Polymarket Forecast: ${displayLabel} (${ticker})  |  Horizon: ${horizonDays} days  |  Grade: ${result.qualityGrade} (${result.qualityScore}/100)`,
-      ];
-
-      if (currentPrice === undefined) {
-        lines.push('⚠️  No current price provided — price shown relative to base 100');
-      }
-
-      if (horizonDays > 90) {
-        lines.push(`⚠️  Horizon ${horizonDays}d > 90 days: Polymarket signal accuracy decreases for longer horizons. Wider CI expected. Consider supplementing with DCF skill for multi-month forecasts.`);
-      } else if (horizonDays > 14) {
-        lines.push(`ℹ️  Horizon ${horizonDays}d: Polymarket markets exist at this range but signal quality is moderate. 95% CI is wider than short-term forecasts.`);
-      }
-
-      lines.push('');
-      lines.push(`Current price:   ${currentPrice !== undefined ? '$' + basePrice : 'not provided — CI shown as %'}`);
-      lines.push(`Forecast price:  ${currentPrice !== undefined ? '$' + result.forecastPrice.toFixed(2) : '(base 100) ' + result.forecastPrice.toFixed(2)}  (${sign(result.forecastReturn)}${returnPct}%)`);
-      if (currentPrice !== undefined) {
-        lines.push(`95% CI:          [$${ciLow.toFixed(2)} – $${ciHigh.toFixed(2)}]  (σ = ${sigmaPct}%)`);
-      } else {
-        const ciLowPct = ((result.ciLow95 / basePrice - 1) * 100).toFixed(2);
-        const ciHighPct = ((result.ciHigh95 / basePrice - 1) * 100).toFixed(2);
-        const ciHighSign = parseFloat(ciHighPct) >= 0 ? '+' : '';
-        lines.push(`95% CI:          [${ciLowPct}% – ${ciHighSign}${ciHighPct}%]  (σ = ${sigmaPct}%)  ← % relative to current price`);
-      }
-      lines.push('');
-
-      // ── Polymarket Signal Summary (grouped by theme) ───────────────────────────
-      const numThemes = rawMarkets.reduce((s, m) => { s.add(m.signalCategory); return s; }, new Set<string>()).size;
-      lines.push(`── Polymarket Signal Summary  (w̄ = ${avgQualityStr} · ${markets.length} markets · ${numThemes} themes) ─`);
-
-      if (markets.length === 0) {
-        lines.push('  [No Polymarket markets found for this asset]');
-      } else {
-        // Group rawMarkets by signalCategory, computing per-theme net conditional return
-        type ThemeRow = {
-          category: string;
-          label: string;
-          netCondReturn: number;
-          topQuestion: string;
-          topProb: number;
-          absContrib: number; // populated after totalling
-        };
-
-        const byCategory = new Map<string, { question: string; probability: number; condReturn: number }[]>();
-        for (const m of rawMarkets) {
+        // Step 3: Build MarketInput array
+        const markets: MarketInput[] = rawMarkets.map((m) => {
           const mImpact = lookupImpact(m.signalCategory, assetClass);
-          const condReturn = computeConditionalReturn(adjustYesBias(m.probability), mImpact.deltaYes, mImpact.deltaNo);
-          if (!byCategory.has(m.signalCategory)) byCategory.set(m.signalCategory, []);
-          byCategory.get(m.signalCategory)!.push({ question: m.question, probability: m.probability, condReturn });
+          return {
+            question: m.question,
+            probability: m.probability,
+            volume24hUsd: m.volume24h,
+            ageDays: m.ageDays,
+            priceSpikeDetected: m.priceSpikeDetected,
+            transitoryMove: m.transitoryMove,
+            signalTier: categoryToTier(m.signalCategory),
+            deltaYes: mImpact.deltaYes,
+            deltaNo: mImpact.deltaNo,
+          };
+        });
+
+        // Step 4: Run ensemble — also capture intermediate values for display
+        const otherSignals = {
+          sentimentScore: input.sentiment_score,
+          markovReturn: input.markov_return,
+          fundamentalReturn: input.fundamental_return,
+          optionsSkew: input.options_skew,
+          horizonDays,
+        };
+
+        const { signal: pmSignal, avgQuality, warnings: pmWarnings } = computePolymarketSignal(markets);
+        const { weights } = computeEnsemble(pmSignal, avgQuality, otherSignals);
+        const result = runEnsemble(basePrice, markets, otherSignals);
+
+        // Step 5: Format output
+        const returnPct = (result.forecastReturn * 100).toFixed(2);
+        const sigmaPct = (result.sigma * 100).toFixed(2);
+        const ciLow = result.ciLow95;
+        const ciHigh = result.ciHigh95;
+        const pmPct = pct(result.pmSignal);
+        const pmWeightPct = (result.pmEffectiveWeight * 100).toFixed(1);
+        const avgQualityStr = result.avgMarketQuality.toFixed(3);
+        let thresholdChartWarning: string | null = null;
+        const displayLabel = searchIdentity.canonicalNames[0]?.toUpperCase() ?? ticker;
+
+        const lines: string[] = [
+          `📊 Polymarket Forecast: ${displayLabel} (${ticker})  |  Horizon: ${horizonDays} days  |  Grade: ${result.qualityGrade} (${result.qualityScore}/100)`,
+        ];
+
+        if (currentPrice === undefined) {
+          lines.push('⚠️  No current price provided — price shown relative to base 100');
         }
 
-        const rows: ThemeRow[] = [];
-        for (const [cat, entries] of byCategory) {
-          const net = entries.reduce((s, e) => s + e.condReturn, 0) / entries.length;
-          // Top market = highest abs conditional return within theme
-          const top = entries.reduce((best, e) => Math.abs(e.condReturn) >= Math.abs(best.condReturn) ? e : best);
-          rows.push({ category: cat, label: catToLabel(cat), netCondReturn: net, topQuestion: top.question, topProb: top.probability, absContrib: Math.abs(net) });
+        if (horizonDays > 90) {
+          lines.push(`⚠️  Horizon ${horizonDays}d > 90 days: Polymarket signal accuracy decreases for longer horizons. Wider CI expected. Consider supplementing with DCF skill for multi-month forecasts.`);
+        } else if (horizonDays > 14) {
+          lines.push(`ℹ️  Horizon ${horizonDays}d: Polymarket markets exist at this range but signal quality is moderate. 95% CI is wider than short-term forecasts.`);
         }
 
-        // Compute contribution % (share of total absolute signal strength)
-        const totalAbs = rows.reduce((s, r) => s + r.absContrib, 0) || 1;
-        rows.sort((a, b) => b.absContrib - a.absContrib);
+        lines.push('');
+        lines.push(`Current price:   ${currentPrice !== undefined ? '$' + basePrice : 'not provided — CI shown as %'}`);
+        lines.push(`Forecast price:  ${currentPrice !== undefined ? '$' + result.forecastPrice.toFixed(2) : '(base 100) ' + result.forecastPrice.toFixed(2)}  (${sign(result.forecastReturn)}${returnPct}%)`);
+        if (currentPrice !== undefined) {
+          lines.push(`95% CI:          [$${ciLow.toFixed(2)} – $${ciHigh.toFixed(2)}]  (σ = ${sigmaPct}%)`);
+        } else {
+          const ciLowPct = ((result.ciLow95 / basePrice - 1) * 100).toFixed(2);
+          const ciHighPct = ((result.ciHigh95 / basePrice - 1) * 100).toFixed(2);
+          const ciHighSign = parseFloat(ciHighPct) >= 0 ? '+' : '';
+          lines.push(`95% CI:          [${ciLowPct}% – ${ciHighSign}${ciHighPct}%]  (σ = ${sigmaPct}%)  ← % relative to current price`);
+        }
+        lines.push('');
 
-        // Column widths
-        const W_THEME = 22;
-        const W_DIR   = 13;
-        const W_SIG   = 48;
+        // ── Polymarket Signal Summary (grouped by theme) ───────────────────────────
+        const numThemes = rawMarkets.reduce((s, m) => { s.add(m.signalCategory); return s; }, new Set<string>()).size;
+        lines.push(`── Polymarket Signal Summary  (w̄ = ${avgQualityStr} · ${markets.length} markets · ${numThemes} themes) ─`);
 
-        const header = `  ${'Theme'.padEnd(W_THEME)}  ${'Direction'.padEnd(W_DIR)}  ${'Key Signal'.padEnd(W_SIG)}  Contribution`;
-        const divider = `  ${'─'.repeat(W_THEME + W_DIR + W_SIG + 18)}`;
-        lines.push(header);
-        lines.push(divider);
+        if (markets.length === 0) {
+          lines.push('  [No Polymarket markets found for this asset]');
+        } else {
+          type ThemeRow = {
+            category: string;
+            label: string;
+            netCondReturn: number;
+            topQuestion: string;
+            topProb: number;
+            absContrib: number;
+          };
 
-        let bullish = 0, bearish = 0, neutral = 0;
-        for (const row of rows) {
-          const dir = row.netCondReturn > 0.0005 ? '↑ Bullish' : row.netCondReturn < -0.0005 ? '↓ Bearish' : '→ Neutral';
-          if (dir.startsWith('↑')) bullish++;
-          else if (dir.startsWith('↓')) bearish++;
-          else neutral++;
+          const byCategory = new Map<string, { question: string; probability: number; condReturn: number }[]>();
+          for (const m of rawMarkets) {
+            const mImpact = lookupImpact(m.signalCategory, assetClass);
+            const condReturn = computeConditionalReturn(adjustYesBias(m.probability), mImpact.deltaYes, mImpact.deltaNo);
+            if (!byCategory.has(m.signalCategory)) byCategory.set(m.signalCategory, []);
+            byCategory.get(m.signalCategory)!.push({ question: m.question, probability: m.probability, condReturn });
+          }
 
-          const probPct = `${(row.topProb * 100).toFixed(0)}% YES`;
-          const keySignal = truncCol(`${row.topQuestion}: ${probPct}`, W_SIG);
-          const contrib = `${((row.absContrib / totalAbs) * 100).toFixed(0)}%`;
+          const rows: ThemeRow[] = [];
+          for (const [cat, entries] of byCategory) {
+            const net = entries.reduce((s, e) => s + e.condReturn, 0) / entries.length;
+            const top = entries.reduce((best, e) => Math.abs(e.condReturn) >= Math.abs(best.condReturn) ? e : best);
+            rows.push({ category: cat, label: catToLabel(cat), netCondReturn: net, topQuestion: top.question, topProb: top.probability, absContrib: Math.abs(net) });
+          }
 
-          lines.push(
-            `  ${truncCol(row.label, W_THEME).padEnd(W_THEME)}  ${dir.padEnd(W_DIR)}  ${keySignal.padEnd(W_SIG)}  ${contrib.padStart(5)}`,
-          );
+          const totalAbs = rows.reduce((s, r) => s + r.absContrib, 0) || 1;
+          rows.sort((a, b) => b.absContrib - a.absContrib);
+
+          const W_THEME = 22;
+          const W_DIR   = 13;
+          const W_SIG   = 48;
+
+          const header = `  ${'Theme'.padEnd(W_THEME)}  ${'Direction'.padEnd(W_DIR)}  ${'Key Signal'.padEnd(W_SIG)}  Contribution`;
+          const divider = `  ${'─'.repeat(W_THEME + W_DIR + W_SIG + 18)}`;
+          lines.push(header);
+          lines.push(divider);
+
+          let bullish = 0;
+          let bearish = 0;
+          let neutral = 0;
+          for (const row of rows) {
+            const dir = row.netCondReturn > 0.0005 ? '↑ Bullish' : row.netCondReturn < -0.0005 ? '↓ Bearish' : '→ Neutral';
+            if (dir.startsWith('↑')) bullish++;
+            else if (dir.startsWith('↓')) bearish++;
+            else neutral++;
+
+            const probPct = `${(row.topProb * 100).toFixed(0)}% YES`;
+            const keySignal = truncCol(`${row.topQuestion}: ${probPct}`, W_SIG);
+            const contrib = `${((row.absContrib / totalAbs) * 100).toFixed(0)}%`;
+
+            lines.push(
+              `  ${truncCol(row.label, W_THEME).padEnd(W_THEME)}  ${dir.padEnd(W_DIR)}  ${keySignal.padEnd(W_SIG)}  ${contrib.padStart(5)}`,
+            );
+          }
+
+          lines.push(divider);
+
+          const netLean = result.pmSignal > 0.005 ? ' (bullish lean)' : result.pmSignal < -0.005 ? ' (bearish lean)' : '';
+          lines.push(`  Consensus: ${bullish} bullish · ${bearish} bearish · ${neutral} neutral    Net signal: ${pmPct}%${netLean}`);
+          lines.push(`  Polymarket drives ${pmWeightPct}% of this forecast  (remainder from sentiment / fundamentals / options)`);
         }
 
-        lines.push(divider);
+        lines.push('');
+        lines.push('── Other Signals ──────────────────────────────────────────────────────────');
 
-        const netLean = result.pmSignal > 0.005 ? ' (bullish lean)' : result.pmSignal < -0.005 ? ' (bearish lean)' : '';
-        lines.push(`  Consensus: ${bullish} bullish · ${bearish} bearish · ${neutral} neutral    Net signal: ${pmPct}%${netLean}`);
-        lines.push(`  Polymarket drives ${pmWeightPct}% of this forecast  (remainder from sentiment / fundamentals / options)`);
-      }
+        const wSent = weights['sentiment'];
+        const wMarkov = weights['markov'];
+        const wFund = weights['fundamental'];
+        const wOpt = weights['options'];
 
-      lines.push('');
-      lines.push('── Other Signals ──────────────────────────────────────────────────────────');
-
-      const wSent = weights['sentiment'];
-      const wMarkov = weights['markov'];
-      const wFund = weights['fundamental'];
-      const wOpt = weights['options'];
-
-      if (input.sentiment_score !== undefined) {
-        const sentContrib = pct(input.sentiment_score * 0.04);
-        lines.push(`  News sentiment:     ${sentimentLabel(input.sentiment_score)} → ${sentContrib}%  (weight: ${((wSent ?? 0) * 100).toFixed(1)}%)`);
-      } else {
-        lines.push('  News sentiment:     [signal omitted — not provided]');
-      }
-
-      if (input.fundamental_return !== undefined) {
-        const fundContrib = pct(input.fundamental_return * (horizonDays / 365));
-        lines.push(`  Fundamentals:       ${fundContrib}%  (weight: ${((wFund ?? 0) * 100).toFixed(1)}%)`);
-      } else {
-        lines.push('  Fundamentals:       [signal omitted — not provided]');
-      }
-
-      if (input.markov_return !== undefined) {
-        const markovContrib = pct(input.markov_return);
-        lines.push(`  Markov chain:       ${markovContrib}%  (weight: ${((wMarkov ?? 0) * 100).toFixed(1)}%)`);
-      } else {
-        lines.push('  Markov chain:       [signal omitted — not provided]');
-      }
-
-      if (input.options_skew !== undefined) {
-        const optContrib = pct(input.options_skew * 0.03);
-        lines.push(`  Options skew:       ${optionsLabel(input.options_skew)} → ${optContrib}%  (weight: ${((wOpt ?? 0) * 100).toFixed(1)}%)`);
-      } else {
-        lines.push('  Options skew:       [signal omitted — not provided]');
-      }
-
-      // ── Price Distribution Chart (from threshold markets) ──────────────────
-      // Extract any markets containing explicit price thresholds ("$70K", "$3,400"…)
-      // and render an implied probability bar chart when ≥2 levels are found.
-      const thresholds = extractPriceThresholds(rawMarkets);
-      const thresholdChartAligned = isThresholdChartAlignedToHorizon(rawMarkets, horizonDays);
-      if (thresholds.length >= 2 && thresholdChartAligned) {
-        const chart = buildPriceDistributionChart(thresholds, currentPrice, ticker);
-        if (chart) {
-          lines.push('');
-          lines.push('── Price Distribution (from threshold markets) ────────────────────────────');
-          lines.push(chart);
+        if (input.sentiment_score !== undefined) {
+          const sentContrib = pct(input.sentiment_score * 0.04);
+          lines.push(`  News sentiment:     ${sentimentLabel(input.sentiment_score)} → ${sentContrib}%  (weight: ${((wSent ?? 0) * 100).toFixed(1)}%)`);
+        } else {
+          lines.push('  News sentiment:     [signal omitted — not provided]');
         }
-      } else if (thresholds.length >= 2) {
-        thresholdChartWarning = 'Threshold-style markets were omitted from the distribution chart because their resolution dates do not align with the requested forecast horizon.';
-      }
 
-      lines.push('');
-      lines.push('── Warnings ───────────────────────────────────────────────────────────────');
-
-      const allWarnings = [
-        ...(result.warnings ?? []),
-        ...pmWarnings.filter((w) => !result.warnings?.includes(w)),
-        ...(thresholdChartWarning ? [thresholdChartWarning] : []),
-      ];
-      const uniqueWarnings = [...new Set(allWarnings)];
-      if (uniqueWarnings.length === 0) {
-        lines.push('  None');
-      } else {
-        for (const w of uniqueWarnings) {
-          lines.push(`  ⚠ ${w}`);
+        if (input.fundamental_return !== undefined) {
+          const fundContrib = pct(input.fundamental_return * (horizonDays / 365));
+          lines.push(`  Fundamentals:       ${fundContrib}%  (weight: ${((wFund ?? 0) * 100).toFixed(1)}%)`);
+        } else {
+          lines.push('  Fundamentals:       [signal omitted — not provided]');
         }
+
+        if (input.markov_return !== undefined) {
+          const markovContrib = pct(input.markov_return);
+          lines.push(`  Markov chain:       ${markovContrib}%  (weight: ${((wMarkov ?? 0) * 100).toFixed(1)}%)`);
+        } else {
+          lines.push('  Markov chain:       [signal omitted — not provided]');
+        }
+
+        if (input.options_skew !== undefined) {
+          const optContrib = pct(input.options_skew * 0.03);
+          lines.push(`  Options skew:       ${optionsLabel(input.options_skew)} → ${optContrib}%  (weight: ${((wOpt ?? 0) * 100).toFixed(1)}%)`);
+        } else {
+          lines.push('  Options skew:       [signal omitted — not provided]');
+        }
+
+        const thresholds = extractPriceThresholds(rawMarkets);
+        const thresholdChartAligned = isThresholdChartAlignedToHorizon(rawMarkets, horizonDays);
+        if (thresholds.length >= 2 && thresholdChartAligned) {
+          const chart = buildPriceDistributionChart(thresholds, currentPrice, ticker);
+          if (chart) {
+            lines.push('');
+            lines.push('── Price Distribution (from threshold markets) ────────────────────────────');
+            lines.push(chart);
+          }
+        } else if (thresholds.length >= 2) {
+          thresholdChartWarning = 'Threshold-style markets were omitted from the distribution chart because their resolution dates do not align with the requested forecast horizon.';
+        }
+
+        lines.push('');
+        lines.push('── Warnings ───────────────────────────────────────────────────────────────');
+
+        const allWarnings = [
+          ...historyWarnings,
+          ...(result.warnings ?? []),
+          ...pmWarnings.filter((w) => !result.warnings?.includes(w)),
+          ...(thresholdChartWarning ? [thresholdChartWarning] : []),
+        ];
+        const uniqueWarnings = [...new Set(allWarnings)];
+        if (uniqueWarnings.length === 0) {
+          lines.push('  None');
+        } else {
+          for (const w of uniqueWarnings) {
+            lines.push(`  ⚠ ${w}`);
+          }
+        }
+
+        lines.push('');
+        lines.push('── Research basis: Reichenbach & Walther (2025) · Cordoba et al. (2024) · Tsang & Yang (2026)');
+
+        return formatToolResult({ result: lines.join('\n') });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`[polymarket_forecast] ${message}`);
       }
+    },
+  });
+}
 
-      lines.push('');
-      lines.push('── Research basis: Reichenbach & Walther (2025) · Cordoba et al. (2024) · Tsang & Yang (2026)');
-
-      return formatToolResult({ result: lines.join('\n') });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`[polymarket_forecast] ${message}`);
-    }
-  },
-});
+export const polymarketForecastTool = createPolymarketForecastTool();

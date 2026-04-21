@@ -179,6 +179,15 @@ describe('Agent E2E — basic financial query flows', () => {
       const payload = JSON.parse(markovEnd!.result) as { data?: { status?: string } };
       expect(payload?.data?.status).toBe('abstain');
 
+      const forecastStarts = result.events.filter((event): event is ToolStartEvent => {
+        if (!event || typeof event !== 'object') return false;
+        const candidate = event as { type?: string; tool?: string };
+        return candidate.type === 'tool_start' && candidate.tool === 'polymarket_forecast';
+      });
+      expect(forecastStarts.length).toBeGreaterThanOrEqual(1);
+      const lastForecastStart = forecastStarts[forecastStarts.length - 1];
+      expect(lastForecastStart?.args['markov_return']).toBeUndefined();
+
       expect(result.answer.toLowerCase()).toMatch(/nvda|nvidia/);
       const mentionsAbstainLimit = /abstain|no calibrated markov|confidence interval|point estimate/i.test(result.answer);
       const hasPriceFigure = /\$[\d,]+(\.\d+)?|\d+\.\d{2}/.test(result.answer);
@@ -226,6 +235,10 @@ describe('Agent E2E — basic financial query flows', () => {
         expect(hasMarkovEnrichedForecast).toBe(true);
       } else {
         expect(polymarketStarts.length).toBeGreaterThanOrEqual(1);
+        const noAbstainMarkovReturnReuse = polymarketStarts.every((start) =>
+          start.args['markov_return'] === undefined,
+        );
+        expect(noAbstainMarkovReturnReuse).toBe(true);
       }
 
       expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);

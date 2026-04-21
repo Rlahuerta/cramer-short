@@ -1,31 +1,31 @@
-import { describe, it, expect, mock, afterAll, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach } from 'bun:test';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
+import { createPolymarketForecastTool, evaluateMarketHistory } from './polymarket-forecast.js';
 import type { PolymarketMarketResult } from './polymarket.js';
 
-// ---------------------------------------------------------------------------
-// Capture real polymarket module before mocking so it can be restored in afterAll.
-// signal-extractor is NOT mocked here — it is pure rule-based logic with no
-// external deps, and mocking it would leak into signal-extractor.test.ts.
-// ---------------------------------------------------------------------------
-
-const realPolymarket = await import('./polymarket.js');
-
 const mockMarkets: PolymarketMarketResult[] = [
-  { question: 'Will NVIDIA beat Q2 earnings?', probability: 0.72, volume24h: 500_000, ageDays: 0 },
-  { question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000, ageDays: 0 },
+  { marketId: 'nvda-market-1', question: 'Will NVIDIA beat Q2 earnings?', probability: 0.72, volume24h: 500_000, ageDays: 0 },
+  { marketId: 'nvda-market-2', question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000, ageDays: 0 },
 ];
 
 function futureIso(daysAhead: number): string {
   return new Date(Date.now() + daysAhead * 86_400_000).toISOString();
 }
 
-mock.module('./polymarket.js', () => ({
-  fetchPolymarketMarkets: async (_query: string, _limit: number): Promise<PolymarketMarketResult[]> =>
-    mockMarkets,
-}));
+// ---------------------------------------------------------------------------
+// Default hermetic tool factory
+// ---------------------------------------------------------------------------
 
-// Import after mocking
-const { polymarketForecastTool } = await import('./polymarket-forecast.js');
+function makeHermeticTool(
+  fetchMarkets: (query: string, limit: number) => Promise<PolymarketMarketResult[]> = async () => mockMarkets,
+): ReturnType<typeof createPolymarketForecastTool> {
+  return createPolymarketForecastTool({
+    fetchMarkets,
+    readRecords: () => [], // hermetic: always empty snapshot history
+  });
+}
+
+let polymarketForecastTool: ReturnType<typeof createPolymarketForecastTool>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -36,13 +36,16 @@ function parseResult(raw: unknown): string {
   return outer.data?.result ?? outer.data?.error ?? '';
 }
 
+beforeEach(() => {
+  polymarketBreaker.reset();
+  polymarketForecastTool = makeHermeticTool();
+});
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe('polymarketForecastTool', () => {
-  beforeEach(() => { polymarketBreaker.reset(); });
-
   it('result string contains "Polymarket Forecast"', async () => {
     const raw = await polymarketForecastTool.func(
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
@@ -96,13 +99,9 @@ describe('polymarketForecastTool', () => {
   });
 
   it('filters out markets that are irrelevant to the selected signal category', async () => {
-    mock.module('./polymarket.js', () => ({
-      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
-        { question: 'Will ETH be above $2,000 by April 30?', probability: 0.61, volume24h: 150_000, ageDays: 1 },
-      ],
-    }));
-
-    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const freshTool = makeHermeticTool(async () => [
+      { question: 'Will ETH be above $2,000 by April 30?', probability: 0.61, volume24h: 150_000, ageDays: 1 },
+    ]);
     const raw = await freshTool.func(
       { ticker: 'GLD', horizon_days: 30, current_price: 440.08 },
       undefined,
@@ -114,14 +113,10 @@ describe('polymarketForecastTool', () => {
   });
 
   it('filters bitcoin price markets out of GLD output while preserving gold markets', async () => {
-    mock.module('./polymarket.js', () => ({
-      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
-        { question: 'Will gold reach $3,000 per ounce by June?', probability: 0.44, volume24h: 240_000, ageDays: 1 },
-        { question: 'Will Bitcoin price exceed $100K in 2026?', probability: 0.65, volume24h: 1_500_000, ageDays: 1 },
-      ],
-    }));
-
-    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const freshTool = makeHermeticTool(async () => [
+      { question: 'Will gold reach $3,000 per ounce by June?', probability: 0.44, volume24h: 240_000, ageDays: 1 },
+      { question: 'Will Bitcoin price exceed $100K in 2026?', probability: 0.65, volume24h: 1_500_000, ageDays: 1 },
+    ]);
     const raw = await freshTool.func(
       { ticker: 'GLD', horizon_days: 30, current_price: 440.08 },
       undefined,
@@ -184,42 +179,162 @@ describe('polymarketForecastTool', () => {
   });
 
   it('grade D when 0 markets returned', async () => {
-    // Temporarily override mock to return 0 markets
-    mock.module('./polymarket.js', () => ({
-      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [],
-    }));
-
-    const { polymarketForecastTool: freshTool } = await import('./polymarket-forecast.js');
+    const freshTool = makeHermeticTool(async () => []);
     const raw = await freshTool.func(
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
       undefined,
     );
     expect(parseResult(raw)).toContain('Grade: D');
   });
+
+});
+
+describe('evaluateMarketHistory', () => {
+  const nowMs = new Date('2026-04-20T12:00:00.000Z').getTime();
+
+  it('detects a 2-4h price spike when the delta exceeds 0.08 and volume is low', () => {
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.42, volume24h: 80_000 },
+      [
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.30,
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-20T09:00:00.000Z',
+        },
+      ],
+      nowMs,
+    );
+
+    expect(evaluation.priceSpikeDetected).toBe(true);
+    expect(evaluation.transitoryMove).toBe(false);
+  });
+
+  it('does not trigger a price spike when the 24h volume gate blocks it', () => {
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.42, volume24h: 150_000 },
+      [
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.30,
+          volume24h: 150_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-20T09:00:00.000Z',
+        },
+      ],
+      nowMs,
+    );
+
+    expect(evaluation.priceSpikeDetected).toBe(false);
+  });
+
+  it('emits a warning when no spike snapshot exists', () => {
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.42, volume24h: 80_000 },
+      [],
+      nowMs,
+    );
+
+    expect(evaluation.priceSpikeDetected).toBe(false);
+    expect(evaluation.warnings.some((warning) => warning.includes('Spike detection unavailable'))).toBe(true);
+  });
+
+  it('marks a market as transitory when a 24-48h move has mostly reversed', () => {
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.26, volume24h: 80_000 },
+      [
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.36,
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-20T09:00:00.000Z',
+        },
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.20,
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-19T06:00:00.000Z',
+        },
+      ],
+      nowMs,
+    );
+
+    expect(evaluation.transitoryMove).toBe(true);
+  });
+
+  it('does not mark a market as transitory when the move has persisted', () => {
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.48, volume24h: 80_000 },
+      [
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.36,
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-20T09:00:00.000Z',
+        },
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.20,
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-19T06:00:00.000Z',
+        },
+      ],
+      nowMs,
+    );
+
+    expect(evaluation.transitoryMove).toBe(false);
+  });
+
+  it('emits a warning when no 24-48h persistence snapshot exists', () => {
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.42, volume24h: 80_000 },
+      [
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.30,
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-20T09:00:00.000Z',
+        },
+      ],
+      nowMs,
+    );
+
+    expect(evaluation.transitoryMove).toBe(false);
+    expect(evaluation.warnings.some((warning) => warning.includes('Persistence test unavailable'))).toBe(true);
+  });
 });
 
 describe('threshold chart horizon alignment', () => {
   it('omits threshold chart and emits warning when threshold markets resolve at the wrong horizon', async () => {
-    mock.module('./polymarket.js', () => ({
-      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
-        {
-          question: 'Will the price of Bitcoin be above $60,000 on April 2?',
-          probability: 0.99,
-          volume24h: 300_000,
-          ageDays: 1,
-          endDate: futureIso(0),
-        },
-        {
-          question: 'Will the price of Bitcoin be above $76,000 on April 2?',
-          probability: 0.04,
-          volume24h: 200_000,
-          ageDays: 1,
-          endDate: futureIso(0),
-        },
-      ],
-    }));
-
-    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const freshTool = makeHermeticTool(async () => [
+      {
+        question: 'Will the price of Bitcoin be above $60,000 on April 2?',
+        probability: 0.99,
+        volume24h: 300_000,
+        ageDays: 1,
+        endDate: futureIso(0),
+      },
+      {
+        question: 'Will the price of Bitcoin be above $76,000 on April 2?',
+        probability: 0.04,
+        volume24h: 200_000,
+        ageDays: 1,
+        endDate: futureIso(0),
+      },
+    ]);
     const result = parseResult(await freshTool.func(
       { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
       undefined,
@@ -230,26 +345,22 @@ describe('threshold chart horizon alignment', () => {
   });
 
   it('renders threshold chart when threshold markets resolve near the requested horizon', async () => {
-    mock.module('./polymarket.js', () => ({
-      fetchPolymarketMarkets: async (): Promise<PolymarketMarketResult[]> => [
-        {
-          question: 'Will the price of Bitcoin be above $60,000 on April 9?',
-          probability: 0.99,
-          volume24h: 300_000,
-          ageDays: 1,
-          endDate: futureIso(7),
-        },
-        {
-          question: 'Will the price of Bitcoin be above $76,000 on April 9?',
-          probability: 0.04,
-          volume24h: 200_000,
-          ageDays: 1,
-          endDate: futureIso(7),
-        },
-      ],
-    }));
-
-    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const freshTool = makeHermeticTool(async () => [
+      {
+        question: 'Will the price of Bitcoin be above $60,000 on April 9?',
+        probability: 0.99,
+        volume24h: 300_000,
+        ageDays: 1,
+        endDate: futureIso(7),
+      },
+      {
+        question: 'Will the price of Bitcoin be above $76,000 on April 9?',
+        probability: 0.04,
+        volume24h: 200_000,
+        ageDays: 1,
+        endDate: futureIso(7),
+      },
+    ]);
     const result = parseResult(await freshTool.func(
       { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
       undefined,
@@ -312,15 +423,6 @@ describe('horizon_days validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('sector ETF differentiation', () => {
-  // Helper to extract the forecast return line
-  function extractReturn(raw: unknown): number {
-    const s = parseResult(raw);
-    // Matches: "Forecast price:  $88.99  (-0.14%)" or "(+1.20%)"
-    const m = s.match(/Forecast price:[^(]+\(([+-]?\d+\.\d+)%\)/);
-    if (!m) throw new Error(`No forecast return found in: ${s}`);
-    return parseFloat(m[1]);
-  }
-
   it('SLX (steel ETF) infers materials asset class and has POSITIVE tariff delta', () => {
     // inferAssetClass must return 'materials' for SLX
     // The trade_policy signal for materials has deltaYes=+0.07 (tariffs protect US steel)
@@ -654,9 +756,6 @@ describe('different asset classes produce distinct conditional returns', () => {
   });
 });
 
-// Restore module mocks so they do not leak into other test files.
-// mock.restore() only handles function mocks; module mocks must be
-// explicitly re-registered with their original implementations.
 // ---------------------------------------------------------------------------
 // Query variant expansion — verify that queryVariants are actually queried
 // alongside primary phrases when fetching Polymarket markets.
@@ -666,14 +765,10 @@ describe('queryVariant expansion in polymarket_forecast', () => {
   it('queries both searchPhrase and queryVariants per signal', async () => {
     const queriedPhrases: string[] = [];
 
-    mock.module('./polymarket.js', () => ({
-      fetchPolymarketMarkets: async (query: string, _limit: number): Promise<PolymarketMarketResult[]> => {
-        queriedPhrases.push(query);
-        return mockMarkets;
-      },
-    }));
-
-    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const freshTool = makeHermeticTool(async (query: string) => {
+      queriedPhrases.push(query);
+      return mockMarkets;
+    });
     await freshTool.func(
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
       undefined,
@@ -697,17 +792,13 @@ describe('queryVariant expansion in polymarket_forecast', () => {
     let callCount = 0;
     const sameQuestion = 'Will NVIDIA beat Q2 earnings?';
 
-    mock.module('./polymarket.js', () => ({
-      fetchPolymarketMarkets: async (_query: string, _limit: number): Promise<PolymarketMarketResult[]> => {
-        callCount++;
-        return [
-          { question: sameQuestion, probability: 0.72, volume24h: 500_000, ageDays: 0 },
-          { question: `Unique result ${callCount}`, probability: 0.6, volume24h: 200_000, ageDays: 0 },
-        ];
-      },
-    }));
-
-    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const freshTool = makeHermeticTool(async () => {
+      callCount++;
+      return [
+        { question: sameQuestion, probability: 0.72, volume24h: 500_000, ageDays: 0 },
+        { question: `Unique result ${callCount}`, probability: 0.6, volume24h: 200_000, ageDays: 0 },
+      ];
+    });
     const raw = await freshTool.func(
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
       undefined,
@@ -725,15 +816,10 @@ describe('queryVariant expansion in polymarket_forecast', () => {
       { question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000, ageDays: 0 },
     ];
 
-    mock.module('./polymarket.js', () => ({
-      fetchPolymarketMarkets: async (query: string, _limit: number): Promise<PolymarketMarketResult[]> => {
-        // Primary phrase (first call per signal) returns empty, variant returns results
-        const isPrimary = query.includes('earnings') || query.includes('Fed') || query.includes('export') || query.includes('recession');
-        return isPrimary ? primaryResults : variantResults;
-      },
-    }));
-
-    const { polymarketForecastTool: freshTool } = await import(`./polymarket-forecast.js?t=${Date.now()}`);
+    const freshTool = makeHermeticTool(async (query: string) => {
+      const isPrimary = query.includes('earnings') || query.includes('Fed') || query.includes('export') || query.includes('recession');
+      return isPrimary ? primaryResults : variantResults;
+    });
     const raw = await freshTool.func(
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
       undefined,
@@ -743,8 +829,4 @@ describe('queryVariant expansion in polymarket_forecast', () => {
     // Should still produce a valid forecast (variant results fill in)
     expect(result).toContain('Polymarket Forecast');
   });
-});
-
-afterAll(() => {
-  mock.module('./polymarket.js', () => realPolymarket);
 });

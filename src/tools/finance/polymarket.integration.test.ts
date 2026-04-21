@@ -6,7 +6,11 @@
  * Skipped in normal `bun test` runs because they make real network calls.
  */
 import { describe, expect } from 'bun:test';
-import { polymarketTool } from './polymarket.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { polymarketTool, fetchPolymarketMarkets } from './polymarket.js';
+import { readSnapshotRecords } from './polymarket-snapshots.js';
 import { integrationIt as maybeIt } from '@/utils/test-guards.js';
 
 describe('Polymarket integration (live API)', () => {
@@ -48,5 +52,34 @@ describe('Polymarket integration (live API)', () => {
     const text = typeof result === 'string' ? result : (result as { data: { result: string } }).data.result;
     // Either no results message or valid market data — never throws
     expect(typeof text).toBe('string');
+  }, 15_000);
+
+  maybeIt('writes one snapshot record per returned market during fetch', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'polymarket-live-snapshots-'));
+    const snapshotFilePath = join(tmpDir, 'polymarket-snapshots.jsonl');
+
+    try {
+      const capturedAt = '2026-04-20T14:30:00.000Z';
+      const markets = await fetchPolymarketMarkets('Federal Reserve interest rates', 3, {
+        snapshotFilePath,
+        capturedAt,
+      });
+
+      const records = readSnapshotRecords(snapshotFilePath);
+      expect(records.length).toBe(markets.length);
+
+      for (let index = 0; index < markets.length; index++) {
+        const market = markets[index]!;
+        const record = records[index]!;
+        if (market.marketId === undefined) {
+          throw new Error('Expected fetched market to include a marketId');
+        }
+        expect(record.marketId).toBe(market.marketId);
+        expect(record.probability).toBeCloseTo(market.probability, 6);
+        expect(record.capturedAt).toBe(capturedAt);
+      }
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   }, 15_000);
 });

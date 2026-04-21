@@ -355,7 +355,7 @@ export function buildForcedMarkovArgs(query: string): { ticker: string; horizon:
 }
 
 export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCallRecord[]): boolean {
-  return isExplicitTerminalDistributionQuery(query)
+  return (isExplicitTerminalDistributionQuery(query) || inferTrajectoryRequest(query))
     && !toolCalls.some((call) => call.tool === 'markov_distribution');
 }
 
@@ -686,24 +686,6 @@ export function extractMarkovReturnFromToolCalls(toolCalls: ToolCallRecord[]): n
     }
   }
 
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-
-    const data = parseToolCallData(call);
-    if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'abstain') continue;
-
-    const forecastHint = data['forecastHint'];
-    if (!forecastHint || typeof forecastHint !== 'object') continue;
-
-    const usage = (forecastHint as Record<string, unknown>)['usage'];
-    const markovReturn = (forecastHint as Record<string, unknown>)['markovReturn'];
-    if (usage !== 'forecast_only') continue;
-    if (typeof markovReturn === 'number' && Number.isFinite(markovReturn)) {
-      return markovReturn;
-    }
-  }
-
   return null;
 }
 
@@ -734,18 +716,6 @@ function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[])
         && typeof markovWeight === 'number' && Number.isFinite(markovWeight)
       ) {
         return expectedReturn * markovWeight;
-      }
-    }
-
-    if (data['status'] === 'abstain') {
-      const forecastHint = data['forecastHint'];
-      if (!forecastHint || typeof forecastHint !== 'object') continue;
-
-      const usage = (forecastHint as Record<string, unknown>)['usage'];
-      const markovReturn = (forecastHint as Record<string, unknown>)['markovReturn'];
-      if (usage !== 'forecast_only') continue;
-      if (typeof markovReturn === 'number' && Number.isFinite(markovReturn)) {
-        return markovReturn;
       }
     }
   }

@@ -1,7 +1,11 @@
 import { describe, expect, it, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache, scoreAnchorMarketRelevance, fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import type { PolymarketMarketResult } from './polymarket.js';
+import { readSnapshotRecords } from './polymarket-snapshots.js';
 
 // Disable retry delays in tests to avoid timeouts
 let originalDelays: number[];
@@ -19,6 +23,7 @@ afterAll(() => {
 
 const MOCK_MARKET = {
   id: '1',
+  conditionId: 'condition-1',
   question: 'Will the Fed cut rates in 2026?',
   outcomes: '["Yes","No"]',
   outcomePrices: '["0.72","0.28"]',
@@ -39,6 +44,7 @@ const MOCK_EVENT = {
 
 const SPORTS_MARKET = {
   id: '99',
+  conditionId: 'condition-99',
   question: 'Will the Lakers win the NBA championship?',
   outcomes: '["Yes","No"]',
   outcomePrices: '["0.30","0.70"]',
@@ -52,6 +58,7 @@ const SPORTS_MARKET = {
 
 const BITCOIN_MARKET = {
   id: '42',
+  conditionId: 'condition-42',
   question: 'Will Bitcoin price exceed $100K in 2026?',
   outcomes: '["Yes","No"]',
   outcomePrices: '["0.65","0.35"]',
@@ -652,6 +659,39 @@ describe('polymarket commodity search filtering (regression)', () => {
 
     expect(results.map((m) => m.question)).toContain('Will gold reach $3,000 per ounce by June?');
     expect(results.map((m) => m.question)).not.toContain('Will Bitcoin price exceed $100K in 2026?');
+  });
+});
+
+describe('fetchPolymarketMarkets snapshot write path', () => {
+  beforeEach(() => { clearPolymarketCache(); });
+
+  it('returns structured results with stable marketId metadata and writes snapshot records', async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'polymarket-fetch-snapshots-'));
+    const snapshotFilePath = join(tmpDir, 'polymarket-snapshots.jsonl');
+
+    try {
+      globalThis.fetch = mockFetch([MOCK_EVENT], [MOCK_MARKET]) as typeof fetch;
+      const { fetchPolymarketMarkets: isolatedFetchPolymarketMarkets } = await import(`./polymarket.js?snapshots=${Date.now()}`) as {
+        fetchPolymarketMarkets: (query: string, limit: number, options?: { snapshotFilePath?: string; capturedAt?: string }) => Promise<PolymarketMarketResult[]>;
+      };
+
+      const capturedAt = '2026-04-20T14:30:00.000Z';
+      const results = await isolatedFetchPolymarketMarkets('Fed rate cut', 5, {
+        snapshotFilePath,
+        capturedAt,
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.marketId).toBe('condition-1');
+
+      const records = readSnapshotRecords(snapshotFilePath);
+      expect(records).toHaveLength(1);
+      expect(records[0]?.marketId).toBe('condition-1');
+      expect(records[0]?.probability).toBeCloseTo(0.72, 6);
+      expect(records[0]?.capturedAt).toBe(capturedAt);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

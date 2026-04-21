@@ -1,5 +1,5 @@
 /**
- * polymarket-forecast-integration.test.ts
+ * polymarket-forecast.integration.test.ts
  *
  * Cross-module consistency tests verifying the full pipeline:
  *   signal-extractor → impact-map → ensemble → polymarket-forecast
@@ -12,6 +12,9 @@
  * no network calls).
  */
 import { describe, it, expect } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 // NOTE: extractSignals is intentionally NOT imported here.
 // polymarket-forecast.test.ts permanently mocks signal-extractor.js via mock.module().
 // All integration tests below use inferAssetClass + lookupImpact directly, which
@@ -19,6 +22,18 @@ import { describe, it, expect } from 'bun:test';
 import { IMPACT_MAP, inferAssetClass, lookupImpact } from './impact-map.js';
 import { computeConditionalReturn, adjustYesBias, computePolymarketSignal, runEnsemble } from '../../utils/ensemble.js';
 import type { MarketInput } from '../../utils/ensemble.js';
+import { appendSnapshotRecord } from './polymarket-snapshots.js';
+
+function snapshotRecord(marketId: string, probability: number, capturedAt: string) {
+  return {
+    marketId,
+    question: `Question for ${marketId}`,
+    probability,
+    volume24h: 55_000,
+    endDate: '2026-12-31T23:59:59Z',
+    capturedAt,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Cross-module category consistency
@@ -65,6 +80,48 @@ describe('signal-extractor × impact-map — category consistency', () => {
           `${ticker}/${cat}/${assetClass} deltaNo is not finite`,
         ).toBe(true);
       }
+    }
+  });
+});
+
+describe('polymarket history integration seams', () => {
+  it('reads 2-4h and 24-48h snapshots through the real helper contract', async () => {
+    const { evaluateMarketHistory } = await import(`./polymarket-forecast.js?history-helper=${Date.now()}`);
+    const nowMs = new Date('2026-04-20T12:00:00.000Z').getTime();
+
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.26, volume24h: 80_000 },
+      [
+        snapshotRecord('m1', 0.36, '2026-04-20T09:00:00.000Z'),
+        snapshotRecord('m1', 0.20, '2026-04-19T06:00:00.000Z'),
+      ],
+      nowMs,
+    );
+
+    expect(evaluation.priceSpikeDetected).toBe(true);
+    expect(evaluation.transitoryMove).toBe(true);
+  });
+
+  it('reads snapshot records from a temp JSONL store via readSnapshotRecords', async () => {
+    const { evaluateHistoryFlags } = await import(`./polymarket-forecast.js?history-store=${Date.now()}`);
+    const tmpDir = await mkdtemp(join(tmpdir(), 'polymarket-forecast-history-'));
+    const snapshotFilePath = join(tmpDir, 'polymarket-snapshots.jsonl');
+
+    try {
+      appendSnapshotRecord(snapshotFilePath, snapshotRecord('m1', 0.36, '2026-04-20T09:00:00.000Z'));
+      appendSnapshotRecord(snapshotFilePath, snapshotRecord('m1', 0.20, '2026-04-19T06:00:00.000Z'));
+
+      const nowMs = new Date('2026-04-20T12:00:00.000Z').getTime();
+      const evaluation = evaluateHistoryFlags(
+        { marketId: 'm1', probability: 0.26, volume24h: 80_000 },
+        nowMs,
+        snapshotFilePath,
+      );
+
+      expect(evaluation.priceSpikeDetected).toBe(true);
+      expect(evaluation.transitoryMove).toBe(true);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
     }
   });
 });

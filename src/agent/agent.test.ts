@@ -349,15 +349,25 @@ describe('Agent', () => {
       expect(inferDistributionTicker('What is the probability distribution for Barrick Gold stock in 30 trading days?')).toBe('GOLD');
     });
 
-    it('flags explicit terminal distribution queries for forced markov routing', () => {
+    it('flags explicit terminal distribution and trajectory queries for forced markov routing', () => {
       expect(shouldForceMarkovDistribution(
         'What is the probability distribution for BTC-USD in 7 trading days? Use the Markov distribution methodology with terminal threshold markets only.',
         [],
       )).toBe(true);
 
       expect(shouldForceMarkovDistribution(
+        'Show me the day-by-day trajectory for NVDA over 14 days',
+        [],
+      )).toBe(true);
+
+      expect(shouldForceMarkovDistribution(
         'What is the probability distribution for BTC-USD in 7 trading days?',
         [{ tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7 }, result: '{"data":{"_tool":"markov_distribution","status":"abstain"}}' }],
+      )).toBe(false);
+
+      expect(shouldForceMarkovDistribution(
+        'Show me the day-by-day trajectory for NVDA over 14 days',
+        [{ tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 14, trajectory: true, trajectoryDays: 14 }, result: '{"data":{"_tool":"markov_distribution","status":"ok"}}' }],
       )).toBe(false);
     });
 
@@ -564,6 +574,55 @@ describe('Agent', () => {
       });
     });
 
+    it('does not reuse abstain-derived Markov return in forced crypto polymarket args', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: {
+                ticker: 'BTC',
+                price: 73300,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'social_sentiment',
+          args: { ticker: 'BTC', include_fear_greed: true, limit: 25 },
+          result: JSON.stringify({
+            data: {
+              result: '## Overall: 📈 Bullish (score +42/100)',
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              forecastHint: {
+                usage: 'forecast_only',
+                markovReturn: 0.006,
+                confidenceScore: 0.18,
+                calibratedDistribution: false,
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedPolymarketForecastArgs('Provide a BTC forecast for the next 7 days', toolCalls)).toEqual({
+        ticker: 'BTC',
+        horizon_days: 7,
+        current_price: 73300,
+        sentiment_score: 0.42,
+      });
+    });
+
     it('builds stable non-crypto forced args from resolved asset identity and explicit market-data query', () => {
       const query = 'Provide a GOLD forecast for next month';
       const toolCalls = [
@@ -603,7 +662,6 @@ describe('Agent', () => {
         ticker: 'GLD',
         horizon_days: 21,
         current_price: 312.45,
-        markov_return: 0.012,
       });
     });
 
@@ -642,7 +700,6 @@ describe('Agent', () => {
         ticker: 'GLD',
         horizon_days: 21,
         current_price: 295,
-        markov_return: 0.012,
       });
     });
 
@@ -677,7 +734,6 @@ describe('Agent', () => {
         ticker: 'GLD',
         horizon_days: 21,
         current_price: 294.87,
-        markov_return: 0.012,
       });
     });
 
@@ -707,7 +763,7 @@ describe('Agent', () => {
             },
           }),
         },
-      ])).toBe(0.006);
+      ])).toBeNull();
     });
 
     it('reruns polymarket_forecast only when a Markov signal exists but prior forecast args were not Markov-enriched', () => {
@@ -764,7 +820,7 @@ describe('Agent', () => {
             },
           }),
         },
-      ])).toBe(true);
+      ])).toBe(false);
     });
 
     it('forces crypto forecast tools only when required enrichment is missing', () => {
@@ -1094,7 +1150,7 @@ describe('Agent', () => {
         )).toBe(true);
       });
 
-      it('returns true when forecast rerun is needed to add markov_return after abstain hint is available', () => {
+      it('returns false when abstain hints are the only source of markov_return enrichment', () => {
         expect(shouldForceNonCryptoForecastFallback(
           'Provide an NVDA forecast for the next 7 days',
           [
@@ -1115,7 +1171,7 @@ describe('Agent', () => {
             { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
             { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13 }, result: '{"data":{}}' },
           ],
-        )).toBe(true);
+        )).toBe(false);
       });
 
       it('returns false when a prior generic market-data query exists but the explicit current-price query already succeeded', () => {
@@ -1243,7 +1299,7 @@ describe('Agent', () => {
         )).toBe(true);
       });
 
-      it('returns true when a prior forecast used the wrong markov_return value', () => {
+      it('returns false when a prior forecast only differs by an abstain-derived markov_return value', () => {
         expect(shouldForceNonCryptoForecastFallback(
           'Provide an NVDA forecast for the next 7 days',
           [
@@ -1264,7 +1320,7 @@ describe('Agent', () => {
             { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
             { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13, markov_return: 0.005 }, result: '{"data":{}}' },
           ],
-        )).toBe(true);
+        )).toBe(false);
       });
 
       it('does not let an unrelated successful Markov call suppress the target fallback', () => {
