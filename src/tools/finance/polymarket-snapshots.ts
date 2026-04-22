@@ -41,6 +41,7 @@ export function parseSnapshotLine(rawLine: string): PolymarketSnapshotRecord | n
     if (!isFiniteNumber(probability) || probability < 0 || probability > 1) return null;
     if (!isFiniteNumber(volume24h) || volume24h < 0) return null;
     if (typeof endDate !== 'string') return null;
+    if (endDate !== '' && !Number.isFinite(Date.parse(endDate))) return null;
     if (typeof capturedAt !== 'string' || !Number.isFinite(Date.parse(capturedAt))) return null;
 
     return {

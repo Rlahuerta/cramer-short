@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { getDefaultSystemPrompt } from '@/agent/prompts';
 import type { TokenUsage } from '@/agent/types';
 import { logger } from '@/utils';
+import { getSetting } from '@/utils/config.js';
 import { classifyError, isNonRetryableError } from '@/utils/errors';
 import { resolveProvider, getProviderById } from '@/providers';
 
@@ -62,11 +63,45 @@ async function withRetry<T>(fn: () => Promise<T>, provider: string, maxAttempts 
 
 /**
  * Race an LLM call against a hard wall-clock timeout.
- * Default: 120 s (configurable via LLM_CALL_TIMEOUT_MS env var).
+ * Default: 120 s (configurable via llmCallTimeoutMs setting or
+ * LLM_CALL_TIMEOUT_MS env var fallback).
  * When the timeout fires the AbortController is signalled so the
  * underlying HTTP connection is also torn down.
  */
-const LLM_CALL_TIMEOUT_MS = parseInt(process.env.LLM_CALL_TIMEOUT_MS ?? '120000', 10);
+export const DEFAULT_LLM_CALL_TIMEOUT_MS = 120_000;
+
+export interface LlmTimeoutResolution {
+  value: number;
+  source: 'config' | 'env' | 'default';
+}
+
+/**
+ * Resolves the effective LLM call timeout with precedence: config > env > default.
+ * Returns both the value and the source for accurate display in /config show.
+ */
+export function resolveLlmCallTimeoutMs(): LlmTimeoutResolution {
+  // Check config first (highest precedence)
+  const configValue = getSetting<number | undefined>('llmCallTimeoutMs', undefined);
+  if (configValue !== undefined) {
+    return { value: configValue, source: 'config' };
+  }
+
+  // Check env second
+  const envRaw = process.env.LLM_CALL_TIMEOUT_MS;
+  if (envRaw !== undefined && envRaw !== '') {
+    const envTimeout = Number(envRaw);
+    if (Number.isFinite(envTimeout) && envTimeout >= 30000 && envTimeout <= 600000) {
+      return { value: envTimeout, source: 'env' };
+    }
+  }
+
+  // Fallback to default
+  return { value: DEFAULT_LLM_CALL_TIMEOUT_MS, source: 'default' };
+}
+
+export function getLlmCallTimeoutMs(): number {
+  return resolveLlmCallTimeoutMs().value;
+}
 
 async function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
   const ac = new AbortController();
@@ -287,7 +322,7 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
       const messages = [new SystemMessage(finalSystemPrompt), new HumanMessage(prompt)];
       return withRetry(() => runnable.invoke(messages, invokeOpts), provider.displayName);
     }
-  }, timeoutMs ?? LLM_CALL_TIMEOUT_MS);
+  }, timeoutMs ?? getLlmCallTimeoutMs());
   const usage = extractUsage(result);
 
   // If no outputSchema and no tools, extract content from AIMessage

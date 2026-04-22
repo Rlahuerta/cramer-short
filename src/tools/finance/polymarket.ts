@@ -6,7 +6,6 @@ import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import {
   appendSnapshotRecords,
   createSnapshotRecord,
-  DEFAULT_POLYMARKET_SNAPSHOTS_PATH,
   type PolymarketSnapshotRecord,
 } from './polymarket-snapshots.js';
 
@@ -863,15 +862,17 @@ export async function fetchPolymarketMarkets(
   const markets = await searchEvents(query, limit);
   const structured = markets.map(toStructuredMarketResult);
 
-  const snapshotRecords = structured
-    .map((market) => createSnapshotRecord(market, options.capturedAt))
-    .filter((record): record is PolymarketSnapshotRecord => record !== null);
+  if (options.snapshotFilePath) {
+    const snapshotRecords = structured
+      .map((market) => createSnapshotRecord(market, options.capturedAt))
+      .filter((record): record is PolymarketSnapshotRecord => record !== null);
 
-  try {
-    appendSnapshotRecords(options.snapshotFilePath ?? DEFAULT_POLYMARKET_SNAPSHOTS_PATH, snapshotRecords);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[polymarket] Failed to write snapshot records: ${message}`);
+    try {
+      appendSnapshotRecords(options.snapshotFilePath, snapshotRecords);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[polymarket] Failed to write snapshot records: ${message}`);
+    }
   }
 
   return structured;

@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import { fetchPolymarketMarkets, type PolymarketMarketResult } from './polymarket.js';
-import { findSnapshotInWindow, readSnapshotRecords } from './polymarket-snapshots.js';
+import { findSnapshotInWindow, readSnapshotRecords, DEFAULT_POLYMARKET_SNAPSHOTS_PATH } from './polymarket-snapshots.js';
 import { extractSignals, scoreMarketRelevance } from './signal-extractor.js';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { lookupImpact, inferAssetClass } from './impact-map.js';
@@ -400,7 +400,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           signals.map((sig) => {
             const phrases = [sig.searchPhrase, ...(sig.queryVariants ?? [])];
             return Promise.allSettled(
-              phrases.map((phrase) => fetchMarkets(phrase, 5)),
+              phrases.map((phrase) => fetchMarkets(phrase, 5, { snapshotFilePath: DEFAULT_POLYMARKET_SNAPSHOTS_PATH })),
             ).then((settledVariants) =>
               settledVariants
                 .filter((r): r is PromiseFulfilledResult<PolymarketMarketResult[]> => r.status === 'fulfilled')

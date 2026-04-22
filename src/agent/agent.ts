@@ -1,6 +1,6 @@
 import { AIMessage } from '@langchain/core/messages';
 import { StructuredToolInterface } from '@langchain/core/tools';
-import { callLlm, streamCallLlm } from '../model/llm.js';
+import { callLlm, streamCallLlm, getLlmCallTimeoutMs } from '../model/llm.js';
 import { getSetting } from '../utils/config.js';
 import { getTools } from '../tools/registry.js';
 import { buildSystemPrompt, buildIterationPrompt, loadSoulDocument } from './prompts.js';
@@ -20,12 +20,9 @@ import { injectPolymarketContext } from '../tools/finance/polymarket-injector.js
 import { detectAssetType, extractSignals as extractSignalsFn } from '../tools/finance/signal-extractor.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { fetchPolymarketMarkets } from '../tools/finance/polymarket.js';
+import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
 import { resolveProvider } from '../providers.js';
 import type { ToolCallRecord } from './scratchpad.js';
-
-/** Matches the timeout used in llm.ts — configurable via the same env var. */
-const LLM_CALL_TIMEOUT_MS = parseInt(process.env.LLM_CALL_TIMEOUT_MS ?? '120000', 10);
-
 
 const DEFAULT_MODEL = 'gpt-5.4';
 export const DEFAULT_MAX_ITERATIONS = 25;
@@ -692,6 +689,7 @@ export function extractMarkovReturnFromToolCalls(toolCalls: ToolCallRecord[]): n
 function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
   const desiredTicker = inferDistributionTicker(query);
   const desiredHorizon = inferMarkovQueryHorizon(query);
+  const requiresSelectiveBtcGate = isBtcShortHorizonForecastQuery(query);
 
   for (let i = toolCalls.length - 1; i >= 0; i--) {
     const call = toolCalls[i];
@@ -709,6 +707,15 @@ function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[])
       const diagnostics = (canonical as Record<string, unknown>)['diagnostics'];
       if (!actionSignal || typeof actionSignal !== 'object' || !diagnostics || typeof diagnostics !== 'object') continue;
 
+      const predictionConfidence = (diagnostics as Record<string, unknown>)['predictionConfidence'];
+      if (
+        requiresSelectiveBtcGate
+        && isFiniteNumber(predictionConfidence)
+        && predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD
+      ) {
+        return null;
+      }
+
       const expectedReturn = (actionSignal as Record<string, unknown>)['expectedReturn'];
       const markovWeight = (diagnostics as Record<string, unknown>)['markovWeight'];
       if (
@@ -721,6 +728,37 @@ function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[])
   }
 
   return null;
+}
+
+function extractMarkovPredictionConfidenceForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
+  const desiredTicker = inferDistributionTicker(query);
+  const desiredHorizon = inferMarkovQueryHorizon(query);
+
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (call.tool !== 'markov_distribution') continue;
+    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
+
+    const data = parseToolCallData(call);
+    if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'ok') continue;
+
+    const canonical = data['canonical'];
+    if (!canonical || typeof canonical !== 'object') continue;
+
+    const diagnostics = (canonical as Record<string, unknown>)['diagnostics'];
+    if (!diagnostics || typeof diagnostics !== 'object') continue;
+
+    const predictionConfidence = (diagnostics as Record<string, unknown>)['predictionConfidence'];
+    if (isFiniteNumber(predictionConfidence)) return predictionConfidence;
+  }
+
+  return null;
+}
+
+function hasLowConfidenceBtcShortHorizonMarkov(query: string, toolCalls: ToolCallRecord[]): boolean {
+  if (!isBtcShortHorizonForecastQuery(query)) return false;
+  const predictionConfidence = extractMarkovPredictionConfidenceForQuery(query, toolCalls);
+  return predictionConfidence !== null && predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD;
 }
 
 export function buildForcedMarketDataArgs(query: string): { query: string } | null {
@@ -1156,10 +1194,30 @@ export function buildForecastDisagreementPrefix(query: string, toolCalls: ToolCa
   ].join('\n');
 }
 
+export function buildLowConfidenceBtcShortHorizonForecastPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
+  if (!hasLowConfidenceBtcShortHorizonMarkov(query, toolCalls)) return null;
+
+  const predictionConfidence = extractMarkovPredictionConfidenceForQuery(query, toolCalls);
+  const confidenceText = predictionConfidence !== null
+    ? predictionConfidence.toFixed(2)
+    : 'N/A';
+
+  return [
+    '## Warning: BTC short-horizon selective Markov gate did not clear',
+    '',
+    `The Markov run completed, but prediction confidence ${confidenceText} is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold. Do not treat the Markov direction here as part of the aggregate selective-accuracy slice or as a validated BTC edge. Read any forecast below as fallback context, not a selective Markov signal.`,
+    '',
+    '---',
+    '',
+  ].join('\n');
+}
+
 export function shouldInjectBtcShortHorizonMixedEvidencePrompt(
   query: string,
   fullToolResults: string,
 ): boolean {
+  if (shouldInjectBtcShortHorizonLowConfidencePrompt(query, fullToolResults)) return false;
+
   const ticker = inferDistributionTicker(query);
   const horizon = inferDistributionHorizon(query);
   if ((ticker !== 'BTC' && ticker !== 'BTC-USD') || horizon === null || horizon > 14) return false;
@@ -1169,6 +1227,19 @@ export function shouldInjectBtcShortHorizonMixedEvidencePrompt(
     || /forecast return\s*:\s*[+]?(?:0|0\.0+)%/i.test(fullToolResults);
 
   return markovBullish && polymarketFlatOrBearish;
+}
+
+export function shouldInjectBtcShortHorizonLowConfidencePrompt(
+  query: string,
+  fullToolResults: string,
+): boolean {
+  if (!isBtcShortHorizonForecastQuery(query)) return false;
+
+  const match = fullToolResults.match(/"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"predictionConfidence"\s*:\s*([0-9]+(?:\.[0-9]+)?)/);
+  if (!match) return false;
+
+  const predictionConfidence = Number.parseFloat(match[1]!);
+  return Number.isFinite(predictionConfidence) && predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD;
 }
 
 // ============================================================================
@@ -1893,9 +1964,11 @@ export class Agent {
 
     const toolCalls = ctx.scratchpad.getToolCallRecords();
     const warningPrefix = buildDistributionWarningPrefix(ctx.query, toolCalls);
+    const lowConfidencePrefix = buildLowConfidenceBtcShortHorizonForecastPrefix(ctx.query, toolCalls);
     const disagreementPrefix = buildForecastDisagreementPrefix(ctx.query, toolCalls);
     const baseText = stripThinkingTags(fallbackText);
-    const text = `${warningPrefix ?? ''}${disagreementPrefix ?? ''}${baseText}`;
+    const prefixText = `${warningPrefix ?? ''}${lowConfidencePrefix ?? ''}${disagreementPrefix ?? ''}`;
+    const text = baseText ? `${prefixText}${baseText}` : '';
 
     if (text) {
       // We already have the answer from the non-streaming callLlm response.
@@ -1909,7 +1982,7 @@ export class Agent {
     } else if (currentPrompt) {
       // No pre-existing answer (e.g. max-iterations synthesis) — request a
       // fresh streaming response. Apply a hard timeout so we never hang.
-      const timeoutSignal = AbortSignal.timeout(LLM_CALL_TIMEOUT_MS);
+      const timeoutSignal = AbortSignal.timeout(getLlmCallTimeoutMs());
       const combinedSignal = this.signal
         ? AbortSignal.any([this.signal, timeoutSignal])
         : timeoutSignal;
@@ -1933,6 +2006,15 @@ export class Agent {
             toolSummary.slice(0, 3000);
           yield { type: 'answer_chunk', chunk: fallback } as AnswerChunkEvent;
           streamedAnswer = fallback;
+        }
+      }
+
+      if (!streamedAnswer && prefixText) {
+        const CHUNK_SIZE = 6;
+        for (let i = 0; i < prefixText.length; i += CHUNK_SIZE) {
+          const chunk = prefixText.slice(i, i + CHUNK_SIZE);
+          streamedAnswer += chunk;
+          yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
         }
       }
     }

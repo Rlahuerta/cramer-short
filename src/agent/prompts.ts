@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getChannelProfile } from './channels.js';
-import { shouldInjectBtcShortHorizonMixedEvidencePrompt } from './agent.js';
+import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
+import { shouldInjectBtcShortHorizonLowConfidencePrompt, shouldInjectBtcShortHorizonMixedEvidencePrompt } from './agent.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { cramerShortPath } from '../utils/paths.js';
 
@@ -395,7 +396,7 @@ ${toolDescriptions}
 - For options chains, implied volatility, put/call ratios, Greeks, or unusual options activity, use get_options_chain.
 - **For terminal price probability distributions** — when the user explicitly asks for a probability distribution of future prices, scenario buckets, or Markov-chain distribution at a specific horizon — use markov_distribution FIRST. This tool is the canonical path for calibrated price distributions and is the only valid source of scenario bucket probabilities. If markov_distribution abstains, clearly warn that no calibrated Markov terminal distribution was available. You may then provide fallback analysis such as a point forecast or confidence interval from polymarket_forecast, but you MUST NOT synthesize replacement scenario buckets yourself.
 - **For price forecasts using prediction market signals** — when the user asks "what will X trade at in N days/weeks/months?", "price target for X", or "where is X headed?" and does NOT specifically require a full probability distribution — use polymarket_forecast. Polymarket hosts markets from 1 day to 12 months, so this tool works for short, medium, and longer horizons. It applies a research-backed weighted ensemble (Polymarket signals + sentiment + fundamentals + options skew) to produce a forecast price, 95% confidence interval, and a conviction grade. Signal quality is highest for 1–90 day horizons; longer horizons are supported but produce wider CIs. CRITICAL: ALWAYS call get_market_data FIRST to obtain the current price, then pass it via current_price — without it the 95% CI is shown in percentages only (relative to base 100), not in dollar terms. For richer results, also call social_sentiment and get_financials and pass their outputs via sentiment_score and fundamental_return. Do NOT use this for real-time prices (use get_market_data) or multi-year DCF valuation (use dcf skill).
-- **For BTC/crypto price forecasts** — use the strongest available signal stack: call get_market_data for the current price, then get_onchain_crypto for on-chain metrics and sentiment, social_sentiment for crowd mood, get_fixed_income for rate/yield-curve context, and polymarket_forecast for the baseline forecast. For short horizons (≤14 days), also call markov_distribution with trajectory=true to get a day-by-day path. For a full structured BTC/crypto forecast report, invoke the probability_assessment skill — it integrates all of these tools into a weighted log-odds assessment.
+- **For BTC/crypto price forecasts** — use the strongest available signal stack: call get_market_data for the current price, then get_onchain_crypto for on-chain metrics and sentiment, social_sentiment for crowd mood, get_fixed_income for rate/yield-curve context, and polymarket_forecast for the baseline forecast. For short horizons (≤14 days), also call markov_distribution with trajectory=true to get a day-by-day path. IMPORTANT: for BTC short horizons, treat Markov as a **selective** signal only when its predictionConfidence clears the recommended 0.25 threshold. If it is below 0.25, do not present the Markov direction as part of the aggregate selective-accuracy slice; treat it as fallback context only. For a full structured BTC/crypto forecast report, invoke the probability_assessment skill — it integrates all of these tools into a weighted log-odds assessment.
 - Call get_financials or get_market_data ONCE with the full natural language query - they handle multi-company/multi-metric requests internally
 - Do NOT break up queries into multiple tool calls when one call can handle the request
 - When news headlines are returned, assess whether the titles and metadata already answer the user's question before fetching full articles with web_fetch (fetching is expensive). Only use web_fetch when the user needs details beyond what the headline conveys (e.g., quotes, specifics of a deal, earnings call takeaways)
@@ -516,6 +517,12 @@ IMPORTANT: markov_distribution results are present. Treat the canonical Markov p
     prompt += `
 
 IMPORTANT: BTC short-horizon signals are mixed. markov_distribution is bullish, but polymarket_forecast is flat or bearish. You MUST explicitly describe this as mixed evidence, and you MUST downgrade the narrative confidence rather than presenting the bullish Markov result as a high-conviction standalone signal.`;
+  }
+
+  if (shouldInjectBtcShortHorizonLowConfidencePrompt(originalQuery, fullToolResults)) {
+    prompt += `
+
+IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, but its predictionConfidence is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold. You MUST NOT present that Markov direction as part of the selective Markov accuracy slice or as a validated BTC directional edge. If you mention it at all, frame it as low-confidence fallback context and make clear that the selective gate did not clear.`;
   }
 
   const hasAbstainingMarkovOutput =

@@ -10,7 +10,7 @@ import type {
 import { DEFAULT_MAX_ITERATIONS } from './agent/index.js';
 import { getApiKeyNameForProvider, getProviderDisplayName } from './utils/env.js';
 import { logger } from './utils/logger.js';
-import { callLlm, isThinkingModel } from './model/llm.js';
+import { callLlm, isThinkingModel, resolveLlmCallTimeoutMs } from './model/llm.js';
 import { MemoryManager } from './memory/index.js';
 import {
   AgentRunnerController,
@@ -1410,6 +1410,13 @@ export async function runCli() {
         const suffix = key === 'parallelToolLimit' && display === 0 ? ' (unlimited)' : '';
         lines.push(`  ${key.padEnd(18)} ${display}${suffix}${extra}`);
       }
+
+      // llmCallTimeoutMs: use resolver to capture env fallback
+      const timeout = resolveLlmCallTimeoutMs();
+      const timeoutSource = timeout.source === 'config' ? '' :
+                             timeout.source === 'env' ? ' (from env)' : ' (default)';
+      lines.push(`  ${'llmCallTimeoutMs'.padEnd(18)} ${timeout.value}${timeoutSource}`);
+
       const provider = getSetting<string | undefined>('provider', undefined);
       const modelId  = getSetting<string | undefined>('modelId', undefined);
       if (provider) lines.push(`  ${'provider'.padEnd(18)} ${provider}`);
@@ -1441,7 +1448,13 @@ export async function runCli() {
         tui.requestRender();
         return;
       }
-      setSetting(cfgKey, value);
+      const saved = setSetting(cfgKey, value);
+      if (!saved) {
+        lastError = `Failed to save config to disk`;
+        refreshError();
+        tui.requestRender();
+        return;
+      }
       lastError = null;
       intro.setModel(`✓ Config: ${cfgKey} = ${String(value)}`);
       tui.requestRender();

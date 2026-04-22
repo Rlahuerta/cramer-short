@@ -65,6 +65,7 @@ const ST_TOOL_CALL = {
 // ---------------------------------------------------------------------------
 mock.module('../model/llm.js', () => ({
   DEFAULT_MODEL: 'gpt-5.4',
+  getLlmCallTimeoutMs: () => 120000,
   callLlm: async () => {
     mockState.callCount++;
     if (mockState.invokeThrows) throw new Error(mockState.invokeThrowMessage);
@@ -121,9 +122,11 @@ const {
   buildForcedMarketDataArgs,
   buildForcedSocialSentimentArgs,
    buildForcedPolymarketForecastArgs,
-   extractMarkovReturnFromToolCalls,
-   shouldInjectBtcShortHorizonMixedEvidencePrompt,
-   shouldRerunPolymarketForecastWithMarkov,
+    extractMarkovReturnFromToolCalls,
+    buildLowConfidenceBtcShortHorizonForecastPrefix,
+    shouldInjectBtcShortHorizonMixedEvidencePrompt,
+    shouldInjectBtcShortHorizonLowConfidencePrompt,
+    shouldRerunPolymarketForecastWithMarkov,
   buildForcedOnchainArgs,
   buildForcedFixedIncomeArgs,
   buildForcedCryptoForecastMarkovArgs,
@@ -639,6 +642,56 @@ describe('Agent', () => {
       });
     });
 
+    it('does not reuse low-confidence BTC Markov return in forced crypto polymarket args', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: {
+                ticker: 'BTC',
+                price: 73300,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'social_sentiment',
+          args: { ticker: 'BTC', include_fear_greed: true, limit: 25 },
+          result: JSON.stringify({
+            data: {
+              result: '## Overall: 📈 Bullish (score +42/100)',
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                actionSignal: { expectedReturn: 0.04 },
+                diagnostics: {
+                  markovWeight: 0.6,
+                  predictionConfidence: 0.18,
+                },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedPolymarketForecastArgs('Provide a BTC forecast for the next 7 days', toolCalls)).toEqual({
+        ticker: 'BTC',
+        horizon_days: 7,
+        current_price: 73300,
+        sentiment_score: 0.42,
+      });
+    });
+
     it('builds stable non-crypto forced args from resolved asset identity and explicit market-data query', () => {
       const query = 'Provide a GOLD forecast for next month';
       const toolCalls = [
@@ -837,6 +890,29 @@ describe('Agent', () => {
           }),
         },
       ])).toBe(false);
+
+      expect(shouldRerunPolymarketForecastWithMarkov('Provide a BTC forecast for the next 7 days', [
+        toolCalls[0]!,
+        toolCalls[1]!,
+        { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.42 }, result: '{}' },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                actionSignal: { expectedReturn: 0.04 },
+                diagnostics: {
+                  markovWeight: 0.6,
+                  predictionConfidence: 0.18,
+                },
+              },
+            },
+          }),
+        },
+      ])).toBe(false);
     });
 
     it('forces crypto forecast tools only when required enrichment is missing', () => {
@@ -1026,6 +1102,38 @@ describe('Agent', () => {
         'Provide a BTC forecast for next week',
         toolCalls,
       )).toBe(true);
+    });
+
+    it('does not preserve BTC short-horizon selective-gate failures as abstentions', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 14,
+                actionSignal: { expectedReturn: 0.03 },
+                diagnostics: {
+                  trustedAnchors: 2,
+                  totalAnchors: 5,
+                  anchorQuality: 'good',
+                  markovWeight: 0.6,
+                  predictionConfidence: 0.19,
+                },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Provide a BTC forecast for the next 14 days',
+        toolCalls,
+      )).toBe(false);
     });
 
     it('does not treat a non-5-day BTC abstain as matching a next-week query', () => {

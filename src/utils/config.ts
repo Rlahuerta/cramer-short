@@ -33,6 +33,7 @@ export const ConfigSchema = z.object({
   keepToolUses: z.number().min(2).max(20).optional(),
   cacheTtlMs: z.number().min(60000).max(86400000).optional(),
   parallelToolLimit: z.number().min(0).max(10).optional(),
+  llmCallTimeoutMs: z.number().min(30000).max(600000).optional(),
 }).passthrough(); // allow unknown keys without throwing
 
 export type Config = z.infer<typeof ConfigSchema> & Record<string, unknown>;
@@ -83,6 +84,7 @@ const CONFIG_VALIDATION_RULES: Record<string, { min: number; max: number }> = {
   keepToolUses:     { min: 2,     max: 20        },
   cacheTtlMs:       { min: 60000, max: 86400000  },
   parallelToolLimit:{ min: 0,     max: 10        },
+  llmCallTimeoutMs: { min: 30000, max: 600000    },
 };
 
 /**

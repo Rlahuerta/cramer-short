@@ -39,6 +39,21 @@ describe('parseSnapshotLine', () => {
       capturedAt: '2026-04-20T12:00:00.000Z',
     }))).toBeNull();
   });
+
+  it('accepts empty string endDate (market with no end date)', () => {
+    const record = snapshot(3, { endDate: '' });
+    expect(parseSnapshotLine(JSON.stringify(record))).toEqual(record);
+  });
+
+  it('rejects non-parseable endDate string', () => {
+    const record = { ...snapshot(3), endDate: 'not-a-date' };
+    expect(parseSnapshotLine(JSON.stringify(record))).toBeNull();
+  });
+
+  it('accepts valid ISO endDate string', () => {
+    const record = snapshot(3, { endDate: '2026-12-31T23:59:59Z' });
+    expect(parseSnapshotLine(JSON.stringify(record))).toEqual(record);
+  });
 });
 
 describe('findSnapshotInWindow', () => {
