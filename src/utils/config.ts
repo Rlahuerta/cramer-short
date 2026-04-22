@@ -108,8 +108,17 @@ export function validateConfigValue(key: string, value: unknown): { valid: boole
   return { valid: true };
 }
 
+let configCache: { data: Config; loadedAt: number } | null = null;
+const CONFIG_TTL_MS = 1000; // 1 second
+
 export function loadConfig(): Config {
+  const now = Date.now();
+  if (configCache && (now - configCache.loadedAt) < CONFIG_TTL_MS) {
+    return configCache.data;
+  }
+
   if (!existsSync(SETTINGS_FILE)) {
+    configCache = { data: {}, loadedAt: now };
     return {};
   }
 
@@ -123,8 +132,10 @@ export function loadConfig(): Config {
       saveConfig(config);
     }
 
+    configCache = { data: config, loadedAt: now };
     return config;
   } catch {
+    configCache = { data: {}, loadedAt: now };
     return {};
   }
 }
@@ -136,6 +147,7 @@ export function saveConfig(config: Config): boolean {
       mkdirSync(dir, { recursive: true });
     }
     writeFileSync(SETTINGS_FILE, JSON.stringify(config, null, 2));
+    configCache = null;
     return true;
   } catch {
     return false;

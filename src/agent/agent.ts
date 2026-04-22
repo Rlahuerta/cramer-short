@@ -182,10 +182,19 @@ function isBtcShortHorizonForecastQuery(query: string): boolean {
   return horizon !== null && horizon <= 14;
 }
 
+export function isExplicitPolymarketForecastRequest(query: string): boolean {
+  const lower = query.toLowerCase();
+  return lower.includes('polymarket_forecast')
+    || /\bpolymarket forecast\b/.test(lower)
+    || /\buse\s+(?:the\s+)?polymarket(?:_forecast| forecast)\b/.test(lower)
+    || /\brun\s+(?:the\s+)?polymarket(?:_forecast| forecast)\b/.test(lower);
+}
+
 export function shouldPreserveAbstainingBtcShortHorizonForecast(
   query: string,
   toolCalls: ToolCallRecord[],
 ): boolean {
+  if (isExplicitPolymarketForecastRequest(query)) return false;
   return isBtcShortHorizonForecastQuery(query)
     && hasAbstainingMarkovDistributionForQuery(query, toolCalls);
 }

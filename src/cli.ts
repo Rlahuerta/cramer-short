@@ -788,7 +788,10 @@ export async function runCli() {
   let skillsVisible = false;
   let skillsList: SkillMetadata[] = [];
   // Watchlist auto-refresh state
-  let watchlistRefreshIntervalMs = 0; // 0 = disabled
+  let watchlistRefreshIntervalMs: number = (() => {
+    const env = parseInt(process.env.WATCHLIST_REFRESH_INTERVAL_MS ?? '0', 10);
+    return Number.isFinite(env) && env >= 1000 ? env : 0;
+  })();
   let watchlistRefreshTimer: ReturnType<typeof setInterval> | null = null;
   let watchlistLastRefresh: Date | null = null;
   // Tracks exchanges already flushed to scrollback on completion (long answers).

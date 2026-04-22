@@ -415,13 +415,16 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         // preserving the signal category from whichever signal first found it
         const seen = new Set<string>();
         const rawMarkets: RawMarket[] = [];
+        const allSnapshotRecords = readRecords(undefined);
         for (let i = 0; i < signals.length; i++) {
           const result = allResults[i];
           if (result.status !== 'fulfilled') continue;
           for (const m of result.value) {
             if (seen.has(m.question)) continue;
             seen.add(m.question);
-            const history = evaluateHistoryFlagsWithReader(m, nowMs, undefined, readRecords);
+            const marketRecords = (_filePath: string | undefined, marketId?: string) =>
+              allSnapshotRecords.filter(r => !marketId || r.marketId === marketId);
+            const history = evaluateHistoryFlagsWithReader(m, nowMs, undefined, marketRecords);
             historyWarnings.push(...history.warnings);
             rawMarkets.push({
               marketId: m.marketId,

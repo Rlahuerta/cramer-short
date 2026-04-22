@@ -1,0 +1,11 @@
+[test]
+# Exclude integration and E2E tests from default `bun test` runs.
+# These require live external services (Ollama, financial APIs) and must run
+# in separate processes to avoid mock.module() contamination from unit tests.
+#
+# Run each tier separately:
+#   bun test                  → unit tests only
+#   bun run test:integration  → integration tests (separate process)
+#   bun run test:e2e          → E2E tests (each file in its own process)
+#   bun run test:all          → all tiers in order
+pathIgnorePatterns = ["*.integration.test.ts", "*.e2e.test.ts"]

@@ -77,8 +77,9 @@ const COMPANY_TICKERS: Record<string, string> = {
 
 /** Extract the first resolvable ticker from a natural language query. */
 export function extractFirstTicker(query: string): string | null {
-  const explicitTickerMatch = query.match(/\$?\b([A-Z]{1,5})\b/);
-  const explicitTicker = explicitTickerMatch?.[1] ?? null;
+  // $-prefixed tickers allow 1-char (e.g. $V); bare tickers require 2+ to avoid "I", "A"
+  const explicitTickerMatch = query.match(/\$([A-Z]{1,5})\b|\b([A-Z]{2,5})\b/);
+  const explicitTicker = explicitTickerMatch?.[1] ?? explicitTickerMatch?.[2] ?? null;
   const resolved = resolveAssetIntent(query, explicitTicker);
   if (resolved.resolvedTicker) return resolved.resolvedTicker;
 
@@ -86,8 +87,8 @@ export function extractFirstTicker(query: string): string | null {
   for (const [name, ticker] of Object.entries(COMPANY_TICKERS)) {
     if (q.includes(name)) return ticker;
   }
-  // Match explicit uppercase ticker tokens (1–5 capital letters at word boundary)
-  const match = query.match(/\b([A-Z]{1,5})\b/);
+  // Match explicit uppercase ticker tokens (2–5 capital letters at word boundary)
+  const match = query.match(/\b([A-Z]{2,5})\b/);
   return match ? match[1] : null;
 }
 
