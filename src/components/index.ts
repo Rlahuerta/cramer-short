@@ -3,6 +3,7 @@ export { ApprovalPromptComponent } from './approval-prompt.js';
 export { ChatLogComponent } from './chat-log.js';
 export { DebugPanelComponent } from './debug-panel.js';
 export { CustomEditor } from './custom-editor.js';
+export { FullAnswerViewerComponent } from './full-answer-viewer.js';
 export { IntroComponent } from './intro.js';
 export {
   ApiKeyInputComponent,

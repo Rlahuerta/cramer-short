@@ -1,10 +1,13 @@
 import { describe, it, expect } from 'bun:test';
 import chalk from 'chalk';
 import {
+  countRenderedTuiMarkdownLines,
   parseMarkdownTable,
   renderBoxTable,
+  truncateTuiMarkdownTail,
   transformMarkdownTables,
   formatResponse,
+  formatResponseTui,
   transformHeaders,
   transformItalic,
   transformInlineCode,
@@ -276,3 +279,43 @@ describe('transformURLs', () => {
   });
 });
 
+describe('formatResponseTui', () => {
+  it('preserves raw markdown tables but styles other markers', () => {
+    const md = `# Header\n| A | B |\n|---|---|\n| 1 | 2 |\n**bold**`;
+    const result = formatResponseTui(md);
+
+    // TUI path should preserve raw markdown so pi-tui can render it natively.
+    expect(result).toContain('# Header');
+
+    // Table should remain raw (pipes and dashes present, no box drawing)
+    expect(result).toContain('| A | B |');
+    expect(result).toContain('|---|---|');
+    expect(result).not.toContain('┌');
+    expect(result).not.toContain('│');
+
+    // Inline markdown should still be preserved for the downstream renderer.
+    expect(result).toContain('**bold**');
+  });
+
+  it('strips terminal control sequences while preserving visible text', () => {
+    const input = [
+      'safe',
+      '\u001b[31mred\u001b[0m',
+      '\u001b]8;;https://example.com\u0007link\u001b]8;;\u0007',
+    ].join(' ');
+
+    const result = formatResponseTui(input);
+
+    expect(result).toBe('safe red link');
+    expect(result).not.toContain('\u001b');
+  });
+
+  it('truncates wrapped single-line content to the rendered-line budget', () => {
+    const longLine = 'This is a very long single-line answer that wraps many times in a narrow viewport without containing newline breaks.';
+    const truncated = truncateTuiMarkdownTail(longLine, 4, 20);
+
+    expect(truncated.truncated).toBe(true);
+    expect(truncated.text.startsWith('…\n')).toBe(true);
+    expect(countRenderedTuiMarkdownLines(truncated.text, 20)).toBeLessThanOrEqual(4);
+  });
+});

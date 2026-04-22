@@ -226,6 +226,7 @@ describe('buildHelpPanel', () => {
     const lines = renderLines(panel);
     expect(lines.some((l) => l.includes('/help'))).toBe(true);
     expect(lines.some((l) => l.includes('/model'))).toBe(true);
+    expect(lines.some((l) => l.includes('/full'))).toBe(true);
     expect(lines.some((l) => l.includes('/watchlist'))).toBe(true);
   });
 
