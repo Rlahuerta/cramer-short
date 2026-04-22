@@ -113,6 +113,7 @@ const {
   inferTrajectoryRequest,
    buildForcedMarkovArgs,
    isCryptoForecastQuery,
+   isExplicitPolymarketForecastRequest,
    isNonCryptoForecastQuery,
    buildForcedNonCryptoMarketDataArgs,
    buildForcedNonCryptoPolymarketForecastArgs,
@@ -1165,6 +1166,35 @@ describe('Agent', () => {
       )).toBe(false);
     });
 
+    it('does not preserve BTC short-horizon abstention when polymarket_forecast was explicitly requested', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 2, trajectory: true, trajectoryDays: 2 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 2,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 4,
+                  anchorQuality: 'none',
+                },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Use polymarket_forecast for BTC over the next 2 days',
+        toolCalls,
+      )).toBe(false);
+    });
+
     describe('isNonCryptoForecastQuery', () => {
       it('matches stock forecast queries', () => {
         expect(isNonCryptoForecastQuery('Provide an NVDA forecast for the next 7 days')).toBe(true);
@@ -1203,6 +1233,12 @@ describe('Agent', () => {
 
       it('rejects macro-only forecast queries without a price ticker target', () => {
         expect(isNonCryptoForecastQuery('Fed rate prediction next meeting')).toBe(false);
+      });
+
+      it('detects explicit polymarket_forecast requests by name', () => {
+        expect(isExplicitPolymarketForecastRequest('Use polymarket_forecast for BTC over the next 2 days')).toBe(true);
+        expect(isExplicitPolymarketForecastRequest('Run the polymarket forecast for NVDA next week')).toBe(true);
+        expect(isExplicitPolymarketForecastRequest('Provide a BTC forecast for the next 7 days')).toBe(false);
       });
     });
 

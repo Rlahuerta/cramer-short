@@ -573,6 +573,36 @@ describe('buildAbstainingBtcShortHorizonForecastAnswer', () => {
     expect(answer).toContain('Model Abstained');
     expect(answer).toContain('Decision guidance');
   });
+
+  it('does not emit the BTC abstention answer when polymarket_forecast was explicitly requested', () => {
+    const scratchpad = new Scratchpad('btc explicit polymarket abstain test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 2 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'abstain',
+          canonical: {
+            ticker: 'BTC-USD',
+            horizon: 2,
+            diagnostics: {
+              trustedAnchors: 0,
+              totalAnchors: 4,
+              anchorQuality: 'none',
+            },
+          },
+        },
+      }),
+    );
+
+    expect(
+      buildAbstainingBtcShortHorizonForecastAnswer(
+        'Use polymarket_forecast for BTC over the next 2 days',
+        scratchpad.getToolCallRecords(),
+      ),
+    ).toBeNull();
+  });
 });
 
 describe('buildDistributionWarningPrefix', () => {
