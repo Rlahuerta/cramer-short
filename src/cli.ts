@@ -633,28 +633,25 @@ function renderCurrentQuery(chatLog: ChatLogComponent, history: AgentRunnerContr
   }
 
   if (item.answer) {
-    // answerBudget for running: remaining content lines after visible events.
-    // answerBudget for complete: legacy formula (matches the auto-flush threshold at line 1370).
-    const answerBudget = isRunning
-      ? Math.max(3, maxContentLines - visibleEvents.length * 2)
-      : Math.max(10, termRows - Math.min(visibleEvents.length * 2 + 12, termRows - 10));
-    const renderedAnswerLines = countRenderedTuiMarkdownLines(item.answer, getRenderedAnswerWidth());
     const isStreaming = item.status === 'processing';
 
-    if (renderedAnswerLines > answerBudget) {
-      if (isStreaming) {
-        // During streaming: show only the tail so the TUI never overflows the viewport.
-        // Overflow would push early lines into the terminal's native scrollback,
-        // making it impossible for flushExchangeToScrollback() to clear them — causing
-        // the answer to appear twice (partial live view + full flushed version).
+    if (isStreaming) {
+      // During streaming: show only the tail so the TUI never overflows the viewport.
+      // Overflow would push early lines into the terminal's native scrollback,
+      // making it impossible for flushExchangeToScrollback() to clear them — causing
+      // the answer to appear twice (partial live view + full flushed version).
+      const answerBudget = Math.max(3, maxContentLines - visibleEvents.length * 2);
+      const renderedAnswerLines = countRenderedTuiMarkdownLines(item.answer, getRenderedAnswerWidth());
+      if (renderedAnswerLines > answerBudget) {
         const tail = truncateTuiMarkdownTail(item.answer, answerBudget, getRenderedAnswerWidth());
         chatLog.finalizeAnswer(tail.text);
       } else {
-        // Complete answer exceeding the inline display budget: keep the main view compact,
-        // but retain full access through the dedicated full-answer viewer.
-        chatLog.finalizeAnswer(`…  (${renderedAnswerLines} rendered lines — open /full to read in TUI)`);
+        chatLog.finalizeAnswer(item.answer);
       }
     } else {
+      // Completed answer: show the full answer. The user needs to read it.
+      // Overflow into terminal scrollback is acceptable — the flush-on-next-query
+      // mechanism handles cleanup when the user starts a new query.
       chatLog.finalizeAnswer(item.answer);
     }
   }
@@ -1531,27 +1528,6 @@ export async function runCli() {
     );
     intro.setTokenCount(totalTokens);
 
-    // If the answer is longer than the terminal can display inline, flush it to the
-    // terminal scrollback immediately. This keeps the prompt/editor visible in the
-    // main TUI, preserves previous output without requiring an overlay close, and
-    // still leaves /full available as an explicit reader for the latest answer.
-    const completedItem = agentRunner.history.at(-1);
-    const termRows = process.stdout.rows ?? 40;
-    if (completedItem && completedItem.status === 'complete' && !flushedItems.has(completedItem)) {
-      // Compute the same answerBudget used in renderChatLogItem so the threshold matches.
-      const eventCount = completedItem.events?.length ?? 0;
-      const reservedRows = Math.min(eventCount * 2 + 12, termRows - 10);
-      const answerBudget = Math.max(10, termRows - reservedRows);
-      const completedAnswer = completedItem.answer ?? '';
-      if (countRenderedTuiMarkdownLines(completedAnswer, getRenderedAnswerWidth()) > answerBudget) {
-        flushExchangeToScrollback(tui, chatLog, completedItem);
-        flushedItems.add(completedItem);
-        renderSelectionOverlay();
-        tui.requestRender();
-        return;
-      }
-    }
-
     refreshError();
     tui.requestRender();
   };
@@ -2013,6 +1989,19 @@ export async function runCli() {
   console.warn = (...args: unknown[]) => suppressToLog('warn', ...args);
   console.error = (...args: unknown[]) => suppressToLog('error', ...args);
   process.once('exit', () => {
+    // Safety net: ensure terminal is restored on any exit path.
+    // Without this, raw mode, Kitty protocol, bracketed paste, and
+    // cursor visibility can be left in a broken state, making the
+    // parent shell unusable (no echo, escape sequences leak as text).
+    try {
+      if (process.stdin.setRawMode && process.stdin.isRaw) {
+        process.stdin.setRawMode(false);
+      }
+    } catch { /* best-effort */ }
+    process.stdout.write('\x1b[?25h');   // show cursor
+    process.stdout.write('\x1b[?2004l'); // disable bracketed paste
+    process.stdout.write('\x1b[<u');     // disable Kitty keyboard protocol
+
     console.log = _origConsoleLog;
     console.warn = _origConsoleWarn;
     console.error = _origConsoleError;
@@ -2076,6 +2065,8 @@ export async function runCli() {
     process.once('SIGTERM', finish);
   });
 
+  // Restore terminal state before disposing resources.
+  tui.stop();
   workingIndicator.dispose();
   debugPanel.dispose();
 }

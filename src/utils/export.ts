@@ -1,6 +1,8 @@
-import { writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { HistoryItem } from '../types.js';
 import type { ToolEndEvent, ToolStartEvent } from '../agent/types.js';
+import { cramerShortPath } from './paths.js';
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
@@ -199,7 +201,9 @@ export function exportSession(
 ): { path: string; content: string } {
   const ext = format === 'markdown' ? 'md' : format === 'json' ? 'json' : 'csv';
   const filename = `cramer-short-export-${exportTimestamp()}.${ext}`;
-  const filePath = outputPath ?? `${process.cwd()}/${filename}`;
+  const defaultDir = cramerShortPath('exports');
+  mkdirSync(defaultDir, { recursive: true });
+  const filePath = outputPath ?? join(defaultDir, filename);
 
   let content: string;
   if (format === 'markdown') {

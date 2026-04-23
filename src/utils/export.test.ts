@@ -231,7 +231,7 @@ describe('exportSession outputPath', () => {
   it('uses auto-generated filename when outputPath is omitted', () => {
     const { path } = exportSession([makeItem()], 'markdown');
     expect(path).toMatch(/cramer-short-export-\d{4}-\d{2}-\d{2}.*\.md$/);
-    expect(path).toContain(process.cwd());
+    expect(path).toContain('.cramer-short/exports');
   });
 
   it('uses the provided outputPath when specified', () => {
