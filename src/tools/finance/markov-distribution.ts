@@ -73,9 +73,10 @@ function normalizeHistoricalPriceTicker(ticker: string): string {
     case 'OIL':
     case 'WTICOUSD':
     case 'CRUDE':
+      // USO is a futures ETF with contango decay — not a direct spot-crude proxy.
       return 'USO';
     default:
-      return ticker;
+      return upper;
   }
 }
 
@@ -777,8 +778,8 @@ const BARRIER_PATTERNS = [
 // Month names for date-anchored trade pattern validation
 const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 
-// Strict date-anchored trade pattern: only accept when followed by an actual date (month name)
-// Rejects non-date anchors like "at expiry", "at close", "at open"
+// Strict date-anchored trade pattern: only accept when followed by an actual date
+// (month name or numeric day). Rejects non-date anchors like "at expiry", "at close", "at open"
 const DATE_ANCHORED_TRADE_PATTERN = new RegExp(
   `\\btrade\\s+(?:above|below|over|under)\\b.*\\b(?:on|at)\\s+(?:\\d{1,2}[\\/\\-]|(?:${MONTH_NAMES.join('|')})\\b)`,
   'i'

@@ -1977,7 +1977,7 @@ export class Agent {
     const disagreementPrefix = buildForecastDisagreementPrefix(ctx.query, toolCalls);
     const baseText = stripThinkingTags(fallbackText);
     const prefixText = `${warningPrefix ?? ''}${lowConfidencePrefix ?? ''}${disagreementPrefix ?? ''}`;
-    const text = baseText ? `${prefixText}${baseText}` : '';
+    const text = baseText ? `${prefixText}${baseText}` : prefixText;
 
     if (text) {
       // We already have the answer from the non-streaming callLlm response.

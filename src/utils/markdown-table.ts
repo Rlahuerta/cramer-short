@@ -362,8 +362,15 @@ export function renderTuiMarkdownLines(content: string, width: number): string[]
   return markdown.render(Math.max(10, width));
 }
 
+const renderedLineCache = new Map<string, number>();
+
 export function countRenderedTuiMarkdownLines(content: string, width: number): number {
-  return renderTuiMarkdownLines(content, width).length;
+  const key = `${content.length}:${width}:${content.slice(0, 120)}`;
+  const cached = renderedLineCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = renderTuiMarkdownLines(content, width).length;
+  renderedLineCache.set(key, result);
+  return result;
 }
 
 export function truncateTuiMarkdownTail(

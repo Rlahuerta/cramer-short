@@ -668,8 +668,9 @@ function renderCurrentQuery(chatLog: ChatLogComponent, history: AgentRunnerContr
  *  1. Capture how many lines the TUI is currently rendering (before stop).
  *  2. Stop the TUI — this positions the hardware cursor at the end of all
  *     rendered content and briefly disables raw mode.
- *  3. Move the cursor back to the top of the TUI area and clear downward so
- *     the "live processing" view doesn't litter the scrollback.
+ *  3. Move the cursor up to the top of the TUI viewport and clear to the end
+ *     of the screen. This removes the live-processing trail from the viewport
+ *     but does NOT erase lines already pushed into the scrollback buffer.
  *  4. Write the formatted exchange — it lands in the terminal's scroll buffer.
  *  5. Clear the TUI component tree (chatLog) so the next render starts fresh.
  *  6. Restart the TUI — re-enables raw mode, resets rendering state, re-renders
@@ -791,8 +792,15 @@ export async function runCli() {
   })();
   let watchlistRefreshTimer: ReturnType<typeof setInterval> | null = null;
   let watchlistLastRefresh: Date | null = null;
-  // Tracks exchanges already flushed to scrollback on completion (long answers).
-  // Prevents the "flush on next submit" path from double-writing them.
+  let tuiStopped = false;
+  const safeStopTui = () => {
+    if (!tuiStopped) {
+      tui.stop();
+      tuiStopped = true;
+    }
+  };
+  // Tracks exchanges already flushed to scrollback.
+  // Prevents double-writing when the user starts a new query.
   const flushedItems = new WeakSet<HistoryItem>();
 
   const sessionController = new SessionController();
@@ -1001,7 +1009,7 @@ export async function runCli() {
     }
 
     if (query.toLowerCase() === 'exit' || query.toLowerCase() === 'quit') {
-      tui.stop();
+      safeStopTui();
       await writeSessionDailySummary(agentRunner.history, modelSelection.model);
       await sessionController.flush();
       return process.exit(0);
@@ -1616,7 +1624,7 @@ export async function runCli() {
       agentRunner.cancelExecution();
       return;
     }
-    tui.stop();
+    safeStopTui();
     // Auto-export session if --export flag was provided
     if (exportPathArg !== undefined) {
       const completedHistory = agentRunner.history.filter((h) => h.status === 'complete');
@@ -1998,9 +2006,13 @@ export async function runCli() {
         process.stdin.setRawMode(false);
       }
     } catch { /* best-effort */ }
-    process.stdout.write('\x1b[?25h');   // show cursor
-    process.stdout.write('\x1b[?2004l'); // disable bracketed paste
-    process.stdout.write('\x1b[<u');     // disable Kitty keyboard protocol
+    try {
+      process.stdout.write('\x1b[?25h');   // show cursor
+      process.stdout.write('\x1b[?2004l'); // disable bracketed paste
+      process.stdout.write('\x1b[<u');     // disable Kitty keyboard protocol
+    } catch {
+      // stdout may already be closed (EPIPE/EBADF); best-effort.
+    }
 
     console.log = _origConsoleLog;
     console.warn = _origConsoleWarn;
@@ -2066,7 +2078,7 @@ export async function runCli() {
   });
 
   // Restore terminal state before disposing resources.
-  tui.stop();
+  safeStopTui();
   workingIndicator.dispose();
   debugPanel.dispose();
 }

@@ -93,8 +93,9 @@ export const YES_BIAS_MULTIPLIER = 0.95;
 /**
  * Composite quality weight for a single Polymarket market.
  *
- * Factors in market age, liquidity (log-volume), tier discount, and a 50%
- * penalty when a whale-sized price spike is detected.
+ * Factors in market age, liquidity (log-volume), tier discount, a 50%
+ * penalty when a whale-sized price spike is detected, and a 30% discount
+ * on transitory moves (unless the stronger whale penalty already applies).
  */
 export function computeMarketQualityWeight(m: MarketInput): number {
   const wAge = Math.min(1, (m.ageDays ?? 21) / 21);
