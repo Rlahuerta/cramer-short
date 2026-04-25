@@ -7,7 +7,7 @@
  * fallback query variants, and a weight for the log-odds probability combiner.
  */
 
-import { resolveAssetIntent, type ResolvedAssetClass } from './asset-resolver.js';
+import { resolveAssetIntent, resolveTickerSearchIdentity, type ResolvedAssetClass } from './asset-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +23,7 @@ export type AssetType =
   | 'consumer'
   | 'crypto'
   | 'commodity'
+  | 'oil'
   | 'macro'
   | 'defense'
   | 'cybersecurity'
@@ -93,6 +94,7 @@ export const TICKER_TO_COMPANY_NAME: Record<string, string> = {
   PALLADIUM: 'palladium', OIL: 'oil', CRUDE: 'oil', NATGAS: 'natural gas',
   WHEAT: 'wheat', CORN: 'corn', SOYBEAN: 'soybeans', COFFEE: 'coffee', SUGAR: 'sugar',
   GLD: 'gold', IAU: 'gold', SLV: 'silver', XAUUSD: 'gold', XAGUSD: 'silver',
+  USO: 'oil', UNG: 'natural gas',
 };
 
 // ---------------------------------------------------------------------------
@@ -108,6 +110,7 @@ export const SIGNAL_KEYWORDS: Record<string, string[]> = {
   fda_approval: ['FDA', 'approval', 'drug', 'trial', 'phase', 'clearance'],
   commodity:    ['oil', 'OPEC', 'price', 'barrel', 'energy', 'supply', 'crude', 'production',
                  'gold', 'silver', 'copper', 'metal', 'ounce', 'commodity', 'natural gas', 'wheat', 'corn'],
+  oil_supply:   ['opec', 'production', 'cut', 'supply', 'inventory', 'spr', 'strategic petroleum', 'output'],
   geopolitical: ['war', 'conflict', 'sanction', 'Middle East', 'Russia', 'China', 'Ukraine'],
   trade_policy: ['tariff', 'trade', 'import', 'export', 'duty'],
   etf_product:     ['ETF', 'fund', 'approval', 'launch', 'spot'],
@@ -163,7 +166,7 @@ const SECTOR_MAP: Record<string, AssetType> = {
   SLX: 'materials', XME: 'materials', XLB: 'materials', GDX: 'materials', GDXJ: 'materials',
   PICK: 'materials', REMX: 'materials',
   // Commodity proxy ETFs route through commodity signals (not equity)
-  GLD: 'commodity', IAU: 'commodity', SLV: 'commodity',
+  GLD: 'commodity', IAU: 'commodity', SLV: 'commodity', USO: 'commodity',
   // Barrick Gold routes through materials (equity, not commodity)
   GOLD: 'materials',
   // Industrials ETFs
@@ -401,6 +404,13 @@ const SIGNAL_MAPS: Record<AssetType, Array<{
     { name: 'Fed Rate Decision', tpl: 'Fed rate cut',          variantTpls: ['Federal Reserve rate', 'FOMC'],           weight: 0.20, category: 'macro_rates' },
     { name: 'US Recession',      tpl: 'US recession',          variantTpls: ['recession', 'economic recession'],        weight: 0.10, category: 'macro_growth' },
   ],
+  oil: [
+    { name: 'Price Level',       tpl: '{ticker} price',        variantTpls: ['{ticker}', 'commodity price', 'crude oil', 'WTI', 'Brent oil'], weight: 0.35, category: 'commodity' },
+    { name: 'OPEC / Supply',     tpl: 'OPEC oil production',   variantTpls: ['OPEC', 'oil supply', 'oil inventory', 'SPR release'],      weight: 0.25, category: 'oil_supply' },
+    { name: 'Geopolitical',      tpl: 'geopolitical conflict', variantTpls: ['geopolitical', 'Middle East conflict', 'Iran sanctions'],  weight: 0.20, category: 'geopolitical' },
+    { name: 'Fed Rate Decision', tpl: 'Fed rate cut',          variantTpls: ['Federal Reserve rate', 'FOMC'],                            weight: 0.10, category: 'macro_rates' },
+    { name: 'US Recession',      tpl: 'US recession',          variantTpls: ['recession', 'economic recession'],                         weight: 0.10, category: 'macro_growth' },
+  ],
   macro: [
     { name: 'Fed Rate Decision', tpl: 'Fed rate cut',          variantTpls: ['Federal Reserve rate', 'FOMC'],         weight: 0.35, category: 'macro_rates' },
     { name: 'US Recession',      tpl: 'US recession',          variantTpls: ['recession', 'economic recession'],      weight: 0.35, category: 'macro_growth' },
@@ -458,9 +468,15 @@ export function extractSignals(query: string): SignalCategory[] {
   const resolved = resolveAssetIntent(query, ticker);
   const signalType = resolveSignalType(resolved.assetClass, type);
   const templates = SIGNAL_MAPS[signalType];
-  // For commodity proxies, use the proxy label (GLD/SLV) as the ticker in templates
+  // For commodity proxies, use the proxy label (GLD/SLV/USO) as the ticker in templates
   // so Polymarket search phrases resolve correctly. For equity, use original ticker.
   const effectiveTicker = resolved.proxyLabel ?? resolved.resolvedTicker ?? ticker ?? 'asset';
+
+  // Pull canonical commodity names (e.g. USO → ['oil', 'uso']) for richer query variants
+  const searchIdentity = resolveTickerSearchIdentity(resolved.resolvedTicker ?? ticker ?? 'asset');
+  const extraNames = searchIdentity.canonicalNames.filter(
+    (n) => n !== effectiveTicker.toLowerCase() && n !== (ticker ?? '').toLowerCase(),
+  );
 
   return templates.map((t) => {
     const rawPhrase = substituteTemplates(t.tpl, effectiveTicker);
@@ -468,12 +484,20 @@ export function extractSignals(query: string): SignalCategory[] {
     const queryVariants = t.variantTpls.map((vTpl) =>
       normalizeForPolymarket(substituteTemplates(vTpl, effectiveTicker), effectiveTicker),
     );
+    // Append canonical commodity names as extra fallback variants
+    for (const name of extraNames) {
+      const variant = normalizeForPolymarket(substituteTemplates(t.tpl, name), name);
+      if (variant !== searchPhrase && !queryVariants.includes(variant)) {
+        queryVariants.push(variant);
+      }
+    }
     return { name: t.name, searchPhrase, queryVariants, weight: t.weight, category: t.category };
   });
 }
 
 function resolveSignalType(assetClass: ResolvedAssetClass | null, fallbackType: AssetType): AssetType {
   if (assetClass === 'commodity_gold' || assetClass === 'commodity_silver') return 'commodity';
+  if (assetClass === 'commodity_oil') return 'oil';
   if (assetClass === 'gold_miner') return 'materials';
   return fallbackType;
 }

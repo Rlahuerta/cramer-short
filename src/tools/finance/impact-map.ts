@@ -248,6 +248,13 @@ export const IMPACT_MAP: Record<string, Record<string, ImpactEntry>> = {
     materials: { deltaYes: -0.02,  deltaNo:  0.01,  tier: 'geopolitical' },  // energy input cost
     default:   { deltaYes: -0.02,  deltaNo:  0.01,  tier: 'geopolitical' },
   },
+  oil_supply: {
+    energy:    { deltaYes:  0.08, deltaNo: -0.03, tier: 'geopolitical' },
+    airline:   { deltaYes: -0.08, deltaNo:  0.04, tier: 'geopolitical' },
+    consumer:  { deltaYes: -0.04, deltaNo:  0.02, tier: 'geopolitical' },
+    materials: { deltaYes: -0.03, deltaNo:  0.02, tier: 'geopolitical' },
+    default:   { deltaYes: -0.02, deltaNo:  0.01, tier: 'geopolitical' },
+  },
   recession: {
     equity:     { deltaYes: -0.12, deltaNo:  0.02, tier: 'macro' },
     materials:  { deltaYes: -0.15, deltaNo:  0.02, tier: 'macro' },

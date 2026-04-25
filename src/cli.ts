@@ -1012,7 +1012,7 @@ export async function runCli() {
       safeStopTui();
       await writeSessionDailySummary(agentRunner.history, modelSelection.model);
       await sessionController.flush();
-      return process.exit(0);
+      process.exit(0);
     }
 
     if (query === '/help') {
@@ -1388,8 +1388,7 @@ export async function runCli() {
         dreamRunning = false;
         clearInterval(dreamHeartbeat);
       }
-      // Flush previous agent exchange to scrollback (only if not already flushed by
-      // the long-answer auto-flush path — same guard as the regular query path).
+      // Flush previous agent exchange to scrollback before rendering the dream answer.
       const prevItem = agentRunner.history.at(-1);
       if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted') && !flushedItems.has(prevItem)) {
         flushExchangeToScrollback(tui, chatLog, prevItem);
@@ -1500,8 +1499,8 @@ export async function runCli() {
     }
 
     // Flush the PREVIOUS completed exchange to scrollback before starting the
-    // new query.  If it was already flushed on completion (long answer path),
-    // skip the scrollback write and just clear the compact TUI view.
+    // new query. If already flushed, skip the scrollback write and just clear
+    // the compact TUI view.
     const prevItem = agentRunner.history.at(-1);
     if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted')) {
       if (flushedItems.has(prevItem)) {

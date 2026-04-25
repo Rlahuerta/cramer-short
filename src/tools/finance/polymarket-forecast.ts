@@ -94,8 +94,7 @@ export function evaluateMarketHistory(
     warnings.push(`Spike detection unavailable: no prior snapshot found for market ${market.marketId}`);
   }
 
-  if (persistenceSnapshot) {
-  } else {
+  if (!persistenceSnapshot) {
     warnings.push(
       `Persistence test unavailable: no prior snapshot found for market ${market.marketId} in 24-48h window`,
     );
@@ -238,6 +237,7 @@ automatically down-weighted by the quality scoring engine.
   available — use the decimal form, e.g. \`0.15\` for a +15% target.
 - **Pass \`options_skew\`** if you have options data — use −1 (bearish), 0 (neutral), +1 (bullish).
 - The tool fetches Polymarket data itself; you do **not** need to call \`polymarket_search\` first.
+- For commodity proxies (USO for oil, GLD for gold, SLV for silver), the tool searches both the ETF ticker and the underlying commodity name (e.g. "WTI", "crude", "OPEC" for oil) to find the broadest set of relevant prediction markets.
 
 ## Interpreting the Output
 
@@ -416,15 +416,16 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const seen = new Set<string>();
         const rawMarkets: RawMarket[] = [];
         const allSnapshotRecords = readRecords(undefined);
+        // Reader reused across all markets — avoids creating a closure per iteration
+        const marketReader = (_filePath: string | undefined, marketId?: string) =>
+          allSnapshotRecords.filter((r) => !marketId || r.marketId === marketId);
         for (let i = 0; i < signals.length; i++) {
           const result = allResults[i];
           if (result.status !== 'fulfilled') continue;
           for (const m of result.value) {
             if (seen.has(m.question)) continue;
             seen.add(m.question);
-            const marketRecords = (_filePath: string | undefined, marketId?: string) =>
-              allSnapshotRecords.filter(r => !marketId || r.marketId === marketId);
-            const history = evaluateHistoryFlagsWithReader(m, nowMs, undefined, marketRecords);
+            const history = evaluateHistoryFlagsWithReader(m, nowMs, undefined, marketReader);
             historyWarnings.push(...history.warnings);
             rawMarkets.push({
               marketId: m.marketId,

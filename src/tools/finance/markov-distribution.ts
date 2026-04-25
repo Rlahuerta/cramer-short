@@ -67,7 +67,7 @@ async function fetchYahooChartPrices(
   }
 }
 
-function normalizeHistoricalPriceTicker(ticker: string): string {
+export function normalizeHistoricalPriceTicker(ticker: string): string {
   const upper = ticker.trim().toUpperCase();
   switch (upper) {
     case 'OIL':
@@ -781,7 +781,7 @@ const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'ju
 // Strict date-anchored trade pattern: only accept when followed by an actual date
 // (month name or numeric day). Rejects non-date anchors like "at expiry", "at close", "at open"
 const DATE_ANCHORED_TRADE_PATTERN = new RegExp(
-  `\\btrade\\s+(?:above|below|over|under)\\b.*\\b(?:on|at)\\s+(?:\\d{1,2}[\\/\\-]|(?:${MONTH_NAMES.join('|')})\\b)`,
+  `\\btrade\\s+(?:above|below|over|under)\\b.*\\b(?:on|at|by|before)\\s+(?:\\d{1,2}[\\s\\/\\-]|\\d{4}[\\/\\-\\.]|(?:${MONTH_NAMES.join('|')})\\b)`,
   'i'
 );
 
@@ -1216,7 +1216,7 @@ async function fetchCandidatePolymarketAnchors(
   });
 
   if (
-    isLongHorizonCrypto
+    (isLongHorizonCrypto || isBtc14d)
     && endDateFilter
     && settled.every((result) => result.status !== 'fulfilled' || result.value.length === 0)
     && retryQueries.length > 0

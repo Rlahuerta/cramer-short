@@ -66,6 +66,7 @@ import {
   buildBtcShortHorizonThinAnchorWarning,
   capBtcShortHorizonConfidence,
   applyCryptoTerminalAnchorFallback,
+  normalizeHistoricalPriceTicker,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 
@@ -485,6 +486,30 @@ describe('extractPriceThresholds', () => {
     expect(above[0].price).toBe(70_000);
     expect(below).toHaveLength(1);
     expect(below[0].price).toBe(65_000);
+  });
+
+  it('accepts ISO date anchors (YYYY-MM-DD)', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will WTI trade above $70 on 2025-05-01?', probability: 0.75, volume: 100_000, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].price).toBe(70);
+  });
+
+  it('accepts day-first formats with month name', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will Brent trade below $65 on 1 May 2025?', probability: 0.60, volume: 100_000, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].price).toBe(65);
+  });
+
+  it('accepts ISO date anchors with slashes', () => {
+    const result = extractPriceThresholds([
+      { question: 'Will oil trade above $80 on 2025/06/15?', probability: 0.80, volume: 100_000, createdAt: Date.now() - 72 * 3600_000 },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].price).toBe(80);
   });
 
   it('rejects "trade above/below ... at expiry" (non-date anchor)', () => {
@@ -2395,6 +2420,29 @@ describe('matMul', () => {
       const sum = row.reduce((s, v) => s + v, 0);
       expect(sum).toBeCloseTo(1.0, 6);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeHistoricalPriceTicker
+// ---------------------------------------------------------------------------
+
+describe('normalizeHistoricalPriceTicker', () => {
+  it('maps oil proxy tickers to USO', () => {
+    expect(normalizeHistoricalPriceTicker('OIL')).toBe('USO');
+    expect(normalizeHistoricalPriceTicker('WTICOUSD')).toBe('USO');
+    expect(normalizeHistoricalPriceTicker('CRUDE')).toBe('USO');
+  });
+
+  it('passes through regular tickers unchanged', () => {
+    expect(normalizeHistoricalPriceTicker('AAPL')).toBe('AAPL');
+    expect(normalizeHistoricalPriceTicker('BTC')).toBe('BTC');
+    expect(normalizeHistoricalPriceTicker('GLD')).toBe('GLD');
+  });
+
+  it('trims and uppercases input', () => {
+    expect(normalizeHistoricalPriceTicker('  oil  ')).toBe('USO');
+    expect(normalizeHistoricalPriceTicker('wtiCOusd')).toBe('USO');
   });
 });
 
