@@ -92,6 +92,40 @@ describe('computeMarketQualityWeight', () => {
     expect(whale).toBeCloseTo(noWhale * 0.5, 5);
   });
 
+  it('transitoryMove flag → 30% penalty on otherwise full-quality market', () => {
+    const base: MarketInput = {
+      question: 'Persistence reversal',
+      probability: 0.7,
+      volume24hUsd: 1_000_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+    };
+    const baseline = computeMarketQualityWeight(base);
+    const transitory = computeMarketQualityWeight({ ...base, transitoryMove: true });
+    expect(transitory).toBeCloseTo(baseline * 0.7, 5);
+  });
+
+  it('price spike dominates transitory move (no stacking beyond whale penalty)', () => {
+    const base: MarketInput = {
+      question: 'Overheated market',
+      probability: 0.7,
+      volume24hUsd: 1_000_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+    };
+    const whaleOnly = computeMarketQualityWeight({ ...base, priceSpikeDetected: true });
+    const bothFlags = computeMarketQualityWeight({
+      ...base,
+      priceSpikeDetected: true,
+      transitoryMove: true,
+    });
+    expect(bothFlags).toBeCloseTo(whaleOnly, 5);
+  });
+
   it('undefined ageDays → treated as 21 (mature)', () => {
     const m: MarketInput = {
       question: 'Q',
@@ -198,6 +232,21 @@ describe('computePolymarketSignal', () => {
     };
     const { warnings } = computePolymarketSignal([m]);
     expect(warnings.some((w) => w.includes('price spike'))).toBe(true);
+  });
+
+  it('transitoryMove market → warning added', () => {
+    const m: MarketInput = {
+      question: 'Reversed market',
+      probability: 0.55,
+      volume24hUsd: 100_000,
+      ageDays: 14,
+      transitoryMove: true,
+      signalTier: 'geopolitical',
+      deltaYes: 0.05,
+      deltaNo: -0.03,
+    };
+    const { warnings } = computePolymarketSignal([m]);
+    expect(warnings.some((w) => w.includes('transitory 24-48h move'))).toBe(true);
   });
 });
 

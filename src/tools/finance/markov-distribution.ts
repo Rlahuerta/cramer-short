@@ -67,6 +67,19 @@ async function fetchYahooChartPrices(
   }
 }
 
+export function normalizeHistoricalPriceTicker(ticker: string): string {
+  const upper = ticker.trim().toUpperCase();
+  switch (upper) {
+    case 'OIL':
+    case 'WTICOUSD':
+    case 'CRUDE':
+      // USO is a futures ETF with contango decay — not a direct spot-crude proxy.
+      return 'USO';
+    default:
+      return upper;
+  }
+}
+
 /**
  * Fetch daily close prices. Tries Financial Datasets API first (fast, high quality),
  * then falls back to Yahoo Finance chart API (free, works for ETFs/commodities).
@@ -76,6 +89,7 @@ export async function fetchHistoricalPrices(
   ticker: string,
   days = 120,
 ): Promise<number[]> {
+  const normalizedTicker = normalizeHistoricalPriceTicker(ticker);
   const endDate = new Date().toISOString().slice(0, 10);
   const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -84,7 +98,7 @@ export async function fetchHistoricalPrices(
   // Try Financial Datasets API first
   try {
     const { data } = await api.get('/prices/', {
-      ticker,
+      ticker: normalizedTicker,
       interval: 'day',
       start_date: startDate,
       end_date: endDate,
@@ -99,11 +113,11 @@ export async function fetchHistoricalPrices(
     // Financial Datasets failed (premium required, rate limit, etc.) — fall through
   }
 
-  const binanceCloses = await fetchBinanceDailyCloses(ticker, days);
+  const binanceCloses = await fetchBinanceDailyCloses(normalizedTicker, days);
   if (binanceCloses.length >= 10) return binanceCloses;
 
   // Fallback: Yahoo Finance chart API (works for ETFs, commodities, most tickers)
-  return fetchYahooChartPrices(ticker, days);
+  return fetchYahooChartPrices(normalizedTicker, days);
 }
 
 // ---------------------------------------------------------------------------
@@ -761,6 +775,16 @@ const BARRIER_PATTERNS = [
   /\b(?:dip|drop|fall|sink|decline|decrease)s?\s+to\b/i,
 ];
 
+// Month names for date-anchored trade pattern validation
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+
+// Strict date-anchored trade pattern: only accept when followed by an actual date
+// (month name or numeric day). Rejects non-date anchors like "at expiry", "at close", "at open"
+const DATE_ANCHORED_TRADE_PATTERN = new RegExp(
+  `\\btrade\\s+(?:above|below|over|under)\\b.*\\b(?:on|at|by|before)\\s+(?:\\d{1,2}[\\s\\/\\-]|\\d{4}[\\/\\-\\.]|(?:${MONTH_NAMES.join('|')})\\b)`,
+  'i'
+);
+
 /** Parse a price string like "$70K" or "$1,234.56" into a number. */
 function parsePrice(raw: string): number {
   const cleaned = raw.replace(/,/g, '');
@@ -789,7 +813,8 @@ export function extractPriceThresholds(
   const now = options?.referenceTimeMs ?? Date.now();
 
   for (const market of markets) {
-    if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question))) {
+    const isDateAnchoredTrade = DATE_ANCHORED_TRADE_PATTERN.test(market.question);
+    if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question)) && !isDateAnchoredTrade) {
       anchorTrace('extract_market', {
         ticker: options?.ticker ?? null,
         horizonDays: options?.horizonDays ?? null,
@@ -1191,7 +1216,7 @@ async function fetchCandidatePolymarketAnchors(
   });
 
   if (
-    isLongHorizonCrypto
+    (isLongHorizonCrypto || isBtc14d)
     && endDateFilter
     && settled.every((result) => result.status !== 'fulfilled' || result.value.length === 0)
     && retryQueries.length > 0
@@ -1229,7 +1254,7 @@ async function fetchCandidatePolymarketAnchors(
   }
 
   if (
-    isLongHorizonCrypto
+    (isLongHorizonCrypto || isBtc14d)
     && endDateFilter
     && settled.every((result) => result.status !== 'fulfilled' || result.value.length === 0)
   ) {

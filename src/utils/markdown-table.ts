@@ -5,7 +5,9 @@
  * Also handles bold text formatting.
  */
 
+import { Markdown } from '@mariozechner/pi-tui';
 import chalk from 'chalk';
+import { markdownTheme } from '../theme.js';
 
 // Box-drawing characters
 const BOX = {
@@ -322,4 +324,115 @@ export function formatResponse(content: string): string {
   result = transformLists(result);
   result = transformURLs(result);
   return result;
+}
+
+/**
+ * Strip terminal control sequences from content before sending it through the
+ * live TUI markdown renderer. This preserves visible text while removing ANSI,
+ * OSC, C1, and other non-printing control bytes that could manipulate the
+ * terminal when replayed interactively.
+ */
+function stripTerminalControlSequences(content: string): string {
+  return content
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\u001B\][\s\S]*?(?:\u0007|\u001B\\)/g, '')
+    .replace(/(?:\u001B\[|\u009B)[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001B[@-_]/g, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F\u0080-\u009A\u009C-\u009F]/g, '')
+    .replace(/\u001B/g, '');
+}
+
+/**
+ * TUI-optimized formatting that preserves raw markdown tables and markdown
+ * syntax for the final renderer, while stripping terminal control sequences so
+ * untrusted content cannot manipulate the live TUI.
+ */
+export function formatResponseTui(content: string): string {
+  return stripTerminalControlSequences(content);
+}
+
+function normalizeTuiMarkdownContent(content: string): string {
+  return formatResponseTui(content).replace(/^\n+/, '');
+}
+
+export function renderTuiMarkdownLines(content: string, width: number): string[] {
+  const markdown = new Markdown('', 0, 0, markdownTheme, { color: (line) => line });
+  markdown.setText(normalizeTuiMarkdownContent(content));
+  return markdown.render(Math.max(10, width));
+}
+
+const renderedLineCache = new Map<string, number>();
+
+export function countRenderedTuiMarkdownLines(content: string, width: number): number {
+  const key = `${content.length}:${width}:${content.slice(0, 120)}`;
+  const cached = renderedLineCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = renderTuiMarkdownLines(content, width).length;
+  renderedLineCache.set(key, result);
+  return result;
+}
+
+export function truncateTuiMarkdownTail(
+  content: string,
+  maxRenderedLines: number,
+  width: number,
+): { text: string; truncated: boolean; renderedLineCount: number } {
+  const fullRenderedLineCount = countRenderedTuiMarkdownLines(content, width);
+  if (fullRenderedLineCount <= maxRenderedLines) {
+    return { text: content, truncated: false, renderedLineCount: fullRenderedLineCount };
+  }
+
+  const rawLines = content.split('\n');
+  const contentBudget = Math.max(1, maxRenderedLines - 1);
+  let low = 0;
+  let high = rawLines.length - 1;
+  let bestStart = rawLines.length - 1;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = rawLines.slice(mid).join('\n');
+    if (countRenderedTuiMarkdownLines(candidate, width) <= contentBudget) {
+      bestStart = mid;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
+    }
+  }
+
+  const fallbackCandidate = rawLines.slice(bestStart).join('\n');
+  if (countRenderedTuiMarkdownLines(fallbackCandidate, width) > contentBudget) {
+    const normalized = normalizeTuiMarkdownContent(content);
+    let charLow = 0;
+    let charHigh = normalized.length - 1;
+    let bestOffset = normalized.length - 1;
+
+    while (charLow <= charHigh) {
+      const mid = Math.floor((charLow + charHigh) / 2);
+      const candidate = normalized.slice(mid);
+      if (countRenderedTuiMarkdownLines(candidate, width) <= contentBudget) {
+        bestOffset = mid;
+        charHigh = mid - 1;
+      } else {
+        charLow = mid + 1;
+      }
+    }
+
+    const trimmed = normalized.slice(bestOffset).trimStart();
+    const safeTail = trimmed.length > 0 ? trimmed : normalized.slice(-Math.max(1, Math.floor(width / 2)));
+    const safeRenderedLineCount = countRenderedTuiMarkdownLines(safeTail, width);
+    return {
+      text: `…\n${safeTail}`,
+      truncated: true,
+      renderedLineCount: 1 + safeRenderedLineCount,
+    };
+  }
+
+  const tail = rawLines.slice(bestStart).join('\n');
+  const tailRenderedLineCount = countRenderedTuiMarkdownLines(tail, width);
+  return {
+    text: `…\n${tail}`,
+    truncated: true,
+    renderedLineCount: 1 + tailRenderedLineCount,
+  };
 }

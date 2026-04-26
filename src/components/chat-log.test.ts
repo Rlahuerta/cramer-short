@@ -7,7 +7,7 @@
  *
  * Uses the same fakeTui pattern as tui-layout.test.ts.
  */
-import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
+import { beforeEach, describe, it, expect } from 'bun:test';
 import { type TUI } from '@mariozechner/pi-tui';
 import { ChatLogComponent } from './chat-log.js';
 
@@ -211,6 +211,30 @@ describe('ChatLogComponent — finalizeAnswer', () => {
     const before = childCount(log);
     log.finalizeAnswer('The answer is 42');
     expect(childCount(log)).toBeGreaterThan(before);
+  });
+
+  it('preserves raw markdown tables in the TUI answer path', () => {
+    const log = new ChatLogComponent(fakeTui);
+    log.finalizeAnswer('| A | B |\n|---|---|\n| 1 | 2 |');
+
+    const children = (log as unknown as { children: unknown[] }).children;
+    expect(children.length).toBeGreaterThan(0);
+
+    const answer = children.at(-1) as { body?: { text?: string } } | undefined;
+    expect(answer).toBeDefined();
+    expect(answer?.body?.text).toContain('| A | B |');
+    expect(answer?.body?.text).not.toContain('┌');
+  });
+
+  it('strips terminal control sequences in the TUI answer path', () => {
+    const log = new ChatLogComponent(fakeTui);
+    log.finalizeAnswer('safe \u001b[31mred\u001b[0m \u001b]8;;https://example.com\u0007link\u001b]8;;\u0007');
+
+    const children = (log as unknown as { children: unknown[] }).children;
+    const answer = children.at(-1) as { body?: { text?: string } } | undefined;
+
+    expect(answer?.body?.text).toBe('safe red link');
+    expect(answer?.body?.text).not.toContain('\u001b');
   });
 });
 

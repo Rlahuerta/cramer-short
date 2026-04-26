@@ -2041,7 +2041,8 @@ describe('Markov distribution walk-forward backtest', () => {
         let changedCount = 0;
         for (let i = 0; i < btc14dActiveReplay.steps.length; i++) {
           const step = btc14dActiveReplay.steps[i];
-          if (step.decisionSource === 'replay-anchor') {
+          const ds = step.decisionSource;
+          if (ds === 'replay-anchor' || ds?.endsWith('+replay-anchor')) {
             activeReplayCount++;
           }
           if ((step.trustedAnchors ?? 0) > 0) {

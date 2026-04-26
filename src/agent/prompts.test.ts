@@ -212,6 +212,28 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('downgrade the narrative confidence');
   });
 
+  it('injects low-confidence selective-gate guard when BTC short-horizon markov confidence is below 0.25', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.18}}}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
+    expect(prompt).toContain('predictionConfidence is below the 0.25 selective threshold');
+    expect(prompt).toContain('fallback context');
+  });
+
+  it('does not inject mixed-evidence guard when BTC short-horizon markov confidence is below 0.25', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.18}}}}',
+      '### polymarket_forecast(ticker=BTC-USD)',
+      'Forecast return: -0.4%\nGrade: B',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
+    expect(prompt).not.toContain('BTC short-horizon signals are mixed');
+    expect(prompt).toContain('predictionConfidence is below the 0.25 selective threshold');
+  });
+
   it('does not inject mixed-evidence guard for BTC horizons above 14 days', () => {
     const results = [
       '### markov_distribution(ticker=BTC-USD)',

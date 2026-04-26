@@ -71,7 +71,7 @@ This fork adds the following on top of the upstream repository:
 - **Fixed Income** (`get_fixed_income`): US Treasury yields (2Y/5Y/10Y/30Y), yield curve spread (with inversion flag), Fed funds rate, CPI, and unemployment rate via FRED API — free, no key required
 - **Options Chain** (`get_options_chain`): options contracts from Yahoo Finance — top calls/puts by open interest, put/call ratio (PCR), implied volatility, and unusual volume detection — free, no key required
 - **Export Framework** (`/export`): export session research to `markdown`, `json`, or `csv` — saved to the current directory; markdown format includes tool usage tables and full answers
-- **Config Expansion** (`/config`): view and tune `maxIterations`, `contextThreshold`, `keepToolUses`, `cacheTtlMs`, `parallelToolLimit` at runtime — persisted to `.cramer-short/settings.json`
+- **Config Expansion** (`/config`): view and tune `maxIterations`, `contextThreshold`, `keepToolUses`, `cacheTtlMs`, `parallelToolLimit`, `llmCallTimeoutMs` at runtime — persisted to `.cramer-short/settings.json`; `llmCallTimeoutMs` defaults to 120 000 ms (2 min), accepts 30 000–600 000 ms (30 s–10 min), and resolves as config > env `LLM_CALL_TIMEOUT_MS` > default — malformed or out-of-range env values silently fall back to default
 - **Context Management Overhaul**: summarise-instead-of-drop — cleared tool results are preserved as ticker-prefixed compact summaries with key metrics (P/E, revenue, etc.), merged into a single rolling block; prevents agent re-fetching data it already has
 - **Markdown Rendering**: bold, italic, inline code, headers (h1/h2/h3), bullet lists, and URLs now render with colour/style in the TUI chat output
 - **Parallel Request Deduplication**: when multiple iterations request the same tool+args simultaneously, only one API call fires — others wait on the in-flight promise (`pendingRequests` map)
@@ -98,8 +98,8 @@ This fork adds the following on top of the upstream repository:
 - `/watchlist` — portfolio morning briefing; subcommands: `add TICKER [cost] [shares]`, `remove TICKER`, `list`, `show TICKER`, `snapshot`
 - `/dream` — manually trigger Dream memory consolidation; `force` bypasses trigger conditions
 - `/export [markdown|csv|json]` — export session research to a file (default: markdown)
-- `/config [show]` — display current configuration
-- `/config set <key> <value>` — update a setting (maxIterations, contextThreshold, keepToolUses, cacheTtlMs, parallelToolLimit)
+- `/config [show]` — display current configuration; `llmCallTimeoutMs` shows precedence annotation `(from env)` or `(default)`
+- `/config set <key> <value>` — update a setting (maxIterations, contextThreshold, keepToolUses, cacheTtlMs, parallelToolLimit, llmCallTimeoutMs); out-of-range values are rejected
 - `/find <keyword>` — search current session history for any keyword; shows matching turns with highlighted excerpts
 
 ### Watchlist Display Enhancements
@@ -217,6 +217,11 @@ FMP_API_KEY=your-fmp-api-key               # international tickers fallback
 # ── Web Search (Exa → Tavily fallback chain) ────────────────────────────────
 EXASEARCH_API_KEY=your-exa-api-key
 TAVILY_API_KEY=your-tavily-api-key
+
+# ── Agent Tuning (optional) ─────────────────────────────────────────────────
+# LLM call timeout in milliseconds (default: 120000, range: 30000–600000)
+# Precedence: config llmCallTimeoutMs > LLM_CALL_TIMEOUT_MS > default
+# LLM_CALL_TIMEOUT_MS=120000
 ```
 
 ## 🚀 How to Run
@@ -251,6 +256,8 @@ Type `/` at the prompt to see all available commands:
 | `/watchlist snapshot` | Portfolio dashboard with ASCII allocation chart |
 | `/dream` | Consolidate memory files (merges daily notes into MEMORY.md) |
 | `/dream force` | Force Dream consolidation regardless of trigger conditions |
+| `/config` | Show current config values (llmCallTimeoutMs shows source) |
+| `/config set <key> <value>` | Update a setting, persisted to settings.json |
 | `/exit` | Exit Cramer-Short (session is saved first) |
 
 **Keyboard shortcuts:**

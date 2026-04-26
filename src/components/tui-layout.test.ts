@@ -12,10 +12,12 @@
  */
 
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { Container, Spacer, Text, type TUI } from '@mariozechner/pi-tui';
+import { Container, Markdown, Text, type TUI } from '@mariozechner/pi-tui';
 import { ChatLogComponent } from './chat-log.js';
 import { ToolEventComponent } from './tool-event.js';
 import { IntroComponent } from './intro.js';
+import { countRenderedTuiMarkdownLines, formatResponseTui, truncateTuiMarkdownTail } from '../utils/markdown-table.js';
+import { markdownTheme } from '../theme.js';
 
 // Minimal TUI stub — components only need the TUI for requestRender callbacks
 // which are irrelevant to layout structure tests.
@@ -24,19 +26,6 @@ const fakeTui = { requestRender: () => {} } as unknown as TUI;
 // Helper: count direct children of any Container
 function childCount(container: Container): number {
   return (container as unknown as { children: unknown[] }).children.length;
-}
-
-// Helper: get rendered text of the first Text child found in a Container tree
-function findText(container: Container, index = 0): string {
-  const children = (container as unknown as { children: unknown[] }).children;
-  let found = 0;
-  for (const child of children) {
-    if ((child as { text?: string }).text !== undefined) {
-      if (found === index) return (child as { text: string }).text;
-      found++;
-    }
-  }
-  return '';
 }
 
 // ─── ChatLogComponent ──────────────────────────────────────────────────────────
@@ -347,7 +336,7 @@ describe('TUI flush lifecycle', () => {
 describe('renderCurrentQuery — streaming answer viewport cap', () => {
   /**
    * Simulate the answer-capping logic from cli.ts renderCurrentQuery.
-   * Returns the text passed to finalizeAnswer (or null if stub was shown).
+   * Returns the text passed to finalizeAnswer.
    *
    * visibleEventCount: number of tool events already visible in the TUI.
    */
@@ -356,26 +345,31 @@ describe('renderCurrentQuery — streaming answer viewport cap', () => {
     status: 'processing' | 'complete',
     termRows = 40,
     visibleEventCount = 0,
-  ): { type: 'full' | 'tail' | 'stub'; text: string } {
+  ): { type: 'full' | 'tail' | 'flush'; text: string } {
     const isRunning = status === 'processing';
     const maxContentLines = Math.max(8, termRows - 8);
     // Running: remaining lines after events; complete: legacy formula.
     const answerBudget = isRunning
       ? Math.max(3, maxContentLines - visibleEventCount * 2)
       : Math.max(10, termRows - Math.min(visibleEventCount * 2 + 12, termRows - 10));
-    const answerLines = answer.split('\n');
+    const renderedLineCount = countRenderedTuiMarkdownLines(answer, 80);
     const isStreaming = status === 'processing';
 
-    if (answerLines.length > answerBudget) {
+    if (renderedLineCount > answerBudget) {
       if (isStreaming) {
-        const tail = answerLines.slice(-answerBudget).join('\n');
-        return { type: 'tail', text: `…\n${tail}` };
+        return { type: 'tail', text: truncateTuiMarkdownTail(answer, answerBudget, 80).text };
       } else {
-        // All complete answers over budget → stub so flush can run cleanly.
-        return { type: 'stub', text: `…  (${answerLines.length} lines — writing to scrollback)` };
+        // Complete answers over budget flush to scrollback immediately so the prompt stays visible.
+        return { type: 'flush', text: '' };
       }
     }
     return { type: 'full', text: answer };
+  }
+
+  function renderMarkdownLines(answer: string, width: number): string[] {
+    const markdown = new Markdown('', 0, 0, markdownTheme, { color: (line) => line });
+    markdown.setText(formatResponseTui(answer).replace(/^\n+/, ''));
+    return markdown.render(width);
   }
 
   test('short answer is rendered in full regardless of status', () => {
@@ -400,35 +394,27 @@ describe('renderCurrentQuery — streaming answer viewport cap', () => {
     expect(result.text.startsWith('…')).toBe(true);
   });
 
-  test('long complete answer renders stub so flush can clear cleanly', () => {
+  test('long complete answer flushes instead of replacing the main view', () => {
     const longAnswer = Array(80).fill('content line').join('\n');
     const result = simulateAnswerRender(longAnswer, 'complete', 40);
-    expect(result.type).toBe('stub');
-    expect(result.text).toContain('80 lines');
-    expect(result.text).toContain('scrollback');
+    expect(result.type).toBe('flush');
+    expect(result.text).toBe('');
   });
 
-  test('stub for complete answer is a single line (never overflows)', () => {
+  test('complete answers over budget do not render inline after completion', () => {
     const longAnswer = Array(200).fill('content').join('\n');
     const result = simulateAnswerRender(longAnswer, 'complete', 40);
-    expect(result.type).toBe('stub');
-    expect(result.text.split('\n').length).toBe(1);
+    expect(result.type).toBe('flush');
+    expect(result.text).toBe('');
   });
 
-  test('medium complete answer (over budget, under old threshold) renders stub and flushes', () => {
+  test('medium complete answer over budget also flushes to preserve prompt visibility', () => {
     // termRows=45, 0 visible events: answerBudget=max(10,45-12)=33
-    // 40 lines: 40 > 33 (over budget) → stub + flush
+    // 40 lines: 40 > 33 (over budget) → flush to scrollback
     const mediumAnswer = Array(40).fill('result line').join('\n');
     const result = simulateAnswerRender(mediumAnswer, 'complete', 45);
-    expect(result.type).toBe('stub');
-    expect(result.text).toContain('40 lines');
-    expect(result.text).toContain('scrollback');
-  });
-
-  test('medium complete stub is always a single line', () => {
-    const mediumAnswer = Array(40).fill('result line').join('\n');
-    const result = simulateAnswerRender(mediumAnswer, 'complete', 45);
-    expect(result.text.split('\n').length).toBe(1);
+    expect(result.type).toBe('flush');
+    expect(result.text).toBe('');
   });
 
   test('answer budget scales with terminal height', () => {
@@ -448,6 +434,12 @@ describe('renderCurrentQuery — streaming answer viewport cap', () => {
     // 5-line answer ≤ 12 → full
     const shortAnswer = Array(5).fill('line').join('\n');
     expect(simulateAnswerRender(shortAnswer, 'processing', 40, 10).type).toBe('full');
+  });
+
+  test('wrapped markdown tables overflow by rendered height, not raw source lines', () => {
+    const table = `| Ticker | Price | Return |\n|---|---|---|\n| **AAPL** | $180.25 | +12.4% |`;
+    expect(table.split('\n').length).toBe(3);
+    expect(renderMarkdownLines(table, 20).length).toBeGreaterThan(3);
   });
 });
 
@@ -523,4 +515,3 @@ describe('renderCurrentQuery — dynamic event cap prevents query overflow', () 
     expect(large).toBeGreaterThan(small);
   });
 });
-

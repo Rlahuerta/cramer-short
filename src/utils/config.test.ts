@@ -88,6 +88,20 @@ describe('validateConfigValue — parallelToolLimit', () => {
   });
 });
 
+describe('validateConfigValue — llmCallTimeoutMs', () => {
+  it('accepts a value within range', () => {
+    expect(validateConfigValue('llmCallTimeoutMs', 300000).valid).toBe(true);
+  });
+
+  it('rejects a value below minimum', () => {
+    expect(validateConfigValue('llmCallTimeoutMs', 10000).valid).toBe(false);
+  });
+
+  it('rejects a value above maximum', () => {
+    expect(validateConfigValue('llmCallTimeoutMs', 900000).valid).toBe(false);
+  });
+});
+
 describe('validateConfigValue — unknown keys', () => {
   it('passes through without validation', () => {
     const result = validateConfigValue('unknownKey', 5);
@@ -116,11 +130,12 @@ describe('Config schema validation (Zod)', () => {
   });
 
   it('valid config parses without warnings', () => {
-    const config = { provider: 'openai', modelId: 'gpt-5.4', maxIterations: 25 };
+    const config = { provider: 'openai', modelId: 'gpt-5.4', maxIterations: 25, llmCallTimeoutMs: 300000 };
     const result = validateAndSanitizeConfig(config);
     expect(warnSpy).not.toHaveBeenCalled();
     expect(result.provider).toBe('openai');
     expect(result.maxIterations).toBe(25);
+    expect(result.llmCallTimeoutMs).toBe(300000);
   });
 
   it('maxIterations: "abc" → warning logged, field stripped, rest returned', () => {
@@ -148,6 +163,14 @@ describe('Config schema validation (Zod)', () => {
     expect(warnSpy).toHaveBeenCalled();
     expect(result.contextThreshold).toBeUndefined();
     expect(result.provider).toBe('anthropic');
+  });
+
+  it('llmCallTimeoutMs: 900000 (above max) → warning logged, field stripped', () => {
+    const config = { llmCallTimeoutMs: 900000, provider: 'openai' };
+    const result = validateAndSanitizeConfig(config);
+    expect(warnSpy).toHaveBeenCalled();
+    expect(result.llmCallTimeoutMs).toBeUndefined();
+    expect(result.provider).toBe('openai');
   });
 
   it('unknown key myCustomKey: "value" → passes through without warning', () => {

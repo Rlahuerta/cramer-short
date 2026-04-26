@@ -24,7 +24,7 @@ Identify:
 - **Topic** — the geopolitical situation (e.g. "Russia Ukraine ceasefire", "China Taiwan military", "Iran nuclear deal")
 - **Time window** — default to "1d" unless the user asks for a broader picture ("7d")
 - **Watchlist** — recall user watchlist from memory so hits can be flagged
-  - Use `recall_financial_context` with query "watchlist portfolio holdings" to retrieve tickers
+  - Use `memory_search` with query "watchlist portfolio holdings" to retrieve tickers from persistent memory or prior notes
 
 ### 2. Search OSINT sources
 Call `geopolitics_search` with:
@@ -43,9 +43,9 @@ The tool automatically queries:
 If the tool returns low confidence or few events, broaden the time window to "7d" and call again.
 
 ### 3. Cross-reference with financial data (optional)
-If the asset implications include tickers the user tracks, call `financial_metrics` to get current prices for context:
+If the asset implications include tickers the user tracks, call `get_market_data` to get current prices for context:
 ```
-financial_metrics: get current price and 1-week performance for [ticker]
+get_market_data: get current price and 1-week performance for [ticker]
 ```
 
 ### 4. Check web for breaking news
@@ -85,7 +85,7 @@ Use `store_financial_insight` with `namespace: "geopolitics-osint"`:
 ```json
 {
   "ticker": "GLOBAL",
-  "insight": "OSINT briefing: [topic summary]. Key implications: [top 3 tickers].",
+  "content": "OSINT briefing: [topic summary]. Key implications: [top 3 tickers].",
   "namespace": "geopolitics-osint",
   "tags": ["osint", "geopolitics", "[event-category]"]
 }

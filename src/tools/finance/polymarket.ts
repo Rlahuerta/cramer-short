@@ -3,6 +3,11 @@ import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
+import {
+  appendSnapshotRecords,
+  createSnapshotRecord,
+  type PolymarketSnapshotRecord,
+} from './polymarket-snapshots.js';
 
 // ---------------------------------------------------------------------------
 // Description (injected into system prompt)
@@ -59,6 +64,7 @@ Short, specific queries work far better than long compound strings.
 
 interface PolymarketMarket {
   id: string;
+  conditionId?: string;
   question: string;
   outcomes: string;
   outcomePrices: string;
@@ -82,6 +88,7 @@ interface PolymarketEvent {
 }
 
 interface FormattedMarket {
+  marketId: string;
   question: string;
   probabilities: Record<string, string>;
   endDate: string | null;
@@ -146,6 +153,11 @@ const CACHE_MAX_ENTRIES = 64;
 interface CacheEntry<T> {
   data: T;
   expiresAt: number;
+}
+
+export interface FetchPolymarketMarketsOptions {
+  snapshotFilePath?: string;
+  capturedAt?: string;
 }
 
 const searchCache = new Map<string, CacheEntry<FormattedMarket[]>>();
@@ -260,6 +272,16 @@ function extractCanonicalNames(ticker: string): string[] {
 
 const CRYPTO_BARRIER_PATTERN = /\b(?:reach|hit|surpass|touch)\b|\b(?:go|move)\s+to\b|\bgo\s+(?:above|below|over|under)\b|\b(?:remain|trade|stay)\s+(?:above|below|over|under)\b|\b(?:dip|drop|fall|sink|decline|decrease)s?\s+to\b/i;
 
+// Month names for date-anchored trade pattern validation
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+
+// Strict narrow exemption: only accept date-anchored trade phrases with actual dates
+// Rejects non-date anchors like "at expiry", "at close", "at open"
+const DATE_ANCHORED_TRADE_PATTERN = new RegExp(
+  `\\btrade\\s+(?:above|below|over|under)\\b.*\\b(?:on|at)\\s+(?:\\d{1,2}[\\/\\-]|(?:${MONTH_NAMES.join('|')})\\b)`,
+  'i'
+);
+
 export function scoreAnchorMarketRelevance(
   question: string,
   ticker: string,
@@ -282,7 +304,8 @@ export function scoreAnchorMarketRelevance(
   const hasCanonicalMatch = names.some((name) => lower.includes(name));
   if (identity.strictQuestionMatch && !hasCanonicalMatch) return 0;
   if (isCrypto && (!hasCanonicalMatch || !hasDollarPrice)) return 0;
-  if (isCrypto && CRYPTO_BARRIER_PATTERN.test(lower)) return 0;
+  // Narrow exemption: accept date-anchored trade phrases, reject other barrier patterns
+  if (isCrypto && CRYPTO_BARRIER_PATTERN.test(lower) && !DATE_ANCHORED_TRADE_PATTERN.test(lower)) return 0;
   if (hasCanonicalMatch) score += 2;
 
   if (/\b(reach|hit|dip to|between|up or down|first)\b/.test(lower)) score -= 3;
@@ -399,6 +422,7 @@ function formatMarket(m: PolymarketMarket): FormattedMarket | null {
   });
 
   return {
+    marketId: m.conditionId ?? m.id,
     question: m.question,
     probabilities,
     endDate: m.endDateIso ?? null,
@@ -789,6 +813,7 @@ export async function fetchPolymarketAnchorMarketsWithQueries(
 
 /** Structured Polymarket market result — numeric values, suitable for the injector. */
 export interface PolymarketMarketResult {
+  marketId?: string;
   question: string;
   /** YES probability [0, 1] */
   probability: number;
@@ -801,6 +826,7 @@ export interface PolymarketMarketResult {
 
 function toStructuredMarketResult(m: FormattedMarket): PolymarketMarketResult {
   return {
+    marketId: m.marketId,
     question: m.question,
     probability: parseYesProbability(m.probabilities),
     volume24h: parseVolumeStr(m.volume24h),
@@ -831,9 +857,25 @@ function parseVolumeStr(s: string): number {
 export async function fetchPolymarketMarkets(
   query: string,
   limit: number,
+  options: FetchPolymarketMarketsOptions = {},
 ): Promise<PolymarketMarketResult[]> {
   const markets = await searchEvents(query, limit);
-  return markets.map(toStructuredMarketResult);
+  const structured = markets.map(toStructuredMarketResult);
+
+  if (options.snapshotFilePath) {
+    const snapshotRecords = structured
+      .map((market) => createSnapshotRecord(market, options.capturedAt))
+      .filter((record): record is PolymarketSnapshotRecord => record !== null);
+
+    try {
+      appendSnapshotRecords(options.snapshotFilePath, snapshotRecords);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[polymarket] Failed to write snapshot records: ${message}`);
+    }
+  }
+
+  return structured;
 }
 
 export async function fetchPolymarketAnchorMarkets(

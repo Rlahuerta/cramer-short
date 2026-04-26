@@ -62,6 +62,8 @@ logs/
 coverage.json
 cramer-short-export-*.json
 cramer-short-export-*.md
+.cramer-short/exports/
+fmp-quota.json
 CODE_REVIEW_REPORT.md
 TEST_COVERAGE_VERIFICATION.md
 *.pile

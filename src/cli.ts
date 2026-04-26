@@ -10,7 +10,7 @@ import type {
 import { DEFAULT_MAX_ITERATIONS } from './agent/index.js';
 import { getApiKeyNameForProvider, getProviderDisplayName } from './utils/env.js';
 import { logger } from './utils/logger.js';
-import { callLlm, isThinkingModel } from './model/llm.js';
+import { callLlm, isThinkingModel, resolveLlmCallTimeoutMs } from './model/llm.js';
 import { MemoryManager } from './memory/index.js';
 import {
   AgentRunnerController,
@@ -37,6 +37,7 @@ import {
   ChatLogComponent,
   CustomEditor,
   DebugPanelComponent,
+  FullAnswerViewerComponent,
   IntroComponent,
   WorkingIndicatorComponent,
   createApiKeyConfirmSelector,
@@ -56,6 +57,7 @@ import { discoverSkills } from './skills/registry.js';
 import type { SkillMetadata } from './skills/types.js';
 import { getSetting, setSetting, validateConfigValue } from './utils/config.js';
 import { searchHistory } from './utils/chat-search.js';
+import { countRenderedTuiMarkdownLines, truncateTuiMarkdownTail } from './utils/markdown-table.js';
 import chalk from 'chalk';
 
 export function truncateAtWord(str: string, maxLength: number): string {
@@ -173,7 +175,9 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'skills',    description: 'Browse available skills and how to invoke them' },
   { name: 'model',     description: 'Switch the LLM model or provider' },
   { name: 'sessions',  description: 'Browse and resume past conversations' },
+  { name: 'full',      description: 'Open the full viewer for the last answer' },
   { name: 'find',      description: 'Search chat history for a keyword — or: find <keyword>' },
+
   { name: 'think',     description: 'Toggle Ollama extended thinking on/off (thinking models only)' },
   { name: 'watchlist', description: 'Portfolio briefing — or: add TICKER [cost] [shares] | remove TICKER | list | show TICKER | snapshot' },
   { name: 'dream',     description: 'Consolidate memory files — or: show (status), force (bypass conditions)' },
@@ -521,6 +525,10 @@ export function buildSnapshotPanel(
  */
 const MAX_RUNNING_EVENTS = 30;
 
+function getRenderedAnswerWidth(): number {
+  return Math.max(10, process.stdout.columns ?? 80);
+}
+
 /**
  * Render only the most recent history item (currently executing or just completed).
  * Completed exchanges are flushed to the terminal scrollback buffer so the TUI
@@ -625,31 +633,25 @@ function renderCurrentQuery(chatLog: ChatLogComponent, history: AgentRunnerContr
   }
 
   if (item.answer) {
-    // answerBudget for running: remaining content lines after visible events.
-    // answerBudget for complete: legacy formula (matches the auto-flush threshold at line 1370).
-    const answerBudget = isRunning
-      ? Math.max(3, maxContentLines - visibleEvents.length * 2)
-      : Math.max(10, termRows - Math.min(visibleEvents.length * 2 + 12, termRows - 10));
-    const answerLines = item.answer.split('\n');
     const isStreaming = item.status === 'processing';
 
-    if (answerLines.length > answerBudget) {
-      if (isStreaming) {
-        // During streaming: show only the tail so the TUI never overflows the viewport.
-        // Overflow would push early lines into the terminal's native scrollback,
-        // making it impossible for flushExchangeToScrollback() to clear them — causing
-        // the answer to appear twice (partial live view + full flushed version).
-        const tail = answerLines.slice(-answerBudget).join('\n');
-        chatLog.finalizeAnswer(`…\n${tail}`);
+    if (isStreaming) {
+      // During streaming: show only the tail so the TUI never overflows the viewport.
+      // Overflow would push early lines into the terminal's native scrollback,
+      // making it impossible for flushExchangeToScrollback() to clear them — causing
+      // the answer to appear twice (partial live view + full flushed version).
+      const answerBudget = Math.max(3, maxContentLines - visibleEvents.length * 2);
+      const renderedAnswerLines = countRenderedTuiMarkdownLines(item.answer, getRenderedAnswerWidth());
+      if (renderedAnswerLines > answerBudget) {
+        const tail = truncateTuiMarkdownTail(item.answer, answerBudget, getRenderedAnswerWidth());
+        chatLog.finalizeAnswer(tail.text);
       } else {
-        // Complete answer exceeding the display budget: always show a one-line stub.
-        // The post-runQuery flush logic will write the full answer to the terminal
-        // scrollback buffer and replace this stub with a "scroll to read" hint.
-        // Using a single-line stub (not a multi-line tail) keeps the cursor arithmetic
-        // in flushExchangeToScrollback() correct regardless of answer length.
-        chatLog.finalizeAnswer(`…  (${answerLines.length} lines — writing to scrollback)`);
+        chatLog.finalizeAnswer(item.answer);
       }
     } else {
+      // Completed answer: show the full answer. The user needs to read it.
+      // Overflow into terminal scrollback is acceptable — the flush-on-next-query
+      // mechanism handles cleanup when the user starts a new query.
       chatLog.finalizeAnswer(item.answer);
     }
   }
@@ -666,8 +668,9 @@ function renderCurrentQuery(chatLog: ChatLogComponent, history: AgentRunnerContr
  *  1. Capture how many lines the TUI is currently rendering (before stop).
  *  2. Stop the TUI — this positions the hardware cursor at the end of all
  *     rendered content and briefly disables raw mode.
- *  3. Move the cursor back to the top of the TUI area and clear downward so
- *     the "live processing" view doesn't litter the scrollback.
+ *  3. Move the cursor up to the top of the TUI viewport and clear to the end
+ *     of the screen. This removes the live-processing trail from the viewport
+ *     but does NOT erase lines already pushed into the scrollback buffer.
  *  4. Write the formatted exchange — it lands in the terminal's scroll buffer.
  *  5. Clear the TUI component tree (chatLog) so the next render starts fresh.
  *  6. Restart the TUI — re-enables raw mode, resets rendering state, re-renders
@@ -757,33 +760,47 @@ export async function runCli() {
   const chatLog = new ChatLogComponent(tui);
   const inputHistory = new InputHistoryController(() => tui.requestRender());
   let lastError: string | null = null;
+  let answerViewerVisible = false;
+  let answerViewerContent = '';
   let helpVisible = false;
   let sessionsVisible = false;
-  let watchlistVisible = false;
-  let watchlistMode: 'list' | 'show' | 'snapshot' = 'list';
-  let watchlistShowTicker: string | null = null;
-  let watchlistEntries: WatchlistEntry[] = [];
-  // null = loading, Map = loaded (may be empty if API unavailable)
-  let watchlistPrices: Map<string, PriceSnapshot> | null = null;
   let sessionsList: SessionIndexEntry[] = [];
   let resumedSessionName: string | null = null;
-  // null = auto-detect from model name; true/false = explicit override
-  let thinkEnabled: boolean | null = null;
   let sessionStarted = false;
-  let dreamRunning = false;
-  // Memory overlay state
   let memoryVisible = false;
+
+  // Watchlist state
+  let watchlistVisible = false;
+  let watchlistEntries: WatchlistEntry[] = [];
+  let watchlistPrices: Map<string, PriceSnapshot> | null = null;
+  let watchlistMode: 'list' | 'show' | 'snapshot' = 'list';
+  let watchlistShowTicker: string | null = null;
+
+  // Agent / Thinking state
+  let thinkEnabled: boolean | null = null; // null = auto
+  let dreamRunning = false;
+
   // null = loading; string = content (may be empty)
   let memoryContent: { memory: string; finance: string } | null = null;
   // Skills overlay state
   let skillsVisible = false;
   let skillsList: SkillMetadata[] = [];
   // Watchlist auto-refresh state
-  let watchlistRefreshIntervalMs = 0; // 0 = disabled
+  let watchlistRefreshIntervalMs: number = (() => {
+    const env = parseInt(process.env.WATCHLIST_REFRESH_INTERVAL_MS ?? '0', 10);
+    return Number.isFinite(env) && env >= 1000 ? env : 0;
+  })();
   let watchlistRefreshTimer: ReturnType<typeof setInterval> | null = null;
   let watchlistLastRefresh: Date | null = null;
-  // Tracks exchanges already flushed to scrollback on completion (long answers).
-  // Prevents the "flush on next submit" path from double-writing them.
+  let tuiStopped = false;
+  const safeStopTui = () => {
+    if (!tuiStopped) {
+      tui.stop();
+      tuiStopped = true;
+    }
+  };
+  // Tracks exchanges already flushed to scrollback.
+  // Prevents double-writing when the user starts a new query.
   const flushedItems = new WeakSet<HistoryItem>();
 
   const sessionController = new SessionController();
@@ -964,6 +981,10 @@ export async function runCli() {
   };
 
   const handleSubmit = async (query: string) => {
+    if (answerViewerVisible) {
+      answerViewerVisible = false;
+      renderSelectionOverlay();
+    }
     // Dismiss help overlay before processing; re-show below only if /help typed again.
     if (helpVisible) {
       helpVisible = false;
@@ -988,16 +1009,28 @@ export async function runCli() {
     }
 
     if (query.toLowerCase() === 'exit' || query.toLowerCase() === 'quit') {
-      tui.stop();
+      safeStopTui();
       await writeSessionDailySummary(agentRunner.history, modelSelection.model);
       await sessionController.flush();
       process.exit(0);
-      return;
     }
 
     if (query === '/help') {
       helpVisible = true;
       renderSelectionOverlay();
+      return;
+    }
+
+    if (query === '/full' || query === '/viewer') {
+      const completedItem = [...agentRunner.history].reverse().find((item) => item.status === 'complete' && item.answer?.trim());
+      if (!completedItem?.answer?.trim()) {
+        lastError = 'No completed answer available to view.';
+        refreshError();
+        tui.requestRender();
+        return;
+      }
+      lastError = null;
+      openAnswerViewer(completedItem.answer);
       return;
     }
 
@@ -1355,8 +1388,7 @@ export async function runCli() {
         dreamRunning = false;
         clearInterval(dreamHeartbeat);
       }
-      // Flush previous agent exchange to scrollback (only if not already flushed by
-      // the long-answer auto-flush path — same guard as the regular query path).
+      // Flush previous agent exchange to scrollback before rendering the dream answer.
       const prevItem = agentRunner.history.at(-1);
       if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted') && !flushedItems.has(prevItem)) {
         flushExchangeToScrollback(tui, chatLog, prevItem);
@@ -1410,6 +1442,13 @@ export async function runCli() {
         const suffix = key === 'parallelToolLimit' && display === 0 ? ' (unlimited)' : '';
         lines.push(`  ${key.padEnd(18)} ${display}${suffix}${extra}`);
       }
+
+      // llmCallTimeoutMs: use resolver to capture env fallback
+      const timeout = resolveLlmCallTimeoutMs();
+      const timeoutSource = timeout.source === 'config' ? '' :
+                             timeout.source === 'env' ? ' (from env)' : ' (default)';
+      lines.push(`  ${'llmCallTimeoutMs'.padEnd(18)} ${timeout.value}${timeoutSource}`);
+
       const provider = getSetting<string | undefined>('provider', undefined);
       const modelId  = getSetting<string | undefined>('modelId', undefined);
       if (provider) lines.push(`  ${'provider'.padEnd(18)} ${provider}`);
@@ -1441,7 +1480,13 @@ export async function runCli() {
         tui.requestRender();
         return;
       }
-      setSetting(cfgKey, value);
+      const saved = setSetting(cfgKey, value);
+      if (!saved) {
+        lastError = `Failed to save config to disk`;
+        refreshError();
+        tui.requestRender();
+        return;
+      }
       lastError = null;
       intro.setModel(`✓ Config: ${cfgKey} = ${String(value)}`);
       tui.requestRender();
@@ -1454,8 +1499,8 @@ export async function runCli() {
     }
 
     // Flush the PREVIOUS completed exchange to scrollback before starting the
-    // new query.  If it was already flushed on completion (long answer path),
-    // skip the scrollback write and just clear the compact TUI view.
+    // new query. If already flushed, skip the scrollback write and just clear
+    // the compact TUI view.
     const prevItem = agentRunner.history.at(-1);
     if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted')) {
       if (flushedItems.has(prevItem)) {
@@ -1490,29 +1535,6 @@ export async function runCli() {
     );
     intro.setTokenCount(totalTokens);
 
-    // If the answer is longer than the terminal can display, flush it to terminal
-    // scrollback immediately so the user can scroll up to read it.  Show a compact
-    // "done" line in the TUI viewport instead.  Short answers stay in the TUI
-    // until the next query (current behaviour) so the user can read them inline.
-    const completedItem = agentRunner.history.at(-1);
-    const termRows = process.stdout.rows ?? 40;
-    if (completedItem && completedItem.status === 'complete' && !flushedItems.has(completedItem)) {
-      // Compute the same answerBudget used in renderChatLogItem so the threshold matches.
-      const eventCount = completedItem.events?.length ?? 0;
-      const reservedRows = Math.min(eventCount * 2 + 12, termRows - 10);
-      const answerBudget = Math.max(10, termRows - reservedRows);
-      if ((completedItem.answer ?? '').split('\n').length > answerBudget) {
-        flushExchangeToScrollback(tui, chatLog, completedItem);
-        flushedItems.add(completedItem);
-        const dur = formatDuration(completedItem.duration ?? 0);
-        const toks = (completedItem.tokenUsage?.totalTokens ?? 0).toLocaleString();
-        chatLog.addChild(new Text(
-          theme.muted(`  ↑ scroll terminal to read full response  ·  ${dur}  ·  ${toks} tokens`),
-          0, 0,
-        ));
-      }
-    }
-
     refreshError();
     tui.requestRender();
   };
@@ -1521,7 +1543,11 @@ export async function runCli() {
     const value = text.trim();
     // Empty Enter while a modal overlay is open → close it (same as Esc).
     if (!value) {
-      if (memoryVisible) {
+      if (answerViewerVisible) {
+        answerViewerVisible = false;
+        renderSelectionOverlay();
+        tui.requestRender();
+      } else if (memoryVisible) {
         memoryVisible = false;
         renderSelectionOverlay();
         tui.requestRender();
@@ -1547,6 +1573,11 @@ export async function runCli() {
   };
 
   editor.onEscape = () => {
+    if (answerViewerVisible) {
+      answerViewerVisible = false;
+      renderSelectionOverlay();
+      return;
+    }
     if (memoryVisible) {
       memoryVisible = false;
       renderSelectionOverlay();
@@ -1592,7 +1623,7 @@ export async function runCli() {
       agentRunner.cancelExecution();
       return;
     }
-    tui.stop();
+    safeStopTui();
     // Auto-export session if --export flag was provided
     if (exportPathArg !== undefined) {
       const completedHistory = agentRunner.history.filter((h) => h.status === 'complete');
@@ -1636,6 +1667,13 @@ export async function runCli() {
     tui.setFocus(editor);
   };
 
+  const openAnswerViewer = (content: string) => {
+    answerViewerContent = content;
+    answerViewerVisible = true;
+    renderSelectionOverlay();
+    tui.requestRender();
+  };
+
   const renderScreenView = (
     title: string,
     description: string,
@@ -1674,6 +1712,22 @@ export async function runCli() {
 
   const renderSelectionOverlay = () => {
     const state = modelSelection.state;
+
+    if (answerViewerVisible) {
+      const body = new FullAnswerViewerComponent(tui, answerViewerContent, () => {
+        answerViewerVisible = false;
+        renderSelectionOverlay();
+        tui.requestRender();
+      });
+      renderScreenView(
+        '⬡ Cramer-Short — Full Answer',
+        '',
+        body,
+        'Esc to close · ↑↓/j/k scroll · Ctrl+U/D page · g/G top/bottom',
+        body,
+      );
+      return;
+    }
 
     if (helpVisible) {
       renderScreenView(
@@ -1942,6 +1996,23 @@ export async function runCli() {
   console.warn = (...args: unknown[]) => suppressToLog('warn', ...args);
   console.error = (...args: unknown[]) => suppressToLog('error', ...args);
   process.once('exit', () => {
+    // Safety net: ensure terminal is restored on any exit path.
+    // Without this, raw mode, Kitty protocol, bracketed paste, and
+    // cursor visibility can be left in a broken state, making the
+    // parent shell unusable (no echo, escape sequences leak as text).
+    try {
+      if (process.stdin.setRawMode && process.stdin.isRaw) {
+        process.stdin.setRawMode(false);
+      }
+    } catch { /* best-effort */ }
+    try {
+      process.stdout.write('\x1b[?25h');   // show cursor
+      process.stdout.write('\x1b[?2004l'); // disable bracketed paste
+      process.stdout.write('\x1b[<u');     // disable Kitty keyboard protocol
+    } catch {
+      // stdout may already be closed (EPIPE/EBADF); best-effort.
+    }
+
     console.log = _origConsoleLog;
     console.warn = _origConsoleWarn;
     console.error = _origConsoleError;
@@ -2005,6 +2076,8 @@ export async function runCli() {
     process.once('SIGTERM', finish);
   });
 
+  // Restore terminal state before disposing resources.
+  safeStopTui();
   workingIndicator.dispose();
   debugPanel.dispose();
 }

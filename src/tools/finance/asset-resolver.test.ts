@@ -39,6 +39,24 @@ describe('resolveAssetIntent', () => {
     expect(result.assetClass).toBe('commodity_silver');
   });
 
+  it('routes oil commodity queries to USO proxy', () => {
+    const result = resolveAssetIntent('oil price forecast next month');
+    expect(result.resolvedTicker).toBe('USO');
+    expect(result.assetClass).toBe('commodity_oil');
+  });
+
+  it('routes open-ended OIL markov prompts to the oil commodity proxy path', () => {
+    const result = resolveAssetIntent('Provide a OIL forecast based on markov chain for the next 14 days', 'OIL');
+    expect(result.resolvedTicker).toBe('USO');
+    expect(result.assetClass).toBe('commodity_oil');
+  });
+
+  it('routes WTI crude oil queries to USO proxy', () => {
+    const result = resolveAssetIntent('WTI crude oil forecast for the next 14 days');
+    expect(result.resolvedTicker).toBe('USO');
+    expect(result.assetClass).toBe('commodity_oil');
+  });
+
   it('passes through non-commodity explicit tickers', () => {
     const result = resolveAssetIntent('AAPL forecast', 'AAPL');
     expect(result.resolvedTicker).toBe('AAPL');
@@ -67,6 +85,11 @@ describe('assertAssetConsistency', () => {
     const intent = resolveAssetIntent('silver forecast', 'SILVER');
     expect(() => assertAssetConsistency(intent, 'get_stock_price', 'SILVER')).toThrow();
   });
+
+  it('rejects commodity oil routed to OIL pseudo-ticker', () => {
+    const intent = resolveAssetIntent('oil forecast', 'OIL');
+    expect(() => assertAssetConsistency(intent, 'get_stock_price', 'OIL')).toThrow();
+  });
 });
 
 describe('resolveTickerSearchIdentity', () => {
@@ -91,6 +114,14 @@ describe('resolveTickerSearchIdentity', () => {
     expect(result.canonicalTicker).toBe('SLV');
     expect(result.searchQuery).toBe('silver');
     expect(result.canonicalNames).toEqual(['silver', 'slv']);
+    expect(result.strictQuestionMatch).toBe(false);
+  });
+
+  it('maps USO to commodity oil search identity', () => {
+    const result = resolveTickerSearchIdentity('USO');
+    expect(result.canonicalTicker).toBe('USO');
+    expect(result.searchQuery).toBe('oil');
+    expect(result.canonicalNames).toEqual(['oil', 'uso']);
     expect(result.strictQuestionMatch).toBe(false);
   });
 });

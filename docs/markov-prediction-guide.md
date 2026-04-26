@@ -277,9 +277,11 @@ recommendation:
 | > 0.5 | **High confidence** — signals strongly agree, decisive probability |
 | 0.3–0.5 | **Medium confidence** — most signals agree, reasonable to act on |
 | < 0.3 | **Low confidence** — signals disagree or model is near random |
+| Abstain / no calibrated distribution | **Skip** — the model declined to produce a calibrated result. Do not treat this as an edge or interpret any fallback text as a signal. |
 
 ⚠️ **Recommendation:** Only act on predictions with confidence ≥ 0.3 for
-directional bets. Use confidence ≥ 0.4 for high-conviction trades.
+directional bets. Use confidence ≥ 0.4 for high-conviction trades. If the
+model abstains or returns no calibrated distribution, skip the trade entirely.
 
 ---
 
@@ -1049,8 +1051,15 @@ The model works without any Polymarket data — pass an empty array for
 
 ## Day-by-Day Price Trajectory
 
-The `trajectory` option generates a day-by-day price forecast with expected price,
+When a calibrated distribution is available, the `trajectory` option generates a day-by-day price forecast with expected price,
 90% confidence intervals, and directional probability for each day up to the horizon.
+
+A trajectory table is produced **only when the model can return a calibrated
+distribution for the requested asset and horizon**. If the asset/horizon
+combination is outside the model's confirmed coverage, or the model abstains
+(because trusted anchors are missing or the signal is too weak), the tool
+returns a summary instead of a trajectory table. See
+[Trajectory Limitations](#trajectory-limitations) below.
 
 ### Usage
 
@@ -1058,30 +1067,36 @@ Set `trajectory: true` when calling the tool. Optionally specify `trajectoryDays
 (1–30, defaults to the horizon value):
 
 ```
-"Give me a 7-day price trajectory for AAPL"
-"Show me day-by-day BTC forecast for the next 14 days"
+"Give me a 14-day price trajectory for SPY"
+"Show me day-by-day IAU forecast for the next 20 days"
 ```
 
-### Output Format
+For assets with confirmed Markov coverage (SPY, QQQ, IAU, GLD, etc. at appropriate
+horizons), the tool returns a full day-by-day table. For assets outside confirmed
+coverage (e.g. BTC, AAPL), the tool may return a qualitative summary or abstain
+rather than a trajectory table.
+
+### Output Format (illustrative example)
 
 ```
-═══ 7-DAY PRICE TRAJECTORY: AAPL ═══
-Current: $213.00 | Regime: bull | Confidence: 0.42
+═══ 14-DAY PRICE TRAJECTORY: SPY ═══
+Current: $520.50 | Regime: bull | Confidence: 0.32
 
 Day │ Expected │     90% CI Range    │ P(up) │ Return
 ────┼──────────┼─────────────────────┼───────┼────────
-  1 │  $213.40 │ $211.90 – $214.90   │   54% │ +0.19%
-  2 │  $213.90 │ $211.10 – $216.70   │   56% │ +0.42%
-  3 │  $214.30 │ $210.20 – $218.40   │   57% │ +0.61%
-  4 │  $214.80 │ $209.50 – $220.10   │   58% │ +0.84%
-  5 │  $215.20 │ $208.60 – $221.80   │   59% │ +1.03%
-  6 │  $215.70 │ $207.80 – $223.60   │   60% │ +1.27%
-  7 │  $216.10 │ $206.90 – $225.30   │   61% │ +1.46%
+  1 │  $521.10 │ $515.20 – $527.00   │   54% │ +0.12%
+  3 │  $523.50 │ $509.80 – $537.20   │   58% │ +0.58%
+  5 │  $525.60 │ $505.00 – $546.20   │   61% │ +0.98%
+  7 │  $527.70 │ $500.30 – $555.10   │   63% │ +1.38%
+ 14 │  $534.20 │ $488.10 – $580.30   │   68% │ +2.63%
 
-📈 Trend: Bullish drift, CI widens ~$2.50/day
+📈 Trend: Bullish drift, CI widens ~$6.50/day
 ⚠️  Point estimates are probability-weighted means, not forecasts.
     The CI range is the honest measure of uncertainty.
 ```
+
+> This example is illustrative, not a guaranteed output format. Actual values
+> will vary by run date, asset, and market conditions.
 
 ### Columns Explained
 
@@ -1129,3 +1144,15 @@ Day │ Expected │     90% CI Range    │ P(up) │ Return
 - **Day 1-2 signals are very weak** — P(up) will be close to 50% for most assets.
 - The trajectory is **not a prediction** — it's a probability-weighted projection.
   Always quote the CI range, not just the expected price.
+
+### Trajectory Limitations
+
+- **Unsupported assets or horizons** may return an abstain or a qualitative summary
+  instead of a trajectory table. For example, requesting a trajectory for BTC at
+  any horizon, or for AAPL, will typically not produce a calibrated day-by-day
+  table because the model does not have a confirmed signal for those assets.
+  When this happens, do not treat the summary as a Markov edge.
+- **Trajectory availability is conditional**: a trajectory table is only produced
+  when the model has sufficient data, a calibrated distribution, and trusted
+  anchors for the requested asset/horizon. If any of these are missing, the tool
+  falls back to a summary or abstains entirely.

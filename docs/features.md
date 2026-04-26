@@ -459,6 +459,7 @@ View and tune Cramer-Short's behaviour without editing files:
 /config set keepToolUses 8           # keep more tool results before clearing
 /config set cacheTtlMs 1800000       # 30-min cache TTL
 /config set parallelToolLimit 5      # cap concurrent tool calls
+/config set llmCallTimeoutMs 300000   # 5-min LLM call timeout
 ```
 
 | Setting | Default | Range | Effect |
@@ -468,8 +469,9 @@ View and tune Cramer-Short's behaviour without editing files:
 | `keepToolUses` | 5 | 2–20 | Tool results kept after context clear |
 | `cacheTtlMs` | 900000 | 60s–24h | In-session request cache TTL |
 | `parallelToolLimit` | 0 (unlimited) | 0–10 | Max concurrent tool calls |
+| `llmCallTimeoutMs` | 120000 | 30s–10min | Timeout per LLM API call (ms) |
 
-Settings are persisted to `.cramer-short/settings.json`.
+Settings are persisted to `.cramer-short/settings.json`. The env variable `LLM_CALL_TIMEOUT_MS` can also set the LLM call timeout, but the `/config` setting takes precedence when both are present.
 
 ---
 

@@ -722,3 +722,72 @@ describe('BTC crypto signal enrichment', () => {
     expect(byCategory['macro_growth']).toBe(0.10);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Oil signal routing
+// ---------------------------------------------------------------------------
+
+describe('extractSignals — oil signal routing', () => {
+  it('oil query routes to dedicated oil signal type (not generic commodity)', () => {
+    const categories = extractSignals('oil price forecast').map((s) => s.category);
+    expect(categories[0]).toBe('commodity');
+    expect(categories).toContain('oil_supply');
+    expect(categories).toContain('geopolitical');
+    expect(categories).toContain('macro_rates');
+    expect(categories).toContain('macro_growth');
+  });
+
+  it('USO ticker query routes to oil signals', () => {
+    const categories = extractSignals('USO').map((s) => s.category);
+    expect(categories[0]).toBe('commodity');
+    expect(categories).toContain('oil_supply');
+  });
+
+  it('oil signal weights sum to 1.0', () => {
+    const sum = extractSignals('oil').reduce((s, sig) => s + sig.weight, 0);
+    expect(sum).toBeCloseTo(1.0, 5);
+  });
+
+  it('oil primary search phrase uses "oil" not "USO"', () => {
+    const signals = extractSignals('oil');
+    const primary = signals[0];
+    expect(primary.searchPhrase.toLowerCase()).toContain('oil');
+  });
+
+  it('oil query variants include commodity-specific terms', () => {
+    const signals = extractSignals('oil');
+    const allVariants = signals.flatMap((s) => s.queryVariants ?? []);
+    const variantTexts = allVariants.map((v) => v.toLowerCase());
+    expect(variantTexts.some((v) => v.includes('crude'))).toBe(true);
+    expect(variantTexts.some((v) => v.includes('wti'))).toBe(true);
+  });
+
+  it('oil_supply signal has correct weight (0.25)', () => {
+    const signals = extractSignals('oil');
+    const supply = signals.find((s) => s.category === 'oil_supply');
+    expect(supply).toBeDefined();
+    expect(supply!.weight).toBe(0.25);
+  });
+
+  it('no oil signal has weight = 0', () => {
+    for (const sig of extractSignals('oil')) {
+      expect(sig.weight, `oil signal "${sig.name}" has zero weight`).toBeGreaterThan(0);
+    }
+  });
+
+  it('no template placeholders remain in oil search phrases', () => {
+    for (const sig of extractSignals('oil')) {
+      expect(sig.searchPhrase).not.toContain('{');
+      expect(sig.searchPhrase).not.toContain('}');
+    }
+  });
+
+  it('no template placeholders remain in oil query variants', () => {
+    for (const sig of extractSignals('oil')) {
+      for (const variant of sig.queryVariants ?? []) {
+        expect(variant).not.toContain('{');
+        expect(variant).not.toContain('}');
+      }
+    }
+  });
+});

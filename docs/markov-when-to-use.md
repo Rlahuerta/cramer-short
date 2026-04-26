@@ -13,11 +13,13 @@
 - ✅ Your horizon is **14–30 days** (the model's sweet spot)
 - ✅ You accept **~60–75% directional accuracy** with explicit confidence intervals
 - ✅ You want probability-weighted scenarios, not point forecasts
+- ✅ The run returns a **calibrated Markov distribution** (check for `predictionConfidence ≥ 0.25` and a non-abstain action signal)
 
 **Do NOT use this model when:**
-- ❌ You trade **crypto** (BTC-USD is negative at all horizons)
+- ❌ You trade **crypto** (BTC-USD is negative at all horizons; any broader commentary the agent provides is fallback, not Markov output)
 - ❌ You need **<7d** or **>30d** forecasts (5–10d is noisy, 45–60d has no Markov signal)
 - ❌ You trade **single-name equities** expecting reliable signals (AAPL/TSLA never clear confirmation bar)
+- ❌ The run **abstains or returns no calibrated distribution** — treat that as a skip, not edge
 - ❌ You want certainty (the model shows **probability distributions**, not guarantees)
 
 ---
@@ -51,7 +53,7 @@
 |-------|------|-----|
 | **AAPL** | Single-name equity | Never clears confirmation bar across any horizon |
 | **TSLA** | High-volatility equity | Marginal across all horizons; volatility overwhelms signal |
-| **BTC-USD** | Crypto | Negative at all horizons; best result 49.2% at 30d |
+| **BTC-USD** | Crypto | Negative at all horizons; best result 49.2% at 30d. Any broader trade commentary the agent provides for BTC is fallback, not validated Markov output. |
 
 ---
 
@@ -64,10 +66,12 @@ The model outputs a **confidence score** (0–1) for each prediction. Use this t
 | **≥ 0.25** (Recommended) | ~66% | ~44% | Default — balances accuracy and coverage |
 | **≥ 0.30** | ~71% | ~30% | When you need higher confidence and can skip more predictions |
 | **≥ 0.40** | ~75% | ~15% | Only for high-conviction trades; most predictions filtered out |
+| **Abstain / no calibrated distribution** | N/A | N/A | **Skip.** Not a signal — treat the absence of a calibrated result as a pass. |
 | **No threshold** | ~60% | 100% | Full coverage, but includes weak signals |
 
 **What the warnings mean:**
 - `⚠️ Low confidence (0.18 < 0.25)` — This prediction is below the recommended threshold; accuracy drops to ~55% in this range. Consider waiting for a higher-confidence signal.
+- **Abstain or no calibrated distribution** — The model declined to produce a calibrated result (typically because trusted anchors are missing or the regime signal is too weak). This is not an edge. Skip the trade rather than interpreting fallback text as a signal.
 
 ---
 
@@ -113,8 +117,9 @@ The model fails predictably in these scenarios:
 |----------|-----|------------|
 | **Earnings week** | No fundamental data; can't capture earnings surprises | Check earnings calendar; reduce position size |
 | **Macro shocks** (Fed, CPI) | Trained on 2022–2025 data; may miss regime shifts | Wait 1–2 days post-announcement for regime to stabilize |
-| **Crypto volatility** | BTC regime model is anti-informative | Do not use for crypto; use CI coverage only |
+| **Crypto volatility** | BTC regime model is anti-informative | Do not use for crypto; any commentary is fallback, not Markov |
 | **Low confidence (<0.20)** | Model is uncertain; accuracy drops to ~50% | Skip these predictions; wait for ≥0.25 |
+| **Abstain / no calibrated distribution** | Trusted anchors missing or regime signal too weak | Skip. Do not treat absence of output or fallback text as a signal |
 | **45–60d horizons** | `markovWeight` near zero; no Markov signal | Do not use beyond 30d |
 
 ---
@@ -125,19 +130,19 @@ The model fails predictably in these scenarios:
 
 > "I want to know if SPY is likely to be higher in 20 days for a swing trade."
 
-**Verdict:** ✅ Use it — SPY 20d is confirmed (70%+ accuracy), horizon is in sweet spot.
+**Verdict:** ✅ Use it — SPY 20d is confirmed (70%+ accuracy), horizon is in sweet spot. If the run returns a calibrated distribution with confidence ≥ 0.25, act on it. If it abstains or returns no calibrated output, skip.
 
 ### ⚠️ Marginal Use Case
 
 > "I want a GOOGL 30d forecast for earnings next month."
 
-**Verdict:** ⚠️ Use with caution — GOOGL 30d is exploratory, and earnings week adds fundamental risk. Check confidence score; if <0.25, skip it.
+**Verdict:** ⚠️ Use with caution — GOOGL only has confirmed coverage at 7d; 30d is exploratory, and earnings week adds fundamental risk. Check the confidence score; if < 0.25 or the model abstains, treat it as a skip rather than a signal.
 
 ### ❌ Bad Use Case
 
 > "I want BTC 14d direction for a crypto trade."
 
-**Verdict:** ❌ Do not use — BTC is negative at all horizons (49.2% best case).
+**Verdict:** ❌ Do not use — BTC is negative at all horizons (49.2% best case). Any broader trade commentary the agent may still provide for BTC is fallback reasoning, not validated Markov output. Do not rely on it as a Markov edge.
 
 ---
 

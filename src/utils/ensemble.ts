@@ -15,6 +15,7 @@ export interface MarketInput {
   volume24hUsd: number;          // 24h USD volume
   ageDays?: number;              // days since market opened (undefined → assume 21+ = mature)
   priceSpikeDetected?: boolean;  // true if |P_now - P_2h_ago| > 0.08 (whale proxy)
+  transitoryMove?: boolean;      // true if a 24-48h move appears to have reversed
   signalTier?: 'macro' | 'geopolitical' | 'electoral'; // default 'geopolitical'
   deltaYes: number;              // estimated asset return if YES (decimal, e.g. 0.06)
   deltaNo: number;               // estimated asset return if NO (decimal, e.g. -0.04)
@@ -92,8 +93,9 @@ export const YES_BIAS_MULTIPLIER = 0.95;
 /**
  * Composite quality weight for a single Polymarket market.
  *
- * Factors in market age, liquidity (log-volume), tier discount, and a 50%
- * penalty when a whale-sized price spike is detected.
+ * Factors in market age, liquidity (log-volume), tier discount, a 50%
+ * penalty when a whale-sized price spike is detected, and a 30% discount
+ * on transitory moves (unless the stronger whale penalty already applies).
  */
 export function computeMarketQualityWeight(m: MarketInput): number {
   const wAge = Math.min(1, (m.ageDays ?? 21) / 21);
@@ -105,8 +107,10 @@ export function computeMarketQualityWeight(m: MarketInput): number {
         ? 0.55
         : 0.75;
   const deltaWhale = m.priceSpikeDetected ? 1 : 0;
+  const deltaTransitory = m.transitoryMove && !m.priceSpikeDetected ? 1 : 0;
   // Whale flag applies a 50% discount (not full elimination).
-  const w = wAge * wLiq * tau * (1 - deltaWhale * 0.5);
+  // Transitory moves apply a 30% discount unless the stronger whale discount already dominates.
+  const w = wAge * wLiq * tau * (1 - deltaWhale * 0.5) * (1 - deltaTransitory * 0.3);
   return Math.max(0, Math.min(1, w));
 }
 
@@ -159,6 +163,11 @@ export function computePolymarketSignal(markets: MarketInput[]): {
     if (m.priceSpikeDetected) {
       warnings.push(
         `Market "${m.question}" has a price spike (possible whale activity) — quality discounted 50%`,
+      );
+    }
+    if (m.transitoryMove) {
+      warnings.push(
+        `Market "${m.question}" shows a transitory 24-48h move — quality discounted 30%`,
       );
     }
   }

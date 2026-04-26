@@ -360,5 +360,29 @@ describe('Replay Module', () => {
 
       expect(changedSteps).toBeGreaterThan(0);
     });
+
+    test('forwards six flags through replay path (issue #4)', async () => {
+      const prices = Array.from({ length: 12 }, (_, i) => 100 + i);
+      const dates = Array.from({ length: 12 }, (_, i) => `2024-06-${String(i + 1).padStart(2, '0')}`);
+
+      const result = await walkForwardWithReplay({
+        ticker: 'BTC-USD',
+        prices,
+        dates,
+        horizon: 1,
+        warmup: 8,
+        stride: 1,
+        replaySnapshots: [{ date: '2024-06-09', markets: [] }],
+        rawDirectionHybrid: true,
+        matureBullCalibration: true,
+        sidewaysSplit: true,
+        transitionDecayOverride: 0.8,
+        regimeSpecificSigma: true,
+        regimeSpecificSigmaThreshold: 0.75,
+      });
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.steps.length).toBeGreaterThan(0);
+    });
   });
 });

@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getChannelProfile } from './channels.js';
-import { shouldInjectBtcShortHorizonMixedEvidencePrompt } from './agent.js';
+import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
+import { isExplicitPolymarketForecastRequest, shouldInjectBtcShortHorizonLowConfidencePrompt, shouldInjectBtcShortHorizonMixedEvidencePrompt } from './agent.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { cramerShortPath } from '../utils/paths.js';
 
@@ -395,7 +396,7 @@ ${toolDescriptions}
 - For options chains, implied volatility, put/call ratios, Greeks, or unusual options activity, use get_options_chain.
 - **For terminal price probability distributions** — when the user explicitly asks for a probability distribution of future prices, scenario buckets, or Markov-chain distribution at a specific horizon — use markov_distribution FIRST. This tool is the canonical path for calibrated price distributions and is the only valid source of scenario bucket probabilities. If markov_distribution abstains, clearly warn that no calibrated Markov terminal distribution was available. You may then provide fallback analysis such as a point forecast or confidence interval from polymarket_forecast, but you MUST NOT synthesize replacement scenario buckets yourself.
 - **For price forecasts using prediction market signals** — when the user asks "what will X trade at in N days/weeks/months?", "price target for X", or "where is X headed?" and does NOT specifically require a full probability distribution — use polymarket_forecast. Polymarket hosts markets from 1 day to 12 months, so this tool works for short, medium, and longer horizons. It applies a research-backed weighted ensemble (Polymarket signals + sentiment + fundamentals + options skew) to produce a forecast price, 95% confidence interval, and a conviction grade. Signal quality is highest for 1–90 day horizons; longer horizons are supported but produce wider CIs. CRITICAL: ALWAYS call get_market_data FIRST to obtain the current price, then pass it via current_price — without it the 95% CI is shown in percentages only (relative to base 100), not in dollar terms. For richer results, also call social_sentiment and get_financials and pass their outputs via sentiment_score and fundamental_return. Do NOT use this for real-time prices (use get_market_data) or multi-year DCF valuation (use dcf skill).
-- **For BTC/crypto price forecasts** — use the strongest available signal stack: call get_market_data for the current price, then get_onchain_crypto for on-chain metrics and sentiment, social_sentiment for crowd mood, get_fixed_income for rate/yield-curve context, and polymarket_forecast for the baseline forecast. For short horizons (≤14 days), also call markov_distribution with trajectory=true to get a day-by-day path. For a full structured BTC/crypto forecast report, invoke the probability_assessment skill — it integrates all of these tools into a weighted log-odds assessment.
+- **For BTC/crypto price forecasts** — use the strongest available signal stack: call get_market_data for the current price, then get_onchain_crypto for on-chain metrics and sentiment, social_sentiment for crowd mood, get_fixed_income for rate/yield-curve context, and polymarket_forecast for the baseline forecast. For short horizons (≤14 days), also call markov_distribution with trajectory=true to get a day-by-day path. IMPORTANT: for BTC short horizons, treat Markov as a **selective** signal only when its predictionConfidence clears the recommended 0.25 threshold. If it is below 0.25, do not present the Markov direction as part of the aggregate selective-accuracy slice; treat it as fallback context only. For a full structured BTC/crypto forecast report, invoke the probability_assessment skill — it integrates all of these tools into a weighted log-odds assessment.
 - Call get_financials or get_market_data ONCE with the full natural language query - they handle multi-company/multi-metric requests internally
 - Do NOT break up queries into multiple tool calls when one call can handle the request
 - When news headlines are returned, assess whether the titles and metadata already answer the user's question before fetching full articles with web_fetch (fetching is expensive). Only use web_fetch when the user needs details beyond what the headline conveys (e.g., quotes, specifics of a deal, earnings call takeaways)
@@ -518,14 +519,22 @@ IMPORTANT: markov_distribution results are present. Treat the canonical Markov p
 IMPORTANT: BTC short-horizon signals are mixed. markov_distribution is bullish, but polymarket_forecast is flat or bearish. You MUST explicitly describe this as mixed evidence, and you MUST downgrade the narrative confidence rather than presenting the bullish Markov result as a high-conviction standalone signal.`;
   }
 
+  if (shouldInjectBtcShortHorizonLowConfidencePrompt(originalQuery, fullToolResults)) {
+    prompt += `
+
+IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, but its predictionConfidence is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold. You MUST NOT present that Markov direction as part of the selective Markov accuracy slice or as a validated BTC directional edge. If you mention it at all, frame it as low-confidence fallback context and make clear that the selective gate did not clear.`;
+  }
+
   const hasAbstainingMarkovOutput =
     /"_tool"\s*:\s*"markov_distribution"/.test(fullToolResults)
     && /"status"\s*:\s*"abstain"/.test(fullToolResults);
   if (hasAbstainingMarkovOutput) {
     const assetIntent = resolveAssetIntent(originalQuery, null);
+    const explicitPolymarketForecast = isExplicitPolymarketForecastRequest(originalQuery);
     const btcShortHorizonForecast = /\b(?:btc|bitcoin)\b/i.test(originalQuery)
       && /\b(?:7|14)\s*(?:day|days)\b/i.test(originalQuery)
       && /\bforecast|outlook|prediction|price target|price outlook\b/i.test(originalQuery)
+      && !explicitPolymarketForecast
       && !/probability distribution|price distribution|full distribution|distribution for .*price/i.test(originalQuery);
     const commodityProxyFraming =
       assetIntent.assetClass === 'commodity_gold' || assetIntent.assetClass === 'commodity_silver'
@@ -538,7 +547,9 @@ IMPORTANT: ${assetIntent.resolvedTicker} is only the data proxy for ${assetInten
 
 IMPORTANT: markov_distribution explicitly abstained. Its diagnostics are authoritative, but no calibrated scenario distribution is available.${btcShortHorizonForecast
       ? ' For BTC short-horizon forecast queries (7-day or 14-day), you MUST preserve the abstention in the final answer. You MUST NOT provide a point forecast, confidence interval, forecast grade, or bull/base/bear scenario probabilities after this abstention. Give a concise diagnostics-led no-trade / insufficient-edge answer instead.'
-      : ' You may explain the abstain reasons and discuss market-quality limitations, and you MAY provide fallback analysis such as a point forecast or confidence interval if another tool explicitly supports it.'} However, you MUST clearly warn that no calibrated Markov terminal distribution was available, and you MUST NOT create, correct, extrapolate, interpolate, renormalize, or manually synthesize replacement scenario buckets or probability percentages from later polymarket_search results. Numeric scenario distributions are only allowed when copied directly from a non-abstaining canonical Markov payload.
+      : explicitPolymarketForecast
+        ? ' The user explicitly requested polymarket_forecast. You MUST preserve the abstain warning, and you MUST still use polymarket_forecast as the lead fallback answer path for a point forecast / confidence interval if its output is available. Do not let the Markov abstention replace the requested polymarket_forecast-led answer framing.'
+        : ' You may explain the abstain reasons and discuss market-quality limitations, and you MAY provide fallback analysis such as a point forecast or confidence interval if another tool explicitly supports it.'} However, you MUST clearly warn that no calibrated Markov terminal distribution was available, and you MUST NOT create, correct, extrapolate, interpolate, renormalize, or manually synthesize replacement scenario buckets or probability percentages from later polymarket_search results. Numeric scenario distributions are only allowed when copied directly from a non-abstaining canonical Markov payload.
 
 For non-crypto forecast queries with a specific asset target (stocks, ETFs, commodities): after Markov abstains, call get_market_data for the current price and then polymarket_forecast for a point estimate with confidence interval. This combination provides the best available fallback. Do NOT stop after a shallow polymarket_search — polymarket_forecast performs a deeper, signal-weighted retrieval that produces a calibrated forecast. Macro-only questions without a specific asset target are handled separately.${commodityProxyFraming}`;
   }
