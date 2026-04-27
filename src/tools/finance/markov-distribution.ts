@@ -27,6 +27,7 @@ import { fetchBinanceDailyCloses } from './binance.js';
 import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
 import { extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
+import { transformQToP, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix } from './rnd-integration.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -4149,19 +4150,54 @@ export async function computeMarkovDistribution(params: {
     ? computeStartStateMixture(regimeSeq.slice(-5))
     : undefined;
 
+  // --- RND integration: Polymarket strike markets → forward-looking regime probabilities ---
+  let rndMixture: Record<RegimeState, number> | undefined;
+  let nudgedP: TransitionMatrix | undefined;
+
+  const highTrustAnchors = polymarketAnchors.filter(a => a.trustScore === 'high');
+  if (highTrustAnchors.length >= 2) {
+    const strikes = highTrustAnchors.map(a => a.price);
+    const yesPrices = highTrustAnchors.map(a => a.probability);
+
+    const avgDailyReturn = returns.reduce((s, r) => s + r, 0) / returns.length;
+    const historicalDrift = avgDailyReturn * 252;
+    const riskFreeRate = assetProfile.type === 'crypto' ? 0.03 : 0.05;
+    const meanReturn = avgDailyReturn;
+    const variance = returns.reduce((s, r) => s + (r - meanReturn) ** 2, 0) / returns.length;
+    const volatility = Math.sqrt(variance) * Math.sqrt(252);
+
+    const pProbs = yesPrices.map(q => transformQToP(q, historicalDrift, riskFreeRate, Math.max(volatility, 1e-6), horizon));
+    const fit = fitLognormalFromStrikes(strikes, pProbs, currentPrice);
+
+    if (Number.isFinite(fit.muLn) && Number.isFinite(fit.sigmaLn) && fit.sigmaLn > 0) {
+      const regimes = lognormalToRegimeProbabilities(fit.muLn, fit.sigmaLn, currentPrice);
+      rndMixture = { bull: regimes.bull, bear: regimes.bear, sideways: regimes.sideways };
+
+      const qualityScore = highTrustAnchors.length >= 5 ? 80 : highTrustAnchors.length >= 3 ? 40 : 20;
+
+      if (qualityScore > 0) {
+        const targetTerminal = { bull: regimes.bull, bear: regimes.bear, sideways: regimes.sideways };
+        nudgedP = nudgeTransitionMatrix(P, currentRegime, targetTerminal, horizon, qualityScore);
+      }
+    }
+  }
+
+  const effectiveMixture = rndMixture ?? mixture;
+  const effectiveP = nudgedP ?? P;
+
   // Compute daily volatility for adaptive grid sizing
   const gridDailyVol = returns.length >= 20
     ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
     : undefined;
   const rawDistribution = interpolateDistribution(
-    currentPrice, horizon, P, regimeStats, currentRegime, polymarketAnchors, rho,
-    20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, mixture,
+    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
+    20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
-    horizon, P, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, mixture,
+    horizon, effectiveP, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, effectiveMixture,
     regimeSpecificSigma, regimeSpecificSigmaThreshold,
   );
 
@@ -4177,13 +4213,13 @@ export async function computeMarkovDistribution(params: {
     ? (pr3gCryptoShortHorizonDecay ?? pr3gDefaultDecay ?? assetProfile.decayRate)
     : undefined;
   const regimeUpRates = computeRegimeUpRates(regimeSeq, returns, horizon, pr3gDecayRate);
-  const Pn = matPow(P, horizon);
-  
+  const Pn = matPow(effectiveP, horizon);
+
   let stateWeightsForUp: number[];
-  if (mixture) {
+  if (effectiveMixture) {
     stateWeightsForUp = [0, 0, 0];
     for (const state of REGIME_STATES) {
-      const w = mixture[state];
+      const w = effectiveMixture[state];
       const idx = STATE_INDEX[state];
       for (let j = 0; j < 3; j++) {
         stateWeightsForUp[j] += w * Pn[idx][j];
@@ -4333,9 +4369,9 @@ export async function computeMarkovDistribution(params: {
   if (params.trajectory) {
     const trajDays = Math.min(30, Math.max(1, params.trajectoryDays ?? horizon));
     trajectoryResult = computeTrajectory(
-      currentPrice, trajDays, P, regimeStats, currentRegime,
+      currentPrice, trajDays, effectiveP, regimeStats, currentRegime,
       combinedDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
-      recentDailyVol, mixture,
+      recentDailyVol, effectiveMixture,
     );
 
     // Align trajectory P(Up) with the calibrated CDF at the final day.
