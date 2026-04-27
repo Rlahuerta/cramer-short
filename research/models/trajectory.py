@@ -114,6 +114,7 @@ def compute_horizon_drift_vol(
     initial_state: RegimeState,
     momentum_adjustment: float = 0.0,
     start_mixture: dict[RegimeState, float] | None = None,
+    hmm_override: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Compute regime-weighted drift and vol at a given horizon.
 
@@ -151,9 +152,19 @@ def compute_horizon_drift_vol(
     mu_eff = mu_obs
     sigma_eff = mixture_sigma
 
+    mu_n = horizon * (mu_eff + momentum_adjustment)
+    sigma_n = sigma_eff * math.sqrt(horizon)
+
+    if hmm_override:
+        w = hmm_override.get("weight", 0.0)
+        hmm_drift = hmm_override.get("drift", mu_eff)
+        hmm_vol = hmm_override.get("vol", sigma_eff)
+        mu_n = w * (horizon * hmm_drift) + (1 - w) * mu_n
+        sigma_n = w * (hmm_vol * math.sqrt(horizon)) + (1 - w) * sigma_n
+
     return {
-        "mu_n": horizon * (mu_eff + momentum_adjustment),
-        "sigma_n": sigma_eff * math.sqrt(horizon),
+        "mu_n": mu_n,
+        "sigma_n": sigma_n,
     }
 
 
@@ -172,6 +183,7 @@ def compute_trajectory(
     nu: int = 5,
     empirical_daily_vol: float | None = None,
     start_mixture: dict[RegimeState, float] | None = None,
+    hmm_override: dict[str, float] | None = None,
 ) -> list[TrajectoryPoint]:
     """Compute day-by-day price trajectory via Monte Carlo.
 
@@ -196,7 +208,7 @@ def compute_trajectory(
 
     # 1-day drift/vol for MC steps
     dv1 = compute_horizon_drift_vol(
-        1, P, regime_stats, initial_state, momentum_adjustment, start_mixture
+        1, P, regime_stats, initial_state, momentum_adjustment, start_mixture, hmm_override
     )
     drift_1d = dv1["mu_n"]
     regime_vol_1d = dv1["sigma_n"]
@@ -221,7 +233,7 @@ def compute_trajectory(
 
         # Horizon drift/vol
         dv = compute_horizon_drift_vol(
-            d, P, regime_stats, initial_state, momentum_adjustment, start_mixture
+            d, P, regime_stats, initial_state, momentum_adjustment, start_mixture, hmm_override
         )
         mu_n = dv["mu_n"]
         sigma_n = dv["sigma_n"]

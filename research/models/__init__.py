@@ -22,6 +22,19 @@ from research.models.ensemble import (
     score_to_grade,
     run_ensemble,
 )
+from research.models.hmm import (
+    AssetProfile,
+    ASSET_PROFILES,
+    HMMFitResult,
+    HMMParams,
+    HMMPrediction,
+    baum_welch,
+    fit_volatility_hmm,
+    initialize_hmm,
+    mat_pow,
+    predict,
+    viterbi,
+)
 from research.models.trajectory import (
     RegimeStats,
     TrajectoryPoint,
@@ -66,4 +79,15 @@ __all__ = [
     "student_t_survival",
     "log_normal_survival",
     "interpolate_survival",
+    "AssetProfile",
+    "ASSET_PROFILES",
+    "HMMFitResult",
+    "HMMParams",
+    "HMMPrediction",
+    "baum_welch",
+    "fit_volatility_hmm",
+    "initialize_hmm",
+    "mat_pow",
+    "predict",
+    "viterbi",
 ]

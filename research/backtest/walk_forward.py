@@ -17,6 +17,7 @@ from research.models.markov import (
     estimate_transition_matrix,
     compute_markov_forecast,
 )
+from research.models.hmm import ASSET_PROFILES, baum_welch, fit_volatility_hmm, predict
 from research.models.trajectory import compute_horizon_drift_vol, RegimeStats
 
 
@@ -46,6 +47,8 @@ def walk_forward(
     stride: int = 10,
     return_threshold_multiplier: float = 0.5,
     decay_rate: float = 0.97,
+    use_hmm: bool = False,
+    asset_profile: str = "crypto",
 ) -> WalkForwardResult:
     """Run a walk-forward backtest on a price series.
 
@@ -63,6 +66,10 @@ def walk_forward(
         Adaptive threshold multiplier for regime classification.
     decay_rate : float
         Exponential decay for transition matrix weighting.
+    use_hmm : bool
+        Whether to blend HMM predictions into the forecast.
+    asset_profile : str
+        Asset profile key (etf, equity, crypto, commodity) for HMM weight tuning.
 
     Returns
     -------
@@ -122,8 +129,30 @@ def walk_forward(
 
             p_up = sum(forecast[s] * up_rates[s] for s in ["bull", "bear", "sideways"])
 
+            # Optional HMM enhancement
+            hmm_override: dict[str, float] | None = None
+            if use_hmm:
+                hmm_result = baum_welch(
+                    window_returns,
+                    n_states=3,
+                    max_iterations=50,
+                    tolerance=1e-3,
+                )
+                if hmm_result.converged:
+                    hmm_pred = predict(window_returns, hmm_result.params, forecast_horizon=horizon)
+                    vol_scale = fit_volatility_hmm(window_returns, vol_window=5, n_states=2)
+                    profile = ASSET_PROFILES.get(asset_profile, ASSET_PROFILES["crypto"])
+                    hmm_weight = np.clip(profile.hmm_weight_multiplier * 0.5, 0.0, 1.0)
+                    hmm_override = {
+                        "drift": hmm_pred.expected_return,
+                        "vol": hmm_pred.expected_volatility * vol_scale,
+                        "weight": float(hmm_weight),
+                    }
+
             # Predicted return from horizon drift
-            dv = compute_horizon_drift_vol(horizon, P, regime_stats, current_regime)
+            dv = compute_horizon_drift_vol(
+                horizon, P, regime_stats, current_regime, hmm_override=hmm_override
+            )
             predicted_return = math.exp(dv["mu_n"]) - 1
 
             # Simple CI using sigma
@@ -139,14 +168,14 @@ def walk_forward(
             result.steps.append(
                 BacktestStep(
                     start_idx=start,
-                    predicted_prob=p_up,
-                    predicted_return=predicted_return,
-                    ci_lower=ci_lower,
-                    ci_upper=ci_upper,
-                    realised_return=realised_return,
-                    realised_price=realised_price,
-                    direction_correct=direction_correct,
-                    in_ci=in_ci,
+                    predicted_prob=float(p_up),
+                    predicted_return=float(predicted_return),
+                    ci_lower=float(ci_lower),
+                    ci_upper=float(ci_upper),
+                    realised_return=float(realised_return),
+                    realised_price=float(realised_price),
+                    direction_correct=bool(direction_correct),
+                    in_ci=bool(in_ci),
                 )
             )
         except Exception as e:
