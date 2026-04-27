@@ -12,6 +12,13 @@ Note on raw-return HMMs:
   expected_return and expected_volatility forecasts, not in hard state
   labels. For explicit bull/bear/sideways regimes, use the observable
   Markov model in markov.py.
+
+Note on asset-class universality:
+  This behavior is not specific to crypto. It persists across asset classes
+  (ETF, equity, commodity) because Gaussian HMMs optimize for likelihood,
+  and one broad Gaussian explains the bulk of any return distribution more
+  efficiently than splitting by mean. Use `fit_2state_return_hmm` for an
+  explicit calm/volatile split, or use the continuous forecasts in `predict`.
 """
 
 from __future__ import annotations
@@ -127,9 +134,12 @@ def baum_welch(
 
     Returns sorted parameters so state 0 = lowest mean, state N-1 = highest.
     Note: on real financial returns the model often collapses to a
-    single low-volatility state with a few outlier states. The value is
-    in the continuous forecasts (expected_return, expected_volatility),
-    not hard regime labels.
+    single low-volatility state with a few outlier states. This is
+    universal across asset classes (crypto, equity, ETF) because EM
+    maximizes likelihood and one broad Gaussian explains the bulk of
+    any return distribution more efficiently than splitting by mean.
+    The value is in the continuous forecasts (expected_return,
+    expected_volatility), not hard regime labels.
     """
     obs = np.asarray(observations).reshape(-1, 1)
     init = initialize_hmm(observations, n_states)
