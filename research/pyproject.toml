@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cramer-research"
+version = "0.1.0"
+description = "Python research mirror for the Cramer-Short forecasting engines"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Ricardo D. Lahuerta" }
+]
+keywords = ["forecasting", "markov", "polymarket", "ensemble", "finance"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Financial",
+]
+
+dependencies = [
+  "numpy",
+  "scipy",
+  "pandas",
+  "matplotlib",
+  "seaborn",
+  "jupyterlab",
+  "ipywidgets",
+  "requests",
+  "python-dotenv",
+  "plotly",
+  "statsmodels",
+  "arch",
+  "yfinance",
+  "hmmlearn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-cov",
+  "black",
+  "ruff",
+  "mypy",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["research*"]
+
+[tool.setuptools.package-data]
+research = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+strict = true

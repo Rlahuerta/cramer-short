@@ -1,0 +1,23 @@
+name: cramer-research
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  - jupyterlab
+  - ipywidgets
+  - requests
+  - python-dotenv
+  - pip:
+      - plotly
+      - statsmodels
+      - arch
+      - yfinance
+      - hmmlearn
+      - pytest

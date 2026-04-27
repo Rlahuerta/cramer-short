@@ -7,7 +7,7 @@ Fetches on-chain and market intelligence metrics for cryptocurrencies from CoinG
 
 ## When to Use
 - User asks about crypto fundamentals, on-chain health, or developer activity  
-- Analyzing whale sentiment, community growth, or ecosystem health
+- Analyzing whale movements, sentiment, community growth, or ecosystem health
 - Comparing crypto projects beyond price (developer commits, community size)
 - Global crypto market overview (BTC dominance, total market cap)
 
@@ -39,15 +39,104 @@ export function resolveCoinGeckoId(ticker: string): string {
   return TICKER_TO_COINGECKO_ID[upper] ?? ticker.trim().toLowerCase();
 }
 
+/** Fetch whale movement data for a cryptocurrency. */
+async function fetchWhaleData(
+  ticker: string,
+  currentPriceUsd: number | null,
+): Promise<Record<string, unknown>> {
+  const upper = ticker.trim().toUpperCase();
+
+  // Prefer Whale Alert API when a key is configured (multi-chain)
+  const whaleAlertKey = process.env.WHALE_ALERT_API_KEY;
+  if (whaleAlertKey) {
+    try {
+      const res = await fetch(
+        `https://api.whale-alert.io/v1/transactions?api_key=${whaleAlertKey}&min_value=500000&currency=${upper}&limit=10`,
+        { headers: { Accept: 'application/json' } },
+      );
+      if (res.ok) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const data: any = await res.json();
+        return {
+          source: 'whale-alert',
+          transactions: data.transactions ?? [],
+          count: data.transactions?.length ?? 0,
+        };
+      }
+    } catch {
+      // fall through to free sources
+    }
+  }
+
+  // Free fallback for BTC via blockchain.info mempool
+  if (upper === 'BTC') {
+    try {
+      const res = await fetch(
+        'https://blockchain.info/unconfirmed-transactions?format=json',
+        { headers: { Accept: 'application/json' } },
+      );
+      if (!res.ok) {
+        return { error: `Blockchain.info returned ${res.status}` };
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data: any = await res.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const txs = (data.txs ?? []) as Array<any>;
+
+      const thresholdBtc = 100;
+      const whaleTxs = txs
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((tx: any) => {
+          const totalOutput = (tx.out ?? []).reduce(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (sum: number, o: any) => sum + (o.value || 0),
+            0,
+          );
+          const btcValue = totalOutput / 1e8;
+          return {
+            hash: tx.hash,
+            btc_amount: btcValue,
+            usd_value: currentPriceUsd ? btcValue * currentPriceUsd : null,
+            time: tx.time,
+          };
+        })
+        .filter((tx: { btc_amount: number }) => tx.btc_amount >= thresholdBtc)
+        .sort((a: { btc_amount: number }, b: { btc_amount: number }) => b.btc_amount - a.btc_amount)
+        .slice(0, 5);
+
+      const totalBtc = whaleTxs.reduce((sum: number, tx: { btc_amount: number }) => sum + tx.btc_amount, 0);
+
+      return {
+        source: 'blockchain.info-mempool',
+        note: 'Data from unconfirmed (mempool) transactions. Use web_search for confirmed whale movements.',
+        threshold_btc: thresholdBtc,
+        whale_transactions_detected: whaleTxs.length,
+        total_btc_moved: totalBtc,
+        total_usd_moved: currentPriceUsd ? totalBtc * currentPriceUsd : null,
+        recent_large_transactions: whaleTxs,
+      };
+    } catch (err) {
+      return {
+        error: 'Unable to fetch whale data from blockchain.info',
+        details: err instanceof Error ? err.message : 'Unknown error',
+      };
+    }
+  }
+
+  return {
+    note: `Whale tracking is currently available for BTC only (or configure WHALE_ALERT_API_KEY for multi-chain). For ${upper}, use web_search for whale alerts.`,
+  };
+}
+
 const OnchainCryptoInputSchema = z.object({
   ticker: z.string().describe("Crypto ticker e.g. 'BTC', 'ETH', 'SOL'"),
   metrics: z
-    .array(z.enum(['market', 'sentiment', 'developer', 'community', 'global']))
+    .array(z.enum(['market', 'sentiment', 'developer', 'community', 'global', 'whale']))
     .default(['market', 'sentiment'])
     .describe('Which on-chain/market metrics to fetch'),
 });
 
-type MetricCategory = 'market' | 'sentiment' | 'developer' | 'community' | 'global';
+type MetricCategory = 'market' | 'sentiment' | 'developer' | 'community' | 'global' | 'whale';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractMarketMetrics(data: any): Record<string, unknown> {
@@ -171,6 +260,11 @@ export const getOnchainCrypto = new DynamicStructuredTool({
             case 'community':
               result.community = extractCommunityMetrics(data);
               break;
+            case 'whale': {
+              const priceUsd = data?.market_data?.current_price?.usd ?? null;
+              result.whale = await fetchWhaleData(input.ticker, priceUsd);
+              break;
+            }
           }
         }
       }

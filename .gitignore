@@ -69,3 +69,7 @@ TEST_COVERAGE_VERIFICATION.md
 *.pile
 /.claude
 fmp-quota.json
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints
