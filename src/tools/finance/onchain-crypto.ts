@@ -133,7 +133,10 @@ const OnchainCryptoInputSchema = z.object({
   metrics: z
     .array(z.enum(['market', 'sentiment', 'developer', 'community', 'global', 'whale']))
     .default(['market', 'sentiment'])
-    .describe('Which on-chain/market metrics to fetch'),
+    .describe(
+      "Which on-chain/market metrics to fetch. Valid values: 'market', 'sentiment', 'developer', 'community', 'global', 'whale'. " +
+      "Use 'whale' for whale movement / large transaction data. Do NOT use 'large_transactions' or 'exchange_flows'.",
+    ),
 });
 
 type MetricCategory = 'market' | 'sentiment' | 'developer' | 'community' | 'global' | 'whale';
@@ -204,7 +207,11 @@ function extractGlobalMetrics(globalData: any): Record<string, unknown> {
 export const getOnchainCrypto = new DynamicStructuredTool({
   name: 'get_onchain_crypto',
   description:
-    'Fetches on-chain and market intelligence metrics for cryptocurrencies from CoinGecko (free, no API key needed). Returns market data, community sentiment, developer activity, and global market context.',
+    "Fetches on-chain and market intelligence metrics for cryptocurrencies from CoinGecko (free, no API key needed). " +
+    "Supported metrics: 'market' (price, volume, supply), 'sentiment' (sentiment votes, public interest), " +
+    "'developer' (commits, forks, issues), 'community' (twitter, reddit, telegram), " +
+    "'global' (BTC dominance, total market cap), 'whale' (whale movements / large transactions). " +
+    "Do NOT request 'large_transactions' or 'exchange_flows' — use 'whale' instead.",
   schema: OnchainCryptoInputSchema,
   func: async (input) => {
     const coinId = resolveCoinGeckoId(input.ticker);
