@@ -12,6 +12,7 @@ from research.models.hmm import (
     HMMParams,
     HMMPrediction,
     baum_welch,
+    fit_2state_return_hmm,
     fit_volatility_hmm,
     initialize_hmm,
     mat_pow,
@@ -310,3 +311,94 @@ def test_trajectory_without_hmm_override_regression():
     for pt in traj:
         assert 0 <= pt.p_up <= 1
         assert pt.lower_bound < pt.expected_price < pt.upper_bound
+
+
+# ---------------------------------------------------------------------------
+# 2-State return HMM
+# ---------------------------------------------------------------------------
+
+
+def test_fit_2state_return_hmm_converges_synthetic():
+    rng = np.random.default_rng(707)
+    n = 200
+    calm = rng.normal(0.0, 0.01, n)
+    volatile = rng.normal(0.0, 0.04, n)
+    obs = np.concatenate([calm, volatile])
+    result = fit_2state_return_hmm(obs)
+    assert result["converged"] is True
+    assert len(result["state_labels"]) == 2
+
+
+def test_fit_2state_return_hmm_two_states():
+    rng = np.random.default_rng(808)
+    obs = rng.normal(0.0, 0.02, 400)
+    result = fit_2state_return_hmm(obs)
+    assert len(result["state_probs"]) == 2
+    assert result["state_probs"][0] > 0
+    assert result["state_probs"][1] > 0
+
+
+def test_fit_2state_return_hmm_vol_labels_sorted():
+    """State 0 should be lower vol than state 1."""
+    rng = np.random.default_rng(909)
+    calm = rng.normal(0.0, 0.01, 200)
+    volatile = rng.normal(0.0, 0.05, 200)
+    obs = np.concatenate([calm, volatile])
+    result = fit_2state_return_hmm(obs)
+    assert result["state_vols"][0] < result["state_vols"][1]
+
+
+def test_fit_2state_return_hmm_probabilities_sum_to_one():
+    rng = np.random.default_rng(111)
+    obs = rng.normal(0.0, 0.02, 300)
+    result = fit_2state_return_hmm(obs)
+    total = sum(result["state_probs"])
+    assert pytest.approx(total, abs=1e-5) == 1.0
+
+
+def test_fit_2state_return_hmm_expected_values_finite():
+    rng = np.random.default_rng(222)
+    obs = rng.normal(0.0, 0.02, 300)
+    result = fit_2state_return_hmm(obs)
+    assert math.isfinite(result["expected_return"])
+    assert math.isfinite(result["expected_volatility"])
+    assert result["expected_volatility"] >= 0
+
+
+def test_fit_2state_return_hmm_on_crypto():
+    """On real BTC data, should converge and return valid values."""
+    from research.data.prices import fetch_historical_prices
+    prices = fetch_historical_prices("BTC", days=180)
+    returns = prices["close"].pct_change().dropna().values
+    result = fit_2state_return_hmm(returns)
+    assert result["converged"] is True
+    assert len(result["state_probs"]) == 2
+    assert all(p >= 0.0 for p in result["state_probs"])
+    assert sum(result["state_probs"]) == pytest.approx(1.0, abs=1e-5)
+    assert math.isfinite(result["expected_return"])
+    assert math.isfinite(result["expected_volatility"])
+    assert result["state_vols"][0] < result["state_vols"][1]
+
+
+def test_fit_2state_return_hmm_vs_3state_on_crypto():
+    """2-state should be less collapsed than 3-state on real BTC data."""
+    from research.data.prices import fetch_historical_prices
+    prices = fetch_historical_prices("BTC", days=180)
+    returns = prices["close"].pct_change().dropna().values
+
+    result_2 = fit_2state_return_hmm(returns)
+    result_3 = baum_welch(returns, n_states=3, max_iterations=50, tolerance=1e-3)
+    states_3 = viterbi(returns, result_3.params)
+
+    # 2-state min probability
+    min_prob_2 = min(result_2["state_probs"])
+
+    # 3-state min probability from decoded counts
+    counts_3 = [sum(1 for s in states_3 if s == i) for i in range(3)]
+    total_3 = len(states_3)
+    min_prob_3 = min(c / total_3 for c in counts_3)
+
+    # 2-state should not be MORE collapsed than 3-state
+    assert min_prob_2 >= min_prob_3, (
+        f"2-state min prob {min_prob_2:.3f} worse than 3-state {min_prob_3:.3f}"
+    )

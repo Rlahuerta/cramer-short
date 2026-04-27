@@ -247,6 +247,99 @@ def mat_pow(A: np.ndarray, n: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def fit_2state_return_hmm(
+    returns: np.ndarray,
+    max_iterations: int = 50,
+    tolerance: float = 1e-3,
+) -> dict:
+    """Fit a 2-state Gaussian HMM on raw returns.
+
+    Labels states by volatility (low-vol = "calm", high-vol = "volatile").
+    Returns stationary probabilities, per-state means/vols, and current
+    state information. More balanced than 3-state on volatile assets.
+
+    Returns
+    -------
+    dict
+        converged, state_labels, state_probs, state_means, state_vols,
+        expected_return, expected_volatility, current_state, current_state_prob.
+    """
+    arr = np.asarray(returns)
+    if len(arr) < 20:
+        return {
+            "converged": False,
+            "state_labels": ["calm", "volatile"],
+            "state_probs": [0.5, 0.5],
+            "state_means": [0.0, 0.0],
+            "state_vols": [0.01, 0.02],
+            "expected_return": 0.0,
+            "expected_volatility": 0.01,
+            "current_state": 0,
+            "current_state_prob": 0.5,
+        }
+
+    result = baum_welch(
+        arr,
+        n_states=2,
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+    )
+
+    if not result.converged:
+        return {
+            "converged": False,
+            "state_labels": ["calm", "volatile"],
+            "state_probs": [0.5, 0.5],
+            "state_means": [0.0, 0.0],
+            "state_vols": [0.01, 0.02],
+            "expected_return": 0.0,
+            "expected_volatility": 0.01,
+            "current_state": 0,
+            "current_state_prob": 0.5,
+        }
+
+    params = result.params
+    # Sort by volatility (ascending): state 0 = calm, state 1 = volatile
+    order = np.argsort(params.stds)
+    means = params.means[order]
+    vols = params.stds[order]
+    A = params.A[np.ix_(order, order)]
+
+    # Stationary distribution via power iteration (more stable than eig)
+    stationary = np.ones(2) / 2
+    for _ in range(100):
+        next_stationary = stationary @ A
+        if np.allclose(next_stationary, stationary, atol=1e-10):
+            break
+        stationary = next_stationary
+    stationary = np.maximum(stationary, 0.0)
+    stationary = stationary / stationary.sum()
+
+    # Current state probabilities from last observation
+    model = _build_model(
+        HMMParams(n_states=2, pi=params.pi[order], A=A, means=means, stds=vols)
+    )
+    obs = arr.reshape(-1, 1)
+    probs = model.predict_proba(obs)
+    current_state_probs = probs[-1]
+    current_state = int(np.argmax(current_state_probs))
+
+    expected_return = float(np.dot(stationary, means))
+    expected_volatility = float(np.dot(stationary, vols))
+
+    return {
+        "converged": True,
+        "state_labels": ["calm", "volatile"],
+        "state_probs": stationary.tolist(),
+        "state_means": means.tolist(),
+        "state_vols": vols.tolist(),
+        "expected_return": expected_return,
+        "expected_volatility": expected_volatility,
+        "current_state": current_state,
+        "current_state_prob": float(current_state_probs[current_state]),
+    }
+
+
 def fit_volatility_hmm(
     returns: np.ndarray,
     vol_window: int = 5,
