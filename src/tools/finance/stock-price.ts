@@ -36,13 +36,13 @@ export function makeGetStockPrice(
         if (quote) {
           const data = {
             symbol: quote.symbol,
-            lastTradePrice: quote.lastTradePrice,
-            bidPrice: quote.bidPrice,
-            askPrice: quote.askPrice,
+            lastTradePrice: quote.last_trade_price,
+            bidPrice: quote.bid_price,
+            askPrice: quote.ask_price,
             volume: quote.volume,
-            adjustedPreviousClose: quote.adjustedPreviousClose,
-            tradingHalted: quote.tradingHalted,
-            previousClose: quote.previousClose,
+            adjustedPreviousClose: quote.adjusted_previous_close,
+            tradingHalted: quote.trading_halted,
+            previousClose: quote.previous_close,
             high52Week: null,
             low52Week: null,
           };

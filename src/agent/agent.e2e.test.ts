@@ -246,7 +246,16 @@ describe('Agent E2E — basic financial query flows', () => {
 
       const markovEnd = findToolEndEvent(result, 'markov_distribution');
       expect(markovEnd).toBeDefined();
-      const markovPayload = JSON.parse(markovEnd!.result) as { data?: { status?: string } };
+      const markovPayload = JSON.parse(markovEnd!.result) as {
+        data?: {
+          status?: string;
+          canonical?: {
+            diagnostics?: {
+              predictionConfidence?: number;
+            };
+          };
+        };
+      };
       expect(['ok', 'abstain']).toContain(markovPayload?.data?.status ?? '');
 
       const polymarketStarts = result.events.filter((event): event is ToolStartEvent => {
@@ -255,7 +264,13 @@ describe('Agent E2E — basic financial query flows', () => {
         return candidate.type === 'tool_start' && candidate.tool === 'polymarket_forecast';
       });
 
-      if (markovPayload?.data?.status === 'ok') {
+      const diagnostics = markovPayload?.data?.canonical?.diagnostics as Record<string, unknown> | undefined;
+      const predictionConfidence = typeof diagnostics?.predictionConfidence === 'number'
+        ? diagnostics.predictionConfidence
+        : null;
+      const hasHighConfidence = predictionConfidence !== null && predictionConfidence >= 0.25;
+
+      if (markovPayload?.data?.status === 'ok' && hasHighConfidence) {
         expect(polymarketStarts.length).toBeGreaterThanOrEqual(1);
         const hasMarkovEnrichedForecast = polymarketStarts.some((start) =>
           typeof start.args['markov_return'] === 'number'

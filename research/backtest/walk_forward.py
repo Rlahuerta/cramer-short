@@ -18,7 +18,7 @@ from research.models.markov import (
     compute_markov_forecast,
 )
 from research.models.hmm import ASSET_PROFILES, baum_welch, fit_volatility_hmm, predict
-from research.models.trajectory import compute_horizon_drift_vol, RegimeStats
+from research.models.trajectory import compute_horizon_drift_vol, compute_trajectory, RegimeStats
 
 
 @dataclass
@@ -148,17 +148,23 @@ def walk_forward(
                         "vol": hmm_pred.expected_volatility * vol_scale,
                         "weight": float(hmm_weight),
                     }
+                else:
+                    result.errors.append(f"Step {start}: HMM did not converge; using pure Markov forecast")
 
-            # Predicted return from horizon drift
-            dv = compute_horizon_drift_vol(
-                horizon, P, regime_stats, current_regime, hmm_override=hmm_override
+            # Generate trajectory with MC-based CIs (Student-t, not Gaussian)
+            traj = compute_trajectory(
+                current_price,
+                horizon,
+                P,
+                regime_stats,
+                current_regime,
+                hmm_override=hmm_override,
+                n_samples=500,
             )
-            predicted_return = math.exp(dv["mu_n"]) - 1
-
-            # Simple CI using sigma
-            sigma = dv["sigma_n"]
-            ci_lower = current_price * (1 - 1.96 * sigma)
-            ci_upper = current_price * (1 + 1.96 * sigma)
+            horizon_point = traj[-1]
+            predicted_return = (horizon_point.expected_price - current_price) / current_price
+            ci_lower = horizon_point.lower_bound
+            ci_upper = horizon_point.upper_bound
 
             direction_correct = (p_up > 0.5 and realised_return > 0) or (
                 p_up <= 0.5 and realised_return <= 0

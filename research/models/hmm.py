@@ -315,15 +315,15 @@ def fit_2state_return_hmm(
     vols = params.stds[order]
     A = params.A[np.ix_(order, order)]
 
-    # Stationary distribution via power iteration (more stable than eig)
-    stationary = np.ones(2) / 2
-    for _ in range(100):
-        next_stationary = stationary @ A
-        if np.allclose(next_stationary, stationary, atol=1e-10):
-            break
-        stationary = next_stationary
-    stationary = np.maximum(stationary, 0.0)
-    stationary = stationary / stationary.sum()
+    # Stationary distribution: closed-form for 2x2 right-stochastic matrix
+    # pi_0 = (1 - A_11) / (2 - A_00 - A_11), pi_1 = 1 - pi_0
+    denom = 2.0 - A[0, 0] - A[1, 1]
+    if abs(denom) > 1e-8:
+        pi_0 = (1.0 - A[1, 1]) / denom
+        stationary = np.array([pi_0, 1.0 - pi_0])
+    else:
+        # Degenerate identity-like matrix
+        stationary = np.array([0.5, 0.5])
 
     # Current state probabilities from last observation
     model = _build_model(

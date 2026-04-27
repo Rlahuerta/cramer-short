@@ -25,28 +25,33 @@ from research.models.ensemble import (
 # ---------------------------------------------------------------------------
 
 def test_adjust_yes_bias_p07():
+    # Multiplicative: 0.7 * 0.95 = 0.665
     assert adjust_yes_bias(0.7) == pytest.approx(0.665, abs=1e-6)
 
 
 def test_adjust_yes_bias_p04():
-    assert adjust_yes_bias(0.4) == pytest.approx(0.4, abs=1e-6)
+    # Multiplicative: 0.4 * 0.95 = 0.38
+    assert adjust_yes_bias(0.4) == pytest.approx(0.38, abs=1e-6)
+
+
+def test_adjust_yes_bias_p05():
+    # Multiplicative: 0.5 * 0.95 = 0.475 (continuous, no discontinuity)
+    assert adjust_yes_bias(0.5) == pytest.approx(0.475, abs=1e-6)
 
 
 def test_adjust_yes_bias_p0535():
-    # 0.535 - 0.035 = 0.500, clamped to [0.01, 0.99]
-    assert adjust_yes_bias(0.535) == pytest.approx(0.5, abs=1e-6)
+    # Multiplicative: 0.535 * 0.95 = 0.50825
+    assert adjust_yes_bias(0.535) == pytest.approx(0.50825, abs=1e-6)
 
 
 def test_adjust_yes_bias_p099():
-    assert adjust_yes_bias(0.99) == pytest.approx(0.955, abs=1e-6)
+    # Multiplicative: 0.99 * 0.95 = 0.9405
+    assert adjust_yes_bias(0.99) == pytest.approx(0.9405, abs=1e-6)
 
 
 def test_adjust_yes_bias_p001():
+    # Multiplicative: 0.01 * 0.95 = 0.0095, clamped to 0.01
     assert adjust_yes_bias(0.01) == pytest.approx(0.01, abs=1e-6)
-
-
-def test_adjust_yes_bias_custom_beta():
-    assert adjust_yes_bias(0.52, 0.10) == pytest.approx(0.42, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------

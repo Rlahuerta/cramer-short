@@ -206,37 +206,64 @@ def compute_trajectory(
         else:
             regime_weights_per_day.append(Pd[initial_idx])
 
-    # 1-day drift/vol for MC steps
-    dv1 = compute_horizon_drift_vol(
-        1, P, regime_stats, initial_state, momentum_adjustment, start_mixture, hmm_override
-    )
-    drift_1d = dv1["mu_n"]
-    regime_vol_1d = dv1["sigma_n"]
+    # Compute per-day mixture drift and vol from regime weights
+    daily_drifts = np.zeros(days)
+    daily_vols = np.zeros(days)
 
-    # Use empirical vol if provided (captures total variance, wider CIs)
-    mc_vol = empirical_daily_vol if empirical_daily_vol else regime_vol_1d
+    for d in range(days):
+        weights = regime_weights_per_day[d]
 
-    # Run shared Monte Carlo with Student-t innovations
+        mu_obs = sum(
+            weights[i] * regime_stats[state].mean_return
+            for i, state in enumerate(REGIME_STATES)
+        )
+
+        var_of_means = sum(
+            weights[i] * (regime_stats[state].mean_return - mu_obs) ** 2
+            for i, state in enumerate(REGIME_STATES)
+        )
+        expected_var = sum(
+            weights[i] * regime_stats[state].std_return ** 2
+            for i, state in enumerate(REGIME_STATES)
+        )
+        sigma_obs = math.sqrt(expected_var + var_of_means)
+
+        # Apply momentum adjustment per-day
+        mu_obs += momentum_adjustment
+
+        # Apply HMM override per-day (HMM drift/vol are daily quantities)
+        if hmm_override:
+            w = hmm_override.get("weight", 0.0)
+            hmm_drift = hmm_override.get("drift", mu_obs)
+            hmm_vol = hmm_override.get("vol", sigma_obs)
+            mu_obs = w * hmm_drift + (1 - w) * mu_obs
+            sigma_obs = w * hmm_vol + (1 - w) * sigma_obs
+
+        # Use empirical vol as floor when provided
+        if empirical_daily_vol:
+            sigma_obs = max(sigma_obs, empirical_daily_vol)
+
+        daily_drifts[d] = mu_obs
+        daily_vols[d] = sigma_obs
+
+    # Run shared Monte Carlo with per-day mixture drift/vol
     paths = np.zeros((n_samples, days))
     for s in range(n_samples):
         cum_log_return = 0.0
         for d in range(days):
             u = np.random.random()
             z = student_t_ppf(u, nu)
-            scaled_vol = mc_vol * math.sqrt((nu - 2) / nu) if nu > 2 else mc_vol
-            cum_log_return += drift_1d + z * scaled_vol
+            scaled_vol = daily_vols[d] * math.sqrt((nu - 2) / nu) if nu > 2 else daily_vols[d]
+            cum_log_return += daily_drifts[d] + z * scaled_vol
             paths[s, d] = cum_log_return
 
     for d in range(1, days + 1):
         day_idx = d - 1
         state_weights = regime_weights_per_day[day_idx]
 
-        # Horizon drift/vol
-        dv = compute_horizon_drift_vol(
-            d, P, regime_stats, initial_state, momentum_adjustment, start_mixture, hmm_override
-        )
-        mu_n = dv["mu_n"]
-        sigma_n = dv["sigma_n"]
+        # Cumulative drift and vol from daily arrays
+        mu_n = float(np.sum(daily_drifts[:d]))
+        sigma_n = math.sqrt(float(np.sum(daily_vols[:d] ** 2)))
 
         # Prices from MC paths
         prices = current_price * np.exp(paths[:, day_idx])

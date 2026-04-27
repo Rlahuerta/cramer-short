@@ -2572,28 +2572,53 @@ export function computeTrajectory(
     }
   }
 
-  // Compute 1-day regime-weighted drift and vol for MC steps
-  const { mu_n: drift1d, sigma_n: regimeVol1d } = computeHorizonDriftVol(
-    1, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture
-  );
+  // Compute per-day mixture drift and vol from regime weights
+  const dailyDrifts = new Array(days).fill(0);
+  const dailyVols = new Array(days).fill(0);
 
-  // Use max(regime-weighted vol, empirical vol) for MC paths.
-  // Regime-weighted vol = E[Var(R|S)] misses between-state variance Var(E[R|S]),
-  // causing systematically narrow CIs. Empirical vol captures total variance.
-  const mcVol = empiricalDailyVol ? Math.max(regimeVol1d, empiricalDailyVol) : regimeVol1d;
+  for (let d = 0; d < days; d++) {
+    const weights = regimeWeightsPerDay[d];
 
-  // Run shared Monte Carlo: generate nSamples random walks, each of length `days`
-  // Using Student-t random variates for fat tails
-  const paths: number[][] = []; // paths[sample][day] = log(price/currentPrice)
+    const muObs = REGIME_STATES.reduce(
+      (s, state, i) => s + weights[i] * regimeStats[state].meanReturn, 0,
+    );
+
+    const varOfMeans = REGIME_STATES.reduce(
+      (s, state, i) => s + weights[i] * (regimeStats[state].meanReturn - muObs) ** 2, 0,
+    );
+    const expectedVar = REGIME_STATES.reduce(
+      (s, state, i) => s + weights[i] * regimeStats[state].stdReturn ** 2, 0,
+    );
+    let sigmaObs = Math.sqrt(expectedVar + varOfMeans);
+
+    let muDay = muObs + momentumAdjustment;
+
+    // Apply HMM override per-day (HMM drift/vol are daily quantities)
+    if (hmmOverride) {
+      const w = hmmOverride.weight;
+      muDay = w * hmmOverride.drift + (1 - w) * muDay;
+      sigmaObs = w * hmmOverride.vol + (1 - w) * sigmaObs;
+    }
+
+    // Use empirical vol as floor when provided
+    if (empiricalDailyVol) {
+      sigmaObs = Math.max(sigmaObs, empiricalDailyVol);
+    }
+
+    dailyDrifts[d] = muDay;
+    dailyVols[d] = sigmaObs;
+  }
+
+  // Run shared Monte Carlo with per-day mixture drift/vol
+  const paths: number[][] = [];
   for (let s = 0; s < nSamples; s++) {
     const path = new Array(days);
     let cumLogReturn = 0;
     for (let d = 0; d < days; d++) {
-      // Student-t variate via inverse CDF of uniform
       const u = Math.random();
       const z = inverseStudentTCDF(u, nu);
-      const scaledVol = nu > 2 ? mcVol * Math.sqrt((nu - 2) / nu) : mcVol;
-      cumLogReturn += drift1d + z * scaledVol;
+      const scaledVol = nu > 2 ? dailyVols[d] * Math.sqrt((nu - 2) / nu) : dailyVols[d];
+      cumLogReturn += dailyDrifts[d] + z * scaledVol;
       path[d] = cumLogReturn;
     }
     paths.push(path);
@@ -2603,12 +2628,16 @@ export function computeTrajectory(
     const dayIdx = d - 1;
     const stateWeights = regimeWeightsPerDay[dayIdx];
 
-    // Drift and vol at this horizon
-    const { mu_n, sigma_n } = computeHorizonDriftVol(
-      d, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
-    );
+    // Cumulative drift and vol from daily arrays
+    let mu_n = 0;
+    let sigmaSq = 0;
+    for (let i = 0; i < d; i++) {
+      mu_n += dailyDrifts[i];
+      sigmaSq += dailyVols[i] ** 2;
+    }
+    const sigma_n = Math.sqrt(sigmaSq);
 
-    // Expected price from analytical drift
+    // Expected price from cumulative drift
     const analyticalExpected = currentPrice * Math.exp(mu_n);
 
     // CI bounds from Monte Carlo paths

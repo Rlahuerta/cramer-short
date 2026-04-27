@@ -17,6 +17,8 @@ from typing import Literal
 
 import numpy as np
 
+from research.utils.calibration import adjust_yes_bias, YES_BIAS_MULTIPLIER
+
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
@@ -71,21 +73,8 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# YES-bias correction
+# YES-bias correction (imported from research.utils.calibration)
 # ---------------------------------------------------------------------------
-
-def adjust_yes_bias(p: float, beta: float = 0.035) -> float:
-    """Additive YES-bias correction for conditional return estimation.
-
-    Reichenbach & Walther (2025): systematic YES-overtrading across 124M
-    Polymarket trades. Applies additive offset when p > 0.5.
-    """
-    if p > 0.5:
-        return _clamp(p - beta, 0.01, 0.99)
-    return _clamp(p, 0.01, 0.99)
-
-
-YES_BIAS_MULTIPLIER = 0.95
 
 
 # ---------------------------------------------------------------------------
