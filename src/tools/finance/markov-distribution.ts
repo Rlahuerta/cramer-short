@@ -28,6 +28,7 @@ import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries }
 import { extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
 import { transformQToP, transformQToPWithShift, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix, DEFAULT_MPR_CAP } from './rnd-integration.js';
+import { recalibratePolymarketPrice, type Domain } from './calibration-offsets.js';
 import {
   type JumpEventSpec,
   jumpDriftCompensator,
@@ -179,6 +180,10 @@ export interface PriceThreshold {
   probability: number;
   /** Whether this anchor is trusted based on liquidity/age heuristics */
   trustScore: 'high' | 'low';
+  /** Optional domain tag (politics/sports/crypto/macro). When provided, the raw
+   *  price is recalibrated via {@link recalibratePolymarketPrice} *before* the
+   *  Girsanov Q→P shift. Absent ⇒ identity (treated as 'unknown'). */
+  domain?: Domain;
   source: 'polymarket' | 'kalshi' | 'averaged';
   endDate?: string | null;
 }
@@ -4324,6 +4329,7 @@ export async function computeMarkovDistribution(params: {
   if (highTrustAnchors.length >= 2) {
     const strikes = highTrustAnchors.map(a => a.price);
     const yesPrices = highTrustAnchors.map(a => a.probability);
+    const domains: Domain[] = highTrustAnchors.map(a => a.domain ?? 'unknown');
 
     const avgDailyReturn = returns.reduce((s, r) => s + r, 0) / returns.length;
     const historicalDrift = avgDailyReturn * 252;
@@ -4332,7 +4338,8 @@ export async function computeMarkovDistribution(params: {
     const variance = returns.reduce((s, r) => s + (r - meanReturn) ** 2, 0) / returns.length;
     const volatility = Math.sqrt(variance) * Math.sqrt(252);
 
-    const shiftRecords = yesPrices.map(q =>
+    const recalibratedYes = yesPrices.map((q, i) => recalibratePolymarketPrice(q, domains[i] ?? 'unknown', horizon));
+    const shiftRecords = recalibratedYes.map(q =>
       transformQToPWithShift(q, historicalDrift, riskFreeRate, Math.max(volatility, 1e-6), horizon),
     );
     const pProbs = shiftRecords.map(r => r.pProb);
