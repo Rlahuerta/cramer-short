@@ -78,13 +78,12 @@ describe('extractJumpEventMarkets', () => {
     expect(out).toHaveLength(0);
   });
 
-  test('floors daysToSettlement at 1 for already-settled markets', () => {
+  test('drops markets that have already settled (P1c)', () => {
     const out = extractJumpEventMarkets(
       [mkt({ endDate: '2025-05-30T00:00:00Z' })], // before now
       { horizonDate: HORIZON, now: NOW },
     );
-    expect(out).toHaveLength(1);
-    expect(out[0].daysToSettlement).toBe(1);
+    expect(out).toHaveLength(0);
   });
 
   test('falls back to question when marketId is absent', () => {

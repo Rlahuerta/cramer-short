@@ -17,7 +17,12 @@ from typing import Literal
 
 import numpy as np
 
-from research.utils.calibration import adjust_yes_bias, YES_BIAS_MULTIPLIER
+from research.utils.calibration import (
+    adjust_yes_bias,
+    YES_BIAS_MULTIPLIER,
+    adjust_yes_bias_v2,
+    compute_expiry_boost,
+)
 
 # ---------------------------------------------------------------------------
 # Types
@@ -37,6 +42,14 @@ class MarketInput:
     signal_tier: Tier = "geopolitical"
     delta_yes: float = 0.06
     delta_no: float = -0.04
+    # P1b — Days remaining to market resolution.
+    days_to_expiry: float | None = None
+    # P1d — Bid-ask spread on YES token in [0, 1].
+    bid_ask_spread: float | None = None
+    # P1e — Per-hour drift in pp (positive = momentum, negative = fading).
+    price_velocity_pp_h: float | None = None
+    # P1e — Largest single-hour |Δp| over the prior 24h window.
+    max_hourly_jump: float | None = None
 
 
 @dataclass
@@ -101,6 +114,21 @@ def compute_market_quality(m: MarketInput) -> float:
     delta_transitory = 1.0 if (m.transitory_move and not m.price_spike_detected) else 0.0
 
     w = w_age * w_liq * tau * (1 - delta_whale * 0.5) * (1 - delta_transitory * 0.3)
+
+    # P1b — time-to-resolution boost (multiplicative; omitted ⇒ 1.0).
+    if m.days_to_expiry is not None:
+        w *= compute_expiry_boost(m.days_to_expiry)
+
+    # P1d — bid-ask spread quality discount (spread > 10pp → quality 0).
+    if m.bid_ask_spread is not None and math.isfinite(m.bid_ask_spread):
+        w *= max(0.0, 1.0 - m.bid_ask_spread / 0.10)
+
+    # P1e — velocity / spike discounts.
+    if m.price_velocity_pp_h is not None and abs(m.price_velocity_pp_h) > 2:
+        w *= 0.80
+    if m.max_hourly_jump is not None and m.max_hourly_jump > 0.08:
+        w *= 0.70
+
     return _clamp(w, 0.0, 1.0)
 
 

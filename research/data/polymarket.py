@@ -299,3 +299,92 @@ def fetch_polymarket_markets(
 
     _cache_set(cache_key, df)
     return df.copy()
+
+
+# ---------------------------------------------------------------------------
+# Jump-event extraction (mirror of TS extractJumpEventMarkets)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class JumpEventMarket:
+    """Filtered prediction-market event suitable for jump-diffusion injection.
+
+    Probabilities are still in the **Q-measure** — apply a Q→P transformation
+    before computing daily hazard rates.
+    """
+
+    id: str
+    probability: float
+    days_to_settlement: int
+    question: str
+
+
+def extract_jump_event_markets(
+    markets: pd.DataFrame,
+    horizon_date: datetime,
+    *,
+    min_volume_24h: float = 5_000.0,
+    min_age_days: int = 2,
+    now: datetime | None = None,
+) -> list[JumpEventMarket]:
+    """Filter a market DataFrame down to jump-eligible events.
+
+    Mirrors :func:`extractJumpEventMarkets` in
+    ``src/tools/finance/polymarket.ts``.
+
+    Filters applied:
+      - probability strictly in (0, 1)
+      - 24h volume ≥ ``min_volume_24h``
+      - age ≥ ``min_age_days``
+      - end_date present, parseable, and ≤ ``horizon_date``
+      - **P1c** — settlement at least 24h away (drops sub-1-day markets)
+    """
+    now_dt = now if now is not None else datetime.now(timezone.utc)
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
+    horizon_ms = horizon_date.timestamp()
+
+    out: list[JumpEventMarket] = []
+    if markets is None or len(markets) == 0:
+        return out
+
+    for _, row in markets.iterrows():
+        try:
+            p = float(row.get("probability", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 < p < 1.0):
+            continue
+        try:
+            vol = float(row.get("volume_24h", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if vol < min_volume_24h:
+            continue
+        age = row.get("age_days")
+        if age is None or age < min_age_days:
+            continue
+        end_date = row.get("end_date")
+        if not end_date:
+            continue
+        try:
+            end_dt = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        end_ms = end_dt.timestamp()
+        if end_ms > horizon_ms:
+            continue
+        raw_days = (end_ms - now_dt.timestamp()) / 86_400.0
+        # P1c — drop markets settling in <24h
+        if raw_days < 1.0:
+            continue
+        days_to_settle = max(1, int(-(-raw_days // 1)))  # ceil
+        out.append(
+            JumpEventMarket(
+                id=str(row.get("market_id") or row.get("question", "")),
+                probability=p,
+                days_to_settlement=days_to_settle,
+                question=str(row.get("question", "")),
+            )
+        )
+    return out

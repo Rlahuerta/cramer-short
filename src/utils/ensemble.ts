@@ -19,6 +19,14 @@ export interface MarketInput {
   signalTier?: 'macro' | 'geopolitical' | 'electoral'; // default 'geopolitical'
   deltaYes: number;              // estimated asset return if YES (decimal, e.g. 0.06)
   deltaNo: number;               // estimated asset return if NO (decimal, e.g. -0.04)
+  /** P1b — Days remaining until market resolution (≥ 0). Undefined ⇒ neutral (no boost/penalty). */
+  daysToExpiry?: number;
+  /** P1d — Bid-ask spread on YES token in [0, 1]. Undefined ⇒ no penalty. */
+  bidAskSpread?: number;
+  /** P1e — Per-hour drift in pp (positive = momentum, negative = fading). Undefined ⇒ no penalty. */
+  priceVelocityPpH?: number;
+  /** P1e — Largest single-hour |Δp| over the prior 24h window. Undefined ⇒ no penalty. */
+  maxHourlyJump?: number;
 }
 
 export interface OtherSignals {
@@ -91,6 +99,65 @@ export function adjustYesBias(p: number, beta = 0.035): number {
 export const YES_BIAS_MULTIPLIER = 0.95;
 
 /**
+ * P1a — Empirically calibrated YES-bias correction (longshot-aware).
+ *
+ * Replaces the flat additive shift used by `adjustYesBias` with a U-shaped
+ * curve that addresses the empirically confirmed favourite-longshot bias:
+ *
+ *   p < 0.05  → strong longshot discount (× 0.70)        — longshots ~30% overpriced
+ *   p ∈ [0.05, 0.15) → linear interpolation (× 0.70 → × 0.95)
+ *   p ∈ [0.15, 0.85] → legacy mid-range behaviour (−3.5pp when p > 0.5, else unchanged)
+ *   p > 0.85  → mild favourite haircut (−2.5pp)
+ *
+ * Output is clamped to [0.001, 0.999].
+ *
+ * Sources:
+ *   - Reichenbach & Walther (2025): YES-overtrading on Polymarket
+ *   - l-marque calibration study (GitHub, 2024): U-shaped Brier residuals
+ *   - docs/polymarket-prediction-improvements-research-2026-07.md §2
+ */
+export function adjustYesBiasV2(p: number): number {
+  if (!Number.isFinite(p) || p <= 0) return 0.001;
+  if (p >= 1) return 0.999;
+
+  let adjusted: number;
+  if (p < 0.05) {
+    adjusted = p * 0.70;
+  } else if (p <= 0.15) {
+    const t = (p - 0.05) / 0.10;          // 0 at p=0.05, 1 at p=0.15
+    const mult = 0.70 + t * (0.95 - 0.70); // 0.70 → 0.95
+    adjusted = p * mult;
+  } else if (p <= 0.85) {
+    adjusted = p > 0.50 ? p - 0.035 : p;
+  } else {
+    adjusted = p - 0.025;
+  }
+  return clamp(adjusted, 0.001, 0.999);
+}
+
+/**
+ * P1b — Time-to-resolution boost factor for `computeMarketQualityWeight`.
+ *
+ * Prediction-market prices are martingales: as t → T (resolution) the
+ * distribution of P(T) collapses toward {0, 1}. Near-expiry markets carry
+ * sharper information; far-dated markets carry more noise. Schedule:
+ *
+ *   ≤ 1d → 1.50  (high certainty)
+ *   ≤ 7d → 1.20
+ *   ≤ 30d → 1.00 (neutral)
+ *   ≤ 90d → 0.85
+ *   > 90d → 0.70 (uncertainty discount)
+ */
+export function computeExpiryBoost(daysToExpiry: number): number {
+  if (!Number.isFinite(daysToExpiry)) return 1.0;
+  if (daysToExpiry <= 1) return 1.50;
+  if (daysToExpiry <= 7) return 1.20;
+  if (daysToExpiry <= 30) return 1.00;
+  if (daysToExpiry <= 90) return 0.85;
+  return 0.70;
+}
+
+/**
  * Composite quality weight for a single Polymarket market.
  *
  * Factors in market age, liquidity (log-volume), tier discount, a 50%
@@ -110,7 +177,22 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   const deltaTransitory = m.transitoryMove && !m.priceSpikeDetected ? 1 : 0;
   // Whale flag applies a 50% discount (not full elimination).
   // Transitory moves apply a 30% discount unless the stronger whale discount already dominates.
-  const w = wAge * wLiq * tau * (1 - deltaWhale * 0.5) * (1 - deltaTransitory * 0.3);
+  let w = wAge * wLiq * tau * (1 - deltaWhale * 0.5) * (1 - deltaTransitory * 0.3);
+  // P1b — time-to-resolution boost (multiplicative). Backward compat: omitted ⇒ 1.0.
+  if (m.daysToExpiry !== undefined) {
+    w *= computeExpiryBoost(m.daysToExpiry);
+  }
+  // P1d — bid-ask spread quality discount. Spread > 10pp → quality 0.
+  if (m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)) {
+    w *= Math.max(0, 1 - m.bidAskSpread / 0.10);
+  }
+  // P1e — velocity / spike discounts. Both apply mildly even without snapshot history.
+  if (m.priceVelocityPpH !== undefined && Math.abs(m.priceVelocityPpH) > 2) {
+    w *= 0.80;
+  }
+  if (m.maxHourlyJump !== undefined && m.maxHourlyJump > 0.08) {
+    w *= 0.70;
+  }
   return Math.max(0, Math.min(1, w));
 }
 

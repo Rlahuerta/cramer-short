@@ -903,7 +903,10 @@ export function extractJumpEventMarkets(
     if (!m.endDate) continue;
     const endMs = Date.parse(m.endDate);
     if (!Number.isFinite(endMs) || endMs > horizonMs) continue;
-    const daysToSettlement = Math.max(1, Math.ceil((endMs - now.getTime()) / 86_400_000));
+    // P1c — drop markets settling in <24h (too noisy, often whale-driven).
+    const rawDaysToSettle = (endMs - now.getTime()) / 86_400_000;
+    if (rawDaysToSettle < 1) continue;
+    const daysToSettlement = Math.max(1, Math.ceil(rawDaysToSettle));
     out.push({
       id: m.marketId ?? m.question,
       probability: m.probability,
