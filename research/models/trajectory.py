@@ -20,6 +20,7 @@ from research.models.markov import (
     RegimeState,
     REGIME_STATES,
 )
+from research.models.jump_diffusion import JumpEventSpec, jump_drift_compensator
 
 
 # ---------------------------------------------------------------------------
@@ -184,11 +185,15 @@ def compute_trajectory(
     empirical_daily_vol: float | None = None,
     start_mixture: dict[RegimeState, float] | None = None,
     hmm_override: dict[str, float] | None = None,
+    jump_spec: list[JumpEventSpec] | None = None,
 ) -> list[TrajectoryPoint]:
     """Compute day-by-day price trajectory via Monte Carlo.
 
     Uses a SINGLE shared set of MC paths sampled at each day, ensuring
     monotonically widening CIs and ~7x speedup over independent simulations.
+
+    When ``jump_spec`` is None or empty the inner MC loop is byte-identical
+    to the pre-Idea-2 implementation — no extra RNG draws are consumed.
     """
     initial_idx = STATE_INDEX[initial_state]
     trajectory: list[TrajectoryPoint] = []
@@ -246,6 +251,12 @@ def compute_trajectory(
         daily_drifts[d] = mu_obs
         daily_vols[d] = sigma_obs
 
+    # Idea 2 — Merton drift compensator applied once.  Empty/None ⇒ 0 ⇒ no-op.
+    has_jumps = bool(jump_spec)
+    if has_jumps:
+        compensator = jump_drift_compensator(jump_spec)
+        daily_drifts -= compensator
+
     # Run shared Monte Carlo with per-day mixture drift/vol
     paths = np.zeros((n_samples, days))
     for s in range(n_samples):
@@ -255,6 +266,16 @@ def compute_trajectory(
             z = student_t_ppf(u, nu)
             scaled_vol = daily_vols[d] * math.sqrt((nu - 2) / nu) if nu > 2 else daily_vols[d]
             cum_log_return += daily_drifts[d] + z * scaled_vol
+
+            # Jump term — only consume RNG when at least one event exists
+            if has_jumps:
+                for e in jump_spec:
+                    if np.random.random() < e.daily_intensity:
+                        u1 = max(1e-12, np.random.random())
+                        u2 = np.random.random()
+                        z_j = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+                        cum_log_return += e.mean_log_jump + z_j * e.std_log_jump
+
             paths[s, d] = cum_log_return
 
     for d in range(1, days + 1):

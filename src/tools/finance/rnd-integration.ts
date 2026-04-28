@@ -7,10 +7,29 @@
 
 import { normCDF, normPPF } from '@/utils/stats.js';
 
+/** Default cap on |Market Price of Risk| to prevent runaway shifts when
+ *  historical drift estimates are noisy (e.g. crypto bull-run windows
+ *  producing μ ≈ 200% / σ ≈ 60% → MPR ≈ 3 → silly P-prob shifts). */
+export const DEFAULT_MPR_CAP = 1.5;
+
 /**
- * Convert risk-neutral probability to physical probability.
+ * Convert risk-neutral probability to physical probability via Girsanov shift.
  *
- * Prob^P(S_T > K) = Phi(Phi^{-1}(Prob^Q(S_T > K)) + lambda * sqrt(T))
+ *   Prob^P(S_T > K) = Phi( Phi^{-1}(Prob^Q(S_T > K)) + λ · sqrt(T) )
+ *
+ * where the Market Price of Risk is λ = (μ − r_f) / σ.
+ *
+ * Inputs are **annualised**:
+ *   - `historicalDrift`  μ      (e.g. 0.40 for 40 % annual)
+ *   - `riskFreeRate`     r_f    (e.g. 0.05 for 5 % annual)
+ *   - `volatility`       σ      (e.g. 0.50 for 50 % annual)
+ *   - `daysToExpiry`     T      (calendar days; converted to years via /365)
+ *
+ * `mprCap` clamps |λ| to a finite range (default {@link DEFAULT_MPR_CAP}).
+ * The cap is necessary because crypto / momentum windows can produce
+ * pathological MPR estimates that translate every Q-prob into ~0 or ~1.
+ *
+ * Returns a probability in [0, 1].  Boundary inputs (0 / 1) pass through.
  */
 export function transformQToP(
   qProb: number,
@@ -18,6 +37,7 @@ export function transformQToP(
   riskFreeRate: number,
   volatility: number,
   daysToExpiry: number,
+  mprCap: number = DEFAULT_MPR_CAP,
 ): number {
   if (qProb <= 0 || qProb >= 1) {
     return Math.max(0, Math.min(1, qProb));
@@ -25,12 +45,39 @@ export function transformQToP(
 
   const qClipped = Math.max(0.001, Math.min(0.999, qProb));
   const T = Math.max(daysToExpiry, 1) / 365.0;
-  const lambdaMpr = (historicalDrift - riskFreeRate) / Math.max(volatility, 1e-6);
+  const rawMpr = (historicalDrift - riskFreeRate) / Math.max(volatility, 1e-6);
+  const cap = Math.max(mprCap, 0);
+  const lambdaMpr = Math.max(-cap, Math.min(cap, rawMpr));
 
   const zQ = normPPF(qClipped);
   const zP = zQ + lambdaMpr * Math.sqrt(T);
 
   return normCDF(zP);
+}
+
+/**
+ * Diagnostic variant of {@link transformQToP} that also returns the applied
+ * Z-score shift `λ · sqrt(T)`.  Useful when surfacing provenance metadata.
+ */
+export function transformQToPWithShift(
+  qProb: number,
+  historicalDrift: number,
+  riskFreeRate: number,
+  volatility: number,
+  daysToExpiry: number,
+  mprCap: number = DEFAULT_MPR_CAP,
+): { pProb: number; zShift: number; mprUsed: number; mprRaw: number } {
+  const T = Math.max(daysToExpiry, 1) / 365.0;
+  const rawMpr = (historicalDrift - riskFreeRate) / Math.max(volatility, 1e-6);
+  const cap = Math.max(mprCap, 0);
+  const mprUsed = Math.max(-cap, Math.min(cap, rawMpr));
+  const zShift = mprUsed * Math.sqrt(T);
+  return {
+    pProb: transformQToP(qProb, historicalDrift, riskFreeRate, volatility, daysToExpiry, mprCap),
+    zShift,
+    mprUsed,
+    mprRaw: rawMpr,
+  };
 }
 
 /**

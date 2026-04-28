@@ -146,8 +146,10 @@ async function ensureBrowser(): Promise<Page> {
 
 /**
  * Close the browser and reset state.
+ * Exported so process-exit hooks (registered in src/index.tsx) can release
+ * the Chromium subprocess and its file descriptors when the agent shuts down.
  */
-async function closeBrowser(): Promise<void> {
+export async function closeBrowser(): Promise<void> {
   if (browser) {
     await browser.close();
     browser = null;

@@ -16,21 +16,38 @@ from scipy import optimize, stats
 from research.models.markov import STATE_INDEX
 
 
+# Default cap on |Market Price of Risk| to prevent runaway shifts when
+# historical drift estimates are noisy (e.g. crypto bull-run windows
+# producing mu ≈ 200% / sigma ≈ 60% -> MPR ≈ 3 -> silly P-prob shifts).
+DEFAULT_MPR_CAP: float = 1.5
+
+
 def transform_q_to_p(
     q_prob: float,
     historical_drift: float,
     risk_free_rate: float,
     volatility: float,
     days_to_expiry: int,
+    mpr_cap: float = DEFAULT_MPR_CAP,
 ) -> float:
-    """Convert risk-neutral probability to physical probability.
-
-    Uses the Market Price of Risk (Sharpe ratio) to shift the probit
-    of the Q-probability back to the physical measure.
+    """Convert risk-neutral probability to physical probability via Girsanov shift.
 
     Prob^P(S_T > K) = Phi(Phi^{-1}(Prob^Q(S_T > K)) + lambda * sqrt(T))
 
-    Where lambda = (mu - r_f) / sigma.
+    Where the Market Price of Risk is lambda = (mu - r_f) / sigma.
+
+    Inputs are **annualised**:
+      - ``historical_drift``  mu      (e.g. 0.40 for 40 % annual)
+      - ``risk_free_rate``    r_f     (e.g. 0.05 for 5 % annual)
+      - ``volatility``        sigma   (e.g. 0.50 for 50 % annual)
+      - ``days_to_expiry``    T       (calendar days; converted to years via /365)
+
+    ``mpr_cap`` clamps ``|lambda|`` to a finite range (default
+    :data:`DEFAULT_MPR_CAP`).  The cap is necessary because crypto / momentum
+    windows can produce pathological MPR estimates that map every Q-prob to
+    ~0 or ~1.
+
+    Returns a probability in ``[0, 1]``.  Boundary inputs (0 / 1) pass through.
     """
     if q_prob <= 0.0 or q_prob >= 1.0:
         return float(np.clip(q_prob, 0.0, 1.0))
@@ -39,12 +56,38 @@ def transform_q_to_p(
     q_clipped = float(np.clip(q_prob, 0.001, 0.999))
 
     T_years = max(days_to_expiry, 1) / 365.0
-    lambda_mpr = (historical_drift - risk_free_rate) / max(volatility, 1e-6)
+    raw_mpr = (historical_drift - risk_free_rate) / max(volatility, 1e-6)
+    cap = max(mpr_cap, 0.0)
+    lambda_mpr = float(np.clip(raw_mpr, -cap, cap))
 
     z_q = stats.norm.ppf(q_clipped)
     z_p = z_q + lambda_mpr * math.sqrt(T_years)
 
     return float(stats.norm.cdf(z_p))
+
+
+def transform_q_to_p_with_shift(
+    q_prob: float,
+    historical_drift: float,
+    risk_free_rate: float,
+    volatility: float,
+    days_to_expiry: int,
+    mpr_cap: float = DEFAULT_MPR_CAP,
+) -> dict[str, float]:
+    """Diagnostic variant returning the applied Z-shift and MPR provenance."""
+    T_years = max(days_to_expiry, 1) / 365.0
+    raw_mpr = (historical_drift - risk_free_rate) / max(volatility, 1e-6)
+    cap = max(mpr_cap, 0.0)
+    mpr_used = float(np.clip(raw_mpr, -cap, cap))
+    z_shift = mpr_used * math.sqrt(T_years)
+    return {
+        "p_prob": transform_q_to_p(
+            q_prob, historical_drift, risk_free_rate, volatility, days_to_expiry, mpr_cap
+        ),
+        "z_shift": z_shift,
+        "mpr_used": mpr_used,
+        "mpr_raw": float(raw_mpr),
+    }
 
 
 # ---------------------------------------------------------------------------

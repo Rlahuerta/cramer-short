@@ -5,10 +5,12 @@ import pytest
 from scipy import stats
 
 from research.models.rnd import (
+    DEFAULT_MPR_CAP,
     fit_lognormal_from_strikes,
     lognormal_to_regime_probabilities,
     nudge_transition_matrix,
     transform_q_to_p,
+    transform_q_to_p_with_shift,
 )
 
 
@@ -45,6 +47,27 @@ class TestTransformQToP:
         """Exactly 0 and 1 are returned unchanged."""
         assert transform_q_to_p(0.0, 0.1, 0.05, 0.3, 7) == 0.0
         assert transform_q_to_p(1.0, 0.1, 0.05, 0.3, 7) == 1.0
+
+    def test_default_mpr_cap_is_15(self):
+        assert DEFAULT_MPR_CAP == 1.5
+
+    def test_caps_pathological_mpr(self):
+        """Drift well above what historical vol can justify must clamp at the cap."""
+        p = transform_q_to_p(0.30, historical_drift=3.0, risk_free_rate=0.05, volatility=0.3, days_to_expiry=30)
+        # Without the cap the shift would be ~9.83·sqrt(30/365) ≈ 2.82 → P≈0.999
+        # With cap 1.5 the shift is 1.5·sqrt(30/365) ≈ 0.43 → P≈0.61
+        assert p < 0.97
+
+    def test_explicit_cap_narrows_shift(self):
+        wide = transform_q_to_p(0.30, 0.50, 0.05, 0.30, 30, mpr_cap=5.0)
+        tight = transform_q_to_p(0.30, 0.50, 0.05, 0.30, 30, mpr_cap=0.1)
+        assert wide > tight
+
+    def test_with_shift_returns_provenance(self):
+        out = transform_q_to_p_with_shift(0.30, historical_drift=3.0, risk_free_rate=0.05, volatility=0.3, days_to_expiry=30)
+        assert out["mpr_raw"] > 2.0
+        assert pytest.approx(out["mpr_used"], abs=1e-6) == 1.5
+        assert pytest.approx(out["z_shift"], abs=1e-6) == 1.5 * math.sqrt(30 / 365)
 
 
 class TestFitLognormalFromStrikes:

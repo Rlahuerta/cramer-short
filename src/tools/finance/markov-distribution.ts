@@ -27,7 +27,14 @@ import { fetchBinanceDailyCloses } from './binance.js';
 import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
 import { extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
-import { transformQToP, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix } from './rnd-integration.js';
+import { transformQToP, transformQToPWithShift, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix, DEFAULT_MPR_CAP } from './rnd-integration.js';
+import {
+  type JumpEventSpec,
+  jumpDriftCompensator,
+  polymarketProbToHazard,
+  buildJumpEventSpec,
+  JUMP_DEFAULTS,
+} from './jump-diffusion.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -529,7 +536,19 @@ export interface MarkovDistributionResult {
     mixingTimeWeight: number;
     /** Second-largest absolute eigenvalue of the transition matrix (spectral gap) */
     secondEigenvalue: number;
-    /** R²_OS vs. historical-average baseline; null if no held-out data */
+    /**
+     * Excess out-of-sample R² (Markov R² minus historical-mean baseline R²).
+     *
+     * Positive ⇒ Markov beats the naive "predict the historical mean every day"
+     * baseline; near zero ⇒ the regime model is essentially recovering the mean
+     * return; negative ⇒ the regime model underperforms the constant-mean prior.
+     *
+     * This is *not* the raw R²_OS (which would be vs. naive mean-zero return).
+     * Confidence-gating logic in `computePredictionConfidence` uses 0.05 as the
+     * threshold for "meaningful improvement over baseline".
+     *
+     * `null` if there is no held-out window (insufficient history).
+     */
     outOfSampleR2: number | null;
     validationMetric: 'daily_return' | 'horizon_return';
     /** Tier 1: Observations per regime state in the training window */
@@ -575,6 +594,40 @@ export interface MarkovDistributionResult {
     breakFallbackCandidateId?: string;
     /** Phase 5 provenance: which fallback mode was applied (backtest-only) */
     breakFallbackMode?: 'hard' | 'blended' | 'blended_capped';
+    /**
+     * RND integration provenance (Idea 4 — Q→P transformation).
+     * Present when ≥2 high-trust Polymarket strike anchors were used to extract
+     * a forward-looking density. `meanZShift` reports the average Girsanov shift
+     * applied across anchors (positive ⇒ market premium tilts P upward); larger
+     * absolute values indicate the historical drift / volatility window
+     * disagrees more strongly with the prediction-market view.
+     */
+    rndIntegration?: {
+      anchorsUsed: number;
+      historicalDriftAnnual: number;
+      volatilityAnnual: number;
+      riskFreeRate: number;
+      mprRaw: number;
+      mprUsed: number;
+      meanZShift: number;
+      qualityScore: number;
+    };
+    /**
+     * Idea 2 — Polymarket-informed jump-diffusion provenance.  Present only
+     * when `enableJumpDiffusion: true` and at least one jump event was active
+     * during this run.  `compensator` is the daily Σ_e λ_e·κ_e subtracted from
+     * the regime drift; `events` echoes the per-event intensity and magnitudes
+     * actually consumed by the trajectory MC.
+     */
+    jumpDiffusion?: {
+      compensatorPerDay: number;
+      events: Array<{
+        id: string;
+        dailyIntensity: number;
+        meanLogJump: number;
+        stdLogJump: number;
+      }>;
+    };
   };
 }
 
@@ -1752,7 +1805,7 @@ export function estimateTransitionMatrix(
 /** Identity-like default matrix with correct row sums. */
 export function buildDefaultMatrix(): TransitionMatrix {
   const diagonal = 0.6;
-  const offDiag  = (1 - diagonal) / (NUM_STATES - 1); // 0.1 for 5 states
+  const offDiag  = (1 - diagonal) / (NUM_STATES - 1); // 0.2 for 3 states
   return Array.from({ length: NUM_STATES }, (_, i) =>
     Array.from({ length: NUM_STATES }, (_, j) => (i === j ? diagonal : offDiag)),
   );
@@ -1789,7 +1842,7 @@ export function normalizeRows(matrix: number[][]): TransitionMatrix {
  */
 export function computeRegimeUpRates(
   regimeSeq: RegimeState[],
-  returns: number[],
+  logReturns: number[],
   horizon: number,
   decayRate?: number,
 ): Record<RegimeState, number> {
@@ -1799,14 +1852,18 @@ export function computeRegimeUpRates(
     sideways: { up: 0, total: 0 },
   };
 
-  // regimeSeq[i] corresponds to returns[i]. Look forward `horizon` days.
-  const maxStart = Math.min(regimeSeq.length, returns.length) - horizon;
+  // regimeSeq[i] corresponds to logReturns[i]. Look forward `horizon` days.
+  // Use log returns so cumulative = Σ log(1+r) is the true cumulative log return
+  // (sign of the sum equals sign of the cumulative simple return). Summing simple
+  // returns is only an approximation and biases the up-rate downward at multi-day
+  // horizons because compound = exp(Σ log(1+r)) − 1 ≠ Σ r when |r| is non-trivial.
+  const maxStart = Math.min(regimeSeq.length, logReturns.length) - horizon;
   for (let i = 0; i < maxStart; i++) {
     const regime = regimeSeq[i];
-    // Cumulative return over next `horizon` days (starts at i+1 — i.e., future returns only)
-    let cumReturn = 0;
+    // Cumulative log return over next `horizon` days (starts at i+1 — future returns only)
+    let cumLogReturn = 0;
     for (let j = i + 1; j <= i + horizon; j++) {
-      cumReturn += returns[j];
+      cumLogReturn += logReturns[j];
     }
     
     // Bounded exponential weighting: recent observations get more weight
@@ -1815,7 +1872,7 @@ export function computeRegimeUpRates(
       : 1;
 
     counts[regime].total += weight;
-    if (cumReturn > 0) counts[regime].up += weight;
+    if (cumLogReturn > 0) counts[regime].up += weight;
   }
 
   const result = {} as Record<RegimeState, number>;
@@ -1861,20 +1918,25 @@ export function transitionGoodnessOfFit(
   let chiSq = 0;
   let df = 0;
 
+  // Per-row df = (contributing_cells_in_row − 1) for each active row.
+  // Each row's transition probabilities are constrained to sum to 1, so a row
+  // that contributes k cells to chi-sq has only (k − 1) degrees of freedom
+  // (one cell is determined by the others). Total df is the sum across active rows.
+  // Previous formulation (df_total = num_terms − activeRows × (NUM_STATES − 1))
+  // over-corrects when some cells are skipped due to expected < 1, since it
+  // subtracts (NUM_STATES − 1) parameters per row even when fewer cells contributed.
   for (let i = 0; i < NUM_STATES; i++) {
     if (rowTotals[i] < 5) continue; // skip rows with too few observations
+    let rowCells = 0;
     for (let j = 0; j < NUM_STATES; j++) {
       const expected = rowTotals[i] * P[i][j];
       if (expected < 1) continue; // skip tiny expected counts (chi-sq unreliable)
       chiSq += (observed[i][j] - expected) ** 2 / expected;
-      df += 1;
+      rowCells += 1;
     }
+    if (rowCells >= 2) df += rowCells - 1; // row contributes (k − 1) df
   }
-
-  // df correction: subtract estimated parameters
-  // For each active row we estimated (NUM_STATES-1) free params from that row
-  const activeRows = rowTotals.filter(t => t >= 5).length;
-  df = Math.max(1, df - activeRows * (NUM_STATES - 1));
+  df = Math.max(1, df);
 
   // Wilson–Hilferty normal approximation for chi-squared CDF
   const z = Math.cbrt(chiSq / df) - (1 - 2 / (9 * df));
@@ -1949,7 +2011,23 @@ export function detectStructuralBreak(
   divergenceThreshold = 0.05,
   alpha = 0.1,
   decayRate = 0.97,
+  minLength = 60,
 ): StructuralBreakResult {
+  // Each half must have enough observations for a meaningful chi-square-like
+  // comparison. With NUM_STATES² = 9 transition cells and the rule of thumb of
+  // ≥5 expected counts per cell, each half needs ≥45 transitions; rounded up to
+  // 60 to keep margins comfortable. Below this, the divergence statistic is
+  // dominated by Dirichlet smoothing rather than empirical signal — return
+  // detected=false rather than risk a false alarm fallback.
+  if (states.length < minLength) {
+    const fallback = buildDefaultMatrix();
+    return {
+      detected: false,
+      divergence: 0,
+      firstHalfMatrix: fallback,
+      secondHalfMatrix: fallback,
+    };
+  }
   const mid = Math.floor(states.length / 2);
   const firstHalf  = states.slice(0, mid);
   const secondHalf = states.slice(mid);
@@ -2550,6 +2628,15 @@ export function computeTrajectory(
   nu = 5,
   empiricalDailyVol?: number,
   startMixture?: Record<RegimeState, number>,
+  /**
+   * Polymarket-informed Merton jump events (Idea 2).  When undefined the inner
+   * MC loop is **byte-identical** to the pre-jump implementation — no extra
+   * RNG draws are consumed.  Supply a non-empty array to enable per-event
+   * Bernoulli(λ_e·Δt) jumps with log-jump magnitude N(μ_J,e, σ_J,e²).
+   * Drift is compensated by `Σ_e λ_e·(exp(μ_J,e + σ_J,e²/2) − 1)` to keep
+   * E[r_t] equal to the pre-jump regime drift.
+   */
+  jumpSpec?: readonly JumpEventSpec[],
 ): TrajectoryPoint[] {
   const initialIdx = STATE_INDEX[initialState];
   const trajectory: TrajectoryPoint[] = [];
@@ -2610,6 +2697,18 @@ export function computeTrajectory(
     dailyVols[d] = sigmaObs;
   }
 
+  // Idea 2 — Merton drift compensator.  Computed once (events are time-stationary
+  // over the trajectory horizon).  When jumpSpec is undefined or empty,
+  // compensator = 0 ⇒ dailyDrifts unchanged ⇒ rest of the loop is byte-identical
+  // to the pre-jump implementation.
+  const hasJumps = jumpSpec !== undefined && jumpSpec.length > 0;
+  if (hasJumps) {
+    const compensator = jumpDriftCompensator(jumpSpec!);
+    for (let d = 0; d < days; d++) {
+      dailyDrifts[d] -= compensator;
+    }
+  }
+
   // Run shared Monte Carlo with per-day mixture drift/vol
   const paths: number[][] = [];
   for (let s = 0; s < nSamples; s++) {
@@ -2620,6 +2719,22 @@ export function computeTrajectory(
       const z = inverseStudentTCDF(u, nu);
       const scaledVol = nu > 2 ? dailyVols[d] * Math.sqrt((nu - 2) / nu) : dailyVols[d];
       cumLogReturn += dailyDrifts[d] + z * scaledVol;
+
+      // Jump term.  Only consume RNG when at least one event exists, so the
+      // default-off path stays bit-for-bit identical to the legacy run.
+      if (hasJumps) {
+        for (const e of jumpSpec!) {
+          if (Math.random() < e.dailyIntensity) {
+            // Box-Muller via two uniforms — keeps the dependency surface
+            // identical to the diffusion draw above (no extra libs).
+            const u1 = Math.max(1e-12, Math.random());
+            const u2 = Math.random();
+            const zJ = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+            cumLogReturn += e.meanLogJump + zJ * e.stdLogJump;
+          }
+        }
+      }
+
       path[d] = cumLogReturn;
     }
     paths.push(path);
@@ -2711,6 +2826,8 @@ export function interpolateDistribution(
   nu = 5,
   regimeSpecificSigma?: boolean,
   regimeSpecificSigmaThreshold?: number,
+  /** Number of historical returns used to estimate drift/vol; controls MC perturbation scale */
+  sampleSize?: number,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -2765,14 +2882,25 @@ export function interpolateDistribution(
     return { ...raw, distanceWeight };
   };
 
-  // Monte Carlo: vary initial state draw for CI
+  // Monte Carlo: perturb drift/vol within sampling uncertainty.
+  // Standard error of the drift estimator is σ/sqrt(N). Without N, the previous
+  // ±10% σ_n perturbation was ad-hoc and made the CI essentially independent of
+  // sample size. With N supplied, scale the perturbation amplitude by 1/sqrt(N)
+  // (clipped to the legacy ±10% σ_n band when N is small or absent so existing
+  // CI behaviour is preserved on small-history calls). For typical N≈250
+  // (1y daily history) this shrinks the band to ~0.06 σ — reflecting that the
+  // drift point estimate is materially better with more data.
+  const N = sampleSize && sampleSize > 0 ? sampleSize : undefined;
+  const driftScale = N ? Math.min(0.20, 1 / Math.sqrt(N)) : 0.20; // matches old ±0.5 × 0.20 band
+  const volLowerScale = N ? Math.max(0.85, 1 - driftScale * 0.5) : 0.90;
+  const volUpperScale = N ? Math.min(1.15, 1 + driftScale * 0.5) : 1.10;
   const rng = (): number => Math.random();
   const ciSamples: Map<number, number[]> = new Map(prices.map(p => [p, []]));
 
   for (let s = 0; s < monteCarloSamples; s++) {
     // Perturb drift and vol within sampling uncertainty
-    const perturbedMu  = mu_n    + (rng() - 0.5) * sigma_n * 0.2;
-    const perturbedVol = sigma_n * (0.9 + rng() * 0.2);
+    const perturbedMu  = mu_n    + (rng() - 0.5) * sigma_n * driftScale;
+    const perturbedVol = sigma_n * (volLowerScale + rng() * (volUpperScale - volLowerScale));
     for (const price of prices) {
       const p = studentTSurvival(currentPrice, price, perturbedMu, perturbedVol, nu);
       ciSamples.get(price)!.push(p);
@@ -2851,6 +2979,15 @@ export function computeR2OS(
   return 1 - ssRes / ssTot;
 }
 
+/**
+ * Walk-forward validation that returns *excess* out-of-sample R² —
+ * `R²_OS(Markov forecast)` minus `R²_OS(historical-mean baseline)`.
+ *
+ * The naming `r2os` is retained internally for backward compatibility, but the
+ * value semantically represents EXCESS R² over the constant-mean baseline.
+ * Callers should label downstream output accordingly (the public `metadata`
+ * field `outOfSampleR2` documents this explicitly).
+ */
 function computeValidationR2OS(params: {
   assetType: AssetProfile['type'];
   horizon: number;
@@ -3732,6 +3869,20 @@ export async function computeMarkovDistribution(params: {
   trajectory?: boolean;
   /** Number of days for trajectory (default: horizon, max 30) */
   trajectoryDays?: number;
+  /**
+   * Idea 2 — Polymarket-informed jump-diffusion.  When true and `jumpEvents`
+   * is non-empty, the trajectory MC adds Bernoulli(λ_e·Δt) Merton jumps with
+   * compensated drift.  Default false ⇒ behaviour is byte-identical to the
+   * pre-jump pipeline.  Caller supplies events explicitly (B5 surface only;
+   * curation lives in B1 `extractJumpEventMarkets`).
+   */
+  enableJumpDiffusion?: boolean;
+  /**
+   * Optional Polymarket-derived event specs.  Probabilities must already be
+   * physical-measure (`transformQToP`-converted) and intensities ≤ 0.95/day.
+   * When `enableJumpDiffusion` is false the array is ignored.
+   */
+  jumpEvents?: JumpEventSpec[];
   /** @deprecated experimental ablation — backtests only */
   cryptoShortHorizonConditionalWeight?: number;
   /** @deprecated experimental ablation — backtests only */
@@ -4153,6 +4304,16 @@ export async function computeMarkovDistribution(params: {
   // --- RND integration: Polymarket strike markets → forward-looking regime probabilities ---
   let rndMixture: Record<RegimeState, number> | undefined;
   let nudgedP: TransitionMatrix | undefined;
+  let rndIntegrationMeta: {
+    anchorsUsed: number;
+    historicalDriftAnnual: number;
+    volatilityAnnual: number;
+    riskFreeRate: number;
+    mprRaw: number;
+    mprUsed: number;
+    meanZShift: number;
+    qualityScore: number;
+  } | undefined;
 
   const highTrustAnchors = polymarketAnchors.filter(a => a.trustScore === 'high');
   if (highTrustAnchors.length >= 2) {
@@ -4166,7 +4327,11 @@ export async function computeMarkovDistribution(params: {
     const variance = returns.reduce((s, r) => s + (r - meanReturn) ** 2, 0) / returns.length;
     const volatility = Math.sqrt(variance) * Math.sqrt(252);
 
-    const pProbs = yesPrices.map(q => transformQToP(q, historicalDrift, riskFreeRate, Math.max(volatility, 1e-6), horizon));
+    const shiftRecords = yesPrices.map(q =>
+      transformQToPWithShift(q, historicalDrift, riskFreeRate, Math.max(volatility, 1e-6), horizon),
+    );
+    const pProbs = shiftRecords.map(r => r.pProb);
+    const meanZShift = shiftRecords.reduce((s, r) => s + r.zShift, 0) / Math.max(shiftRecords.length, 1);
     const fit = fitLognormalFromStrikes(strikes, pProbs, currentPrice);
 
     if (Number.isFinite(fit.muLn) && Number.isFinite(fit.sigmaLn) && fit.sigmaLn > 0) {
@@ -4179,6 +4344,17 @@ export async function computeMarkovDistribution(params: {
         const targetTerminal = { bull: regimes.bull, bear: regimes.bear, sideways: regimes.sideways };
         nudgedP = nudgeTransitionMatrix(P, currentRegime, targetTerminal, horizon, qualityScore);
       }
+
+      rndIntegrationMeta = {
+        anchorsUsed: highTrustAnchors.length,
+        historicalDriftAnnual: historicalDrift,
+        volatilityAnnual: volatility,
+        riskFreeRate,
+        mprRaw: shiftRecords[0]?.mprRaw ?? 0,
+        mprUsed: shiftRecords[0]?.mprUsed ?? 0,
+        meanZShift,
+        qualityScore,
+      };
     }
   }
 
@@ -4193,6 +4369,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
     20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
+    logReturns.length,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
@@ -4212,7 +4389,7 @@ export async function computeMarkovDistribution(params: {
   const pr3gDecayRate = usePr3gRecency
     ? (pr3gCryptoShortHorizonDecay ?? pr3gDefaultDecay ?? assetProfile.decayRate)
     : undefined;
-  const regimeUpRates = computeRegimeUpRates(regimeSeq, returns, horizon, pr3gDecayRate);
+  const regimeUpRates = computeRegimeUpRates(regimeSeq, logReturns, horizon, pr3gDecayRate);
   const Pn = matPow(effectiveP, horizon);
 
   let stateWeightsForUp: number[];
@@ -4366,12 +4543,27 @@ export async function computeMarkovDistribution(params: {
 
   // --- Trajectory computation (optional day-by-day forecast) ---
   let trajectoryResult: TrajectoryPoint[] | undefined;
+  let jumpDiffusionMeta: { compensatorPerDay: number; events: Array<{ id: string; dailyIntensity: number; meanLogJump: number; stdLogJump: number }> } | undefined;
   if (params.trajectory) {
     const trajDays = Math.min(30, Math.max(1, params.trajectoryDays ?? horizon));
+    const activeJumpSpec = (params.enableJumpDiffusion === true && params.jumpEvents && params.jumpEvents.length > 0)
+      ? params.jumpEvents
+      : undefined;
+    if (activeJumpSpec) {
+      jumpDiffusionMeta = {
+        compensatorPerDay: jumpDriftCompensator(activeJumpSpec),
+        events: activeJumpSpec.map(e => ({
+          id: e.id,
+          dailyIntensity: e.dailyIntensity,
+          meanLogJump: e.meanLogJump,
+          stdLogJump: e.stdLogJump,
+        })),
+      };
+    }
     trajectoryResult = computeTrajectory(
       currentPrice, trajDays, effectiveP, regimeStats, currentRegime,
       combinedDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
-      recentDailyVol, effectiveMixture,
+      recentDailyVol, effectiveMixture, activeJumpSpec,
     );
 
     // Align trajectory P(Up) with the calibrated CDF at the final day.
@@ -4384,11 +4576,21 @@ export async function computeMarkovDistribution(params: {
       const rawFinalPUp = trajectoryResult[lastIdx].pUp;
       // Only override if they diverge by more than 2pp (avoid unnecessary perturbation)
       if (Math.abs(rawFinalPUp - calibratedPUpFinal) > 0.02) {
+        // Anchor day-0 to the regime-conditional single-step P(up) instead of
+        // an uninformative 0.5. The trajectory's first day reflects the current
+        // regime's empirical up-rate (already weighted by recency via decay
+        // when usePr3gRecency is enabled), which is the correct prior over
+        // tomorrow's direction. Falling back to 0.5 only when no rate is
+        // available for the current regime.
+        const startPUp = (() => {
+          const r = regimeUpRates[currentRegime];
+          return Number.isFinite(r) && r > 0 && r < 1 ? r : 0.5;
+        })();
         for (let i = 0; i <= lastIdx; i++) {
-          // Linear interpolation from 0.5 (day 0) toward calibrated P(Up) at final day
+          // Linear interpolation from regime-conditional start P(Up) toward calibrated P(Up) at final day
           const t = (i + 1) / (lastIdx + 1);
           trajectoryResult[i].pUp = Math.round(
-            (0.5 + t * (calibratedPUpFinal - 0.5)) * 1000,
+            (startPUp + t * (calibratedPUpFinal - startPUp)) * 1000,
           ) / 1000;
         }
       }
@@ -4599,6 +4801,8 @@ export async function computeMarkovDistribution(params: {
         Math.max(...stateWeightsForUp) > (regimeSpecificSigmaThreshold ?? 0.60),
       breakFallbackCandidateId: breakFallbackCandidate?.id ?? undefined,
       breakFallbackMode: (breakResult.detected && breakFallbackCandidate) ? breakFallbackCandidate.mode : undefined,
+      rndIntegration: rndIntegrationMeta,
+      jumpDiffusion: jumpDiffusionMeta,
     }
   };
 }

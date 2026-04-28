@@ -189,7 +189,13 @@ export function baumWelch(
   }
 
   let params = initializeHMM(observations, nStates);
-  let prevLL = -Infinity;
+  // Seed prevLL with the initial-parameter log-likelihood so the convergence
+  // check on iteration 1 is meaningful. Previously prevLL was -Infinity, which
+  // guaranteed iteration 1 could never satisfy `|ll - prevLL| < tolerance`,
+  // forcing at least 2 forward-backward passes even when the initialisation
+  // was already at a fixed point.
+  const { logLikelihood: initialLL } = forward(observations, params);
+  let prevLL = initialLL;
   let iterations = 0;
   let converged = false;
 

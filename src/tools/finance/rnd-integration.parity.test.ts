@@ -58,6 +58,24 @@ print(transform_q_to_p(0.0001, 0.40, 0.05, 0.5, 30))
     `);
     expect(ts).toBeCloseTo(parseFloat(py), 6);
   });
+
+  test('mpr cap parity (default 1.5)', async () => {
+    const ts = transformQToP(0.30, 3.0, 0.05, 0.3, 30);
+    const py = await runPython(`
+from research.models.rnd import transform_q_to_p
+print(transform_q_to_p(0.30, 3.0, 0.05, 0.3, 30))
+    `);
+    expect(ts).toBeCloseTo(parseFloat(py), 6);
+  });
+
+  test('explicit mpr cap parity', async () => {
+    const ts = transformQToP(0.30, 0.50, 0.05, 0.30, 30, 0.1);
+    const py = await runPython(`
+from research.models.rnd import transform_q_to_p
+print(transform_q_to_p(0.30, 0.50, 0.05, 0.30, 30, 0.1))
+    `);
+    expect(ts).toBeCloseTo(parseFloat(py), 6);
+  });
 });
 
 describe('TS/Python parity — lognormal fit + regime mapping', () => {

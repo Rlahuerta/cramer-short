@@ -850,6 +850,71 @@ function parseVolumeStr(s: string): number {
 }
 
 /**
+ * Idea 2 — Curate Polymarket markets suitable for use as jump-diffusion
+ * event sources.  A market qualifies when it satisfies all of:
+ *
+ *   1. Resolves before `horizonDate` (settlement falls inside the forecast).
+ *   2. 24h volume ≥ `minVolume24h` (default $5,000) — proxy for liquidity.
+ *   3. Age ≥ `minAgeDays` (default 2) — filters brand-new low-info markets.
+ *   4. Probability strictly in (0, 1) — degenerate quotes give no information.
+ *
+ * The returned shape is intentionally minimal so callers can pair it with
+ * `buildJumpEventSpec()` without leaking Polymarket-specific fields into
+ * the trajectory module.
+ *
+ * Probabilities returned here are still in the **Q-measure** — apply the
+ * Q→P transformation before computing the daily hazard rate.
+ */
+export interface JumpEventMarket {
+  /** Polymarket market id or question slug (used as JumpEventSpec.id). */
+  id: string;
+  /** Q-measure YES probability in (0, 1). */
+  probability: number;
+  /** Days from today to settlement (≥ 1). */
+  daysToSettlement: number;
+  /** Original question text — handy for provenance/debug logs. */
+  question: string;
+}
+
+export interface ExtractJumpEventOptions {
+  /** End-of-forecast horizon date.  Markets resolving after this are dropped. */
+  horizonDate: Date;
+  /** Optional liquidity floor (USD).  Default 5,000. */
+  minVolume24h?: number;
+  /** Minimum market age in days.  Default 2. */
+  minAgeDays?: number;
+  /** Reference "now" — defaults to `new Date()`. */
+  now?: Date;
+}
+
+export function extractJumpEventMarkets(
+  markets: readonly PolymarketMarketResult[],
+  options: ExtractJumpEventOptions,
+): JumpEventMarket[] {
+  const minVol = options.minVolume24h ?? 5_000;
+  const minAge = options.minAgeDays ?? 2;
+  const now = options.now ?? new Date();
+  const horizonMs = options.horizonDate.getTime();
+  const out: JumpEventMarket[] = [];
+  for (const m of markets) {
+    if (m.probability <= 0 || m.probability >= 1) continue;
+    if (m.volume24h < minVol) continue;
+    if (m.ageDays === undefined || m.ageDays < minAge) continue;
+    if (!m.endDate) continue;
+    const endMs = Date.parse(m.endDate);
+    if (!Number.isFinite(endMs) || endMs > horizonMs) continue;
+    const daysToSettlement = Math.max(1, Math.ceil((endMs - now.getTime()) / 86_400_000));
+    out.push({
+      id: m.marketId ?? m.question,
+      probability: m.probability,
+      daysToSettlement,
+      question: m.question,
+    });
+  }
+  return out;
+}
+
+/**
  * Fetches Polymarket markets for `query` and returns structured numeric results.
  * Used by `polymarket-injector` for pre-query context injection.
  * Uses tag-based search exclusively — the Gamma API keyword param is non-functional.

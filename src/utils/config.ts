@@ -124,7 +124,20 @@ export function loadConfig(): Config {
 
   try {
     const content = readFileSync(SETTINGS_FILE, 'utf-8');
-    let config = validateAndSanitizeConfig(JSON.parse(content));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch (parseErr) {
+      const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      console.warn(
+        `[cramer-short] settings.json contains invalid JSON (${msg}). ` +
+          `Falling back to defaults. Fix syntax in ${SETTINGS_FILE} to restore your settings.`,
+      );
+      configCache = { data: {}, loadedAt: now };
+      return {};
+    }
+
+    const config = validateAndSanitizeConfig(parsed);
 
     // Upgrade deprecated model IDs (e.g. gpt-5.2 -> gpt-5.4)
     if (config.modelId && DEPRECATED_MODEL_UPGRADES[config.modelId]) {
@@ -134,7 +147,9 @@ export function loadConfig(): Config {
 
     configCache = { data: config, loadedAt: now };
     return config;
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[cramer-short] failed to read ${SETTINGS_FILE} (${msg}). Using defaults.`);
     configCache = { data: {}, loadedAt: now };
     return {};
   }

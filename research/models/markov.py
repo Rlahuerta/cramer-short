@@ -109,14 +109,30 @@ def detect_structural_break(
     divergence_threshold: float = 0.05,
     alpha: float = 0.1,
     decay_rate: float = 0.97,
+    min_length: int = 60,
 ) -> dict:
     """Detect structural break by comparing first/second half transition matrices.
+
+    Each half must have enough observations for a stable transition estimate.
+    With ``NUM_STATES**2 = 9`` cells and the ≥5-expected-counts rule of thumb,
+    each half needs ≥45 transitions; rounded up to 60 so the divergence
+    statistic isn't dominated by Dirichlet smoothing (the TS counterpart applies
+    the same guard).
 
     Returns
     -------
     dict
         detected (bool), divergence (float), first_half_matrix, second_half_matrix.
     """
+    if len(states) < min_length:
+        fallback = _default_matrix()
+        return {
+            "detected": False,
+            "divergence": 0.0,
+            "first_half_matrix": fallback,
+            "second_half_matrix": fallback,
+        }
+
     mid = len(states) // 2
     first_half = states[:mid]
     second_half = states[mid:]

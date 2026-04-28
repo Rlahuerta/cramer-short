@@ -14,6 +14,19 @@ export interface DiskCacheEntry {
 
 const MAX_VALUE_SIZE = 50 * 1024; // 50 KB
 
+// Throttle warnings so a permanently-broken cache directory doesn't spam stderr
+// on every tool call. We log the first occurrence then suppress duplicates of
+// the same error code for the lifetime of the process.
+const warnedCodes = new Set<string>();
+function warnOnce(scope: string, err: unknown): void {
+  const code = (err as NodeJS.ErrnoException)?.code ?? 'UNKNOWN';
+  const key = `${scope}:${code}`;
+  if (warnedCodes.has(key)) return;
+  warnedCodes.add(key);
+  const msg = err instanceof Error ? err.message : String(err);
+  console.warn(`[cramer-short] cross-session cache ${scope} failed (${code}): ${msg}`);
+}
+
 /** Replaces characters that are illegal or problematic in filenames. */
 function sanitizeKey(key: string): string {
   return key.replace(/[/:?&]/g, '_').slice(0, 100);
@@ -25,18 +38,21 @@ export async function loadCacheFromDisk(): Promise<Map<string, string>> {
 
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
-  } catch {
+  } catch (err) {
+    warnOnce('mkdir', err);
     return result;
   }
 
   let files: string[];
   try {
     files = readdirSync(CACHE_DIR).filter((f) => f.endsWith('.json'));
-  } catch {
+  } catch (err) {
+    warnOnce('readdir', err);
     return result;
   }
 
   const now = Date.now();
+  let malformed = 0;
 
   for (const file of files) {
     try {
@@ -52,13 +68,18 @@ export async function loadCacheFromDisk(): Promise<Map<string, string>> {
         typeof entry.value !== 'string' ||
         typeof entry.expiresAt !== 'number'
       ) {
+        malformed++;
         continue;
       }
 
       result.set(entry.key, entry.value);
     } catch {
-      // Silently skip malformed files
+      malformed++;
     }
+  }
+
+  if (malformed > 0) {
+    console.warn(`[cramer-short] cross-session cache: skipped ${malformed} malformed entries in ${CACHE_DIR}`);
   }
 
   return result;
@@ -89,7 +110,7 @@ export function saveCacheToDisk(
     };
 
     writeFileSync(filePath, JSON.stringify(entry), 'utf-8');
-  } catch {
-    // Silently swallow write errors
+  } catch (err) {
+    warnOnce('write', err);
   }
 }

@@ -1,1 +1,1 @@
-export { browserTool } from './browser.js';
+export { browserTool, closeBrowser } from './browser.js';

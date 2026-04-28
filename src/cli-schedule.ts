@@ -10,7 +10,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join, resolve, sep } from 'path';
 import { Agent } from './agent/agent.js';
 
 export interface ScheduleJob {
@@ -27,7 +27,12 @@ export interface ScheduleJob {
   outputFile: string;
 }
 
-const SCHEDULES_PATH = join(homedir(), '.cramer-short', 'schedules.json');
+const CRAMER_SHORT_HOME = join(homedir(), '.cramer-short');
+const SCHEDULES_PATH = join(CRAMER_SHORT_HOME, 'schedules.json');
+const ALLOWED_OUTPUT_ROOTS = [
+  resolve(CRAMER_SHORT_HOME),
+  resolve(process.cwd(), '.cramer-short'),
+];
 
 const EXAMPLE_CONFIG: ScheduleJob[] = [
   {
@@ -52,13 +57,30 @@ async function loadJobs(): Promise<ScheduleJob[]> {
 
 function resolveOutputPath(template: string): string {
   const date = new Date().toISOString().slice(0, 10);
-  return template.replace('{date}', date).replace(/^~/, homedir());
+  const expanded = template.replace('{date}', date).replace(/^~(?=$|\/)/, homedir());
+  // Resolve relative paths against cwd, then normalise to eliminate `..` segments.
+  const resolved = resolve(expanded);
+
+  // Defence-in-depth: schedule outputs must stay within an allow-listed root
+  // (~/.cramer-short or <cwd>/.cramer-short) so a malicious schedules.json
+  // cannot drop files into arbitrary locations such as ~/.ssh or /etc.
+  const isAllowed = ALLOWED_OUTPUT_ROOTS.some(
+    (root) => resolved === root || resolved.startsWith(root + sep),
+  );
+  if (!isAllowed) {
+    throw new Error(
+      `Refusing to write schedule output outside allowed roots.\n` +
+        `  resolved: ${resolved}\n` +
+        `  allowed:  ${ALLOWED_OUTPUT_ROOTS.join(', ')}`,
+    );
+  }
+  return resolved;
 }
 
 async function runJob(job: ScheduleJob): Promise<void> {
   console.log(`\n▶ Running job "${job.id}": ${job.description}`);
   const outPath = resolveOutputPath(job.outputFile);
-  const outDir = outPath.slice(0, outPath.lastIndexOf('/'));
+  const outDir = dirname(outPath);
   if (outDir) await mkdir(outDir, { recursive: true });
 
   const agent = await Agent.create();

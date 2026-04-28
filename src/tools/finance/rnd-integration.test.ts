@@ -16,9 +16,11 @@ function erf(x: number): number {
 }
 import {
   transformQToP,
+  transformQToPWithShift,
   fitLognormalFromStrikes,
   lognormalToRegimeProbabilities,
   nudgeTransitionMatrix,
+  DEFAULT_MPR_CAP,
 } from './rnd-integration.js';
 
 describe('transformQToP', () => {
@@ -52,6 +54,32 @@ describe('transformQToP', () => {
   test('boundary zero and one', () => {
     expect(transformQToP(0, 0.1, 0.05, 0.3, 7)).toBe(0);
     expect(transformQToP(1, 0.1, 0.05, 0.3, 7)).toBe(1);
+  });
+
+  test('caps pathological MPR (default cap = 1.5)', () => {
+    // raw MPR = (3.0 - 0.05) / 0.3 ≈ 9.83 → would push P-prob to ~1.0
+    const uncappedShift = 9.83 * Math.sqrt(30 / 365);
+    const p = transformQToP(0.30, 3.0, 0.05, 0.3, 30);
+    // With the 1.5 cap we expect the shift to be ≪ uncappedShift → result far below ~1
+    expect(p).toBeLessThan(0.97);
+    expect(uncappedShift).toBeGreaterThan(2.0); // sanity check on the test setup
+  });
+
+  test('mprCap parameter narrows the shift', () => {
+    const wide = transformQToP(0.30, 0.50, 0.05, 0.30, 30, 5.0);
+    const tight = transformQToP(0.30, 0.50, 0.05, 0.30, 30, 0.1);
+    expect(wide).toBeGreaterThan(tight); // larger cap allows larger upward shift
+  });
+
+  test('default cap constant is exported and equals 1.5', () => {
+    expect(DEFAULT_MPR_CAP).toBe(1.5);
+  });
+
+  test('transformQToPWithShift surfaces capped MPR provenance', () => {
+    const out = transformQToPWithShift(0.30, 3.0, 0.05, 0.3, 30);
+    expect(out.mprRaw).toBeGreaterThan(2.0);
+    expect(out.mprUsed).toBeCloseTo(1.5, 6);
+    expect(out.zShift).toBeCloseTo(1.5 * Math.sqrt(30 / 365), 6);
   });
 });
 
