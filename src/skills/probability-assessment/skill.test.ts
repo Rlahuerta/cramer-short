@@ -11,5 +11,7 @@ describe('probability-assessment skill', () => {
     'get_fixed_income',
     'markov_distribution',
     'trajectory',
+    'range stage',
+    'point stage',
   ]);
 });

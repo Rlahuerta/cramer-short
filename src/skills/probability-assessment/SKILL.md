@@ -181,6 +181,57 @@ Flag divergence (⚠️) when σ > 0.3.
 
 ---
 
+## Step 4a — Range-Before-Point calibration (mandatory before Step 5)
+
+**Source:** Lu (2025), *Evaluating LLMs on Real-World Forecasting Against Expert
+Forecasters* (arXiv:2507.04562). Direct point-probability prompting is
+systematically overconfident on Metaculus; forcing a **range stage** first and
+then constraining the **point stage** to that range yields a 5–7 pp Brier-score
+improvement across o3 / Claude / DeepSeek-R1.
+
+You **must** complete both stages before you write the Step 5 summary table.
+Do not skip the range stage even if your prior conviction is high — the act of
+naming the interval is what corrects the overconfidence.
+
+### Range stage (always first)
+
+Emit a credible interval for the combined probability **before** writing the
+point estimate. State it explicitly with three pieces:
+
+```
+**Range stage**
+  • Credible interval: P(YES) ∈ [LOW% – HIGH%]
+  • Width: HIGH − LOW = WIDTHpp
+  • Anchor reasoning: 2–3 short bullet points naming the dominant signals that
+    pin the lower and upper bounds (e.g. "lower bound from bearish ETF flows;
+    upper bound from contrarian sentiment").
+```
+
+The width must reflect actual uncertainty:
+- Strongly aligned signals (σ < 0.15) → 5–10pp width
+- Mixed signals (σ ≈ 0.20) → 10–20pp width
+- Diverging signals (σ > 0.30) → 20–35pp width
+- Single-source / very thin data → ≥30pp width
+
+### Point stage (constrained to the range)
+
+After the range stage, emit the point probability. It **must** lie strictly
+inside the range stage interval; if your computed log-odds combination falls
+outside, widen the range (do not pick a number outside it):
+
+```
+**Point stage**
+  • Combined probability: PP% (within the [LOW%–HIGH%] range from above)
+  • Reason for placement: one sentence explaining why the point lies where it
+    does within the range (closer to the lower or upper bound, and why).
+```
+
+Both stages must appear before the Step 5b summary table. The summary table's
+`Combined (log-odds)` row should match the point-stage value, and the `±Npp`
+band should equal half the range-stage width.
+
+---
+
 ## Step 5 — Output structured assessment
 
 The output must follow this exact order: **evidence first, then the summary table, then interpretation**.
