@@ -14,7 +14,7 @@ let tmpDir: string;
 let ctrl: WatchlistController;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `dexter-wl-test-${Date.now()}`);
+  tmpDir = join(tmpdir(), `dexter-wl-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tmpDir, { recursive: true });
   ctrl = new WatchlistController(tmpDir);
 });

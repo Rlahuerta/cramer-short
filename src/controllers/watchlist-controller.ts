@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { cramerShortPath } from '../utils/paths.js';
 
 export interface WatchlistEntry {
   ticker: string;
@@ -87,7 +86,11 @@ export class WatchlistController {
   private readonly filePath: string;
 
   constructor(baseDir: string = process.cwd()) {
-    this.filePath = join(baseDir, cramerShortPath('watchlist.json'));
+    // Use a hard-coded `.cramer-short` segment here rather than `cramerShortPath`
+    // so that callers passing an explicit `baseDir` (notably tests using a tmp
+    // directory) are not affected by the CRAMER_SHORT_DIR_OVERRIDE env var
+    // that other concurrent tests may set.
+    this.filePath = join(baseDir, '.cramer-short', 'watchlist.json');
   }
 
   load(): WatchlistFile {
