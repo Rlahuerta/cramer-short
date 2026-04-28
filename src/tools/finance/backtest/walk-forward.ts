@@ -91,6 +91,12 @@ export interface WalkForwardConfig {
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
   kswinAlpha?: number;
+  /** R4 Idea 2: enable cross-asset Lasso bias on trajectory drift. Default false. */
+  enableCrossAssetBias?: boolean;
+  /** Peer-ticker → daily-return series, time-aligned with the target. */
+  crossAssetReturns?: Record<string, number[]>;
+  /** Lasso L1 strength. Default 0.005. */
+  crossAssetLassoLambda?: number;
 }
 
 export interface WalkForwardResult {
@@ -167,6 +173,9 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         enableGarchVol: config.enableGarchVol,
         enableKswinTrim: config.enableKswinTrim,
         kswinAlpha: config.kswinAlpha,
+        enableCrossAssetBias: config.enableCrossAssetBias,
+        crossAssetReturns: config.crossAssetReturns,
+        crossAssetLassoLambda: config.crossAssetLassoLambda,
       });
 
       const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
@@ -212,6 +221,9 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             enableGarchVol: config.enableGarchVol,
             enableKswinTrim: config.enableKswinTrim,
             kswinAlpha: config.kswinAlpha,
+            enableCrossAssetBias: config.enableCrossAssetBias,
+            crossAssetReturns: config.crossAssetReturns,
+            crossAssetLassoLambda: config.crossAssetLassoLambda,
           });
         }
       }

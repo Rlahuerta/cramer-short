@@ -47,6 +47,7 @@ import {
   type RegimePlattFits,
 } from './regime-calibrator.js';
 import { computeGarchScales } from './garch-scales.js';
+import { estimateCrossAssetBias } from './cross-asset-lasso.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -657,6 +658,7 @@ export interface MarkovDistributionResult {
     regimePlattApplied?: boolean;
     garchVolApplied?: boolean;
     kswinTrim?: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number };
+    crossAssetBias?: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number };
   };
 }
 
@@ -4005,6 +4007,14 @@ export async function computeMarkovDistribution(params: {
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
   kswinAlpha?: number;
+  /** R4 Idea 2: enable cross-asset Lasso pooling — adds an additive bias to
+   *  trajectory drift learned from peer-asset 1-day returns.  Default OFF. */
+  enableCrossAssetBias?: boolean;
+  /** Map of peer-ticker → daily-return series, time-aligned with historicalPrices.
+   *  Required for `enableCrossAssetBias`. */
+  crossAssetReturns?: Record<string, number[]>;
+  /** Lasso L1 strength.  Default 0.005. */
+  crossAssetLassoLambda?: number;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
@@ -4045,6 +4055,9 @@ export async function computeMarkovDistribution(params: {
     enableGarchVol,
     enableKswinTrim,
     kswinAlpha,
+    enableCrossAssetBias,
+    crossAssetReturns,
+    crossAssetLassoLambda,
   } = params;
 
   // W3R2 ADWIN trim — opt-in. Default OFF preserves byte-identical behaviour.
@@ -4720,6 +4733,7 @@ export async function computeMarkovDistribution(params: {
   let trajectoryResult: TrajectoryPoint[] | undefined;
   let jumpDiffusionMeta: { compensatorPerDay: number; events: Array<{ id: string; dailyIntensity: number; meanLogJump: number; stdLogJump: number }> } | undefined;
   let garchVolApplied = false;
+  let crossAssetBiasMeta: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number } | undefined;
   if (params.trajectory) {
     const trajDays = Math.min(30, Math.max(1, params.trajectoryDays ?? horizon));
     const activeJumpSpec = hasJumps ? activeJumpEvents : undefined;
@@ -4743,9 +4757,34 @@ export async function computeMarkovDistribution(params: {
         garchVolApplied = true;
       }
     }
+
+    // R4 Phase D — optional cross-asset Lasso bias (default OFF).
+    let trajectoryDriftAdj = combinedDriftAdj;
+    if (
+      enableCrossAssetBias === true
+      && crossAssetReturns
+      && Object.keys(crossAssetReturns).length > 0
+    ) {
+      const bias = estimateCrossAssetBias(
+        returns,
+        crossAssetReturns,
+        Math.min(trajDays, horizon),
+        { lambda: crossAssetLassoLambda ?? 0.005 },
+      );
+      if (bias && Number.isFinite(bias.perDayBias)) {
+        // Clip to a sane range so a pathological fit can't dominate the drift.
+        const clipped = Math.max(-0.05, Math.min(0.05, bias.perDayBias));
+        trajectoryDriftAdj = combinedDriftAdj + clipped;
+        crossAssetBiasMeta = {
+          perDayBias: clipped,
+          tickers: bias.tickers,
+          nonZeroCoefCount: bias.fit.coef.filter(c => c !== 0).length,
+        };
+      }
+    }
     trajectoryResult = computeTrajectory(
       currentPrice, trajDays, effectiveP, regimeStats, currentRegime,
-      combinedDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
+      trajectoryDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
       recentDailyVol, effectiveMixture, activeJumpSpec,
       garchScalesForTraj,
     );
@@ -4991,6 +5030,7 @@ export async function computeMarkovDistribution(params: {
       regimePlattApplied: regimePlattApplied || undefined,
       garchVolApplied: garchVolApplied || undefined,
       kswinTrim: kswinTrimMeta,
+      crossAssetBias: crossAssetBiasMeta,
     }
   };
 }
