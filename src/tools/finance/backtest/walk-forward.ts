@@ -74,6 +74,14 @@ export interface WalkForwardConfig {
   btcReturnThresholdMultiplier?: number;
   /** Phase C experimental: BTC-only override for structural break divergence threshold */
   btcBreakDivergenceThreshold?: number;
+  /** W3R2 experimental: enable ADWIN-based historical-price trim */
+  enableAdwinTrim?: boolean;
+  /** W3R2 experimental: ADWIN delta (false-positive rate). Default 0.05 in MD. */
+  adwinDelta?: number;
+  /** W3R2 experimental: enable Hawkes-based jump intensity amplification */
+  enableHawkesIntensity?: boolean;
+  /** W3R2 experimental: sigma threshold for Hawkes jump detection. Default 3.0. */
+  hawkesSigmaThreshold?: number;
 }
 
 export interface WalkForwardResult {
@@ -142,6 +150,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
         btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
         btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
+        enableAdwinTrim: config.enableAdwinTrim,
+        adwinDelta: config.adwinDelta,
+        enableHawkesIntensity: config.enableHawkesIntensity,
+        hawkesSigmaThreshold: config.hawkesSigmaThreshold,
       });
 
       const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
@@ -179,6 +191,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
             btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
             btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
+            enableAdwinTrim: config.enableAdwinTrim,
+            adwinDelta: config.adwinDelta,
+            enableHawkesIntensity: config.enableHawkesIntensity,
+            hawkesSigmaThreshold: config.hawkesSigmaThreshold,
           });
         }
       }

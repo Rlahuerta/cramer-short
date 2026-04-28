@@ -36,6 +36,11 @@ import {
   buildJumpEventSpec,
   JUMP_DEFAULTS,
 } from './jump-diffusion.js';
+import {
+  applyAdwinTrim,
+  applyHawkesAmplification,
+  amplifyJumpEvents,
+} from './forecast-hooks.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -3943,12 +3948,23 @@ export async function computeMarkovDistribution(params: {
   btcReturnThresholdMultiplier?: number;
   /** Phase C experimental: BTC-only override for structural break divergence threshold (backtest-only). */
   btcBreakDivergenceThreshold?: number;
+  /** W3 Round-2 experimental: trim historical prices to ADWIN-detected stationary suffix.
+   *  Default false ⇒ behaviour byte-identical to pre-W3R2. */
+  enableAdwinTrim?: boolean;
+  /** ADWIN per-test false-positive rate. Default 0.05. Ignored unless `enableAdwinTrim`. */
+  adwinDelta?: number;
+  /** W3 Round-2 experimental: detect 3σ jump clustering via Hawkes MLE and amplify
+   *  any caller-supplied `jumpEvents` intensities (and synthesize an endogenous jump
+   *  spec when no events are provided). Default false ⇒ byte-identical. */
+  enableHawkesIntensity?: boolean;
+  /** Sigma threshold for Hawkes jump detection. Default 3.0. */
+  hawkesSigmaThreshold?: number;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
     horizon,
     currentPrice,
-    historicalPrices,
+    historicalPrices: historicalPricesParam,
     polymarketMarkets,
     sentiment,
     kalshiAnchors,
@@ -3975,7 +3991,25 @@ export async function computeMarkovDistribution(params: {
     regimeSpecificSigmaThreshold,
     btcReturnThresholdMultiplier,
     btcBreakDivergenceThreshold,
+    enableAdwinTrim,
+    adwinDelta,
+    enableHawkesIntensity,
+    hawkesSigmaThreshold,
   } = params;
+
+  // W3R2 ADWIN trim — opt-in. Default OFF preserves byte-identical behaviour.
+  let historicalPrices = historicalPricesParam;
+  let adwinTrimMeta: { droppedPrices: number; keptPrices: number } | undefined;
+  if (enableAdwinTrim === true && Array.isArray(historicalPricesParam) && historicalPricesParam.length > 60) {
+    const { trimmedPrices, result } = applyAdwinTrim(
+      historicalPricesParam,
+      adwinDelta ?? 0.05,
+    );
+    if (result.trimmed) {
+      historicalPrices = trimmedPrices;
+      adwinTrimMeta = { droppedPrices: result.droppedPrices, keptPrices: trimmedPrices.length };
+    }
+  }
 
   const normalizedSentiment = sentiment === undefined ? undefined : normalizeSentiment(sentiment);
   if (sentiment !== undefined && normalizedSentiment === undefined) {
@@ -4556,14 +4590,50 @@ export async function computeMarkovDistribution(params: {
   // --- Trajectory computation (optional day-by-day forecast) ---
   // hasJumps reflects user intent — whether jump-diffusion was requested,
   // independent of whether a trajectory was also requested.
-  const hasJumps = params.enableJumpDiffusion === true &&
-    Array.isArray(params.jumpEvents) && params.jumpEvents.length > 0;
+  let activeJumpEvents: JumpEventSpec[] | undefined =
+    Array.isArray(params.jumpEvents) && params.jumpEvents.length > 0
+      ? [...params.jumpEvents]
+      : undefined;
+  let hasJumps = params.enableJumpDiffusion === true && !!activeJumpEvents;
+
+  // W3R2 Hawkes amplification — opt-in. Default OFF preserves byte-identical behaviour.
+  let hawkesMeta: {
+    intensityMultiplier: number;
+    branchingRatio: number | null;
+    jumpCount: number;
+    endogenousJumpInjected: boolean;
+  } | undefined;
+  if (enableHawkesIntensity === true && historicalPrices.length > 30) {
+    const hawkes = applyHawkesAmplification(historicalPrices, {
+      sigmaThreshold: hawkesSigmaThreshold ?? 3.0,
+    });
+    if (hawkes.intensityMultiplier > 1.001 || hawkes.endogenousJump) {
+      if (activeJumpEvents && activeJumpEvents.length > 0) {
+        activeJumpEvents = amplifyJumpEvents(activeJumpEvents, hawkes.intensityMultiplier);
+      }
+      if (hawkes.endogenousJump) {
+        activeJumpEvents = activeJumpEvents
+          ? [hawkes.endogenousJump, ...activeJumpEvents]
+          : [hawkes.endogenousJump];
+        // Promote jump-diffusion path so the synthesized event is actually used.
+        hasJumps = true;
+      } else if (activeJumpEvents && params.enableJumpDiffusion === true) {
+        hasJumps = true;
+      }
+      hawkesMeta = {
+        intensityMultiplier: hawkes.intensityMultiplier,
+        branchingRatio: hawkes.fit ? hawkes.fit.alpha / hawkes.fit.beta : null,
+        jumpCount: hawkes.jumpIndices.length,
+        endogenousJumpInjected: !!hawkes.endogenousJump,
+      };
+    }
+  }
 
   let trajectoryResult: TrajectoryPoint[] | undefined;
   let jumpDiffusionMeta: { compensatorPerDay: number; events: Array<{ id: string; dailyIntensity: number; meanLogJump: number; stdLogJump: number }> } | undefined;
   if (params.trajectory) {
     const trajDays = Math.min(30, Math.max(1, params.trajectoryDays ?? horizon));
-    const activeJumpSpec = hasJumps ? params.jumpEvents : undefined;
+    const activeJumpSpec = hasJumps ? activeJumpEvents : undefined;
     if (activeJumpSpec) {
       jumpDiffusionMeta = {
         compensatorPerDay: jumpDriftCompensator(activeJumpSpec),
