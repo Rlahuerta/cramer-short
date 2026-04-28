@@ -3,6 +3,11 @@ import { integrationIt } from '@/utils/test-guards.js';
 import { runComparison } from './phase4-trend-penalty-comparison.js';
 
 describe('phase4-trend-penalty-comparison', () => {
+  // NOTE: Headline metrics refreshed after commit 0332b33 corrected
+  // computeRegimeUpRates to sum log returns instead of simple returns
+  // (the prior summation under-counted up moves at multi-day horizons).
+  // The numbers below reflect the mathematically correct baseline and
+  // are therefore the new ground truth.
   integrationIt('reproduces the verified Phase 4 headline metrics on the fixture universe', async () => {
     const artifact = await runComparison();
 
@@ -12,14 +17,14 @@ describe('phase4-trend-penalty-comparison', () => {
     expect(artifact.delta.changedBreakChopCount).toBe(313);
     expect(artifact.delta.changedBreakTrendingCount).toBe(0);
 
-    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6452879581151832, 6);
-    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.5787878787878787, 6);
-    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6543778801843319, 6);
-    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.6575757575757576, 6);
+    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6392459297343616, 6);
+    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.884090909090909, 6);
+    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6435070306038048, 6);
+    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.9159090909090909, 6);
 
-    expect(artifact.baseline.breakContextRC.find(point => point.threshold === 0.3)?.accuracy).toBeCloseTo(0.6071428571428571, 6);
-    expect(artifact.baseline.breakContextRC.find(point => point.threshold === 0.3)?.coverage).toBeCloseTo(0.09435551811288964, 6);
-    expect(artifact.experiment.breakContextRC.find(point => point.threshold === 0.3)?.accuracy).toBeCloseTo(0.657243816254417, 6);
-    expect(artifact.experiment.breakContextRC.find(point => point.threshold === 0.3)?.coverage).toBeCloseTo(0.2384161752316765, 6);
+    expect(artifact.baseline.breakContextRC.find(point => point.threshold === 0.3)?.accuracy).toBeCloseTo(0.6322115384615384, 6);
+    expect(artifact.baseline.breakContextRC.find(point => point.threshold === 0.3)?.coverage).toBeCloseTo(0.35046335299073295, 6);
+    expect(artifact.experiment.breakContextRC.find(point => point.threshold === 0.3)?.accuracy).toBeCloseTo(0.6598639455782312, 6);
+    expect(artifact.experiment.breakContextRC.find(point => point.threshold === 0.3)?.coverage).toBeCloseTo(0.4953664700926706, 6);
   }, 480_000);
 });

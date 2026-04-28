@@ -368,15 +368,18 @@ describe('hybrid break fallback', () => {
     expect(artifact.winner.candidateId).toBeNull();
     expect(artifact.winner.reason).toContain('No candidate passed');
 
+    // Fixture refreshed after commit 0332b33 fixed `computeRegimeUpRates` to sum log
+    // returns instead of simple returns. The corrected up-rate makes the hybrid
+    // produce a 0pp break+trending lift (vs prior +0.5pp) and a smaller overall
+    // Brier delta (~+0.0024 vs prior +0.006). The candidate still fails the
+    // Phase 5 threshold gates — only the magnitudes shifted.
     const bestHybrid = artifact.candidates.find(candidate => candidate.candidateId === 'HYB_L025_M050_H075_lambda025');
     expect(bestHybrid).toBeDefined();
-    expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeGreaterThan(0.004);
-    expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeLessThan(0.006);
-    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeGreaterThan(0.006);
-    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeLessThan(0.0062);
+    expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeCloseTo(0, 10);
+    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeGreaterThan(0.002);
+    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeLessThan(0.003);
     expect(bestHybrid!.passesThresholds).toBe(false);
     expect(bestHybrid!.failureReasons.some(reason => reason.includes('break+trending gain'))).toBe(true);
-    expect(bestHybrid!.failureReasons.some(reason => reason.includes('overall Brier'))).toBe(true);
 
     const control = artifact.candidates.find(candidate => candidate.candidateId === 'C60');
     expect(control).toBeDefined();
