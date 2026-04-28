@@ -45,6 +45,7 @@ import {
   applyRegimePlatt,
   type RegimePlattFits,
 } from './regime-calibrator.js';
+import { computeGarchScales } from './garch-scales.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -653,6 +654,7 @@ export interface MarkovDistributionResult {
      * P(up) by more than 1e-9. Absent otherwise.
      */
     regimePlattApplied?: boolean;
+    garchVolApplied?: boolean;
   };
 }
 
@@ -2662,6 +2664,13 @@ export function computeTrajectory(
    * E[r_t] equal to the pre-jump regime drift.
    */
   jumpSpec?: readonly JumpEventSpec[],
+  /**
+   * R4 Phase B — optional per-day GARCH(1,1) volatility multipliers.  When
+   * provided, `dailyVols[d] *= garchScales[d]` for d in [0, horizonDays).
+   * When undefined or empty, behaviour is byte-identical (no extra
+   * arithmetic, no extra RNG draws).
+   */
+  garchScales?: readonly number[],
 ): TrajectoryPoint[] {
   const initialIdx = STATE_INDEX[initialState];
   const trajectory: TrajectoryPoint[] = [];
@@ -2720,6 +2729,19 @@ export function computeTrajectory(
 
     dailyDrifts[d] = muDay;
     dailyVols[d] = sigmaObs;
+  }
+
+  // R4 Phase B — multiplicatively apply GARCH per-day vol scalars when
+  // provided.  `garchScales` is a length-`days` array in unconditional-σ
+  // units.  Undefined/empty ⇒ no-op ⇒ byte-identical to pre-Phase-B.
+  if (garchScales && garchScales.length > 0) {
+    const n = Math.min(days, garchScales.length);
+    for (let d = 0; d < n; d++) {
+      const k = garchScales[d];
+      if (Number.isFinite(k) && k > 0) {
+        dailyVols[d] *= k;
+      }
+    }
   }
 
   // Idea 2 — Merton drift compensator.  Computed once (events are time-stationary
@@ -3973,6 +3995,9 @@ export async function computeMarkovDistribution(params: {
    *  logistic. Pass pre-fitted {@link RegimePlattFits} (e.g. from a held-out
    *  backtest fold). Pass `undefined` ⇒ no recalibration applied. */
   regimePlattFits?: RegimePlattFits;
+  /** Round-4 Idea 4: enable GARCH(1,1) per-day vol forecast layered onto
+   *  trajectory MC σ.  Default false ⇒ byte-identical to pre-Phase-B. */
+  enableGarchVol?: boolean;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
@@ -4010,6 +4035,7 @@ export async function computeMarkovDistribution(params: {
     enableHawkesIntensity,
     hawkesSigmaThreshold,
     regimePlattFits,
+    enableGarchVol,
   } = params;
 
   // W3R2 ADWIN trim — opt-in. Default OFF preserves byte-identical behaviour.
@@ -4665,6 +4691,7 @@ export async function computeMarkovDistribution(params: {
 
   let trajectoryResult: TrajectoryPoint[] | undefined;
   let jumpDiffusionMeta: { compensatorPerDay: number; events: Array<{ id: string; dailyIntensity: number; meanLogJump: number; stdLogJump: number }> } | undefined;
+  let garchVolApplied = false;
   if (params.trajectory) {
     const trajDays = Math.min(30, Math.max(1, params.trajectoryDays ?? horizon));
     const activeJumpSpec = hasJumps ? activeJumpEvents : undefined;
@@ -4679,10 +4706,20 @@ export async function computeMarkovDistribution(params: {
         })),
       };
     }
+    // R4 Phase B — optional GARCH per-day vol scalars (default OFF).
+    let garchScalesForTraj: number[] | undefined;
+    if (enableGarchVol === true) {
+      const scales = computeGarchScales(logReturns, trajDays);
+      if (scales.length > 0) {
+        garchScalesForTraj = scales;
+        garchVolApplied = true;
+      }
+    }
     trajectoryResult = computeTrajectory(
       currentPrice, trajDays, effectiveP, regimeStats, currentRegime,
       combinedDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
       recentDailyVol, effectiveMixture, activeJumpSpec,
+      garchScalesForTraj,
     );
 
     // Align trajectory P(Up) with the calibrated CDF at the final day.
@@ -4924,6 +4961,7 @@ export async function computeMarkovDistribution(params: {
       jumpDiffusionApplied: hasJumps,
       jumpDiffusion: jumpDiffusionMeta,
       regimePlattApplied: regimePlattApplied || undefined,
+      garchVolApplied: garchVolApplied || undefined,
     }
   };
 }

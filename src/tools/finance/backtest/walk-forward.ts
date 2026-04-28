@@ -85,6 +85,8 @@ export interface WalkForwardConfig {
   hawkesSigmaThreshold?: number;
   /** R4 Idea 3: pre-fitted regime-conditional Platt overlay. Default undefined ⇒ no overlay. */
   regimePlattFits?: RegimePlattFits;
+  /** R4 Idea 4: enable GARCH(1,1) per-day vol scalars in trajectory MC. Default false ⇒ byte-identical. */
+  enableGarchVol?: boolean;
 }
 
 export interface WalkForwardResult {
@@ -158,6 +160,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         enableHawkesIntensity: config.enableHawkesIntensity,
         hawkesSigmaThreshold: config.hawkesSigmaThreshold,
         regimePlattFits: config.regimePlattFits,
+        enableGarchVol: config.enableGarchVol,
       });
 
       const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
@@ -200,6 +203,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             enableHawkesIntensity: config.enableHawkesIntensity,
             hawkesSigmaThreshold: config.hawkesSigmaThreshold,
             regimePlattFits: config.regimePlattFits,
+            enableGarchVol: config.enableGarchVol,
           });
         }
       }
