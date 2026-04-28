@@ -38,6 +38,7 @@ import {
 } from './jump-diffusion.js';
 import {
   applyAdwinTrim,
+  applyKswinTrim,
   applyHawkesAmplification,
   amplifyJumpEvents,
 } from './forecast-hooks.js';
@@ -655,6 +656,7 @@ export interface MarkovDistributionResult {
      */
     regimePlattApplied?: boolean;
     garchVolApplied?: boolean;
+    kswinTrim?: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number };
   };
 }
 
@@ -3998,6 +4000,11 @@ export async function computeMarkovDistribution(params: {
   /** Round-4 Idea 4: enable GARCH(1,1) per-day vol forecast layered onto
    *  trajectory MC σ.  Default false ⇒ byte-identical to pre-Phase-B. */
   enableGarchVol?: boolean;
+  /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
+   *  Default false ⇒ byte-identical to pre-Phase-C. */
+  enableKswinTrim?: boolean;
+  /** KSWIN significance level. Default 0.005. */
+  kswinAlpha?: number;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
@@ -4036,6 +4043,8 @@ export async function computeMarkovDistribution(params: {
     hawkesSigmaThreshold,
     regimePlattFits,
     enableGarchVol,
+    enableKswinTrim,
+    kswinAlpha,
   } = params;
 
   // W3R2 ADWIN trim — opt-in. Default OFF preserves byte-identical behaviour.
@@ -4049,6 +4058,25 @@ export async function computeMarkovDistribution(params: {
     if (result.trimmed) {
       historicalPrices = trimmedPrices;
       adwinTrimMeta = { droppedPrices: result.droppedPrices, keptPrices: trimmedPrices.length };
+    }
+  }
+
+  // R4 KSWIN trim — opt-in, variance-aware (complementary to mean-aware ADWIN).
+  // Applied AFTER ADWIN so the two flags can be enabled independently or
+  // composed.  Default OFF preserves byte-identical behaviour.
+  let kswinTrimMeta: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number } | undefined;
+  if (enableKswinTrim === true && Array.isArray(historicalPrices) && historicalPrices.length > 60) {
+    const { trimmedPrices, result } = applyKswinTrim(historicalPrices, {
+      alpha: kswinAlpha,
+    });
+    if (result.trimmed) {
+      historicalPrices = trimmedPrices;
+      kswinTrimMeta = {
+        droppedPrices: result.droppedPrices,
+        keptPrices: trimmedPrices.length,
+        maxD: result.maxD,
+        criticalD: result.criticalD,
+      };
     }
   }
 
@@ -4962,6 +4990,7 @@ export async function computeMarkovDistribution(params: {
       jumpDiffusion: jumpDiffusionMeta,
       regimePlattApplied: regimePlattApplied || undefined,
       garchVolApplied: garchVolApplied || undefined,
+      kswinTrim: kswinTrimMeta,
     }
   };
 }

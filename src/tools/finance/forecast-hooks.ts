@@ -10,6 +10,7 @@
  */
 
 import { Adwin } from '../../utils/adwin.js';
+import { detectKswinDrift, type KswinOptions } from '../../utils/kswin.js';
 import { fitHawkesMLE, type HawkesFit } from './hawkes.js';
 import type { JumpEventSpec } from './jump-diffusion.js';
 
@@ -87,6 +88,90 @@ export function applyAdwinTrim(
       droppedPrices: totalPrices - trimmed.length,
       trimmed: true,
       totalPrices,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// KSWIN: variance-aware drift trimming (R4 Idea 1)
+// ---------------------------------------------------------------------------
+
+export interface KswinTrimResult {
+  keptPrices: number;
+  droppedPrices: number;
+  trimmed: boolean;
+  totalPrices: number;
+  /** Max KS-D observed across split points (diagnostic). */
+  maxD: number;
+  /** Critical D under the chosen alpha (diagnostic). */
+  criticalD: number;
+}
+
+/**
+ * Apply KSWIN drift detection to the |log-return| series of `historicalPrices`
+ * and return the recent stationary suffix.  Operates on |returns| so the
+ * detector is sensitive to *variance* shifts (where ADWIN, being mean-aware,
+ * stays silent).
+ *
+ * Invariants mirror {@link applyAdwinTrim}: short histories pass through
+ * untouched; the returned suffix always contains ≥ `minKeep` prices.
+ */
+export function applyKswinTrim(
+  historicalPrices: number[],
+  opts: KswinOptions & { minHistory?: number } = {},
+): { trimmedPrices: number[]; result: KswinTrimResult } {
+  const minHistory = opts.minHistory ?? 60;
+  const minKeep = opts.minKeep ?? 60;
+  const totalPrices = historicalPrices.length;
+
+  if (totalPrices < minHistory) {
+    return {
+      trimmedPrices: historicalPrices,
+      result: {
+        keptPrices: totalPrices, droppedPrices: 0, trimmed: false, totalPrices,
+        maxD: 0, criticalD: 0,
+      },
+    };
+  }
+
+  const absLogReturns: number[] = new Array(totalPrices - 1);
+  for (let i = 1; i < totalPrices; i++) {
+    absLogReturns[i - 1] = Math.abs(Math.log(historicalPrices[i] / historicalPrices[i - 1]));
+  }
+
+  const drift = detectKswinDrift(absLogReturns, { ...opts, minKeep });
+  if (!drift.drift) {
+    return {
+      trimmedPrices: historicalPrices,
+      result: {
+        keptPrices: totalPrices, droppedPrices: 0, trimmed: false, totalPrices,
+        maxD: drift.maxD, criticalD: drift.criticalD,
+      },
+    };
+  }
+
+  // drift.keepCount counts returns; map back to prices (returns + 1 boundary).
+  const desiredKeepPrices = Math.min(totalPrices, Math.max(minKeep, drift.keepCount + 1));
+  if (desiredKeepPrices >= totalPrices) {
+    return {
+      trimmedPrices: historicalPrices,
+      result: {
+        keptPrices: totalPrices, droppedPrices: 0, trimmed: false, totalPrices,
+        maxD: drift.maxD, criticalD: drift.criticalD,
+      },
+    };
+  }
+
+  const trimmed = historicalPrices.slice(totalPrices - desiredKeepPrices);
+  return {
+    trimmedPrices: trimmed,
+    result: {
+      keptPrices: trimmed.length,
+      droppedPrices: totalPrices - trimmed.length,
+      trimmed: true,
+      totalPrices,
+      maxD: drift.maxD,
+      criticalD: drift.criticalD,
     },
   };
 }

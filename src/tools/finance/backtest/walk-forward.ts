@@ -87,6 +87,10 @@ export interface WalkForwardConfig {
   regimePlattFits?: RegimePlattFits;
   /** R4 Idea 4: enable GARCH(1,1) per-day vol scalars in trajectory MC. Default false ⇒ byte-identical. */
   enableGarchVol?: boolean;
+  /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
+  enableKswinTrim?: boolean;
+  /** KSWIN significance level. Default 0.005. */
+  kswinAlpha?: number;
 }
 
 export interface WalkForwardResult {
@@ -161,6 +165,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         hawkesSigmaThreshold: config.hawkesSigmaThreshold,
         regimePlattFits: config.regimePlattFits,
         enableGarchVol: config.enableGarchVol,
+        enableKswinTrim: config.enableKswinTrim,
+        kswinAlpha: config.kswinAlpha,
       });
 
       const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
@@ -204,6 +210,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             hawkesSigmaThreshold: config.hawkesSigmaThreshold,
             regimePlattFits: config.regimePlattFits,
             enableGarchVol: config.enableGarchVol,
+            enableKswinTrim: config.enableKswinTrim,
+            kswinAlpha: config.kswinAlpha,
           });
         }
       }
