@@ -148,6 +148,29 @@ export function adjustYesBiasV2(p: number): number {
  *   ≤ 90d → 0.85
  *   > 90d → 0.70 (uncertainty discount)
  */
+/**
+ * W3 Idea 1a — Dubach (2026) depth-decay haircut.
+ *
+ * Reference: arXiv 2604.24366 §4 — empirical Polymarket depth shrinks
+ * materially as a contract approaches resolution (in-category log-log slope
+ * ≈ 0.55 on seconds-to-close). Our `volume24hUsd` proxy is backward-looking,
+ * so this corrects a *liquidity* misestimate — independent of the
+ * information-value `computeExpiryBoost` (which captures martingale collapse).
+ *
+ *   ≥ 30 d         →  1.00     (no penalty; far enough out)
+ *   undefined/NaN  →  1.00     (back-compat)
+ *   day-by-day     →  (d/30)^0.55, floored at 0.5
+ *
+ * Floor of 0.5 keeps the haircut from collapsing a market entirely.
+ */
+export function depthDecayHaircut(daysToExpiry: number | undefined): number {
+  if (daysToExpiry === undefined || !Number.isFinite(daysToExpiry)) return 1.0;
+  if (daysToExpiry >= 30) return 1.0;
+  const ratio = Math.max(0, daysToExpiry) / 30;
+  const slope = 0.55;
+  return Math.max(0.5, Math.pow(ratio, slope));
+}
+
 export function computeExpiryBoost(daysToExpiry: number): number {
   if (!Number.isFinite(daysToExpiry)) return 1.0;
   if (daysToExpiry <= 1) return 1.50;
@@ -166,7 +189,9 @@ export function computeExpiryBoost(daysToExpiry: number): number {
  */
 export function computeMarketQualityWeight(m: MarketInput): number {
   const wAge = Math.min(1, (m.ageDays ?? 21) / 21);
-  const wLiq = Math.min(1, Math.log10(m.volume24hUsd + 1) / 6);
+  // W3 Idea 1a — Dubach 2026 depth-decay haircut applied to the liquidity
+  // component only. volume24hUsd is a stale proxy near resolution.
+  const wLiq = Math.min(1, Math.log10(m.volume24hUsd + 1) / 6) * depthDecayHaircut(m.daysToExpiry);
   const tau =
     m.signalTier === 'macro'
       ? 0.90

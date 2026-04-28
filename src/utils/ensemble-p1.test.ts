@@ -166,11 +166,17 @@ describe('computeMarketQualityWeight — daysToExpiry integration', () => {
     expect(wExplicit).toBeCloseTo(wOld, 6);
   });
 
-  it('daysToExpiry=1 → quality boosted by 1.5×', () => {
+  it('daysToExpiry=1 → information-value boost (1.5×) net of W3 depth-decay haircut (0.5)', () => {
+    // W3 Idea 1a (Dubach 2026): the 1.5× near-expiry information-value boost
+    // is now offset by a 0.5 haircut on the liquidity component when depth is
+    // expected to have evaporated. Net effect: near-expiry quality drops to
+    // ~0.75× of the 30-day reference. Intentional behaviour change — a
+    // public-feed Polymarket signal at <7d to resolution is *less* trustworthy,
+    // not more, despite the martingale collapse, because liquidity disappears.
     const wNeutral = computeMarketQualityWeight({ ...baseInput, daysToExpiry: 30 });
     const wNear = computeMarketQualityWeight({ ...baseInput, daysToExpiry: 1 });
-    expect(wNear).toBeGreaterThan(wNeutral);
-    expect(wNear / wNeutral).toBeCloseTo(1.5, 4);
+    expect(wNear).toBeLessThan(wNeutral);
+    expect(wNear / wNeutral).toBeCloseTo(0.75, 4);
   });
 
   it('daysToExpiry=180 → quality discounted by 0.7×', () => {
