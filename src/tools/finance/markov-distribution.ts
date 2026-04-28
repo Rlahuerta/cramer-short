@@ -41,6 +41,10 @@ import {
   applyHawkesAmplification,
   amplifyJumpEvents,
 } from './forecast-hooks.js';
+import {
+  applyRegimePlatt,
+  type RegimePlattFits,
+} from './regime-calibrator.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -643,6 +647,12 @@ export interface MarkovDistributionResult {
         stdLogJump: number;
       }>;
     };
+    /**
+     * Round-4 Idea 3 provenance: `true` when a regime-specific Platt fit
+     * was supplied via `regimePlattFits` AND it shifted the calibrated
+     * P(up) by more than 1e-9. Absent otherwise.
+     */
+    regimePlattApplied?: boolean;
   };
 }
 
@@ -3959,6 +3969,10 @@ export async function computeMarkovDistribution(params: {
   enableHawkesIntensity?: boolean;
   /** Sigma threshold for Hawkes jump detection. Default 3.0. */
   hawkesSigmaThreshold?: number;
+  /** Round-4 Idea 3: post-process calibrated P(up) through a per-regime Platt
+   *  logistic. Pass pre-fitted {@link RegimePlattFits} (e.g. from a held-out
+   *  backtest fold). Pass `undefined` ⇒ no recalibration applied. */
+  regimePlattFits?: RegimePlattFits;
 }): Promise<MarkovDistributionResult> {
   const {
     ticker,
@@ -3995,6 +4009,7 @@ export async function computeMarkovDistribution(params: {
     adwinDelta,
     enableHawkesIntensity,
     hawkesSigmaThreshold,
+    regimePlattFits,
   } = params;
 
   // W3R2 ADWIN trim — opt-in. Default OFF preserves byte-identical behaviour.
@@ -4537,7 +4552,26 @@ export async function computeMarkovDistribution(params: {
   // --- P(up) from both raw and calibrated distributions for confidence scoring ---
   // Raw P(up) reflects model's actual signal strength BEFORE calibration compresses it.
   // This gives a much more discriminative decisiveness score.
-  const calPUp = interpolateSurvival(distribution, currentPrice);
+  let calPUp = interpolateSurvival(distribution, currentPrice);
+
+  // R4 Idea 3: Regime-conditional Platt overlay on calPUp. Default OFF.
+  // When `regimePlattFits` is provided and contains a fit for the current regime,
+  // apply σ(a · logit(calPUp) + b) and shift the distribution by the same delta
+  // to preserve consistency between calPUp and the survival curve.
+  let regimePlattApplied = false;
+  if (regimePlattFits && currentRegime) {
+    const recalibrated = applyRegimePlatt(calPUp, currentRegime, regimePlattFits);
+    if (Math.abs(recalibrated - calPUp) > 1e-9) {
+      const delta = recalibrated - calPUp;
+      for (const pt of distribution) {
+        pt.probability = Math.max(0, Math.min(1, pt.probability + delta));
+        if (pt.lowerBound != null) pt.lowerBound = Math.max(0, Math.min(1, pt.lowerBound + delta));
+        if (pt.upperBound != null) pt.upperBound = Math.max(0, Math.min(1, pt.upperBound + delta));
+      }
+      calPUp = recalibrated;
+      regimePlattApplied = true;
+    }
+  }
 
   // Recent daily volatility (20-day std of daily returns)
   const recentDailyVol = returns.length >= 20
@@ -4889,6 +4923,7 @@ export async function computeMarkovDistribution(params: {
       rndIntegration: rndIntegrationMeta,
       jumpDiffusionApplied: hasJumps,
       jumpDiffusion: jumpDiffusionMeta,
+      regimePlattApplied: regimePlattApplied || undefined,
     }
   };
 }

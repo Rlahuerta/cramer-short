@@ -12,6 +12,7 @@ import {
   type BreakFallbackCandidate,
   type DivergencePenaltySchedule,
 } from '../markov-distribution.js';
+import type { RegimePlattFits } from '../regime-calibrator.js';
 import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,8 @@ export interface WalkForwardConfig {
   enableHawkesIntensity?: boolean;
   /** W3R2 experimental: sigma threshold for Hawkes jump detection. Default 3.0. */
   hawkesSigmaThreshold?: number;
+  /** R4 Idea 3: pre-fitted regime-conditional Platt overlay. Default undefined ⇒ no overlay. */
+  regimePlattFits?: RegimePlattFits;
 }
 
 export interface WalkForwardResult {
@@ -154,6 +157,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         adwinDelta: config.adwinDelta,
         enableHawkesIntensity: config.enableHawkesIntensity,
         hawkesSigmaThreshold: config.hawkesSigmaThreshold,
+        regimePlattFits: config.regimePlattFits,
       });
 
       const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
@@ -195,6 +199,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             adwinDelta: config.adwinDelta,
             enableHawkesIntensity: config.enableHawkesIntensity,
             hawkesSigmaThreshold: config.hawkesSigmaThreshold,
+            regimePlattFits: config.regimePlattFits,
           });
         }
       }
