@@ -17,6 +17,8 @@ from typing import Any
 import pandas as pd
 import requests
 
+from ..models.jump_diffusion import classify_jump_direction
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -317,6 +319,7 @@ class JumpEventMarket:
     probability: float
     days_to_settlement: int
     question: str
+    jump_direction: str = "unknown"  # P2a — 'up' | 'down' | 'unknown'
 
 
 def extract_jump_event_markets(
@@ -379,12 +382,14 @@ def extract_jump_event_markets(
         if raw_days < 1.0:
             continue
         days_to_settle = max(1, int(-(-raw_days // 1)))  # ceil
+        question = str(row.get("question", ""))
         out.append(
             JumpEventMarket(
                 id=str(row.get("market_id") or row.get("question", "")),
                 probability=p,
                 days_to_settlement=days_to_settle,
-                question=str(row.get("question", "")),
+                question=question,
+                jump_direction=classify_jump_direction(question),
             )
         )
     return out

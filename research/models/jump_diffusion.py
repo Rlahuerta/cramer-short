@@ -16,9 +16,47 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Mapping
+from typing import Iterable, Literal, Mapping
 
 from .rnd import transform_q_to_p
+
+
+# P2a — Direction implied by a Polymarket question (mirrors TS JumpDirection).
+JumpDirection = Literal["up", "down", "unknown"]
+
+
+# P2a — Keyword classifier (mirrors `classifyJumpDirection` in polymarket.ts).
+_DOWN_KEYWORDS = (
+    "crash", "attack", "war", "invasion", "recession", "default",
+    "collapse", "bankrupt", "fail", "drop", "sanction", "plunge",
+    "tariff", "shutdown", "crisis", "sell-off", "selloff", "meltdown",
+)
+_UP_KEYWORDS = (
+    "rate cut", "cut rates", "reach", "hit", "breakthrough", "approve",
+    "approved", "rally", "surge", "deal", "agreement", "signed",
+    "announce", "launch", "merger", "acquisition",
+)
+
+
+def classify_jump_direction(question: str) -> JumpDirection:
+    """Heuristic direction classifier — mirrors TS implementation."""
+    q = question.lower()
+    has_down = any(kw in q for kw in _DOWN_KEYWORDS)
+    has_up = any(kw in q for kw in _UP_KEYWORDS)
+    if has_down and not has_up:
+        return "down"
+    if has_up and not has_down:
+        return "up"
+    return "unknown"
+
+
+def effective_jump_mean(prior_mean: float, direction: JumpDirection | None) -> float:
+    """P2a — Sign-flip a prior log-jump mean according to the implied direction."""
+    if direction == "up":
+        return abs(prior_mean)
+    if direction == "down":
+        return -abs(prior_mean)
+    return prior_mean
 
 # ---------------------------------------------------------------------------
 # Per-asset-class jump-magnitude defaults
@@ -45,6 +83,7 @@ class JumpEventSpec:
     daily_intensity: float  # λ_e per day (already Q→P-converted, capped at 0.95)
     mean_log_jump: float
     std_log_jump: float
+    jump_direction: JumpDirection = "unknown"  # P2a — provenance only
 
 
 def polymarket_prob_to_hazard(p: float, horizon_days: int) -> float:
@@ -73,11 +112,12 @@ def build_jump_event_spec(
     volatility_annual: float,
     prior: Mapping[str, float],
     id: str,
+    jump_direction: JumpDirection = "unknown",
 ) -> JumpEventSpec:
     """Convert a raw Polymarket Q-prob into a fully-specified JumpEventSpec.
 
     Composes Q→P transformation with hazard derivation, then attaches the
-    asset-class jump-size prior.
+    asset-class jump-size prior. P2a — applies directional sign-flip.
     """
     p_physical = transform_q_to_p(
         raw,
@@ -90,8 +130,9 @@ def build_jump_event_spec(
     return JumpEventSpec(
         id=id,
         daily_intensity=daily_intensity,
-        mean_log_jump=float(prior["mean_log_jump"]),
+        mean_log_jump=effective_jump_mean(float(prior["mean_log_jump"]), jump_direction),
         std_log_jump=float(prior["std_log_jump"]),
+        jump_direction=jump_direction,
     )
 
 
@@ -110,7 +151,10 @@ def jump_drift_compensator(events: Iterable[JumpEventSpec]) -> float:
 
 __all__ = [
     "JUMP_DEFAULTS",
+    "JumpDirection",
     "JumpEventSpec",
+    "classify_jump_direction",
+    "effective_jump_mean",
     "polymarket_prob_to_hazard",
     "build_jump_event_spec",
     "jump_drift_compensator",

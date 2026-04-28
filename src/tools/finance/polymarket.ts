@@ -874,6 +874,43 @@ export interface JumpEventMarket {
   daysToSettlement: number;
   /** Original question text — handy for provenance/debug logs. */
   question: string;
+  /** P2a — heuristic direction inferred from question wording. */
+  jumpDirection: JumpDirection;
+}
+
+/** P2a — Direction of the implied jump if the YES outcome materialises. */
+export type JumpDirection = 'up' | 'down' | 'unknown';
+
+/**
+ * Heuristic classifier — returns the *most likely* asset-price direction
+ * if the prediction-market YES outcome resolves true.
+ *
+ * Polymarket questions about war, sanctions, recession, defaults,
+ * crashes, etc. are downside catalysts. Questions about rate cuts,
+ * trade deals, regulatory approvals, breakthroughs are upside catalysts.
+ *
+ * Keyword lists are intentionally short and high-precision; ambiguous
+ * questions return 'unknown' so the MC engine falls back to the
+ * direction-neutral prior.
+ */
+const _DOWN_KEYWORDS = [
+  'crash', 'attack', 'war', 'invasion', 'recession', 'default',
+  'collapse', 'bankrupt', 'fail', 'drop', 'sanction', 'plunge',
+  'tariff', 'shutdown', 'crisis', 'sell-off', 'selloff', 'meltdown',
+];
+const _UP_KEYWORDS = [
+  'rate cut', 'cut rates', 'reach', 'hit', 'breakthrough', 'approve',
+  'approved', 'rally', 'surge', 'deal', 'agreement', 'signed',
+  'announce', 'launch', 'merger', 'acquisition',
+];
+
+export function classifyJumpDirection(question: string): JumpDirection {
+  const q = question.toLowerCase();
+  const hasDown = _DOWN_KEYWORDS.some((kw) => q.includes(kw));
+  const hasUp = _UP_KEYWORDS.some((kw) => q.includes(kw));
+  if (hasDown && !hasUp) return 'down';
+  if (hasUp && !hasDown) return 'up';
+  return 'unknown';
 }
 
 export interface ExtractJumpEventOptions {
@@ -912,6 +949,7 @@ export function extractJumpEventMarkets(
       probability: m.probability,
       daysToSettlement,
       question: m.question,
+      jumpDirection: classifyJumpDirection(m.question),
     });
   }
   return out;

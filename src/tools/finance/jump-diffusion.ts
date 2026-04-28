@@ -23,6 +23,27 @@
  */
 
 import { transformQToP } from './rnd-integration.js';
+import type { JumpDirection } from './polymarket.js';
+
+export type { JumpDirection };
+
+/**
+ * P2a — Apply directional sign-flip to a prior log-jump mean.
+ *
+ * Asset-class priors in {@link JUMP_DEFAULTS} default to **negative**
+ * means because Polymarket tail-risk markets cluster on the downside.
+ * When a market explicitly implies an *up* catalyst (rate cut, deal,
+ * approval, breakthrough), flip the prior's magnitude positive.
+ * `unknown` and `undefined` preserve the prior unchanged.
+ */
+export function effectiveJumpMean(
+  priorMean: number,
+  direction: JumpDirection | undefined,
+): number {
+  if (direction === 'up') return Math.abs(priorMean);
+  if (direction === 'down') return -Math.abs(priorMean);
+  return priorMean;
+}
 
 /**
  * Per-asset-class jump-magnitude defaults.
@@ -72,6 +93,8 @@ export interface JumpEventSpec {
   meanLogJump: number;
   /** Std of log(J) for this event. */
   stdLogJump: number;
+  /** P2a — direction implied by the source question, for provenance. */
+  jumpDirection?: JumpDirection;
 }
 
 /**
@@ -125,14 +148,16 @@ export function buildJumpEventSpec(
   volatilityAnnual: number,
   prior: JumpPrior,
   id: string,
+  jumpDirection: JumpDirection = 'unknown',
 ): JumpEventSpec {
   const pPhysical = transformQToP(raw, historicalDriftAnnual, riskFreeRate, volatilityAnnual, horizonDays);
   const dailyIntensity = polymarketProbToHazard(pPhysical, horizonDays);
   return {
     id,
     dailyIntensity,
-    meanLogJump: prior.meanLogJump,
+    meanLogJump: effectiveJumpMean(prior.meanLogJump, jumpDirection),
     stdLogJump: prior.stdLogJump,
+    jumpDirection,
   };
 }
 
