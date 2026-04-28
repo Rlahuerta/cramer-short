@@ -28,10 +28,12 @@ from .rnd import transform_q_to_p
 # over 2020-01-01..2024-12-31.  See TS mirror for design notes.
 
 JUMP_DEFAULTS: Mapping[str, Mapping[str, float]] = {
-    "etf":       {"mean_log_jump": -0.04, "std_log_jump": 0.02},
-    "equity":    {"mean_log_jump": -0.05, "std_log_jump": 0.03},
-    "crypto":    {"mean_log_jump": -0.08, "std_log_jump": 0.05},
-    "commodity": {"mean_log_jump": -0.05, "std_log_jump": 0.03},
+    "etf":         {"mean_log_jump": -0.04, "std_log_jump": 0.02},
+    "equity":      {"mean_log_jump": -0.05, "std_log_jump": 0.03},
+    "crypto":      {"mean_log_jump": -0.08, "std_log_jump": 0.05},
+    "commodity":   {"mean_log_jump": -0.05, "std_log_jump": 0.03},
+    # War, sanctions, political shock — spec: ±10% expected impact, wide uncertainty.
+    "geopolitics": {"mean_log_jump": -0.10, "std_log_jump": 0.06},
 }
 
 

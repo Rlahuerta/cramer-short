@@ -45,6 +45,23 @@ describe('extractJumpEventMarkets', () => {
     expect(out).toHaveLength(0);
   });
 
+  test('default minVolume24h floor is 5000 — rejects 4999 without explicit option', () => {
+    // The 5_000 threshold is the trust gate; callers should not need to specify it
+    const out = extractJumpEventMarkets(
+      [mkt({ volume24h: 4_999 })],
+      { horizonDate: HORIZON, now: NOW },
+    );
+    expect(out).toHaveLength(0);
+  });
+
+  test('default minVolume24h floor allows exactly 5000', () => {
+    const out = extractJumpEventMarkets(
+      [mkt({ volume24h: 5_000 })],
+      { horizonDate: HORIZON, now: NOW },
+    );
+    expect(out).toHaveLength(1);
+  });
+
   test('drops too-young markets', () => {
     const out = extractJumpEventMarkets(
       [mkt({ ageDays: 1 }), mkt({ ageDays: undefined })],

@@ -194,3 +194,51 @@ describe('Config schema validation (Zod)', () => {
     expect((result.memory as Record<string, unknown> | undefined)?.embeddingModel).toBe('text-embedding-3-small');
   });
 });
+
+// ---------------------------------------------------------------------------
+// §5.4 — forecasting block in ConfigSchema
+// ---------------------------------------------------------------------------
+describe('ConfigSchema — forecasting block', () => {
+  it('accepts valid forecasting block with all fields', () => {
+    const raw = {
+      forecasting: {
+        enableJumpDiffusion: true,
+        qToPMprCap: 2.0,
+        enableMSM: false,
+      },
+    };
+    const result = validateAndSanitizeConfig(raw);
+    expect((result as Record<string, unknown>).forecasting).toBeDefined();
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBe(true);
+    expect(f.qToPMprCap).toBe(2.0);
+    expect(f.enableMSM).toBe(false);
+  });
+
+  it('accepts forecasting with only enableJumpDiffusion', () => {
+    const raw = { forecasting: { enableJumpDiffusion: false } };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBe(false);
+  });
+
+  it('strips invalid qToPMprCap (negative)', () => {
+    const raw = { forecasting: { enableJumpDiffusion: false, qToPMprCap: -1 } };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.qToPMprCap).toBeUndefined();
+  });
+
+  it('strips non-boolean enableJumpDiffusion', () => {
+    const raw = { forecasting: { enableJumpDiffusion: 'yes' } };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBeUndefined();
+  });
+
+  it('preserves other top-level keys alongside forecasting', () => {
+    const raw = { maxIterations: 30, forecasting: { enableJumpDiffusion: true } };
+    const result = validateAndSanitizeConfig(raw);
+    expect(result.maxIterations).toBe(30);
+  });
+});

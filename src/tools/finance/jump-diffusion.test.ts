@@ -36,7 +36,7 @@ describe('polymarketProbToHazard', () => {
 
 describe('JUMP_DEFAULTS', () => {
   test('all asset classes present with negative meanLogJump', () => {
-    for (const cls of ['etf', 'equity', 'crypto', 'commodity'] as const) {
+    for (const cls of ['etf', 'equity', 'crypto', 'commodity', 'geopolitics'] as const) {
       expect(JUMP_DEFAULTS[cls].meanLogJump).toBeLessThan(0);
       expect(JUMP_DEFAULTS[cls].stdLogJump).toBeGreaterThan(0);
     }
@@ -44,6 +44,13 @@ describe('JUMP_DEFAULTS', () => {
   test('crypto has the largest jump magnitude', () => {
     expect(Math.abs(JUMP_DEFAULTS.crypto.meanLogJump))
       .toBeGreaterThan(Math.abs(JUMP_DEFAULTS.etf.meanLogJump));
+  });
+  test('geopolitics has meanLogJump ≤ −0.10 (tail-risk spec)', () => {
+    expect(JUMP_DEFAULTS.geopolitics.meanLogJump).toBeLessThanOrEqual(-0.10);
+  });
+  test('geopolitics stdLogJump is wider than equity (reflects uncertainty)', () => {
+    expect(JUMP_DEFAULTS.geopolitics.stdLogJump)
+      .toBeGreaterThanOrEqual(JUMP_DEFAULTS.equity.stdLogJump);
   });
 });
 

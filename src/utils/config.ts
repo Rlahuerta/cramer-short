@@ -34,6 +34,18 @@ export const ConfigSchema = z.object({
   cacheTtlMs: z.number().min(60000).max(86400000).optional(),
   parallelToolLimit: z.number().min(0).max(10).optional(),
   llmCallTimeoutMs: z.number().min(30000).max(600000).optional(),
+  /**
+   * Forecasting pipeline settings (markov_distribution tool).
+   * All fields are optional; defaults are applied by the respective modules.
+   */
+  forecasting: z.object({
+    /** Enable Merton jump-diffusion step in Monte Carlo trajectory. Default: false. */
+    enableJumpDiffusion: z.boolean().optional(),
+    /** Cap on the Market Price of Risk (Sharpe Ratio) used in Q→P transformation. Default: 1.5. */
+    qToPMprCap: z.number().min(0.1).max(10).optional(),
+    /** Enable Markov-Switching Multifractal volatility model. Default: false. */
+    enableMSM: z.boolean().optional(),
+  }).optional(),
 }).passthrough(); // allow unknown keys without throwing
 
 export type Config = z.infer<typeof ConfigSchema> & Record<string, unknown>;

@@ -46,11 +46,13 @@ export interface JumpPrior {
   stdLogJump: number;
 }
 
-export const JUMP_DEFAULTS: Record<'etf' | 'equity' | 'crypto' | 'commodity', JumpPrior> = {
-  etf:       { meanLogJump: -0.04, stdLogJump: 0.02 },
-  equity:    { meanLogJump: -0.05, stdLogJump: 0.03 },
-  crypto:    { meanLogJump: -0.08, stdLogJump: 0.05 },
-  commodity: { meanLogJump: -0.05, stdLogJump: 0.03 },
+export const JUMP_DEFAULTS: Record<'etf' | 'equity' | 'crypto' | 'commodity' | 'geopolitics', JumpPrior> = {
+  etf:         { meanLogJump: -0.04, stdLogJump: 0.02 },
+  equity:      { meanLogJump: -0.05, stdLogJump: 0.03 },
+  crypto:      { meanLogJump: -0.08, stdLogJump: 0.05 },
+  commodity:   { meanLogJump: -0.05, stdLogJump: 0.03 },
+  /** War, sanctions, political shock — spec: ±10% expected impact, wide uncertainty. */
+  geopolitics: { meanLogJump: -0.10, stdLogJump: 0.06 },
 };
 
 /**

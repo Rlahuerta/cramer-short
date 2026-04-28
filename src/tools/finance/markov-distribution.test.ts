@@ -6307,3 +6307,76 @@ describe('computeMarkovDistribution — regime-specific sigma provenance', () =>
     expect(result.metadata.regimeSpecificSigmaActive).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// §5.3 — jumpDiffusionApplied boolean in metadata
+// ---------------------------------------------------------------------------
+describe('metadata.jumpDiffusionApplied flag', () => {
+  const prices = Array.from({ length: 120 }, (_, i) => 100 * Math.exp(i * 0.001));
+
+  it('is false by default (enableJumpDiffusion not set)', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 10,
+      currentPrice: 120,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    expect(result.metadata.jumpDiffusionApplied).toBe(false);
+  });
+
+  it('is false when enableJumpDiffusion is explicitly false', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 10,
+      currentPrice: 120,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableJumpDiffusion: false,
+    });
+    expect(result.metadata.jumpDiffusionApplied).toBe(false);
+  });
+
+  it('is true when enableJumpDiffusion is true and jumpEvents are provided', async () => {
+    const result = await computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 10,
+      currentPrice: 120,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableJumpDiffusion: true,
+      jumpEvents: [{ id: 'test-event', dailyIntensity: 0.01, meanLogJump: -0.05, stdLogJump: 0.02 }],
+    });
+    expect(result.metadata.jumpDiffusionApplied).toBe(true);
+  });
+
+  it('jumpDiffusion provenance block is present iff jumpDiffusionApplied is true and trajectory requested', async () => {
+    const noJump = await computeMarkovDistribution({
+      ticker: 'TEST', horizon: 10, currentPrice: 120,
+      historicalPrices: prices, polymarketMarkets: [],
+    });
+    expect(noJump.metadata.jumpDiffusion).toBeUndefined();
+    expect(noJump.metadata.jumpDiffusionApplied).toBe(false);
+
+    // jumpDiffusionApplied is true regardless of trajectory
+    const withJumpNoTraj = await computeMarkovDistribution({
+      ticker: 'TEST', horizon: 10, currentPrice: 120,
+      historicalPrices: prices, polymarketMarkets: [],
+      enableJumpDiffusion: true,
+      jumpEvents: [{ id: 'ev', dailyIntensity: 0.01, meanLogJump: -0.05, stdLogJump: 0.02 }],
+    });
+    expect(withJumpNoTraj.metadata.jumpDiffusionApplied).toBe(true);
+    // provenance detail block only populated when trajectory is also requested
+    expect(withJumpNoTraj.metadata.jumpDiffusion).toBeUndefined();
+
+    const withJumpWithTraj = await computeMarkovDistribution({
+      ticker: 'TEST', horizon: 10, currentPrice: 120,
+      historicalPrices: prices, polymarketMarkets: [],
+      trajectory: true,
+      enableJumpDiffusion: true,
+      jumpEvents: [{ id: 'ev', dailyIntensity: 0.01, meanLogJump: -0.05, stdLogJump: 0.02 }],
+    });
+    expect(withJumpWithTraj.metadata.jumpDiffusionApplied).toBe(true);
+    expect(withJumpWithTraj.metadata.jumpDiffusion).toBeDefined();
+  });
+});

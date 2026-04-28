@@ -47,13 +47,21 @@ def test_hazard_horizon_floor():
 # ---------------------------------------------------------------------------
 
 def test_defaults_all_negative_drift():
-    for cls in ("etf", "equity", "crypto", "commodity"):
+    for cls in ("etf", "equity", "crypto", "commodity", "geopolitics"):
         assert JUMP_DEFAULTS[cls]["mean_log_jump"] < 0
         assert JUMP_DEFAULTS[cls]["std_log_jump"] > 0
 
 
 def test_crypto_largest_magnitude():
     assert abs(JUMP_DEFAULTS["crypto"]["mean_log_jump"]) > abs(JUMP_DEFAULTS["etf"]["mean_log_jump"])
+
+
+def test_geopolitics_at_least_minus_10pct():
+    assert JUMP_DEFAULTS["geopolitics"]["mean_log_jump"] <= -0.10
+
+
+def test_geopolitics_wider_than_equity():
+    assert JUMP_DEFAULTS["geopolitics"]["std_log_jump"] >= JUMP_DEFAULTS["equity"]["std_log_jump"]
 
 
 # ---------------------------------------------------------------------------

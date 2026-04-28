@@ -40,6 +40,8 @@
 | Observable Markov | `markov-distribution.ts:3947-4011` | `research/models/markov.py` | 02_Markov_Engine |
 | Gaussian HMM | `hmm.ts` | `research/models/hmm.py` | 10_HMM_Regimes |
 | Trajectory | `markov-distribution.ts` | `research/models/trajectory.py` | 08_Trajectory |
+| **Jump-diffusion** | **`jump-diffusion.ts`** | **`research/models/jump_diffusion.py`** | — |
+| Q→P transformation | `rnd-integration.ts` | `research/models/rnd.py` | — |
 | Polymarket signal | `polymarket-forecast.ts` | `research/models/ensemble.py` | 03_Polymarket_Signals |
 | Ensemble blend | `ensemble.ts` | `research/models/ensemble.py` | 04_Ensemble_Blending |
 | Walk-forward backtest | `markov-backtest.integration.test.ts` | `research/backtest/walk_forward.py` | 09_Backtest |
@@ -389,7 +391,110 @@ Before approving changes to the forecasting subsystem, verify:
 
 ---
 
-## 10. References
+## 10. Merton Jump-Diffusion MC Step (Phase B)
+
+### 10.1 Overview
+
+`src/tools/finance/jump-diffusion.ts` (mirror: `research/models/jump_diffusion.py`) adds an optional
+compound Poisson jump term to the trajectory Monte Carlo, implementing the Merton (1976) model:
+
+```
+dS_t / S_t = (μ − λ·κ) dt + σ dW_t + (J − 1) dN_t
+```
+
+- `N_t` — Poisson process; per-event intensity `λ_e` (jumps / day).
+- `log(J) ~ N(μ_J, σ_J²)` — log-normal jump size.
+- `κ = exp(μ_J + σ_J²/2) − 1` — expected percentage jump.
+- `λ·κ` — **drift compensator** that keeps `E[dS/S] = μ dt` without double-counting the
+  expected jump impact.
+
+### 10.2 `jumpSpec` Parameter Contract
+
+`computeTrajectory` accepts an optional 12th argument `jumpSpec?: JumpEventSpec[]`.
+
+```typescript
+interface JumpEventSpec {
+  id: string;           // provenance (e.g. Polymarket slug)
+  dailyIntensity: number;  // λ_e — physical-measure, post Q→P transform
+  meanLogJump: number;  // μ_J — usually negative (down-jump)
+  stdLogJump: number;   // σ_J — uncertainty in jump size
+}
+```
+
+**`hasJumps` gate invariant:**  
+If `jumpSpec` is `undefined` or empty, the `hasJumps` flag is `false`. No extra RNG calls are
+made; the trajectory is byte-identical to the pre-jump-diffusion path. This preserves all 453
+existing `markov-distribution` trajectory test assertions.
+
+### 10.3 Drift Compensator
+
+`jumpDriftCompensator(events)` returns `Σ_e λ_e · (exp(μ_J,e + σ_J,e²/2) − 1)`.
+
+This value is subtracted from the per-step drift *before* the Brownian term is added, so the
+unconditional expected daily return stays constant regardless of whether a jump fires.
+
+### 10.4 Polymarket → λ Pipeline
+
+```
+Polymarket price (Q-measure)
+  ↓ transformQToP(qProb, drift, rf, σ, days)    [rnd-integration.ts]
+P-measure event probability
+  ↓ polymarketProbToHazard(pProb, horizon)       [jump-diffusion.ts]
+Daily Poisson intensity λ_e = −ln(1 − p) / horizon
+```
+
+The Q→P step must precede the hazard conversion; reversing the order re-introduces the
+systematic bearish bias that Phase A removes.
+
+### 10.5 Default Priors (`JUMP_DEFAULTS`)
+
+| Asset class | `meanLogJump` | `stdLogJump` | Calibration source |
+|---|---|---|---|
+| `etf` | −0.04 | 0.02 | SPY/QQQ 90-day tail percentile, 2020–2024 |
+| `equity` | −0.05 | 0.03 | Single-stock 90-day tail percentile |
+| `crypto` | −0.08 | 0.05 | BTC/ETH 90-day tail percentile |
+| `commodity` | −0.05 | 0.03 | GLD/USO 90-day tail percentile |
+| `geopolitics` | −0.10 | 0.06 | Theory-based (±10% shock, wide uncertainty) |
+
+### 10.6 Metadata Fields
+
+When `enableJumpDiffusion: true`:
+- `metadata.jumpDiffusionApplied: boolean` — always set; `true` iff jump spec was active.
+- `metadata.jumpDiffusion?: { compensatorPerDay, events[] }` — populated only when
+  `trajectory: true` is also set; provides per-event provenance for audit.
+
+### 10.7 Activation
+
+Set `params.enableJumpDiffusion = true` and provide a `jumpEvents` array in
+`computeMarkovDistribution`. The feature defaults to **off** to preserve backward
+compatibility with all existing callers.
+
+To surface Polymarket markets as jump events, call `extractJumpEventMarkets()` (in
+`polymarket.ts`) to filter the raw market list, then `buildJumpEventSpec()` (in
+`jump-diffusion.ts`) to apply the Q→P transform and hazard conversion in one step.
+
+### 10.8 Test Coverage
+
+| File | Count | What it tests |
+|---|---|---|
+| `jump-diffusion.test.ts` | 13 + 4 = 17 | Pure-math helpers + geopolitics default |
+| `jump-diffusion.parity.test.ts` | 5 | TS ↔ Python numerical parity |
+| `polymarket-jump-extract.test.ts` | 9 | `extractJumpEventMarkets` quality filters |
+| `markov-distribution.test.ts` | 4 | `jumpDiffusionApplied` metadata flag |
+| `research/tests/test_jump_diffusion.py` | 13 + 4 = 17 | Python mirror |
+
+### 10.9 Open Tasks (before enabling in production)
+
+- **B7** — Re-run walk-forward backtest harness with `enableJumpDiffusion: true` and one
+  representative `jumpEvents` config. If avg P(up) drifts > 1 pp versus the jump-free
+  baseline, recalibrate `YES_BIAS_MULTIPLIER` in `src/utils/ensemble.ts`.
+- **§5.4** — `settings.json` `forecasting.enableJumpDiffusion` is now schema-validated
+  but not yet wired through `computeMarkovDistribution` as a default override; callers
+  must pass `params.enableJumpDiffusion` explicitly.
+
+---
+
+## 11. References
 
 - `docs/markov-prediction-guide.md` — User-facing prediction guide
 - `docs/markov-when-to-use.md` — When to use (and not use) the Markov tool

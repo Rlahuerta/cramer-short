@@ -613,11 +613,16 @@ export interface MarkovDistributionResult {
       qualityScore: number;
     };
     /**
+     * Whether the Merton jump-diffusion step was active for this run.
+     * Always set; `true` iff `enableJumpDiffusion` was set and at least
+     * one `jumpEvents` entry was provided.
+     */
+    jumpDiffusionApplied: boolean;
+    /**
      * Idea 2 — Polymarket-informed jump-diffusion provenance.  Present only
-     * when `enableJumpDiffusion: true` and at least one jump event was active
-     * during this run.  `compensator` is the daily Σ_e λ_e·κ_e subtracted from
-     * the regime drift; `events` echoes the per-event intensity and magnitudes
-     * actually consumed by the trajectory MC.
+     * when `jumpDiffusionApplied` is `true`.  `compensatorPerDay` is the
+     * daily Σ_e λ_e·κ_e subtracted from the regime drift; `events` echoes
+     * the per-event intensity and magnitudes actually consumed by the MC.
      */
     jumpDiffusion?: {
       compensatorPerDay: number;
@@ -4542,13 +4547,16 @@ export async function computeMarkovDistribution(params: {
   });
 
   // --- Trajectory computation (optional day-by-day forecast) ---
+  // hasJumps reflects user intent — whether jump-diffusion was requested,
+  // independent of whether a trajectory was also requested.
+  const hasJumps = params.enableJumpDiffusion === true &&
+    Array.isArray(params.jumpEvents) && params.jumpEvents.length > 0;
+
   let trajectoryResult: TrajectoryPoint[] | undefined;
   let jumpDiffusionMeta: { compensatorPerDay: number; events: Array<{ id: string; dailyIntensity: number; meanLogJump: number; stdLogJump: number }> } | undefined;
   if (params.trajectory) {
     const trajDays = Math.min(30, Math.max(1, params.trajectoryDays ?? horizon));
-    const activeJumpSpec = (params.enableJumpDiffusion === true && params.jumpEvents && params.jumpEvents.length > 0)
-      ? params.jumpEvents
-      : undefined;
+    const activeJumpSpec = hasJumps ? params.jumpEvents : undefined;
     if (activeJumpSpec) {
       jumpDiffusionMeta = {
         compensatorPerDay: jumpDriftCompensator(activeJumpSpec),
@@ -4802,6 +4810,7 @@ export async function computeMarkovDistribution(params: {
       breakFallbackCandidateId: breakFallbackCandidate?.id ?? undefined,
       breakFallbackMode: (breakResult.detected && breakFallbackCandidate) ? breakFallbackCandidate.mode : undefined,
       rndIntegration: rndIntegrationMeta,
+      jumpDiffusionApplied: hasJumps,
       jumpDiffusion: jumpDiffusionMeta,
     }
   };
