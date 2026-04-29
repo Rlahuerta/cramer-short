@@ -27,7 +27,7 @@ import { fetchBinanceDailyCloses } from './binance.js';
 import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
 import { extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
-import { transformQToP, transformQToPWithShift, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix, DEFAULT_MPR_CAP } from './rnd-integration.js';
+import { transformQToP, transformQToPWithShift, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix, DEFAULT_MPR_CAP, applyLongshotShrinkage } from './rnd-integration.js';
 import { recalibratePolymarketPrice, type Domain } from './calibration-offsets.js';
 import {
   type JumpEventSpec,
@@ -48,6 +48,7 @@ import {
 } from './regime-calibrator.js';
 import { computeGarchScales } from './garch-scales.js';
 import { estimateCrossAssetBias } from './cross-asset-lasso.js';
+import { computeTransitionEntropy, entropyZToCiScale } from './transition-entropy.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -628,6 +629,9 @@ export interface MarkovDistributionResult {
       mprUsed: number;
       meanZShift: number;
       qualityScore: number;
+      longshotShrinkageApplied?: boolean;
+      longshotShrinkageCount?: number;
+      maxLongshotTailDistance?: number;
     };
     /**
      * Whether the Merton jump-diffusion step was active for this run.
@@ -657,6 +661,11 @@ export interface MarkovDistributionResult {
      */
     regimePlattApplied?: boolean;
     garchVolApplied?: boolean;
+    transitionEntropy?: number;
+    transitionEntropyNorm?: number;
+    transitionEntropyZ?: number | null;
+    entropyCiScale?: number;
+    entropyCiModulationApplied?: boolean;
     kswinTrim?: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number };
     crossAssetBias?: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number };
   };
@@ -2577,6 +2586,7 @@ export function computeHorizonDriftVol(
   startMixture?: Record<RegimeState, number>,
   regimeSpecificSigma?: boolean,
   regimeSpecificSigmaThreshold?: number,
+  garchScales?: readonly number[],
 ): { mu_n: number; sigma_n: number } {
   const Pn = matPow(P, horizon);
   
@@ -2631,9 +2641,19 @@ export function computeHorizonDriftVol(
     sigma_eff = sigma_obs;
   }
 
+  let sigma_n = sigma_eff * Math.sqrt(horizon);
+  if (garchScales && garchScales.length > 0) {
+    let varianceScale = 0;
+    for (let d = 0; d < horizon; d++) {
+      const k = garchScales[d] ?? 1;
+      varianceScale += Number.isFinite(k) && k > 0 ? k * k : 1;
+    }
+    sigma_n = sigma_eff * Math.sqrt(varianceScale);
+  }
+
   return {
     mu_n: horizon * (mu_eff + momentumAdjustment),
-    sigma_n: sigma_eff * Math.sqrt(horizon),
+    sigma_n,
   };
 }
 
@@ -2879,6 +2899,8 @@ export function interpolateDistribution(
   regimeSpecificSigmaThreshold?: number,
   /** Number of historical returns used to estimate drift/vol; controls MC perturbation scale */
   sampleSize?: number,
+  /** Optional per-day GARCH volatility multipliers for distribution/CI variance. */
+  garchScales?: readonly number[],
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -2915,7 +2937,7 @@ export function interpolateDistribution(
   // Compute regime-weighted drift and vol via shared helper
   const { mu_n, sigma_n } = computeHorizonDriftVol(
     horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
-    regimeSpecificSigma, regimeSpecificSigmaThreshold,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales,
   );
 
   // Nearest anchor lookup helper with distance-based dampening.
@@ -3461,6 +3483,18 @@ export function interpolateSurvival(
     }
   }
   return 0.0;
+}
+
+function zScoreAgainstHistory(history: readonly number[] | undefined, value: number): number | null {
+  if (!history || history.length < 5) return null;
+  let mean = 0;
+  for (const v of history) mean += v;
+  mean /= history.length;
+  let sse = 0;
+  for (const v of history) sse += (v - mean) ** 2;
+  const std = Math.sqrt(sse / history.length);
+  if (!(std > 1e-9)) return 0;
+  return (value - mean) / std;
 }
 
 /**
@@ -4010,6 +4044,14 @@ export async function computeMarkovDistribution(params: {
    *  but `garchRegimeCeiling` is omitted; preserves legacy [0.33,3.0]
    *  clamp when both are absent. */
   garchRegimeCeiling?: { calm: number; turbulent: number };
+  /** R5 Idea #14 — apply transition-entropy z-score as a CI width scalar. */
+  enableEntropyCiModulation?: boolean;
+  /** Rolling prior entropy values supplied by walk-forward state. */
+  transitionEntropyHistory?: readonly number[];
+  /** Entropy CI sensitivity. Default 0.15. */
+  entropyKappa?: number;
+  /** R5 Idea #11 — apply favourite/longshot shrinkage after Q→P conversion. Default false for behaviour safety. */
+  enableLongshotShrinkage?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
    *  Default false ⇒ byte-identical to pre-Phase-C. */
   enableKswinTrim?: boolean;
@@ -4063,6 +4105,10 @@ export async function computeMarkovDistribution(params: {
     enableGarchVol,
     garchHorizonCap,
     garchRegimeCeiling,
+    enableEntropyCiModulation,
+    transitionEntropyHistory,
+    entropyKappa,
+    enableLongshotShrinkage,
     enableKswinTrim,
     kswinAlpha,
     enableCrossAssetBias,
@@ -4449,6 +4495,9 @@ export async function computeMarkovDistribution(params: {
     mprUsed: number;
     meanZShift: number;
     qualityScore: number;
+    longshotShrinkageApplied?: boolean;
+    longshotShrinkageCount?: number;
+    maxLongshotTailDistance?: number;
   } | undefined;
 
   const highTrustAnchors = polymarketAnchors.filter(a => a.trustScore === 'high');
@@ -4468,7 +4517,14 @@ export async function computeMarkovDistribution(params: {
     const shiftRecords = recalibratedYes.map(q =>
       transformQToPWithShift(q, historicalDrift, riskFreeRate, Math.max(volatility, 1e-6), horizon),
     );
-    const pProbs = shiftRecords.map(r => r.pProb);
+    const shrinkRecords = enableLongshotShrinkage === true
+      ? shiftRecords.map(r => applyLongshotShrinkage(r.pProb))
+      : undefined;
+    const pProbs = shrinkRecords ? shrinkRecords.map(r => r.p) : shiftRecords.map(r => r.pProb);
+    const longshotShrinkageCount = shrinkRecords?.filter(r => r.applied).length ?? 0;
+    const maxLongshotTailDistance = shrinkRecords && shrinkRecords.length > 0
+      ? Math.max(...shrinkRecords.map(r => r.tailDistance))
+      : undefined;
     const meanZShift = shiftRecords.reduce((s, r) => s + r.zShift, 0) / Math.max(shiftRecords.length, 1);
     const fit = fitLognormalFromStrikes(strikes, pProbs, currentPrice);
 
@@ -4492,12 +4548,42 @@ export async function computeMarkovDistribution(params: {
         mprUsed: shiftRecords[0]?.mprUsed ?? 0,
         meanZShift,
         qualityScore,
+        longshotShrinkageApplied: longshotShrinkageCount > 0 || undefined,
+        longshotShrinkageCount: longshotShrinkageCount > 0 ? longshotShrinkageCount : undefined,
+        maxLongshotTailDistance: maxLongshotTailDistance ?? undefined,
       };
     }
   }
 
   const effectiveMixture = rndMixture ?? mixture;
   const effectiveP = nudgedP ?? P;
+  const transitionEntropy = computeTransitionEntropy(effectiveP);
+  const transitionEntropyZ = enableEntropyCiModulation === true
+    ? zScoreAgainstHistory(transitionEntropyHistory, transitionEntropy.entropyNorm)
+    : null;
+  const entropyCiScale = transitionEntropyZ === null
+    ? 1.0
+    : entropyZToCiScale(transitionEntropyZ, entropyKappa ?? 0.15);
+  const effectiveCiWidthMultiplier = ciWidthMultiplier * entropyCiScale;
+
+  let garchScalesForDistribution: number[] | undefined;
+  let garchVolApplied = false;
+  if (enableGarchVol === true) {
+    const opts =
+      garchHorizonCap !== undefined || garchRegimeCeiling !== undefined
+        ? {
+            horizonCap: garchHorizonCap,
+            ceiling: garchRegimeCeiling ?? { calm: 1.5, turbulent: 3.0 },
+          }
+        : undefined;
+    const scales = opts
+      ? computeGarchScales(logReturns, horizon, opts)
+      : computeGarchScales(logReturns, horizon);
+    if (scales.length > 0) {
+      garchScalesForDistribution = scales;
+      garchVolApplied = true;
+    }
+  }
 
   // Compute daily volatility for adaptive grid sizing
   const gridDailyVol = returns.length >= 20
@@ -4505,15 +4591,15 @@ export async function computeMarkovDistribution(params: {
     : undefined;
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
-    20, 1000, ciWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
+    20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
-    logReturns.length,
+    logReturns.length, garchScalesForDistribution,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
     horizon, effectiveP, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, effectiveMixture,
-    regimeSpecificSigma, regimeSpecificSigmaThreshold,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScalesForDistribution,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -4742,7 +4828,6 @@ export async function computeMarkovDistribution(params: {
 
   let trajectoryResult: TrajectoryPoint[] | undefined;
   let jumpDiffusionMeta: { compensatorPerDay: number; events: Array<{ id: string; dailyIntensity: number; meanLogJump: number; stdLogJump: number }> } | undefined;
-  let garchVolApplied = false;
   let crossAssetBiasMeta: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number } | undefined;
   if (params.trajectory) {
     const trajDays = Math.min(30, Math.max(1, params.trajectoryDays ?? horizon));
@@ -5051,6 +5136,11 @@ export async function computeMarkovDistribution(params: {
       jumpDiffusion: jumpDiffusionMeta,
       regimePlattApplied: regimePlattApplied || undefined,
       garchVolApplied: garchVolApplied || undefined,
+      transitionEntropy: transitionEntropy.entropyNats,
+      transitionEntropyNorm: transitionEntropy.entropyNorm,
+      transitionEntropyZ,
+      entropyCiScale,
+      entropyCiModulationApplied: entropyCiScale !== 1 ? true : undefined,
       kswinTrim: kswinTrimMeta,
       crossAssetBias: crossAssetBiasMeta,
     }

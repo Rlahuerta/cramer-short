@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import optimize, stats
 
+from research.models.longshot_shrinkage import apply_longshot_shrinkage
 from research.models.markov import STATE_INDEX
 
 
@@ -73,6 +74,7 @@ def transform_q_to_p_with_shift(
     volatility: float,
     days_to_expiry: int,
     mpr_cap: float = DEFAULT_MPR_CAP,
+    apply_longshot: bool = False,
 ) -> dict[str, float]:
     """Diagnostic variant returning the applied Z-shift and MPR provenance."""
     T_years = max(days_to_expiry, 1) / 365.0
@@ -80,13 +82,17 @@ def transform_q_to_p_with_shift(
     cap = max(mpr_cap, 0.0)
     mpr_used = float(np.clip(raw_mpr, -cap, cap))
     z_shift = mpr_used * math.sqrt(T_years)
+    p_prob = transform_q_to_p(
+        q_prob, historical_drift, risk_free_rate, volatility, days_to_expiry, mpr_cap
+    )
+    shrink = apply_longshot_shrinkage(p_prob) if apply_longshot else None
     return {
-        "p_prob": transform_q_to_p(
-            q_prob, historical_drift, risk_free_rate, volatility, days_to_expiry, mpr_cap
-        ),
+        "p_prob": shrink.p if shrink else p_prob,
         "z_shift": z_shift,
         "mpr_used": mpr_used,
         "mpr_raw": float(raw_mpr),
+        "longshot_shrinkage_applied": bool(shrink.applied) if shrink else False,
+        "longshot_tail_distance": float(shrink.tail_distance) if shrink else abs(p_prob - 0.5),
     }
 
 

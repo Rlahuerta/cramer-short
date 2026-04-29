@@ -186,6 +186,7 @@ def compute_trajectory(
     start_mixture: dict[RegimeState, float] | None = None,
     hmm_override: dict[str, float] | None = None,
     jump_spec: list[JumpEventSpec] | None = None,
+    garch_scales: list[float] | None = None,
 ) -> list[TrajectoryPoint]:
     """Compute day-by-day price trajectory via Monte Carlo.
 
@@ -250,6 +251,12 @@ def compute_trajectory(
 
         daily_drifts[d] = mu_obs
         daily_vols[d] = sigma_obs
+
+    if garch_scales:
+        for d in range(min(days, len(garch_scales))):
+            k = garch_scales[d]
+            if math.isfinite(k) and k > 0:
+                daily_vols[d] *= k
 
     # Idea 2 — Merton drift compensator applied once.  Empty/None ⇒ 0 ⇒ no-op.
     has_jumps = bool(jump_spec)

@@ -69,6 +69,78 @@ def test_walk_forward_ci_coverage_reasonable():
         assert 0.2 <= covered <= 1.0
 
 
+def _synthetic_vol_burst_prices() -> list[float]:
+    rng = np.random.default_rng(123)
+    prices = [100.0]
+    for _ in range(180):
+        prices.append(prices[-1] * float(np.exp(0.0002 + rng.normal(0.0, 0.006))))
+    for _ in range(70):
+        prices.append(prices[-1] * float(np.exp(-0.0005 + rng.normal(0.0, 0.055))))
+    return prices
+
+
+def test_walk_forward_garch_changes_high_vol_ci_but_off_path_is_stable():
+    prices = _synthetic_vol_burst_prices()
+
+    np.random.seed(77)
+    baseline = walk_forward(prices, horizon=30, warmup=120, stride=10)
+    np.random.seed(77)
+    explicit_off = walk_forward(
+        prices,
+        horizon=30,
+        warmup=120,
+        stride=10,
+        enable_garch_vol=False,
+        garch_horizon_cap=7,
+        garch_regime_ceiling=(1.1, 1.2),
+    )
+    np.random.seed(77)
+    enabled = walk_forward(
+        prices,
+        horizon=30,
+        warmup=120,
+        stride=10,
+        enable_garch_vol=True,
+        garch_horizon_cap=7,
+        garch_regime_ceiling=(1.1, 1.2),
+    )
+
+    assert not baseline.errors
+    assert not enabled.errors
+    assert [
+        (s.predicted_prob, s.predicted_return, s.ci_lower, s.ci_upper)
+        for s in explicit_off.steps
+    ] == [
+        (s.predicted_prob, s.predicted_return, s.ci_lower, s.ci_upper)
+        for s in baseline.steps
+    ]
+    assert any(s.garch_vol_applied for s in enabled.steps)
+    assert any(
+        abs((e.ci_upper - e.ci_lower) - (b.ci_upper - b.ci_lower)) > 1e-6
+        for e, b in zip(enabled.steps, baseline.steps)
+    )
+
+
+def test_walk_forward_entropy_records_metadata_and_modulates_ci():
+    prices = _synthetic_vol_burst_prices()
+    np.random.seed(91)
+    result = walk_forward(
+        prices,
+        horizon=7,
+        warmup=80,
+        stride=5,
+        enable_entropy_ci_modulation=True,
+        entropy_window_size=5,
+        entropy_kappa=0.5,
+    )
+
+    assert not result.errors
+    assert len(result.steps) > 5
+    assert all(s.transition_entropy_norm is not None for s in result.steps)
+    assert any(s.transition_entropy_z is not None for s in result.steps)
+    assert any(s.entropy_ci_scale is not None and abs(s.entropy_ci_scale - 1.0) > 1e-6 for s in result.steps)
+
+
 # ---------------------------------------------------------------------------
 # HMM integration
 # ---------------------------------------------------------------------------

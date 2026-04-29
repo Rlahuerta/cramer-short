@@ -68,6 +68,20 @@ class TestTransformQToP:
         assert out["mpr_raw"] > 2.0
         assert pytest.approx(out["mpr_used"], abs=1e-6) == 1.5
         assert pytest.approx(out["z_shift"], abs=1e-6) == 1.5 * math.sqrt(30 / 365)
+        assert out["longshot_shrinkage_applied"] is False
+
+    def test_with_shift_can_apply_longshot_shrinkage(self):
+        out = transform_q_to_p_with_shift(
+            0.01,
+            historical_drift=0.05,
+            risk_free_rate=0.05,
+            volatility=0.3,
+            days_to_expiry=30,
+            apply_longshot=True,
+        )
+        assert out["longshot_shrinkage_applied"] is True
+        assert out["p_prob"] == pytest.approx(0.255, abs=1e-6)
+        assert out["longshot_tail_distance"] > 0.45
 
 
 class TestFitLognormalFromStrikes:

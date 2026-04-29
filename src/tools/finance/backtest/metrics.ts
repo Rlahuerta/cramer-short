@@ -37,6 +37,8 @@ export type PUpBandSource = 'calibrated' | 'raw';
 
 export type DivergenceBucketLabel = '<0.05' | '0.05–0.10' | '0.10–0.20' | '≥0.20';
 
+export type EntropyCiScaleBucketLabel = 'tightened' | 'neutral' | 'widened';
+
 // ---------------------------------------------------------------------------
 // Provenance types (PR3E)
 // ---------------------------------------------------------------------------
@@ -86,7 +88,8 @@ export type FailureSliceKey =
   | 'divergence'
   | 'hmmConverged'
   | 'ensembleConsensus'
-  | 'pUpBand';
+  | 'pUpBand'
+  | 'entropyCiScale';
 
 export interface NumericBucketDefinition<Label extends string = string> {
   label: Label;
@@ -197,6 +200,18 @@ export interface BacktestStep {
   breakFallbackMode?: 'hard' | 'blended' | 'blended_capped';
   /** Phase 7 provenance: whether regime-specific sigma was active for this step (backtest-only). */
   regimeSpecificSigmaActive?: boolean;
+  /** R4/R5 provenance: whether GARCH volatility scaling affected the distribution path. */
+  garchVolApplied?: boolean;
+  /** R5 Idea #14 provenance: stationary-weighted transition entropy in nats. */
+  transitionEntropy?: number;
+  /** R5 Idea #14 provenance: transition entropy normalized to [0, 1]. */
+  transitionEntropyNorm?: number;
+  /** R5 Idea #14 provenance: rolling z-score used for CI modulation; null until enough history exists. */
+  transitionEntropyZ?: number | null;
+  /** R5 Idea #14 provenance: multiplier applied to CI half-width. */
+  entropyCiScale?: number;
+  /** R5 Idea #14 provenance: true when entropy changed CI width for this step. */
+  entropyCiModulationApplied?: boolean;
   structuralBreakDivergence?: number | null;
   /** Structural-break divergence from the pre-rerun full-window pass when applicable. */
   originalStructuralBreakDivergence?: number | null;
@@ -677,6 +692,21 @@ export function bucketByPUpBand(
   );
 }
 
+export function bucketByEntropyCiScale(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  const labels = ['tightened', 'neutral', 'widened'] as const satisfies readonly EntropyCiScaleBucketLabel[];
+  return summarizeFixedBuckets(
+    steps,
+    [...labels],
+    step => {
+      const scale = step.entropyCiScale ?? 1;
+      if (scale < 0.999) return 'tightened';
+      if (scale > 1.001) return 'widened';
+      return 'neutral';
+    },
+    holdThreshold,
+  );
+}
+
 export function computeFailureDecomposition(
   steps: BacktestStep[],
   holdThreshold = 0.03,
@@ -698,6 +728,7 @@ export function computeFailureDecomposition(
       { key: 'hmmConverged', rows: bucketByHmmConverged(steps, holdThreshold) },
       { key: 'ensembleConsensus', rows: bucketByEnsembleConsensus(steps, holdThreshold) },
       { key: 'pUpBand', rows: bucketByPUpBand(steps, holdThreshold) },
+      { key: 'entropyCiScale', rows: bucketByEntropyCiScale(steps, holdThreshold) },
     ],
   };
 }

@@ -41,6 +41,7 @@ const FAILURE_WEAKNESS_FAMILY: Record<FailureSliceKey, FailureWeaknessFamily> = 
   hmmConverged: 'break-context',
   ensembleConsensus: 'signal-shape',
   pUpBand: 'signal-shape',
+  entropyCiScale: 'signal-shape',
 };
 
 export interface RankedFailureBucket {

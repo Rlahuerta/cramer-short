@@ -91,6 +91,14 @@ export interface WalkForwardConfig {
   garchHorizonCap?: number;
   /** R5 Idea #5 — regime-conditional ceiling for the GARCH scalar. */
   garchRegimeCeiling?: { calm: number; turbulent: number };
+  /** R5 Idea #14 — enable transition-entropy CI width modulation. */
+  enableEntropyCiModulation?: boolean;
+  /** R5 Idea #14 — rolling history size for entropy z-score state. Default 60. */
+  entropyWindowSize?: number;
+  /** R5 Idea #14 — CI-scale sensitivity to entropy z-score. Default 0.15. */
+  entropyKappa?: number;
+  /** R5 Idea #11 — enable longshot/favorite shrinkage in RND anchor integration. */
+  enableLongshotShrinkage?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -134,6 +142,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
   const steps: BacktestStep[] = [];
   const errors: Array<{ t: number; error: string }> = [];
   const maxT = prices.length - horizon - 1;
+  const entropyHistory: number[] = [];
+  const entropyWindowSize = Math.max(5, config.entropyWindowSize ?? 60);
 
   for (let t = warmup; t <= maxT; t += stride) {
     const histPrices = prices.slice(0, t + 1);
@@ -177,6 +187,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         enableGarchVol: config.enableGarchVol,
         garchHorizonCap: config.garchHorizonCap,
         garchRegimeCeiling: config.garchRegimeCeiling,
+        enableEntropyCiModulation: config.enableEntropyCiModulation,
+        transitionEntropyHistory: entropyHistory,
+        entropyKappa: config.entropyKappa,
+        enableLongshotShrinkage: config.enableLongshotShrinkage,
         enableKswinTrim: config.enableKswinTrim,
         kswinAlpha: config.kswinAlpha,
         enableCrossAssetBias: config.enableCrossAssetBias,
@@ -227,6 +241,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             enableGarchVol: config.enableGarchVol,
             garchHorizonCap: config.garchHorizonCap,
             garchRegimeCeiling: config.garchRegimeCeiling,
+            enableEntropyCiModulation: config.enableEntropyCiModulation,
+            transitionEntropyHistory: entropyHistory,
+            entropyKappa: config.entropyKappa,
+            enableLongshotShrinkage: config.enableLongshotShrinkage,
             enableKswinTrim: config.enableKswinTrim,
             kswinAlpha: config.kswinAlpha,
             enableCrossAssetBias: config.enableCrossAssetBias,
@@ -297,7 +315,18 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         breakFallbackCandidateId: result.metadata.breakFallbackCandidateId,
         breakFallbackMode: result.metadata.breakFallbackMode,
         regimeSpecificSigmaActive: result.metadata.regimeSpecificSigmaActive,
+        garchVolApplied: result.metadata.garchVolApplied,
+        transitionEntropy: result.metadata.transitionEntropy,
+        transitionEntropyNorm: result.metadata.transitionEntropyNorm,
+        transitionEntropyZ: result.metadata.transitionEntropyZ,
+        entropyCiScale: result.metadata.entropyCiScale,
+        entropyCiModulationApplied: result.metadata.entropyCiModulationApplied,
       });
+      const entropyNorm = result.metadata.transitionEntropyNorm;
+      if (typeof entropyNorm === 'number' && Number.isFinite(entropyNorm)) {
+        entropyHistory.push(entropyNorm);
+        if (entropyHistory.length > entropyWindowSize) entropyHistory.shift();
+      }
     } catch (err) {
       errors.push({ t, error: String(err) });
     }

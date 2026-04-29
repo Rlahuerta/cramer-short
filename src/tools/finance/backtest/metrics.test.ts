@@ -369,6 +369,7 @@ describe('computeFailureDecomposition', () => {
       'hmmConverged',
       'ensembleConsensus',
       'pUpBand',
+      'entropyCiScale',
     ]);
 
     const regimeRows = report.slices[0].rows.map(row => ({ label: row.label, count: row.count, fraction: row.fraction }));
@@ -390,7 +391,7 @@ describe('computeFailureDecomposition', () => {
     const report = computeFailureDecomposition([]);
 
     expect(report.totalSteps).toBe(0);
-    expect(report.slices).toHaveLength(14);
+    expect(report.slices).toHaveLength(15);
     expect(report.slices[0].rows).toEqual([]);
     expect(report.slices[1].rows.map(row => row.count)).toEqual([0, 0, 0]);
     expect(report.slices[4].rows.map(row => row.count)).toEqual([0, 0, 0, 0, 0]);
@@ -497,7 +498,7 @@ describe('generateReport', () => {
     expect(report.reliabilityBins).toHaveLength(10);
     expect(typeof report.balancedDirectionalAccuracy).toBe('number');
     expect(typeof report.meanEdge).toBe('number');
-    expect(report.failureDecomposition?.slices).toHaveLength(14);
+    expect(report.failureDecomposition?.slices).toHaveLength(15);
   });
 
   it('aggregates provenanceSummary from steps', () => {
@@ -1100,7 +1101,7 @@ describe('bucketByEnsembleConsensus', () => {
 });
 
 describe('computeFailureDecomposition PR3A slices', () => {
-  it('includes structuralBreak, divergence, new move/trend slices, hmmConverged, ensembleConsensus, pUpBand slices', () => {
+  it('includes structuralBreak, divergence, new move/trend slices, hmmConverged, ensembleConsensus, pUpBand, entropy slices', () => {
     const report = computeFailureDecomposition([
       makeStep({
         structuralBreakDetected: false,
@@ -1121,11 +1122,12 @@ describe('computeFailureDecomposition PR3A slices', () => {
     expect(keys).toContain('hmmConverged');
     expect(keys).toContain('ensembleConsensus');
     expect(keys).toContain('pUpBand');
+    expect(keys).toContain('entropyCiScale');
   });
 
-  it('has 14 slices total after Phase 2A additions', () => {
+  it('has 15 slices total after R5 entropy additions', () => {
     const report = computeFailureDecomposition([]);
-    expect(report.slices).toHaveLength(14);
+    expect(report.slices).toHaveLength(15);
   });
 });
 

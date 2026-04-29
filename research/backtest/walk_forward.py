@@ -17,8 +17,14 @@ from research.models.markov import (
     estimate_transition_matrix,
     compute_markov_forecast,
 )
+from research.models.garch_scales import GarchClampOptions, compute_garch_scales
 from research.models.hmm import ASSET_PROFILES, baum_welch, fit_volatility_hmm, predict
-from research.models.trajectory import compute_horizon_drift_vol, compute_trajectory, RegimeStats
+from research.models.transition_entropy import (
+    EntropyZScoreTracker,
+    compute_transition_entropy,
+    entropy_z_to_ci_scale,
+)
+from research.models.trajectory import compute_trajectory, RegimeStats
 
 
 @dataclass
@@ -32,6 +38,12 @@ class BacktestStep:
     realised_price: float
     direction_correct: bool
     in_ci: bool
+    garch_vol_applied: bool | None = None
+    transition_entropy: float | None = None
+    transition_entropy_norm: float | None = None
+    transition_entropy_z: float | None = None
+    entropy_ci_scale: float | None = None
+    entropy_ci_modulation_applied: bool | None = None
 
 
 @dataclass
@@ -49,6 +61,12 @@ def walk_forward(
     decay_rate: float = 0.97,
     use_hmm: bool = False,
     asset_profile: str = "crypto",
+    enable_garch_vol: bool = False,
+    garch_horizon_cap: int | None = None,
+    garch_regime_ceiling: tuple[float, float] | None = None,
+    enable_entropy_ci_modulation: bool = False,
+    entropy_window_size: int = 60,
+    entropy_kappa: float = 0.15,
 ) -> WalkForwardResult:
     """Run a walk-forward backtest on a price series.
 
@@ -77,6 +95,7 @@ def walk_forward(
         Steps and any errors encountered.
     """
     result = WalkForwardResult()
+    entropy_tracker = EntropyZScoreTracker(max(5, entropy_window_size))
 
     if len(prices) < warmup + horizon + 10:
         result.errors.append(
@@ -102,6 +121,13 @@ def walk_forward(
             current_regime = regimes[-1] if regimes else "sideways"
 
             forecast = compute_markov_forecast(P, current_regime, horizon)
+            entropy = compute_transition_entropy(P)
+            entropy_z: float | None = None
+            entropy_ci_scale = 1.0
+            if enable_entropy_ci_modulation:
+                entropy_z = entropy_tracker.z_score(entropy.entropy_norm)
+                if entropy_z is not None:
+                    entropy_ci_scale = entropy_z_to_ci_scale(entropy_z, entropy_kappa)
 
             # Empirical regime stats from the window
             regime_stats: dict[str, RegimeStats] = {}
@@ -151,6 +177,21 @@ def walk_forward(
                 else:
                     result.errors.append(f"Step {start}: HMM did not converge; using pure Markov forecast")
 
+            garch_scales: list[float] | None = None
+            garch_vol_applied = False
+            if enable_garch_vol:
+                log_returns = [math.log(prices[i] / prices[i - 1]) for i in range(1, start + 1)]
+                opts: GarchClampOptions | None = None
+                if garch_horizon_cap is not None or garch_regime_ceiling is not None:
+                    opts = GarchClampOptions(
+                        horizon_cap=garch_horizon_cap,
+                        ceiling=garch_regime_ceiling or (1.5, 3.0),
+                    )
+                scales = compute_garch_scales(log_returns, horizon, opts)
+                if scales:
+                    garch_scales = scales
+                    garch_vol_applied = True
+
             # Generate trajectory with MC-based CIs (Student-t, not Gaussian)
             traj = compute_trajectory(
                 current_price,
@@ -160,11 +201,17 @@ def walk_forward(
                 current_regime,
                 hmm_override=hmm_override,
                 n_samples=500,
+                garch_scales=garch_scales,
             )
             horizon_point = traj[-1]
             predicted_return = (horizon_point.expected_price - current_price) / current_price
             ci_lower = horizon_point.lower_bound
             ci_upper = horizon_point.upper_bound
+            if entropy_ci_scale != 1.0:
+                center = (ci_lower + ci_upper) / 2.0
+                half_width = (ci_upper - ci_lower) / 2.0
+                ci_lower = center - half_width * entropy_ci_scale
+                ci_upper = center + half_width * entropy_ci_scale
 
             direction_correct = (p_up > 0.5 and realised_return > 0) or (
                 p_up <= 0.5 and realised_return <= 0
@@ -182,8 +229,15 @@ def walk_forward(
                     realised_price=float(realised_price),
                     direction_correct=bool(direction_correct),
                     in_ci=bool(in_ci),
+                    garch_vol_applied=bool(garch_vol_applied),
+                    transition_entropy=float(entropy.entropy_nats),
+                    transition_entropy_norm=float(entropy.entropy_norm),
+                    transition_entropy_z=None if entropy_z is None else float(entropy_z),
+                    entropy_ci_scale=float(entropy_ci_scale),
+                    entropy_ci_modulation_applied=bool(abs(entropy_ci_scale - 1.0) > 1e-12),
                 )
             )
+            entropy_tracker.push(entropy.entropy_norm)
         except Exception as e:
             result.errors.append(f"Step {start}: {e}")
 
