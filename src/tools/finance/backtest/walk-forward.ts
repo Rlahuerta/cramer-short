@@ -87,6 +87,10 @@ export interface WalkForwardConfig {
   regimePlattFits?: RegimePlattFits;
   /** R4 Idea 4: enable GARCH(1,1) per-day vol scalars in trajectory MC. Default false ⇒ byte-identical. */
   enableGarchVol?: boolean;
+  /** R5 Idea #5 — soft-blend GARCH scalars toward 1.0 past this horizon (in days). */
+  garchHorizonCap?: number;
+  /** R5 Idea #5 — regime-conditional ceiling for the GARCH scalar. */
+  garchRegimeCeiling?: { calm: number; turbulent: number };
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -171,6 +175,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         hawkesSigmaThreshold: config.hawkesSigmaThreshold,
         regimePlattFits: config.regimePlattFits,
         enableGarchVol: config.enableGarchVol,
+        garchHorizonCap: config.garchHorizonCap,
+        garchRegimeCeiling: config.garchRegimeCeiling,
         enableKswinTrim: config.enableKswinTrim,
         kswinAlpha: config.kswinAlpha,
         enableCrossAssetBias: config.enableCrossAssetBias,
@@ -219,6 +225,8 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             hawkesSigmaThreshold: config.hawkesSigmaThreshold,
             regimePlattFits: config.regimePlattFits,
             enableGarchVol: config.enableGarchVol,
+            garchHorizonCap: config.garchHorizonCap,
+            garchRegimeCeiling: config.garchRegimeCeiling,
             enableKswinTrim: config.enableKswinTrim,
             kswinAlpha: config.kswinAlpha,
             enableCrossAssetBias: config.enableCrossAssetBias,

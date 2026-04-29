@@ -4002,6 +4002,14 @@ export async function computeMarkovDistribution(params: {
   /** Round-4 Idea 4: enable GARCH(1,1) per-day vol forecast layered onto
    *  trajectory MC σ.  Default false ⇒ byte-identical to pre-Phase-B. */
   enableGarchVol?: boolean;
+  /** R5 Idea #5 — soft-blend GARCH scalars toward 1.0 past this horizon
+   *  (in days). Pass `undefined` to preserve pre-R5 unbounded behaviour. */
+  garchHorizonCap?: number;
+  /** R5 Idea #5 — regime-conditional ceiling for the GARCH scalar.
+   *  Defaults to {calm:1.5, turbulent:3.0} when `garchHorizonCap` is set
+   *  but `garchRegimeCeiling` is omitted; preserves legacy [0.33,3.0]
+   *  clamp when both are absent. */
+  garchRegimeCeiling?: { calm: number; turbulent: number };
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
    *  Default false ⇒ byte-identical to pre-Phase-C. */
   enableKswinTrim?: boolean;
@@ -4053,6 +4061,8 @@ export async function computeMarkovDistribution(params: {
     hawkesSigmaThreshold,
     regimePlattFits,
     enableGarchVol,
+    garchHorizonCap,
+    garchRegimeCeiling,
     enableKswinTrim,
     kswinAlpha,
     enableCrossAssetBias,
@@ -4751,7 +4761,19 @@ export async function computeMarkovDistribution(params: {
     // R4 Phase B — optional GARCH per-day vol scalars (default OFF).
     let garchScalesForTraj: number[] | undefined;
     if (enableGarchVol === true) {
-      const scales = computeGarchScales(logReturns, trajDays);
+      // R5 Idea #5 — opt-in horizon-aware + regime-conditional clamping.
+      // When `garchHorizonCap` or `garchRegimeCeiling` is provided, we
+      // route through the modulated path; otherwise legacy behaviour.
+      const opts =
+        garchHorizonCap !== undefined || garchRegimeCeiling !== undefined
+          ? {
+              horizonCap: garchHorizonCap,
+              ceiling: garchRegimeCeiling ?? { calm: 1.5, turbulent: 3.0 },
+            }
+          : undefined;
+      const scales = opts
+        ? computeGarchScales(logReturns, trajDays, opts)
+        : computeGarchScales(logReturns, trajDays);
       if (scales.length > 0) {
         garchScalesForTraj = scales;
         garchVolApplied = true;
