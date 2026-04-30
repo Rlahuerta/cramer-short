@@ -48,11 +48,22 @@ describe('convergenceTimeFactor', () => {
     expect(convergenceTimeFactor(r)).toBeCloseTo(1.0, 6);
   });
 
-  test('fast convergence (≤7d) ⇒ boost ≈ +15%', () => {
+  test('fast convergence decays linearly from day 1 through day 7', () => {
+    const day1 = convergenceTimeFactor({ converged: true, daysToConverge: 1, direction: 'yes' });
+    const day5 = convergenceTimeFactor({ converged: true, daysToConverge: 5, direction: 'yes' });
+    const day7 = convergenceTimeFactor({ converged: true, daysToConverge: 7, direction: 'yes' });
+
+    expect(day1).toBeCloseTo(1.15, 6);
+    expect(day1).toBeGreaterThan(day5);
+    expect(day5).toBeGreaterThan(day7);
+    expect(day7).toBeGreaterThan(1.0);
+  });
+
+  test('five-day convergence gets a moderate fast-window boost rather than the maximum boost', () => {
     const r: ConvergenceResult = { converged: true, daysToConverge: 5, direction: 'yes' };
     const f = convergenceTimeFactor(r);
-    expect(f).toBeGreaterThan(1.10);
-    expect(f).toBeLessThan(1.20);
+    expect(f).toBeGreaterThan(1.05);
+    expect(f).toBeLessThan(1.08);
   });
 
   test('slow convergence (≥30d) ⇒ damp ≈ −10%', () => {
