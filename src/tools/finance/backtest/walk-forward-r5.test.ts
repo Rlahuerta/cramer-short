@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { computeMarkovDistribution } from '../markov-distribution.js';
 import {
   computeFailureDecomposition,
+  selectiveDirectionalAccuracy,
   sharpness,
   type BacktestStep,
 } from './metrics.js';
@@ -313,5 +314,35 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
     expect(conformalStepView(adaptive).every(step => step.conformalApplied === true)).toBe(true);
     expect(conformalStepView(adaptive).every(step => step.conformalMode === 'normal' || step.conformalMode === 'break')).toBe(true);
     expect(sharpness(adaptive.steps)).toBeLessThanOrEqual(sharpness(baseline.steps) * 1.05);
+  });
+
+  it('restores non-zero selective coverage at 0.45 on a calm BTC synthetic series with rebalanced confidence', async () => {
+    const prices = syntheticCalmPrices();
+    const baseConfig = {
+      ticker: 'BTC-USD',
+      prices,
+      horizon: 7,
+      warmup: 80,
+      stride: 5,
+    } as const;
+
+    const legacy = await withSeed(141, () => walkForward({
+      ...baseConfig,
+      predictionConfidenceMode: 'legacy',
+    }));
+    const rebalanced = await withSeed(141, () => walkForward({
+      ...baseConfig,
+      predictionConfidenceMode: 'rebalanced',
+    }));
+
+    expect(legacy.errors).toHaveLength(0);
+    expect(rebalanced.errors).toHaveLength(0);
+
+    const legacySelective = selectiveDirectionalAccuracy(legacy.steps, 0.45);
+    const rebalancedSelective = selectiveDirectionalAccuracy(rebalanced.steps, 0.45);
+
+    expect(legacySelective.coverage).toBe(0);
+    expect(rebalancedSelective.coverage).toBeGreaterThan(0);
+    expect(rebalancedSelective.selected).toBeGreaterThan(legacySelective.selected);
   });
 });

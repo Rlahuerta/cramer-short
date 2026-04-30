@@ -11,6 +11,7 @@ import {
   type MarkovDistributionResult,
   type BreakFallbackCandidate,
   type DivergencePenaltySchedule,
+  type PredictionConfidenceMode,
 } from '../markov-distribution.js';
 import {
   AdaptiveConformalPID,
@@ -113,6 +114,8 @@ export interface WalkForwardConfig {
   conformalFastLearningRate?: number;
   /** R6 — number of steps to keep break mode active after a trigger. */
   conformalCooloffWindow?: number;
+  /** Item 1 — confidence-score ablation mode. */
+  predictionConfidenceMode?: PredictionConfidenceMode;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -211,6 +214,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         conformalBreakSensitivity: config.conformalBreakSensitivity,
         conformalFastLearningRate: config.conformalFastLearningRate,
         conformalCooloffWindow: config.conformalCooloffWindow,
+        predictionConfidenceMode: config.predictionConfidenceMode,
         enableKswinTrim: config.enableKswinTrim,
         kswinAlpha: config.kswinAlpha,
         enableCrossAssetBias: config.enableCrossAssetBias,
@@ -265,14 +269,15 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
              transitionEntropyHistory: entropyHistory,
              entropyKappa: config.entropyKappa,
              enableLongshotShrinkage: config.enableLongshotShrinkage,
-             enableAdaptiveConformal: config.enableAdaptiveConformal,
-             conformalAlpha: config.conformalAlpha,
-             conformalBreakSensitivity: config.conformalBreakSensitivity,
-             conformalFastLearningRate: config.conformalFastLearningRate,
-             conformalCooloffWindow: config.conformalCooloffWindow,
-             enableKswinTrim: config.enableKswinTrim,
-             kswinAlpha: config.kswinAlpha,
-             enableCrossAssetBias: config.enableCrossAssetBias,
+            enableAdaptiveConformal: config.enableAdaptiveConformal,
+            conformalAlpha: config.conformalAlpha,
+            conformalBreakSensitivity: config.conformalBreakSensitivity,
+            conformalFastLearningRate: config.conformalFastLearningRate,
+            conformalCooloffWindow: config.conformalCooloffWindow,
+            predictionConfidenceMode: config.predictionConfidenceMode,
+            enableKswinTrim: config.enableKswinTrim,
+            kswinAlpha: config.kswinAlpha,
+            enableCrossAssetBias: config.enableCrossAssetBias,
             crossAssetReturns: config.crossAssetReturns,
             crossAssetLassoLambda: config.crossAssetLassoLambda,
           });

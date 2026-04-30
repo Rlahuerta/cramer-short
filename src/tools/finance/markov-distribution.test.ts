@@ -3345,6 +3345,28 @@ describe('computePredictionConfidence', () => {
     expect(anchoredCrypto).toBeGreaterThan(plainCrypto);
   });
 
+  it('keeps strong short-horizon crypto setups above the 0.45 selective cutoff', () => {
+    const confidence = computePredictionConfidence({
+      pUp: 0.62,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 8,
+      structuralBreak: false,
+      assetType: 'crypto',
+      recentVol: 0.025,
+      momentumAgreement: 2 / 3,
+      calibratedPUp: 0.58,
+      baseRate: 0.56,
+      trustedAnchors: 2,
+      horizonDays: 7,
+      outOfSampleR2: 0.01,
+      regimeState: 'bull',
+      confidenceMode: 'rebalanced',
+    });
+
+    expect(confidence).toBeGreaterThan(0.45);
+  });
+
   it('structural break penalty is softer for short-horizon crypto with anchors and neutral R²', () => {
     const broken = computePredictionConfidence({
       pUp: 0.75,
@@ -5088,6 +5110,59 @@ describe('markov_distribution tool output envelope', () => {
       'mode',
       'radius',
     ]);
+  });
+
+  it('surfaces confidence-breakdown metadata alongside the collapsed score', async () => {
+    interface ConfidenceBreakdownContract {
+      mode: string;
+      total: number;
+      components: Record<string, number>;
+      multipliers: Record<string, number>;
+    }
+
+    type PlannedConfidenceMetadata =
+      Awaited<ReturnType<typeof computeMarkovDistribution>>['metadata']
+      & { confidence?: ConfidenceBreakdownContract };
+
+    function getConfidenceMetadata(
+      metadata: Awaited<ReturnType<typeof computeMarkovDistribution>>['metadata'],
+    ): ConfidenceBreakdownContract | undefined {
+      return (metadata as PlannedConfidenceMetadata).confidence;
+    }
+
+    const prices = Array.from({ length: 140 }, (_, i) =>
+      100 + i * 0.15 + Math.sin(i * 0.18) * 1.5,
+    );
+
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+
+    const confidence = getConfidenceMetadata(result.metadata);
+    expect(confidence).toStrictEqual({
+      mode: expect.any(String),
+      total: result.predictionConfidence,
+      components: {
+        decisiveness: expect.any(Number),
+        ensembleConsensus: expect.any(Number),
+        hmmConvergence: expect.any(Number),
+        regimeStability: expect.any(Number),
+        momentumAgreement: expect.any(Number),
+        baseRateAlignment: expect.any(Number),
+        nearZeroR2Bonus: expect.any(Number),
+        anchorSupport: expect.any(Number),
+      },
+      multipliers: {
+        structuralBreak: expect.any(Number),
+        assetType: expect.any(Number),
+        volatility: expect.any(Number),
+        normalization: expect.any(Number),
+      },
+    });
   });
 
   it('keeps BTC 30-day off-window fallback candidates from enabling canonical emission', async () => {

@@ -184,6 +184,29 @@ export const STATE_INDEX: Record<RegimeState, number> = {
  */
 export const RECOMMENDED_CONFIDENCE_THRESHOLD = 0.25;
 
+export type PredictionConfidenceMode = 'legacy' | 'rebalanced';
+
+export interface PredictionConfidenceBreakdown {
+  mode: PredictionConfidenceMode;
+  total: number;
+  components: {
+    decisiveness: number;
+    ensembleConsensus: number;
+    hmmConvergence: number;
+    regimeStability: number;
+    momentumAgreement: number;
+    baseRateAlignment: number;
+    nearZeroR2Bonus: number;
+    anchorSupport: number;
+  };
+  multipliers: {
+    structuralBreak: number;
+    assetType: number;
+    volatility: number;
+    normalization: number;
+  };
+}
+
 export interface PriceThreshold {
   price: number;
   /** Raw YES probability from Polymarket (0–1) */
@@ -670,6 +693,7 @@ export interface MarkovDistributionResult {
     entropyCiScale?: number;
     entropyCiModulationApplied?: boolean;
     conformal?: AdaptiveConformalMetadata;
+    confidence?: PredictionConfidenceBreakdown;
     kswinTrim?: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number };
     crossAssetBias?: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number };
   };
@@ -3468,7 +3492,7 @@ export function calibrateProbabilities(
  * Inspired by El-Yaniv & Pidan (NeurIPS 2011): selective prediction trades
  * coverage for accuracy by abstaining when confidence is low.
  */
-export function computePredictionConfidence(options: {
+export function computePredictionConfidenceBreakdown(options: {
   /** P(price > currentPrice at horizon) — preferably raw (pre-calibration) */
   pUp: number;
   /** Ensemble consensus count (0–3) */
@@ -3500,8 +3524,11 @@ export function computePredictionConfidence(options: {
   structuralBreakDivergence?: number;
   /** Penalty schedule for divergence-weighted mode. Defaults to DEFAULT_DIVERGENCE_PENALTY_SCHEDULE. */
   divergencePenaltySchedule?: DivergencePenaltySchedule;
-}): number {
+  /** Optional scoring mode for backtest/live confidence ablations. */
+  confidenceMode?: PredictionConfidenceMode;
+}): PredictionConfidenceBreakdown {
   const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
+  const mode = options.confidenceMode ?? 'legacy';
   const cryptoShortHorizon = options.assetType === 'crypto'
     && options.horizonDays != null
     && options.horizonDays <= 14;
@@ -3510,32 +3537,23 @@ export function computePredictionConfidence(options: {
   const r2ClearlyBad = typeof r2 === 'number' && Number.isFinite(r2) && r2 < -0.05;
   const r2NearZero = typeof r2 === 'number' && Number.isFinite(r2) && r2 >= -0.02 && r2 <= 0.02;
 
-  // 1. Decisiveness: |P(up) - 0.5| scaled to [0, 1]
   const decisiveness = Math.min(1.0, Math.abs(pUp - 0.5) * 2);
-
-  // 2. Ensemble consensus: 0/3 = 0, 1/3 = 0.33, 2/3 = 0.67, 3/3 = 1
   const consensusScore = ensembleConsensus / 3;
-
-  // 3. HMM convergence: binary
   const hmmScore = hmmConverged ? 1.0 : 0.0;
-
-  // 4. Regime stability: saturates at 20 consecutive days
   const stabilityScore = Math.min(1.0, regimeRunLength / 20);
 
-  // Weighted combination (total base weights = 1.0)
-  let confidence = 0.30 * decisiveness
-                 + 0.15 * consensusScore
-                 + 0.10 * hmmScore
-                 + 0.15 * stabilityScore;
-
-  // 5. Multi-lookback momentum agreement (Idea R)
   const momentumAgr = options.momentumAgreement ?? 0;
-  confidence += 0.10 * momentumAgr;
+  const components: PredictionConfidenceBreakdown['components'] = {
+    decisiveness: 0.30 * decisiveness,
+    ensembleConsensus: 0.15 * consensusScore,
+    hmmConvergence: 0.10 * hmmScore,
+    regimeStability: 0.15 * stabilityScore,
+    momentumAgreement: 0.10 * momentumAgr,
+    baseRateAlignment: 0,
+    nearZeroR2Bonus: 0,
+    anchorSupport: 0,
+  };
 
-  // 6. Base-rate alignment (Round 5): predictions that agree with the empirical
-  // base rate are much more reliable than predictions that go against it.
-  // In a 74% up market, a BUY prediction is right ~74% of the time (aligned),
-  // while a SELL prediction is right ~26% of the time (contra-directional).
   const calPUp = options.calibratedPUp;
   const bRate = options.baseRate;
   if (calPUp !== undefined && bRate !== undefined) {
@@ -3544,20 +3562,27 @@ export function computePredictionConfidence(options: {
     const baseStrength = Math.abs(bRate - 0.5) * 2; // 0 at bRate=0.5, 1 at bRate=0/1
 
     if (predDirection === baseDirection) {
-      // Aligned: boost proportional to how strong the base rate signal is
-      confidence += 0.20 * baseStrength;
+      components.baseRateAlignment = 0.20 * baseStrength;
     } else {
-      // Contra-directional: mild penalty — don't over-punish since model might have
-      // genuine information that diverges from the base rate
-      confidence -= 0.08 * baseStrength;
+      components.baseRateAlignment = -0.08 * baseStrength;
     }
   }
 
   if (cryptoShortHorizon && r2NearZero) {
-    confidence += 0.08;
+    components.nearZeroR2Bonus = 0.08;
   }
 
-  // Penalty for structural break (regime change mid-window → unreliable)
+  if (mode === 'rebalanced') {
+    if (cryptoShortHorizon) {
+      components.anchorSupport = anchorsHelpful ? 0.05 : 0.03;
+    } else if (anchorsHelpful) {
+      components.anchorSupport = 0.02;
+    }
+  }
+
+  let confidence = Object.values(components).reduce((sum, value) => sum + value, 0);
+
+  let structuralBreakMultiplier = 1.0;
   if (structuralBreak) {
     const breakConfidencePolicy = options.breakConfidencePolicy ?? 'default';
 
@@ -3576,30 +3601,59 @@ export function computePredictionConfidence(options: {
       } else {
         breakPenalty = cryptoShortHorizon && anchorsHelpful && !r2ClearlyBad ? 0.8 : 0.6;
       }
-      confidence *= breakPenalty;
+      structuralBreakMultiplier = breakPenalty;
+      confidence *= structuralBreakMultiplier;
     }
   }
 
-  // Asset-type discount: crypto is inherently noisier → scale confidence down.
-  // Commodities are driven by supply shocks → moderate discount.
-  // ETFs are the most predictable → small boost.
   const assetType = options.assetType;
+  let assetTypeMultiplier = 1.0;
   if (assetType === 'crypto') {
-    confidence *= cryptoShortHorizon && anchorsHelpful ? 0.85 : 0.7;
+    if (mode === 'rebalanced') {
+      assetTypeMultiplier = cryptoShortHorizon
+        ? (anchorsHelpful && !r2ClearlyBad ? 0.92 : 0.82)
+        : 0.74;
+    } else {
+      assetTypeMultiplier = cryptoShortHorizon && anchorsHelpful ? 0.85 : 0.7;
+    }
   } else if (assetType === 'commodity') {
-    confidence *= 0.85;
+    assetTypeMultiplier = 0.85;
   } else if (assetType === 'etf') {
-    confidence *= 1.1;
+    assetTypeMultiplier = 1.1;
   }
+  confidence *= assetTypeMultiplier;
 
-  // Volatility penalty: daily vol > 3% → scale confidence down.
   const vol = options.recentVol;
+  let volatilityMultiplier = 1.0;
   if (vol && vol > 0.02) {
-    const volPenalty = Math.max(0.7, 1 - (vol - 0.02) * 5);
-    confidence *= volPenalty;
+    volatilityMultiplier = mode === 'rebalanced' && cryptoShortHorizon
+      ? Math.max(0.85, 1 - (vol - 0.02) * 3)
+      : Math.max(0.7, 1 - (vol - 0.02) * 5);
+    confidence *= volatilityMultiplier;
   }
 
-  return Math.max(0, Math.min(1, confidence));
+  const normalizationMultiplier = mode === 'rebalanced'
+    ? (assetType === 'crypto'
+        ? (cryptoShortHorizon ? 1.6 : 1.35)
+        : 1.0)
+    : 1.0;
+  confidence *= normalizationMultiplier;
+
+  return {
+    mode,
+    total: Math.max(0, Math.min(1, confidence)),
+    components,
+    multipliers: {
+      structuralBreak: structuralBreakMultiplier,
+      assetType: assetTypeMultiplier,
+      volatility: volatilityMultiplier,
+      normalization: normalizationMultiplier,
+    },
+  };
+}
+
+export function computePredictionConfidence(options: Parameters<typeof computePredictionConfidenceBreakdown>[0]): number {
+  return computePredictionConfidenceBreakdown(options).total;
 }
 
 // ---------------------------------------------------------------------------
@@ -4205,6 +4259,8 @@ export async function computeMarkovDistribution(params: {
   conformalFastLearningRate?: number;
   /** R6 — ignored for single-shot metadata; walk-forward uses it for online control. */
   conformalCooloffWindow?: number;
+  /** Item 1 — confidence-score ablation mode. Default rebalanced in the live forecast path. */
+  predictionConfidenceMode?: PredictionConfidenceMode;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
    *  Default false ⇒ byte-identical to pre-Phase-C. */
   enableKswinTrim?: boolean;
@@ -4920,7 +4976,7 @@ export async function computeMarkovDistribution(params: {
   // is often compressed to 0.45-0.55, making decisiveness uniformly low.
   // Include base-rate alignment (Round 5): predictions aligned with the empirical
   // base rate are much more reliable than contra-directional ones.
-  const predictionConfidence = computePredictionConfidence({
+  const confidenceBreakdown = computePredictionConfidenceBreakdown({
     pUp: rawPUp,
     ensembleConsensus: ensemble.consensus,
     hmmConverged: hmmMeta?.converged ?? false,
@@ -4943,7 +4999,9 @@ export async function computeMarkovDistribution(params: {
     regimeState: currentRegime,
     structuralBreakDivergence: breakResult.divergence,
     divergencePenaltySchedule,
+    confidenceMode: params.predictionConfidenceMode ?? 'rebalanced',
   });
+  const predictionConfidence = confidenceBreakdown.total;
 
   // --- Trajectory computation (optional day-by-day forecast) ---
   // hasJumps reflects user intent — whether jump-diffusion was requested,
@@ -5314,6 +5372,7 @@ export async function computeMarkovDistribution(params: {
       entropyCiScale,
       entropyCiModulationApplied: entropyCiScale !== 1 ? true : undefined,
       ...(conformalMetadata ? { conformal: conformalMetadata } : {}),
+      confidence: confidenceBreakdown,
       kswinTrim: kswinTrimMeta,
       crossAssetBias: crossAssetBiasMeta,
     }
