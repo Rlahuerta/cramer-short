@@ -151,6 +151,58 @@ describe('forecast_arbitrator integration', () => {
     });
   });
 
+  integrationIt('keeps structural-break forecasts at full policy when terminal support and diagnostics stay strong', async () => {
+    const payload = {
+      ticker: 'BTC',
+      horizon_days: '7',
+      current_price: '76000',
+      leverage: '2',
+      markov: {
+        forecast_return: '0.018',
+        p_up: '0.68',
+        confidence: '0.78',
+        structural_break: 'true',
+        flat_probability: '0.28',
+        ci_low: '74200',
+        ci_high: '79100',
+        summary: 'Break detected, but confidence and terminal support remain strong.',
+        conformal: {
+          applied: true,
+          radius: '0.039',
+          coverageEstimate: '0.91',
+          mode: 'normal',
+        },
+      },
+      polymarket: {
+        forecast_return: '0.015',
+        confidence: '0.78',
+        quality_score: '82',
+        markets: [
+          {
+            question: 'Will BTC be above $77,000 on May 7?',
+            probability: '0.67',
+            semantics: 'terminal' as ForecastMarketSemantics,
+          },
+        ],
+      },
+      whale: {
+        direction: 'long',
+        confidence: '0.7',
+        summary: 'Whale desks remain net long through the break.',
+      },
+    };
+
+    const raw = await forecastArbitratorTool.invoke(payload);
+    const parsed = parseResult(raw);
+
+    expect(parsed.data.result.shouldEnterNow).toBe(true);
+    expectPlannedPolicy(parsed.data.result, {
+      level: 'full',
+      horizonEligible: true,
+      tradeEligible: true,
+    });
+  });
+
   integrationIt('drops malformed conformal mode strings instead of inventing a normal regime', async () => {
     const payload = {
       ticker: 'BTC',

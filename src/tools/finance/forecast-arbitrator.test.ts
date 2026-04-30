@@ -155,6 +155,26 @@ function buildBreakModeConformalFixture(): PlannedForecastArbiterInput {
   };
 }
 
+function buildStrongBreakFullGuidanceFixture(): PlannedForecastArbiterInput {
+  const aligned = buildAlignedFullGuidanceFixture();
+  return {
+    ...aligned,
+    markov: {
+      ...aligned.markov,
+      structural_break: true,
+      confidence: 0.78,
+      flat_probability: 0.28,
+      summary: 'Break detected, but confidence and terminal support remain strong.',
+      conformal: {
+        applied: true,
+        radius: 0.039,
+        coverageEstimate: 0.91,
+        mode: 'normal',
+      },
+    },
+  };
+}
+
 function buildMissingTrustedSupportAbstainFixture(): PlannedForecastArbiterInput {
   return {
     ticker: 'BTC',
@@ -312,6 +332,18 @@ describe('forecast arbitrator', () => {
           conformal: fixture.markov.conformal,
         }),
       },
+    });
+  });
+
+  it('permits full guidance when a structural break is supported by strong terminal evidence and healthy diagnostics', () => {
+    const result = arbitratePlannedForecast(buildStrongBreakFullGuidanceFixture());
+
+    expect(result.verdict).toBe('LONG');
+    expect(result.shouldEnterNow).toBe(true);
+    expectPlannedPolicy(result, {
+      level: 'full',
+      horizonEligible: true,
+      tradeEligible: true,
     });
   });
 

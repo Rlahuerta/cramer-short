@@ -491,7 +491,6 @@ function computeForecastTrustPolicy(params: {
     level = 'abstain';
   } else if (
     params.isDivergent
-    || params.structuralBreak
     || params.flatProbability >= 0.7
     || params.leverage >= 8
     || weakConfidence
@@ -591,7 +590,6 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
   const immediateEntryBlocked = isDivergent
     || leverage >= 8
     || flatProbability >= 0.7
-    || structuralBreak
     || bestScore.riskAdjustedScore < 0.0015
     || !policy.tradeEligible;
 
