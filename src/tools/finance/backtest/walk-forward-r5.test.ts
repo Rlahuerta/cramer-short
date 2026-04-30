@@ -406,7 +406,10 @@ describe('soft regime weighting walk-forward wiring', () => {
 
     const avgConfidence = (steps: WalkForwardResult['steps']) =>
       steps.reduce((sum, step) => sum + step.confidence, 0) / steps.length;
+    const avgPredictedProb = (steps: WalkForwardResult['steps']) =>
+      steps.reduce((sum, step) => sum + step.predictedProb, 0) / steps.length;
 
     expect(avgConfidence(enabled.steps)).toBeLessThan(avgConfidence(baseline.steps));
+    expect(Math.abs(avgPredictedProb(enabled.steps) - avgPredictedProb(baseline.steps))).toBeGreaterThan(1e-4);
   });
 });

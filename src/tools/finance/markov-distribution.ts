@@ -220,6 +220,9 @@ export interface SoftRegimeDiagnostics {
   dominantStateProbability: number;
   currentStateProbabilities: number[];
   forecastProbabilities: number[];
+  currentRegimeMixture?: Record<RegimeState, number>;
+  forecastRegimeMixture?: Record<RegimeState, number>;
+  transitionBlendWeight?: number;
 }
 
 export interface PriceThreshold {
@@ -3731,6 +3734,67 @@ function computeNormalizedEntropy(probabilities: readonly number[]): number {
   return Math.max(0, Math.min(1, entropy / maxEntropy));
 }
 
+function oneHotRegimeMixture(state: RegimeState): Record<RegimeState, number> {
+  return {
+    bull: state === 'bull' ? 1 : 0,
+    bear: state === 'bear' ? 1 : 0,
+    sideways: state === 'sideways' ? 1 : 0,
+  };
+}
+
+function blendRegimeMixtures(
+  base: Record<RegimeState, number>,
+  overlay: Record<RegimeState, number>,
+  weight: number,
+): Record<RegimeState, number> {
+  const w = Math.max(0, Math.min(1, weight));
+  const mixed = {
+    bull: (1 - w) * base.bull + w * overlay.bull,
+    bear: (1 - w) * base.bear + w * overlay.bear,
+    sideways: (1 - w) * base.sideways + w * overlay.sideways,
+  };
+  const sum = mixed.bull + mixed.bear + mixed.sideways;
+  if (!(sum > 0)) return base;
+  return {
+    bull: mixed.bull / sum,
+    bear: mixed.bear / sum,
+    sideways: mixed.sideways / sum,
+  };
+}
+
+function regimeMixtureToArray(mixture: Record<RegimeState, number>): number[] {
+  return REGIME_STATES.map((state) => mixture[state]);
+}
+
+function mapHmmProbabilitiesToRegimeMixture(
+  probabilities: readonly number[],
+  means: readonly number[],
+): Record<RegimeState, number> | null {
+  if (probabilities.length !== means.length || probabilities.length === 0) return null;
+  const ranked = means
+    .map((mean, index) => ({ mean, index }))
+    .sort((a, b) => a.mean - b.mean);
+  const bearIndex = ranked[0]?.index;
+  const bullIndex = ranked[ranked.length - 1]?.index;
+  if (bearIndex === undefined || bullIndex === undefined) return null;
+  let bear = 0;
+  let bull = 0;
+  let sideways = 0;
+  for (let i = 0; i < probabilities.length; i++) {
+    const probability = probabilities[i] ?? 0;
+    if (i === bearIndex) bear += probability;
+    else if (i === bullIndex) bull += probability;
+    else sideways += probability;
+  }
+  const sum = bull + bear + sideways;
+  if (!(sum > 0)) return null;
+  return {
+    bull: bull / sum,
+    bear: bear / sum,
+    sideways: sideways / sum,
+  };
+}
+
 /**
  * Compute scenario probability buckets from the calibrated CDF distribution.
  * Buckets: Down >5%, Down 3–5%, Flat ±3%, Up 3–5%, Up >5%.
@@ -4576,6 +4640,9 @@ export async function computeMarkovDistribution(params: {
   let hmmOverride: { drift: number; vol: number; weight: number } | undefined;
   let hmmMeta: { converged: boolean; iterations: number; states: number; logLikelihood: number; volRegimeConverged?: boolean } | undefined;
   let softRegimeMeta: SoftRegimeDiagnostics | undefined;
+  let softCurrentRegimeMixture: Record<RegimeState, number> | undefined;
+  let softForecastRegimeMixture: Record<RegimeState, number> | undefined;
+  let softTransitionBlendWeight = 0;
   const HMM_MIN_OBS = 60; // need at least 60 returns for stable HMM
   if (returns.length >= HMM_MIN_OBS) {
     try {
@@ -4588,6 +4655,17 @@ export async function computeMarkovDistribution(params: {
       const dominantStateProbability = Math.max(...hmmForecast.currentStateProbabilities);
       const softRegimeConfidenceMultiplier = Math.max(0.65, 1 - effectivePosteriorEntropy * 0.35);
       const softRegimeCiScale = 1 + effectivePosteriorEntropy * 0.35;
+      const mappedCurrentRegimeMixture = mapHmmProbabilitiesToRegimeMixture(
+        hmmForecast.currentStateProbabilities,
+        hmmResult.params.means,
+      );
+      const mappedForecastRegimeMixture = mapHmmProbabilitiesToRegimeMixture(
+        hmmForecast.forecastProbabilities,
+        hmmResult.params.means,
+      );
+      softTransitionBlendWeight = effectivePosteriorEntropy;
+      softCurrentRegimeMixture = mappedCurrentRegimeMixture ?? undefined;
+      softForecastRegimeMixture = mappedForecastRegimeMixture ?? undefined;
 
       // Secondary: volatility regime HMM (Idea C — orthogonal vol signal)
       // 5-day rolling realized volatility as independent feature
@@ -4637,6 +4715,9 @@ export async function computeMarkovDistribution(params: {
           dominantStateProbability,
           currentStateProbabilities: [...hmmForecast.currentStateProbabilities],
           forecastProbabilities: [...hmmForecast.forecastProbabilities],
+          ...(softCurrentRegimeMixture ? { currentRegimeMixture: softCurrentRegimeMixture } : {}),
+          ...(softForecastRegimeMixture ? { forecastRegimeMixture: softForecastRegimeMixture } : {}),
+          transitionBlendWeight: softTransitionBlendWeight,
         };
       }
       if (hmmResult.converged && Number.isFinite(hmmForecast.expectedReturn)) {
@@ -4839,7 +4920,11 @@ export async function computeMarkovDistribution(params: {
     }
   }
 
-  const effectiveMixture = rndMixture ?? mixture;
+  const softBaseMixture = mixture ?? oneHotRegimeMixture(currentRegime);
+  const softBlendedMixture = params.enableSoftRegimeWeighting === true && !rndMixture && softCurrentRegimeMixture
+    ? blendRegimeMixtures(softBaseMixture, softCurrentRegimeMixture, softTransitionBlendWeight)
+    : undefined;
+  const effectiveMixture = rndMixture ?? softBlendedMixture ?? mixture;
   const effectiveP = nudgedP ?? P;
   const transitionEntropy = computeTransitionEntropy(effectiveP);
   const transitionEntropyZ = enableEntropyCiModulation === true
@@ -4915,6 +5000,12 @@ export async function computeMarkovDistribution(params: {
     }
   } else {
     stateWeightsForUp = Pn[STATE_INDEX[currentRegime]];
+  }
+  if (params.enableSoftRegimeWeighting === true && softForecastRegimeMixture) {
+    const forecastWeights = regimeMixtureToArray(softForecastRegimeMixture);
+    stateWeightsForUp = stateWeightsForUp.map((weight, index) =>
+      (1 - softTransitionBlendWeight) * weight + softTransitionBlendWeight * (forecastWeights[index] ?? 0),
+    );
   }
 
   const conditionalPUp = (sidewaysSplitSafe && conditionalPUp_experiment !== undefined)

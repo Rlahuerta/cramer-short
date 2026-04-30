@@ -5175,6 +5175,9 @@ describe('markov_distribution tool output envelope', () => {
       dominantStateProbability: number;
       currentStateProbabilities: number[];
       forecastProbabilities: number[];
+      currentRegimeMixture?: { bull: number; bear: number; sideways: number };
+      forecastRegimeMixture?: { bull: number; bear: number; sideways: number };
+      transitionBlendWeight?: number;
     }
 
     type PlannedSoftRegimeMetadata =
@@ -5239,12 +5242,21 @@ describe('markov_distribution tool output envelope', () => {
       dominantStateProbability: expect.any(Number),
       currentStateProbabilities: expect.any(Array),
       forecastProbabilities: expect.any(Array),
+      currentRegimeMixture: expect.any(Object),
+      forecastRegimeMixture: expect.any(Object),
+      transitionBlendWeight: expect.any(Number),
     });
     expect(softChoppy!.currentStateProbabilities.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
     expect(softChoppy!.forecastProbabilities.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
+    expect(Object.values(softChoppy!.currentRegimeMixture ?? {}).reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
+    expect(Object.values(softChoppy!.forecastRegimeMixture ?? {}).reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
+    expect(softChoppy!.transitionBlendWeight).toBeGreaterThan(0);
     expect(softChoppy!.ciScale).toBeGreaterThan(1);
     expect(softChoppy!.confidenceMultiplier).toBeLessThan(1);
     expect(enabledChoppy.predictionConfidence).toBeLessThan(disabled.predictionConfidence);
+    expect(
+      Math.abs(enabledChoppy.actionSignal.expectedReturn - disabled.actionSignal.expectedReturn),
+    ).toBeGreaterThan(1e-4);
     expect(softTrend).toBeDefined();
     expect(softTrend!.posteriorEntropy).toBeLessThanOrEqual(softChoppy!.posteriorEntropy);
     expect(softTrend!.ciScale).toBeLessThanOrEqual(softChoppy!.ciScale);
