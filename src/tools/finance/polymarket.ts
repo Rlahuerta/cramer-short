@@ -68,6 +68,7 @@ interface PolymarketMarket {
   question: string;
   outcomes: string;
   outcomePrices: string;
+  clobTokenIds?: string | string[];
   endDateIso?: string;
   /** Gamma API returns ISO date string for market creation time. */
   createdAt?: string;
@@ -76,6 +77,7 @@ interface PolymarketMarket {
   liquidityNum?: number;
   active: boolean;
   closed: boolean;
+  enableOrderBook?: boolean;
   description?: string;
 }
 
@@ -89,6 +91,7 @@ interface PolymarketEvent {
 
 interface FormattedMarket {
   marketId: string;
+  assetId?: string;
   question: string;
   probabilities: Record<string, string>;
   endDate: string | null;
@@ -96,6 +99,9 @@ interface FormattedMarket {
   liquidity: string;
   /** Days since the market was created (undefined if createdAt missing from API). */
   ageDays: number | undefined;
+  active: boolean;
+  closed: boolean;
+  enableOrderBook?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +419,7 @@ function formatVolume(n: number | undefined): string {
 function formatMarket(m: PolymarketMarket): FormattedMarket | null {
   const outcomes = parseJsonField<string[]>(m.outcomes);
   const prices = parseJsonField<string[]>(m.outcomePrices);
+  const clobTokenIds = parseJsonField<string[]>(m.clobTokenIds ?? []);
   if (!outcomes.length || !prices.length) return null;
 
   const probabilities: Record<string, string> = {};
@@ -423,12 +430,16 @@ function formatMarket(m: PolymarketMarket): FormattedMarket | null {
 
   return {
     marketId: m.conditionId ?? m.id,
+    assetId: clobTokenIds.find((tokenId) => typeof tokenId === 'string' && tokenId.trim().length > 0),
     question: m.question,
     probabilities,
     endDate: m.endDateIso ?? null,
     volume24h: formatVolume(m.volume24hr),
     liquidity: formatVolume(m.liquidityNum),
     ageDays: computeAgeDays(m.createdAt),
+    active: m.active,
+    closed: m.closed,
+    enableOrderBook: m.enableOrderBook,
   };
 }
 
@@ -814,6 +825,7 @@ export async function fetchPolymarketAnchorMarketsWithQueries(
 /** Structured Polymarket market result — numeric values, suitable for the injector. */
 export interface PolymarketMarketResult {
   marketId?: string;
+  assetId?: string;
   question: string;
   /** YES probability [0, 1] */
   probability: number;
@@ -822,16 +834,23 @@ export interface PolymarketMarketResult {
   /** Days since market was created (undefined if unavailable from API). */
   ageDays: number | undefined;
   endDate?: string | null;
+  active?: boolean;
+  closed?: boolean;
+  enableOrderBook?: boolean;
 }
 
 function toStructuredMarketResult(m: FormattedMarket): PolymarketMarketResult {
   return {
     marketId: m.marketId,
+    assetId: m.assetId,
     question: m.question,
     probability: parseYesProbability(m.probabilities),
     volume24h: parseVolumeStr(m.volume24h),
     ageDays: m.ageDays,
     endDate: m.endDate,
+    active: m.active,
+    closed: m.closed,
+    enableOrderBook: m.enableOrderBook,
   };
 }
 

@@ -1,8 +1,8 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import {
+  createGetOnchainCryptoTool,
   resolveCoinGeckoId,
   TICKER_TO_COINGECKO_ID,
-  getOnchainCrypto,
 } from './onchain-crypto.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -60,6 +60,9 @@ function makeGlobalResponse(): Record<string, unknown> {
 // ── mock fetch ────────────────────────────────────────────────────────────────
 
 let originalFetch: typeof fetch;
+const getOnchainCrypto = createGetOnchainCryptoTool({
+  recordReplayWhaleCapture: () => {},
+});
 
 beforeEach(() => {
   originalFetch = globalThis.fetch;
@@ -252,6 +255,56 @@ describe('global metrics from CoinGecko', () => {
     expect(global.eth_dominance).toBe(17.1);
     expect(global.market_cap_change_24h_pct).toBe(1.8);
     expect(global.active_cryptocurrencies).toBe(13000);
+  });
+});
+
+describe('whale capture auto-recorder', () => {
+  it('records raw whale rows when whale data is returned', async () => {
+    const captured: Array<{ ticker: string; source: string; txCount: number }> = [];
+    const tool = createGetOnchainCryptoTool({
+      recordReplayWhaleCapture: (row) => {
+        captured.push({
+          ticker: row.ticker,
+          source: row.source,
+          txCount: row.transactions.length,
+        });
+      },
+    });
+
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      const urlStr = url.toString();
+      if (urlStr.includes('/coins/bitcoin')) {
+        return new Response(JSON.stringify(makeCoinGeckoResponse()), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (urlStr.includes('blockchain.info/unconfirmed-transactions')) {
+        return new Response(JSON.stringify({
+          txs: [
+            {
+              hash: '0xabc',
+              time: 1777548000,
+              out: [{ value: 150 * 1e8 }],
+            },
+          ],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      throw new Error(`Unexpected URL: ${urlStr}`);
+    }) as unknown as typeof fetch;
+
+    await tool.invoke({ ticker: 'BTC', metrics: ['whale'] });
+
+    expect(captured).toEqual([
+      {
+        ticker: 'BTC',
+        source: 'blockchain.info-mempool',
+        txCount: 1,
+      },
+    ]);
   });
 });
 

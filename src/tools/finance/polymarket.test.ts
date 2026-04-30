@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, beforeAll, afterAll } from
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache, scoreAnchorMarketRelevance, fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
+import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RETRY_DELAYS, clearPolymarketCache, scoreAnchorMarketRelevance, fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries, fetchPolymarketMarkets } from './polymarket.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import type { PolymarketMarketResult } from './polymarket.js';
 import { readSnapshotRecords } from './polymarket-snapshots.js';
@@ -27,6 +27,7 @@ const MOCK_MARKET = {
   question: 'Will the Fed cut rates in 2026?',
   outcomes: '["Yes","No"]',
   outcomePrices: '["0.72","0.28"]',
+  clobTokenIds: '["asset-yes-1","asset-no-1"]',
   endDateIso: '2026-12-31',
   volume24hr: 1_500_000,
   volumeNum: 5_000_000,
@@ -524,6 +525,27 @@ describe('polymarketTool', () => {
     const text = typeof result === 'string' ? result : JSON.stringify(result);
     expect(text).toContain('$1.5M');  // 24h volume
     expect(text).toContain('2026-12-31'); // end date
+  });
+
+  it('preserves the first CLOB token id as the replay-ready asset id', async () => {
+    globalThis.fetch = mockFetch([MOCK_EVENT], [MOCK_MARKET]) as typeof fetch;
+
+    const result = await fetchPolymarketMarkets('Fed rate cut', 1);
+
+    expect(result).toEqual([
+      {
+        marketId: 'condition-1',
+        assetId: 'asset-yes-1',
+        question: 'Will the Fed cut rates in 2026?',
+        probability: 0.72,
+        volume24h: 1500000,
+        ageDays: undefined,
+        endDate: '2026-12-31',
+        active: true,
+        closed: false,
+        enableOrderBook: undefined,
+      },
+    ]);
   });
 
   it('deduplicates markets appearing in both events and direct search', async () => {

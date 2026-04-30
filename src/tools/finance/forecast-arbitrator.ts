@@ -1,6 +1,11 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
+import {
+  appendReplayCacheBundle,
+  createArbiterReplayBundleFromArbitratorInput,
+  type ArbiterReplayBundle,
+} from './arbiter-replay.js';
 
 export type ForecastMarketSemantics =
   | 'terminal'
@@ -21,10 +26,16 @@ export type ForecastTrustPolicyLevel = 'full' | 'context-only' | 'abstain';
 type Direction = 'long' | 'short' | 'neutral';
 
 export interface ForecastMarketEvidence {
+  marketId?: string;
+  assetId?: string;
   question: string;
   probability?: number;
   semantics?: ForecastMarketSemantics;
   price?: number;
+  volume24h?: number;
+  endDate?: string | null;
+  bid?: number;
+  ask?: number;
 }
 
 export interface ForecastArbiterInput {
@@ -56,6 +67,7 @@ export interface ForecastArbiterInput {
     confidence?: number;
     quality_score?: number;
     quality_grade?: string;
+    querySet?: string[];
     markets?: ForecastMarketEvidence[];
     summary?: string;
   };
@@ -63,6 +75,12 @@ export interface ForecastArbiterInput {
     direction?: Direction;
     confidence?: number;
     summary?: string;
+    source?: string;
+    observationWindowStart?: string;
+    observationWindowEnd?: string;
+    txCount?: number;
+    notionalUsd?: number | null;
+    txHashes?: string[];
   };
 }
 
@@ -228,11 +246,18 @@ const schema = z.object({
     confidence: optionalNumber({ min: 0, max: 1 }),
     quality_score: optionalNumber({ min: 0, max: 100 }),
     quality_grade: optionalString(),
+    querySet: z.array(z.coerce.string()).optional(),
     markets: z.array(z.object({
+      marketId: optionalString(),
+      assetId: optionalString(),
       question: z.coerce.string(),
       probability: optionalNumber({ min: 0, max: 1 }),
       semantics: optionalSemantics(),
       price: optionalNumber({ positive: true }),
+      volume24h: optionalNumber({ min: 0 }),
+      endDate: optionalString(),
+      bid: optionalNumber({ min: 0, max: 1 }),
+      ask: optionalNumber({ min: 0, max: 1 }),
     })).optional().default([]),
     summary: optionalString(),
   }).optional(),
@@ -240,6 +265,12 @@ const schema = z.object({
     direction: optionalDirection(),
     confidence: optionalNumber({ min: 0, max: 1 }),
     summary: optionalString(),
+    source: optionalString(),
+    observationWindowStart: optionalString(),
+    observationWindowEnd: optionalString(),
+    txCount: optionalNumber({ min: 0 }),
+    notionalUsd: optionalNumber({ min: 0 }),
+    txHashes: z.array(z.coerce.string()).optional(),
   }).optional(),
 });
 
@@ -681,12 +712,32 @@ Use this after gathering the raw forecast tools when:
 This tool does not replace raw evidence. It preserves Markov, Polymarket, and whale inputs in its output, classifies forecast semantics, scores LONG vs SHORT under leverage, and may recommend NO_TRADE or conditional triggers instead of forcing a side.
 `.trim();
 
-export const forecastArbitratorTool = new DynamicStructuredTool({
-  name: 'forecast_arbitrator',
-  description: FORECAST_ARBITRATOR_DESCRIPTION,
-  schema,
-  func: async (input) => {
-    const result = arbitrateForecast(input);
-    return formatToolResult({ result });
-  },
-});
+type ForecastArbitratorToolDependencies = {
+  recordReplayBundleCapture?: (bundle: ArbiterReplayBundle) => void;
+};
+
+export function createForecastArbitratorTool(
+  dependencies: ForecastArbitratorToolDependencies = {},
+) {
+  const recordReplayBundleCapture = dependencies.recordReplayBundleCapture
+    ?? ((bundle: ArbiterReplayBundle) => {
+      appendReplayCacheBundle(bundle);
+    });
+
+  return new DynamicStructuredTool({
+    name: 'forecast_arbitrator',
+    description: FORECAST_ARBITRATOR_DESCRIPTION,
+    schema,
+    func: async (input) => {
+      const capturedAt = new Date().toISOString();
+      const result = arbitrateForecast(input);
+      recordReplayBundleCapture(createArbiterReplayBundleFromArbitratorInput({
+        capturedAt,
+        input,
+      }));
+      return formatToolResult({ result });
+    },
+  });
+}
+
+export const forecastArbitratorTool = createForecastArbitratorTool();

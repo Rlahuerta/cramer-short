@@ -2,8 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import {
   arbitrateForecast,
   classifyPolymarketQuestion,
+  createForecastArbitratorTool,
   extractPriceLevels,
-  forecastArbitratorTool,
 } from './forecast-arbitrator.js';
 import type {
   ForecastArbiterInput,
@@ -57,6 +57,10 @@ type PlannedForecastArbiterResult = ForecastArbiterResult & {
   };
 };
 
+const forecastArbitratorTool = createForecastArbitratorTool({
+  recordReplayBundleCapture: () => {},
+});
+
 function parseToolResult(raw: unknown) {
   return JSON.parse(raw as string) as { data: { result: PlannedForecastArbiterResult } };
 }
@@ -79,7 +83,13 @@ function buildTerminalMarket(
   probability: number,
   semantics: ForecastMarketSemantics = 'terminal',
 ): PlannedForecastMarketEvidence {
-  return { question, probability, semantics };
+  return {
+    marketId: 'pm-test-1',
+    assetId: 'asset-test-1',
+    question,
+    probability,
+    semantics,
+  };
 }
 
 function buildAlignedFullGuidanceFixture(): PlannedForecastArbiterInput {
@@ -455,5 +465,26 @@ describe('forecast arbitrator', () => {
     expect(parsed.data.result.leverage).toBe(10);
     expect(parsed.data.result.verdict).toBe('NO_TRADE');
     expect(parsed.data.result.rawEvidence.whale?.direction).toBe('neutral');
+  });
+
+  it('records a normalized replay bundle when the real tool entrypoint is invoked', async () => {
+    const captures: Array<{
+      ticker: string;
+      polymarketQuestion?: string;
+    }> = [];
+    const tool = createForecastArbitratorTool({
+      recordReplayBundleCapture: (bundle) => {
+        captures.push({
+          ticker: bundle.ticker,
+          polymarketQuestion: bundle.polymarket?.selectedMarkets[0]?.question,
+        });
+      },
+    });
+
+    await tool.invoke(buildAlignedFullGuidanceFixture());
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.ticker).toBe('BTC');
+    expect(captures[0]?.polymarketQuestion).toContain('Will BTC be above $77,000');
   });
 });

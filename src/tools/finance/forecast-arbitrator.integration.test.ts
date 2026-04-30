@@ -1,6 +1,6 @@
 import { describe, expect } from 'bun:test';
 import { integrationIt } from '../../utils/test-guards.js';
-import { forecastArbitratorTool } from './forecast-arbitrator.js';
+import { createForecastArbitratorTool } from './forecast-arbitrator.js';
 import type { ForecastArbiterResult, ForecastMarketSemantics } from './forecast-arbitrator.js';
 
 type PlannedPolicyLevel = 'full' | 'context-only' | 'abstain';
@@ -46,6 +46,10 @@ function expectPlannedPolicy(
   expect(result.policy).toMatchObject(expected);
   expect(Array.isArray(result.policy.reasons)).toBe(true);
 }
+
+const forecastArbitratorTool = createForecastArbitratorTool({
+  recordReplayBundleCapture: () => {},
+});
 
 describe('forecast_arbitrator integration', () => {
   integrationIt('validates the LLM-style BTC 10x divergence payload through the real tool schema', async () => {

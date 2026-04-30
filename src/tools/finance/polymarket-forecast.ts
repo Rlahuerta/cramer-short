@@ -20,15 +20,26 @@ import { lookupImpact, inferAssetClass } from './impact-map.js';
 import { runEnsemble, computePolymarketSignal, computeEnsemble, computeConditionalReturn, adjustYesBias, type MarketInput } from '../../utils/ensemble.js';
 import { buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
 import type { PolymarketSnapshotRecord } from './polymarket-snapshots.js';
+import {
+  appendReplayCachePolymarketCapture,
+  createRawPolymarketReplayRow,
+  freezePolymarketReplayBlock,
+  type ArbiterReplayBundle,
+  type RawPolymarketReplayRow,
+} from './arbiter-replay.js';
 
 type RawMarket = {
   marketId?: string;
+  assetId?: string;
   question: string;
   probability: number;
   volume24h: number;
   ageDays: number | undefined;
   signalCategory: string;
   endDate?: string | null;
+  active?: boolean;
+  closed?: boolean;
+  enableOrderBook?: boolean;
   priceSpikeDetected: boolean;
   transitoryMove: boolean;
 };
@@ -39,6 +50,10 @@ type ForecastMarketFetcher = typeof fetchPolymarketMarkets;
 type ForecastToolDependencies = {
   fetchMarkets?: ForecastMarketFetcher;
   readRecords?: ForecastHistoryReader;
+  recordReplayPolymarketCapture?: (capture: {
+    rawRow: RawPolymarketReplayRow;
+    polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+  }) => void;
 };
 
 type HistoryFlags = {
@@ -367,6 +382,13 @@ function optionsLabel(skew: number): string {
 export function createPolymarketForecastTool(dependencies: ForecastToolDependencies = {}) {
   const fetchMarkets = dependencies.fetchMarkets ?? fetchPolymarketMarkets;
   const readRecords = dependencies.readRecords ?? readSnapshotRecords;
+  const recordReplayPolymarketCapture = dependencies.recordReplayPolymarketCapture
+    ?? ((capture: {
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }) => {
+      appendReplayCachePolymarketCapture(capture);
+    });
 
   return new DynamicStructuredTool({
     name: 'polymarket_forecast',
@@ -390,9 +412,13 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const assetClass = inferAssetClass(searchIdentity.canonicalTicker);
         const historyWarnings: string[] = [];
         const nowMs = Date.now();
+        const replayCapturedAt = new Date(nowMs).toISOString();
 
         // Step 1: Extract signals for this ticker (up to 5)
         const signals = extractSignals(searchIdentity.canonicalTicker).slice(0, 5);
+        const replayQuerySet = [...new Set(
+          signals.flatMap((sig) => [sig.searchPhrase, ...(sig.queryVariants ?? [])]),
+        )];
 
         // Step 2: Fetch Polymarket markets for each signal using primary phrase
         // AND query variants to deepen retrieval, up to 5 per query
@@ -429,16 +455,42 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             historyWarnings.push(...history.warnings);
             rawMarkets.push({
               marketId: m.marketId,
+              assetId: m.assetId,
               question: m.question,
               probability: m.probability,
               volume24h: m.volume24h,
               ageDays: m.ageDays,
               endDate: m.endDate,
               signalCategory: m.signalCategory,
+              active: m.active,
+              closed: m.closed,
+              enableOrderBook: m.enableOrderBook,
               priceSpikeDetected: history.priceSpikeDetected,
               transitoryMove: history.transitoryMove,
             });
           }
+        }
+
+        if (recordReplayPolymarketCapture) {
+          const rawRow = createRawPolymarketReplayRow({
+            capturedAt: replayCapturedAt,
+            ticker: searchIdentity.canonicalTicker,
+            horizonDays,
+            currentPrice: currentPrice ?? null,
+            querySet: replayQuerySet,
+            selectedMarkets: rawMarkets,
+            warnings: historyWarnings,
+          });
+          const polymarket = freezePolymarketReplayBlock({
+            querySet: replayQuerySet,
+            selectedMarkets: rawMarkets.map((market) => ({
+              ...market,
+              relevanceScore: scoreMarketRelevance(market.question, market.signalCategory),
+            })),
+            warnings: historyWarnings,
+          });
+
+          recordReplayPolymarketCapture({ rawRow, polymarket });
         }
 
         // Step 3: Build MarketInput array

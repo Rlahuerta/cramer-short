@@ -2,10 +2,11 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import { createPolymarketForecastTool, evaluateMarketHistory } from './polymarket-forecast.js';
 import type { PolymarketMarketResult } from './polymarket.js';
+import type { ArbiterReplayBundle, RawPolymarketReplayRow } from './arbiter-replay.js';
 
 const mockMarkets: PolymarketMarketResult[] = [
-  { marketId: 'nvda-market-1', question: 'Will NVIDIA beat Q2 earnings?', probability: 0.72, volume24h: 500_000, ageDays: 0 },
-  { marketId: 'nvda-market-2', question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000, ageDays: 0 },
+  { marketId: 'nvda-market-1', assetId: 'nvda-yes-1', question: 'Will NVIDIA beat Q2 earnings?', probability: 0.72, volume24h: 500_000, ageDays: 0 },
+  { marketId: 'nvda-market-2', assetId: 'nvda-yes-2', question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000, ageDays: 0 },
 ];
 
 function futureIso(daysAhead: number): string {
@@ -18,10 +19,15 @@ function futureIso(daysAhead: number): string {
 
 function makeHermeticTool(
   fetchMarkets: (query: string, limit: number) => Promise<PolymarketMarketResult[]> = async () => mockMarkets,
+  recordReplayPolymarketCapture: ((capture: {
+    rawRow: RawPolymarketReplayRow;
+    polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+  }) => void) | undefined = () => {},
 ): ReturnType<typeof createPolymarketForecastTool> {
   return createPolymarketForecastTool({
     fetchMarkets,
     readRecords: () => [], // hermetic: always empty snapshot history
+    recordReplayPolymarketCapture,
   });
 }
 
@@ -185,6 +191,58 @@ describe('polymarketForecastTool', () => {
       undefined,
     );
     expect(parseResult(raw)).toContain('Grade: D');
+  });
+
+  it('captures a replay-ready Polymarket decision block with frozen semantics and CLOB token ids', async () => {
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async () => [
+        {
+          marketId: 'btc-market-1',
+          assetId: 'btc-yes-1',
+          question: 'Will Bitcoin be above $70,000 on May 7?',
+          probability: 0.54,
+          volume24h: 250_000,
+          ageDays: 3,
+          endDate: '2026-05-07T00:00:00.000Z',
+          active: true,
+          closed: false,
+          enableOrderBook: true,
+        },
+      ],
+      (capture) => { captures.push(capture); },
+    );
+
+    await freshTool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68000 },
+      undefined,
+    );
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.rawRow.ticker).toBe('BTC');
+    expect(captures[0]?.rawRow.currentPrice).toBe(68000);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-market-1']);
+    expect(captures[0]?.rawRow.candidates[0]).toMatchObject({
+      marketId: 'btc-market-1',
+      assetId: 'btc-yes-1',
+      enableOrderBook: true,
+    });
+    expect(captures[0]?.polymarket.selectedMarkets).toEqual([
+      {
+        marketId: 'btc-market-1',
+        assetId: 'btc-yes-1',
+        question: 'Will Bitcoin be above $70,000 on May 7?',
+        probability: 0.54,
+        volume24h: 250_000,
+        endDate: '2026-05-07T00:00:00.000Z',
+        semantics: 'terminal',
+        extractedPriceLevels: [70000],
+        relevanceScore: expect.any(Number),
+      },
+    ]);
   });
 
 });

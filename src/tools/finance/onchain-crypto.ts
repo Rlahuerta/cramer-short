@@ -1,6 +1,11 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
+import {
+  appendReplayCacheWhaleCapture,
+  createRawWhaleReplayRowFromToolResult,
+  type RawWhaleReplayRow,
+} from './arbiter-replay.js';
 
 export const ONCHAIN_CRYPTO_DESCRIPTION = `
 Fetches on-chain and market intelligence metrics for cryptocurrencies from CoinGecko (free, no key). Returns market data, community sentiment, developer activity, and global market context. Use when the user asks about crypto fundamentals, on-chain health, developer activity, or market sentiment beyond just price.
@@ -141,6 +146,10 @@ const OnchainCryptoInputSchema = z.object({
 
 type MetricCategory = 'market' | 'sentiment' | 'developer' | 'community' | 'global' | 'whale';
 
+type OnchainCryptoDependencies = {
+  recordReplayWhaleCapture?: (row: RawWhaleReplayRow) => void;
+};
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractMarketMetrics(data: any): Record<string, unknown> {
   const md = data?.market_data ?? {};
@@ -204,109 +213,126 @@ function extractGlobalMetrics(globalData: any): Record<string, unknown> {
   };
 }
 
-export const getOnchainCrypto = new DynamicStructuredTool({
-  name: 'get_onchain_crypto',
-  description:
-    "Fetches on-chain and market intelligence metrics for cryptocurrencies from CoinGecko (free, no API key needed). " +
-    "Supported metrics: 'market' (price, volume, supply), 'sentiment' (sentiment votes, public interest), " +
-    "'developer' (commits, forks, issues), 'community' (twitter, reddit, telegram), " +
-    "'global' (BTC dominance, total market cap), 'whale' (whale movements / large transactions). " +
-    "Do NOT request 'large_transactions' or 'exchange_flows' — use 'whale' instead.",
-  schema: OnchainCryptoInputSchema,
-  func: async (input) => {
-    const coinId = resolveCoinGeckoId(input.ticker);
-    const metrics = input.metrics as MetricCategory[];
-    const needsCoinData = metrics.some((m) => m !== 'global');
-    const needsGlobal = metrics.includes('global');
+export function createGetOnchainCryptoTool(dependencies: OnchainCryptoDependencies = {}) {
+  const recordReplayWhaleCapture = dependencies.recordReplayWhaleCapture
+    ?? ((row: RawWhaleReplayRow) => {
+      appendReplayCacheWhaleCapture(row);
+    });
 
-    const result: Record<string, unknown> = {
-      ticker: input.ticker.trim().toUpperCase(),
-      coinGeckoId: coinId,
-    };
-    const sourceUrls: string[] = [];
+  return new DynamicStructuredTool({
+    name: 'get_onchain_crypto',
+    description:
+      "Fetches on-chain and market intelligence metrics for cryptocurrencies from CoinGecko (free, no API key needed). " +
+      "Supported metrics: 'market' (price, volume, supply), 'sentiment' (sentiment votes, public interest), " +
+      "'developer' (commits, forks, issues), 'community' (twitter, reddit, telegram), " +
+      "'global' (BTC dominance, total market cap), 'whale' (whale movements / large transactions). " +
+      "Do NOT request 'large_transactions' or 'exchange_flows' — use 'whale' instead.",
+    schema: OnchainCryptoInputSchema,
+    func: async (input) => {
+      const coinId = resolveCoinGeckoId(input.ticker);
+      const metrics = input.metrics as MetricCategory[];
+      const needsCoinData = metrics.some((m) => m !== 'global');
+      const needsGlobal = metrics.includes('global');
 
-    try {
-      // Fetch coin data if any non-global metric is requested
-      if (needsCoinData) {
-        const coinUrl =
-          `https://api.coingecko.com/api/v3/coins/${coinId}` +
-          `?localization=false&tickers=false&market_data=true&community_data=true&developer_data=true`;
-        sourceUrls.push(coinUrl);
+      const result: Record<string, unknown> = {
+        ticker: input.ticker.trim().toUpperCase(),
+        coinGeckoId: coinId,
+      };
+      const sourceUrls: string[] = [];
+      const capturedAt = new Date().toISOString();
 
-        const res = await fetch(coinUrl, {
-          headers: { Accept: 'application/json' },
-        });
+      try {
+        // Fetch coin data if any non-global metric is requested
+        if (needsCoinData) {
+          const coinUrl =
+            `https://api.coingecko.com/api/v3/coins/${coinId}` +
+            `?localization=false&tickers=false&market_data=true&community_data=true&developer_data=true`;
+          sourceUrls.push(coinUrl);
 
-        if (res.status === 429) {
-          return formatToolResult(
-            { error: 'CoinGecko rate limit exceeded. Please retry in a few seconds.' },
-            [],
-          );
-        }
+          const res = await fetch(coinUrl, {
+            headers: { Accept: 'application/json' },
+          });
 
-        if (!res.ok) {
-          throw new Error(`CoinGecko returned ${res.status} for coin ID "${coinId}"`);
-        }
+          if (res.status === 429) {
+            return formatToolResult(
+              { error: 'CoinGecko rate limit exceeded. Please retry in a few seconds.' },
+              [],
+            );
+          }
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data: any = await res.json();
-        result.name = data?.name ?? coinId;
-        result.symbol = data?.symbol?.toUpperCase() ?? input.ticker.toUpperCase();
+          if (!res.ok) {
+            throw new Error(`CoinGecko returned ${res.status} for coin ID "${coinId}"`);
+          }
 
-        for (const metric of metrics) {
-          switch (metric) {
-            case 'market':
-              result.market = extractMarketMetrics(data);
-              break;
-            case 'sentiment':
-              result.sentiment = extractSentimentMetrics(data);
-              break;
-            case 'developer':
-              result.developer = extractDeveloperMetrics(data);
-              break;
-            case 'community':
-              result.community = extractCommunityMetrics(data);
-              break;
-            case 'whale': {
-              const priceUsd = data?.market_data?.current_price?.usd ?? null;
-              result.whale = await fetchWhaleData(input.ticker, priceUsd);
-              break;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const data: any = await res.json();
+          result.name = data?.name ?? coinId;
+          result.symbol = data?.symbol?.toUpperCase() ?? input.ticker.toUpperCase();
+
+          for (const metric of metrics) {
+            switch (metric) {
+              case 'market':
+                result.market = extractMarketMetrics(data);
+                break;
+              case 'sentiment':
+                result.sentiment = extractSentimentMetrics(data);
+                break;
+              case 'developer':
+                result.developer = extractDeveloperMetrics(data);
+                break;
+              case 'community':
+                result.community = extractCommunityMetrics(data);
+                break;
+              case 'whale': {
+                const priceUsd = data?.market_data?.current_price?.usd ?? null;
+                const whale = await fetchWhaleData(input.ticker, priceUsd);
+                result.whale = whale;
+                const rawRow = createRawWhaleReplayRowFromToolResult({
+                  capturedAt,
+                  ticker: input.ticker,
+                  whale,
+                });
+                if (rawRow) recordReplayWhaleCapture(rawRow);
+                break;
+              }
             }
           }
         }
-      }
 
-      // Fetch global market data
-      if (needsGlobal) {
-        const globalUrl = 'https://api.coingecko.com/api/v3/global';
-        sourceUrls.push(globalUrl);
+        // Fetch global market data
+        if (needsGlobal) {
+          const globalUrl = 'https://api.coingecko.com/api/v3/global';
+          sourceUrls.push(globalUrl);
 
-        const globalRes = await fetch(globalUrl, {
-          headers: { Accept: 'application/json' },
-        });
+          const globalRes = await fetch(globalUrl, {
+            headers: { Accept: 'application/json' },
+          });
 
-        if (globalRes.status === 429) {
-          result.global = { error: 'CoinGecko rate limit exceeded for global endpoint.' };
-        } else if (!globalRes.ok) {
-          result.global = { error: `CoinGecko global endpoint returned ${globalRes.status}` };
-        } else {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const globalData: any = await globalRes.json();
-          result.global = extractGlobalMetrics(globalData);
+          if (globalRes.status === 429) {
+            result.global = { error: 'CoinGecko rate limit exceeded for global endpoint.' };
+          } else if (!globalRes.ok) {
+            result.global = { error: `CoinGecko global endpoint returned ${globalRes.status}` };
+          } else {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const globalData: any = await globalRes.json();
+            result.global = extractGlobalMetrics(globalData);
+          }
         }
-      }
 
-      return formatToolResult(result, sourceUrls);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      return formatToolResult(
-        {
-          error: `On-chain crypto data unavailable for ${input.ticker}: ${errorMessage}. Try web_search for "${input.ticker} crypto on-chain metrics".`,
-          ticker: input.ticker.toUpperCase(),
-          coinGeckoId: coinId,
-        },
-        [],
-      );
-    }
-  },
-});
+        return formatToolResult(result, sourceUrls);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        return formatToolResult(
+          {
+            error: `On-chain crypto data unavailable for ${input.ticker}: ${errorMessage}. Try web_search for "${input.ticker} crypto on-chain metrics".`,
+            ticker: input.ticker.toUpperCase(),
+            coinGeckoId: coinId,
+          },
+          [],
+        );
+      }
+    },
+  });
+}
+
+export const getOnchainCrypto = createGetOnchainCryptoTool();
