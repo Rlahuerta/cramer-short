@@ -50,6 +50,10 @@ import { computeGarchScales } from './garch-scales.js';
 import { estimateCrossAssetBias } from './cross-asset-lasso.js';
 import type { AdaptiveConformalMetadata } from './conformal.js';
 import { computeTransitionEntropy, entropyZToCiScale } from './transition-entropy.js';
+import {
+  buildCoefficientClusteringDiagnostics,
+  type CoefficientClusteringDiagnostics,
+} from './coefficient-clustering.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -707,6 +711,7 @@ export interface MarkovDistributionResult {
     conformal?: AdaptiveConformalMetadata;
     confidence?: PredictionConfidenceBreakdown;
     softRegime?: SoftRegimeDiagnostics;
+    coefficientClustering?: CoefficientClusteringDiagnostics;
     kswinTrim?: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number };
     hawkes?: { intensityMultiplier: number; branchingRatio: number | null; jumpCount: number; endogenousJumpInjected: boolean };
     crossAssetBias?: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number };
@@ -4295,6 +4300,8 @@ export async function computeMarkovDistribution(params: {
   predictionConfidenceMode?: PredictionConfidenceMode;
   /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. Default false. */
   enableSoftRegimeWeighting?: boolean;
+  /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
+  enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
    *  Default false ⇒ byte-identical to pre-Phase-C. */
   enableKswinTrim?: boolean;
@@ -4357,6 +4364,7 @@ export async function computeMarkovDistribution(params: {
     conformalBreakSensitivity,
     enableKswinTrim,
     kswinAlpha,
+    enableCoefficientClustering,
     enableCrossAssetBias,
     crossAssetReturns,
     crossAssetLassoLambda,
@@ -4425,6 +4433,10 @@ export async function computeMarkovDistribution(params: {
     // Approximate daily vol as |return| (proxy; real impl should use (H-L)/O)
     vols.push(Math.abs(ret));
   }
+
+  const coefficientClusteringMeta = enableCoefficientClustering === true
+    ? buildCoefficientClusteringDiagnostics(returns)
+    : null;
 
   // --- Classify regime states with adaptive thresholds ---
   const effectiveReturnThresholdMultiplier = btcReturnThresholdMultiplier !== undefined && isBtcTicker
@@ -5086,6 +5098,12 @@ export async function computeMarkovDistribution(params: {
     const hawkes = applyHawkesAmplification(historicalPrices, {
       sigmaThreshold: hawkesSigmaThreshold ?? 3.0,
     });
+    hawkesMeta = {
+      intensityMultiplier: hawkes.intensityMultiplier,
+      branchingRatio: hawkes.fit ? hawkes.fit.alpha / hawkes.fit.beta : null,
+      jumpCount: hawkes.jumpIndices.length,
+      endogenousJumpInjected: !!hawkes.endogenousJump,
+    };
     if (hawkes.intensityMultiplier > 1.001 || hawkes.endogenousJump) {
       if (activeJumpEvents && activeJumpEvents.length > 0) {
         activeJumpEvents = amplifyJumpEvents(activeJumpEvents, hawkes.intensityMultiplier);
@@ -5099,12 +5117,6 @@ export async function computeMarkovDistribution(params: {
       } else if (activeJumpEvents && params.enableJumpDiffusion === true) {
         hasJumps = true;
       }
-      hawkesMeta = {
-        intensityMultiplier: hawkes.intensityMultiplier,
-        branchingRatio: hawkes.fit ? hawkes.fit.alpha / hawkes.fit.beta : null,
-        jumpCount: hawkes.jumpIndices.length,
-        endogenousJumpInjected: !!hawkes.endogenousJump,
-      };
     }
   }
 
@@ -5438,6 +5450,7 @@ export async function computeMarkovDistribution(params: {
       ...(conformalMetadata ? { conformal: conformalMetadata } : {}),
       confidence: confidenceBreakdown,
       ...(softRegimeMeta ? { softRegime: softRegimeMeta } : {}),
+      ...(coefficientClusteringMeta ? { coefficientClustering: coefficientClusteringMeta } : {}),
       kswinTrim: kswinTrimMeta,
       hawkes: hawkesMeta,
       crossAssetBias: crossAssetBiasMeta,

@@ -5302,6 +5302,64 @@ describe('markov_distribution tool output envelope', () => {
     expect(enabled.metadata.historicalDays).toBeLessThan(disabled.metadata.historicalDays);
   });
 
+  it('surfaces coefficient-clustering diagnostics only when enabled', async () => {
+    function makeArSeries(phi: number, sigma: number, length: number): number[] {
+      const series: number[] = [];
+      let prev = 0.004;
+      for (let i = 0; i < length; i++) {
+        const noise = sigma * Math.sin((i + 1) * 1.73);
+        const next = phi * prev + noise;
+        series.push(next);
+        prev = next;
+      }
+      return series;
+    }
+
+    function makePriceSeries(returns: number[], start = 100): number[] {
+      const out = new Array(returns.length + 1);
+      out[0] = start;
+      for (let i = 0; i < returns.length; i++) out[i + 1] = out[i] * Math.exp(returns[i]);
+      return out;
+    }
+
+    const prices = makePriceSeries([
+      ...makeArSeries(0.85, 0.002, 80),
+      ...makeArSeries(-0.72, 0.0025, 80),
+      ...makeArSeries(0.2, 0.006, 80),
+    ]);
+
+    const disabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    const enabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableCoefficientClustering: true,
+    });
+
+    expect(disabled.metadata.coefficientClustering).toBeUndefined();
+    expect(enabled.metadata.coefficientClustering).toEqual({
+      segmentCount: expect.any(Number),
+      occupiedClusters: expect.any(Number),
+      currentCluster: expect.any(Number),
+      currentProbabilities: expect.any(Array),
+      currentCoefficients: expect.any(Array),
+      centroids: expect.any(Array),
+      assignments: expect.any(Array),
+    });
+    expect(enabled.metadata.coefficientClustering!.occupiedClusters).toBeGreaterThanOrEqual(2);
+    expect(
+      enabled.metadata.coefficientClustering!.currentProbabilities.reduce((sum, value) => sum + value, 0),
+    ).toBeCloseTo(1, 6);
+  });
+
   it('exposes KSWIN trim metadata when the historical window has a variance shift', async () => {
     function makeRng(seed: number): () => number {
       let s = seed >>> 0;
@@ -5379,8 +5437,9 @@ describe('markov_distribution tool output envelope', () => {
     const rng = makeRng(99);
     const returns: number[] = [];
     for (let i = 0; i < 600; i++) returns.push(randn(rng) * 0.01);
-    for (let k = 0; k < 10; k++) returns[100 + k] += 0.09 * (rng() < 0.5 ? -1 : 1);
-    for (let k = 0; k < 8; k++) returns[380 + k] += 0.09 * (rng() < 0.5 ? -1 : 1);
+    for (let k = 0; k < 14; k++) returns[100 + k] += 0.14 * (rng() < 0.5 ? -1 : 1);
+    for (let k = 0; k < 12; k++) returns[250 + k] += 0.12 * (rng() < 0.5 ? -1 : 1);
+    for (let k = 0; k < 12; k++) returns[380 + k] += 0.14 * (rng() < 0.5 ? -1 : 1);
     const prices = makePriceSeries(returns);
 
     const disabled = await computeMarkovDistribution({
@@ -5401,7 +5460,7 @@ describe('markov_distribution tool output envelope', () => {
       trajectory: true,
       trajectoryDays: 7,
       enableHawkesIntensity: true,
-      hawkesSigmaThreshold: 2.0,
+      hawkesSigmaThreshold: 1.5,
     });
 
     expect(disabled.metadata.hawkes).toBeUndefined();
