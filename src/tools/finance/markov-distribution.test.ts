@@ -5250,6 +5250,230 @@ describe('markov_distribution tool output envelope', () => {
     expect(softTrend!.ciScale).toBeLessThanOrEqual(softChoppy!.ciScale);
   });
 
+  it('exposes ADWIN trim metadata when the historical window is mean-shifted', async () => {
+    function makeRng(seed: number): () => number {
+      let s = seed >>> 0;
+      return () => {
+        s = (s * 1664525 + 1013904223) >>> 0;
+        return s / 0x100000000;
+      };
+    }
+
+    function randn(rng: () => number): number {
+      const u1 = Math.max(1e-12, rng());
+      const u2 = rng();
+      return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    }
+
+    function makePriceSeries(returns: number[], start = 100): number[] {
+      const out = new Array(returns.length + 1);
+      out[0] = start;
+      for (let i = 0; i < returns.length; i++) out[i + 1] = out[i] * Math.exp(returns[i]);
+      return out;
+    }
+
+    const rng = makeRng(7);
+    const calm = Array.from({ length: 200 }, () => randn(rng) * 0.001);
+    const shifted = Array.from({ length: 200 }, () => randn(rng) * 0.001 + 0.5);
+    const prices = makePriceSeries([...calm, ...shifted]);
+
+    const disabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    const enabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableAdwinTrim: true,
+      adwinDelta: 0.1,
+    });
+
+    expect(disabled.metadata.adwinTrim).toBeUndefined();
+    expect(enabled.metadata.adwinTrim).toEqual({
+      droppedPrices: expect.any(Number),
+      keptPrices: expect.any(Number),
+    });
+    expect(enabled.metadata.historicalDays).toBeLessThan(disabled.metadata.historicalDays);
+  });
+
+  it('exposes KSWIN trim metadata when the historical window has a variance shift', async () => {
+    function makeRng(seed: number): () => number {
+      let s = seed >>> 0;
+      return () => {
+        s = (s * 1664525 + 1013904223) >>> 0;
+        return s / 0x100000000;
+      };
+    }
+
+    function randn(rng: () => number): number {
+      const u1 = Math.max(1e-12, rng());
+      const u2 = rng();
+      return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    }
+
+    function makePriceSeries(returns: number[], start = 100): number[] {
+      const out = new Array(returns.length + 1);
+      out[0] = start;
+      for (let i = 0; i < returns.length; i++) out[i + 1] = out[i] * Math.exp(returns[i]);
+      return out;
+    }
+
+    const rng = makeRng(17);
+    const wild = Array.from({ length: 160 }, () => randn(rng) * 0.04);
+    const calm = Array.from({ length: 160 }, () => randn(rng) * 0.002);
+    const prices = makePriceSeries([...wild, ...calm]);
+
+    const disabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    const enabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableKswinTrim: true,
+    });
+
+    expect(disabled.metadata.kswinTrim).toBeUndefined();
+    expect(enabled.metadata.kswinTrim).toEqual({
+      droppedPrices: expect.any(Number),
+      keptPrices: expect.any(Number),
+      maxD: expect.any(Number),
+      criticalD: expect.any(Number),
+    });
+  });
+
+  it('exposes Hawkes amplification metadata when clustered jumps are present', async () => {
+    function makeRng(seed: number): () => number {
+      let s = seed >>> 0;
+      return () => {
+        s = (s * 1664525 + 1013904223) >>> 0;
+        return s / 0x100000000;
+      };
+    }
+
+    function randn(rng: () => number): number {
+      const u1 = Math.max(1e-12, rng());
+      const u2 = rng();
+      return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    }
+
+    function makePriceSeries(returns: number[], start = 100): number[] {
+      const out = new Array(returns.length + 1);
+      out[0] = start;
+      for (let i = 0; i < returns.length; i++) out[i + 1] = out[i] * Math.exp(returns[i]);
+      return out;
+    }
+
+    const rng = makeRng(99);
+    const returns: number[] = [];
+    for (let i = 0; i < 600; i++) returns.push(randn(rng) * 0.01);
+    for (let k = 0; k < 10; k++) returns[100 + k] += 0.09 * (rng() < 0.5 ? -1 : 1);
+    for (let k = 0; k < 8; k++) returns[380 + k] += 0.09 * (rng() < 0.5 ? -1 : 1);
+    const prices = makePriceSeries(returns);
+
+    const disabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+      trajectoryDays: 7,
+    });
+    const enabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+      trajectoryDays: 7,
+      enableHawkesIntensity: true,
+      hawkesSigmaThreshold: 2.0,
+    });
+
+    expect(disabled.metadata.hawkes).toBeUndefined();
+    expect(enabled.metadata.hawkes).toEqual({
+      intensityMultiplier: expect.any(Number),
+      branchingRatio: expect.anything(),
+      jumpCount: expect.any(Number),
+      endogenousJumpInjected: expect.any(Boolean),
+    });
+  });
+
+  it('exposes cross-asset bias metadata only when trajectory drift is adjusted by peers', async () => {
+    function makeRng(seed: number): () => number {
+      let s = seed >>> 0;
+      return () => {
+        s = (s * 1664525 + 1013904223) >>> 0;
+        return s / 0x100000000;
+      };
+    }
+
+    function randn(rng: () => number): number {
+      const u1 = Math.max(1e-12, rng());
+      const u2 = rng();
+      return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    }
+
+    function makePriceSeries(returns: number[], start = 100): number[] {
+      const out = new Array(returns.length + 1);
+      out[0] = start;
+      for (let i = 0; i < returns.length; i++) out[i + 1] = out[i] * Math.exp(returns[i]);
+      return out;
+    }
+
+    const rng = makeRng(11);
+    const n = 220;
+    const ethReturns = Array.from({ length: n }, () => randn(rng) * 0.02);
+    const btcReturns = new Array(n).fill(0);
+    for (let i = 0; i < n - 1; i++) {
+      btcReturns[i + 1] = 0.4 * ethReturns[i] + 0.005 * randn(rng);
+    }
+    const prices = makePriceSeries(btcReturns);
+
+    const disabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+      trajectoryDays: 7,
+    });
+    const enabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+      trajectoryDays: 7,
+      enableCrossAssetBias: true,
+      crossAssetReturns: { ETH: ethReturns },
+      crossAssetLassoLambda: 0.001,
+    });
+
+    expect(disabled.metadata.crossAssetBias).toBeUndefined();
+    expect(enabled.metadata.crossAssetBias).toEqual({
+      perDayBias: expect.any(Number),
+      tickers: ['ETH'],
+      nonZeroCoefCount: expect.any(Number),
+    });
+  });
+
   it('keeps BTC 30-day off-window fallback candidates from enabling canonical emission', async () => {
     const now = Date.now();
     const day = 86_400_000;

@@ -703,10 +703,12 @@ export interface MarkovDistributionResult {
     transitionEntropyZ?: number | null;
     entropyCiScale?: number;
     entropyCiModulationApplied?: boolean;
+    adwinTrim?: { droppedPrices: number; keptPrices: number };
     conformal?: AdaptiveConformalMetadata;
     confidence?: PredictionConfidenceBreakdown;
     softRegime?: SoftRegimeDiagnostics;
     kswinTrim?: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number };
+    hawkes?: { intensityMultiplier: number; branchingRatio: number | null; jumpCount: number; endogenousJumpInjected: boolean };
     crossAssetBias?: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number };
   };
 }
@@ -5432,10 +5434,12 @@ export async function computeMarkovDistribution(params: {
       transitionEntropyZ,
       entropyCiScale,
       entropyCiModulationApplied: entropyCiScale !== 1 ? true : undefined,
+      adwinTrim: adwinTrimMeta,
       ...(conformalMetadata ? { conformal: conformalMetadata } : {}),
       confidence: confidenceBreakdown,
       ...(softRegimeMeta ? { softRegime: softRegimeMeta } : {}),
       kswinTrim: kswinTrimMeta,
+      hawkes: hawkesMeta,
       crossAssetBias: crossAssetBiasMeta,
     }
   };
