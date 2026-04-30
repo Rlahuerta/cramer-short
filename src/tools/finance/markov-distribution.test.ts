@@ -66,6 +66,7 @@ import {
   buildBtcShortHorizonThinAnchorWarning,
   capBtcShortHorizonConfidence,
   applyCryptoTerminalAnchorFallback,
+  evaluateAnchorTrust,
   normalizeHistoricalPriceTicker,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
@@ -421,6 +422,63 @@ describe('extractPriceThresholds', () => {
       { question: 'Will TSLA exceed $300?', probability: 0.5, volume: 0 },
     ]);
     expect(result[0].trustScore).toBe('low');
+  });
+
+  it('evaluates anchor trust with an explicit decision table for crypto resolution rules', () => {
+    expect(evaluateAnchorTrust({
+      hasVolume: true,
+      isYoung: false,
+      isShortHorizonCrypto: false,
+      isLongHorizonCrypto: false,
+      isNearTargetResolution: false,
+    })).toEqual({
+      trustScore: 'high',
+      lowTrustReasons: [],
+    });
+
+    expect(evaluateAnchorTrust({
+      hasVolume: true,
+      isYoung: true,
+      isShortHorizonCrypto: true,
+      isLongHorizonCrypto: false,
+      isNearTargetResolution: true,
+    })).toEqual({
+      trustScore: 'high',
+      lowTrustReasons: ['young_market'],
+    });
+
+    expect(evaluateAnchorTrust({
+      hasVolume: true,
+      isYoung: true,
+      isShortHorizonCrypto: true,
+      isLongHorizonCrypto: false,
+      isNearTargetResolution: false,
+    })).toEqual({
+      trustScore: 'low',
+      lowTrustReasons: ['young_market', 'resolution_mismatch'],
+    });
+
+    expect(evaluateAnchorTrust({
+      hasVolume: true,
+      isYoung: false,
+      isShortHorizonCrypto: false,
+      isLongHorizonCrypto: true,
+      isNearTargetResolution: true,
+    })).toEqual({
+      trustScore: 'high',
+      lowTrustReasons: [],
+    });
+
+    expect(evaluateAnchorTrust({
+      hasVolume: true,
+      isYoung: false,
+      isShortHorizonCrypto: false,
+      isLongHorizonCrypto: true,
+      isNearTargetResolution: false,
+    })).toEqual({
+      trustScore: 'low',
+      lowTrustReasons: ['resolution_mismatch'],
+    });
   });
 
   it('skips markets with no price in question', () => {

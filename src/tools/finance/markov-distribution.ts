@@ -225,6 +225,19 @@ export interface SoftRegimeDiagnostics {
   transitionBlendWeight?: number;
 }
 
+export interface AnchorTrustEvaluationInput {
+  hasVolume: boolean;
+  isYoung: boolean;
+  isShortHorizonCrypto: boolean;
+  isLongHorizonCrypto: boolean;
+  isNearTargetResolution: boolean;
+}
+
+export interface AnchorTrustEvaluation {
+  trustScore: 'high' | 'low';
+  lowTrustReasons: AnchorLowTrustReason[];
+}
+
 export interface PriceThreshold {
   price: number;
   /** Raw YES probability from Polymarket (0–1) */
@@ -958,6 +971,32 @@ function parsePrice(raw: string): number {
 
 type AnchorLowTrustReason = 'young_market' | 'resolution_mismatch' | 'missing_volume';
 
+/**
+ * Evaluate whether a parsed terminal anchor should be trusted for calibration.
+ *
+ * Decision table:
+ * - Non-crypto or short-horizon crypto:
+ *   - mature + volume => high
+ *   - young short-horizon crypto also needs near-target resolution
+ * - Long-horizon crypto:
+ *   - always requires volume, maturity, and near-target resolution
+ */
+export function evaluateAnchorTrust(input: AnchorTrustEvaluationInput): AnchorTrustEvaluation {
+  const needsResolutionMatch = input.isLongHorizonCrypto || (input.isShortHorizonCrypto && input.isYoung);
+  const trustScore: 'high' | 'low' =
+    input.hasVolume && (
+      (input.isLongHorizonCrypto && !input.isYoung && input.isNearTargetResolution)
+      || (!input.isLongHorizonCrypto && (!input.isYoung || (input.isShortHorizonCrypto && input.isNearTargetResolution)))
+    ) ? 'high' : 'low';
+
+  const lowTrustReasons: AnchorLowTrustReason[] = [];
+  if (!input.hasVolume) lowTrustReasons.push('missing_volume');
+  if (input.isYoung) lowTrustReasons.push('young_market');
+  if (needsResolutionMatch && !input.isNearTargetResolution) lowTrustReasons.push('resolution_mismatch');
+
+  return { trustScore, lowTrustReasons };
+}
+
 type AnchorCandidateInspection =
   | {
       status: 'excluded';
@@ -1071,17 +1110,13 @@ function inspectAnchorCandidate(
   const isNearTargetResolution = options?.horizonDays != null && endDate
     ? Math.abs((Date.parse(endDate) - now) / 86_400_000 - options.horizonDays) <= 2
     : false;
-  const trustScore: 'high' | 'low' =
-    hasVolume && (
-      (isLongHorizonCrypto && !isYoung && isNearTargetResolution)
-      || (!isLongHorizonCrypto && (!isYoung || (isShortHorizonCrypto && isNearTargetResolution)))
-    ) ? 'high' : 'low';
-
-  const lowTrustReasons: AnchorLowTrustReason[] = [];
-  if (!hasVolume) lowTrustReasons.push('missing_volume');
-  if (isYoung) lowTrustReasons.push('young_market');
-  const needsResolutionMatch = isLongHorizonCrypto || (isShortHorizonCrypto && isYoung);
-  if (needsResolutionMatch && !isNearTargetResolution) lowTrustReasons.push('resolution_mismatch');
+  const { trustScore, lowTrustReasons } = evaluateAnchorTrust({
+    hasVolume,
+    isYoung,
+    isShortHorizonCrypto,
+    isLongHorizonCrypto,
+    isNearTargetResolution,
+  });
 
   const rawProbability = market.probability;
   const correctedRaw = rawProbability * YES_BIAS_MULTIPLIER;
