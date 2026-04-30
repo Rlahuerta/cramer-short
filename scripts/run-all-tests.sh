@@ -71,21 +71,39 @@ echo "── Python Tests (research/) ──────────────
 
 # Use conda environment as specified in research/README.md
 CONDA_ENV="cramer-research"
-if ! command -v conda &>/dev/null; then
-  echo "ERROR: conda not found. Cannot run Python tests." >&2
-  echo "Install Miniconda: https://docs.conda.io/en/latest/miniconda.html" >&2
-  PY_FAIL=$((PY_FAIL + 1))
-  TOTAL_EXIT=1
-elif ! conda env list 2>/dev/null | grep -q "^${CONDA_ENV} "; then
-  echo "ERROR: conda environment '${CONDA_ENV}' not found." >&2
-  echo "Create it: conda env create -f environment-research.yml" >&2
+CONDA_SH=""
+
+# Locate conda.sh — check common install locations
+for candidate in \
+  "${HOME}/anaconda3/etc/profile.d/conda.sh" \
+  "${HOME}/miniconda3/etc/profile.d/conda.sh" \
+  "/opt/conda/etc/profile.d/conda.sh"; do
+  if [[ -f "$candidate" ]]; then
+    CONDA_SH="$candidate"
+    break
+  fi
+done
+
+if [[ -z "$CONDA_SH" ]]; then
+  echo "ERROR: conda.sh not found. Cannot run Python tests." >&2
+  echo "Expected at ~/anaconda3/etc/profile.d/conda.sh or similar." >&2
   PY_FAIL=$((PY_FAIL + 1))
   TOTAL_EXIT=1
 else
-  # Install package in editable mode within the conda environment
-  conda run -n "$CONDA_ENV" pip install -e "$REPO_ROOT/research" --quiet 2>&1
+  source "$CONDA_SH"
+  conda activate "$CONDA_ENV" 2>/dev/null || {
+    echo "ERROR: conda environment '${CONDA_ENV}' not found." >&2
+    echo "Create it: conda env create -f environment-research.yml" >&2
+    PY_FAIL=$((PY_FAIL + 1))
+    TOTAL_EXIT=1
+  }
+fi
 
-  if conda run -n "$CONDA_ENV" python -m pytest research/tests -v 2>&1; then
+if [[ $PY_FAIL -eq 0 ]]; then
+  # Install package in editable mode within the conda environment
+  pip install -e "$REPO_ROOT/research" --quiet 2>&1
+
+  if python -m pytest research/tests -v 2>&1; then
     PY_PASS=$((PY_PASS + 1))
   else
     PY_FAIL=$((PY_FAIL + 1))
