@@ -48,6 +48,7 @@ import {
 } from './regime-calibrator.js';
 import { computeGarchScales } from './garch-scales.js';
 import { estimateCrossAssetBias } from './cross-asset-lasso.js';
+import type { AdaptiveConformalMetadata } from './conformal.js';
 import { computeTransitionEntropy, entropyZToCiScale } from './transition-entropy.js';
 
 // ---------------------------------------------------------------------------
@@ -668,6 +669,7 @@ export interface MarkovDistributionResult {
     transitionEntropyZ?: number | null;
     entropyCiScale?: number;
     entropyCiModulationApplied?: boolean;
+    conformal?: AdaptiveConformalMetadata;
     kswinTrim?: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number };
     crossAssetBias?: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number };
   };
@@ -4193,6 +4195,16 @@ export async function computeMarkovDistribution(params: {
   entropyKappa?: number;
   /** R5 Idea #11 — apply favourite/longshot shrinkage after Q→P conversion. Default false for behaviour safety. */
   enableLongshotShrinkage?: boolean;
+  /** R6 — expose adaptive conformal trust metadata for single-shot forecasts. */
+  enableAdaptiveConformal?: boolean;
+  /** R6 — target conformal miscoverage α. */
+  conformalAlpha?: number;
+  /** R6 — widen metadata radius more aggressively in break mode. */
+  conformalBreakSensitivity?: number;
+  /** R6 — ignored for single-shot metadata; walk-forward uses it for online control. */
+  conformalFastLearningRate?: number;
+  /** R6 — ignored for single-shot metadata; walk-forward uses it for online control. */
+  conformalCooloffWindow?: number;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
    *  Default false ⇒ byte-identical to pre-Phase-C. */
   enableKswinTrim?: boolean;
@@ -4250,6 +4262,9 @@ export async function computeMarkovDistribution(params: {
     transitionEntropyHistory,
     entropyKappa,
     enableLongshotShrinkage,
+    enableAdaptiveConformal,
+    conformalAlpha,
+    conformalBreakSensitivity,
     enableKswinTrim,
     kswinAlpha,
     enableCrossAssetBias,
@@ -5235,6 +5250,16 @@ export async function computeMarkovDistribution(params: {
     });
   }
 
+  const conformalMetadata = enableAdaptiveConformal === true
+    ? buildAdaptiveConformalMetadata({
+      distribution,
+      currentPrice,
+      alpha: conformalAlpha,
+      structuralBreakDetected: breakResult.detected,
+      breakSensitivity: conformalBreakSensitivity,
+    })
+    : undefined;
+
   return {
     ticker,
     currentPrice,
@@ -5288,10 +5313,68 @@ export async function computeMarkovDistribution(params: {
       transitionEntropyZ,
       entropyCiScale,
       entropyCiModulationApplied: entropyCiScale !== 1 ? true : undefined,
+      ...(conformalMetadata ? { conformal: conformalMetadata } : {}),
       kswinTrim: kswinTrimMeta,
       crossAssetBias: crossAssetBiasMeta,
     }
   };
+}
+
+function buildAdaptiveConformalMetadata(params: {
+  distribution: MarkovDistributionPoint[];
+  currentPrice: number;
+  alpha?: number;
+  structuralBreakDetected: boolean;
+  breakSensitivity?: number;
+}): AdaptiveConformalMetadata {
+  const {
+    distribution,
+    currentPrice,
+    alpha,
+    structuralBreakDetected,
+    breakSensitivity,
+  } = params;
+  const mode = structuralBreakDetected ? 'break' : 'normal';
+  const baselineRadius = estimateDistributionRadius(distribution, currentPrice, alpha);
+  const radius = mode === 'break'
+    ? baselineRadius * Math.max(1, Math.sqrt(breakSensitivity ?? 1.5))
+    : baselineRadius;
+
+  return {
+    applied: true,
+    radius,
+    coverageEstimate: null,
+    mode,
+  };
+}
+
+function estimateDistributionRadius(
+  distribution: MarkovDistributionPoint[],
+  currentPrice: number,
+  alpha = 0.1,
+): number {
+  if (distribution.length === 0) return currentPrice * 0.05;
+
+  let ciLower = distribution[0].price;
+  let ciUpper = distribution[distribution.length - 1].price;
+  const tailProbability = Math.min(Math.max(alpha / 2, 1e-4), 0.49);
+  const lowerThreshold = 1 - tailProbability;
+  const upperThreshold = tailProbability;
+
+  for (let i = 0; i < distribution.length - 1; i++) {
+    if (distribution[i].probability >= lowerThreshold && distribution[i + 1].probability < lowerThreshold) {
+      const frac = (lowerThreshold - distribution[i + 1].probability)
+        / (distribution[i].probability - distribution[i + 1].probability);
+      ciLower = distribution[i + 1].price + frac * (distribution[i].price - distribution[i + 1].price);
+    }
+    if (distribution[i].probability >= upperThreshold && distribution[i + 1].probability < upperThreshold) {
+      const frac = (upperThreshold - distribution[i + 1].probability)
+        / (distribution[i].probability - distribution[i + 1].probability);
+      ciUpper = distribution[i + 1].price + frac * (distribution[i].price - distribution[i + 1].price);
+    }
+  }
+
+  return Math.max((ciUpper - ciLower) / 2, currentPrice * 0.005);
 }
 // 9. LangChain tool wrapper
 // ---------------------------------------------------------------------------

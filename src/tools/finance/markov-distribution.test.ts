@@ -5010,6 +5010,86 @@ describe('markov_distribution tool output envelope', () => {
     expect(result.metadata.divergenceWeightedBreakConfidenceActive).toBeUndefined();
   });
 
+  it('exposes conformal diagnostics only when adaptive conformal is enabled', async () => {
+    interface AdaptiveConformalMarkovDistributionOptions {
+      enableAdaptiveConformal?: boolean;
+      conformalAlpha?: number;
+      conformalBreakSensitivity?: number;
+    }
+
+    interface AdaptiveConformalMetadataContract {
+      applied: true;
+      radius: number;
+      coverageEstimate: number | null;
+      mode: 'normal' | 'break';
+    }
+
+    type PlannedAdaptiveConformalMetadata =
+      Awaited<ReturnType<typeof computeMarkovDistribution>>['metadata']
+      & { conformal?: AdaptiveConformalMetadataContract };
+
+    function getConformalMetadata(
+      metadata: Awaited<ReturnType<typeof computeMarkovDistribution>>['metadata'],
+    ): AdaptiveConformalMetadataContract | undefined {
+      return (metadata as PlannedAdaptiveConformalMetadata).conformal;
+    }
+
+    const prices = Array.from({ length: 140 }, (_, i) =>
+      i < 90
+        ? 100 + i * 0.18 + Math.sin(i * 0.25)
+        : 116 - (i - 90) * 0.45 + Math.sin(i * 0.25) * 2,
+    );
+
+    const disabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    const explicitlyDisabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableAdaptiveConformal: false,
+      conformalAlpha: 0.1,
+      conformalBreakSensitivity: 1.5,
+    } as Parameters<typeof computeMarkovDistribution>[0] & AdaptiveConformalMarkovDistributionOptions);
+    const enabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableAdaptiveConformal: true,
+      conformalAlpha: 0.1,
+      conformalBreakSensitivity: 1.5,
+    } as Parameters<typeof computeMarkovDistribution>[0] & AdaptiveConformalMarkovDistributionOptions);
+
+    const disabledConformal = getConformalMetadata(disabled.metadata);
+    const explicitlyDisabledConformal = getConformalMetadata(explicitlyDisabled.metadata);
+    const enabledConformal = getConformalMetadata(enabled.metadata);
+
+    expect(disabledConformal).toBeUndefined();
+    expect(explicitlyDisabledConformal).toBeUndefined();
+    expect(Object.hasOwn(disabled.metadata, 'conformal')).toBe(false);
+    expect(Object.hasOwn(explicitlyDisabled.metadata, 'conformal')).toBe(false);
+    expect(enabledConformal).toStrictEqual({
+      applied: true,
+      radius: expect.any(Number),
+      coverageEstimate: null,
+      mode: expect.stringMatching(/^(normal|break)$/),
+    });
+    expect(Object.keys(enabledConformal ?? {}).sort()).toEqual([
+      'applied',
+      'coverageEstimate',
+      'mode',
+      'radius',
+    ]);
+  });
+
   it('keeps BTC 30-day off-window fallback candidates from enabling canonical emission', async () => {
     const now = Date.now();
     const day = 86_400_000;

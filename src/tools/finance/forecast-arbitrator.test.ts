@@ -5,9 +5,184 @@ import {
   extractPriceLevels,
   forecastArbitratorTool,
 } from './forecast-arbitrator.js';
+import type {
+  ForecastArbiterInput,
+  ForecastArbiterResult,
+  ForecastMarketEvidence,
+  ForecastMarketSemantics,
+} from './forecast-arbitrator.js';
+
+type PlannedPolicyLevel = 'full' | 'context-only' | 'abstain';
+
+interface PlannedConformalDiagnostics {
+  applied: boolean;
+  radius: number;
+  coverageEstimate: number | null;
+  mode: 'normal' | 'break';
+}
+
+interface PlannedPolicy {
+  level: PlannedPolicyLevel;
+  horizonEligible: boolean;
+  tradeEligible: boolean;
+  reasons: string[];
+}
+
+type PlannedMarkovInput = NonNullable<ForecastArbiterInput['markov']> & {
+  conformal?: PlannedConformalDiagnostics;
+};
+
+type PlannedPolymarketInput = Omit<NonNullable<ForecastArbiterInput['polymarket']>, 'markets'> & {
+  markets?: PlannedForecastMarketEvidence[];
+};
+
+type PlannedWhaleInput = NonNullable<ForecastArbiterInput['whale']>;
+
+type PlannedForecastMarketEvidence = ForecastMarketEvidence & {
+  semantics?: ForecastMarketSemantics;
+};
+
+type PlannedForecastArbiterInput = Omit<ForecastArbiterInput, 'markov' | 'polymarket' | 'whale'> & {
+  markov: PlannedMarkovInput;
+  polymarket?: PlannedPolymarketInput;
+  whale?: PlannedWhaleInput;
+};
+
+type PlannedForecastArbiterResult = ForecastArbiterResult & {
+  policy: PlannedPolicy;
+  rawEvidence: {
+    markov: PlannedMarkovInput | null;
+    polymarket: PlannedPolymarketInput | null;
+    whale: PlannedWhaleInput | null;
+  };
+};
 
 function parseToolResult(raw: unknown) {
-  return JSON.parse(raw as string) as { data: { result: ReturnType<typeof arbitrateForecast> } };
+  return JSON.parse(raw as string) as { data: { result: PlannedForecastArbiterResult } };
+}
+
+function arbitratePlannedForecast(input: PlannedForecastArbiterInput): PlannedForecastArbiterResult {
+  return arbitrateForecast(input) as PlannedForecastArbiterResult;
+}
+
+function expectPlannedPolicy(
+  result: PlannedForecastArbiterResult,
+  expected: Pick<PlannedPolicy, 'level' | 'horizonEligible' | 'tradeEligible'>,
+) {
+  expect(result).toHaveProperty('policy');
+  expect(result.policy).toMatchObject(expected);
+  expect(Array.isArray(result.policy.reasons)).toBe(true);
+}
+
+function buildTerminalMarket(
+  question: string,
+  probability: number,
+  semantics: ForecastMarketSemantics = 'terminal',
+): PlannedForecastMarketEvidence {
+  return { question, probability, semantics };
+}
+
+function buildAlignedFullGuidanceFixture(): PlannedForecastArbiterInput {
+  return {
+    ticker: 'BTC',
+    horizon_days: 7,
+    current_price: 76_000,
+    leverage: 2,
+    markov: {
+      forecast_return: 0.018,
+      p_up: 0.68,
+      confidence: 0.84,
+      structural_break: false,
+      flat_probability: 0.22,
+      ci_low: 74_200,
+      ci_high: 79_100,
+      summary: 'Trusted Markov regime remains intact.',
+      conformal: {
+        applied: true,
+        radius: 0.041,
+        coverageEstimate: 0.93,
+        mode: 'normal',
+      },
+    },
+    polymarket: {
+      forecast_return: 0.015,
+      confidence: 0.78,
+      quality_score: 82,
+      markets: [
+        buildTerminalMarket('Will BTC be above $77,000 on May 7?', 0.67),
+      ],
+      summary: 'Terminal YES markets still lean higher into the requested horizon.',
+    },
+    whale: {
+      direction: 'long',
+      confidence: 0.7,
+      summary: 'Whale desks have been net-accumulating on dips.',
+    },
+  };
+}
+
+function buildDirectionalDivergenceContextOnlyFixture(): PlannedForecastArbiterInput {
+  const aligned = buildAlignedFullGuidanceFixture();
+  return {
+    ...aligned,
+    polymarket: {
+      forecast_return: -0.009,
+      confidence: aligned.polymarket?.confidence,
+      quality_score: aligned.polymarket?.quality_score,
+      markets: [
+        buildTerminalMarket('Will BTC finish below $75,000 on May 7?', 0.59),
+      ],
+      summary: 'Prediction markets lean lower while Markov still points modestly higher.',
+    },
+  };
+}
+
+function buildBreakModeConformalFixture(): PlannedForecastArbiterInput {
+  const aligned = buildAlignedFullGuidanceFixture();
+  return {
+    ...aligned,
+    markov: {
+      ...aligned.markov,
+      structural_break: true,
+      summary: 'Break regime detected; treat drift as regime context only.',
+      conformal: {
+        applied: true,
+        radius: 0.088,
+        coverageEstimate: 0.61,
+        mode: 'break',
+      },
+    },
+  };
+}
+
+function buildMissingTrustedSupportAbstainFixture(): PlannedForecastArbiterInput {
+  return {
+    ticker: 'BTC',
+    horizon_days: 14,
+    current_price: 76_000,
+    leverage: 3,
+    markov: {
+      forecast_return: 0.001,
+      p_up: 0.51,
+      confidence: 0.17,
+      structural_break: true,
+      flat_probability: 0.86,
+      ci_low: 69_800,
+      ci_high: 82_400,
+      summary: 'No trusted terminal support remains after the break.',
+      conformal: {
+        applied: true,
+        radius: 0.132,
+        coverageEstimate: 0.54,
+        mode: 'break',
+      },
+    },
+    whale: {
+      direction: 'neutral',
+      confidence: 0.25,
+      summary: 'No whale confirmation is available.',
+    },
+  };
 }
 
 describe('forecast arbitrator', () => {
@@ -84,6 +259,105 @@ describe('forecast arbitrator', () => {
     expect(result.verdict).toBe('LONG');
     expect(result.shouldEnterNow).toBe(true);
     expect(result.preferredDirection).toBe('long');
+  });
+
+  it('promotes aligned high-confidence evidence to full guidance policy', () => {
+    const result = arbitratePlannedForecast(buildAlignedFullGuidanceFixture());
+
+    expect(result.verdict).toBe('LONG');
+    expect(result.shouldEnterNow).toBe(true);
+    expectPlannedPolicy(result, {
+      level: 'full',
+      horizonEligible: true,
+      tradeEligible: true,
+    });
+  });
+
+  it('keeps the horizon eligible but blocks trade entry when only the directional evidence diverges', () => {
+    const result = arbitratePlannedForecast(buildDirectionalDivergenceContextOnlyFixture());
+
+    expect(result.shouldEnterNow).toBe(false);
+    expectPlannedPolicy(result, {
+      level: 'context-only',
+      horizonEligible: true,
+      tradeEligible: false,
+    });
+  });
+
+  it('abstains when trusted terminal support is missing rather than merely downgrading trade entry', () => {
+    const result = arbitratePlannedForecast(buildMissingTrustedSupportAbstainFixture());
+
+    expect(result.shouldEnterNow).toBe(false);
+    expectPlannedPolicy(result, {
+      level: 'abstain',
+      horizonEligible: false,
+      tradeEligible: false,
+    });
+  });
+
+  it('threads break-aware conformal diagnostics into the preserved raw Markov evidence', () => {
+    const fixture = buildBreakModeConformalFixture();
+    const result = arbitratePlannedForecast(fixture);
+
+    expectPlannedPolicy(result, {
+      level: 'context-only',
+      horizonEligible: true,
+      tradeEligible: false,
+    });
+    expect(result).toMatchObject({
+      rawEvidence: {
+        markov: expect.objectContaining({
+          forecast_return: fixture.markov.forecast_return,
+          summary: fixture.markov.summary,
+          conformal: fixture.markov.conformal,
+        }),
+      },
+    });
+  });
+
+  it('does not coerce malformed conformal mode input into a normal regime', async () => {
+    const fixture = buildAlignedFullGuidanceFixture();
+    const raw = await forecastArbitratorTool.invoke({
+      ...fixture,
+      markov: {
+        ...fixture.markov,
+        conformal: {
+          applied: true,
+          radius: 0.041,
+          coverageEstimate: 0.93,
+          mode: 'regime_shift',
+        },
+      },
+    });
+
+    const parsed = parseToolResult(raw);
+    expect(parsed.data.result.rawEvidence.markov?.conformal?.mode).toBeUndefined();
+  });
+
+  it('keeps raw Markov, Polymarket, and whale evidence visible even when policy downgrades to context-only', () => {
+    const fixture = buildDirectionalDivergenceContextOnlyFixture();
+    const result = arbitratePlannedForecast(fixture);
+
+    expectPlannedPolicy(result, {
+      level: 'context-only',
+      horizonEligible: true,
+      tradeEligible: false,
+    });
+    expect(result).toMatchObject({
+      rawEvidence: {
+        markov: expect.objectContaining({
+          forecast_return: fixture.markov.forecast_return,
+          summary: fixture.markov.summary,
+        }),
+        polymarket: expect.objectContaining({
+          forecast_return: fixture.polymarket?.forecast_return,
+          summary: fixture.polymarket?.summary,
+        }),
+        whale: expect.objectContaining({
+          summary: fixture.whale?.summary,
+        }),
+      },
+    });
   });
 
   it('tool output preserves raw Markov, Polymarket, and whale evidence', async () => {

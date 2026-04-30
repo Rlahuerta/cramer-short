@@ -12,6 +12,10 @@ import {
   type BreakFallbackCandidate,
   type DivergencePenaltySchedule,
 } from '../markov-distribution.js';
+import {
+  AdaptiveConformalPID,
+  type AdaptiveConformalRecordDiagnostics,
+} from '../conformal.js';
 import type { RegimePlattFits } from '../regime-calibrator.js';
 import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
 
@@ -99,6 +103,16 @@ export interface WalkForwardConfig {
   entropyKappa?: number;
   /** R5 Idea #11 — enable longshot/favorite shrinkage in RND anchor integration. */
   enableLongshotShrinkage?: boolean;
+  /** R6 — enable adaptive conformal calibration in walk-forward CI evaluation. */
+  enableAdaptiveConformal?: boolean;
+  /** R6 — target conformal miscoverage α. Default 0.1. */
+  conformalAlpha?: number;
+  /** R6 — break-mode sensitivity / learning-rate multiplier. */
+  conformalBreakSensitivity?: number;
+  /** R6 — base adaptive conformal learning rate. */
+  conformalFastLearningRate?: number;
+  /** R6 — number of steps to keep break mode active after a trigger. */
+  conformalCooloffWindow?: number;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -144,6 +158,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
   const maxT = prices.length - horizon - 1;
   const entropyHistory: number[] = [];
   const entropyWindowSize = Math.max(5, config.entropyWindowSize ?? 60);
+  let adaptiveConformal: AdaptiveConformalPID | undefined;
 
   for (let t = warmup; t <= maxT; t += stride) {
     const histPrices = prices.slice(0, t + 1);
@@ -191,6 +206,11 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         transitionEntropyHistory: entropyHistory,
         entropyKappa: config.entropyKappa,
         enableLongshotShrinkage: config.enableLongshotShrinkage,
+        enableAdaptiveConformal: config.enableAdaptiveConformal,
+        conformalAlpha: config.conformalAlpha,
+        conformalBreakSensitivity: config.conformalBreakSensitivity,
+        conformalFastLearningRate: config.conformalFastLearningRate,
+        conformalCooloffWindow: config.conformalCooloffWindow,
         enableKswinTrim: config.enableKswinTrim,
         kswinAlpha: config.kswinAlpha,
         enableCrossAssetBias: config.enableCrossAssetBias,
@@ -241,13 +261,18 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             enableGarchVol: config.enableGarchVol,
             garchHorizonCap: config.garchHorizonCap,
             garchRegimeCeiling: config.garchRegimeCeiling,
-            enableEntropyCiModulation: config.enableEntropyCiModulation,
-            transitionEntropyHistory: entropyHistory,
-            entropyKappa: config.entropyKappa,
-            enableLongshotShrinkage: config.enableLongshotShrinkage,
-            enableKswinTrim: config.enableKswinTrim,
-            kswinAlpha: config.kswinAlpha,
-            enableCrossAssetBias: config.enableCrossAssetBias,
+             enableEntropyCiModulation: config.enableEntropyCiModulation,
+             transitionEntropyHistory: entropyHistory,
+             entropyKappa: config.entropyKappa,
+             enableLongshotShrinkage: config.enableLongshotShrinkage,
+             enableAdaptiveConformal: config.enableAdaptiveConformal,
+             conformalAlpha: config.conformalAlpha,
+             conformalBreakSensitivity: config.conformalBreakSensitivity,
+             conformalFastLearningRate: config.conformalFastLearningRate,
+             conformalCooloffWindow: config.conformalCooloffWindow,
+             enableKswinTrim: config.enableKswinTrim,
+             kswinAlpha: config.kswinAlpha,
+             enableCrossAssetBias: config.enableCrossAssetBias,
             crossAssetReturns: config.crossAssetReturns,
             crossAssetLassoLambda: config.crossAssetLassoLambda,
           });
@@ -261,7 +286,49 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
       // The raw distribution has wider spread and better sign discriminability.
       const rawPredictedProb = interpolateSurvival(result.rawDistribution, currentPrice);
 
-      const { ciLower, ciUpper } = extractCI(result.distribution, currentPrice);
+      let { ciLower, ciUpper } = extractCI(result.distribution, currentPrice);
+      let conformalApplied: boolean | undefined;
+      let conformalRadius: number | undefined;
+      let conformalCoverageEstimate: number | undefined;
+      let conformalMode: 'normal' | 'break' | undefined;
+
+      if (config.enableAdaptiveConformal === true) {
+        const forecastCenter = currentPrice * (1 + result.actionSignal.expectedReturn);
+        const recentRealizedVol = computeRecentRealizedVol(histPrices);
+        if (!adaptiveConformal) {
+          adaptiveConformal = new AdaptiveConformalPID({
+            enabled: true,
+            alpha: config.conformalAlpha,
+            initialRadius: currentPrice * 0.005,
+            learningRate: config.conformalFastLearningRate,
+            breakLearningRateMultiplier: config.conformalBreakSensitivity,
+            cooloffWindow: config.conformalCooloffWindow,
+          });
+        }
+
+        const adaptiveDiagnostics: AdaptiveConformalRecordDiagnostics = {
+          structuralBreak: result.metadata.structuralBreakDetected && (recentRealizedVol ?? 0) >= 0.02,
+          realizedVol: recentRealizedVol,
+        };
+        const adaptiveInterval = adaptiveConformal.wrap(forecastCenter, adaptiveDiagnostics);
+        const adaptiveMode = adaptiveConformal.currentMode();
+        const adaptiveRadius = adaptiveInterval.high - forecastCenter;
+        if (adaptiveMode === 'break') {
+          const midpoint = (ciLower + ciUpper) / 2;
+          const halfWidth = (ciUpper - ciLower) / 2;
+          const widenedHalfWidth = Math.max(
+            halfWidth * (1 + ((config.conformalBreakSensitivity ?? 1.5) * 0.35)),
+            adaptiveRadius,
+          );
+          ciLower = Math.min(ciLower, adaptiveInterval.low, midpoint - widenedHalfWidth);
+          ciUpper = Math.max(ciUpper, adaptiveInterval.high, midpoint + widenedHalfWidth);
+        }
+        adaptiveConformal.record(forecastCenter, realizedPrice, adaptiveDiagnostics);
+        conformalApplied = true;
+        conformalRadius = adaptiveRadius;
+        conformalCoverageEstimate = adaptiveConformal.empiricalCoverage();
+        conformalMode = adaptiveMode;
+      }
 
       let decisionSource: DecisionSource = 'default';
       if (result.metadata.pr3fDisagreementBlendActive) {
@@ -321,6 +388,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         transitionEntropyZ: result.metadata.transitionEntropyZ,
         entropyCiScale: result.metadata.entropyCiScale,
         entropyCiModulationApplied: result.metadata.entropyCiModulationApplied,
+        conformalApplied,
+        conformalRadius,
+        conformalCoverageEstimate,
+        conformalMode,
       });
       const entropyNorm = result.metadata.transitionEntropyNorm;
       if (typeof entropyNorm === 'number' && Number.isFinite(entropyNorm)) {
@@ -398,4 +469,20 @@ function extractCI(
   }
 
   return { ciLower, ciUpper };
+}
+
+function computeRecentRealizedVol(prices: readonly number[], lookback = 20): number | undefined {
+  if (prices.length < 3) return undefined;
+  const start = Math.max(1, prices.length - lookback);
+  const returns: number[] = [];
+  for (let i = start; i < prices.length; i++) {
+    const prev = prices[i - 1];
+    const next = prices[i];
+    if (!(prev > 0) || !(next > 0)) continue;
+    returns.push(Math.log(next / prev));
+  }
+  if (returns.length < 2) return undefined;
+  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const variance = returns.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / returns.length;
+  return Math.sqrt(Math.max(variance, 0));
 }

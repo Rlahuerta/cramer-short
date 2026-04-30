@@ -10,7 +10,8 @@
  * touches the underlying forecast model.
  */
 import { describe, it, expect } from 'bun:test';
-import { ConformalPID } from './conformal.js';
+import { ConformalPID, type ConformalPIDOptions } from './conformal.js';
+import * as conformalModule from './conformal.js';
 
 // Deterministic Gaussian sampler (Box–Muller) for reproducible tests.
 function makeGaussian(seed: number): () => number {
@@ -24,6 +25,46 @@ function makeGaussian(seed: number): () => number {
     const u2 = rand();
     return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   };
+}
+
+type AdaptiveConformalLike = {
+  currentRadius(): number;
+  currentMode(): 'normal' | 'break';
+  empiricalCoverage(): number | undefined;
+  sampleCount(): number;
+  wrap(forecastCenter: number): { low: number; high: number };
+  record(
+    forecastCenter: number,
+    actual: number,
+    diagnostics?: { structuralBreak?: boolean; realizedVol?: number },
+  ): void;
+};
+
+interface AdaptiveConformalRecordDiagnostics {
+  structuralBreak?: boolean;
+  realizedVol?: number;
+}
+
+interface AdaptiveConformalPIDOptionsContract extends ConformalPIDOptions {
+  enabled?: boolean;
+  breakLearningRateMultiplier?: number;
+  cooloffWindow?: number;
+}
+
+type AdaptiveConformalPIDConstructor = new (
+  opts?: AdaptiveConformalPIDOptionsContract,
+) => AdaptiveConformalLike;
+
+type ConformalModuleContract = typeof conformalModule & {
+  AdaptiveConformalPID?: AdaptiveConformalPIDConstructor;
+};
+
+function createAdaptiveConformal(
+  opts: AdaptiveConformalPIDOptionsContract = {},
+): AdaptiveConformalLike {
+  const { AdaptiveConformalPID } = conformalModule as ConformalModuleContract;
+  expect(AdaptiveConformalPID).toBeDefined();
+  return new AdaptiveConformalPID!(opts);
 }
 
 describe('ConformalPID — construction', () => {
@@ -129,5 +170,132 @@ describe('ConformalPID — coverage helpers', () => {
     const c = new ConformalPID();
     expect(c.sampleCount()).toBe(0);
     expect(c.empiricalCoverage()).toBeUndefined();
+  });
+});
+
+describe('AdaptiveConformalPID — planned break-aware behavior', () => {
+  const adaptiveDefaults = {
+    enabled: true,
+    alpha: 0.1,
+    initialRadius: 1.0,
+    learningRate: 0.05,
+    breakLearningRateMultiplier: 4,
+    cooloffWindow: 20,
+  } satisfies AdaptiveConformalPIDOptionsContract;
+
+  it('expands radius faster than the PID baseline after a volatility / structural-break shock', () => {
+    const lo = makeGaussian(7001);
+    const hi = makeGaussian(7002);
+    const baseline = new ConformalPID({ alpha: 0.1, initialRadius: 1.0, learningRate: 0.05 });
+    const adaptive = createAdaptiveConformal(adaptiveDefaults);
+
+    for (let i = 0; i < 600; i++) {
+      const actual = lo();
+      baseline.record(0, actual);
+      adaptive.record(0, actual, { structuralBreak: false });
+    }
+
+    const baselineBeforeShock = baseline.currentRadius();
+    const adaptiveBeforeShock = adaptive.currentRadius();
+
+    for (let i = 0; i < 40; i++) {
+      const actual = 4 * hi();
+      baseline.record(0, actual);
+      adaptive.record(0, actual, { structuralBreak: true, realizedVol: 4 });
+    }
+
+    const baselineExpansion = baseline.currentRadius() - baselineBeforeShock;
+    const adaptiveExpansion = adaptive.currentRadius() - adaptiveBeforeShock;
+    expect(adaptiveExpansion).toBeGreaterThan(baselineExpansion * 1.5);
+  });
+
+  it('stays bounded in a stable regime and does not drift wider than the PID baseline', () => {
+    const gauss = makeGaussian(7003);
+    const baseline = new ConformalPID({ alpha: 0.1, initialRadius: 1.0, learningRate: 0.05 });
+    const adaptive = createAdaptiveConformal(adaptiveDefaults);
+
+    for (let i = 0; i < 4_000; i++) {
+      const actual = gauss();
+      baseline.record(0, actual);
+      adaptive.record(0, actual, { structuralBreak: false, realizedVol: 1 });
+    }
+
+      expect(adaptive.currentRadius()).toBeLessThanOrEqual(baseline.currentRadius() * 1.05);
+    });
+
+  it('is disabled by default, matching the baseline PID until explicitly enabled', () => {
+    const gauss = makeGaussian(7004);
+    const baseline = new ConformalPID({ alpha: 0.1, initialRadius: 0.75, learningRate: 0.04 });
+    const defaultAdaptive = createAdaptiveConformal({
+      alpha: 0.1,
+      initialRadius: 0.75,
+      learningRate: 0.04,
+      breakLearningRateMultiplier: 4,
+      cooloffWindow: 20,
+    });
+
+    for (let i = 0; i < 2_500; i++) {
+      const diagnostics: AdaptiveConformalRecordDiagnostics = {
+        structuralBreak: i >= 1_250,
+        realizedVol: i < 1_250 ? 1 : 2,
+      };
+      const actual = diagnostics.realizedVol! * gauss();
+      baseline.record(0, actual);
+      defaultAdaptive.record(0, actual, diagnostics);
+    }
+
+    expect(defaultAdaptive.currentRadius()).toBeCloseTo(baseline.currentRadius(), 10);
+    expect(defaultAdaptive.empiricalCoverage()).toBeCloseTo(baseline.empiricalCoverage()!, 10);
+  });
+
+  it('preserves current PID behavior when adaptive mode is explicitly disabled', () => {
+    const gauss = makeGaussian(7005);
+    const baseline = new ConformalPID({ alpha: 0.1, initialRadius: 0.75, learningRate: 0.04 });
+    const disabledAdaptive = createAdaptiveConformal({
+      alpha: 0.1,
+      initialRadius: 0.75,
+      learningRate: 0.04,
+      enabled: false,
+      breakLearningRateMultiplier: 4,
+      cooloffWindow: 20,
+    });
+
+    for (let i = 0; i < 2_500; i++) {
+      const scale = i < 1_250 ? 1 : 2;
+      const actual = scale * gauss();
+      baseline.record(0, actual);
+      disabledAdaptive.record(0, actual, { structuralBreak: i >= 1_250, realizedVol: scale });
+    }
+
+    expect(disabledAdaptive.currentRadius()).toBeCloseTo(baseline.currentRadius(), 10);
+    expect(disabledAdaptive.empiricalCoverage()).toBeCloseTo(baseline.empiricalCoverage()!, 10);
+  });
+
+  it('consumes break cooloff once per forecast/update cycle', () => {
+    const adaptive = createAdaptiveConformal({
+      alpha: 0.1,
+      initialRadius: 1,
+      learningRate: 0.05,
+      enabled: true,
+      breakLearningRateMultiplier: 2,
+      cooloffWindow: 2,
+    });
+
+    adaptive.wrap(0);
+    adaptive.record(0, 3, { structuralBreak: true, realizedVol: 3 });
+    expect(adaptive.currentMode()).toBe('break');
+
+    adaptive.wrap(0);
+    expect(adaptive.currentMode()).toBe('break');
+    adaptive.record(0, 0, { structuralBreak: false, realizedVol: 1 });
+    expect(adaptive.currentMode()).toBe('break');
+
+    adaptive.wrap(0);
+    expect(adaptive.currentMode()).toBe('break');
+    adaptive.record(0, 0, { structuralBreak: false, realizedVol: 1 });
+    expect(adaptive.currentMode()).toBe('break');
+
+    adaptive.wrap(0);
+    expect(adaptive.currentMode()).toBe('normal');
   });
 });

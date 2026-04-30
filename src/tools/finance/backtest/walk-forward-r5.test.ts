@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'bun:test';
 import { computeMarkovDistribution } from '../markov-distribution.js';
-import { computeFailureDecomposition, sharpness } from './metrics.js';
-import { walkForward } from './walk-forward.js';
+import {
+  computeFailureDecomposition,
+  sharpness,
+  type BacktestStep,
+} from './metrics.js';
+import {
+  walkForward,
+  type WalkForwardConfig,
+  type WalkForwardResult,
+} from './walk-forward.js';
 
 const realRandom = Math.random;
 
@@ -40,7 +48,70 @@ function syntheticVolBurstPrices(): number[] {
   return prices;
 }
 
-function comparableStepProjection(result: Awaited<ReturnType<typeof walkForward>>) {
+function syntheticCalmPrices(): number[] {
+  const rng = seedRng(321);
+  const prices = [100];
+  for (let i = 0; i < 250; i++) {
+    prices.push(prices.at(-1)! * Math.exp(0.0003 + gauss(rng) * 0.004));
+  }
+  return prices;
+}
+
+interface AdaptiveConformalWalkForwardOptions {
+  enableAdaptiveConformal?: boolean;
+  conformalAlpha?: number;
+  conformalBreakSensitivity?: number;
+  conformalFastLearningRate?: number;
+  conformalCooloffWindow?: number;
+}
+
+interface AdaptiveConformalBacktestDiagnostics {
+  conformalApplied?: boolean;
+  conformalRadius?: number;
+  conformalCoverageEstimate?: number;
+  conformalMode?: 'normal' | 'break';
+}
+
+type ConformalBacktestStep = BacktestStep & AdaptiveConformalBacktestDiagnostics;
+
+const adaptiveConformalConfig = {
+  enableAdaptiveConformal: true,
+  conformalAlpha: 0.1,
+  conformalBreakSensitivity: 1.5,
+  conformalFastLearningRate: 0.2,
+  conformalCooloffWindow: 20,
+} satisfies AdaptiveConformalWalkForwardOptions;
+
+const adaptiveConformalDisabledConfig = {
+  enableAdaptiveConformal: false,
+  conformalAlpha: 0.1,
+  conformalBreakSensitivity: 1.5,
+  conformalFastLearningRate: 0.2,
+  conformalCooloffWindow: 20,
+} satisfies AdaptiveConformalWalkForwardOptions;
+
+function withAdaptiveConformalConfig(
+  base: WalkForwardConfig,
+  extra: AdaptiveConformalWalkForwardOptions,
+): WalkForwardConfig & AdaptiveConformalWalkForwardOptions {
+  return { ...base, ...extra };
+}
+
+function conformalStepView(result: WalkForwardResult): ConformalBacktestStep[] {
+  return result.steps as ConformalBacktestStep[];
+}
+
+function conformalDiagnosticsProjection(result: WalkForwardResult) {
+  return conformalStepView(result).map(step => ({
+    t: step.t,
+    conformalApplied: step.conformalApplied,
+    conformalRadius: step.conformalRadius,
+    conformalCoverageEstimate: step.conformalCoverageEstimate,
+    conformalMode: step.conformalMode,
+  }));
+}
+
+function comparableStepProjection(result: WalkForwardResult) {
   return result.steps.map(step => ({
     t: step.t,
     predictedProb: step.predictedProb,
@@ -51,6 +122,26 @@ function comparableStepProjection(result: Awaited<ReturnType<typeof walkForward>
     recommendation: step.recommendation,
     confidence: step.confidence,
   }));
+}
+
+function intervalWidth(step: Pick<BacktestStep, 'ciLower' | 'ciUpper'>): number {
+  return step.ciUpper - step.ciLower;
+}
+
+function coveredCount(steps: readonly BacktestStep[]): number {
+  return steps.filter(step => step.realizedPrice >= step.ciLower && step.realizedPrice <= step.ciUpper).length;
+}
+
+function medianIntervalWidth(steps: readonly Pick<BacktestStep, 'ciLower' | 'ciUpper'>[]): number {
+  const widths = steps.map(intervalWidth).sort((a, b) => a - b);
+  const mid = Math.floor(widths.length / 2);
+  return widths.length % 2 === 0
+    ? (widths[mid - 1] + widths[mid]) / 2
+    : widths[mid];
+}
+
+function shockSlice(result: WalkForwardResult): ConformalBacktestStep[] {
+  return conformalStepView(result).filter(step => step.t >= 180);
 }
 
 describe('R5 walk-forward forecast wiring', () => {
@@ -149,5 +240,78 @@ describe('R5 longshot shrinkage RND wiring', () => {
     expect(enabled.metadata.rndIntegration?.longshotShrinkageApplied).toBe(true);
     expect(enabled.metadata.rndIntegration?.longshotShrinkageCount).toBeGreaterThanOrEqual(1);
     expect(enabled.metadata.rndIntegration?.maxLongshotTailDistance).toBeGreaterThan(0.45);
+  });
+});
+
+describe('R6 adaptive conformal walk-forward wiring', () => {
+  it('keeps adaptive conformal disabled by default and identical to an explicit false flag', async () => {
+    const prices = syntheticVolBurstPrices();
+    const baseConfig = {
+      ticker: 'BTC-USD',
+      prices,
+      horizon: 14,
+      warmup: 120,
+      stride: 5,
+    } as const;
+
+    const baseline = await withSeed(141, () => walkForward(baseConfig));
+    const explicitlyDisabled = await withSeed(141, () => walkForward(
+      withAdaptiveConformalConfig(baseConfig, adaptiveConformalDisabledConfig),
+    ));
+
+    expect(baseline.errors).toHaveLength(0);
+    expect(explicitlyDisabled.errors).toHaveLength(0);
+    expect(comparableStepProjection(explicitlyDisabled)).toEqual(comparableStepProjection(baseline));
+    expect(conformalDiagnosticsProjection(explicitlyDisabled)).toEqual(conformalDiagnosticsProjection(baseline));
+  });
+
+  it('records adaptive conformal break diagnostics and improves shock-slice coverage on a synthetic volatility-burst series', async () => {
+    const prices = syntheticVolBurstPrices();
+    const baseConfig = {
+      ticker: 'BTC-USD',
+      prices,
+      horizon: 14,
+      warmup: 120,
+      stride: 5,
+    } as const;
+
+    const baseline = await withSeed(141, () => walkForward(baseConfig));
+    const adaptive = await withSeed(141, () => walkForward(
+      withAdaptiveConformalConfig(baseConfig, adaptiveConformalConfig),
+    ));
+    const baselineShockSlice = shockSlice(baseline);
+    const adaptiveShockSlice = shockSlice(adaptive);
+
+    expect(baseline.errors).toHaveLength(0);
+    expect(adaptive.errors).toHaveLength(0);
+    expect(adaptiveShockSlice.length).toBeGreaterThan(0);
+    expect(adaptiveShockSlice.every(step => step.conformalApplied === true)).toBe(true);
+    expect(adaptiveShockSlice.some(step => step.conformalMode === 'break')).toBe(true);
+    expect(adaptiveShockSlice.every(step => typeof step.conformalRadius === 'number')).toBe(true);
+    expect(adaptiveShockSlice.every(step => typeof step.conformalCoverageEstimate === 'number')).toBe(true);
+    expect(coveredCount(adaptiveShockSlice)).toBeGreaterThan(coveredCount(baselineShockSlice));
+    expect(medianIntervalWidth(adaptiveShockSlice)).toBeGreaterThan(medianIntervalWidth(baselineShockSlice));
+  });
+
+  it('does not materially degrade sharpness on a calm synthetic series', async () => {
+    const prices = syntheticCalmPrices();
+    const baseConfig = {
+      ticker: 'BTC-USD',
+      prices,
+      horizon: 14,
+      warmup: 120,
+      stride: 5,
+    } as const;
+
+    const baseline = await withSeed(211, () => walkForward(baseConfig));
+    const adaptive = await withSeed(211, () => walkForward(
+      withAdaptiveConformalConfig(baseConfig, adaptiveConformalConfig),
+    ));
+
+    expect(baseline.errors).toHaveLength(0);
+    expect(adaptive.errors).toHaveLength(0);
+    expect(conformalStepView(adaptive).every(step => step.conformalApplied === true)).toBe(true);
+    expect(conformalStepView(adaptive).every(step => step.conformalMode === 'normal' || step.conformalMode === 'break')).toBe(true);
+    expect(sharpness(adaptive.steps)).toBeLessThanOrEqual(sharpness(baseline.steps) * 1.05);
   });
 });

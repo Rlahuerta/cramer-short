@@ -449,6 +449,15 @@ type ForcedForecastArbiterArgs = {
     flat_probability?: number;
     ci_low?: number;
     ci_high?: number;
+    trusted_anchors?: number;
+    total_anchors?: number;
+    anchor_quality?: string;
+    conformal?: {
+      applied?: boolean;
+      radius?: number;
+      coverageEstimate?: number | null;
+      mode?: 'normal' | 'break';
+    };
     summary?: string;
   };
   polymarket?: {
@@ -832,6 +841,17 @@ function extractMarkovArbiterEvidence(query: string, toolCalls: ToolCallRecord[]
       const reasons = Array.isArray(data['abstainReasons'])
         ? data['abstainReasons'].filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
         : [];
+      const canonical = data['canonical'] && typeof data['canonical'] === 'object'
+        ? data['canonical'] as Record<string, unknown>
+        : null;
+      const diagnostics = canonical?.['diagnostics'] && typeof canonical['diagnostics'] === 'object'
+        ? canonical['diagnostics'] as Record<string, unknown>
+        : null;
+      if (diagnostics) {
+        if (isFiniteNumber(diagnostics['trustedAnchors'])) evidence.trusted_anchors = diagnostics['trustedAnchors'];
+        if (isFiniteNumber(diagnostics['totalAnchors'])) evidence.total_anchors = diagnostics['totalAnchors'];
+        if (typeof diagnostics['anchorQuality'] === 'string') evidence.anchor_quality = diagnostics['anchorQuality'];
+      }
       evidence.summary = reasons.length > 0
         ? `Markov abstained: ${reasons.join('; ')}`
         : 'Markov abstained; treat Markov evidence as diagnostics only.';
@@ -873,6 +893,23 @@ function extractMarkovArbiterEvidence(query: string, toolCalls: ToolCallRecord[]
       const diagnosticRecord = diagnostics as Record<string, unknown>;
       if (isFiniteNumber(diagnosticRecord['predictionConfidence'])) evidence.confidence = diagnosticRecord['predictionConfidence'];
       if (typeof diagnosticRecord['structuralBreakDetected'] === 'boolean') evidence.structural_break = diagnosticRecord['structuralBreakDetected'];
+      if (isFiniteNumber(diagnosticRecord['trustedAnchors'])) evidence.trusted_anchors = diagnosticRecord['trustedAnchors'];
+      if (isFiniteNumber(diagnosticRecord['totalAnchors'])) evidence.total_anchors = diagnosticRecord['totalAnchors'];
+      if (typeof diagnosticRecord['anchorQuality'] === 'string') evidence.anchor_quality = diagnosticRecord['anchorQuality'];
+      const conformal = diagnosticRecord['conformal'];
+      if (conformal && typeof conformal === 'object') {
+        const conformalRecord = conformal as Record<string, unknown>;
+        const conformed: NonNullable<NonNullable<ForcedForecastArbiterArgs['markov']>['conformal']> = {};
+        if (typeof conformalRecord['applied'] === 'boolean') conformed.applied = conformalRecord['applied'];
+        if (isFiniteNumber(conformalRecord['radius'])) conformed.radius = conformalRecord['radius'];
+        if (conformalRecord['coverageEstimate'] === null || isFiniteNumber(conformalRecord['coverageEstimate'])) {
+          conformed.coverageEstimate = conformalRecord['coverageEstimate'] as number | null;
+        }
+        if (conformalRecord['mode'] === 'normal' || conformalRecord['mode'] === 'break') {
+          conformed.mode = conformalRecord['mode'];
+        }
+        if (Object.keys(conformed).length > 0) evidence.conformal = conformed;
+      }
     }
 
     if (actionSignal && typeof actionSignal === 'object' && typeof (actionSignal as Record<string, unknown>)['confidence'] === 'string') {

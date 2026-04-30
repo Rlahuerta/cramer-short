@@ -212,6 +212,14 @@ export interface BacktestStep {
   entropyCiScale?: number;
   /** R5 Idea #14 provenance: true when entropy changed CI width for this step. */
   entropyCiModulationApplied?: boolean;
+  /** R6 adaptive conformal provenance: true when the step CI came from online conformal calibration. */
+  conformalApplied?: boolean;
+  /** R6 adaptive conformal provenance: symmetric radius applied around the forecast center. */
+  conformalRadius?: number;
+  /** R6 adaptive conformal provenance: running empirical coverage estimate. */
+  conformalCoverageEstimate?: number;
+  /** R6 adaptive conformal provenance: normal mode vs break-aware accelerated mode. */
+  conformalMode?: 'normal' | 'break';
   structuralBreakDivergence?: number | null;
   /** Structural-break divergence from the pre-rerun full-window pass when applicable. */
   originalStructuralBreakDivergence?: number | null;

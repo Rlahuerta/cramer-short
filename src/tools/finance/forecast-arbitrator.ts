@@ -16,6 +16,8 @@ export type ForecastArbiterVerdict =
   | 'CONDITIONAL_LONG'
   | 'CONDITIONAL_SHORT';
 
+export type ForecastTrustPolicyLevel = 'full' | 'context-only' | 'abstain';
+
 type Direction = 'long' | 'short' | 'neutral';
 
 export interface ForecastMarketEvidence {
@@ -38,6 +40,15 @@ export interface ForecastArbiterInput {
     flat_probability?: number;
     ci_low?: number;
     ci_high?: number;
+    trusted_anchors?: number;
+    total_anchors?: number;
+    anchor_quality?: string;
+    conformal?: {
+      applied?: boolean;
+      radius?: number;
+      coverageEstimate?: number | null;
+      mode?: 'normal' | 'break';
+    };
     summary?: string;
   };
   polymarket?: {
@@ -87,6 +98,12 @@ export interface ForecastArbiterResult {
     shortTrigger: string | null;
     invalidation: string | null;
   };
+  policy: {
+    level: ForecastTrustPolicyLevel;
+    horizonEligible: boolean;
+    tradeEligible: boolean;
+    reasons: string[];
+  };
   rationale: string[];
   rawEvidence: {
     markov: ForecastArbiterInput['markov'] | null;
@@ -101,6 +118,13 @@ interface TradeScore {
   leveragePnlPct: number;
   rr: number | null;
   notes: string[];
+}
+
+interface ForecastTrustPolicy {
+  level: ForecastTrustPolicyLevel;
+  horizonEligible: boolean;
+  tradeEligible: boolean;
+  reasons: string[];
 }
 
 const SEMANTICS_VALUES: ForecastMarketSemantics[] = [
@@ -163,6 +187,15 @@ function optionalSemantics() {
   }, z.enum(SEMANTICS_VALUES as [ForecastMarketSemantics, ...ForecastMarketSemantics[]]).optional()).optional();
 }
 
+function optionalConformalMode() {
+  return z.preprocess((value) => {
+    if (value === null || value === '') return undefined;
+    if (typeof value !== 'string') return value;
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'normal' || normalized === 'break' ? normalized : undefined;
+  }, z.enum(['normal', 'break']).optional()).optional();
+}
+
 const schema = z.object({
   ticker: z.string().describe('Asset ticker, e.g. BTC, BTC-USD, ETH, SPY.'),
   horizon_days: z.coerce.number().int().min(1).max(365).default(1),
@@ -176,6 +209,18 @@ const schema = z.object({
     flat_probability: optionalNumber({ min: 0, max: 1 }),
     ci_low: optionalNumber({ positive: true }),
     ci_high: optionalNumber({ positive: true }),
+    trusted_anchors: optionalNumber({ min: 0 }),
+    total_anchors: optionalNumber({ min: 0 }),
+    anchor_quality: optionalString(),
+    conformal: z.object({
+      applied: optionalBoolean(),
+      radius: optionalNumber({ min: 0 }),
+      coverageEstimate: z.preprocess(
+        (value) => value === '' ? undefined : value,
+        z.coerce.number().finite().min(0).max(1).nullable().optional(),
+      ).optional(),
+      mode: optionalConformalMode(),
+    }).optional(),
     summary: optionalString(),
   }).optional(),
   polymarket: z.object({
@@ -367,6 +412,112 @@ function confidenceFromScores(best: TradeScore, divergent: boolean, leverage: nu
   return 'medium';
 }
 
+function hasTerminalPolymarketSupport(markets: ForecastMarketEvidence[] | undefined): boolean {
+  return (markets ?? []).some((market) => (market.semantics ?? classifyPolymarketQuestion(market.question)) === 'terminal');
+}
+
+function computeForecastTrustPolicy(params: {
+  input: ForecastArbiterInput;
+  leverage: number;
+  semantic: ReturnType<typeof inferMarketSemantics>;
+  bestScore: TradeScore;
+  isDivergent: boolean;
+  markovConfidence: number;
+  structuralBreak: boolean;
+  flatProbability: number;
+}): ForecastTrustPolicy {
+  const reasons: string[] = [];
+  const conformal = params.input.markov?.conformal;
+  const conformalApplied = conformal?.applied === true;
+  const conformalRadius = conformal?.radius ?? null;
+  const conformalCoverage = conformal?.coverageEstimate ?? null;
+  const conformalBreakMode = conformal?.mode === 'break';
+  const anchorQuality = params.input.markov?.anchor_quality?.trim().toLowerCase() ?? null;
+  const trustedAnchors = params.input.markov?.trusted_anchors ?? null;
+  const hasTerminalSupport = hasTerminalPolymarketSupport(params.input.polymarket?.markets);
+
+  const weakConfidence = params.markovConfidence < 0.45;
+  const severeConfidence = params.markovConfidence < 0.2;
+  const weakConformal = conformalApplied
+    && (
+      conformalBreakMode
+      || (typeof conformalCoverage === 'number' && conformalCoverage < 0.75)
+      || (typeof conformalRadius === 'number' && conformalRadius >= 0.08)
+    );
+  const severeConformal = conformalApplied
+    && (
+      (typeof conformalCoverage === 'number' && conformalCoverage < 0.6)
+      || (typeof conformalRadius === 'number' && conformalRadius >= 0.12)
+      || (conformalBreakMode && typeof conformalCoverage === 'number' && conformalCoverage < 0.65)
+    );
+  const missingTrustedSupport = (
+    (trustedAnchors !== null && trustedAnchors <= 0)
+    || anchorQuality === 'none'
+    || anchorQuality === 'weak'
+    || (!hasTerminalSupport && params.structuralBreak && params.flatProbability >= 0.8 && severeConfidence)
+  );
+
+  if (params.isDivergent) {
+    reasons.push('Markov and Polymarket disagree on direction, so this horizon is context-only until the signals realign.');
+  }
+  if (params.semantic.primary === 'barrier_touch' || params.semantic.primary === 'path_dependent') {
+    reasons.push('Prediction-market support is barrier/path dependent rather than a clean terminal anchor.');
+  }
+  if (params.structuralBreak) {
+    reasons.push('A structural-break flag is active, so regime trust is reduced.');
+  }
+  if (params.flatProbability >= 0.7) {
+    reasons.push('Flat-probability is elevated, which weakens immediate directional edge.');
+  }
+  if (params.leverage >= 8) {
+    reasons.push(`${params.leverage}x leverage is too unforgiving for the current forecast quality.`);
+  }
+  if (weakConfidence) {
+    reasons.push('Markov prediction confidence is too weak to treat as a standalone trade trigger.');
+  }
+  if (weakConformal) {
+    reasons.push('Conformal diagnostics are stressed, so keep the forecast as regime context rather than a full trade signal.');
+  }
+  if (missingTrustedSupport) {
+    reasons.push('Trusted horizon support is missing, so the forecast should abstain instead of manufacturing a calibrated edge.');
+  }
+
+  let level: ForecastTrustPolicyLevel = 'full';
+  if (
+    missingTrustedSupport
+    || (params.structuralBreak && severeConfidence && params.flatProbability >= 0.82)
+    || (params.structuralBreak && severeConformal && !hasTerminalSupport)
+  ) {
+    level = 'abstain';
+  } else if (
+    params.isDivergent
+    || params.structuralBreak
+    || params.flatProbability >= 0.7
+    || params.leverage >= 8
+    || weakConfidence
+    || weakConformal
+    || params.semantic.primary === 'barrier_touch'
+    || params.semantic.primary === 'path_dependent'
+  ) {
+    level = 'context-only';
+  }
+
+  if (reasons.length === 0) {
+    reasons.push(level === 'full'
+      ? 'Evidence is aligned and regime diagnostics are healthy enough for full guidance.'
+      : level === 'context-only'
+        ? 'Use the forecast as context only until trust diagnostics improve.'
+        : 'No calibrated edge is available for this horizon.');
+  }
+
+  return {
+    level,
+    horizonEligible: level !== 'abstain',
+    tradeEligible: level === 'full',
+    reasons,
+  };
+}
+
 export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterResult {
   const ticker = input.ticker.trim().toUpperCase();
   const leverage = clamp(input.leverage ?? 1, 1, 125);
@@ -426,12 +577,23 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
       ? 'short'
       : 'neutral';
   const bestScore = bestDirection === 'short' ? short : long;
+  const policy = computeForecastTrustPolicy({
+    input,
+    leverage,
+    semantic,
+    bestScore,
+    isDivergent,
+    markovConfidence,
+    structuralBreak,
+    flatProbability,
+  });
 
   const immediateEntryBlocked = isDivergent
     || leverage >= 8
     || flatProbability >= 0.7
     || structuralBreak
-    || bestScore.riskAdjustedScore < 0.0015;
+    || bestScore.riskAdjustedScore < 0.0015
+    || !policy.tradeEligible;
 
   let verdict: ForecastArbiterVerdict = 'NO_TRADE';
   if (!immediateEntryBlocked && bestDirection === 'long') verdict = 'LONG';
@@ -439,6 +601,7 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
   if (immediateEntryBlocked && bestDirection === 'long' && bestScore.riskAdjustedScore > 0) verdict = 'CONDITIONAL_LONG';
   if (immediateEntryBlocked && bestDirection === 'short' && bestScore.riskAdjustedScore > 0) verdict = 'CONDITIONAL_SHORT';
   if (isDivergent && leverage >= 8 && flatProbability >= 0.65) verdict = 'NO_TRADE';
+  if (policy.level === 'abstain') verdict = 'NO_TRADE';
 
   const barrier = semantic.barrierPrices[0] ?? null;
   const formattedBarrier = barrier !== null ? `$${barrier.toLocaleString('en-US')}` : null;
@@ -499,6 +662,7 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
         ? `If price chops around ${formattedBarrier} without reclaim/rejection confirmation, keep the setup as no-trade.`
         : 'If confirmation does not appear, preserve the raw forecasts but avoid a directional recommendation.',
     },
+    policy,
     rationale,
     rawEvidence: {
       markov: input.markov ?? null,

@@ -47,20 +47,45 @@ export interface ConformalInterval {
   high: number;
 }
 
+export type AdaptiveConformalMode = 'normal' | 'break';
+
+export interface AdaptiveConformalRecordDiagnostics {
+  structuralBreak?: boolean;
+  realizedVol?: number;
+}
+
+export interface AdaptiveConformalPIDOptions extends ConformalPIDOptions {
+  /**
+   * Explicit on/off switch for structural-break-aware updates. Default false.
+   */
+  enabled?: boolean;
+  /** Multiplier used for break-mode learning-rate and interval inflation. */
+  breakLearningRateMultiplier?: number;
+  /** Number of subsequent steps to keep break mode active after a trigger. */
+  cooloffWindow?: number;
+}
+
+export interface AdaptiveConformalMetadata {
+  applied: true;
+  radius: number;
+  coverageEstimate: number | null;
+  mode: AdaptiveConformalMode;
+}
+
 export class ConformalPID {
   readonly alpha: number;
   readonly targetCoverage: number;
-  private readonly lr: number;
-  private readonly kp: number;
-  private readonly ki: number;
-  private readonly kd: number;
-  private readonly gamma: number;
+  protected readonly lr: number;
+  protected readonly kp: number;
+  protected readonly ki: number;
+  protected readonly kd: number;
+  protected readonly gamma: number;
 
-  private q: number;
-  private integral: number;
-  private prevBias: number;
-  private samples: number;
-  private hits: number;
+  protected q: number;
+  protected integral: number;
+  protected prevBias: number;
+  protected samples: number;
+  protected hits: number;
 
   constructor(opts: ConformalPIDOptions = {}) {
     this.alpha = opts.alpha ?? 0.1;
@@ -79,6 +104,14 @@ export class ConformalPID {
 
   /** Record a (forecastCenter, actual) pair and update the PID state. */
   record(forecastCenter: number, actual: number): void {
+    this.step(forecastCenter, actual, this.lr);
+  }
+
+  protected step(
+    forecastCenter: number,
+    actual: number,
+    learningRate: number,
+  ): { residual: number; covered: boolean } | undefined {
     if (!Number.isFinite(forecastCenter) || !Number.isFinite(actual)) return;
     const residual = Math.abs(actual - forecastCenter);
     const covered = residual <= this.q ? 1 : 0;
@@ -89,11 +122,12 @@ export class ConformalPID {
     const derivative = bias - this.prevBias;
     this.prevBias = bias;
 
-    const update = this.lr * (this.kp * bias + this.ki * this.integral + this.kd * derivative);
+    const update = learningRate * (this.kp * bias + this.ki * this.integral + this.kd * derivative);
     this.q = Math.max(0, this.q + update);
 
     this.samples += 1;
     this.hits += covered;
+    return { residual, covered: covered === 1 };
   }
 
   /** Current symmetric radius. */
@@ -115,5 +149,115 @@ export class ConformalPID {
   empiricalCoverage(): number | undefined {
     if (this.samples === 0) return undefined;
     return this.hits / this.samples;
+  }
+}
+
+export class AdaptiveConformalPID extends ConformalPID {
+  private readonly enabled: boolean;
+  private readonly breakLearningRateMultiplier: number;
+  private readonly cooloffWindow: number;
+  private cooloffRemaining = 0;
+  private residualEma?: number;
+  private volatilityEma?: number;
+  private mode: AdaptiveConformalMode = 'normal';
+  private lastAppliedRadius: number;
+
+  constructor(opts: AdaptiveConformalPIDOptions = {}) {
+    super(opts);
+    this.enabled = opts.enabled ?? false;
+    this.breakLearningRateMultiplier = Math.max(1, opts.breakLearningRateMultiplier ?? 1.5);
+    this.cooloffWindow = Math.max(0, Math.round(opts.cooloffWindow ?? 0));
+    this.lastAppliedRadius = this.q;
+  }
+
+  override wrap(
+    forecastCenter: number,
+    diagnostics?: AdaptiveConformalRecordDiagnostics,
+  ): ConformalInterval {
+    const mode = this.resolveMode(diagnostics);
+    const radius = this.appliedRadius(mode);
+    this.lastAppliedRadius = radius;
+    return { low: forecastCenter - radius, high: forecastCenter + radius };
+  }
+
+  override record(
+    forecastCenter: number,
+    actual: number,
+    diagnostics?: AdaptiveConformalRecordDiagnostics,
+  ): void {
+    const mode = this.resolveMode(diagnostics, { consumeCooloff: true });
+    const learningRate = mode === 'break'
+      ? this.lr * this.breakLearningRateMultiplier
+      : this.lr;
+    const stepped = this.step(forecastCenter, actual, learningRate);
+    if (!stepped) return;
+    this.updateResidualEma(stepped.residual);
+    this.updateVolatilityEma(diagnostics?.realizedVol);
+  }
+
+  currentMode(): AdaptiveConformalMode {
+    return this.mode;
+  }
+
+  diagnostics(): AdaptiveConformalMetadata {
+    return {
+      applied: true,
+      radius: this.lastAppliedRadius,
+      coverageEstimate: this.empiricalCoverage() ?? null,
+      mode: this.mode,
+    };
+  }
+
+  private resolveMode(
+    diagnostics?: AdaptiveConformalRecordDiagnostics,
+    options?: { consumeCooloff?: boolean },
+  ): AdaptiveConformalMode {
+    if (!this.enabled) {
+      if (options?.consumeCooloff === true) this.cooloffRemaining = 0;
+      this.mode = 'normal';
+      return this.mode;
+    }
+
+    const triggered = diagnostics?.structuralBreak === true
+      || this.isVolatilityShock(diagnostics?.realizedVol);
+    const inCooloff = this.cooloffRemaining > 0;
+    const mode = triggered || inCooloff ? 'break' : 'normal';
+
+    if (options?.consumeCooloff === true) {
+      if (triggered) {
+        this.cooloffRemaining = this.cooloffWindow;
+      } else if (inCooloff) {
+        this.cooloffRemaining -= 1;
+      }
+    }
+
+    this.mode = mode;
+    return this.mode;
+  }
+
+  private appliedRadius(mode: AdaptiveConformalMode): number {
+    if (mode !== 'break') return this.q;
+    return this.q * Math.max(1, Math.sqrt(this.breakLearningRateMultiplier));
+  }
+
+  private isVolatilityShock(realizedVol?: number): boolean {
+    if (!Number.isFinite(realizedVol) || realizedVol === undefined || realizedVol <= 0) return false;
+    const baseline = this.volatilityEma ?? this.residualEma;
+    if (baseline === undefined) return false;
+    return realizedVol >= baseline * this.breakLearningRateMultiplier;
+  }
+
+  private updateResidualEma(residual: number): void {
+    if (!Number.isFinite(residual) || residual < 0) return;
+    this.residualEma = this.residualEma === undefined
+      ? residual
+      : (this.residualEma * 0.95) + (residual * 0.05);
+  }
+
+  private updateVolatilityEma(realizedVol?: number): void {
+    if (!Number.isFinite(realizedVol) || realizedVol === undefined || realizedVol <= 0) return;
+    this.volatilityEma = this.volatilityEma === undefined
+      ? realizedVol
+      : (this.volatilityEma * 0.9) + (realizedVol * 0.1);
   }
 }

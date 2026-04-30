@@ -123,10 +123,11 @@ const {
   buildForcedMarketDataArgs,
   buildForcedSocialSentimentArgs,
    buildForcedPolymarketForecastArgs,
-    extractMarkovReturnFromToolCalls,
-    buildLowConfidenceBtcShortHorizonForecastPrefix,
-    shouldInjectBtcShortHorizonMixedEvidencePrompt,
-    shouldInjectBtcShortHorizonLowConfidencePrompt,
+     extractMarkovReturnFromToolCalls,
+     buildForecastDisagreementPrefix,
+     buildLowConfidenceBtcShortHorizonForecastPrefix,
+     shouldInjectBtcShortHorizonMixedEvidencePrompt,
+     shouldInjectBtcShortHorizonLowConfidencePrompt,
     shouldRerunPolymarketForecastWithMarkov,
     buildForcedForecastArbiterArgs,
     shouldForceForecastArbitrator,
@@ -845,6 +846,158 @@ describe('Agent', () => {
       expect(args?.markov?.summary).toContain('Markov abstained');
       expect(args?.polymarket?.forecast_return).toBe(-0.0121);
       expect(args?.leverage).toBe(10);
+    });
+
+    it('preserves the stable Markov arbiter fields even when upstream diagnostics include future conformal details', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: {
+                ticker: 'BTC',
+                price: 76000,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                scenarios: {
+                  expectedReturn: 0.012,
+                  pUp: 0.61,
+                  buckets: [
+                    { label: 'Flat +/-3%', probability: 0.74 },
+                  ],
+                },
+                diagnostics: {
+                  predictionConfidence: 0.58,
+                  structuralBreakDetected: true,
+                  conformal: {
+                    applied: true,
+                    radius: 0.088,
+                    coverageEstimate: 0.61,
+                    mode: 'break',
+                  },
+                },
+              },
+              distribution: [
+                { price: 71500, probability: 0.95 },
+                { price: 79000, probability: 0.05 },
+              ],
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'BTC', horizon_days: 7, current_price: 76000, markov_return: 0.012 },
+          result: JSON.stringify({
+            data: {
+              forecastReturn: -0.009,
+              result: 'Polymarket Forecast: BTC | Horizon: 7 days | Grade: A- (81/100)\nWill BTC finish below $75,000 on May 7?: 59% YES',
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedForecastArbiterArgs(
+        'Give me a Polymarket and markov price forecast for BTC over the next 7 days with position direction',
+        toolCalls,
+      )).toMatchObject({
+        ticker: 'BTC',
+        horizon_days: 7,
+        current_price: 76000,
+        markov: {
+          forecast_return: 0.012,
+          p_up: 0.61,
+          confidence: 0.58,
+          structural_break: true,
+          flat_probability: 0.74,
+          ci_low: 71500,
+          ci_high: 79000,
+        },
+      });
+    });
+
+    it('builds mixed-evidence forecast arbitrator args without collapsing Markov and Polymarket inputs', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                scenarios: {
+                  expectedReturn: 0.032,
+                },
+                actionSignal: {
+                  recommendation: 'BUY',
+                  expectedReturn: 0.032,
+                },
+                diagnostics: {
+                  predictionConfidence: 0.62,
+                  markovWeight: 1,
+                },
+              },
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'BTC', horizon_days: 7 },
+          result: JSON.stringify({
+            data: {
+              forecastReturn: -0.004,
+              result: 'Polymarket Forecast: BTC | Horizon: 7 days | Grade: B\nWill BTC finish below $75,000 on May 7?: 58% YES',
+            },
+          }),
+        },
+      ];
+
+      const prefix = buildForecastDisagreementPrefix(
+        'Give me a Polymarket and markov price forecast for BTC over the next 7 days',
+        toolCalls,
+      );
+
+      expect(shouldForceForecastArbitrator(
+        'Give me a Polymarket and markov price forecast for BTC over the next 7 days',
+        toolCalls,
+      )).toBe(true);
+      expect(buildForcedForecastArbiterArgs(
+        'Give me a Polymarket and markov price forecast for BTC over the next 7 days',
+        toolCalls,
+      )).toMatchObject({
+        ticker: 'BTC',
+        horizon_days: 7,
+        markov: {
+          forecast_return: 0.032,
+          confidence: 0.62,
+        },
+        polymarket: {
+          forecast_return: -0.004,
+          markets: [
+            {
+              question: 'Will BTC finish below $75,000 on May 7?',
+              probability: 0.58,
+            },
+          ],
+        },
+        whale: {
+          direction: 'neutral',
+          confidence: 0.35,
+          summary: 'No confirmed whale/on-chain signal available.',
+        },
+      });
+      expect(prefix).toContain('signals are mixed');
     });
 
     it('builds stable non-crypto forced args from resolved asset identity and explicit market-data query', () => {
