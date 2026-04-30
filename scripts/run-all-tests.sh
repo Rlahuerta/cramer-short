@@ -2,14 +2,21 @@
 set -euo pipefail
 
 # Run all Cramer-Short tests (TypeScript + Python, unit + integration + e2e)
-# Usage: bash scripts/run-all-tests.sh [--no-e2e]
+# Usage: bash scripts/run-all-tests.sh [--skip-e2e]
+
+# Guard: prevent accidental sourcing (which would kill the caller's shell via exit)
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  echo "ERROR: This script must be executed, not sourced." >&2
+  echo "Usage: bash scripts/run-all-tests.sh [--skip-e2e]" >&2
+  return 1 2>/dev/null || exit 1
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-NO_E2E=false
-if [[ "${1:-}" == "--no-e2e" ]]; then
-  NO_E2E=true
+SKIP_E2E=false
+if [[ "${1:-}" == "--skip-e2e" ]]; then
+  SKIP_E2E=true
 fi
 
 echo "═══════════════════════════════════════════════════════════"
@@ -26,7 +33,7 @@ TOTAL_EXIT=0
 
 # ─── TypeScript Unit Tests ──────────────────────────────────
 echo "── TypeScript Unit Tests ────────────────────────────────"
-if bun run test:unit 2>&1; then
+if bun test --ignore 'src/**/*.integration.test.ts' --ignore 'src/**/*.e2e.test.ts' 2>&1; then
   TS_PASS=$((TS_PASS + 1))
 else
   TS_FAIL=$((TS_FAIL + 1))
@@ -45,7 +52,7 @@ fi
 echo ""
 
 # ─── TypeScript E2E Tests ───────────────────────────────────
-if [[ "$NO_E2E" == false ]]; then
+if [[ "$SKIP_E2E" == false ]]; then
   echo "── TypeScript E2E Tests ─────────────────────────────────"
   if bun run test:e2e 2>&1; then
     TS_PASS=$((TS_PASS + 1))
@@ -55,24 +62,35 @@ if [[ "$NO_E2E" == false ]]; then
   fi
   echo ""
 else
-  echo "── TypeScript E2E Tests: SKIPPED (pass --no-e2e to include) ──────────"
+  echo "── TypeScript E2E Tests: SKIPPED (--skip-e2e was passed) ─────────────"
   echo ""
 fi
 
 # ─── Python Tests ───────────────────────────────────────────
 echo "── Python Tests (research/) ─────────────────────────────"
 
-# Ensure the package is installed in editable mode
-if ! python -c "import research" 2>/dev/null; then
-  echo "Installing cramer-research in editable mode..."
-  python -m pip install -e "$REPO_ROOT/research"
-fi
-
-if PYTHONPATH="$REPO_ROOT" python -m pytest research/tests -v 2>&1; then
-  PY_PASS=$((PY_PASS + 1))
-else
+# Use conda environment as specified in research/README.md
+CONDA_ENV="cramer-research"
+if ! command -v conda &>/dev/null; then
+  echo "ERROR: conda not found. Cannot run Python tests." >&2
+  echo "Install Miniconda: https://docs.conda.io/en/latest/miniconda.html" >&2
   PY_FAIL=$((PY_FAIL + 1))
   TOTAL_EXIT=1
+elif ! conda env list 2>/dev/null | grep -q "^${CONDA_ENV} "; then
+  echo "ERROR: conda environment '${CONDA_ENV}' not found." >&2
+  echo "Create it: conda env create -f environment-research.yml" >&2
+  PY_FAIL=$((PY_FAIL + 1))
+  TOTAL_EXIT=1
+else
+  # Install package in editable mode within the conda environment
+  conda run -n "$CONDA_ENV" pip install -e "$REPO_ROOT/research" --quiet 2>&1
+
+  if conda run -n "$CONDA_ENV" python -m pytest research/tests -v 2>&1; then
+    PY_PASS=$((PY_PASS + 1))
+  else
+    PY_FAIL=$((PY_FAIL + 1))
+    TOTAL_EXIT=1
+  fi
 fi
 echo ""
 
@@ -85,8 +103,8 @@ echo "  TypeScript suites:  $TS_PASS passed, $TS_FAIL failed"
 echo "  Python suites:      $PY_PASS passed, $PY_FAIL failed"
 echo ""
 
-if [[ "$NO_E2E" == true ]]; then
-  echo "  (E2E tests were skipped — pass without --no-e2e to include)"
+if [[ "$SKIP_E2E" == true ]]; then
+  echo "  (E2E tests were skipped — omit --skip-e2e to include)"
   echo ""
 fi
 

@@ -7,6 +7,9 @@ Python research mirror of the TypeScript forecasting engines for interactive ana
 ### 1. Create the Conda Environment
 
 ```bash
+# (Optional) Activate a base conda environment
+source ~/anaconda3/bin/activate root
+
 # From repo root
 conda env create -f environment-research.yml
 ```
