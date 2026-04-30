@@ -116,6 +116,8 @@ export interface WalkForwardConfig {
   conformalCooloffWindow?: number;
   /** Item 1 — confidence-score ablation mode. */
   predictionConfidenceMode?: PredictionConfidenceMode;
+  /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. */
+  enableSoftRegimeWeighting?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -215,6 +217,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         conformalFastLearningRate: config.conformalFastLearningRate,
         conformalCooloffWindow: config.conformalCooloffWindow,
         predictionConfidenceMode: config.predictionConfidenceMode,
+        enableSoftRegimeWeighting: config.enableSoftRegimeWeighting,
         enableKswinTrim: config.enableKswinTrim,
         kswinAlpha: config.kswinAlpha,
         enableCrossAssetBias: config.enableCrossAssetBias,
@@ -275,6 +278,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             conformalFastLearningRate: config.conformalFastLearningRate,
             conformalCooloffWindow: config.conformalCooloffWindow,
             predictionConfidenceMode: config.predictionConfidenceMode,
+            enableSoftRegimeWeighting: config.enableSoftRegimeWeighting,
             enableKswinTrim: config.enableKswinTrim,
             kswinAlpha: config.kswinAlpha,
             enableCrossAssetBias: config.enableCrossAssetBias,
@@ -397,6 +401,11 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         conformalRadius,
         conformalCoverageEstimate,
         conformalMode,
+        softRegimeWeightingApplied: result.metadata.softRegime ? true : undefined,
+        softRegimePosteriorEntropy: result.metadata.softRegime?.posteriorEntropy,
+        softRegimeForecastEntropy: result.metadata.softRegime?.forecastEntropy,
+        softRegimeCiScale: result.metadata.softRegime?.ciScale,
+        softRegimeConfidenceMultiplier: result.metadata.softRegime?.confidenceMultiplier,
       });
       const entropyNorm = result.metadata.transitionEntropyNorm;
       if (typeof entropyNorm === 'number' && Number.isFinite(entropyNorm)) {

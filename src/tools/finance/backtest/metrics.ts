@@ -220,6 +220,16 @@ export interface BacktestStep {
   conformalCoverageEstimate?: number;
   /** R6 adaptive conformal provenance: normal mode vs break-aware accelerated mode. */
   conformalMode?: 'normal' | 'break';
+  /** Item 2 provenance: true when HMM posterior uncertainty altered confidence or CI width. */
+  softRegimeWeightingApplied?: boolean;
+  /** Item 2 provenance: normalized entropy of the current HMM posterior. */
+  softRegimePosteriorEntropy?: number;
+  /** Item 2 provenance: normalized entropy of the horizon-state forecast mixture. */
+  softRegimeForecastEntropy?: number;
+  /** Item 2 provenance: CI width multiplier derived from posterior uncertainty. */
+  softRegimeCiScale?: number;
+  /** Item 2 provenance: confidence multiplier derived from posterior uncertainty. */
+  softRegimeConfidenceMultiplier?: number;
   structuralBreakDivergence?: number | null;
   /** Structural-break divergence from the pre-rerun full-window pass when applicable. */
   originalStructuralBreakDivergence?: number | null;

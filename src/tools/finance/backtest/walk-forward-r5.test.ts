@@ -58,6 +58,16 @@ function syntheticCalmPrices(): number[] {
   return prices;
 }
 
+function syntheticChoppyPrices(): number[] {
+  const rng = seedRng(777);
+  const prices = [100];
+  for (let i = 0; i < 250; i++) {
+    const drift = i % 2 === 0 ? 0.0025 : -0.0023;
+    prices.push(prices.at(-1)! * Math.exp(drift + gauss(rng) * 0.012));
+  }
+  return prices;
+}
+
 interface AdaptiveConformalWalkForwardOptions {
   enableAdaptiveConformal?: boolean;
   conformalAlpha?: number;
@@ -344,5 +354,59 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
     expect(legacySelective.coverage).toBe(0);
     expect(rebalancedSelective.coverage).toBeGreaterThan(0);
     expect(rebalancedSelective.selected).toBeGreaterThan(legacySelective.selected);
+  });
+});
+
+describe('soft regime weighting walk-forward wiring', () => {
+  it('keeps soft regime weighting disabled by default and identical to an explicit false flag', async () => {
+    const prices = syntheticChoppyPrices();
+    const baseConfig = {
+      ticker: 'BTC-USD',
+      prices,
+      horizon: 7,
+      warmup: 120,
+      stride: 5,
+      predictionConfidenceMode: 'rebalanced' as const,
+    };
+
+    const baseline = await withSeed(501, () => walkForward(baseConfig));
+    const explicitlyDisabled = await withSeed(501, () => walkForward({
+      ...baseConfig,
+      enableSoftRegimeWeighting: false,
+    }));
+
+    expect(baseline.errors).toHaveLength(0);
+    expect(explicitlyDisabled.errors).toHaveLength(0);
+    expect(comparableStepProjection(explicitlyDisabled)).toEqual(comparableStepProjection(baseline));
+  });
+
+  it('widens uncertainty and lowers average confidence on a choppy synthetic series when enabled', async () => {
+    const prices = syntheticChoppyPrices();
+    const baseConfig = {
+      ticker: 'BTC-USD',
+      prices,
+      horizon: 7,
+      warmup: 120,
+      stride: 5,
+      predictionConfidenceMode: 'rebalanced' as const,
+    };
+
+    const baseline = await withSeed(502, () => walkForward({
+      ...baseConfig,
+      enableSoftRegimeWeighting: false,
+    }));
+    const enabled = await withSeed(502, () => walkForward({
+      ...baseConfig,
+      enableSoftRegimeWeighting: true,
+    }));
+
+    expect(baseline.errors).toHaveLength(0);
+    expect(enabled.errors).toHaveLength(0);
+    expect(sharpness(enabled.steps)).toBeGreaterThan(sharpness(baseline.steps));
+
+    const avgConfidence = (steps: WalkForwardResult['steps']) =>
+      steps.reduce((sum, step) => sum + step.confidence, 0) / steps.length;
+
+    expect(avgConfidence(enabled.steps)).toBeLessThan(avgConfidence(baseline.steps));
   });
 });

@@ -5161,8 +5161,93 @@ describe('markov_distribution tool output envelope', () => {
         assetType: expect.any(Number),
         volatility: expect.any(Number),
         normalization: expect.any(Number),
+        posteriorUncertainty: expect.any(Number),
       },
     });
+  });
+
+  it('surfaces posterior-entropy diagnostics only when soft regime weighting is enabled', async () => {
+    interface SoftRegimeMetadataContract {
+      posteriorEntropy: number;
+      forecastEntropy: number;
+      ciScale: number;
+      confidenceMultiplier: number;
+      dominantStateProbability: number;
+      currentStateProbabilities: number[];
+      forecastProbabilities: number[];
+    }
+
+    type PlannedSoftRegimeMetadata =
+      Awaited<ReturnType<typeof computeMarkovDistribution>>['metadata']
+      & { softRegime?: SoftRegimeMetadataContract };
+
+    function getSoftRegimeMetadata(
+      metadata: Awaited<ReturnType<typeof computeMarkovDistribution>>['metadata'],
+    ): SoftRegimeMetadataContract | undefined {
+      return (metadata as PlannedSoftRegimeMetadata).softRegime;
+    }
+
+    const choppyPrices: number[] = Array.from({ length: 180 }, (_, i) =>
+      i === 0 ? 100 : 0,
+    );
+    for (let i = 1; i < choppyPrices.length; i++) {
+      const prev = choppyPrices[i - 1];
+      const shock = i % 2 === 0 ? 0.012 : -0.011;
+      choppyPrices[i] = prev * Math.exp(shock + Math.sin(i * 0.45) * 0.004);
+    }
+
+    const trendPrices = Array.from({ length: 180 }, (_, i) =>
+      100 * Math.exp(i * 0.0025 + Math.sin(i * 0.08) * 0.002),
+    );
+
+    const disabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: choppyPrices[choppyPrices.length - 1],
+      historicalPrices: choppyPrices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+    });
+    const enabledChoppy = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: choppyPrices[choppyPrices.length - 1],
+      historicalPrices: choppyPrices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+    });
+    const enabledTrend = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: trendPrices[trendPrices.length - 1],
+      historicalPrices: trendPrices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+    });
+
+    const softChoppy = getSoftRegimeMetadata(enabledChoppy.metadata);
+    const softTrend = getSoftRegimeMetadata(enabledTrend.metadata);
+
+    expect(getSoftRegimeMetadata(disabled.metadata)).toBeUndefined();
+    expect(softChoppy).toStrictEqual({
+      posteriorEntropy: expect.any(Number),
+      forecastEntropy: expect.any(Number),
+      ciScale: expect.any(Number),
+      confidenceMultiplier: expect.any(Number),
+      dominantStateProbability: expect.any(Number),
+      currentStateProbabilities: expect.any(Array),
+      forecastProbabilities: expect.any(Array),
+    });
+    expect(softChoppy!.currentStateProbabilities.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
+    expect(softChoppy!.forecastProbabilities.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
+    expect(softChoppy!.ciScale).toBeGreaterThan(1);
+    expect(softChoppy!.confidenceMultiplier).toBeLessThan(1);
+    expect(enabledChoppy.predictionConfidence).toBeLessThan(disabled.predictionConfidence);
+    expect(softTrend).toBeDefined();
+    expect(softTrend!.posteriorEntropy).toBeLessThanOrEqual(softChoppy!.posteriorEntropy);
+    expect(softTrend!.ciScale).toBeLessThanOrEqual(softChoppy!.ciScale);
   });
 
   it('keeps BTC 30-day off-window fallback candidates from enabling canonical emission', async () => {

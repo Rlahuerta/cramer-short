@@ -204,7 +204,18 @@ export interface PredictionConfidenceBreakdown {
     assetType: number;
     volatility: number;
     normalization: number;
+    posteriorUncertainty: number;
   };
+}
+
+export interface SoftRegimeDiagnostics {
+  posteriorEntropy: number;
+  forecastEntropy: number;
+  ciScale: number;
+  confidenceMultiplier: number;
+  dominantStateProbability: number;
+  currentStateProbabilities: number[];
+  forecastProbabilities: number[];
 }
 
 export interface PriceThreshold {
@@ -694,6 +705,7 @@ export interface MarkovDistributionResult {
     entropyCiModulationApplied?: boolean;
     conformal?: AdaptiveConformalMetadata;
     confidence?: PredictionConfidenceBreakdown;
+    softRegime?: SoftRegimeDiagnostics;
     kswinTrim?: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number };
     crossAssetBias?: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number };
   };
@@ -3526,6 +3538,8 @@ export function computePredictionConfidenceBreakdown(options: {
   divergencePenaltySchedule?: DivergencePenaltySchedule;
   /** Optional scoring mode for backtest/live confidence ablations. */
   confidenceMode?: PredictionConfidenceMode;
+  /** Optional HMM posterior uncertainty [0,1]; higher means more ambiguous regime assignment. */
+  posteriorEntropy?: number;
 }): PredictionConfidenceBreakdown {
   const { pUp, ensembleConsensus, hmmConverged, regimeRunLength, structuralBreak } = options;
   const mode = options.confidenceMode ?? 'legacy';
@@ -3639,6 +3653,11 @@ export function computePredictionConfidenceBreakdown(options: {
     : 1.0;
   confidence *= normalizationMultiplier;
 
+  const posteriorUncertaintyMultiplier = options.posteriorEntropy !== undefined
+    ? Math.max(0.65, 1 - options.posteriorEntropy * 0.35)
+    : 1.0;
+  confidence *= posteriorUncertaintyMultiplier;
+
   return {
     mode,
     total: Math.max(0, Math.min(1, confidence)),
@@ -3648,6 +3667,7 @@ export function computePredictionConfidenceBreakdown(options: {
       assetType: assetTypeMultiplier,
       volatility: volatilityMultiplier,
       normalization: normalizationMultiplier,
+      posteriorUncertainty: posteriorUncertaintyMultiplier,
     },
   };
 }
@@ -3692,6 +3712,16 @@ function zScoreAgainstHistory(history: readonly number[] | undefined, value: num
   const std = Math.sqrt(sse / history.length);
   if (!(std > 1e-9)) return 0;
   return (value - mean) / std;
+}
+
+function computeNormalizedEntropy(probabilities: readonly number[]): number {
+  if (probabilities.length === 0) return 0;
+  const positive = probabilities.filter((p) => Number.isFinite(p) && p > 0);
+  if (positive.length === 0) return 0;
+  const entropy = -positive.reduce((sum, p) => sum + p * Math.log(p), 0);
+  const maxEntropy = Math.log(probabilities.length);
+  if (!(maxEntropy > 0)) return 0;
+  return Math.max(0, Math.min(1, entropy / maxEntropy));
 }
 
 /**
@@ -4261,6 +4291,8 @@ export async function computeMarkovDistribution(params: {
   conformalCooloffWindow?: number;
   /** Item 1 — confidence-score ablation mode. Default rebalanced in the live forecast path. */
   predictionConfidenceMode?: PredictionConfidenceMode;
+  /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. Default false. */
+  enableSoftRegimeWeighting?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
    *  Default false ⇒ byte-identical to pre-Phase-C. */
   enableKswinTrim?: boolean;
@@ -4529,12 +4561,19 @@ export async function computeMarkovDistribution(params: {
   // Also fit a volatility HMM on rolling vol for an independent vol-regime signal.
   let hmmOverride: { drift: number; vol: number; weight: number } | undefined;
   let hmmMeta: { converged: boolean; iterations: number; states: number; logLikelihood: number; volRegimeConverged?: boolean } | undefined;
+  let softRegimeMeta: SoftRegimeDiagnostics | undefined;
   const HMM_MIN_OBS = 60; // need at least 60 returns for stable HMM
   if (returns.length >= HMM_MIN_OBS) {
     try {
       // Primary: return HMM (directional signal)
       const hmmResult = baumWelch(returns, 3, 50, 1e-3);
       const hmmForecast = hmmPredict(returns, hmmResult.params, horizon);
+      const posteriorEntropy = computeNormalizedEntropy(hmmForecast.currentStateProbabilities);
+      const forecastEntropy = computeNormalizedEntropy(hmmForecast.forecastProbabilities);
+      const effectivePosteriorEntropy = Math.max(posteriorEntropy, forecastEntropy);
+      const dominantStateProbability = Math.max(...hmmForecast.currentStateProbabilities);
+      const softRegimeConfidenceMultiplier = Math.max(0.65, 1 - effectivePosteriorEntropy * 0.35);
+      const softRegimeCiScale = 1 + effectivePosteriorEntropy * 0.35;
 
       // Secondary: volatility regime HMM (Idea C — orthogonal vol signal)
       // 5-day rolling realized volatility as independent feature
@@ -4575,14 +4614,28 @@ export async function computeMarkovDistribution(params: {
         logLikelihood: hmmResult.logLikelihood,
         volRegimeConverged,
       };
+      if (params.enableSoftRegimeWeighting === true) {
+        softRegimeMeta = {
+          posteriorEntropy,
+          forecastEntropy,
+          ciScale: softRegimeCiScale,
+          confidenceMultiplier: softRegimeConfidenceMultiplier,
+          dominantStateProbability,
+          currentStateProbabilities: [...hmmForecast.currentStateProbabilities],
+          forecastProbabilities: [...hmmForecast.forecastProbabilities],
+        };
+      }
       if (hmmResult.converged && Number.isFinite(hmmForecast.expectedReturn)) {
         // Weight HMM based on data length, scaled by asset profile
         const baseHmmWeight = returns.length >= 120 ? 0.5 : 0.25;
         const hmmWeight = Math.min(0.7, baseHmmWeight * assetProfile.hmmWeightMultiplier);
+        const adjustedHmmWeight = params.enableSoftRegimeWeighting === true
+          ? hmmWeight * Math.max(0.5, 1 - effectivePosteriorEntropy * 0.4)
+          : hmmWeight;
         hmmOverride = {
           drift: hmmForecast.expectedReturn,
           vol: hmmForecast.expectedVolatility * volScaleFactor,
-          weight: hmmWeight,
+          weight: adjustedHmmWeight,
         };
       }
     } catch {
@@ -4781,7 +4834,10 @@ export async function computeMarkovDistribution(params: {
   const entropyCiScale = transitionEntropyZ === null
     ? 1.0
     : entropyZToCiScale(transitionEntropyZ, entropyKappa ?? 0.15);
-  const effectiveCiWidthMultiplier = ciWidthMultiplier * entropyCiScale;
+  const softRegimeCiScale = params.enableSoftRegimeWeighting === true
+    ? (softRegimeMeta?.ciScale ?? 1.0)
+    : 1.0;
+  const effectiveCiWidthMultiplier = ciWidthMultiplier * entropyCiScale * softRegimeCiScale;
 
   let garchScalesForDistribution: number[] | undefined;
   let garchVolApplied = false;
@@ -5000,6 +5056,11 @@ export async function computeMarkovDistribution(params: {
     structuralBreakDivergence: breakResult.divergence,
     divergencePenaltySchedule,
     confidenceMode: params.predictionConfidenceMode ?? 'rebalanced',
+    posteriorEntropy: params.enableSoftRegimeWeighting === true
+      ? softRegimeMeta
+        ? Math.max(softRegimeMeta.posteriorEntropy, softRegimeMeta.forecastEntropy)
+        : undefined
+      : undefined,
   });
   const predictionConfidence = confidenceBreakdown.total;
 
@@ -5373,6 +5434,7 @@ export async function computeMarkovDistribution(params: {
       entropyCiModulationApplied: entropyCiScale !== 1 ? true : undefined,
       ...(conformalMetadata ? { conformal: conformalMetadata } : {}),
       confidence: confidenceBreakdown,
+      ...(softRegimeMeta ? { softRegime: softRegimeMeta } : {}),
       kswinTrim: kswinTrimMeta,
       crossAssetBias: crossAssetBiasMeta,
     }
