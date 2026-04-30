@@ -24,6 +24,7 @@ import { getEarningsTranscript, EARNINGS_TRANSCRIPT_DESCRIPTION } from './financ
 import { getOnchainCrypto, ONCHAIN_CRYPTO_DESCRIPTION } from './finance/onchain-crypto.js';
 import { getRobinhoodQuote, getRobinhoodFundamentals } from './finance/robinhood.js';
 import { polymarketForecastTool, POLYMARKET_FORECAST_DESCRIPTION } from './finance/polymarket-forecast.js';
+import { forecastArbitratorTool, FORECAST_ARBITRATOR_DESCRIPTION } from './finance/forecast-arbitrator.js';
 import { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION } from './finance/price-distribution-chart.js';
 import { markovDistributionTool, MARKOV_DISTRIBUTION_DESCRIPTION } from './finance/markov-distribution.js';
 import { trumpPressureIndexTool, TRUMP_PRESSURE_DESCRIPTION } from './finance/trump-pressure-index.js';
@@ -106,6 +107,11 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       name: 'polymarket_forecast',
       tool: polymarketForecastTool,
       description: POLYMARKET_FORECAST_DESCRIPTION,
+    },
+    {
+      name: 'forecast_arbitrator',
+      tool: forecastArbitratorTool,
+      description: FORECAST_ARBITRATOR_DESCRIPTION,
     },
     {
       name: 'price_distribution_chart',

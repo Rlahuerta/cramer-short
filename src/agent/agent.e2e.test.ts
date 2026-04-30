@@ -290,4 +290,47 @@ describe('Agent E2E — basic financial query flows', () => {
     },
     E2E_TIMEOUT_MS,
   );
+
+  e2eIt(
+    'routes leveraged BTC divergence prompts through forecast_arbitrator without schema errors',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Give me a Polymarket and markov price forecast for BTC over the next 24 hours and also check for a possible whales movements. Provide the enter price, and stop market price for 10x leveraged and the position direction',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+      expect(result.toolsCalled).toContain('get_onchain_crypto');
+      expect(result.toolsCalled).toContain('forecast_arbitrator');
+
+      const arbiterStart = findToolStartEvent(result, 'forecast_arbitrator');
+      expect(arbiterStart).toBeDefined();
+      expect(arbiterStart?.args.ticker).toMatch(/^BTC(?:-USD)?$/);
+      expect(arbiterStart?.args.horizon_days).toBe(1);
+      expect(arbiterStart?.args.leverage).toBe(10);
+
+      const arbiterEnd = findToolEndEvent(result, 'forecast_arbitrator');
+      expect(arbiterEnd).toBeDefined();
+      const payload = JSON.parse(arbiterEnd!.result) as {
+        data?: {
+          result?: {
+            verdict?: string;
+            rawEvidence?: {
+              markov?: unknown;
+              polymarket?: unknown;
+              whale?: unknown;
+            };
+          };
+        };
+      };
+      expect(['LONG', 'SHORT', 'NO_TRADE', 'CONDITIONAL_LONG', 'CONDITIONAL_SHORT']).toContain(payload.data?.result?.verdict ?? '');
+      expect(payload.data?.result?.rawEvidence?.markov).toBeDefined();
+      expect(payload.data?.result?.rawEvidence?.polymarket).toBeDefined();
+      expect(payload.data?.result?.rawEvidence?.whale).toBeDefined();
+      expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
 });

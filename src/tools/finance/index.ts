@@ -19,6 +19,7 @@ export { socialSentimentTool, SOCIAL_SENTIMENT_DESCRIPTION } from './social-sent
 export { getEarningsTranscript, EARNINGS_TRANSCRIPT_DESCRIPTION } from './earnings-transcripts.js';
 export { getOnchainCrypto, ONCHAIN_CRYPTO_DESCRIPTION } from './onchain-crypto.js';
 export { polymarketForecastTool, POLYMARKET_FORECAST_DESCRIPTION } from './polymarket-forecast.js';
+export { forecastArbitratorTool, FORECAST_ARBITRATOR_DESCRIPTION, arbitrateForecast, classifyPolymarketQuestion } from './forecast-arbitrator.js';
 export { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION, buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
 export { markovDistributionTool, computeMarkovDistribution, MARKOV_DISTRIBUTION_DESCRIPTION } from './markov-distribution.js';
 export { trumpPressureIndexTool, TRUMP_PRESSURE_DESCRIPTION, computeTrumpPressureIndex, checkTacoAlert } from './trump-pressure-index.js';

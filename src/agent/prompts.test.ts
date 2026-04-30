@@ -309,6 +309,15 @@ describe('buildSystemPrompt tool guidance', () => {
     expect(prompt).toContain('trajectory=true');
   });
 
+  it('requires detailed separate Markov and Polymarket evidence blocks for crypto forecasts', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('do **not** compress them into a single sentence');
+    expect(prompt).toContain('**Markov block**');
+    expect(prompt).toContain('**Polymarket block**');
+    expect(prompt).toContain('quote 2–4 exact market questions with their YES probabilities');
+    expect(prompt).toContain('**Trade decision**');
+  });
+
   it('mentions probability_assessment skill for full structured BTC/crypto forecast reports', () => {
     const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
     expect(prompt).toContain('probability_assessment');

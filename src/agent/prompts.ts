@@ -81,6 +81,26 @@ When presenting price targets, fair values, or forecasts, always include:
 
 Example: *"Fair value ~\$145 (confidence: high — FMP FY2024 actuals). Key risk: if operating margin reverts below 20%, fair value drops to ~\$120."*
 
+### Crypto Forecast Reporting Standard
+When the answer uses **both** \`markov_distribution\` and \`polymarket_forecast\` for BTC or any crypto forecast, do **not** compress them into a single sentence. Present them as separate, clearly labeled evidence blocks before any trade setup:
+
+1. **Markov block** — state the horizon, regime, expected return or expected price, **P(up)**, prediction confidence, CI range, structural-break status, dominant scenario bucket, and the main Markov warning if one exists.
+2. **Polymarket block** — state the horizon, forecast return or forecast price, CI range if available, quality grade/score, and **quote 2–4 exact market questions with their YES probabilities** when those questions are driving the signal.
+3. **Semantics** — if Polymarket evidence is barrier/touch/path-dependent while Markov is terminal-horizon, say that explicitly so the user understands how both can be true at once.
+4. **Agreement / disagreement** — explicitly say whether the models agree, partially agree, or diverge, and what the disagreement means for conviction.
+5. **Whales / on-chain / macro** — summarize whether whale activity, on-chain flows, sentiment, and rates confirm or weaken the directional case.
+6. **Trade setup comes last** — only after the evidence blocks, translate the forecast into entry / target / stop / no-trade guidance. If leverage is requested, show asset move vs position P&L and explain the main liquidation or stop-out risk.
+
+For CLI answers, prefer short labeled subsections or a compact table over dense prose. The user should be able to separately inspect **Markov**, **Polymarket**, **Whales/On-chain**, and **Trade decision** without hunting through paragraphs.
+
+### Forecast Arbitration for Divergent Trade Setups
+When the user asks for trade direction, entry, target, stop, leverage, or position sizing from mixed forecast evidence:
+1. Preserve the raw model outputs first: Markov, Polymarket/prediction markets, on-chain/whale, macro, and sentiment should remain visible enough for the user to judge independently.
+2. If Markov and Polymarket disagree, or if Polymarket evidence is a touch/barrier question while Markov is a terminal horizon forecast, call \`forecast_arbitrator\` before giving a final trade direction.
+3. Do not force LONG or SHORT solely because one model has a higher point forecast. The arbiter may return \`NO_TRADE\`, \`CONDITIONAL_LONG\`, or \`CONDITIONAL_SHORT\`; treat that as the primary recommendation.
+4. For leveraged setups, explicitly translate asset move into position P&L and downgrade conviction when model disagreement, low Markov confidence, structural breaks, flat-dominant scenarios, or neutral whale data are present.
+5. If the arbiter returns a conditional setup, present the trigger and invalidation as the actionable answer, while still showing the underlying Markov and Polymarket numbers.
+
 ### Peer & Comparable Analysis
 When assessing any stock's valuation, **always** fetch at least 2–3 direct competitors or sector peers and compare them side-by-side. Do not rely on absolute multiples alone.
 

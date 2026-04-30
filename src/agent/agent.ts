@@ -319,6 +319,14 @@ export function inferDistributionHorizon(query: string, referenceDate: Date = ne
   const dayMatch = lower.match(/(\d+)[-\s]days?\b/i);
   if (dayMatch) return parseInt(dayMatch[1]!, 10);
 
+  const hourMatch = lower.match(/(\d+)[-\s]?(?:hours?|hrs?|h)\b/i);
+  if (hourMatch) {
+    const hours = parseInt(hourMatch[1]!, 10);
+    if (Number.isFinite(hours) && hours > 0) {
+      return Math.max(1, Math.ceil(hours / 24));
+    }
+  }
+
   const weekMatch = lower.match(/(\d+)[-\s]weeks?\b/i);
    if (weekMatch) return parseInt(weekMatch[1]!, 10) * TRADING_DAYS_PER_WEEK;
 
@@ -419,6 +427,34 @@ type ForecastCoverageArgs = {
   current_price?: number;
   sentiment_score?: number;
   markov_return?: number;
+};
+
+type ForcedForecastArbiterArgs = {
+  ticker: string;
+  horizon_days: number;
+  current_price?: number;
+  leverage?: number;
+  markov?: {
+    forecast_return?: number;
+    p_up?: number;
+    confidence?: number;
+    structural_break?: boolean;
+    flat_probability?: number;
+    ci_low?: number;
+    ci_high?: number;
+    summary?: string;
+  };
+  polymarket?: {
+    forecast_return?: number;
+    quality_score?: number;
+    markets?: Array<{ question: string; probability?: number }>;
+    summary?: string;
+  };
+  whale?: {
+    direction?: 'long' | 'short' | 'neutral';
+    confidence?: number;
+    summary?: string;
+  };
 };
 
 /**
@@ -749,7 +785,9 @@ function extractMarkovPredictionConfidenceForQuery(query: string, toolCalls: Too
     if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
 
     const data = parseToolCallData(call);
-    if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'ok') continue;
+    if (!data || data['_tool'] !== 'markov_distribution') continue;
+
+    if (data['status'] !== 'ok') continue;
 
     const canonical = data['canonical'];
     if (!canonical || typeof canonical !== 'object') continue;
@@ -759,6 +797,92 @@ function extractMarkovPredictionConfidenceForQuery(query: string, toolCalls: Too
 
     const predictionConfidence = (diagnostics as Record<string, unknown>)['predictionConfidence'];
     if (isFiniteNumber(predictionConfidence)) return predictionConfidence;
+  }
+
+  return null;
+}
+
+function extractMarkovArbiterEvidence(query: string, toolCalls: ToolCallRecord[]): ForcedForecastArbiterArgs['markov'] | null {
+  const desiredTicker = inferDistributionTicker(query);
+  const desiredHorizon = inferMarkovQueryHorizon(query);
+
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (call.tool !== 'markov_distribution') continue;
+    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
+
+    const data = parseToolCallData(call);
+    if (!data || data['_tool'] !== 'markov_distribution') continue;
+
+    if (data['status'] === 'abstain') {
+      const evidence: NonNullable<ForcedForecastArbiterArgs['markov']> = {};
+      const forecastHint = data['forecastHint'];
+      if (forecastHint && typeof forecastHint === 'object') {
+        const hintRecord = forecastHint as Record<string, unknown>;
+        if (isFiniteNumber(hintRecord['markovReturn'])) evidence.forecast_return = hintRecord['markovReturn'];
+        if (isFiniteNumber(hintRecord['confidenceScore'])) evidence.confidence = hintRecord['confidenceScore'];
+      }
+      const reasons = Array.isArray(data['abstainReasons'])
+        ? data['abstainReasons'].filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
+        : [];
+      evidence.summary = reasons.length > 0
+        ? `Markov abstained: ${reasons.join('; ')}`
+        : 'Markov abstained; treat Markov evidence as diagnostics only.';
+      return evidence;
+    }
+
+    if (data['status'] !== 'ok') continue;
+
+    const canonical = data['canonical'];
+    if (!canonical || typeof canonical !== 'object') continue;
+    const canonicalRecord = canonical as Record<string, unknown>;
+    const scenarios = canonicalRecord['scenarios'];
+    const diagnostics = canonicalRecord['diagnostics'];
+    const actionSignal = canonicalRecord['actionSignal'];
+    const distribution = data['distribution'];
+
+    const evidence: NonNullable<ForcedForecastArbiterArgs['markov']> = {};
+    const weightedReturn = extractMarkovReturnForQuery(query, toolCalls);
+    if (weightedReturn !== null) evidence.forecast_return = weightedReturn;
+
+    if (scenarios && typeof scenarios === 'object') {
+      const scenarioRecord = scenarios as Record<string, unknown>;
+      if (isFiniteNumber(scenarioRecord['pUp'])) evidence.p_up = scenarioRecord['pUp'];
+      if (isFiniteNumber(scenarioRecord['expectedReturn']) && evidence.forecast_return === undefined) {
+        evidence.forecast_return = scenarioRecord['expectedReturn'];
+      }
+      const buckets = scenarioRecord['buckets'];
+      if (Array.isArray(buckets)) {
+        const flat = buckets.find((bucket) =>
+          bucket && typeof bucket === 'object'
+          && typeof (bucket as Record<string, unknown>)['label'] === 'string'
+          && ((bucket as Record<string, unknown>)['label'] as string).toLowerCase().includes('flat')
+        ) as Record<string, unknown> | undefined;
+        if (flat && isFiniteNumber(flat['probability'])) evidence.flat_probability = flat['probability'];
+      }
+    }
+
+    if (diagnostics && typeof diagnostics === 'object') {
+      const diagnosticRecord = diagnostics as Record<string, unknown>;
+      if (isFiniteNumber(diagnosticRecord['predictionConfidence'])) evidence.confidence = diagnosticRecord['predictionConfidence'];
+      if (typeof diagnosticRecord['structuralBreakDetected'] === 'boolean') evidence.structural_break = diagnosticRecord['structuralBreakDetected'];
+    }
+
+    if (actionSignal && typeof actionSignal === 'object' && typeof (actionSignal as Record<string, unknown>)['confidence'] === 'string') {
+      evidence.summary = `Markov action signal confidence ${(actionSignal as Record<string, unknown>)['confidence']}`;
+    }
+
+    if (Array.isArray(distribution)) {
+      const prices = distribution
+        .map((point) => point && typeof point === 'object' ? (point as Record<string, unknown>)['price'] : null)
+        .filter((price): price is number => isFinitePositiveNumber(price));
+      if (prices.length > 0) {
+        evidence.ci_low = Math.min(...prices);
+        evidence.ci_high = Math.max(...prices);
+      }
+    }
+
+    return Object.keys(evidence).length > 0 ? evidence : null;
   }
 
   return null;
@@ -881,7 +1005,10 @@ function matchesTickerAndOptionalHorizon(
 ): boolean {
   if (ticker) {
     const existingTicker = typeof args['ticker'] === 'string' ? args['ticker'].toUpperCase() : null;
-    if (existingTicker !== ticker.toUpperCase()) return false;
+    const expectedTicker = ticker.toUpperCase();
+    const equivalentCryptoTicker = expectedTicker.endsWith('-USD')
+      && existingTicker === expectedTicker.replace(/-USD$/, '');
+    if (existingTicker !== expectedTicker && !equivalentCryptoTicker) return false;
   }
 
   if (horizon !== null && getPositiveIntegerArg(args, horizonKey) !== horizon) {
@@ -1054,8 +1181,9 @@ export function shouldForceCryptoForecastTools(query: string, toolCalls: ToolCal
   const needsMarkov = buildForcedCryptoForecastMarkovArgs(query) !== null
     && !hasCompletedMarkovDistributionForQuery(query, toolCalls);
   const needsPolymarketRerun = shouldRerunPolymarketForecastWithMarkov(query, toolCalls);
+  const needsForecastArbiter = shouldForceForecastArbitrator(query, toolCalls);
 
-  return !hasMarketData || !hasSocialSentiment || !hasPolymarketForecast || !hasOnchain || !hasFixedIncome || needsMarkov || needsPolymarketRerun;
+  return !hasMarketData || !hasSocialSentiment || !hasPolymarketForecast || !hasOnchain || !hasFixedIncome || needsMarkov || needsPolymarketRerun || needsForecastArbiter;
 }
 
 function hasSuccessfulMarkovDistribution(toolCalls: ToolCallRecord[]): boolean {
@@ -1175,6 +1303,118 @@ function extractPolymarketForecastReturnForQuery(query: string, toolCalls: ToolC
   }
 
   return null;
+}
+
+function extractPolymarketArbiterEvidence(query: string, toolCalls: ToolCallRecord[]): ForcedForecastArbiterArgs['polymarket'] | null {
+  const desiredTicker = inferDistributionTicker(query);
+  const desiredHorizon = inferDistributionHorizon(query);
+
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const call = toolCalls[i];
+    if (call.tool !== 'polymarket_forecast') continue;
+    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon_days', desiredHorizon)) continue;
+
+    const data = parseToolCallData(call);
+    if (!data) continue;
+
+    const evidence: NonNullable<ForcedForecastArbiterArgs['polymarket']> = {};
+    const forecastReturn = extractPolymarketForecastReturnForQuery(query, toolCalls);
+    if (forecastReturn !== null) evidence.forecast_return = forecastReturn;
+
+    const resultText = data['result'];
+    if (typeof resultText === 'string') {
+      const scoreMatch = resultText.match(/Grade:\s*[A-Z][^(]*\((\d+)\/100\)/i);
+      if (scoreMatch) {
+        const score = Number.parseInt(scoreMatch[1]!, 10);
+        if (Number.isFinite(score)) evidence.quality_score = score;
+      }
+
+      const markets: Array<{ question: string; probability?: number }> = [];
+      const marketPattern = /(Will [^:\n|]+?)[:|]\s*(\d{1,3})%\s+YES/gi;
+      let marketMatch: RegExpExecArray | null;
+      while ((marketMatch = marketPattern.exec(resultText)) !== null && markets.length < 5) {
+        const question = marketMatch[1]?.trim();
+        const probability = Number.parseInt(marketMatch[2]!, 10) / 100;
+        if (question) markets.push({ question, probability });
+      }
+      if (markets.length > 0) evidence.markets = markets;
+      evidence.summary = resultText.slice(0, 600);
+    }
+
+    return Object.keys(evidence).length > 0 ? evidence : null;
+  }
+
+  return null;
+}
+
+function inferLeverageFromQuery(query: string): number | null {
+  const match = query.match(/\b(\d{1,3}(?:\.\d+)?)\s*x\b/i);
+  if (!match) return null;
+  const leverage = Number.parseFloat(match[1]!);
+  return Number.isFinite(leverage) && leverage > 0 ? leverage : null;
+}
+
+function isTradeDecisionQuery(query: string): boolean {
+  return /\b(direction|entry|enter|stop|stop-loss|target|take profit|leverage|leveraged|\d{1,3}(?:\.\d+)?\s*x|long|short|trade setup|position)\b/i.test(query);
+}
+
+function hasForecastArbitratorForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
+  const desiredTicker = inferDistributionTicker(query);
+  const desiredHorizon = inferDistributionHorizon(query);
+  return toolCalls.some((call) => {
+    if (call.tool !== 'forecast_arbitrator') return false;
+    if (hasErrorLikeToolResult(call.result)) return false;
+    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon_days', desiredHorizon)) return false;
+    return hasNonEmptyParsedToolData(call);
+  });
+}
+
+export function buildForcedForecastArbiterArgs(query: string, toolCalls: ToolCallRecord[]): ForcedForecastArbiterArgs | null {
+  if (!isCryptoForecastQuery(query)) return null;
+  if (!isTradeDecisionQuery(query) && !detectBtcShortHorizonDisagreement(query, toolCalls)) return null;
+
+  const detected = detectAssetType(query);
+  if (detected.type !== 'crypto' || !detected.ticker) return null;
+
+  const horizon = inferDistributionHorizon(query) ?? inferBtcShortHorizonForecastHorizon(query) ?? 1;
+  const markov = extractMarkovArbiterEvidence(query, toolCalls);
+  const polymarket = extractPolymarketArbiterEvidence(query, toolCalls);
+  if (!markov && !polymarket) return null;
+
+  const args: ForcedForecastArbiterArgs = {
+    ticker: detected.ticker,
+    horizon_days: horizon,
+    whale: {
+      direction: 'neutral',
+      confidence: 0.35,
+      summary: hasUsableOnchainResultForCryptoQuery(query, toolCalls)
+        ? 'On-chain/whale tool completed; treat as neutral unless the final synthesis has a stronger confirmed whale signal.'
+        : 'No confirmed whale/on-chain signal available.',
+    },
+  };
+
+  if (markov) args.markov = markov;
+  if (polymarket) args.polymarket = polymarket;
+
+  const currentPrice = extractCurrentPriceForCryptoQuery(query, toolCalls);
+  if (currentPrice !== null) args.current_price = currentPrice;
+
+  const leverage = inferLeverageFromQuery(query);
+  if (leverage !== null) args.leverage = leverage;
+
+  return args;
+}
+
+export function shouldForceForecastArbitrator(query: string, toolCalls: ToolCallRecord[]): boolean {
+  if (hasForecastArbitratorForQuery(query, toolCalls)) return false;
+  return buildForcedForecastArbiterArgs(query, toolCalls) !== null;
+}
+
+function hasPrematureForecastArbitratorCall(response: AIMessage, query: string, toolCalls: ToolCallRecord[]): boolean {
+  const requestedArbiter = response.tool_calls?.some((call) => call.name === 'forecast_arbitrator') ?? false;
+  return requestedArbiter
+    && buildForcedCryptoForecastMarkovArgs(query) !== null
+    && !hasCompletedMarkovDistributionForQuery(query, toolCalls);
 }
 
 function detectBtcShortHorizonDisagreement(query: string, toolCalls: ToolCallRecord[]): boolean {
@@ -1693,6 +1933,19 @@ export class Agent {
 
       // Count sequential_thinking calls before executing tools (needed for nudge below).
       const toolCalls = (response as AIMessage).tool_calls ?? [];
+      if (hasPrematureForecastArbitratorCall(response as AIMessage, query, ctx.scratchpad.getToolCallRecords())) {
+        const forced = yield* this.forceCryptoForecastTools(ctx);
+        if (forced) {
+          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
+          currentPrompt = buildIterationPrompt(
+            query,
+            ctx.scratchpad.getToolResults(),
+            ctx.scratchpad.formatToolUsageForPrompt(),
+          );
+          continue;
+        }
+      }
+
       const stCallsThisIteration = toolCalls.filter((tc) => tc.name === 'sequential_thinking').length;
       sequentialThinkingCallCount += stCallsThisIteration;
 
@@ -1911,6 +2164,21 @@ export class Agent {
         }
       }
       forcedAny = forcedAny || ok;
+    }
+
+    if (shouldForceForecastArbitrator(ctx.query, getToolCalls())) {
+      const args = buildForcedForecastArbiterArgs(ctx.query, getToolCalls());
+      if (args) {
+        let ok = true;
+        for await (const event of this.toolExecutor.executeTool('forecast_arbitrator', args, ctx)) {
+          yield event;
+          if (event.type === 'tool_error' || event.type === 'tool_denied') {
+            ok = false;
+            break;
+          }
+        }
+        forcedAny = forcedAny || ok;
+      }
     }
 
     return forcedAny;

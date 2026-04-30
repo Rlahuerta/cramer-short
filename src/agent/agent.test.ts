@@ -128,6 +128,8 @@ const {
     shouldInjectBtcShortHorizonMixedEvidencePrompt,
     shouldInjectBtcShortHorizonLowConfidencePrompt,
     shouldRerunPolymarketForecastWithMarkov,
+    buildForcedForecastArbiterArgs,
+    shouldForceForecastArbitrator,
   buildForcedOnchainArgs,
   buildForcedFixedIncomeArgs,
   buildForcedCryptoForecastMarkovArgs,
@@ -310,6 +312,17 @@ describe('Agent', () => {
       expect(inferDistributionHorizon('Will GLD rally next quarter?')).toBe(63);
       expect(inferDistributionHorizon('Where will oil prices be in 2 months?')).toBe(42);
       expect(inferDistributionHorizon('QQQ outlook in 2 quarters')).toBe(126);
+    });
+
+    it('infers hourly short horizons for crypto forecast phrasing', () => {
+      expect(inferDistributionHorizon('BTC forecast over the next 24 hours')).toBe(1);
+      expect(inferDistributionHorizon('BTC forecast over the next 48h')).toBe(2);
+      expect(buildForcedCryptoForecastMarkovArgs('Give me a BTC markov forecast over the next 24 hours')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 1,
+        trajectory: true,
+        trajectoryDays: 1,
+      });
     });
 
     it('infers quarter-end horizons relative to a provided reference date', () => {
@@ -691,6 +704,147 @@ describe('Agent', () => {
         current_price: 73300,
         sentiment_score: 0.42,
       });
+    });
+
+    it('builds forecast arbitrator args after Markov and Polymarket evidence for leveraged trade asks', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: {
+                ticker: 'BTC',
+                price: 76029.21,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 1, trajectory: true, trajectoryDays: 1 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                scenarios: {
+                  expectedReturn: 0.006,
+                  pUp: 0.55,
+                  buckets: [
+                    { label: 'Down >5%', probability: 0.021 },
+                    { label: 'Flat +/-3%', probability: 0.828 },
+                    { label: 'Up >5%', probability: 0.06 },
+                  ],
+                },
+                actionSignal: { expectedReturn: 0.006, confidence: 'MEDIUM' },
+                diagnostics: {
+                  markovWeight: 0.68,
+                  predictionConfidence: 0.274,
+                  structuralBreakDetected: true,
+                },
+              },
+              distribution: [
+                { price: 72095, probability: 0.95 },
+                { price: 78116, probability: 0.05 },
+              ],
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'BTC', horizon_days: 1, current_price: 76029.21, markov_return: 0.00408 },
+          result: JSON.stringify({
+            data: {
+              forecastReturn: -0.0121,
+              result: 'Polymarket Forecast: BTC | Horizon: 1 days | Grade: A (83/100)\nWill Bitcoin dip to $75,000 in April?: 100% YES',
+            },
+          }),
+        },
+        {
+          tool: 'get_onchain_crypto',
+          args: { ticker: 'BTC', metrics: ['market', 'sentiment'] },
+          result: JSON.stringify({ data: { result: 'No whale transactions detected.' } }),
+        },
+      ];
+
+      const query = 'Give me a Polymarket and markov price forecast for BTC over the next 24 hours with entry and stop for 10x leveraged position direction';
+      expect(shouldForceForecastArbitrator(query, toolCalls)).toBe(true);
+      expect(buildForcedForecastArbiterArgs(query, toolCalls)).toEqual({
+        ticker: 'BTC',
+        horizon_days: 1,
+        current_price: 76029.21,
+        leverage: 10,
+        markov: {
+          forecast_return: 0.00408,
+          p_up: 0.55,
+          confidence: 0.274,
+          structural_break: true,
+          flat_probability: 0.828,
+          ci_low: 72095,
+          ci_high: 78116,
+          summary: 'Markov action signal confidence MEDIUM',
+        },
+        polymarket: {
+          forecast_return: -0.0121,
+          quality_score: 83,
+          markets: [
+            { question: 'Will Bitcoin dip to $75,000 in April?', probability: 1 },
+          ],
+          summary: 'Polymarket Forecast: BTC | Horizon: 1 days | Grade: A (83/100)\nWill Bitcoin dip to $75,000 in April?: 100% YES',
+        },
+        whale: {
+          direction: 'neutral',
+          confidence: 0.35,
+          summary: 'On-chain/whale tool completed; treat as neutral unless the final synthesis has a stronger confirmed whale signal.',
+        },
+      });
+    });
+
+    it('still forces forecast arbitrator for leveraged trade asks when Markov abstains', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: { ticker: 'BTC', price: 75504.42 },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 1, trajectory: true, trajectoryDays: 1 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              abstainReasons: ['prediction confidence below selective threshold'],
+              forecastHint: {
+                markovReturn: 0.003,
+                confidenceScore: 0.18,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'BTC', horizon_days: 1, current_price: 75504.42 },
+          result: JSON.stringify({
+            data: {
+              forecastReturn: -0.0121,
+              result: 'Polymarket Forecast: BTC | Horizon: 1 days | Grade: A (83/100)\nWill Bitcoin dip to $75,000 in April?: 100% YES',
+            },
+          }),
+        },
+      ];
+
+      const query = 'Give me a BTC forecast over the next 24 hours with entry and stop for a 10x leveraged position direction';
+      const args = buildForcedForecastArbiterArgs(query, toolCalls);
+      expect(shouldForceForecastArbitrator(query, toolCalls)).toBe(true);
+      expect(args?.markov?.summary).toContain('Markov abstained');
+      expect(args?.polymarket?.forecast_return).toBe(-0.0121);
+      expect(args?.leverage).toBe(10);
     });
 
     it('builds stable non-crypto forced args from resolved asset identity and explicit market-data query', () => {
