@@ -4542,6 +4542,77 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.forecastHint).toBeNull();
   });
 
+  it('explains low-trust BTC 14d anchors in abstain diagnostics', async () => {
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const currentPrice = prices[prices.length - 1];
+    const offHorizonEndDate = new Date(Date.now() + 6 * 86_400_000);
+    const offHorizonLabel = offHorizonEndDate.toLocaleString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      timeZone: 'UTC',
+    });
+    const offHorizonIso = offHorizonEndDate.toISOString().slice(0, 10);
+
+    const result = await markovDistributionTool.func({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [
+        {
+          question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.02)} on ${offHorizonLabel}?`,
+          probability: 0.42,
+          volume: 2000,
+          createdAt: Date.now(),
+          endDate: offHorizonIso,
+        },
+        {
+          question: `Will the price of Bitcoin be below $${Math.round(currentPrice * 0.96)} on ${offHorizonLabel}?`,
+          probability: 0.18,
+          volume: 1200,
+          createdAt: Date.now(),
+          endDate: offHorizonIso,
+        },
+        {
+          question: `Will the price of Bitcoin be between $${Math.round(currentPrice * 0.99)} and $${Math.round(currentPrice * 1.01)} on ${offHorizonLabel}?`,
+          probability: 0.22,
+          volume: 400,
+          createdAt: Date.now(),
+          endDate: offHorizonIso,
+        },
+      ],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical?.diagnostics;
+    const inspection = diagnostics?.anchorInspection;
+
+    expect(parsed.data.status).toBe('abstain');
+    expect(inspection).toBeDefined();
+    expect(inspection.candidateMarkets).toBe(3);
+    expect(inspection.terminalThresholdMatches).toBe(2);
+    expect(inspection.trustedAnchors).toBe(0);
+    expect(inspection.lowTrustAnchors).toBeGreaterThan(0);
+    expect(inspection.lowTrustReasonCounts.youngMarket).toBeGreaterThan(0);
+    expect(inspection.lowTrustReasonCounts.resolutionMismatch).toBeGreaterThan(0);
+    expect(inspection.excludedNonTerminalMarkets).toBe(1);
+    expect(inspection.closestResolutionDate).toBe(offHorizonIso);
+    expect(inspection.closestResolutionOffsetDays).toBeLessThan(0);
+    expect(parsed.data.abstainReasons[0]).toContain('0 passed the trust gate');
+    expect(parsed.data.report).toContain('Anchor search diagnostics:');
+    expect(parsed.data.report).toContain('Closest terminal resolution:');
+    expect(parsed.data.report).toContain('Low-trust reasons:');
+    expect(parsed.data.report).toContain('Example low-trust markets:');
+    expect(parsed.data.report).toContain('Example excluded markets:');
+  });
+
   it('returns forecastHint for BTC short-horizon abstain without exposing canonical action signal', async () => {
     mock.module('./polymarket.js', () => ({
       ...realPolymarketModule,

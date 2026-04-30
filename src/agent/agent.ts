@@ -184,10 +184,13 @@ function isBtcShortHorizonForecastQuery(query: string): boolean {
 
 export function isExplicitPolymarketForecastRequest(query: string): boolean {
   const lower = query.toLowerCase();
+  const hasPolymarketMention = /\bpolymarket\b/.test(lower) || lower.includes('polymarket_forecast');
+  const hasForecastIntent = /\b(?:forecast|prediction|predict|price target)\b/.test(lower);
   return lower.includes('polymarket_forecast')
     || /\bpolymarket forecast\b/.test(lower)
     || /\buse\s+(?:the\s+)?polymarket(?:_forecast| forecast)\b/.test(lower)
-    || /\brun\s+(?:the\s+)?polymarket(?:_forecast| forecast)\b/.test(lower);
+    || /\brun\s+(?:the\s+)?polymarket(?:_forecast| forecast)\b/.test(lower)
+    || (hasPolymarketMention && hasForecastIntent);
 }
 
 export function shouldPreserveAbstainingBtcShortHorizonForecast(
@@ -195,6 +198,10 @@ export function shouldPreserveAbstainingBtcShortHorizonForecast(
   toolCalls: ToolCallRecord[],
 ): boolean {
   if (isExplicitPolymarketForecastRequest(query)) return false;
+  if (hasForecastArbitratorForQuery(query, toolCalls)) return false;
+  if (hasCryptoPolymarketForecastCoverage(query, toolCalls)) return false;
+  if (hasUsableOnchainResultForCryptoQuery(query, toolCalls)) return false;
+  if (hasUsableFixedIncomeResult(toolCalls)) return false;
   return isBtcShortHorizonForecastQuery(query)
     && hasAbstainingMarkovDistributionForQuery(query, toolCalls);
 }
@@ -1813,15 +1820,6 @@ export class Agent {
 
       // No tool calls = final answer is in this response
       if (typeof response === 'string' || !hasToolCalls(response)) {
-        const abstainingBtcForecastAnswer = buildAbstainingBtcShortHorizonForecastAnswer(
-          query,
-          ctx.scratchpad.getToolCallRecords(),
-        );
-        if (abstainingBtcForecastAnswer) {
-          yield* this.handleDirectResponse(abstainingBtcForecastAnswer, ctx, currentPrompt);
-          return;
-        }
-
         if (shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
           const forced = yield* this.forceCryptoForecastTools(ctx);
           if (forced) {
@@ -1859,6 +1857,15 @@ export class Agent {
             );
             continue;
           }
+        }
+
+        const abstainingBtcForecastAnswer = buildAbstainingBtcShortHorizonForecastAnswer(
+          query,
+          ctx.scratchpad.getToolCallRecords(),
+        );
+        if (abstainingBtcForecastAnswer) {
+          yield* this.handleDirectResponse(abstainingBtcForecastAnswer, ctx, currentPrompt);
+          return;
         }
 
         yield* this.handleDirectResponse(responseText ?? '', ctx, currentPrompt);

@@ -588,6 +588,8 @@ export interface MarkovDistributionResult {
     }>;
     /** Anchor coverage diagnostic — how well Polymarket anchors cover the price range */
     anchorCoverage: AnchorCoverageDiagnostic;
+    /** Richer anchor diagnostics for abstain / low-trust reporting */
+    anchorInspection: AnchorInspectionDiagnostic;
     /** Goodness-of-fit: chi-squared p-value comparing observed vs expected transitions.
      *  Low p-value (< 0.05) means the Markov assumption is a poor fit. null if insufficient data. */
     goodnessOfFit: GoodnessOfFitResult | null;
@@ -731,6 +733,26 @@ export interface AnchorCoverageDiagnostic {
   quality: 'good' | 'sparse' | 'none';
   /** Human-readable warning or caveat (may be non-empty even when quality is 'good') */
   warning: string;
+}
+
+export interface AnchorInspectionDiagnostic {
+  candidateMarkets: number;
+  terminalThresholdMatches: number;
+  trustedAnchors: number;
+  lowTrustAnchors: number;
+  excludedBarrierMarkets: number;
+  excludedNonTerminalMarkets: number;
+  invalidThresholdMarkets: number;
+  lowTrustReasonCounts: {
+    youngMarket: number;
+    resolutionMismatch: number;
+    missingVolume: number;
+  };
+  closestResolutionDate: string | null;
+  /** Signed offset vs. target horizon. Negative = resolves early; positive = resolves late. */
+  closestResolutionOffsetDays: number | null;
+  exampleLowTrustQuestions: string[];
+  exampleExcludedQuestions: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -886,6 +908,214 @@ function parsePrice(raw: string): number {
   return parseFloat(cleaned.replace(/[KkMm]$/, '')) * multiplier;
 }
 
+type AnchorLowTrustReason = 'young_market' | 'resolution_mismatch' | 'missing_volume';
+
+type AnchorCandidateInspection =
+  | {
+      status: 'excluded';
+      question: string;
+      endDate: string | null;
+      volume: number;
+      exclusionReason: 'barrier_pattern' | 'no_terminal_threshold_match' | 'invalid_threshold';
+      matchedPrice?: number;
+    }
+  | {
+      status: 'accepted';
+      question: string;
+      endDate: string | null;
+      volume: number;
+      matchedPrice: number;
+      isBelow: boolean;
+      hasVolume: boolean;
+      isYoung: boolean;
+      isNearTargetResolution: boolean;
+      trustScore: 'high' | 'low';
+      lowTrustReasons: AnchorLowTrustReason[];
+      rawProbability: number;
+      correctedProbability: number;
+      threshold: PriceThreshold;
+    };
+
+function inspectAnchorCandidate(
+  market: {
+    question: string;
+    probability: number;
+    volume?: number;
+    createdAt?: string | number;
+    endDate?: string | null;
+  },
+  options?: { ticker?: string; horizonDays?: number; referenceTimeMs?: number },
+): AnchorCandidateInspection {
+  const now = options?.referenceTimeMs ?? Date.now();
+  const volume = market.volume ?? 0;
+  const endDate = market.endDate ?? null;
+  const isDateAnchoredTrade = DATE_ANCHORED_TRADE_PATTERN.test(market.question);
+
+  if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question)) && !isDateAnchoredTrade) {
+    return {
+      status: 'excluded',
+      question: market.question,
+      endDate,
+      volume,
+      exclusionReason: 'barrier_pattern',
+    };
+  }
+
+  let matched: number | null = null;
+  let isBelow = false;
+
+  for (const pattern of BELOW_PATTERNS) {
+    const m = market.question.match(pattern);
+    if (m) {
+      matched = parsePrice(m[1]);
+      isBelow = true;
+      break;
+    }
+  }
+
+  if (matched === null) {
+    for (const pattern of ABOVE_PATTERNS) {
+      const m = market.question.match(pattern);
+      if (m) {
+        matched = parsePrice(m[1]);
+        isBelow = false;
+        break;
+      }
+    }
+  }
+
+  if (matched === null) {
+    return {
+      status: 'excluded',
+      question: market.question,
+      endDate,
+      volume,
+      exclusionReason: 'no_terminal_threshold_match',
+    };
+  }
+
+  if (isNaN(matched) || matched <= 0) {
+    return {
+      status: 'excluded',
+      question: market.question,
+      endDate,
+      volume,
+      matchedPrice: matched,
+      exclusionReason: 'invalid_threshold',
+    };
+  }
+
+  const isYoung =
+    market.createdAt != null &&
+    now - (typeof market.createdAt === 'string'
+      ? Date.parse(market.createdAt)
+      : market.createdAt) < 48 * 60 * 60 * 1000;
+
+  const hasVolume = volume > 0;
+  const isCrypto = options?.ticker != null
+    && getAssetProfile(options.ticker).type === 'crypto';
+  const isShortHorizonCrypto = isCrypto
+    && options?.horizonDays != null
+    && options.horizonDays <= 14;
+  const isLongHorizonCrypto = isCrypto
+    && options?.horizonDays != null
+    && options.horizonDays > 14;
+  const isNearTargetResolution = options?.horizonDays != null && endDate
+    ? Math.abs((Date.parse(endDate) - now) / 86_400_000 - options.horizonDays) <= 2
+    : false;
+  const trustScore: 'high' | 'low' =
+    hasVolume && (
+      (isLongHorizonCrypto && !isYoung && isNearTargetResolution)
+      || (!isLongHorizonCrypto && (!isYoung || (isShortHorizonCrypto && isNearTargetResolution)))
+    ) ? 'high' : 'low';
+
+  const lowTrustReasons: AnchorLowTrustReason[] = [];
+  if (!hasVolume) lowTrustReasons.push('missing_volume');
+  if (isYoung) lowTrustReasons.push('young_market');
+  const needsResolutionMatch = isLongHorizonCrypto || (isShortHorizonCrypto && isYoung);
+  if (needsResolutionMatch && !isNearTargetResolution) lowTrustReasons.push('resolution_mismatch');
+
+  const rawProbability = market.probability;
+  const correctedRaw = rawProbability * YES_BIAS_MULTIPLIER;
+  const survivalProb = isBelow ? (1 - correctedRaw) : correctedRaw;
+  const correctedProbability = Math.max(0, Math.min(1, survivalProb));
+
+  return {
+    status: 'accepted',
+    question: market.question,
+    endDate,
+    volume,
+    matchedPrice: matched,
+    isBelow,
+    hasVolume,
+    isYoung,
+    isNearTargetResolution,
+    trustScore,
+    lowTrustReasons,
+    rawProbability,
+    correctedProbability,
+    threshold: {
+      price: matched,
+      rawProbability,
+      probability: correctedProbability,
+      trustScore,
+      source: 'polymarket',
+      endDate,
+    },
+  };
+}
+
+function summarizeAnchorInspection(
+  markets: Array<{
+    question: string;
+    probability: number;
+    volume?: number;
+    createdAt?: string | number;
+    endDate?: string | null;
+  }>,
+  finalAnchors: PriceThreshold[],
+  options?: { ticker?: string; horizonDays?: number; referenceTimeMs?: number },
+): AnchorInspectionDiagnostic {
+  const now = options?.referenceTimeMs ?? Date.now();
+  const inspections = markets.map((market) => inspectAnchorCandidate(market, options));
+  const accepted = inspections.filter(
+    (inspection): inspection is Extract<AnchorCandidateInspection, { status: 'accepted' }> =>
+      inspection.status === 'accepted',
+  );
+  const excluded = inspections.filter(
+    (inspection): inspection is Extract<AnchorCandidateInspection, { status: 'excluded' }> =>
+      inspection.status === 'excluded',
+  );
+
+  const lowTrustRaw = accepted.filter((inspection) => inspection.trustScore === 'low');
+  const closestResolution = accepted
+    .filter((inspection) => inspection.endDate != null && !Number.isNaN(Date.parse(inspection.endDate)))
+    .map((inspection) => {
+      const offset = (Date.parse(inspection.endDate!) - now) / 86_400_000 - (options?.horizonDays ?? 0);
+      return { inspection, offset };
+    })
+    .sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))[0];
+
+  return {
+    candidateMarkets: markets.length,
+    terminalThresholdMatches: accepted.length,
+    trustedAnchors: finalAnchors.filter((anchor) => anchor.trustScore === 'high').length,
+    lowTrustAnchors: finalAnchors.filter((anchor) => anchor.trustScore === 'low').length,
+    excludedBarrierMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'barrier_pattern').length,
+    excludedNonTerminalMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'no_terminal_threshold_match').length,
+    invalidThresholdMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'invalid_threshold').length,
+    lowTrustReasonCounts: {
+      youngMarket: lowTrustRaw.filter((inspection) => inspection.lowTrustReasons.includes('young_market')).length,
+      resolutionMismatch: lowTrustRaw.filter((inspection) => inspection.lowTrustReasons.includes('resolution_mismatch')).length,
+      missingVolume: lowTrustRaw.filter((inspection) => inspection.lowTrustReasons.includes('missing_volume')).length,
+    },
+    closestResolutionDate: closestResolution?.inspection.endDate ?? null,
+    closestResolutionOffsetDays: closestResolution?.offset ?? null,
+    exampleLowTrustQuestions: lowTrustRaw.slice(0, 3).map((inspection) => inspection.question),
+    exampleExcludedQuestions: excluded.slice(0, 3).map((inspection) => inspection.question),
+  };
+}
+
 /**
  * Parse Polymarket market objects into sorted price thresholds with bias correction.
  *
@@ -904,129 +1134,40 @@ export function extractPriceThresholds(
 ): PriceThreshold[] {
   const seen = new Map<number, PriceThreshold>();
 
-  const now = options?.referenceTimeMs ?? Date.now();
-
   for (const market of markets) {
-    const isDateAnchoredTrade = DATE_ANCHORED_TRADE_PATTERN.test(market.question);
-    if (BARRIER_PATTERNS.some((pattern) => pattern.test(market.question)) && !isDateAnchoredTrade) {
+    const inspection = inspectAnchorCandidate(market, options);
+    if (inspection.status === 'excluded') {
       anchorTrace('extract_market', {
         ticker: options?.ticker ?? null,
         horizonDays: options?.horizonDays ?? null,
-        question: market.question,
-        endDate: market.endDate ?? null,
-        volume: market.volume ?? 0,
-        excluded: 'barrier_pattern',
+        question: inspection.question,
+        endDate: inspection.endDate,
+        volume: inspection.volume,
+        matchedPrice: inspection.matchedPrice,
+        excluded: inspection.exclusionReason,
       });
       continue;
     }
-
-    let matched: number | null = null;
-    let isBelow = false;
-
-    // Try "below" patterns first (more specific)
-    for (const pattern of BELOW_PATTERNS) {
-      const m = market.question.match(pattern);
-      if (m) {
-        matched = parsePrice(m[1]);
-        isBelow = true;
-        break;
-      }
-    }
-    // Then try "above" patterns
-    if (matched === null) {
-      for (const pattern of ABOVE_PATTERNS) {
-        const m = market.question.match(pattern);
-        if (m) {
-          matched = parsePrice(m[1]);
-          isBelow = false;
-          break;
-        }
-      }
-    }
-    if (matched === null) {
-      anchorTrace('extract_market', {
-        ticker: options?.ticker ?? null,
-        horizonDays: options?.horizonDays ?? null,
-        question: market.question,
-        endDate: market.endDate ?? null,
-        volume: market.volume ?? 0,
-        excluded: 'no_terminal_threshold_match',
-      });
-      continue;
-    }
-    if (isNaN(matched) || matched <= 0) {
-      anchorTrace('extract_market', {
-        ticker: options?.ticker ?? null,
-        horizonDays: options?.horizonDays ?? null,
-        question: market.question,
-        endDate: market.endDate ?? null,
-        volume: market.volume ?? 0,
-        matchedPrice: matched,
-        excluded: 'invalid_threshold',
-      });
-      continue;
-    }
-
-    const isYoung =
-      market.createdAt != null &&
-      now - (typeof market.createdAt === 'string'
-        ? Date.parse(market.createdAt)
-        : market.createdAt) < 48 * 60 * 60 * 1000;
-
-    const hasVolume = (market.volume ?? 0) > 0;
-    const isCrypto = options?.ticker != null
-      && getAssetProfile(options.ticker).type === 'crypto';
-    const isShortHorizonCrypto = isCrypto
-      && options?.horizonDays != null
-      && options.horizonDays <= 14;
-    const isLongHorizonCrypto = isCrypto
-      && options?.horizonDays != null
-      && options.horizonDays > 14;
-    const isNearTargetResolution = options?.horizonDays != null && market.endDate
-      ? Math.abs((Date.parse(market.endDate) - now) / 86_400_000 - options.horizonDays) <= 2
-      : false;
-    const trustScore: 'high' | 'low' =
-      hasVolume && (
-        (isLongHorizonCrypto && !isYoung && isNearTargetResolution)
-        || (!isLongHorizonCrypto && (!isYoung || (isShortHorizonCrypto && isNearTargetResolution)))
-      ) ? 'high' : 'low';
-
-    const rawProbability = market.probability;
-    const correctedRaw = rawProbability * YES_BIAS_MULTIPLIER;
-
-    // Convert to survival probability P(> price):
-    // "exceed/above $X" at P=p → P(> X) = p
-    // "fall below $X" at P=p → P(< X) = p → P(> X) = 1 - p
-    const survivalProb = isBelow ? (1 - correctedRaw) : correctedRaw;
-
-    const corrected: PriceThreshold = {
-      price: matched,
-      rawProbability,
-      probability: Math.max(0, Math.min(1, survivalProb)),
-      trustScore,
-      source: 'polymarket',
-      endDate: market.endDate ?? null,
-    };
 
     anchorTrace('extract_market', {
       ticker: options?.ticker ?? null,
       horizonDays: options?.horizonDays ?? null,
-      question: market.question,
-      endDate: market.endDate ?? null,
-      volume: market.volume ?? 0,
-      matchedPrice: matched,
-      isBelow,
-      hasVolume,
-      isYoung,
-      isNearTargetResolution,
-      trustScore,
-      rawProbability,
-      correctedProbability: corrected.probability,
+      question: inspection.question,
+      endDate: inspection.endDate,
+      volume: inspection.volume,
+      matchedPrice: inspection.matchedPrice,
+      isBelow: inspection.isBelow,
+      hasVolume: inspection.hasVolume,
+      isYoung: inspection.isYoung,
+      isNearTargetResolution: inspection.isNearTargetResolution,
+      trustScore: inspection.trustScore,
+      rawProbability: inspection.rawProbability,
+      correctedProbability: inspection.correctedProbability,
     });
 
-    const existing = seen.get(matched);
-    if (!existing || rawProbability > existing.rawProbability) {
-      seen.set(matched, corrected);
+    const existing = seen.get(inspection.matchedPrice);
+    if (!existing || inspection.rawProbability > existing.rawProbability) {
+      seen.set(inspection.matchedPrice, inspection.threshold);
     }
   }
 
@@ -4276,6 +4417,11 @@ export async function computeMarkovDistribution(params: {
     polymarketAnchors = merged.anchors;
     anchorDivergenceWarnings = merged.warnings;
   }
+  const anchorInspection = summarizeAnchorInspection(
+    polymarketMarkets,
+    polymarketAnchors,
+    { ticker, horizonDays: horizon, referenceTimeMs: params.referenceTimeMs },
+  );
 
   // --- Spectral gap ---
   const rho = secondLargestEigenvalue(P);
@@ -5115,6 +5261,7 @@ export async function computeMarkovDistribution(params: {
       ciWidened: breakResult.detected,
       anchorDivergenceWarnings,
       anchorCoverage,
+      anchorInspection,
       goodnessOfFit: gofResult,
       hmm: hmmMeta ?? null,
       ensemble,
@@ -5215,6 +5362,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       probability: z.number().min(0).max(1),
       volume:      z.number().optional(),
       createdAt:   z.union([z.string(), z.number()]).optional(),
+      endDate:     z.string().nullable().optional(),
     })).optional().default([]).describe('Polymarket markets with dollar price thresholds (optional, defaults to empty)'),
     sentiment: z.object({
       bullish: z.number().min(0).max(100),
@@ -5310,9 +5458,26 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       !m.structuralBreakDetected;
 
     const abstainReasons: string[] = [];
+    const lowTrustReasonParts = [
+      m.anchorInspection.lowTrustReasonCounts.youngMarket > 0
+        ? `${m.anchorInspection.lowTrustReasonCounts.youngMarket} young (<48h)`
+        : null,
+      m.anchorInspection.lowTrustReasonCounts.resolutionMismatch > 0
+        ? `${m.anchorInspection.lowTrustReasonCounts.resolutionMismatch} off-horizon`
+        : null,
+      m.anchorInspection.lowTrustReasonCounts.missingVolume > 0
+        ? `${m.anchorInspection.lowTrustReasonCounts.missingVolume} zero-volume`
+        : null,
+    ].filter((part): part is string => part !== null);
 
     if (m.anchorCoverage.trustedAnchors === 0 && !commodityModelOnly) {
-      abstainReasons.push('No trusted terminal prediction-market anchors are available for this horizon.');
+      if (m.anchorInspection.terminalThresholdMatches > 0) {
+        abstainReasons.push(
+          `Found ${m.anchorInspection.terminalThresholdMatches} terminal threshold market${m.anchorInspection.terminalThresholdMatches === 1 ? '' : 's'}, but 0 passed the trust gate${lowTrustReasonParts.length > 0 ? ` (${lowTrustReasonParts.join(', ')})` : ''}.`,
+        );
+      } else {
+        abstainReasons.push('No trusted terminal prediction-market anchors are available for this horizon.');
+      }
     } else if (m.anchorCoverage.trustedAnchors === 0 && commodityModelOnly) {
       // No abstain reason for anchors — commodity model-only bypass applies.
     } else if (m.anchorCoverage.quality !== 'good' && !sparseCryptoAnchorAllowed) {
@@ -5407,7 +5572,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       '',
       `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
       `Current: $${fmt(result.currentPrice)} | Regime: ${m.regimeState}`,
-      `Anchors: ${m.polymarketAnchors} trusted | Anchor quality: ${m.anchorCoverage.quality.toUpperCase()}`,
+      `Anchors: ${m.polymarketAnchors} trusted | ${m.anchorInspection.lowTrustAnchors} low-trust | Anchor quality: ${m.anchorCoverage.quality.toUpperCase()}`,
       mixingLine,
     ];
 
@@ -5478,6 +5643,41 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       mixingTimeWeight: m.mixingTimeWeight,
       predictionConfidence: result.predictionConfidence,
     });
+    const closestResolutionLine =
+      m.anchorInspection.closestResolutionDate != null
+      && m.anchorInspection.closestResolutionOffsetDays != null
+        ? `- Closest terminal resolution: ${m.anchorInspection.closestResolutionDate} (${Math.abs(m.anchorInspection.closestResolutionOffsetDays).toFixed(1)} days ${m.anchorInspection.closestResolutionOffsetDays < 0 ? 'early' : 'late'} vs ${result.horizon}d target)`
+        : null;
+    const excludedParts = [
+      m.anchorInspection.excludedBarrierMarkets > 0
+        ? `${m.anchorInspection.excludedBarrierMarkets} barrier/path-dependent`
+        : null,
+      m.anchorInspection.excludedNonTerminalMarkets > 0
+        ? `${m.anchorInspection.excludedNonTerminalMarkets} non-terminal/range`
+        : null,
+      m.anchorInspection.invalidThresholdMarkets > 0
+        ? `${m.anchorInspection.invalidThresholdMarkets} invalid-threshold`
+        : null,
+    ].filter((part): part is string => part !== null);
+    const abstainAnchorDiagnostics = canEmitCanonical
+      ? []
+      : [
+          '',
+          'Anchor search diagnostics:',
+          '-'.repeat(60),
+          `- Candidate markets scanned: ${m.anchorInspection.candidateMarkets}`,
+          `- Terminal threshold matches: ${m.anchorInspection.terminalThresholdMatches}`,
+          `- Trusted anchors: ${m.anchorInspection.trustedAnchors} | Low-trust anchors: ${m.anchorInspection.lowTrustAnchors}`,
+          ...(closestResolutionLine ? [closestResolutionLine] : []),
+          ...(lowTrustReasonParts.length > 0 ? [`- Low-trust reasons: ${lowTrustReasonParts.join(', ')}`] : []),
+          ...(excludedParts.length > 0 ? [`- Excluded markets: ${excludedParts.join(', ')}`] : []),
+          ...(m.anchorInspection.exampleLowTrustQuestions.length > 0
+            ? ['- Example low-trust markets:', ...m.anchorInspection.exampleLowTrustQuestions.map((question) => `  - ${question}`)]
+            : []),
+          ...(m.anchorInspection.exampleExcludedQuestions.length > 0
+            ? ['- Example excluded markets:', ...m.anchorInspection.exampleExcludedQuestions.map((question) => `  - ${question}`)]
+            : []),
+        ];
 
     const report = canEmitCanonical
       ? [
@@ -5499,6 +5699,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
         '',
         'Why this abstained:',
         ...abstainReasons.map((reason) => `- ${reason}`),
+        ...abstainAnchorDiagnostics,
         '',
         ...header,
         ...(warnings.length > 0 ? ['', ...warnings] : []),
@@ -5522,6 +5723,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           trustedAnchors: m.anchorCoverage.trustedAnchors,
           anchorQuality: m.anchorCoverage.quality,
           anchorWarning: m.anchorCoverage.warning || null,
+          anchorInspection: m.anchorInspection,
           regimeState: m.regimeState,
           mixingTimeWeight: m.mixingTimeWeight,
           markovWeight: commodityModelOnly ? 1 : m.mixingTimeWeight,

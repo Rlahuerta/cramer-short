@@ -1349,6 +1349,74 @@ describe('Agent', () => {
       )).toBe(false);
     });
 
+    it('does not preserve BTC short-horizon abstention for explicit combined Polymarket + Markov forecast prompts', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 14,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 5,
+                  anchorQuality: 'none',
+                },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Give me a Polymarket and markov price forecast for BTC over the next 14 days',
+        toolCalls,
+      )).toBe(false);
+    });
+
+    it('does not preserve BTC short-horizon abstention once arbitrator evidence exists', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 14,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 5,
+                  anchorQuality: 'none',
+                },
+              },
+            },
+          }),
+        },
+        {
+          tool: 'forecast_arbitrator',
+          args: { ticker: 'BTC', horizon_days: 14, current_price: 76135, leverage: 10 },
+          result: JSON.stringify({
+            data: {
+              verdict: 'NO_TRADE',
+              confidence: 'low',
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Give me a Polymarket and markov price forecast for BTC over the next 14 days and provide the position direction',
+        toolCalls,
+      )).toBe(false);
+    });
+
     describe('isNonCryptoForecastQuery', () => {
       it('matches stock forecast queries', () => {
         expect(isNonCryptoForecastQuery('Provide an NVDA forecast for the next 7 days')).toBe(true);
@@ -1392,6 +1460,7 @@ describe('Agent', () => {
       it('detects explicit polymarket_forecast requests by name', () => {
         expect(isExplicitPolymarketForecastRequest('Use polymarket_forecast for BTC over the next 2 days')).toBe(true);
         expect(isExplicitPolymarketForecastRequest('Run the polymarket forecast for NVDA next week')).toBe(true);
+        expect(isExplicitPolymarketForecastRequest('Give me a Polymarket and markov price forecast for BTC over the next 14 days')).toBe(true);
         expect(isExplicitPolymarketForecastRequest('Provide a BTC forecast for the next 7 days')).toBe(false);
       });
     });
