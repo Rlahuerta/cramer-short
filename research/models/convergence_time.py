@@ -38,9 +38,13 @@ def convergence_time_factor(r: ConvergenceResult) -> float:
     if not r.converged or r.days_to_converge is None:
         return 1.0
     days = r.days_to_converge * NO_SPEEDUP if r.direction == "no" else float(r.days_to_converge)
-    if days <= FAST_THRESHOLD_DAYS:
+    fast_window_floor = 1 + FAST_BOOST / FAST_THRESHOLD_DAYS
+    if days <= 1:
         return 1 + FAST_BOOST
+    if days <= FAST_THRESHOLD_DAYS:
+        t_fast = (days - 1) / max(1, FAST_THRESHOLD_DAYS - 1)
+        return (1 + FAST_BOOST) + t_fast * (fast_window_floor - (1 + FAST_BOOST))
     if days >= SLOW_THRESHOLD_DAYS:
         return 1 - SLOW_DAMP
     t = (days - FAST_THRESHOLD_DAYS) / (SLOW_THRESHOLD_DAYS - FAST_THRESHOLD_DAYS)
-    return (1 + FAST_BOOST) + t * ((1 - SLOW_DAMP) - (1 + FAST_BOOST))
+    return fast_window_floor + t * ((1 - SLOW_DAMP) - fast_window_floor)

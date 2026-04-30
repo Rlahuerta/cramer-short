@@ -45,9 +45,17 @@ def test_factor_unconverged():
     )
 
 
-def test_factor_fast_boost():
+def test_factor_fast_window_linear():
+    day1 = convergence_time_factor(ConvergenceResult(True, 1, "yes"))
+    day5 = convergence_time_factor(ConvergenceResult(True, 5, "yes"))
+    day7 = convergence_time_factor(ConvergenceResult(True, 7, "yes"))
+    assert math.isclose(day1, 1.15)
+    assert day1 > day5 > day7 > 1.0
+
+
+def test_factor_five_day_moderate_boost():
     f = convergence_time_factor(ConvergenceResult(True, 5, "yes"))
-    assert 1.10 < f < 1.20
+    assert 1.05 < f < 1.08
 
 
 def test_factor_slow_damp():

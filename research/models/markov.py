@@ -15,6 +15,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+from research.models.soft_regime import blend_regime_mixtures
+
 RegimeState = Literal["bull", "bear", "sideways"]
 REGIME_STATES: list[RegimeState] = ["bull", "bear", "sideways"]
 STATE_INDEX: dict[RegimeState, int] = {"bull": 0, "bear": 1, "sideways": 2}
@@ -154,6 +156,10 @@ def compute_markov_forecast(
     transition_matrix: np.ndarray,
     current_regime: RegimeState,
     horizon: int,
+    *,
+    start_mixture: dict[RegimeState, float] | None = None,
+    forecast_mixture: dict[RegimeState, float] | None = None,
+    soft_transition_blend_weight: float = 0.0,
 ) -> dict[RegimeState, float]:
     """Compute regime probabilities at a given horizon via matrix exponentiation.
 
@@ -166,14 +172,47 @@ def compute_markov_forecast(
     horizon : int
         Number of steps ahead.
 
+    Additional Parameters
+    ---------------------
+    start_mixture : dict[RegimeState, float] | None
+        Optional soft start-state mixture. When provided, replaces the hard
+        one-hot current regime with a weighted combination of all start states.
+    forecast_mixture : dict[RegimeState, float] | None
+        Optional horizon-state mixture from an HMM posterior forecast.
+    soft_transition_blend_weight : float
+        Blend weight in [0, 1] used when combining the Markov transition
+        forecast with the soft HMM forecast mixture.
+
     Returns
     -------
     dict[RegimeState, float]
         Probability of each regime at the horizon.
     """
     P_n = np.linalg.matrix_power(transition_matrix, horizon)
-    idx = STATE_INDEX[current_regime]
-    probs = P_n[idx]
+    if start_mixture is None:
+        idx = STATE_INDEX[current_regime]
+        probs = np.array(P_n[idx], dtype=float)
+    else:
+        probs = np.zeros(NUM_STATES, dtype=float)
+        for state, weight in start_mixture.items():
+            probs += float(weight) * P_n[STATE_INDEX[state]]
+
+    if forecast_mixture is not None:
+        weight = min(1.0, max(0.0, float(soft_transition_blend_weight)))
+        blended = blend_regime_mixtures(
+            {
+                "bull": float(probs[0]),
+                "bear": float(probs[1]),
+                "sideways": float(probs[2]),
+            },
+            forecast_mixture,
+            weight,
+        )
+        probs = np.array([blended["bull"], blended["bear"], blended["sideways"]], dtype=float)
+
+    total = float(np.sum(probs))
+    if total > 0:
+        probs = probs / total
     return {
         "bull": float(probs[0]),
         "bear": float(probs[1]),

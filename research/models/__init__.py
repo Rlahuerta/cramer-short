@@ -35,6 +35,16 @@ from research.models.hmm import (
     predict,
     viterbi,
 )
+from research.models.soft_regime import (
+    blend_regime_mixtures,
+    map_hmm_probabilities_to_regime_mixture,
+    one_hot_regime_mixture,
+)
+from research.models.forecast_policy import (
+    ForecastTrustPolicy,
+    ForecastTrustPolicyInput,
+    compute_forecast_trust_policy,
+)
 from research.models.trajectory import (
     RegimeStats,
     TrajectoryPoint,
@@ -90,4 +100,10 @@ __all__ = [
     "mat_pow",
     "predict",
     "viterbi",
+    "blend_regime_mixtures",
+    "map_hmm_probabilities_to_regime_mixture",
+    "one_hot_regime_mixture",
+    "ForecastTrustPolicy",
+    "ForecastTrustPolicyInput",
+    "compute_forecast_trust_policy",
 ]

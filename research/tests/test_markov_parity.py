@@ -13,6 +13,7 @@ from research.models.markov import (
     NUM_STATES,
     STATE_INDEX,
 )
+from research.models.soft_regime import one_hot_regime_mixture
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +161,34 @@ def test_compute_markov_forecast_from_each_state():
         forecast = compute_markov_forecast(P, state, 1)
         idx = STATE_INDEX[state]
         assert forecast[state] == pytest.approx(P[idx][idx], abs=1e-10)
+
+
+def test_compute_markov_forecast_supports_soft_start_mixture():
+    P = np.array([[0.7, 0.2, 0.1], [0.2, 0.7, 0.1], [0.25, 0.25, 0.5]])
+    hard = compute_markov_forecast(P, "bull", 1)
+    soft = compute_markov_forecast(
+        P,
+        "bull",
+        1,
+        start_mixture={"bull": 0.5, "bear": 0.0, "sideways": 0.5},
+    )
+    assert sum(soft.values()) == pytest.approx(1.0, abs=1e-10)
+    assert soft["sideways"] > hard["sideways"]
+
+
+def test_compute_markov_forecast_supports_soft_forecast_blend():
+    P = np.array([[0.7, 0.2, 0.1], [0.2, 0.7, 0.1], [0.25, 0.25, 0.5]])
+    base = compute_markov_forecast(P, "bull", 1, start_mixture=one_hot_regime_mixture("bull"))
+    blended = compute_markov_forecast(
+        P,
+        "bull",
+        1,
+        start_mixture=one_hot_regime_mixture("bull"),
+        forecast_mixture={"bull": 0.2, "bear": 0.3, "sideways": 0.5},
+        soft_transition_blend_weight=0.6,
+    )
+    assert sum(blended.values()) == pytest.approx(1.0, abs=1e-10)
+    assert blended["sideways"] > base["sideways"]
 
 
 # ---------------------------------------------------------------------------
