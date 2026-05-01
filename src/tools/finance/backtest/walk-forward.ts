@@ -259,6 +259,9 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
       // The raw distribution has wider spread and better sign discriminability.
       const rawPredictedProb = interpolateSurvival(result.rawDistribution, currentPrice);
 
+      const central90Interval = extractCentralCI(result.distribution, currentPrice, 0.10);
+      const central95Interval = extractCentralCI(result.distribution, currentPrice, 0.05);
+      const central99Interval = extractCentralCI(result.distribution, currentPrice, 0.01);
       let { ciLower, ciUpper } = extractCI(result.distribution, currentPrice);
       let conformalApplied: boolean | undefined;
       let conformalRadius: number | undefined;
@@ -342,6 +345,12 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         actualReturn,
         ciLower,
         ciUpper,
+        central90CiLower: central90Interval.ciLower,
+        central90CiUpper: central90Interval.ciUpper,
+        central95CiLower: central95Interval.ciLower,
+        central95CiUpper: central95Interval.ciUpper,
+        central99CiLower: central99Interval.ciLower,
+        central99CiUpper: central99Interval.ciUpper,
         realizedPrice,
         recommendation: result.actionSignal.recommendation,
         gofPasses: result.metadata.goodnessOfFit?.passes ?? null,
@@ -442,15 +451,28 @@ function extractCI(
   dist: MarkovDistributionResult['distribution'],
   currentPrice: number,
 ): { ciLower: number; ciUpper: number } {
+  return extractSurvivalInterval(dist, currentPrice, 0.995, 0.005);
+}
+
+function extractCentralCI(
+  dist: MarkovDistributionResult['distribution'],
+  currentPrice: number,
+  alpha: number,
+): { ciLower: number; ciUpper: number } {
+  const tailProbability = alpha / 2;
+  return extractSurvivalInterval(dist, currentPrice, 1 - tailProbability, tailProbability);
+}
+
+function extractSurvivalInterval(
+  dist: MarkovDistributionResult['distribution'],
+  currentPrice: number,
+  lowerThreshold: number,
+  upperThreshold: number,
+): { ciLower: number; ciUpper: number } {
   if (dist.length === 0) return { ciLower: currentPrice * 0.9, ciUpper: currentPrice * 1.1 };
 
   let ciLower = dist[0].price;
   let ciUpper = dist[dist.length - 1].price;
-
-  // Use conservative survival thresholds — tuned empirically for coverage rather
-  // than interpreted as literal 5th/95th percentiles.
-  const lowerThreshold = 0.995;
-  const upperThreshold = 0.005;
 
   for (let i = 0; i < dist.length - 1; i++) {
     if (dist[i].probability >= lowerThreshold && dist[i + 1].probability < lowerThreshold) {

@@ -205,6 +205,9 @@ export async function walkForwardWithReplay(
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);
       const rawPredictedProb = interpolateSurvival(result.rawDistribution, currentPrice);
       const { ciLower, ciUpper } = extractCI(result.distribution, currentPrice);
+      const central90Interval = extractCentralCI(result.distribution, currentPrice, 0.10);
+      const central95Interval = extractCentralCI(result.distribution, currentPrice, 0.05);
+      const central99Interval = extractCentralCI(result.distribution, currentPrice, 0.01);
 
       const replayAnchorActive = result.metadata.anchorCoverage.trustedAnchors > 0;
       let decisionSource: DecisionSource = replayAnchorActive ? 'replay-anchor' : 'default';
@@ -239,6 +242,12 @@ export async function walkForwardWithReplay(
         actualReturn,
         ciLower,
         ciUpper,
+        central90CiLower: central90Interval.ciLower,
+        central90CiUpper: central90Interval.ciUpper,
+        central95CiLower: central95Interval.ciLower,
+        central95CiUpper: central95Interval.ciUpper,
+        central99CiLower: central99Interval.ciLower,
+        central99CiUpper: central99Interval.ciUpper,
         realizedPrice,
         recommendation: result.actionSignal.recommendation,
         gofPasses: result.metadata.goodnessOfFit?.passes ?? null,
@@ -287,11 +296,27 @@ function interpolateSurvival(dist: MarkovDistributionResult['distribution'], tar
 }
 
 function extractCI(dist: MarkovDistributionResult['distribution'], currentPrice: number): { ciLower: number; ciUpper: number } {
+  return extractSurvivalInterval(dist, currentPrice, 0.995, 0.005);
+}
+
+function extractCentralCI(
+  dist: MarkovDistributionResult['distribution'],
+  currentPrice: number,
+  alpha: number,
+): { ciLower: number; ciUpper: number } {
+  const tailProbability = alpha / 2;
+  return extractSurvivalInterval(dist, currentPrice, 1 - tailProbability, tailProbability);
+}
+
+function extractSurvivalInterval(
+  dist: MarkovDistributionResult['distribution'],
+  currentPrice: number,
+  lowerThreshold: number,
+  upperThreshold: number,
+): { ciLower: number; ciUpper: number } {
   if (dist.length === 0) return { ciLower: currentPrice * 0.9, ciUpper: currentPrice * 1.1 };
   let ciLower = dist[0].price;
   let ciUpper = dist[dist.length - 1].price;
-  const lowerThreshold = 0.995;
-  const upperThreshold = 0.005;
   for (let i = 0; i < dist.length - 1; i++) {
     if (dist[i].probability >= lowerThreshold && dist[i + 1].probability < lowerThreshold) {
       const frac = (lowerThreshold - dist[i + 1].probability) / (dist[i].probability - dist[i + 1].probability);

@@ -166,6 +166,18 @@ export interface BacktestStep {
   ciLower: number;
   /** 90% CI upper bound (price) */
   ciUpper: number;
+  /** Literal central 90% interval lower bound from the forecast distribution when available. */
+  central90CiLower?: number;
+  /** Literal central 90% interval upper bound from the forecast distribution when available. */
+  central90CiUpper?: number;
+  /** Literal central 95% interval lower bound from the forecast distribution when available. */
+  central95CiLower?: number;
+  /** Literal central 95% interval upper bound from the forecast distribution when available. */
+  central95CiUpper?: number;
+  /** Literal central 99% interval lower bound from the forecast distribution when available. */
+  central99CiLower?: number;
+  /** Literal central 99% interval upper bound from the forecast distribution when available. */
+  central99CiUpper?: number;
   /** Realized price at t + horizon */
   realizedPrice: number;
   /** Recommendation: BUY, HOLD, or SELL */
@@ -276,15 +288,26 @@ export interface BacktestReport {
   horizon: number;
   totalSteps: number;
   brierScore: number;
+  /** Legacy primary interval coverage. In current walk-forward runs this is the conservative helper interval. */
   ciCoverage: number;
+  /** Explicit alias for the conservative helper interval coverage used by current walk-forward backtests. */
+  conservativeCiCoverage: number;
+  /** Literal central-90% coverage when the step payload contains the matching interval. */
+  central90CiCoverage: number;
+  /** Literal central-95% coverage when the step payload contains the matching interval. */
+  central95CiCoverage: number;
+  /** Literal central-99% coverage when the step payload contains the matching interval. */
+  central99CiCoverage: number;
   directionalAccuracy: number;
   expectedReturnCorrelation: number;
   sharpness: number;
   crps: number;
   scaledCrps: number;
+  tailWeightedCrps: number;
   murphyWinklerScore: number;
   murphyWinklerDecomposition: MurphyWinklerDecomposition;
   reliabilityBins: ReliabilityBin[];
+  tailReliabilityBins: ReliabilityBin[];
   gofPassRate: number | null;
   balancedDirectionalAccuracy?: number;
   meanEdge?: number;
@@ -350,6 +373,39 @@ export function reliabilityBins(steps: BacktestStep[], numBins = 10): Reliabilit
   return bins;
 }
 
+const DEFAULT_TAIL_RELIABILITY_BINS = [
+  [0.0, 0.05],
+  [0.05, 0.10],
+  [0.90, 0.95],
+  [0.95, 1.0],
+] as const;
+
+/**
+ * Reliability bins focused on the extreme probability tails.
+ */
+export function tailReliabilityBins(steps: BacktestStep[]): ReliabilityBin[] {
+  return DEFAULT_TAIL_RELIABILITY_BINS.map(([lower, upper], index) => {
+    const isLast = index === DEFAULT_TAIL_RELIABILITY_BINS.length - 1;
+    const inBin = steps.filter(
+      step => step.predictedProb >= lower && (isLast ? step.predictedProb <= upper : step.predictedProb < upper),
+    );
+    const meanPredicted = inBin.length > 0
+      ? inBin.reduce((sum, step) => sum + step.predictedProb, 0) / inBin.length
+      : (lower + upper) / 2;
+    const actualFrequency = inBin.length > 0
+      ? inBin.reduce((sum, step) => sum + step.actualBinary, 0) / inBin.length
+      : 0;
+
+    return {
+      binLower: lower,
+      binUpper: upper,
+      meanPredicted,
+      actualFrequency,
+      count: inBin.length,
+    };
+  });
+}
+
 /**
  * Maximum absolute deviation between predicted and actual frequency across bins.
  * Only considers bins with ≥ minCount observations.
@@ -365,12 +421,45 @@ export function maxReliabilityDeviation(bins: ReliabilityBin[], minCount = 3): n
 // ---------------------------------------------------------------------------
 
 /**
- * Fraction of steps where the realized price falls within the predicted CI.
- * Target for 90% CI: ~0.90 coverage.
+ * Fraction of steps where the realized price falls within the primary step interval.
+ * In the current walk-forward engine this is a conservative helper interval rather
+ * than a literal central-90% interval.
  */
 export function ciCoverage(steps: BacktestStep[]): number {
   if (steps.length === 0) return 0;
   const covered = steps.filter(s => s.realizedPrice >= s.ciLower && s.realizedPrice <= s.ciUpper);
+  return covered.length / steps.length;
+}
+
+function resolveCentralIntervalBounds(
+  step: BacktestStep,
+  level: 0.9 | 0.95 | 0.99,
+): { lower: number; upper: number } {
+  if (level === 0.9 && step.central90CiLower !== undefined && step.central90CiUpper !== undefined) {
+    return { lower: step.central90CiLower, upper: step.central90CiUpper };
+  }
+  if (level === 0.95 && step.central95CiLower !== undefined && step.central95CiUpper !== undefined) {
+    return { lower: step.central95CiLower, upper: step.central95CiUpper };
+  }
+  if (level === 0.99 && step.central99CiLower !== undefined && step.central99CiUpper !== undefined) {
+    return { lower: step.central99CiLower, upper: step.central99CiUpper };
+  }
+  return { lower: step.ciLower, upper: step.ciUpper };
+}
+
+/**
+ * Coverage of the literal central interval carried on each step when available.
+ * Falls back to the legacy primary interval to keep historical reports defined.
+ */
+export function centralIntervalCoverage(
+  steps: BacktestStep[],
+  level: 0.9 | 0.95 | 0.99 = 0.9,
+): number {
+  if (steps.length === 0) return 0;
+  const covered = steps.filter(step => {
+    const { lower, upper } = resolveCentralIntervalBounds(step, level);
+    return step.realizedPrice >= lower && step.realizedPrice <= upper;
+  });
   return covered.length / steps.length;
 }
 
@@ -423,6 +512,14 @@ function stepCrps(step: BacktestStep): number {
   return Number.isFinite(score) ? Math.max(0, score) : 0;
 }
 
+function standardizedResidual(step: BacktestStep): number {
+  return Math.abs(step.realizedPrice - deriveForecastCenter(step)) / deriveIntervalScale(step);
+}
+
+function tailWeight(step: BacktestStep, thresholdZ = CENTRAL_90_Z): number {
+  return 1 + Math.max(0, standardizedResidual(step) - thresholdZ);
+}
+
 /**
  * Continuous Ranked Probability Score using the current backtest interval as a
  * central-normal approximation. Lower is better.
@@ -443,8 +540,25 @@ export function scaledCrps(steps: BacktestStep[]): number {
 }
 
 /**
- * Murphy-Winkler interval score decomposition for central prediction intervals.
- * For the repository's 90% intervals, alpha defaults to 0.10.
+ * Threshold-weighted CRPS using standardized forecast errors to up-weight tail misses.
+ * Lower is better; identical to CRPS when all observations stay inside the threshold.
+ */
+export function tailWeightedCrps(steps: BacktestStep[], thresholdZ = CENTRAL_90_Z): number {
+  if (steps.length === 0) return 0;
+  let totalWeight = 0;
+  let weightedScore = 0;
+  for (const step of steps) {
+    const weight = tailWeight(step, thresholdZ);
+    totalWeight += weight;
+    weightedScore += stepCrps(step) * weight;
+  }
+  return totalWeight > 0 ? weightedScore / totalWeight : 0;
+}
+
+/**
+ * Murphy-Winkler interval score decomposition for the primary step interval.
+ * In current walk-forward runs this is the conservative helper interval unless a
+ * caller populates a different interval into `ciLower` / `ciUpper`.
  */
 export function murphyWinklerDecomposition(
   steps: BacktestStep[],
@@ -1005,6 +1119,8 @@ export function generateReport(
   steps: BacktestStep[],
 ): BacktestReport {
   const bins = reliabilityBins(steps);
+  const tailBins = tailReliabilityBins(steps);
+  const conservativeCoverage = ciCoverage(steps);
 
   const provenanceSummary: ProvenanceSummary = {
     decisionSources: {
@@ -1039,15 +1155,21 @@ export function generateReport(
     horizon,
     totalSteps: steps.length,
     brierScore: brierScore(steps),
-    ciCoverage: ciCoverage(steps),
+    ciCoverage: conservativeCoverage,
+    conservativeCiCoverage: conservativeCoverage,
+    central90CiCoverage: centralIntervalCoverage(steps, 0.9),
+    central95CiCoverage: centralIntervalCoverage(steps, 0.95),
+    central99CiCoverage: centralIntervalCoverage(steps, 0.99),
     directionalAccuracy: directionalAccuracy(steps),
     expectedReturnCorrelation: expectedReturnCorrelation(steps),
     sharpness: sharpness(steps),
     crps: crps(steps),
     scaledCrps: scaledCrps(steps),
+    tailWeightedCrps: tailWeightedCrps(steps),
     murphyWinklerScore: murphyWinklerScore(steps),
     murphyWinklerDecomposition: murphyWinklerDecomposition(steps),
     reliabilityBins: bins,
+    tailReliabilityBins: tailBins,
     gofPassRate: gofPassRate(steps),
     balancedDirectionalAccuracy: balancedDirectionalAccuracy(steps),
     meanEdge: meanEdge(steps),
