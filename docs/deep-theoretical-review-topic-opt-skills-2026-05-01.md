@@ -267,9 +267,9 @@ architecturally simpler, but materially stronger than a metadata-only heuristic.
 |--------|-------|---------|
 | PID update rule (conformal.ts:102-110) | Angelopoulos et al. (2307.16895) | Exact match |
 | CRPS closed form (metrics.ts:412-415) | Gneiting & Raftery via Waghmare & Ziegel | Exact match |
-| Scaled CRPS (metrics.ts:434-438) | Bolin & Wallin (1912.05642) | Correct principle |
+| Scaled CRPS (metrics.ts:434-438) | Bolin & Wallin (1912.05642) | Correct local scaling rule within the interval-normal approximation |
 | Murphy-Winkler decomposition (metrics.ts:445-489) | Murphy & Winkler (1984) | Exact match |
-| Student-t posterior updates (hmm.ts:198-206) | Geweke (1993) | Exact match |
+| Student-t posterior updates (hmm.ts:198-206) | Geweke (1993) | Exact local posterior-update match, with HMM state-weighting caveat handled separately |
 | Forward-backward (hmm.ts:313-373) | Rabiner (1989) | Correct |
 
 ### 5.2 Approximations (Honest, Documented)
@@ -279,7 +279,12 @@ architecturally simpler, but materially stronger than a metadata-only heuristic.
 | Normal CRPS for mixture forecast | Loses multi-modality/tail info |
 | Gamma weights as pseudo-counts | Undersells joint posterior uncertainty |
 | Soft-regime entropy constants | Empirically calibrated |
-| 0.995/0.005 survival thresholds for CI | Not literal percentiles |
+
+**Adjacent backtest-helper approximation (outside the four-core-module scope)**
+
+| Approximation | Limitation |
+|---------------|------------|
+| 0.995/0.005 survival thresholds for CI extraction in `walk-forward.ts` / `replay.ts` | Coverage-tuned helper thresholds, not literal 0.5% / 99.5% forecast percentiles |
 
 ### 5.3 Theoretical Gaps
 
