@@ -25,6 +25,13 @@ function sigmoid(z: number): number {
   return 1 / (1 + Math.exp(-z));
 }
 
+export function predictWithBrierReplayState(
+  rawProbability: number,
+  state: BrierReplayCalibratorState,
+): number {
+  return sigmoid(state.slope * logit(rawProbability) + state.bias);
+}
+
 export class BrierReplayCalibrator {
   private readonly learningRate: number;
   private readonly midConfidenceWeight: number;
@@ -45,7 +52,7 @@ export class BrierReplayCalibrator {
   }
 
   predict(rawProbability: number): number {
-    return sigmoid(this.slope * logit(rawProbability) + this.bias);
+    return predictWithBrierReplayState(rawProbability, this.state());
   }
 
   record(rawProbability: number, actualBinary: number): BrierReplayCalibratorState {

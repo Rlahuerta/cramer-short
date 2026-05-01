@@ -27,6 +27,10 @@ import {
   type ArbiterReplayBundle,
   type RawPolymarketReplayRow,
 } from './arbiter-replay.js';
+import {
+  predictWithBrierReplayState,
+  type BrierReplayCalibratorState,
+} from './brier-replay-calibrator.js';
 
 type RawMarket = {
   marketId?: string;
@@ -66,6 +70,64 @@ const TWO_HOURS_MS = 2 * 3_600_000;
 const FOUR_HOURS_MS = 4 * 3_600_000;
 const TWENTY_FOUR_HOURS_MS = 24 * 3_600_000;
 const FORTY_EIGHT_HOURS_MS = 48 * 3_600_000;
+const LIVE_BRIER_REPLAY_FLAG = 'POLYMARKET_BRIER_REPLAY_CALIBRATOR_ENABLED';
+const LIVE_BRIER_REPLAY_STATE: BrierReplayCalibratorState = {
+  bias: 0.016276026205423927,
+  slope: 1 / 3,
+};
+const LIVE_BRIER_REPLAY_MIN_PROBABILITY = 0.4;
+const LIVE_BRIER_REPLAY_MAX_PROBABILITY = 0.6;
+
+function isLiveBrierReplayCalibratorEnabled(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env[LIVE_BRIER_REPLAY_FLAG] ?? '');
+}
+
+function isUsablePolymarketProbability(probability: number): boolean {
+  return Number.isFinite(probability) && probability >= 0 && probability <= 1;
+}
+
+function applyLiveBrierReplayCalibration(probability: number): number {
+  if (
+    !isUsablePolymarketProbability(probability)
+    || probability < LIVE_BRIER_REPLAY_MIN_PROBABILITY
+    || probability > LIVE_BRIER_REPLAY_MAX_PROBABILITY
+  ) {
+    return probability;
+  }
+  return predictWithBrierReplayState(probability, LIVE_BRIER_REPLAY_STATE);
+}
+
+function toRawMarket(
+  market: PolymarketMarketResult,
+  signalCategory: string,
+  history: HistoryFlags,
+): RawMarket | null {
+  if (!isUsablePolymarketProbability(market.probability)) {
+    return null;
+  }
+
+  return {
+    marketId: market.marketId,
+    assetId: market.assetId,
+    question: market.question,
+    probability: market.probability,
+    volume24h: market.volume24h,
+    ageDays: market.ageDays,
+    endDate: market.endDate,
+    signalCategory,
+    active: market.active,
+    closed: market.closed,
+    enableOrderBook: market.enableOrderBook,
+    priceSpikeDetected: history.priceSpikeDetected,
+    transitoryMove: history.transitoryMove,
+  };
+}
+
+function isLiveCalibrationApplicable(probability: number): boolean {
+  return isUsablePolymarketProbability(probability)
+    && probability >= LIVE_BRIER_REPLAY_MIN_PROBABILITY
+    && probability <= LIVE_BRIER_REPLAY_MAX_PROBABILITY;
+}
 
 export function evaluateMarketHistory(
   market: Pick<PolymarketMarketResult, 'marketId' | 'probability' | 'volume24h'>,
@@ -408,6 +470,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const horizonDays = input.horizon_days ?? 7;
         const currentPrice = input.current_price;
         const basePrice = currentPrice ?? 100;
+        const liveBrierReplayEnabled = isLiveBrierReplayCalibratorEnabled();
         const searchIdentity = resolveTickerSearchIdentity(ticker);
         const assetClass = inferAssetClass(searchIdentity.canonicalTicker);
         const historyWarnings: string[] = [];
@@ -453,21 +516,10 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             seen.add(m.question);
             const history = evaluateHistoryFlagsWithReader(m, nowMs, undefined, marketReader);
             historyWarnings.push(...history.warnings);
-            rawMarkets.push({
-              marketId: m.marketId,
-              assetId: m.assetId,
-              question: m.question,
-              probability: m.probability,
-              volume24h: m.volume24h,
-              ageDays: m.ageDays,
-              endDate: m.endDate,
-              signalCategory: m.signalCategory,
-              active: m.active,
-              closed: m.closed,
-              enableOrderBook: m.enableOrderBook,
-              priceSpikeDetected: history.priceSpikeDetected,
-              transitoryMove: history.transitoryMove,
-            });
+            const rawMarket = toRawMarket(m, m.signalCategory, history);
+            if (rawMarket) {
+              rawMarkets.push(rawMarket);
+            }
           }
         }
 
@@ -494,11 +546,17 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         }
 
         // Step 3: Build MarketInput array
+        let calibratedMarketCount = 0;
         const markets: MarketInput[] = rawMarkets.map((m) => {
           const mImpact = lookupImpact(m.signalCategory, assetClass);
+          const shouldApplyLiveCalibration = liveBrierReplayEnabled && isLiveCalibrationApplicable(m.probability);
+          const probability = shouldApplyLiveCalibration
+            ? applyLiveBrierReplayCalibration(m.probability)
+            : m.probability;
+          if (shouldApplyLiveCalibration && probability !== m.probability) calibratedMarketCount++;
           return {
             question: m.question,
-            probability: m.probability,
+            probability,
             volume24hUsd: m.volume24h,
             ageDays: m.ageDays,
             priceSpikeDetected: m.priceSpikeDetected,
@@ -508,6 +566,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             deltaNo: mImpact.deltaNo,
           };
         });
+        const liveCalibrationApplied = liveBrierReplayEnabled && calibratedMarketCount > 0;
 
         // Step 4: Run ensemble — also capture intermediate values for display
         const otherSignals = {
@@ -545,6 +604,9 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           lines.push(`⚠️  Horizon ${horizonDays}d > 90 days: Polymarket signal accuracy decreases for longer horizons. Wider CI expected. Consider supplementing with DCF skill for multi-month forecasts.`);
         } else if (horizonDays > 14) {
           lines.push(`ℹ️  Horizon ${horizonDays}d: Polymarket markets exist at this range but signal quality is moderate. 95% CI is wider than short-term forecasts.`);
+        }
+        if (liveCalibrationApplied) {
+          lines.push(`ℹ️  Live Brier replay calibration is active: compressed ${calibratedMarketCount} mid-confidence market ${calibratedMarketCount === 1 ? 'quote' : 'quotes'} toward neutral before blending.`);
         }
 
         lines.push('');
@@ -698,7 +760,10 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         lines.push('');
         lines.push('── Research basis: Reichenbach & Walther (2025) · Cordoba et al. (2024) · Tsang & Yang (2026)');
 
-        return formatToolResult({ result: lines.join('\n') });
+        return formatToolResult({
+          result: lines.join('\n'),
+          ...(liveCalibrationApplied ? { forecastReturn: result.forecastReturn } : {}),
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`[polymarket_forecast] ${message}`);

@@ -4,6 +4,8 @@ import { createPolymarketForecastTool, evaluateMarketHistory } from './polymarke
 import type { PolymarketMarketResult } from './polymarket.js';
 import type { ArbiterReplayBundle, RawPolymarketReplayRow } from './arbiter-replay.js';
 
+const LIVE_BRIER_REPLAY_FLAG = 'POLYMARKET_BRIER_REPLAY_CALIBRATOR_ENABLED';
+
 const mockMarkets: PolymarketMarketResult[] = [
   { marketId: 'nvda-market-1', assetId: 'nvda-yes-1', question: 'Will NVIDIA beat Q2 earnings?', probability: 0.72, volume24h: 500_000, ageDays: 0 },
   { marketId: 'nvda-market-2', assetId: 'nvda-yes-2', question: 'Will NVIDIA revenue exceed $30B?', probability: 0.65, volume24h: 300_000, ageDays: 0 },
@@ -38,11 +40,19 @@ let polymarketForecastTool: ReturnType<typeof createPolymarketForecastTool>;
 // ---------------------------------------------------------------------------
 
 function parseResult(raw: unknown): string {
-  const outer = JSON.parse(raw as string) as { data?: { result?: string; error?: string } };
-  return outer.data?.result ?? outer.data?.error ?? '';
+  const data = parsePayload(raw);
+  return data.result ?? data.error ?? '';
+}
+
+function parsePayload(raw: unknown): { result?: string; error?: string; forecastReturn?: number } {
+  const outer = JSON.parse(raw as string) as {
+    data?: { result?: string; error?: string; forecastReturn?: number };
+  };
+  return outer.data ?? {};
 }
 
 beforeEach(() => {
+  delete process.env[LIVE_BRIER_REPLAY_FLAG];
   polymarketBreaker.reset();
   polymarketForecastTool = makeHermeticTool();
 });
@@ -52,6 +62,112 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('polymarketForecastTool', () => {
+  it('preserves the baseline live-path payload when the calibrator is default-off or explicitly falsey', async () => {
+    const baseline = parsePayload(await makeHermeticTool(async () => [
+      {
+        question: 'Will Bitcoin be above $70,000 on May 9?',
+        probability: 0.58,
+        volume24h: 240_000,
+        ageDays: 2,
+        endDate: futureIso(7),
+      },
+    ]).func(
+        { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+        undefined,
+    ));
+
+    for (const flag of ['0', 'false', 'no', 'off']) {
+      process.env[LIVE_BRIER_REPLAY_FLAG] = flag;
+      const disabled = parsePayload(await makeHermeticTool(async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 2,
+          endDate: futureIso(7),
+        },
+      ]).func(
+        { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+        undefined,
+      ));
+
+      expect(disabled).toEqual(baseline);
+      expect(disabled.forecastReturn).toBeUndefined();
+    }
+  });
+
+  it('changes the live-path forecast payload when the calibrator flag is enabled', async () => {
+    const tool = makeHermeticTool(async () => [
+      {
+        question: 'Will Bitcoin be above $70,000 on May 9?',
+        probability: 0.58,
+        volume24h: 240_000,
+        ageDays: 2,
+        endDate: futureIso(7),
+      },
+    ]);
+
+    const baseline = parsePayload(await tool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    ));
+
+    process.env[LIVE_BRIER_REPLAY_FLAG] = '1';
+    const enabled = parsePayload(await tool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(typeof baseline.result).toBe('string');
+    expect(enabled.forecastReturn).toBeNumber();
+    expect(enabled.forecastReturn).not.toBe(baseline.forecastReturn);
+    expect(enabled.result).not.toBe(baseline.result);
+  });
+
+  it('skips non-finite probabilities before the live calibrator path', async () => {
+    process.env[LIVE_BRIER_REPLAY_FLAG] = '1';
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const raw = await makeHermeticTool(
+      async () => [
+        {
+          marketId: 'btc-nan',
+          assetId: 'btc-nan-yes',
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: Number.NaN,
+          volume24h: 240_000,
+          ageDays: 2,
+          endDate: futureIso(7),
+        },
+        {
+          marketId: 'btc-inf',
+          assetId: 'btc-inf-yes',
+          question: 'Will Bitcoin be above $72,000 on May 9?',
+          probability: Number.POSITIVE_INFINITY,
+          volume24h: 240_000,
+          ageDays: 2,
+          endDate: futureIso(7),
+        },
+      ],
+      (capture) => { captures.push(capture); },
+    ).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    );
+
+    const payload = parsePayload(raw);
+    const result = parseResult(raw);
+
+    expect(payload.forecastReturn).toBeUndefined();
+    expect(result).toContain('[No Polymarket markets found for this asset]');
+    expect(result).not.toContain('NaN');
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual([]);
+    expect(captures[0]?.polymarket.selectedMarkets).toEqual([]);
+  });
+
   it('result string contains "Polymarket Forecast"', async () => {
     const raw = await polymarketForecastTool.func(
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
