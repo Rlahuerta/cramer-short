@@ -29,6 +29,7 @@ import {
   directionalAccuracy,
   computeRCCurve,
   expectedReturnCorrelation,
+  forecastAccuracyCoherenceScore,
   generateReport,
   gofPassRate,
   maxReliabilityDeviation,
@@ -51,9 +52,11 @@ import {
   sharpness,
   tailReliabilityBins,
   tailWeightedCrps,
+  tailWeightedMixtureCrps,
   type BacktestStep,
   type BootstrapCI,
   type DecisionSource,
+  type MultiHorizonBacktestSeries,
   type ProbabilitySource,
   type ProvenanceSummary,
   DEFAULT_PUP_BANDS,
@@ -602,6 +605,173 @@ describe('tailWeightedCrps', () => {
   });
 });
 
+describe('tailWeightedMixtureCrps', () => {
+  it('up-weights mixture tail misses relative to ordinary mixture CRPS', () => {
+    const centered = makeStep({
+      realizedPrice: 100,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+    const tailMiss = makeStep({
+      realizedPrice: 118,
+      actualReturn: 0.18,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+
+    const steps = [centered, tailMiss];
+
+    expect(tailWeightedMixtureCrps(steps)).toBeGreaterThan(mixtureCrps(steps));
+    expect(tailWeightedMixtureCrps([tailMiss])).toBeGreaterThan(
+      tailWeightedMixtureCrps([centered]),
+    );
+  });
+
+  it('uses the stored forecast distribution for tail weighting before the helper interval', () => {
+    const centered = makeStep({
+      ciLower: 50,
+      ciUpper: 150,
+      realizedPrice: 100,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+    const tailMiss = makeStep({
+      ciLower: 50,
+      ciUpper: 150,
+      realizedPrice: 118,
+      actualReturn: 0.18,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+
+    const steps = [centered, tailMiss];
+
+    expect(tailWeightedMixtureCrps(steps)).toBeGreaterThan(mixtureCrps(steps));
+  });
+
+  it('falls back to literal central intervals before the conservative helper interval', () => {
+    const centered = makeStep({
+      ciLower: 50,
+      ciUpper: 150,
+      central90CiLower: 95,
+      central90CiUpper: 105,
+      realizedPrice: 100,
+    });
+    const tailMiss = makeStep({
+      ciLower: 50,
+      ciUpper: 150,
+      central90CiLower: 95,
+      central90CiUpper: 105,
+      realizedPrice: 112,
+      actualReturn: 0.12,
+    });
+
+    const steps = [centered, tailMiss];
+
+    expect(tailWeightedMixtureCrps(steps)).toBeGreaterThan(mixtureCrps(steps));
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(tailWeightedMixtureCrps([])).toBe(0);
+  });
+});
+
+describe('forecastAccuracyCoherenceScore', () => {
+  it('rewards stable overlapping forecasts over unstable ones', () => {
+    const stable: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 2, predictedReturn: 0.02, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+      {
+        horizon: 2,
+        steps: [makeStep({ t: 1, predictedReturn: 0.02, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+      {
+        horizon: 3,
+        steps: [makeStep({ t: 0, predictedReturn: 0.02, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+    ];
+    const unstable: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 2, predictedReturn: 0.02, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+      {
+        horizon: 2,
+        steps: [makeStep({ t: 1, predictedReturn: 0.10, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+      {
+        horizon: 3,
+        steps: [makeStep({ t: 0, predictedReturn: -0.06, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+    ];
+
+    expect(forecastAccuracyCoherenceScore(stable)).toBeLessThan(
+      forecastAccuracyCoherenceScore(unstable),
+    );
+  });
+
+  it('falls back to normalized accuracy when horizons do not overlap', () => {
+    const series: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 0, predictedReturn: 0.1, actualReturn: 0, realizedPrice: 100 })],
+      },
+      {
+        horizon: 2,
+        steps: [makeStep({ t: 5, predictedReturn: -0.1, actualReturn: 0, realizedPrice: 200 })],
+      },
+    ];
+
+    expect(forecastAccuracyCoherenceScore(series)).toBeCloseTo(0.01, 10);
+  });
+
+  it('treats equal upside and downside return misses symmetrically', () => {
+    const upside: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 0, predictedReturn: 0.1, actualReturn: 0, realizedPrice: 100 })],
+      },
+    ];
+    const downside: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 0, predictedReturn: -0.1, actualReturn: 0, realizedPrice: 100 })],
+      },
+    ];
+
+    expect(forecastAccuracyCoherenceScore(upside)).toBeCloseTo(
+      forecastAccuracyCoherenceScore(downside),
+      10,
+    );
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(forecastAccuracyCoherenceScore([])).toBe(0);
+  });
+});
+
 describe('tailReliabilityBins', () => {
   it('summarizes the four extreme probability buckets', () => {
     const bins = tailReliabilityBins([
@@ -711,6 +881,7 @@ describe('generateReport', () => {
     expect(typeof report.mixtureCrps).toBe('number');
     expect(typeof report.scaledCrps).toBe('number');
     expect(typeof report.tailWeightedCrps).toBe('number');
+    expect(typeof report.tailWeightedMixtureCrps).toBe('number');
     expect(typeof report.murphyWinklerScore).toBe('number');
     expect(report.murphyWinklerDecomposition).toBeDefined();
     expect(report.reliabilityBins).toHaveLength(10);

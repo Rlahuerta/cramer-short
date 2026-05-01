@@ -313,6 +313,7 @@ export interface BacktestReport {
   mixtureCrps: number;
   scaledCrps: number;
   tailWeightedCrps: number;
+  tailWeightedMixtureCrps: number;
   murphyWinklerScore: number;
   murphyWinklerDecomposition: MurphyWinklerDecomposition;
   reliabilityBins: ReliabilityBin[];
@@ -327,6 +328,11 @@ export interface BacktestReport {
   trendPenaltyOnlyBreakConfidenceActive?: boolean;
   /** Whether any step in this report came from a run where the BTC 14d bearish-break SELL gate fired. */
   bearishBreakRecommendationGateActive?: boolean;
+}
+
+export interface MultiHorizonBacktestSeries {
+  horizon: number;
+  steps: BacktestStep[];
 }
 
 // ---------------------------------------------------------------------------
@@ -440,10 +446,10 @@ export function ciCoverage(steps: BacktestStep[]): number {
   return covered.length / steps.length;
 }
 
-function resolveCentralIntervalBounds(
+function resolveLiteralCentralIntervalBounds(
   step: BacktestStep,
   level: 0.9 | 0.95 | 0.99,
-): { lower: number; upper: number } {
+): { lower: number; upper: number } | null {
   if (level === 0.9 && step.central90CiLower !== undefined && step.central90CiUpper !== undefined) {
     return { lower: step.central90CiLower, upper: step.central90CiUpper };
   }
@@ -453,6 +459,15 @@ function resolveCentralIntervalBounds(
   if (level === 0.99 && step.central99CiLower !== undefined && step.central99CiUpper !== undefined) {
     return { lower: step.central99CiLower, upper: step.central99CiUpper };
   }
+  return null;
+}
+
+function resolveCentralIntervalBounds(
+  step: BacktestStep,
+  level: 0.9 | 0.95 | 0.99,
+): { lower: number; upper: number } {
+  const literalBounds = resolveLiteralCentralIntervalBounds(step, level);
+  if (literalBounds) return literalBounds;
   return { lower: step.ciLower, upper: step.ciUpper };
 }
 
@@ -552,6 +567,36 @@ function mixtureCdf(
   return 1 - interpolateSurvivalProbability(distribution, targetPrice);
 }
 
+function interpolatePriceAtSurvivalProbability(
+  distribution: readonly ForecastDistributionPoint[],
+  targetProbability: number,
+): number | null {
+  if (distribution.length === 0) return null;
+  if (targetProbability >= distribution[0].probability) return distribution[0].price;
+  if (targetProbability <= distribution[distribution.length - 1].probability) {
+    return distribution[distribution.length - 1].price;
+  }
+
+  for (let index = 0; index < distribution.length - 1; index++) {
+    const lower = distribution[index];
+    const upper = distribution[index + 1];
+    const lowerProbability = lower.probability;
+    const upperProbability = upper.probability;
+
+    if (
+      (lowerProbability >= targetProbability && targetProbability >= upperProbability) ||
+      (lowerProbability <= targetProbability && targetProbability <= upperProbability)
+    ) {
+      const probabilitySpan = upperProbability - lowerProbability;
+      if (Math.abs(probabilitySpan) <= MIN_SCALE) return lower.price;
+      const frac = (targetProbability - lowerProbability) / probabilitySpan;
+      return lower.price + frac * (upper.price - lower.price);
+    }
+  }
+
+  return distribution[distribution.length - 1].price;
+}
+
 function stepMixtureCrps(step: BacktestStep): number {
   const distribution = step.forecastDistribution;
   if (!distribution || distribution.length < 2) return stepCrps(step);
@@ -579,6 +624,89 @@ function standardizedResidual(step: BacktestStep): number {
 
 function tailWeight(step: BacktestStep, thresholdZ = CENTRAL_90_Z): number {
   return 1 + Math.max(0, standardizedResidual(step) - thresholdZ);
+}
+
+function centralLevelForThreshold(thresholdZ: number): number {
+  return Math.min(0.999999, Math.max(0, (2 * normalCdf(Math.max(0, thresholdZ))) - 1));
+}
+
+function normalizeIntervalBounds(bounds: { lower: number; upper: number }): { lower: number; upper: number } {
+  return bounds.lower <= bounds.upper
+    ? bounds
+    : { lower: bounds.upper, upper: bounds.lower };
+}
+
+function resolveDistributionTailIntervalBounds(
+  step: BacktestStep,
+  thresholdZ: number,
+): { lower: number; upper: number } | null {
+  const distribution = step.forecastDistribution;
+  if (!distribution || distribution.length < 2) return null;
+
+  const centralLevel = centralLevelForThreshold(thresholdZ);
+  const tailMass = (1 - centralLevel) / 2;
+  const lower = interpolatePriceAtSurvivalProbability(distribution, 1 - tailMass);
+  const upper = interpolatePriceAtSurvivalProbability(distribution, tailMass);
+  if (lower === null || upper === null) return null;
+  return normalizeIntervalBounds({ lower, upper });
+}
+
+function resolveLiteralTailIntervalBounds(
+  step: BacktestStep,
+  thresholdZ: number,
+): { lower: number; upper: number } | null {
+  const targetLevel = centralLevelForThreshold(thresholdZ);
+  const candidateLevels: Array<0.9 | 0.95 | 0.99> = [0.9, 0.95, 0.99];
+  let bestBounds: { lower: number; upper: number } | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const level of candidateLevels) {
+    const bounds = resolveLiteralCentralIntervalBounds(step, level);
+    if (!bounds) continue;
+    const distance = Math.abs(level - targetLevel);
+    if (distance < bestDistance) {
+      bestBounds = bounds;
+      bestDistance = distance;
+    }
+  }
+
+  return bestBounds ? normalizeIntervalBounds(bestBounds) : null;
+}
+
+function intervalAlignedTailWeight(
+  step: BacktestStep,
+  bounds: { lower: number; upper: number },
+  thresholdZ: number,
+): number {
+  const { lower, upper } = normalizeIntervalBounds(bounds);
+  const center = (lower + upper) / 2;
+  const halfWidth = Math.max(Math.abs(upper - lower) / 2, MIN_SCALE);
+  const outsideDistance = Math.max(0, Math.abs(step.realizedPrice - center) - halfWidth);
+  return 1 + (outsideDistance * Math.max(0, thresholdZ)) / halfWidth;
+}
+
+function mixtureTailWeight(step: BacktestStep, thresholdZ = CENTRAL_90_Z): number {
+  const bounds =
+    resolveDistributionTailIntervalBounds(step, thresholdZ) ??
+    resolveLiteralTailIntervalBounds(step, thresholdZ);
+  if (!bounds) return tailWeight(step, thresholdZ);
+  return intervalAlignedTailWeight(step, bounds, thresholdZ);
+}
+
+function weightedStepScore(
+  steps: BacktestStep[],
+  scoreFn: (step: BacktestStep) => number,
+  weightFn: (step: BacktestStep) => number,
+): number {
+  if (steps.length === 0) return 0;
+  let totalWeight = 0;
+  let weightedScore = 0;
+  for (const step of steps) {
+    const weight = weightFn(step);
+    totalWeight += weight;
+    weightedScore += scoreFn(step) * weight;
+  }
+  return totalWeight > 0 ? weightedScore / totalWeight : 0;
 }
 
 /**
@@ -614,15 +742,73 @@ export function scaledCrps(steps: BacktestStep[]): number {
  * Lower is better; identical to CRPS when all observations stay inside the threshold.
  */
 export function tailWeightedCrps(steps: BacktestStep[], thresholdZ = CENTRAL_90_Z): number {
-  if (steps.length === 0) return 0;
-  let totalWeight = 0;
-  let weightedScore = 0;
-  for (const step of steps) {
-    const weight = tailWeight(step, thresholdZ);
-    totalWeight += weight;
-    weightedScore += stepCrps(step) * weight;
+  return weightedStepScore(steps, stepCrps, step => tailWeight(step, thresholdZ));
+}
+
+/**
+ * Tail-weighted mixture-aware CRPS. Lower is better and identical to mixture CRPS
+ * when all observations stay inside the threshold.
+ */
+export function tailWeightedMixtureCrps(
+  steps: BacktestStep[],
+  thresholdZ = CENTRAL_90_Z,
+): number {
+  return weightedStepScore(steps, stepMixtureCrps, step => mixtureTailWeight(step, thresholdZ));
+}
+
+/**
+ * Forecast AC score: normalized squared forecast error plus a stability penalty for
+ * overlapping horizons that target the same timestamp. Lower is better.
+ */
+export function forecastAccuracyCoherenceScore(
+  series: MultiHorizonBacktestSeries[],
+  stabilityWeight = 1,
+): number {
+  if (series.length === 0) return 0;
+
+  const targets = new Map<number, { realizedPrice: number; forecasts: number[] }>();
+  let totalAccuracyPenalty = 0;
+  let forecastCount = 0;
+
+  for (const { horizon, steps } of series) {
+    for (const step of steps) {
+      const forecastPrice = deriveForecastCenter(step);
+      const normalizedError = step.predictedReturn - step.actualReturn;
+
+      totalAccuracyPenalty += normalizedError * normalizedError;
+      forecastCount++;
+
+      const targetT = step.t + horizon;
+      const target = targets.get(targetT) ?? { realizedPrice: step.realizedPrice, forecasts: [] };
+      target.realizedPrice = step.realizedPrice;
+      target.forecasts.push(forecastPrice);
+      targets.set(targetT, target);
+    }
   }
-  return totalWeight > 0 ? weightedScore / totalWeight : 0;
+
+  if (forecastCount === 0) return 0;
+
+  let totalCoherencePenalty = 0;
+  let overlappingTargets = 0;
+
+  for (const target of targets.values()) {
+    if (target.forecasts.length < 2) continue;
+    const meanForecast =
+      target.forecasts.reduce((sum, forecast) => sum + forecast, 0) / target.forecasts.length;
+    const variance =
+      target.forecasts.reduce((sum, forecast) => sum + (forecast - meanForecast) ** 2, 0) /
+      target.forecasts.length;
+    const scale = Math.max(Math.abs(target.realizedPrice), MIN_SCALE);
+
+    totalCoherencePenalty += variance / (scale * scale);
+    overlappingTargets++;
+  }
+
+  const accuracyPenalty = totalAccuracyPenalty / forecastCount;
+  const coherencePenalty = overlappingTargets > 0
+    ? totalCoherencePenalty / overlappingTargets
+    : 0;
+  return accuracyPenalty + stabilityWeight * coherencePenalty;
 }
 
 /**
@@ -1237,6 +1423,7 @@ export function generateReport(
     mixtureCrps: mixtureCrps(steps),
     scaledCrps: scaledCrps(steps),
     tailWeightedCrps: tailWeightedCrps(steps),
+    tailWeightedMixtureCrps: tailWeightedMixtureCrps(steps),
     murphyWinklerScore: murphyWinklerScore(steps),
     murphyWinklerDecomposition: murphyWinklerDecomposition(steps),
     reliabilityBins: bins,
