@@ -210,8 +210,9 @@ XGBoost-predicted soft regime weights.
 
 ### 4.2 What the Code Implements
 
-The code captures the **conceptual insight** through posterior entropy from the
-forward-backward pass:
+The code captures the paper's **soft-over-hard insight** through HMM posterior
+probabilities from the forward-backward pass. Posterior entropy is used as the
+control signal:
 
 ```typescript
 const effectivePosteriorEntropy = Math.max(posteriorEntropy, forecastEntropy);
@@ -219,19 +220,42 @@ const softRegimeConfidenceMultiplier = Math.max(0.65, 1 - effectivePosteriorEntr
 const softRegimeCiScale = 1 + effectivePosteriorEntropy * 0.35;
 ```
 
-When entropy is high: confidence reduced (floor 0.65), CI widened (up to 1.35x),
-HMM weight reduced via `hmmWeight * max(0.5, 1 - entropy * 0.4)`.
+When entropy is high: confidence is reduced (floor 0.65), CI is widened (up to
+1.35x), and HMM weight is reduced via `hmmWeight * max(0.5, 1 - entropy * 0.4)`.
 
-**Verdict: CONCEPTUAL MATCH, DIFFERENT MECHANISM.** Does not implement the
-paper's XGBoost pipeline. Uses posterior entropy instead — architecturally
-simpler, captures the same "soft over hard" insight.
+Current code goes further than a pure confidence overlay. It also blends soft
+current-regime and forecast-regime mixtures directly into the forecast path:
+
+```typescript
+const softBlendedMixture = params.enableSoftRegimeWeighting === true && !rndMixture && softCurrentRegimeMixture
+  ? blendRegimeMixtures(softBaseMixture, softCurrentRegimeMixture, softTransitionBlendWeight)
+  : undefined;
+const effectiveMixture = rndMixture ?? softBlendedMixture ?? mixture;
+const forecastAdjustedStateWeights = params.enableSoftRegimeWeighting === true && softForecastRegimeMixture
+  ? blendStateWeightVectors(baseForecastStateWeights, regimeMixtureToArray(softForecastRegimeMixture), softTransitionBlendWeight)
+  : baseForecastStateWeights;
+```
+
+So the implemented mechanism changes not only metadata and confidence, but also
+the **raw distribution path**, **forecast state weights**, and therefore
+**expected return**. Existing tests verify:
+
+- disabled parity when the flag is omitted or explicitly false,
+- metadata for posterior/forecast mixtures,
+- lower confidence and wider CI on choppy series,
+- movement in expected return and raw survival probabilities when enabled.
+
+**Verdict: CONCEPTUAL MATCH, DIFFERENT MECHANISM.** The repository does not
+implement the paper's Mood-test + Bayesian GMM + XGBoost pipeline. Instead it
+uses posterior-probability mixture blending plus entropy-based modulation —
+architecturally simpler, but materially stronger than a metadata-only heuristic.
 
 ### 4.3 Gaps
 
 | Gap | Severity |
 |-----|----------|
-| Magic constants (0.35, 0.65, 0.4, 0.5) not from theory | Medium — pragmatic calibration |
-| Does not implement paper's XGBoost + Bayesian GMM | Low — different but valid approach |
+| Magic constants (0.35, 0.65, 0.4, 0.5) are empirically chosen rather than paper-derived | Medium — pragmatic calibration |
+| Does not implement the paper's Mood-test + Bayesian GMM + XGBoost regime pipeline | Low — different but still aligned with the paper's soft-weighting intuition |
 
 ---
 
