@@ -75,6 +75,9 @@ interface AdaptiveConformalWalkForwardOptions {
   conformalFastLearningRate?: number;
   conformalCooloffWindow?: number;
   conformalResetOnStructuralBreak?: boolean;
+  enableConformalScoreAggregation?: boolean;
+  conformalScoreMinSamples?: number;
+  conformalScoreCalibrationWindow?: number;
 }
 
 interface AdaptiveConformalBacktestDiagnostics {
@@ -84,6 +87,10 @@ interface AdaptiveConformalBacktestDiagnostics {
   conformalSampleCount?: number;
   conformalMode?: 'normal' | 'break';
   conformalResetTriggered?: boolean;
+  conformalScoreAggregationApplied?: boolean;
+  conformalScoreAggregationRadius?: number;
+  conformalScoreAggregationMultiplier?: number;
+  conformalScoreAggregationSampleCount?: number;
 }
 
 type ConformalBacktestStep = BacktestStep & AdaptiveConformalBacktestDiagnostics;
@@ -102,6 +109,13 @@ const adaptiveConformalDisabledConfig = {
   conformalBreakSensitivity: 1.5,
   conformalFastLearningRate: 0.2,
   conformalCooloffWindow: 20,
+} satisfies AdaptiveConformalWalkForwardOptions;
+
+const scoreAggregatedConformalConfig = {
+  ...adaptiveConformalConfig,
+  enableConformalScoreAggregation: true,
+  conformalScoreMinSamples: 5,
+  conformalScoreCalibrationWindow: 60,
 } satisfies AdaptiveConformalWalkForwardOptions;
 
 function withAdaptiveConformalConfig(
@@ -124,6 +138,10 @@ function conformalDiagnosticsProjection(result: WalkForwardResult) {
     conformalSampleCount: step.conformalSampleCount,
     conformalMode: step.conformalMode,
     conformalResetTriggered: step.conformalResetTriggered,
+    conformalScoreAggregationApplied: step.conformalScoreAggregationApplied,
+    conformalScoreAggregationRadius: step.conformalScoreAggregationRadius,
+    conformalScoreAggregationMultiplier: step.conformalScoreAggregationMultiplier,
+    conformalScoreAggregationSampleCount: step.conformalScoreAggregationSampleCount,
   }));
 }
 
@@ -135,6 +153,17 @@ function comparableStepProjection(result: WalkForwardResult) {
     predictedReturn: step.predictedReturn,
     ciLower: step.ciLower,
     ciUpper: step.ciUpper,
+    recommendation: step.recommendation,
+    confidence: step.confidence,
+  }));
+}
+
+function forecastOnlyProjection(result: WalkForwardResult) {
+  return result.steps.map(step => ({
+    t: step.t,
+    predictedProb: step.predictedProb,
+    rawPredictedProb: step.rawPredictedProb,
+    predictedReturn: step.predictedReturn,
     recommendation: step.recommendation,
     confidence: step.confidence,
   }));
@@ -373,6 +402,64 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
     expect(laterRerunStep).toBeDefined();
     expect(laterRerunStep?.conformalResetTriggered).toBeUndefined();
     expect(laterRerunStep?.conformalSampleCount).toBeGreaterThan(1);
+  });
+
+  it('keeps score aggregation disabled by default and identical to an explicit false flag', async () => {
+    const prices = syntheticVolBurstPrices();
+    const baseConfig = {
+      ticker: 'BTC-USD',
+      prices,
+      horizon: 14,
+      warmup: 120,
+      stride: 5,
+    } as const;
+
+    const adaptive = await withSeed(141, () => walkForward(
+      withAdaptiveConformalConfig(baseConfig, adaptiveConformalConfig),
+    ));
+    const explicitlyDisabled = await withSeed(141, () => walkForward(
+      withAdaptiveConformalConfig(baseConfig, {
+        ...adaptiveConformalConfig,
+        enableConformalScoreAggregation: false,
+        conformalScoreMinSamples: 5,
+        conformalScoreCalibrationWindow: 60,
+      }),
+    ));
+
+    expect(adaptive.errors).toHaveLength(0);
+    expect(explicitlyDisabled.errors).toHaveLength(0);
+    expect(comparableStepProjection(explicitlyDisabled)).toEqual(comparableStepProjection(adaptive));
+    expect(conformalDiagnosticsProjection(explicitlyDisabled)).toEqual(conformalDiagnosticsProjection(adaptive));
+  });
+
+  it('applies score aggregation only when enabled, tightening calibrated break intervals without changing forecasts', async () => {
+    const prices = syntheticVolBurstPrices();
+    const baseConfig = {
+      ticker: 'BTC-USD',
+      prices,
+      horizon: 14,
+      warmup: 120,
+      stride: 5,
+    } as const;
+
+    const adaptive = await withSeed(141, () => walkForward(
+      withAdaptiveConformalConfig(baseConfig, adaptiveConformalConfig),
+    ));
+    const aggregated = await withSeed(141, () => walkForward(
+      withAdaptiveConformalConfig(baseConfig, scoreAggregatedConformalConfig),
+    ));
+
+    expect(adaptive.errors).toHaveLength(0);
+    expect(aggregated.errors).toHaveLength(0);
+    expect(forecastOnlyProjection(aggregated)).toEqual(forecastOnlyProjection(adaptive));
+
+    const adaptiveBreakSlice = shockSlice(adaptive).filter(step => step.conformalMode === 'break');
+    const aggregatedBreakSlice = shockSlice(aggregated).filter(step => step.conformalMode === 'break');
+
+    expect(aggregatedBreakSlice.length).toBeGreaterThan(0);
+    expect(aggregatedBreakSlice.some(step => step.conformalScoreAggregationApplied === true)).toBe(true);
+    expect(aggregatedBreakSlice.some(step => typeof step.conformalScoreAggregationMultiplier === 'number')).toBe(true);
+    expect(medianIntervalWidth(aggregatedBreakSlice)).toBeLessThan(medianIntervalWidth(adaptiveBreakSlice));
   });
 
   it('restores non-zero selective coverage at 0.45 on a calm BTC synthetic series with rebalanced confidence', async () => {

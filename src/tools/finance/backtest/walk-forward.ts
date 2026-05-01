@@ -15,6 +15,7 @@ import {
 } from '../markov-distribution.js';
 import {
   AdaptiveConformalPID,
+  ScoreAggregatedConformal,
   type AdaptiveConformalRecordDiagnostics,
 } from '../conformal.js';
 import type { RegimePlattFits } from '../regime-calibrator.js';
@@ -116,6 +117,12 @@ export interface WalkForwardConfig {
   conformalCooloffWindow?: number;
   /** R6 — reset adaptive conformal state when a structural-break short-window rerun restarts the forecaster. Default true. */
   conformalResetOnStructuralBreak?: boolean;
+  /** Phase 3 experimental: replace break-time interval merging with score-level conformal aggregation. */
+  enableConformalScoreAggregation?: boolean;
+  /** Phase 3 experimental: minimum calibration samples before score aggregation activates. */
+  conformalScoreMinSamples?: number;
+  /** Phase 3 experimental: rolling calibration window for score aggregation. */
+  conformalScoreCalibrationWindow?: number;
   /** Item 1 — confidence-score ablation mode. */
   predictionConfidenceMode?: PredictionConfidenceMode;
   /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. */
@@ -178,6 +185,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
   const entropyHistory: number[] = [];
   const entropyWindowSize = Math.max(5, config.entropyWindowSize ?? 60);
   let adaptiveConformal: AdaptiveConformalPID | undefined;
+  let scoreAggregatedConformal: ScoreAggregatedConformal | undefined;
   let conformalBreakEpisodeActive = false;
 
   const baseDistributionConfig = {
@@ -284,6 +292,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
       let conformalSampleCount: number | undefined;
       let conformalMode: 'normal' | 'break' | undefined;
       let conformalResetTriggered: boolean | undefined;
+      let conformalScoreAggregationApplied: boolean | undefined;
+      let conformalScoreAggregationRadius: number | undefined;
+      let conformalScoreAggregationMultiplier: number | undefined;
+      let conformalScoreAggregationSampleCount: number | undefined;
       const recentRealizedVol = computeRecentRealizedVol(histPrices);
 
       const originalConformalBreakSignal = structuralBreakRerunTriggered
@@ -301,10 +313,18 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             cooloffWindow: config.conformalCooloffWindow,
           });
         }
+        if (!scoreAggregatedConformal && config.enableConformalScoreAggregation === true) {
+          scoreAggregatedConformal = new ScoreAggregatedConformal({
+            alpha: config.conformalAlpha,
+            minSamples: config.conformalScoreMinSamples,
+            calibrationWindow: config.conformalScoreCalibrationWindow,
+          });
+        }
 
         const enteringBreakRerunEpisode = structuralBreakRerunTriggered && !conformalBreakEpisodeActive;
         if (enteringBreakRerunEpisode && (config.conformalResetOnStructuralBreak ?? true)) {
           adaptiveConformal.reset({ radius: adaptiveConformal.currentRadius() });
+          scoreAggregatedConformal?.reset();
           conformalResetTriggered = true;
         }
         conformalBreakEpisodeActive = structuralBreakRerunTriggered;
@@ -318,6 +338,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         const adaptiveInterval = adaptiveConformal.wrap(forecastCenter, adaptiveDiagnostics);
         const adaptiveMode = adaptiveConformal.currentMode();
         const adaptiveRadius = adaptiveInterval.high - forecastCenter;
+        const projectedModelRadius = Math.max(ciUpper - forecastCenter, forecastCenter - ciLower, 0);
+        const scoreAggregatedInterval = adaptiveMode === 'break'
+          ? scoreAggregatedConformal?.wrap(forecastCenter, [projectedModelRadius, adaptiveRadius])
+          : undefined;
         if (adaptiveMode === 'break') {
           const midpoint = (ciLower + ciUpper) / 2;
           const halfWidth = (ciUpper - ciLower) / 2;
@@ -325,15 +349,35 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             halfWidth * (1 + ((config.conformalBreakSensitivity ?? 1.5) * 0.35)),
             adaptiveRadius,
           );
-          ciLower = Math.min(ciLower, adaptiveInterval.low, midpoint - widenedHalfWidth);
-          ciUpper = Math.max(ciUpper, adaptiveInterval.high, midpoint + widenedHalfWidth);
+          const mergedLower = Math.min(ciLower, adaptiveInterval.low, midpoint - widenedHalfWidth);
+          const mergedUpper = Math.max(ciUpper, adaptiveInterval.high, midpoint + widenedHalfWidth);
+          if (scoreAggregatedInterval?.applied === true) {
+            const intersectedLower = Math.max(mergedLower, scoreAggregatedInterval.low);
+            const intersectedUpper = Math.min(mergedUpper, scoreAggregatedInterval.high);
+            if (intersectedLower < intersectedUpper) {
+              ciLower = intersectedLower;
+              ciUpper = intersectedUpper;
+              conformalScoreAggregationApplied = (intersectedUpper - intersectedLower) + 1e-9
+                < (mergedUpper - mergedLower);
+              conformalScoreAggregationRadius = (intersectedUpper - intersectedLower) / 2;
+              conformalScoreAggregationMultiplier = scoreAggregatedInterval.multiplier ?? undefined;
+            } else {
+              ciLower = mergedLower;
+              ciUpper = mergedUpper;
+            }
+          } else {
+            ciLower = mergedLower;
+            ciUpper = mergedUpper;
+          }
         }
         adaptiveConformal.record(forecastCenter, realizedPrice, adaptiveDiagnostics);
+        scoreAggregatedConformal?.record(forecastCenter, realizedPrice, [projectedModelRadius, adaptiveRadius]);
         conformalApplied = true;
         conformalRadius = adaptiveRadius;
         conformalCoverageEstimate = adaptiveConformal.empiricalCoverage();
         conformalSampleCount = adaptiveConformal.sampleCount();
         conformalMode = adaptiveMode;
+        conformalScoreAggregationSampleCount = scoreAggregatedConformal?.sampleCount();
       }
 
       let decisionSource: DecisionSource = 'default';
@@ -410,6 +454,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         conformalSampleCount,
         conformalMode,
         conformalResetTriggered,
+        conformalScoreAggregationApplied,
+        conformalScoreAggregationRadius,
+        conformalScoreAggregationMultiplier,
+        conformalScoreAggregationSampleCount,
         softRegimeWeightingApplied: result.metadata.softRegime ? true : undefined,
         softRegimePosteriorEntropy: result.metadata.softRegime?.posteriorEntropy,
         softRegimeForecastEntropy: result.metadata.softRegime?.forecastEntropy,

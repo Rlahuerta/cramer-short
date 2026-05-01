@@ -56,6 +56,21 @@ export interface AdaptiveConformalMetadata {
   mode: AdaptiveConformalMode;
 }
 
+export interface ScoreAggregatedConformalOptions {
+  /** Target miscoverage rate. Reuses the conformal α. Default 0.1. */
+  alpha?: number;
+  /** Minimum calibration sample count before score aggregation activates. Default 20. */
+  minSamples?: number;
+  /** Maximum number of aggregated scores retained for calibration. Default 120. */
+  calibrationWindow?: number;
+}
+
+export interface ScoreAggregatedConformalInterval extends ConformalInterval {
+  applied: boolean;
+  radius: number;
+  multiplier: number | null;
+}
+
 export class ConformalPID {
   readonly alpha: number;
   readonly targetCoverage: number;
@@ -264,4 +279,84 @@ export class AdaptiveConformalPID extends ConformalPID {
       ? realizedVol
       : (this.volatilityEma * 0.9) + (realizedVol * 0.1);
   }
+}
+
+export class ScoreAggregatedConformal {
+  private readonly alpha: number;
+  private readonly minSamples: number;
+  private readonly calibrationWindow: number;
+  private readonly scores: number[] = [];
+
+  constructor(opts: ScoreAggregatedConformalOptions = {}) {
+    this.alpha = opts.alpha ?? 0.1;
+    this.minSamples = Math.max(1, Math.round(opts.minSamples ?? 20));
+    this.calibrationWindow = Math.max(this.minSamples, Math.round(opts.calibrationWindow ?? 120));
+  }
+
+  wrap(
+    forecastCenter: number,
+    sourceRadii: readonly number[],
+  ): ScoreAggregatedConformalInterval {
+    const radii = normalizeSourceRadii(sourceRadii);
+    const baseRadius = radii.length > 0 ? Math.min(...radii) : 0;
+    const multiplier = this.scoreMultiplier();
+    const radius = baseRadius * (multiplier ?? 1);
+    return {
+      low: forecastCenter - radius,
+      high: forecastCenter + radius,
+      applied: multiplier !== undefined,
+      radius,
+      multiplier: multiplier ?? null,
+    };
+  }
+
+  record(
+    forecastCenter: number,
+    actual: number,
+    sourceRadii: readonly number[],
+  ): void {
+    if (!Number.isFinite(forecastCenter) || !Number.isFinite(actual)) return;
+    const radii = normalizeSourceRadii(sourceRadii);
+    if (radii.length === 0) return;
+
+    const residual = Math.abs(actual - forecastCenter);
+    const aggregatedScore = radii.reduce(
+      (maxScore, radius) => Math.max(maxScore, residual / radius),
+      0,
+    );
+    if (!Number.isFinite(aggregatedScore)) return;
+
+    this.scores.push(aggregatedScore);
+    if (this.scores.length > this.calibrationWindow) {
+      this.scores.splice(0, this.scores.length - this.calibrationWindow);
+    }
+  }
+
+  sampleCount(): number {
+    return this.scores.length;
+  }
+
+  reset(): void {
+    this.scores.length = 0;
+  }
+
+  private scoreMultiplier(): number | undefined {
+    if (this.scores.length < this.minSamples) return undefined;
+    return Math.max(1, upperQuantile(this.scores, 1 - this.alpha));
+  }
+}
+
+function normalizeSourceRadii(sourceRadii: readonly number[]): number[] {
+  return sourceRadii.filter((radius) => Number.isFinite(radius) && radius > 0);
+}
+
+function upperQuantile(values: readonly number[], quantile: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const clampedQuantile = Math.min(1, Math.max(0, quantile));
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil(sorted.length * clampedQuantile) - 1),
+  );
+  return sorted[index];
 }

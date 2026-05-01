@@ -10,7 +10,11 @@
  * touches the underlying forecast model.
  */
 import { describe, it, expect } from 'bun:test';
-import { ConformalPID, type ConformalPIDOptions } from './conformal.js';
+import {
+  ConformalPID,
+  ScoreAggregatedConformal,
+  type ConformalPIDOptions,
+} from './conformal.js';
 import * as conformalModule from './conformal.js';
 
 // Deterministic Gaussian sampler (Box–Muller) for reproducible tests.
@@ -297,5 +301,45 @@ describe('AdaptiveConformalPID — planned break-aware behavior', () => {
 
     adaptive.wrap(0);
     expect(adaptive.currentMode()).toBe('normal');
+  });
+});
+
+describe('ScoreAggregatedConformal — score-level aggregation', () => {
+  it('stays inactive until the minimum calibration sample count is reached', () => {
+    const aggregated = new ScoreAggregatedConformal({ alpha: 0.1, minSamples: 3, calibrationWindow: 10 });
+
+    aggregated.record(100, 101, [4, 8]);
+    aggregated.record(100, 102, [4, 8]);
+
+    const interval = aggregated.wrap(100, [4, 8]);
+    expect(interval.applied).toBe(false);
+    expect(interval.radius).toBeCloseTo(4, 10);
+    expect(aggregated.sampleCount()).toBe(2);
+  });
+
+  it('projects max-norm score calibration back to a tighter scalar radius than interval merging', () => {
+    const aggregated = new ScoreAggregatedConformal({ alpha: 0.1, minSamples: 5, calibrationWindow: 20 });
+    const residuals = [2.4, 3.0, 3.4, 3.8, 4.0, 3.6];
+
+    for (const residual of residuals) {
+      aggregated.record(100, 100 + residual, [4, 8]);
+    }
+
+    const interval = aggregated.wrap(100, [4, 8]);
+    expect(interval.applied).toBe(true);
+    expect(interval.multiplier).not.toBeNull();
+    expect(interval.radius).toBeGreaterThanOrEqual(4);
+    expect(interval.radius).toBeLessThan(8);
+  });
+
+  it('resets its calibration history when the wrapped forecaster restarts', () => {
+    const aggregated = new ScoreAggregatedConformal({ alpha: 0.1, minSamples: 2, calibrationWindow: 10 });
+    aggregated.record(100, 103, [4, 8]);
+    aggregated.record(100, 104, [4, 8]);
+
+    expect(aggregated.wrap(100, [4, 8]).applied).toBe(true);
+    aggregated.reset();
+    expect(aggregated.sampleCount()).toBe(0);
+    expect(aggregated.wrap(100, [4, 8]).applied).toBe(false);
   });
 });

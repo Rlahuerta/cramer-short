@@ -238,6 +238,14 @@ export interface BacktestStep {
   conformalMode?: 'normal' | 'break';
   /** R6 adaptive conformal provenance: true when a break-triggered forecaster rerun reset the controller state. */
   conformalResetTriggered?: boolean;
+  /** Phase 3 provenance: true when score-level conformal aggregation replaced break-time interval merging. */
+  conformalScoreAggregationApplied?: boolean;
+  /** Phase 3 provenance: aggregated symmetric radius applied after score calibration. */
+  conformalScoreAggregationRadius?: number;
+  /** Phase 3 provenance: empirical score multiplier used to project back to a scalar interval radius. */
+  conformalScoreAggregationMultiplier?: number;
+  /** Phase 3 provenance: calibration sample count tracked by the score aggregator. */
+  conformalScoreAggregationSampleCount?: number;
   /** Item 2 provenance: true when HMM posterior uncertainty altered confidence or CI width. */
   softRegimeWeightingApplied?: boolean;
   /** Item 2 provenance: normalized entropy of the current HMM posterior. */
