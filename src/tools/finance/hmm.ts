@@ -43,6 +43,12 @@ export interface StudentTEmission {
   effectiveSampleSize: number;
 }
 
+export interface StudentTPriorHyperparameters {
+  priorKappa: number;
+  priorAlpha: number;
+  priorBeta: number;
+}
+
 export interface HMMFitResult {
   params: HMMParams;
   logLikelihood: number;
@@ -172,12 +178,11 @@ export function attachStudentTPredictiveEmissions(
 
     const priorMean = params.means[stateIdx];
     const priorStd = Math.max(params.stds[stateIdx], 1e-6);
-    const priorKappa = 0.01;
-    const priorAlpha = 2.0;
-    const priorBeta = Math.max(
-      (priorStd ** 2) * priorAlpha * priorKappa / (priorKappa + 1),
-      1e-8,
-    );
+    const {
+      priorKappa,
+      priorAlpha,
+      priorBeta,
+    } = resolveStudentTPriorHyperparameters(observations, priorStd, nEff);
 
     let location = priorMean;
     let scale = priorStd * Math.sqrt((priorKappa) / (priorKappa + 1));
@@ -219,6 +224,43 @@ export function attachStudentTPredictiveEmissions(
     means: predictiveMeans,
     stds: predictiveStds,
     studentTEmissions,
+  };
+}
+
+export function resolveStudentTPriorHyperparameters(
+  observations: number[],
+  priorStd: number,
+  effectiveSampleSize: number,
+): StudentTPriorHyperparameters {
+  const clippedStd = Math.max(priorStd, 1e-6);
+  const sampleMean = observations.reduce((sum, value) => sum + value, 0) / observations.length;
+  const sampleVariance = observations.reduce(
+    (sum, value) => sum + (value - sampleMean) ** 2,
+    0,
+  ) / Math.max(observations.length, 1);
+  let excessKurtosis = 0;
+  if (observations.length >= 4 && sampleVariance > 1e-12) {
+    const fourthMoment = observations.reduce(
+      (sum, value) => sum + (value - sampleMean) ** 4,
+      0,
+    ) / observations.length;
+    excessKurtosis = Math.max(0, (fourthMoment / (sampleVariance ** 2)) - 3);
+  }
+
+  const sparsePriorBoost = effectiveSampleSize < 5
+    ? ((5 - effectiveSampleSize) / 5) * 0.24
+    : 0;
+  const priorKappa = 0.01 + sparsePriorBoost;
+  const priorAlpha = Math.max(2.0, Math.min(4.0, 2 + (4 / (1 + excessKurtosis))));
+  const priorBeta = Math.max(
+    (clippedStd ** 2) * priorAlpha * priorKappa / (priorKappa + 1),
+    1e-8,
+  );
+
+  return {
+    priorKappa,
+    priorAlpha,
+    priorBeta,
   };
 }
 

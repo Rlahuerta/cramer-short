@@ -10,6 +10,7 @@ import {
   viterbi,
   predict,
   attachStudentTPredictiveEmissions,
+  resolveStudentTPriorHyperparameters,
   type HMMParams,
 } from './hmm.js';
 
@@ -323,6 +324,26 @@ describe('predict', () => {
 });
 
 describe('attachStudentTPredictiveEmissions', () => {
+  it('strengthens the prior mean weight for sparse states and relaxes it for dense states', () => {
+    const calmObs = [-0.01, 0.02, -0.015, 0.01, -0.005, 0.012, -0.008, 0.009];
+    const sparse = resolveStudentTPriorHyperparameters(calmObs, 1, 1.5);
+    const dense = resolveStudentTPriorHyperparameters(calmObs, 1, 20);
+
+    expect(sparse.priorKappa).toBeGreaterThan(dense.priorKappa);
+    expect(sparse.priorAlpha).toBeGreaterThan(2);
+    expect(dense.priorKappa).toBeCloseTo(0.01, 12);
+  });
+
+  it('keeps heavier-tail priors for more kurtotic series than for calm series', () => {
+    const calmObs = [-0.01, 0.02, -0.015, 0.01, -0.005, 0.012, -0.008, 0.009];
+    const turbulentObs = [-0.02, 0.018, -0.015, 0.02, 0.01, -0.01, 0.012, -0.008, 0.85, -0.72];
+    const calm = resolveStudentTPriorHyperparameters(calmObs, 1, 4);
+    const turbulent = resolveStudentTPriorHyperparameters(turbulentObs, 1, 4);
+
+    expect(calm.priorAlpha).toBeGreaterThan(turbulent.priorAlpha);
+    expect(turbulent.priorAlpha).toBeGreaterThanOrEqual(2);
+  });
+
   it('produces finite Student-t predictive parameters for every state', () => {
     const obs = generateFromHMM(THREE_STATE_PARAMS, 200, 777);
     const augmented = attachStudentTPredictiveEmissions(obs, THREE_STATE_PARAMS);
