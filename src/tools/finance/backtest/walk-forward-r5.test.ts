@@ -74,13 +74,16 @@ interface AdaptiveConformalWalkForwardOptions {
   conformalBreakSensitivity?: number;
   conformalFastLearningRate?: number;
   conformalCooloffWindow?: number;
+  conformalResetOnStructuralBreak?: boolean;
 }
 
 interface AdaptiveConformalBacktestDiagnostics {
   conformalApplied?: boolean;
   conformalRadius?: number;
   conformalCoverageEstimate?: number;
+  conformalSampleCount?: number;
   conformalMode?: 'normal' | 'break';
+  conformalResetTriggered?: boolean;
 }
 
 type ConformalBacktestStep = BacktestStep & AdaptiveConformalBacktestDiagnostics;
@@ -118,7 +121,9 @@ function conformalDiagnosticsProjection(result: WalkForwardResult) {
     conformalApplied: step.conformalApplied,
     conformalRadius: step.conformalRadius,
     conformalCoverageEstimate: step.conformalCoverageEstimate,
+    conformalSampleCount: step.conformalSampleCount,
     conformalMode: step.conformalMode,
+    conformalResetTriggered: step.conformalResetTriggered,
   }));
 }
 
@@ -324,6 +329,47 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
     expect(conformalStepView(adaptive).every(step => step.conformalApplied === true)).toBe(true);
     expect(conformalStepView(adaptive).every(step => step.conformalMode === 'normal' || step.conformalMode === 'break')).toBe(true);
     expect(sharpness(adaptive.steps)).toBeLessThanOrEqual(sharpness(baseline.steps) * 1.05);
+  });
+
+  it('resets adaptive conformal state when a structural-break rerun restarts the forecaster', async () => {
+    const prices = syntheticVolBurstPrices();
+    const baseConfig = {
+      ticker: 'BTC-USD',
+      prices,
+      horizon: 14,
+      warmup: 160,
+      stride: 5,
+      postBreakShortWindow: true,
+      postBreakWindowSize: 60,
+    } as const;
+
+    const withoutReset = await withSeed(141, () => walkForward(
+      withAdaptiveConformalConfig(baseConfig, {
+        ...adaptiveConformalConfig,
+        conformalResetOnStructuralBreak: false,
+      }),
+    ));
+    const withReset = await withSeed(141, () => walkForward(
+      withAdaptiveConformalConfig(baseConfig, {
+        ...adaptiveConformalConfig,
+      }),
+    ));
+
+    expect(withoutReset.errors).toHaveLength(0);
+    expect(withReset.errors).toHaveLength(0);
+    expect(conformalStepView(withoutReset).some(step => step.conformalResetTriggered === true)).toBe(false);
+
+    const resetSteps = conformalStepView(withReset).filter(step => step.conformalResetTriggered === true);
+    expect(resetSteps.length).toBeGreaterThan(0);
+
+    const resetStepWithPrior = resetSteps.at(-1)!;
+    const sameStepWithoutReset = conformalStepView(withoutReset)
+      .find(step => step.t === resetStepWithPrior.t);
+
+    expect(resetStepWithPrior.structuralBreakRerunTriggered).toBe(true);
+    expect(sameStepWithoutReset).toBeDefined();
+    expect(resetStepWithPrior.conformalSampleCount).toBe(1);
+    expect(sameStepWithoutReset?.conformalSampleCount).toBeGreaterThan(1);
   });
 
   it('restores non-zero selective coverage at 0.45 on a calm BTC synthetic series with rebalanced confidence', async () => {

@@ -7,14 +7,15 @@
 
 ## Outcome
 
-This remediation pass executed the two **live** follow-ups from the verification note and kept only the change that cleared the repo's safety gate.
+This remediation pass executed the two **live** follow-ups from the verification note and later added a targeted conformal mitigation for the remaining restart-specific gap.
 
 | Phase | Status | Result |
 | --- | --- | --- |
 | Phase 1 — baseline freeze and documentation hygiene | **Done** | Baseline behavior and current-head audit note were frozen before code changes. |
 | Phase 2 — conformal integral-decay evaluation | **Rejected** | A promoted `integralDecay = 0.95` default was tested and reverted. |
 | Phase 3 — Student-t prior calibration hardening | **Kept** | Sparse-state prior hardening was implemented in `hmm.ts` and retained. |
-| Phase 4 — final comparative verification | **Done** | Final keep/drop decision recorded here. |
+| Phase 4 — final comparative verification | **Done** | Final keep/drop decision for the first pass was recorded. |
+| Phase 5 — adaptive conformal restart mitigation | **Kept** | Adaptive conformal now resets controller state when a structural-break short-window rerun effectively restarts the forecaster. |
 
 ---
 
@@ -112,10 +113,60 @@ The retained change did **not** create a visible BTC fixture improvement, but it
 
 ---
 
+## Phase 5 — Adaptive conformal restart mitigation
+
+### Candidate
+
+The retained conformal follow-up does **not** change the global `ConformalPID`
+default. Instead it adds a narrow restart hook for the exact scenario flagged by
+the theory review: when `walkForward()` detects a structural break and reruns
+the forecaster on a shorter history window, the adaptive conformal controller
+now resets its carried state before calibrating the restarted forecaster.
+
+### Retained files
+
+- `src/tools/finance/conformal.ts`
+- `src/tools/finance/backtest/walk-forward.ts`
+- `src/tools/finance/backtest/metrics.ts`
+- `src/tools/finance/backtest/walk-forward-r5.test.ts`
+
+### Why it was kept
+
+1. It directly addresses the report's strongest live conformal concern: reused
+   controller state across an effective forecaster restart.
+2. It is narrow and behavior-safe:
+   - no global `integralDecay` default change,
+   - no effect unless adaptive conformal is enabled,
+   - no effect unless the short-window structural-break rerun path is active.
+3. It passed the validation gate:
+   - `bun run typecheck`
+   - `bun test src/tools/finance/conformal.test.ts`
+   - `bun test src/tools/finance/backtest/walk-forward-r5.test.ts`
+   - `RUN_INTEGRATION=1 bun test src/tools/finance/markov-backtest.integration.test.ts`
+
+### What changed
+
+1. `ConformalPID` / `AdaptiveConformalPID` now expose a reset path that clears
+   accumulated controller state while optionally preserving the current radius.
+2. `walkForward()` now uses that reset when `postBreakShortWindow` reruns the
+   forecaster and adaptive conformal is active.
+3. Backtest provenance now records:
+   - `conformalSampleCount`
+   - `conformalResetTriggered`
+
+### Interpretation
+
+This does **not** make the walk-forward conformal integration fully theorem
+aligned, but it removes the most obvious state-carryover mismatch identified by
+the report without repeating the previously rejected default-decay experiment.
+
+---
+
 ## Final keep/drop decision
 
 ### Keep
 
+- **Adaptive conformal restart mitigation** in `src/tools/finance/conformal.ts` and `src/tools/finance/backtest/walk-forward.ts`
 - **Student-t sparse-state prior hardening** in `src/tools/finance/hmm.ts`
 
 ### Drop
@@ -133,6 +184,7 @@ The retained change did **not** create a visible BTC fixture improvement, but it
 After this remediation pass:
 
 1. `ConformalPID` still defaults to **`integralDecay = 1.0`**
-2. Student-t predictive emissions now have **adaptive prior hyperparameters** for sparse-state hardening
-3. all targeted checks and integration tests pass
-4. the repo keeps only the change that cleared the safety gate
+2. adaptive conformal now **resets on structural-break short-window reruns** so the restarted forecaster does not inherit stale controller state
+3. Student-t predictive emissions now have **adaptive prior hyperparameters** for sparse-state hardening
+4. all targeted checks and integration tests pass
+5. the repo keeps only the changes that cleared the safety gate

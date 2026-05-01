@@ -119,6 +119,17 @@ export class ConformalPID {
     return this.q;
   }
 
+  /** Reset controller state when the wrapped forecaster effectively restarts. */
+  reset(opts: { radius?: number } = {}): void {
+    if (opts.radius !== undefined) {
+      this.q = Math.max(0, opts.radius);
+    }
+    this.integral = 0;
+    this.prevBias = 0;
+    this.samples = 0;
+    this.hits = 0;
+  }
+
   /** Wrap a forecast center in the current symmetric interval. */
   wrap(forecastCenter: number): ConformalInterval {
     return { low: forecastCenter - this.q, high: forecastCenter + this.q };
@@ -190,6 +201,15 @@ export class AdaptiveConformalPID extends ConformalPID {
       coverageEstimate: this.empiricalCoverage() ?? null,
       mode: this.mode,
     };
+  }
+
+  override reset(opts: { radius?: number } = {}): void {
+    super.reset(opts);
+    this.cooloffRemaining = 0;
+    this.residualEma = undefined;
+    this.volatilityEma = undefined;
+    this.mode = 'normal';
+    this.lastAppliedRadius = this.q;
   }
 
   private resolveMode(

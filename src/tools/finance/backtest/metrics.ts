@@ -218,8 +218,12 @@ export interface BacktestStep {
   conformalRadius?: number;
   /** R6 adaptive conformal provenance: running empirical coverage estimate. */
   conformalCoverageEstimate?: number;
+  /** R6 adaptive conformal provenance: sample count in the current controller state. */
+  conformalSampleCount?: number;
   /** R6 adaptive conformal provenance: normal mode vs break-aware accelerated mode. */
   conformalMode?: 'normal' | 'break';
+  /** R6 adaptive conformal provenance: true when a break-triggered forecaster rerun reset the controller state. */
+  conformalResetTriggered?: boolean;
   /** Item 2 provenance: true when HMM posterior uncertainty altered confidence or CI width. */
   softRegimeWeightingApplied?: boolean;
   /** Item 2 provenance: normalized entropy of the current HMM posterior. */

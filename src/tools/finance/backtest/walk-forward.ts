@@ -114,6 +114,8 @@ export interface WalkForwardConfig {
   conformalFastLearningRate?: number;
   /** R6 — number of steps to keep break mode active after a trigger. */
   conformalCooloffWindow?: number;
+  /** R6 — reset adaptive conformal state when a structural-break short-window rerun restarts the forecaster. Default true. */
+  conformalResetOnStructuralBreak?: boolean;
   /** Item 1 — confidence-score ablation mode. */
   predictionConfidenceMode?: PredictionConfidenceMode;
   /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. */
@@ -260,7 +262,9 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
       let conformalApplied: boolean | undefined;
       let conformalRadius: number | undefined;
       let conformalCoverageEstimate: number | undefined;
+      let conformalSampleCount: number | undefined;
       let conformalMode: 'normal' | 'break' | undefined;
+      let conformalResetTriggered: boolean | undefined;
 
       if (config.enableAdaptiveConformal === true) {
         const forecastCenter = currentPrice * (1 + result.actionSignal.expectedReturn);
@@ -274,6 +278,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             breakLearningRateMultiplier: config.conformalBreakSensitivity,
             cooloffWindow: config.conformalCooloffWindow,
           });
+        }
+        if (structuralBreakRerunTriggered && (config.conformalResetOnStructuralBreak ?? true)) {
+          adaptiveConformal.reset({ radius: adaptiveConformal.currentRadius() });
+          conformalResetTriggered = true;
         }
 
         const adaptiveDiagnostics: AdaptiveConformalRecordDiagnostics = {
@@ -297,6 +305,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         conformalApplied = true;
         conformalRadius = adaptiveRadius;
         conformalCoverageEstimate = adaptiveConformal.empiricalCoverage();
+        conformalSampleCount = adaptiveConformal.sampleCount();
         conformalMode = adaptiveMode;
       }
 
@@ -361,7 +370,9 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         conformalApplied,
         conformalRadius,
         conformalCoverageEstimate,
+        conformalSampleCount,
         conformalMode,
+        conformalResetTriggered,
         softRegimeWeightingApplied: result.metadata.softRegime ? true : undefined,
         softRegimePosteriorEntropy: result.metadata.softRegime?.posteriorEntropy,
         softRegimeForecastEntropy: result.metadata.softRegime?.forecastEntropy,
