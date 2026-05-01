@@ -400,6 +400,26 @@ export function buildForecastHint(params: {
   };
 }
 
+export function buildRecommendationProvenanceNote(params: {
+  ticker: string;
+  horizon: number;
+  actionSignal: ActionSignal;
+  scenarios?: ScenarioProbabilities;
+  bearishBreakRecommendationGateActive?: boolean;
+}): string | null {
+  const baseRecommendation = params.actionSignal.baseRecommendation ?? params.actionSignal.recommendation;
+
+  if (params.bearishBreakRecommendationGateActive) {
+    return `ℹ️ Recommendation provenance: final ${params.actionSignal.recommendation} overrides the base ${baseRecommendation} because the BTC 14d bearish-break gate fired under structural-break / low-confidence conditions.`;
+  }
+
+  if (params.actionSignal.recommendationSource === 'short_horizon_scenario' && params.scenarios) {
+    return `ℹ️ Recommendation provenance: short-horizon crypto converted a ${baseRecommendation} into ${params.actionSignal.recommendation} because scenario P(up) is ${(params.scenarios.pUp * 100).toFixed(1)}%.`;
+  }
+
+  return null;
+}
+
 export type BreakConfidencePolicy = 'default' | 'trend_penalty_only' | 'divergence_weighted';
 
 // ---------------------------------------------------------------------------
@@ -769,6 +789,10 @@ export interface ActionSignal {
   sellProbability: number;
   /** Primary recommendation based on distribution shape */
   recommendation: 'BUY' | 'HOLD' | 'SELL';
+  /** Recommendation before short-horizon crypto scenario overrides were applied. */
+  baseRecommendation?: 'BUY' | 'HOLD' | 'SELL';
+  /** Provenance for the final recommendation. */
+  recommendationSource?: 'expected_return' | 'short_horizon_scenario';
   /** Confidence level based on margin between leading and second probability */
   confidence: 'HIGH' | 'MEDIUM' | 'LOW';
   /** Expected return over the horizon (e.g. 0.03 = +3%) */
@@ -4034,10 +4058,15 @@ export function computeActionSignal(
   } else {
     recommendation = 'HOLD';
   }
+  const baseRecommendation = recommendation;
+  let recommendationSource: ActionSignal['recommendationSource'] = 'expected_return';
 
   const shortHorizonCrypto = assetType === 'crypto' && horizon <= 14;
   if (shortHorizonCrypto && recommendation === 'HOLD' && scenarios) {
     recommendation = scenarios.pUp >= 0.50 ? 'BUY' : 'SELL';
+    if (recommendation !== baseRecommendation) {
+      recommendationSource = 'short_horizon_scenario';
+    }
   }
 
   // Cross-validate recommendation against scenario probabilities.
@@ -4092,6 +4121,8 @@ export function computeActionSignal(
     holdProbability: pHold,
     sellProbability: pBelowSell,
     recommendation,
+    baseRecommendation,
+    recommendationSource,
     confidence,
     expectedReturn,
     riskRewardRatio,
@@ -5919,6 +5950,16 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       `│  📉 SELL  ${sellPct.padStart(5)}% chance price falls >${sellThr}% below current   │`,
       '└────────────────────────────────────────────────────────┘',
     ];
+    const recommendationProvenanceNote = buildRecommendationProvenanceNote({
+      ticker: result.ticker,
+      horizon: result.horizon,
+      actionSignal: sig,
+      scenarios: result.scenarios,
+      bearishBreakRecommendationGateActive: m.bearishBreakRecommendationGateActive,
+    });
+    if (recommendationProvenanceNote) {
+      decisionCard.push('', recommendationProvenanceNote);
+    }
 
     // --- Section 2: Action Plan with price levels ---
     const actionPlan = [

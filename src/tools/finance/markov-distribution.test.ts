@@ -63,6 +63,7 @@ import {
   buildPolymarketAnchorQueryVariants,
   normalizeSentiment,
   buildForecastHint,
+  buildRecommendationProvenanceNote,
   buildBtcShortHorizonThinAnchorWarning,
   capBtcShortHorizonConfidence,
   applyCryptoTerminalAnchorFallback,
@@ -2059,6 +2060,8 @@ describe('computeActionSignal', () => {
 
     expect(sig.expectedReturn).toBeGreaterThan(0);
     expect(sig.recommendation).toBe('BUY');
+    expect(sig.baseRecommendation).toBe('HOLD');
+    expect(sig.recommendationSource).toBe('short_horizon_scenario');
   });
 
   it('uses bearish short-horizon crypto direction when pUp is clear but expected return stays in HOLD band', () => {
@@ -2087,6 +2090,8 @@ describe('computeActionSignal', () => {
 
     expect(sig.expectedReturn).toBeLessThan(0);
     expect(sig.recommendation).toBe('SELL');
+    expect(sig.baseRecommendation).toBe('HOLD');
+    expect(sig.recommendationSource).toBe('short_horizon_scenario');
   });
 
   it('keeps the non-target short-horizon equity path unchanged for the same bullish setup', () => {
@@ -2114,6 +2119,79 @@ describe('computeActionSignal', () => {
     const sig = computeActionSignal(dist, 100, 0.05, 0.03, 7, 0.04, scenarios, 'equity');
 
     expect(sig.recommendation).toBe('HOLD');
+  });
+
+  it('builds a provenance note for short-horizon crypto scenario overrides', () => {
+    const note = buildRecommendationProvenanceNote({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      actionSignal: {
+        buyProbability: 0.21,
+        holdProbability: 0.39,
+        sellProbability: 0.40,
+        recommendation: 'SELL',
+        confidence: 'LOW',
+        expectedReturn: -0.003,
+        riskRewardRatio: 0.92,
+        buyThreshold: 0.05,
+        sellThreshold: 0.03,
+        actionLevels: {
+          targetPrice: 103,
+          stopLoss: 95,
+          medianPrice: 99.7,
+          bullCase: 105,
+          bearCase: 94,
+        },
+        baseRecommendation: 'HOLD',
+        recommendationSource: 'short_horizon_scenario',
+      },
+      scenarios: {
+        buckets: [
+          { label: 'Down >5%', probability: 0.22, priceRange: [null, 95] },
+          { label: 'Down 3–5%', probability: 0.20, priceRange: [95, 97] },
+          { label: 'Flat ±3%', probability: 0.24, priceRange: [97, 103] },
+          { label: 'Up 3–5%', probability: 0.16, priceRange: [103, 105] },
+          { label: 'Up >5%', probability: 0.18, priceRange: [105, null] },
+        ],
+        expectedPrice: 99.7,
+        expectedReturn: -0.003,
+        pUp: 0.44,
+      },
+    });
+
+    expect(note).toContain('converted a HOLD into SELL');
+    expect(note).toContain('P(up) is 44.0%');
+  });
+
+  it('builds a provenance note for the BTC bearish-break SELL gate', () => {
+    const note = buildRecommendationProvenanceNote({
+      ticker: 'BTC-USD',
+      horizon: 14,
+      actionSignal: {
+        buyProbability: 0.32,
+        holdProbability: 0.41,
+        sellProbability: 0.27,
+        recommendation: 'SELL',
+        confidence: 'LOW',
+        expectedReturn: 0.012,
+        riskRewardRatio: 1.21,
+        buyThreshold: 0.05,
+        sellThreshold: 0.03,
+        actionLevels: {
+          targetPrice: 110,
+          stopLoss: 95,
+          medianPrice: 102,
+          bullCase: 114,
+          bearCase: 93,
+        },
+        baseRecommendation: 'BUY',
+        recommendationSource: 'expected_return',
+      },
+      bearishBreakRecommendationGateActive: true,
+    });
+
+    expect(note).toContain('bearish-break gate fired');
+    expect(note).toContain('final SELL overrides the base BUY');
   });
 
   it('raw-direction hybrid preserves calibrated output surfaces while enabling BTC short-horizon provenance', async () => {
