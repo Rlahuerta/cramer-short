@@ -291,6 +291,25 @@ describe('forecast arbitrator', () => {
     expect(result.preferredDirection).toBe('long');
   });
 
+  it('treats missing whale input as unavailable rather than neutral evidence', () => {
+    const fixture = buildAlignedFullGuidanceFixture();
+    const { whale: _whale, ...withoutWhale } = fixture;
+    const result = arbitratePlannedForecast(withoutWhale);
+
+    expect(result.rawEvidence.whale).toBeNull();
+    expect(result.disagreement.summary).toContain('whales are unavailable');
+    expect(result.rationale.join(' ')).toContain('Whale/on-chain data was not provided');
+    expect(result.rationale.join(' ')).not.toContain('Whale data is neutral');
+  });
+
+  it('preserves explicit neutral whale evidence as neutral when it is provided', () => {
+    const result = arbitratePlannedForecast(buildMissingTrustedSupportAbstainFixture());
+
+    expect(result.rawEvidence.whale?.direction).toBe('neutral');
+    expect(result.disagreement.summary).toContain('whales are neutral');
+    expect(result.rationale.join(' ')).toContain('Whale data is neutral');
+  });
+
   it('promotes aligned high-confidence evidence to full guidance policy', () => {
     const result = arbitratePlannedForecast(buildAlignedFullGuidanceFixture());
 

@@ -371,6 +371,7 @@ function computeTradeScore(params: {
   polymarketSemantics: ForecastMarketSemantics;
   flatProbability: number;
   structuralBreak: boolean;
+  hasWhaleInput: boolean;
   whaleDirection: Direction;
   whaleConfidence: number;
   leverage: number;
@@ -424,7 +425,9 @@ function computeTradeScore(params: {
   if (params.leverage >= 5) {
     notes.push(`${params.leverage}x leverage magnifies small forecast errors.`);
   }
-  if (params.whaleDirection === 'neutral') {
+  if (!params.hasWhaleInput) {
+    notes.push('Whale/on-chain input was not provided.');
+  } else if (params.whaleDirection === 'neutral') {
     notes.push('Whale/on-chain input is neutral and does not confirm either side.');
   }
 
@@ -557,8 +560,10 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
   const polymarketConfidence = qualityToConfidence(input.polymarket);
   const markovDirection = directionFromReturn(markovReturn);
   const polymarketDirection = directionFromReturn(polymarketReturn);
+  const hasWhaleInput = input.whale !== undefined;
   const whaleDirection = input.whale?.direction ?? 'neutral';
-  const whaleConfidence = clamp(input.whale?.confidence ?? 0.35, 0, 1);
+  const whaleConfidence = clamp(input.whale?.confidence ?? 0, 0, 1);
+  const whaleSummary = hasWhaleInput ? whaleDirection : 'unavailable';
   const semantic = inferMarketSemantics(input.polymarket?.markets);
   const structuralBreak = input.markov?.structural_break ?? false;
   const flatProbability = input.markov?.flat_probability ?? 0;
@@ -577,6 +582,7 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
     polymarketSemantics: semantic.primary,
     flatProbability,
     structuralBreak,
+    hasWhaleInput,
     whaleDirection,
     whaleConfidence,
     leverage,
@@ -593,6 +599,7 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
     polymarketSemantics: semantic.primary,
     flatProbability,
     structuralBreak,
+    hasWhaleInput,
     whaleDirection,
     whaleConfidence,
     leverage,
@@ -646,7 +653,11 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
   if (semantic.primary !== 'terminal') rationale.push('The leading Polymarket evidence appears path-dependent/barrier-like, which can be true even if terminal Markov drift is flat or positive.');
   if (flatProbability >= 0.7) rationale.push('Markov assigns high probability to a flat/range outcome, which weakens both immediate LONG and SHORT setups.');
   if (leverage >= 8) rationale.push(`${leverage}x leverage makes a normal intraday move large enough to dominate the expected edge.`);
-  if (whaleDirection === 'neutral') rationale.push('Whale data is neutral, so it does not break the model tie.');
+  if (!hasWhaleInput) {
+    rationale.push('Whale/on-chain data was not provided, so it cannot break the model tie.');
+  } else if (whaleDirection === 'neutral') {
+    rationale.push('Whale data is neutral, so it does not break the model tie.');
+  }
   if (rationale.length === 0) rationale.push('Evidence is sufficiently aligned after leverage/risk adjustment.');
 
   const reconciliation = semantic.primary === 'barrier_touch' || semantic.primary === 'path_dependent'
@@ -674,8 +685,8 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
       whaleDirection,
       isDivergent,
       summary: isDivergent
-        ? `Divergence: Markov is ${markovDirection}, Polymarket is ${polymarketDirection}, whales are ${whaleDirection}.`
-        : `No strong directional conflict: Markov is ${markovDirection}, Polymarket is ${polymarketDirection}, whales are ${whaleDirection}.`,
+        ? `Divergence: Markov is ${markovDirection}, Polymarket is ${polymarketDirection}, whales are ${whaleSummary}.`
+        : `No strong directional conflict: Markov is ${markovDirection}, Polymarket is ${polymarketDirection}, whales are ${whaleSummary}.`,
     },
     leverageAssessment: {
       long,
