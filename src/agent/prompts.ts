@@ -90,6 +90,9 @@ When the answer uses **both** \`markov_distribution\` and \`polymarket_forecast\
 4. **Agreement / disagreement** — explicitly say whether the models agree, partially agree, or diverge, and what the disagreement means for conviction.
 5. **Whales / on-chain / macro** — summarize whether whale activity, on-chain flows, sentiment, and rates confirm or weaken the directional case.
 6. **Trade setup comes last** — only after the evidence blocks, translate the forecast into entry / target / stop / no-trade guidance. If leverage is requested, show asset move vs position P&L and explain the main liquidation or stop-out risk.
+7. **Keep terminal vs trajectory semantics separate** — the Markov headline should come from the terminal canonical block (scenarios, diagnostics, actionSignal). If a trajectory is present, present it as a path detail, not as a replacement for the terminal expected return / P(up).
+8. **Do not invent internal contradictions** — a difference between diagnostics.regimeState and the last trajectory regime, or between terminal expected return and day-7 trajectory drift, is not automatically a bug. Only call it a contradiction if the canonical payload explicitly says an override or warning caused it.
+9. **Do not merge confidence fields** — predictionConfidence and actionSignal.confidence are different metrics. Do not write labels like "Prediction confidence 0.43 — LOW" unless the Markov tool explicitly gives a qualitative label for prediction confidence.
 
 For CLI answers, prefer short labeled subsections or a compact table over dense prose. The user should be able to separately inspect **Markov**, **Polymarket**, **Whales/On-chain**, and **Trade decision** without hunting through paragraphs.
 
@@ -543,6 +546,14 @@ IMPORTANT: BTC short-horizon signals are mixed. markov_distribution is bullish, 
     prompt += `
 
 IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, but its predictionConfidence is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold. You MUST NOT present that Markov direction as part of the selective Markov accuracy slice or as a validated BTC directional edge. If you mention it at all, frame it as low-confidence fallback context and make clear that the selective gate did not clear.`;
+  }
+
+  const hasMarkovTrajectoryOutput =
+    /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"trajectory"\s*:\s*\[/.test(fullToolResults);
+  if (hasMarkovTrajectoryOutput) {
+    prompt += `
+
+IMPORTANT: This markov_distribution result includes both a terminal canonical forecast and a day-by-day trajectory. Keep them separate. The Markov headline must use the canonical terminal fields (scenario probabilities, expected return/price, P(up), diagnostics, and actionSignal). The trajectory is path context only. Do NOT claim an "internal inconsistency" solely because the trajectory's last-day regime or drift differs from diagnostics.regimeState or the terminal expected return. Do NOT relabel predictionConfidence with LOW/MEDIUM/HIGH unless that label appears explicitly in the Markov payload. If diagnostics.recommendationProvenance is present, use it as the explanation for any recommendation override instead of inventing a new reason.`;
   }
 
   const hasAbstainingMarkovOutput =

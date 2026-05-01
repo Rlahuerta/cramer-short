@@ -3886,6 +3886,15 @@ describe('computeTrajectory', () => {
     const hmmFinal = trajHmm[6].expectedPrice;
     expect(hmmFinal).toBeGreaterThan(noHmmFinal);
   });
+
+  it('keeps expectedPrice mean-based when empiricalDailyVol widens the interval', () => {
+    const baseline = computeTrajectory(100, 14, P, regimeStats, 'bull', 0, undefined, 4000, 5);
+    const widened = computeTrajectory(100, 14, P, regimeStats, 'bull', 0, undefined, 4000, 5, 0.25);
+
+    expect(widened[13].expectedPrice).toBe(baseline[13].expectedPrice);
+    expect(widened[13].upperBound - widened[13].lowerBound)
+      .toBeGreaterThan(baseline[13].upperBound - baseline[13].lowerBound);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -6184,6 +6193,7 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.scenarios).toBeDefined();
     expect(parsed.data.canonical.actionSignal).toBeDefined();
     expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+    expect(parsed.data.canonical.diagnostics).toHaveProperty('recommendationProvenance');
     expect(Array.isArray(parsed.data.distribution)).toBe(true);
   });
 

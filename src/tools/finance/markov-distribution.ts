@@ -334,7 +334,7 @@ export interface MarkovDistributionPoint {
 export interface TrajectoryPoint {
   /** Day number (1, 2, ..., N) */
   day: number;
-  /** Regime-weighted expected price at this horizon */
+  /** Regime-weighted mean price at this horizon */
   expectedPrice: number;
   /** 5th percentile price (lower 90% CI bound) */
   lowerBound: number;
@@ -365,7 +365,7 @@ export interface ScenarioBucket {
 export interface ScenarioProbabilities {
   /** Scenario buckets: Down >5%, Down 3-5%, Flat ±3%, Up 3-5%, Up >5% */
   buckets: ScenarioBucket[];
-  /** Expected price at horizon (from calibrated distribution median) */
+  /** Expected price at horizon (from calibrated distribution mean) */
   expectedPrice: number;
   /** Expected return as decimal, e.g., 0.006 for +0.6% */
   expectedReturn: number;
@@ -3116,14 +3116,14 @@ export function computeTrajectory(
     const prices = paths.map(path => currentPrice * Math.exp(path[dayIdx]));
     prices.sort((a, b) => a - b);
     const p5Idx = Math.max(0, Math.floor(nSamples * 0.05) - 1);
-    const p50Idx = Math.floor(nSamples * 0.5);
     const p95Idx = Math.min(nSamples - 1, Math.ceil(nSamples * 0.95));
     const lowerBound = prices[p5Idx];
     const upperBound = prices[p95Idx];
 
-    // Use MC median when empirical vol is used (more consistent with MC bounds),
-    // otherwise use the analytical expected price
-    const expectedPrice = empiricalDailyVol ? prices[p50Idx] : analyticalExpected;
+    // Keep trajectory expectedPrice on the mean path even when an empirical-vol
+    // floor widens the MC interval. Otherwise the trajectory can silently switch
+    // from mean to median semantics and contradict the terminal expected price.
+    const expectedPrice = analyticalExpected;
 
     // P(up) from Student-t survival at currentPrice
     const pUp = studentTSurvival(currentPrice, currentPrice, mu_n, sigma_n, nu);
@@ -6242,6 +6242,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           structuralBreakDivergence: m.structuralBreakDivergence,
           ciWidened: m.ciWidened,
           predictionConfidence: result.predictionConfidence,
+          recommendationProvenance: canEmitCanonical ? recommendationProvenanceNote ?? null : null,
           calibrationMode,
           anchorBypassApplied,
           status: canEmitCanonical ? 'ok' : 'abstain',

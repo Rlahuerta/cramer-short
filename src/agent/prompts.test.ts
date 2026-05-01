@@ -234,6 +234,18 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('predictionConfidence is below the 0.25 selective threshold');
   });
 
+  it('injects trajectory-semantics guard when markov_distribution includes a trajectory payload', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","confidence":"LOW"},"diagnostics":{"predictionConfidence":0.43,"regimeState":"bull","recommendationProvenance":"override note"}},"trajectory":[{"day":1,"expectedPrice":78000,"regime":"bear"}]}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 7 days', results);
+    expect(prompt).toContain('includes both a terminal canonical forecast and a day-by-day trajectory');
+    expect(prompt).toContain('Do NOT claim an "internal inconsistency" solely because');
+    expect(prompt).toContain('Do NOT relabel predictionConfidence with LOW/MEDIUM/HIGH');
+    expect(prompt).toContain('recommendationProvenance');
+  });
+
   it('does not inject mixed-evidence guard for BTC horizons above 14 days', () => {
     const results = [
       '### markov_distribution(ticker=BTC-USD)',
@@ -316,6 +328,8 @@ describe('buildSystemPrompt tool guidance', () => {
     expect(prompt).toContain('**Polymarket block**');
     expect(prompt).toContain('quote 2–4 exact market questions with their YES probabilities');
     expect(prompt).toContain('**Trade decision**');
+    expect(prompt).toContain('Keep terminal vs trajectory semantics separate');
+    expect(prompt).toContain('Do not merge confidence fields');
   });
 
   it('mentions probability_assessment skill for full structured BTC/crypto forecast reports', () => {
