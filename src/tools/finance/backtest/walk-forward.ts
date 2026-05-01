@@ -366,6 +366,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         central95CiUpper: central95Interval.ciUpper,
         central99CiLower: central99Interval.ciLower,
         central99CiUpper: central99Interval.ciUpper,
+        forecastDistribution: result.distribution.map(point => ({
+          price: point.price,
+          probability: point.probability,
+        })),
         realizedPrice,
         recommendation: result.actionSignal.recommendation,
         gofPasses: result.metadata.goodnessOfFit?.passes ?? null,

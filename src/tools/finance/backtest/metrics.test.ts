@@ -33,6 +33,7 @@ import {
   gofPassRate,
   maxReliabilityDeviation,
   meanEdge,
+  mixtureCrps,
   murphyWinklerDecomposition,
   mulberry32,
   optimizeThresholds,
@@ -533,6 +534,46 @@ describe('crps', () => {
   });
 });
 
+describe('mixtureCrps', () => {
+  it('scores a realization near the forecast median better than a tail miss', () => {
+    const centered = makeStep({
+      realizedPrice: 100,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+    const tailMiss = makeStep({
+      realizedPrice: 118,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+
+    expect(mixtureCrps([centered])).toBeLessThan(mixtureCrps([tailMiss]));
+  });
+
+  it('falls back to the normal-approximation CRPS when no distribution is stored', () => {
+    const steps = [
+      makeStep({ realizedPrice: 100 }),
+      makeStep({ realizedPrice: 112, actualReturn: 0.12 }),
+    ];
+
+    expect(mixtureCrps(steps)).toBeCloseTo(crps(steps), 10);
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(mixtureCrps([])).toBe(0);
+  });
+});
+
 describe('tailWeightedCrps', () => {
   it('up-weights tail misses relative to ordinary CRPS', () => {
     const calm = makeStep({
@@ -667,6 +708,7 @@ describe('generateReport', () => {
     expect(typeof report.expectedReturnCorrelation).toBe('number');
     expect(typeof report.sharpness).toBe('number');
     expect(typeof report.crps).toBe('number');
+    expect(typeof report.mixtureCrps).toBe('number');
     expect(typeof report.scaledCrps).toBe('number');
     expect(typeof report.tailWeightedCrps).toBe('number');
     expect(typeof report.murphyWinklerScore).toBe('number');

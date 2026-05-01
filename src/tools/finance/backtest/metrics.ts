@@ -178,6 +178,8 @@ export interface BacktestStep {
   central99CiLower?: number;
   /** Literal central 99% interval upper bound from the forecast distribution when available. */
   central99CiUpper?: number;
+  /** Compact forecast distribution summary used for mixture-aware scoring diagnostics. */
+  forecastDistribution?: ForecastDistributionPoint[];
   /** Realized price at t + horizon */
   realizedPrice: number;
   /** Recommendation: BUY, HOLD, or SELL */
@@ -270,6 +272,12 @@ export interface ReliabilityBin {
   count: number;
 }
 
+export interface ForecastDistributionPoint {
+  price: number;
+  /** Survival probability P(price > level). */
+  probability: number;
+}
+
 export interface ProvenanceSummary {
   decisionSources: Record<DecisionSource, number>;
   probabilitySources: Record<ProbabilitySource, number>;
@@ -302,6 +310,7 @@ export interface BacktestReport {
   expectedReturnCorrelation: number;
   sharpness: number;
   crps: number;
+  mixtureCrps: number;
   scaledCrps: number;
   tailWeightedCrps: number;
   murphyWinklerScore: number;
@@ -512,6 +521,58 @@ function stepCrps(step: BacktestStep): number {
   return Number.isFinite(score) ? Math.max(0, score) : 0;
 }
 
+function interpolateSurvivalProbability(
+  distribution: readonly ForecastDistributionPoint[],
+  targetPrice: number,
+): number {
+  if (distribution.length === 0) return 0.5;
+  if (targetPrice <= distribution[0].price) return distribution[0].probability;
+  if (targetPrice >= distribution[distribution.length - 1].price) {
+    return distribution[distribution.length - 1].probability;
+  }
+
+  for (let index = 0; index < distribution.length - 1; index++) {
+    const lower = distribution[index];
+    const upper = distribution[index + 1];
+    if (lower.price <= targetPrice && targetPrice <= upper.price) {
+      const span = upper.price - lower.price;
+      if (Math.abs(span) <= MIN_SCALE) return lower.probability;
+      const frac = (targetPrice - lower.price) / span;
+      return lower.probability + frac * (upper.probability - lower.probability);
+    }
+  }
+
+  return distribution[distribution.length - 1].probability;
+}
+
+function mixtureCdf(
+  distribution: readonly ForecastDistributionPoint[],
+  targetPrice: number,
+): number {
+  return 1 - interpolateSurvivalProbability(distribution, targetPrice);
+}
+
+function stepMixtureCrps(step: BacktestStep): number {
+  const distribution = step.forecastDistribution;
+  if (!distribution || distribution.length < 2) return stepCrps(step);
+
+  const nodes = Array.from(
+    new Set([...distribution.map(point => point.price), step.realizedPrice].sort((a, b) => a - b)),
+  );
+  if (nodes.length < 2) return stepCrps(step);
+
+  let area = 0;
+  for (let index = 0; index < nodes.length - 1; index++) {
+    const left = nodes[index];
+    const right = nodes[index + 1];
+    const leftDiff = mixtureCdf(distribution, left) - (left >= step.realizedPrice ? 1 : 0);
+    const rightDiff = mixtureCdf(distribution, right) - (right >= step.realizedPrice ? 1 : 0);
+    area += 0.5 * ((leftDiff * leftDiff) + (rightDiff * rightDiff)) * (right - left);
+  }
+
+  return Number.isFinite(area) ? Math.max(0, area) : stepCrps(step);
+}
+
 function standardizedResidual(step: BacktestStep): number {
   return Math.abs(step.realizedPrice - deriveForecastCenter(step)) / deriveIntervalScale(step);
 }
@@ -527,6 +588,15 @@ function tailWeight(step: BacktestStep, thresholdZ = CENTRAL_90_Z): number {
 export function crps(steps: BacktestStep[]): number {
   if (steps.length === 0) return 0;
   return steps.reduce((sum, step) => sum + stepCrps(step), 0) / steps.length;
+}
+
+/**
+ * Mixture-aware CRPS computed directly from the stored forecast distribution when
+ * available; falls back to the normal approximation otherwise.
+ */
+export function mixtureCrps(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+  return steps.reduce((sum, step) => sum + stepMixtureCrps(step), 0) / steps.length;
 }
 
 /**
@@ -1164,6 +1234,7 @@ export function generateReport(
     expectedReturnCorrelation: expectedReturnCorrelation(steps),
     sharpness: sharpness(steps),
     crps: crps(steps),
+    mixtureCrps: mixtureCrps(steps),
     scaledCrps: scaledCrps(steps),
     tailWeightedCrps: tailWeightedCrps(steps),
     murphyWinklerScore: murphyWinklerScore(steps),
