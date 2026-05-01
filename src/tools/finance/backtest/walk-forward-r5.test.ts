@@ -360,16 +360,19 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
     expect(conformalStepView(withoutReset).some(step => step.conformalResetTriggered === true)).toBe(false);
 
     const resetSteps = conformalStepView(withReset).filter(step => step.conformalResetTriggered === true);
+    const rerunSteps = conformalStepView(withReset).filter(step => step.structuralBreakRerunTriggered === true);
     expect(resetSteps.length).toBeGreaterThan(0);
+    expect(rerunSteps.length).toBeGreaterThan(resetSteps.length);
 
-    const resetStepWithPrior = resetSteps.at(-1)!;
-    const sameStepWithoutReset = conformalStepView(withoutReset)
-      .find(step => step.t === resetStepWithPrior.t);
+    const firstResetStep = resetSteps[0];
+    const laterRerunStep = rerunSteps.find(step => step.t > firstResetStep.t);
 
-    expect(resetStepWithPrior.structuralBreakRerunTriggered).toBe(true);
-    expect(sameStepWithoutReset).toBeDefined();
-    expect(resetStepWithPrior.conformalSampleCount).toBe(1);
-    expect(sameStepWithoutReset?.conformalSampleCount).toBeGreaterThan(1);
+    expect(firstResetStep.structuralBreakRerunTriggered).toBe(true);
+    expect(firstResetStep.conformalMode).toBe('break');
+    expect(firstResetStep.conformalSampleCount).toBe(1);
+    expect(laterRerunStep).toBeDefined();
+    expect(laterRerunStep?.conformalResetTriggered).toBeUndefined();
+    expect(laterRerunStep?.conformalSampleCount).toBeGreaterThan(1);
   });
 
   it('restores non-zero selective coverage at 0.45 on a calm BTC synthetic series with rebalanced confidence', async () => {

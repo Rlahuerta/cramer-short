@@ -148,8 +148,11 @@ now resets its carried state before calibrating the restarted forecaster.
 
 1. `ConformalPID` / `AdaptiveConformalPID` now expose a reset path that clears
    accumulated controller state while optionally preserving the current radius.
+   Preserving the radius is a pragmatic continuity heuristic rather than a
+   theorem-backed guarantee for the restarted forecaster.
 2. `walkForward()` now uses that reset when `postBreakShortWindow` reruns the
-   forecaster and adaptive conformal is active.
+   forecaster and adaptive conformal is active, but only on entry into a new
+   break-rerun episode rather than on every consecutive rerun step.
 3. Backtest provenance now records:
    - `conformalSampleCount`
    - `conformalResetTriggered`

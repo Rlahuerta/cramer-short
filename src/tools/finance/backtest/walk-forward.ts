@@ -168,6 +168,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
   const entropyHistory: number[] = [];
   const entropyWindowSize = Math.max(5, config.entropyWindowSize ?? 60);
   let adaptiveConformal: AdaptiveConformalPID | undefined;
+  let conformalBreakEpisodeActive = false;
 
   const baseDistributionConfig = {
     ticker,
@@ -265,10 +266,13 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
       let conformalSampleCount: number | undefined;
       let conformalMode: 'normal' | 'break' | undefined;
       let conformalResetTriggered: boolean | undefined;
+      const recentRealizedVol = computeRecentRealizedVol(histPrices);
+
+      const originalConformalBreakSignal = structuralBreakRerunTriggered
+        || (originalStructuralBreakDetected && (recentRealizedVol ?? 0) >= 0.02);
 
       if (config.enableAdaptiveConformal === true) {
         const forecastCenter = currentPrice * (1 + result.actionSignal.expectedReturn);
-        const recentRealizedVol = computeRecentRealizedVol(histPrices);
         if (!adaptiveConformal) {
           adaptiveConformal = new AdaptiveConformalPID({
             enabled: true,
@@ -279,13 +283,18 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             cooloffWindow: config.conformalCooloffWindow,
           });
         }
-        if (structuralBreakRerunTriggered && (config.conformalResetOnStructuralBreak ?? true)) {
+
+        const enteringBreakRerunEpisode = structuralBreakRerunTriggered && !conformalBreakEpisodeActive;
+        if (enteringBreakRerunEpisode && (config.conformalResetOnStructuralBreak ?? true)) {
           adaptiveConformal.reset({ radius: adaptiveConformal.currentRadius() });
           conformalResetTriggered = true;
         }
+        conformalBreakEpisodeActive = structuralBreakRerunTriggered;
 
         const adaptiveDiagnostics: AdaptiveConformalRecordDiagnostics = {
-          structuralBreak: result.metadata.structuralBreakDetected && (recentRealizedVol ?? 0) >= 0.02,
+          structuralBreak: structuralBreakRerunTriggered
+            ? originalConformalBreakSignal
+            : result.metadata.structuralBreakDetected && (recentRealizedVol ?? 0) >= 0.02,
           realizedVol: recentRealizedVol,
         };
         const adaptiveInterval = adaptiveConformal.wrap(forecastCenter, adaptiveDiagnostics);
