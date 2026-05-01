@@ -136,19 +136,6 @@ export function adjustYesBiasV2(p: number): number {
 }
 
 /**
- * P1b — Time-to-resolution boost factor for `computeMarketQualityWeight`.
- *
- * Prediction-market prices are martingales: as t → T (resolution) the
- * distribution of P(T) collapses toward {0, 1}. Near-expiry markets carry
- * sharper information; far-dated markets carry more noise. Schedule:
- *
- *   ≤ 1d → 1.50  (high certainty)
- *   ≤ 7d → 1.20
- *   ≤ 30d → 1.00 (neutral)
- *   ≤ 90d → 0.85
- *   > 90d → 0.70 (uncertainty discount)
- */
-/**
  * W3 Idea 1a — Dubach (2026) depth-decay haircut.
  *
  * Reference: arXiv 2604.24366 §4 — empirical Polymarket depth shrinks
@@ -171,6 +158,7 @@ export function depthDecayHaircut(daysToExpiry: number | undefined): number {
   return Math.max(0.5, Math.pow(ratio, slope));
 }
 
+/** Time-to-resolution boost: near-expiry markets carry sharper information. */
 export function computeExpiryBoost(daysToExpiry: number): number {
   if (!Number.isFinite(daysToExpiry)) return 1.0;
   if (daysToExpiry <= 1) return 1.50;

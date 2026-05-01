@@ -1,28 +1,12 @@
 /**
- * Online Conformal PID Wrapper
+ * Online Conformal PID Wrapper.
  *
  * Implements the PID-controller variant of online conformal prediction from
+ * Angelopoulos, Candès & Tibshirani (2023), "Conformal PID Control for Time
+ * Series Prediction", arXiv:2307.16895.
  *
- *   Angelopoulos, Candès & Tibshirani (2023)
- *   "Conformal PID Control for Time Series Prediction"
- *   arXiv:2307.16895
- *
- * The wrapper sits *outside* any forecasting model. Given a stream of
- * (forecastCenter, actual) pairs, it adapts a single radius `q` such that the
- * long-run miscoverage of the symmetric interval [center − q, center + q]
- * approaches a target α. No assumptions on the underlying model — finite
- * sample coverage holds under arbitrary distribution shift in the spirit of
- * the original adaptive-conformal-inference (ACI) family.
- *
- * Why "PID":
- *
- *   bias_t = err_t − α                            (proportional term)
- *   I_t    = γ · I_{t−1} + bias_t                 (decaying integral)
- *   D_t    = bias_t − bias_{t−1}                  (derivative)
- *   q_{t+1} = max(0, q_t + lr · (Kp·b + Ki·I + Kd·D))
- *
- * The integral decay γ < 1 prevents windup; it is the only deviation from a
- * textbook PID and matches the practical recipe in §3 of the paper.
+ * The wrapper adapts a symmetric radius `q` so long-run miscoverage approaches
+ * a target alpha. The integral decay γ < 1 prevents windup (§3 of the paper).
  */
 
 export interface ConformalPIDOptions {
