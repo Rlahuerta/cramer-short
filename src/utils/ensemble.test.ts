@@ -315,6 +315,77 @@ describe('computeEnsemble', () => {
     expect(withUndefinedMarkov.forecastReturn).toBeCloseTo(withoutMarkov.forecastReturn, 8);
     expect(withUndefinedMarkov.weights).toEqual(withoutMarkov.weights);
   });
+
+  it('keeps default behaviour identical to explicit adaptiveWeighting=false', () => {
+    const others: OtherSignals = {
+      sentimentScore: 0.25,
+      markovReturn: 0.03,
+      horizonDays: 7,
+    };
+
+    const implicitDefault = computeEnsemble(0.01, 0.7, others);
+    const explicitFalse = computeEnsemble(0.01, 0.7, others, { adaptiveWeighting: false });
+    expect(explicitFalse.forecastReturn).toBeCloseTo(implicitDefault.forecastReturn, 12);
+    expect(explicitFalse.weights).toEqual(implicitDefault.weights);
+  });
+
+  it('adaptive weighting de-emphasizes weak low-quality PM disagreement in favor of stronger aligned signals', () => {
+    const others: OtherSignals = {
+      sentimentScore: 0.4,
+      markovReturn: 0.04,
+      horizonDays: 7,
+    };
+
+    const fixed = computeEnsemble(-0.008, 0.25, others);
+    const adaptive = computeEnsemble(-0.008, 0.25, others, { adaptiveWeighting: true });
+
+    expect(Object.values(adaptive.weights).reduce((a, b) => a + b, 0)).toBeCloseTo(1, 8);
+    expect(adaptive.weights['markov']).toBeGreaterThan(fixed.weights['markov']);
+    expect(adaptive.weights['pm']).toBeLessThan(fixed.weights['pm']);
+    expect(adaptive.forecastReturn).toBeGreaterThan(fixed.forecastReturn);
+  });
+
+  it('adaptive weighting improves a toy regime-shift sequence versus fixed weights', () => {
+    const cases: Array<{
+      pmSignal: number;
+      pmAvgQuality: number;
+      others: OtherSignals;
+      actualReturn: number;
+    }> = [
+      {
+        pmSignal: -0.006,
+        pmAvgQuality: 0.2,
+        others: { markovReturn: 0.032, sentimentScore: 0.25, horizonDays: 7 },
+        actualReturn: 0.028,
+      },
+      {
+        pmSignal: -0.010,
+        pmAvgQuality: 0.25,
+        others: { markovReturn: 0.040, sentimentScore: 0.20, horizonDays: 7 },
+        actualReturn: 0.036,
+      },
+      {
+        pmSignal: 0.026,
+        pmAvgQuality: 0.95,
+        others: { markovReturn: -0.008, sentimentScore: 0.05, horizonDays: 7 },
+        actualReturn: 0.024,
+      },
+      {
+        pmSignal: 0.030,
+        pmAvgQuality: 0.9,
+        others: { markovReturn: -0.015, sentimentScore: 0.0, horizonDays: 7 },
+        actualReturn: 0.021,
+      },
+    ];
+
+    const meanAbsError = (adaptiveWeighting: boolean) =>
+      cases.reduce((sum, item) => {
+        const result = computeEnsemble(item.pmSignal, item.pmAvgQuality, item.others, { adaptiveWeighting });
+        return sum + Math.abs(result.forecastReturn - item.actualReturn);
+      }, 0) / cases.length;
+
+    expect(meanAbsError(true)).toBeLessThan(meanAbsError(false));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -467,6 +538,15 @@ describe('runEnsemble', () => {
     const { pmEffectiveWeight } = runEnsemble(100, markets, others);
     expect(pmEffectiveWeight).toBeGreaterThanOrEqual(0);
     expect(pmEffectiveWeight).toBeLessThanOrEqual(0.40);
+  });
+
+  it('pmNormalizedWeight tracks the actual normalized PM share used in blending', () => {
+    const fixed = runEnsemble(100, markets, others);
+    const adaptive = runEnsemble(100, markets, others, { adaptiveWeighting: true });
+    expect(fixed.pmNormalizedWeight).toBeGreaterThanOrEqual(0);
+    expect(fixed.pmNormalizedWeight).toBeLessThanOrEqual(1);
+    expect(adaptive.pmNormalizedWeight).toBeGreaterThanOrEqual(0);
+    expect(adaptive.pmNormalizedWeight).toBeLessThanOrEqual(1);
   });
 
   it('no markets → warnings array non-empty', () => {

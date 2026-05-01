@@ -600,10 +600,11 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           optionsSkew: input.options_skew,
           horizonDays,
         };
+        const ensembleOptions = { adaptiveWeighting: true } as const;
 
         const { signal: pmSignal, avgQuality, warnings: pmWarnings } = computePolymarketSignal(markets);
-        const { weights } = computeEnsemble(pmSignal, avgQuality, otherSignals);
-        const result = runEnsemble(basePrice, markets, otherSignals);
+        const { weights } = computeEnsemble(pmSignal, avgQuality, otherSignals, ensembleOptions);
+        const result = runEnsemble(basePrice, markets, otherSignals, ensembleOptions);
 
         // Step 5: Format output
         const returnPct = (result.forecastReturn * 100).toFixed(2);
@@ -611,7 +612,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const ciLow = result.ciLow95;
         const ciHigh = result.ciHigh95;
         const pmPct = pct(result.pmSignal);
-        const pmWeightPct = (result.pmEffectiveWeight * 100).toFixed(1);
+        const pmWeightPct = (result.pmNormalizedWeight * 100).toFixed(1);
         const avgQualityStr = result.avgMarketQuality.toFixed(3);
         let thresholdChartWarning: string | null = null;
         const displayLabel = searchIdentity.canonicalNames[0]?.toUpperCase() ?? ticker;

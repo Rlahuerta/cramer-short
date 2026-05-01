@@ -37,6 +37,14 @@ export interface OtherSignals {
   horizonDays?: number;       // for scaling fundamentalReturn (default 7)
 }
 
+export interface EnsembleOptions {
+  /**
+   * Apply bounded adaptive reweighting using the current signal strengths and
+   * cross-signal agreement. Default false to preserve legacy behaviour.
+   */
+  adaptiveWeighting?: boolean;
+}
+
 export interface EnsembleResult {
   forecastReturn: number;      // E[r_forecast] as decimal
   forecastPrice: number;       // S_current * (1 + forecastReturn)
@@ -47,6 +55,7 @@ export interface EnsembleResult {
   qualityGrade: 'A' | 'B' | 'C' | 'D';
   pmSignal: number;            // E[r_PM] the polymarket component
   pmEffectiveWeight: number;   // w_PM_eff (0-0.40 scaled by market quality)
+  pmNormalizedWeight: number;  // final normalized PM share after any adaptive reweighting
   avgMarketQuality: number;    // w̄ mean quality weight
   warnings: string[];
 }
@@ -57,6 +66,67 @@ export interface EnsembleResult {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
+}
+
+type SignalKey = 'pm' | 'sentiment' | 'fundamental' | 'options' | 'markov';
+type SignalEntry = { weight: number; signal: number };
+
+function signalScale(key: SignalKey, horizonDays: number): number {
+  switch (key) {
+    case 'pm':
+      return 0.05;
+    case 'sentiment':
+      return 0.04;
+    case 'fundamental':
+      return Math.max(0.01, 0.20 * (horizonDays / 365));
+    case 'options':
+      return 0.03;
+    case 'markov':
+      return 0.05;
+  }
+}
+
+function normalizedSignalStrength(
+  key: SignalKey,
+  signal: number,
+  horizonDays: number,
+): number {
+  const scale = signalScale(key, horizonDays);
+  return clamp(Math.abs(signal) / scale, 0, 1);
+}
+
+function agreementScore(
+  key: SignalKey,
+  available: Partial<Record<SignalKey, SignalEntry>>,
+): number {
+  const current = available[key];
+  if (!current) return 0.5;
+  const currentDir = Math.sign(current.signal);
+  if (currentDir === 0) return 0.5;
+
+  let signedMass = 0;
+  let totalMass = 0;
+  for (const [otherKey, other] of Object.entries(available) as Array<[SignalKey, SignalEntry | undefined]>) {
+    if (!other || otherKey === key) continue;
+    signedMass += other.weight * Math.sign(other.signal);
+    totalMass += other.weight;
+  }
+  if (totalMass === 0) return 0.5;
+
+  const normalizedSupport = clamp(signedMass / totalMass, -1, 1);
+  return clamp(0.5 + 0.5 * currentDir * normalizedSupport, 0, 1);
+}
+
+function adaptiveWeightMultiplier(
+  key: SignalKey,
+  available: Partial<Record<SignalKey, SignalEntry>>,
+  horizonDays: number,
+): number {
+  const entry = available[key];
+  if (!entry) return 1;
+  const strength = normalizedSignalStrength(key, entry.signal, horizonDays);
+  const agreement = agreementScore(key, available);
+  return clamp(1 + 0.35 * (strength - 0.5) + 0.25 * (agreement - 0.5), 0.75, 1.25);
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +354,7 @@ export function computeEnsemble(
   pmSignal: number,
   pmAvgQuality: number,
   others: OtherSignals,
+  options: EnsembleOptions = {},
 ): { forecastReturn: number; weights: Record<string, number> } {
   const horizonDays = others.horizonDays ?? 7;
 
@@ -291,55 +362,70 @@ export function computeEnsemble(
   const wPmEff = 0.40 * pmAvgQuality;
 
   // Available signals with their raw weights and returns.
-  type SignalEntry = { weight: number; signal: number };
-  const available: Record<string, SignalEntry> = {};
+  const available: Partial<Record<SignalKey, SignalEntry>> = {};
 
   // PM is always included.
-  available['pm'] = { weight: wPmEff, signal: pmSignal };
+  available.pm = { weight: wPmEff, signal: pmSignal };
 
   if (others.sentimentScore !== undefined && !Number.isNaN(others.sentimentScore)) {
-    available['sentiment'] = {
+    available.sentiment = {
       weight: 0.20,
       signal: others.sentimentScore * 0.04,
     };
   }
 
   if (others.fundamentalReturn !== undefined && !Number.isNaN(others.fundamentalReturn)) {
-    available['fundamental'] = {
+    available.fundamental = {
       weight: 0.25,
       signal: others.fundamentalReturn * (horizonDays / 365),
     };
   }
 
   if (others.optionsSkew !== undefined && !Number.isNaN(others.optionsSkew)) {
-    available['options'] = {
+    available.options = {
       weight: 0.15,
       signal: others.optionsSkew * 0.03,
     };
   }
 
   if (others.markovReturn !== undefined && !Number.isNaN(others.markovReturn)) {
-    available['markov'] = {
+    available.markov = {
       weight: 0.20,
       signal: others.markovReturn,
     };
   }
 
+  const effectiveAvailable = options.adaptiveWeighting
+    ? Object.fromEntries(
+        Object.entries(available).map(([key, entry]) => {
+          const signalKey = key as SignalKey;
+          const multiplier = adaptiveWeightMultiplier(signalKey, available, horizonDays);
+          return [
+            key,
+            {
+              ...entry!,
+              weight: entry!.weight * multiplier,
+            },
+          ];
+        }),
+      ) as Partial<Record<SignalKey, SignalEntry>>
+    : available;
+
   // Normalise weights to sum to 1.
-  const totalRaw = Object.values(available).reduce((acc, e) => acc + e.weight, 0);
+  const totalRaw = Object.values(effectiveAvailable).reduce((acc, e) => acc + e.weight, 0);
   const weights: Record<string, number> = {};
   let forecastReturn = 0;
 
   if (totalRaw === 0) {
     // Degenerate case: all weights zero — equal-weight available signals.
-    const n = Object.keys(available).length;
-    for (const [key, entry] of Object.entries(available)) {
+    const n = Object.keys(effectiveAvailable).length;
+    for (const [key, entry] of Object.entries(effectiveAvailable)) {
       const w = n > 0 ? 1 / n : 0;
       weights[key] = w;
       forecastReturn += w * entry.signal;
     }
   } else {
-    for (const [key, entry] of Object.entries(available)) {
+    for (const [key, entry] of Object.entries(effectiveAvailable)) {
       const w = entry.weight / totalRaw;
       weights[key] = w;
       forecastReturn += w * entry.signal;
@@ -440,12 +526,13 @@ export function runEnsemble(
   currentPrice: number,
   markets: MarketInput[],
   others: OtherSignals,
+  options: EnsembleOptions = {},
 ): EnsembleResult {
   // Step 1: Aggregate Polymarket signal.
   const { signal: pmSignal, avgQuality, warnings } = computePolymarketSignal(markets);
 
   // Step 2: Blend with auxiliary signals.
-  const { forecastReturn, weights } = computeEnsemble(pmSignal, avgQuality, others);
+  const { forecastReturn, weights } = computeEnsemble(pmSignal, avgQuality, others, options);
 
   // Step 3: Forecast price.
   const forecastPrice = currentPrice * (1 + forecastReturn);
@@ -494,6 +581,7 @@ export function runEnsemble(
     qualityGrade,
     pmSignal,
     pmEffectiveWeight: 0.40 * avgQuality,
+    pmNormalizedWeight: weights['pm'] ?? 0,
     avgMarketQuality: avgQuality,
     warnings,
   };
