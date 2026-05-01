@@ -120,6 +120,16 @@ export interface WalkForwardConfig {
   predictionConfidenceMode?: PredictionConfidenceMode;
   /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. */
   enableSoftRegimeWeighting?: boolean;
+  /** Item 2 — minimum confidence multiplier under maximum posterior entropy. Default 0.65. */
+  softRegimeConfidenceFloor?: number;
+  /** Item 2 — entropy weight used to damp confidence. Default 0.35. */
+  softRegimeConfidenceEntropyWeight?: number;
+  /** Item 2 — entropy weight used to widen CI. Default 0.35. */
+  softRegimeCiEntropyWeight?: number;
+  /** Item 2 — minimum retained HMM drift/vol blend weight under high entropy. Default 0.5. */
+  softRegimeHmmWeightFloor?: number;
+  /** Item 2 — entropy weight used to reduce HMM blend weight. Default 0.4. */
+  softRegimeHmmWeightEntropyWeight?: number;
   /** Phase 2 experimental: replace Gaussian HMM forecast emissions with Student-t predictive emissions. */
   enableStudentTEmission?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
@@ -213,6 +223,11 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     conformalCooloffWindow: config.conformalCooloffWindow,
     predictionConfidenceMode: config.predictionConfidenceMode,
     enableSoftRegimeWeighting: config.enableSoftRegimeWeighting,
+    softRegimeConfidenceFloor: config.softRegimeConfidenceFloor,
+    softRegimeConfidenceEntropyWeight: config.softRegimeConfidenceEntropyWeight,
+    softRegimeCiEntropyWeight: config.softRegimeCiEntropyWeight,
+    softRegimeHmmWeightFloor: config.softRegimeHmmWeightFloor,
+    softRegimeHmmWeightEntropyWeight: config.softRegimeHmmWeightEntropyWeight,
     enableStudentTEmission: config.enableStudentTEmission,
     enableKswinTrim: config.enableKswinTrim,
     kswinAlpha: config.kswinAlpha,

@@ -200,6 +200,13 @@ export async function walkForwardWithReplay(
         regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
         btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
         btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
+        enableSoftRegimeWeighting: config.enableSoftRegimeWeighting,
+        softRegimeConfidenceFloor: config.softRegimeConfidenceFloor,
+        softRegimeConfidenceEntropyWeight: config.softRegimeConfidenceEntropyWeight,
+        softRegimeCiEntropyWeight: config.softRegimeCiEntropyWeight,
+        softRegimeHmmWeightFloor: config.softRegimeHmmWeightFloor,
+        softRegimeHmmWeightEntropyWeight: config.softRegimeHmmWeightEntropyWeight,
+        enableStudentTEmission: config.enableStudentTEmission,
       });
 
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);

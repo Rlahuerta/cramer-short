@@ -222,6 +222,11 @@ export interface SoftRegimeDiagnostics {
   forecastEntropy: number;
   ciScale: number;
   confidenceMultiplier: number;
+  confidenceFloor: number;
+  confidenceEntropyWeight: number;
+  ciEntropyWeight: number;
+  hmmWeightFloor: number;
+  hmmWeightEntropyWeight: number;
   dominantStateProbability: number;
   currentStateProbabilities: number[];
   forecastProbabilities: number[];
@@ -4476,6 +4481,16 @@ export async function computeMarkovDistribution(params: {
   predictionConfidenceMode?: PredictionConfidenceMode;
   /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. Default false. */
   enableSoftRegimeWeighting?: boolean;
+  /** Item 2 — minimum confidence multiplier under maximum posterior entropy. Default 0.65. */
+  softRegimeConfidenceFloor?: number;
+  /** Item 2 — entropy weight used to damp confidence. Default 0.35. */
+  softRegimeConfidenceEntropyWeight?: number;
+  /** Item 2 — entropy weight used to widen CI. Default 0.35. */
+  softRegimeCiEntropyWeight?: number;
+  /** Item 2 — minimum retained HMM drift/vol blend weight under high entropy. Default 0.5. */
+  softRegimeHmmWeightFloor?: number;
+  /** Item 2 — entropy weight used to reduce HMM blend weight. Default 0.4. */
+  softRegimeHmmWeightEntropyWeight?: number;
   /** Phase 2 experimental: replace Gaussian forecast emissions with NIG-derived Student-t predictive emissions. Default false. */
   enableStudentTEmission?: boolean;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
@@ -4779,8 +4794,28 @@ export async function computeMarkovDistribution(params: {
       const forecastEntropy = computeNormalizedEntropy(hmmForecast.forecastProbabilities);
       const effectivePosteriorEntropy = Math.max(posteriorEntropy, forecastEntropy);
       const dominantStateProbability = Math.max(...hmmForecast.currentStateProbabilities);
-      const softRegimeConfidenceMultiplier = Math.max(0.65, 1 - effectivePosteriorEntropy * 0.35);
-      const softRegimeCiScale = 1 + effectivePosteriorEntropy * 0.35;
+      const softRegimeConfidenceFloor = Math.max(
+        0,
+        Math.min(1, params.softRegimeConfidenceFloor ?? 0.65),
+      );
+      const softRegimeConfidenceEntropyWeight = Math.max(
+        0,
+        params.softRegimeConfidenceEntropyWeight ?? 0.35,
+      );
+      const softRegimeCiEntropyWeight = Math.max(0, params.softRegimeCiEntropyWeight ?? 0.35);
+      const softRegimeHmmWeightFloor = Math.max(
+        0,
+        Math.min(1, params.softRegimeHmmWeightFloor ?? 0.5),
+      );
+      const softRegimeHmmWeightEntropyWeight = Math.max(
+        0,
+        params.softRegimeHmmWeightEntropyWeight ?? 0.4,
+      );
+      const softRegimeConfidenceMultiplier = Math.max(
+        softRegimeConfidenceFloor,
+        1 - effectivePosteriorEntropy * softRegimeConfidenceEntropyWeight,
+      );
+      const softRegimeCiScale = 1 + effectivePosteriorEntropy * softRegimeCiEntropyWeight;
       const mappedCurrentRegimeMixture = mapHmmProbabilitiesToRegimeMixture(
         hmmForecast.currentStateProbabilities,
         hmmParams.means,
@@ -4842,6 +4877,11 @@ export async function computeMarkovDistribution(params: {
           forecastEntropy,
           ciScale: softRegimeCiScale,
           confidenceMultiplier: softRegimeConfidenceMultiplier,
+          confidenceFloor: softRegimeConfidenceFloor,
+          confidenceEntropyWeight: softRegimeConfidenceEntropyWeight,
+          ciEntropyWeight: softRegimeCiEntropyWeight,
+          hmmWeightFloor: softRegimeHmmWeightFloor,
+          hmmWeightEntropyWeight: softRegimeHmmWeightEntropyWeight,
           dominantStateProbability,
           currentStateProbabilities: [...hmmForecast.currentStateProbabilities],
           forecastProbabilities: [...hmmForecast.forecastProbabilities],
@@ -4855,7 +4895,10 @@ export async function computeMarkovDistribution(params: {
         const baseHmmWeight = returns.length >= 120 ? 0.5 : 0.25;
         const hmmWeight = Math.min(0.7, baseHmmWeight * assetProfile.hmmWeightMultiplier);
         const adjustedHmmWeight = params.enableSoftRegimeWeighting === true
-          ? hmmWeight * Math.max(0.5, 1 - effectivePosteriorEntropy * 0.4)
+          ? hmmWeight * Math.max(
+              softRegimeHmmWeightFloor,
+              1 - effectivePosteriorEntropy * softRegimeHmmWeightEntropyWeight,
+            )
           : hmmWeight;
         hmmOverride = {
           drift: hmmForecast.expectedReturn,
@@ -5812,6 +5855,18 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       .describe('Return day-by-day price trajectory instead of single-horizon snapshot'),
     trajectoryDays: z.number().int().min(1).max(30).optional()
       .describe('Number of days for trajectory (default: horizon, max 30)'),
+    enableSoftRegimeWeighting: z.boolean().optional()
+      .describe('Experimental: use HMM posterior entropy to widen CI / damp confidence / blend regime mixtures. Default false.'),
+    softRegimeConfidenceFloor: z.number().min(0).max(1).optional()
+      .describe('Experimental: minimum soft-regime confidence multiplier. Default 0.65.'),
+    softRegimeConfidenceEntropyWeight: z.number().min(0).optional()
+      .describe('Experimental: entropy weight used to damp confidence. Default 0.35.'),
+    softRegimeCiEntropyWeight: z.number().min(0).optional()
+      .describe('Experimental: entropy weight used to widen CI. Default 0.35.'),
+    softRegimeHmmWeightFloor: z.number().min(0).max(1).optional()
+      .describe('Experimental: minimum retained HMM blend weight under high entropy. Default 0.5.'),
+    softRegimeHmmWeightEntropyWeight: z.number().min(0).optional()
+      .describe('Experimental: entropy weight used to reduce HMM blend weight. Default 0.4.'),
     enableStudentTEmission: z.boolean().optional()
       .describe('Experimental: swap the Gaussian HMM forecast emissions for NIG-derived Student-t predictive emissions. Default false.'),
   }),
@@ -5847,6 +5902,12 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       kalshiAnchors:     input.kalshiAnchors,
       trajectory:        input.trajectory,
       trajectoryDays:    input.trajectoryDays,
+      enableSoftRegimeWeighting: input.enableSoftRegimeWeighting,
+      softRegimeConfidenceFloor: input.softRegimeConfidenceFloor,
+      softRegimeConfidenceEntropyWeight: input.softRegimeConfidenceEntropyWeight,
+      softRegimeCiEntropyWeight: input.softRegimeCiEntropyWeight,
+      softRegimeHmmWeightFloor: input.softRegimeHmmWeightFloor,
+      softRegimeHmmWeightEntropyWeight: input.softRegimeHmmWeightEntropyWeight,
       enableStudentTEmission: input.enableStudentTEmission,
     });
 

@@ -5310,6 +5310,11 @@ describe('markov_distribution tool output envelope', () => {
       forecastEntropy: number;
       ciScale: number;
       confidenceMultiplier: number;
+      confidenceFloor: number;
+      confidenceEntropyWeight: number;
+      ciEntropyWeight: number;
+      hmmWeightFloor: number;
+      hmmWeightEntropyWeight: number;
       dominantStateProbability: number;
       currentStateProbabilities: number[];
       forecastProbabilities: number[];
@@ -5378,6 +5383,11 @@ describe('markov_distribution tool output envelope', () => {
       forecastEntropy: expect.any(Number),
       ciScale: expect.any(Number),
       confidenceMultiplier: expect.any(Number),
+      confidenceFloor: expect.any(Number),
+      confidenceEntropyWeight: expect.any(Number),
+      ciEntropyWeight: expect.any(Number),
+      hmmWeightFloor: expect.any(Number),
+      hmmWeightEntropyWeight: expect.any(Number),
       dominantStateProbability: expect.any(Number),
       currentStateProbabilities: expect.any(Array),
       forecastProbabilities: expect.any(Array),
@@ -5399,6 +5409,69 @@ describe('markov_distribution tool output envelope', () => {
     expect(softTrend).toBeDefined();
     expect(softTrend!.posteriorEntropy).toBeLessThanOrEqual(softChoppy!.posteriorEntropy);
     expect(softTrend!.ciScale).toBeLessThanOrEqual(softChoppy!.ciScale);
+  });
+
+  it('lets soft regime entropy coefficients be tuned explicitly without changing explicit defaults', async () => {
+    const choppyPrices: number[] = Array.from({ length: 180 }, (_, i) =>
+      i === 0 ? 100 : 0,
+    );
+    for (let i = 1; i < choppyPrices.length; i++) {
+      const prev = choppyPrices[i - 1];
+      const shock = i % 2 === 0 ? 0.012 : -0.011;
+      choppyPrices[i] = prev * Math.exp(shock + Math.sin(i * 0.45) * 0.004);
+    }
+
+    const implicitDefaults = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: choppyPrices[choppyPrices.length - 1],
+      historicalPrices: choppyPrices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+    });
+    const explicitDefaults = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: choppyPrices[choppyPrices.length - 1],
+      historicalPrices: choppyPrices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+      softRegimeConfidenceFloor: 0.65,
+      softRegimeConfidenceEntropyWeight: 0.35,
+      softRegimeCiEntropyWeight: 0.35,
+      softRegimeHmmWeightFloor: 0.5,
+      softRegimeHmmWeightEntropyWeight: 0.4,
+    });
+    const aggressive = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: choppyPrices[choppyPrices.length - 1],
+      historicalPrices: choppyPrices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+      softRegimeConfidenceFloor: 0.4,
+      softRegimeConfidenceEntropyWeight: 0.6,
+      softRegimeCiEntropyWeight: 0.6,
+      softRegimeHmmWeightFloor: 0.3,
+      softRegimeHmmWeightEntropyWeight: 0.7,
+    });
+
+    expect(explicitDefaults.predictionConfidence).toBeCloseTo(implicitDefaults.predictionConfidence, 10);
+    expect(explicitDefaults.metadata.softRegime?.ciScale).toBeCloseTo(
+      implicitDefaults.metadata.softRegime?.ciScale ?? 0,
+      10,
+    );
+    expect(aggressive.metadata.softRegime?.ciScale).toBeGreaterThan(
+      implicitDefaults.metadata.softRegime?.ciScale ?? 0,
+    );
+    expect(aggressive.metadata.softRegime?.confidenceMultiplier).toBeLessThan(
+      implicitDefaults.metadata.softRegime?.confidenceMultiplier ?? 1,
+    );
+    expect(aggressive.metadata.softRegime?.confidenceFloor).toBeCloseTo(0.4, 10);
+    expect(aggressive.metadata.softRegime?.hmmWeightEntropyWeight).toBeCloseTo(0.7, 10);
   });
 
   it('pushes the raw forecast path toward the soft forecast regime mixture only when enabled', async () => {
