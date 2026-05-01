@@ -5384,6 +5384,150 @@ describe('markov_distribution tool output envelope', () => {
     expect(enabled.actionSignal.expectedReturn).toBeGreaterThan(disabled.actionSignal.expectedReturn);
   });
 
+  it('keeps Student-t HMM emissions default-off and changes the forecast path only when enabled', async () => {
+    const predictSawStudentT: boolean[] = [];
+
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: () => ({
+        params: {
+          nStates: 3,
+          pi: [0.2, 0.6, 0.2],
+          A: [
+            [0.85, 0.10, 0.05],
+            [0.15, 0.70, 0.15],
+            [0.05, 0.10, 0.85],
+          ],
+          means: [-0.03, 0.0, 0.03],
+          stds: [0.012, 0.010, 0.012],
+        },
+        logLikelihood: -88,
+        iterations: 4,
+        converged: true,
+      }),
+      predict: (_observations: number[], params: { nStates: number; studentTEmissions?: unknown[] }) => {
+        const enabled = Array.isArray(params.studentTEmissions);
+        if (params.nStates === 3) predictSawStudentT.push(enabled);
+        return {
+          currentState: enabled ? 2 : 1,
+          stateProbabilities: [],
+          currentStateProbabilities: enabled ? [0.15, 0.35, 0.50] : [0.10, 0.80, 0.10],
+          forecastProbabilities: enabled ? [0.10, 0.20, 0.70] : [0.20, 0.60, 0.20],
+          expectedReturn: enabled ? 0.012 : 0.002,
+          expectedVolatility: enabled ? 0.035 : 0.012,
+        };
+      },
+    }));
+
+    const returns = Array.from({ length: 120 }, (_, i) => [0.002, -0.003, 0.004, -0.002, 0.001][i % 5]);
+    const prices = [100];
+    for (const ret of returns) prices.push(prices[prices.length - 1] * Math.exp(ret));
+    const currentPrice = prices[prices.length - 1];
+
+    const implicitDefault = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+    });
+    const explicitFalse = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableStudentTEmission: false,
+    });
+    const enabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableStudentTEmission: true,
+    });
+
+    expect(predictSawStudentT[0]).toBe(false);
+    expect(predictSawStudentT[1]).toBe(false);
+    expect(predictSawStudentT).toContain(true);
+    expect(implicitDefault.metadata.hmm?.emissionFamily).toBe('gaussian');
+    expect(explicitFalse.metadata.hmm?.emissionFamily).toBe('gaussian');
+    expect(enabled.metadata.hmm?.emissionFamily).toBe('student-t-predictive');
+    expect(enabled.metadata.hmm?.studentTDegreesOfFreedom?.length).toBe(3);
+    expect(enabled.actionSignal.expectedReturn).toBeGreaterThan(implicitDefault.actionSignal.expectedReturn);
+  });
+
+  it('maps soft regime mixtures with Student-t predictive means when enabled', async () => {
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: () => ({
+        params: {
+          nStates: 3,
+          pi: [0.2, 0.6, 0.2],
+          A: [
+            [0.85, 0.10, 0.05],
+            [0.15, 0.70, 0.15],
+            [0.05, 0.10, 0.85],
+          ],
+          means: [-0.03, 0.0, 0.03],
+          stds: [0.012, 0.010, 0.012],
+        },
+        logLikelihood: -88,
+        iterations: 4,
+        converged: true,
+      }),
+      attachStudentTPredictiveEmissions: (
+        _observations: number[],
+        params: {
+          nStates: number;
+          pi: number[];
+          A: number[][];
+          means: number[];
+          stds: number[];
+        },
+      ) => ({
+        ...params,
+        means: [0.03, -0.03, 0.0],
+        studentTEmissions: [
+          { degreesOfFreedom: 6, location: 0.03, scale: 0.012 },
+          { degreesOfFreedom: 6, location: -0.03, scale: 0.012 },
+          { degreesOfFreedom: 6, location: 0.0, scale: 0.010 },
+        ],
+      }),
+      predict: () => ({
+        currentState: 0,
+        stateProbabilities: [],
+        currentStateProbabilities: [0.70, 0.20, 0.10],
+        forecastProbabilities: [0.10, 0.70, 0.20],
+        expectedReturn: 0.012,
+        expectedVolatility: 0.035,
+      }),
+    }));
+
+    const returns = Array.from({ length: 120 }, (_, i) => [0.002, -0.003, 0.004, -0.002, 0.001][i % 5]);
+    const prices = [100];
+    for (const ret of returns) prices.push(prices[prices.length - 1] * Math.exp(ret));
+    const currentPrice = prices[prices.length - 1];
+
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableSoftRegimeWeighting: true,
+      enableStudentTEmission: true,
+    });
+
+    expect(result.metadata.softRegime?.currentRegimeMixture?.bull).toBeCloseTo(0.70, 8);
+    expect(result.metadata.softRegime?.currentRegimeMixture?.bear).toBeCloseTo(0.20, 8);
+    expect(result.metadata.softRegime?.currentRegimeMixture?.sideways).toBeCloseTo(0.10, 8);
+    expect(result.metadata.softRegime?.forecastRegimeMixture?.bull).toBeCloseTo(0.10, 8);
+    expect(result.metadata.softRegime?.forecastRegimeMixture?.bear).toBeCloseTo(0.70, 8);
+    expect(result.metadata.softRegime?.forecastRegimeMixture?.sideways).toBeCloseTo(0.20, 8);
+  });
+
   it('exposes ADWIN trim metadata when the historical window is mean-shifted', async () => {
     function makeRng(seed: number): () => number {
       let s = seed >>> 0;

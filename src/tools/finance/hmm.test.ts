@@ -9,6 +9,7 @@ import {
   baumWelch,
   viterbi,
   predict,
+  attachStudentTPredictiveEmissions,
   type HMMParams,
 } from './hmm.js';
 
@@ -318,6 +319,39 @@ describe('predict', () => {
     const obs = Array(100).fill(-0.02);
     const result = predict(obs, THREE_STATE_PARAMS, 10);
     expect(result.expectedReturn).toBeLessThan(0);
+  });
+});
+
+describe('attachStudentTPredictiveEmissions', () => {
+  it('produces finite Student-t predictive parameters for every state', () => {
+    const obs = generateFromHMM(THREE_STATE_PARAMS, 200, 777);
+    const augmented = attachStudentTPredictiveEmissions(obs, THREE_STATE_PARAMS);
+
+    expect(augmented.studentTEmissions).toHaveLength(THREE_STATE_PARAMS.nStates);
+    for (const emission of augmented.studentTEmissions ?? []) {
+      expect(Number.isFinite(emission.location)).toBe(true);
+      expect(Number.isFinite(emission.scale)).toBe(true);
+      expect(emission.scale).toBeGreaterThan(0);
+      expect(emission.degreesOfFreedom).toBeGreaterThan(2);
+      expect(emission.effectiveSampleSize).toBeGreaterThan(0);
+    }
+  });
+
+  it('assigns more density to an outlier than the Gaussian baseline on the same fitted state', () => {
+    const baseParams: HMMParams = {
+      nStates: 1,
+      pi: [1],
+      A: [[1]],
+      means: [0],
+      stds: [1],
+    };
+    const obs = Array.from({ length: 30 }, (_, i) => [-1.1, -0.8, -0.4, 0, 0.2, 0.5, 0.9][i % 7]).concat(6);
+    const augmented = attachStudentTPredictiveEmissions(obs, baseParams);
+
+    expect(augmented.studentTEmissions?.[0].degreesOfFreedom).toBeGreaterThan(4);
+    expect(forward([6], augmented).logLikelihood).toBeGreaterThan(
+      forward([6], baseParams).logLikelihood,
+    );
   });
 });
 

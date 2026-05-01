@@ -118,6 +118,8 @@ export interface WalkForwardConfig {
   predictionConfidenceMode?: PredictionConfidenceMode;
   /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. */
   enableSoftRegimeWeighting?: boolean;
+  /** Phase 2 experimental: replace Gaussian HMM forecast emissions with Student-t predictive emissions. */
+  enableStudentTEmission?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -218,6 +220,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         conformalCooloffWindow: config.conformalCooloffWindow,
         predictionConfidenceMode: config.predictionConfidenceMode,
         enableSoftRegimeWeighting: config.enableSoftRegimeWeighting,
+        enableStudentTEmission: config.enableStudentTEmission,
         enableKswinTrim: config.enableKswinTrim,
         kswinAlpha: config.kswinAlpha,
         enableCrossAssetBias: config.enableCrossAssetBias,
@@ -279,6 +282,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             conformalCooloffWindow: config.conformalCooloffWindow,
             predictionConfidenceMode: config.predictionConfidenceMode,
             enableSoftRegimeWeighting: config.enableSoftRegimeWeighting,
+            enableStudentTEmission: config.enableStudentTEmission,
             enableKswinTrim: config.enableKswinTrim,
             kswinAlpha: config.kswinAlpha,
             enableCrossAssetBias: config.enableCrossAssetBias,

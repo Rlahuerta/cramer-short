@@ -21,7 +21,12 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
-import { baumWelch, predict as hmmPredict, type HMMParams } from './hmm.js';
+import {
+  attachStudentTPredictiveEmissions,
+  baumWelch,
+  predict as hmmPredict,
+  type HMMParams,
+} from './hmm.js';
 import { api } from './api.js';
 import { fetchBinanceDailyCloses } from './binance.js';
 import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
@@ -649,7 +654,15 @@ export interface MarkovDistributionResult {
      *  Low p-value (< 0.05) means the Markov assumption is a poor fit. null if insufficient data. */
     goodnessOfFit: GoodnessOfFitResult | null;
     /** HMM fitting metadata (null if HMM was not attempted) */
-    hmm: { converged: boolean; iterations: number; states: number; logLikelihood: number; volRegimeConverged?: boolean } | null;
+    hmm: {
+      converged: boolean;
+      iterations: number;
+      states: number;
+      logLikelihood: number;
+      volRegimeConverged?: boolean;
+      emissionFamily?: 'gaussian' | 'student-t-predictive';
+      studentTDegreesOfFreedom?: number[];
+    } | null;
     /** Ensemble signal metadata */
     ensemble: { consensus: number; adjustment: number };
     pr3fDisagreementBlendActive: boolean;
@@ -4432,6 +4445,8 @@ export async function computeMarkovDistribution(params: {
   predictionConfidenceMode?: PredictionConfidenceMode;
   /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. Default false. */
   enableSoftRegimeWeighting?: boolean;
+  /** Phase 2 experimental: replace Gaussian forecast emissions with NIG-derived Student-t predictive emissions. Default false. */
+  enableStudentTEmission?: boolean;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
@@ -4494,6 +4509,7 @@ export async function computeMarkovDistribution(params: {
     enableAdaptiveConformal,
     conformalAlpha,
     conformalBreakSensitivity,
+    enableStudentTEmission,
     enableKswinTrim,
     kswinAlpha,
     enableCoefficientClustering,
@@ -4706,7 +4722,15 @@ export async function computeMarkovDistribution(params: {
   // Fit a Gaussian HMM on daily returns when we have enough data.
   // Also fit a volatility HMM on rolling vol for an independent vol-regime signal.
   let hmmOverride: { drift: number; vol: number; weight: number } | undefined;
-  let hmmMeta: { converged: boolean; iterations: number; states: number; logLikelihood: number; volRegimeConverged?: boolean } | undefined;
+  let hmmMeta: {
+    converged: boolean;
+    iterations: number;
+    states: number;
+    logLikelihood: number;
+    volRegimeConverged?: boolean;
+    emissionFamily?: 'gaussian' | 'student-t-predictive';
+    studentTDegreesOfFreedom?: number[];
+  } | undefined;
   let softRegimeMeta: SoftRegimeDiagnostics | undefined;
   let softCurrentRegimeMixture: Record<RegimeState, number> | undefined;
   let softForecastRegimeMixture: Record<RegimeState, number> | undefined;
@@ -4716,7 +4740,10 @@ export async function computeMarkovDistribution(params: {
     try {
       // Primary: return HMM (directional signal)
       const hmmResult = baumWelch(returns, 3, 50, 1e-3);
-      const hmmForecast = hmmPredict(returns, hmmResult.params, horizon);
+      const hmmParams = enableStudentTEmission === true
+        ? attachStudentTPredictiveEmissions(returns, hmmResult.params)
+        : hmmResult.params;
+      const hmmForecast = hmmPredict(returns, hmmParams, horizon);
       const posteriorEntropy = computeNormalizedEntropy(hmmForecast.currentStateProbabilities);
       const forecastEntropy = computeNormalizedEntropy(hmmForecast.forecastProbabilities);
       const effectivePosteriorEntropy = Math.max(posteriorEntropy, forecastEntropy);
@@ -4725,11 +4752,11 @@ export async function computeMarkovDistribution(params: {
       const softRegimeCiScale = 1 + effectivePosteriorEntropy * 0.35;
       const mappedCurrentRegimeMixture = mapHmmProbabilitiesToRegimeMixture(
         hmmForecast.currentStateProbabilities,
-        hmmResult.params.means,
+        hmmParams.means,
       );
       const mappedForecastRegimeMixture = mapHmmProbabilitiesToRegimeMixture(
         hmmForecast.forecastProbabilities,
-        hmmResult.params.means,
+        hmmParams.means,
       );
       softTransitionBlendWeight = effectivePosteriorEntropy;
       softCurrentRegimeMixture = mappedCurrentRegimeMixture ?? undefined;
@@ -4773,6 +4800,10 @@ export async function computeMarkovDistribution(params: {
         states: hmmResult.params.nStates,
         logLikelihood: hmmResult.logLikelihood,
         volRegimeConverged,
+        emissionFamily: enableStudentTEmission === true ? 'student-t-predictive' : 'gaussian',
+        studentTDegreesOfFreedom: hmmParams.studentTEmissions?.map(
+          (emission) => emission.degreesOfFreedom,
+        ),
       };
       if (params.enableSoftRegimeWeighting === true) {
         softRegimeMeta = {
@@ -5750,6 +5781,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       .describe('Return day-by-day price trajectory instead of single-horizon snapshot'),
     trajectoryDays: z.number().int().min(1).max(30).optional()
       .describe('Number of days for trajectory (default: horizon, max 30)'),
+    enableStudentTEmission: z.boolean().optional()
+      .describe('Experimental: swap the Gaussian HMM forecast emissions for NIG-derived Student-t predictive emissions. Default false.'),
   }),
   func: async (input) => {
     // Auto-fetch historical prices if not provided or too few
@@ -5783,6 +5816,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       kalshiAnchors:     input.kalshiAnchors,
       trajectory:        input.trajectory,
       trajectoryDays:    input.trajectoryDays,
+      enableStudentTEmission: input.enableStudentTEmission,
     });
 
     const { metadata: m, actionSignal: sig } = result;
