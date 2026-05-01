@@ -259,6 +259,14 @@ export interface ProvenanceSummary {
   probabilitySources: Record<ProbabilitySource, number>;
 }
 
+export interface MurphyWinklerDecomposition {
+  meanWidth: number;
+  lowerMissPenalty: number;
+  upperMissPenalty: number;
+  totalScore: number;
+  coverage: number;
+}
+
 export interface BacktestReport {
   ticker: string;
   horizon: number;
@@ -268,6 +276,10 @@ export interface BacktestReport {
   directionalAccuracy: number;
   expectedReturnCorrelation: number;
   sharpness: number;
+  crps: number;
+  scaledCrps: number;
+  murphyWinklerScore: number;
+  murphyWinklerDecomposition: MurphyWinklerDecomposition;
   reliabilityBins: ReliabilityBin[];
   gofPassRate: number | null;
   balancedDirectionalAccuracy?: number;
@@ -356,6 +368,128 @@ export function ciCoverage(steps: BacktestStep[]): number {
   if (steps.length === 0) return 0;
   const covered = steps.filter(s => s.realizedPrice >= s.ciLower && s.realizedPrice <= s.ciUpper);
   return covered.length / steps.length;
+}
+
+// ---------------------------------------------------------------------------
+// CRPS / interval score diagnostics
+// ---------------------------------------------------------------------------
+
+const CENTRAL_90_Z = 1.6448536269514722;
+const SQRT_PI = Math.sqrt(Math.PI);
+const MIN_SCALE = 1e-9;
+
+function erf(x: number): number {
+  const sign = x < 0 ? -1 : 1;
+  const absX = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * absX);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-absX * absX);
+  return sign * y;
+}
+
+function normalPdf(x: number): number {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+}
+
+function normalCdf(x: number): number {
+  return 0.5 * (1 + erf(x / Math.SQRT2));
+}
+
+function deriveForecastCenter(step: BacktestStep): number {
+  const denominator = 1 + step.actualReturn;
+  const currentPrice = Number.isFinite(denominator) && Math.abs(denominator) > MIN_SCALE
+    ? step.realizedPrice / denominator
+    : (step.ciLower + step.ciUpper) / 2;
+  const forecastCenter = currentPrice * (1 + step.predictedReturn);
+  return Number.isFinite(forecastCenter) ? forecastCenter : (step.ciLower + step.ciUpper) / 2;
+}
+
+function deriveIntervalScale(step: BacktestStep): number {
+  const width = Math.abs(step.ciUpper - step.ciLower);
+  const sigma = width / (2 * CENTRAL_90_Z);
+  return Number.isFinite(sigma) && sigma > MIN_SCALE ? sigma : MIN_SCALE;
+}
+
+function normalCrps(observed: number, mean: number, sigma: number): number {
+  const z = (observed - mean) / sigma;
+  return sigma * (z * (2 * normalCdf(z) - 1) + 2 * normalPdf(z) - 1 / SQRT_PI);
+}
+
+function stepCrps(step: BacktestStep): number {
+  const score = normalCrps(step.realizedPrice, deriveForecastCenter(step), deriveIntervalScale(step));
+  return Number.isFinite(score) ? Math.max(0, score) : 0;
+}
+
+/**
+ * Continuous Ranked Probability Score using the current backtest interval as a
+ * central-normal approximation. Lower is better.
+ */
+export function crps(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+  return steps.reduce((sum, step) => sum + stepCrps(step), 0) / steps.length;
+}
+
+/**
+ * Locally scaled CRPS: CRPS divided by the interval-implied scale for each step.
+ * Lower is better and less sensitive to heterogeneous forecast units/volatility.
+ */
+export function scaledCrps(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+  const sum = steps.reduce((total, step) => total + stepCrps(step) / deriveIntervalScale(step), 0);
+  return sum / steps.length;
+}
+
+/**
+ * Murphy-Winkler interval score decomposition for central prediction intervals.
+ * For the repository's 90% intervals, alpha defaults to 0.10.
+ */
+export function murphyWinklerDecomposition(
+  steps: BacktestStep[],
+  alpha = 0.10,
+): MurphyWinklerDecomposition {
+  if (steps.length === 0) {
+    return {
+      meanWidth: 0,
+      lowerMissPenalty: 0,
+      upperMissPenalty: 0,
+      totalScore: 0,
+      coverage: 0,
+    };
+  }
+
+  const penaltyScale = 2 / alpha;
+  let widthSum = 0;
+  let lowerPenaltySum = 0;
+  let upperPenaltySum = 0;
+  let covered = 0;
+
+  for (const step of steps) {
+    const lower = Math.min(step.ciLower, step.ciUpper);
+    const upper = Math.max(step.ciLower, step.ciUpper);
+    widthSum += upper - lower;
+    if (step.realizedPrice < lower) {
+      lowerPenaltySum += penaltyScale * (lower - step.realizedPrice);
+    } else if (step.realizedPrice > upper) {
+      upperPenaltySum += penaltyScale * (step.realizedPrice - upper);
+    } else {
+      covered++;
+    }
+  }
+
+  const meanWidth = widthSum / steps.length;
+  const lowerMissPenalty = lowerPenaltySum / steps.length;
+  const upperMissPenalty = upperPenaltySum / steps.length;
+
+  return {
+    meanWidth,
+    lowerMissPenalty,
+    upperMissPenalty,
+    totalScore: meanWidth + lowerMissPenalty + upperMissPenalty,
+    coverage: covered / steps.length,
+  };
+}
+
+export function murphyWinklerScore(steps: BacktestStep[], alpha = 0.10): number {
+  return murphyWinklerDecomposition(steps, alpha).totalScore;
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +1039,10 @@ export function generateReport(
     directionalAccuracy: directionalAccuracy(steps),
     expectedReturnCorrelation: expectedReturnCorrelation(steps),
     sharpness: sharpness(steps),
+    crps: crps(steps),
+    scaledCrps: scaledCrps(steps),
+    murphyWinklerScore: murphyWinklerScore(steps),
+    murphyWinklerDecomposition: murphyWinklerDecomposition(steps),
     reliabilityBins: bins,
     gofPassRate: gofPassRate(steps),
     balancedDirectionalAccuracy: balancedDirectionalAccuracy(steps),

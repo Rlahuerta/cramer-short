@@ -24,6 +24,7 @@ import {
   calibratedPUpDirectionalAccuracy,
   ciCoverage,
   computeFailureDecomposition,
+  crps,
   directionalAccuracy,
   computeRCCurve,
   expectedReturnCorrelation,
@@ -31,6 +32,7 @@ import {
   gofPassRate,
   maxReliabilityDeviation,
   meanEdge,
+  murphyWinklerDecomposition,
   mulberry32,
   optimizeThresholds,
   bootstrapDirectionalCI,
@@ -40,6 +42,7 @@ import {
   pUpDirectionalAccuracy,
   rawPUpDirectionalAccuracy,
   reliabilityBins,
+  scaledCrps,
   selectiveDirectionalAccuracy,
   selectivePUpAccuracy,
   selectiveRawPUpAccuracy,
@@ -456,6 +459,96 @@ describe('sharpness', () => {
 });
 
 // ---------------------------------------------------------------------------
+// CRPS / scaled CRPS
+// ---------------------------------------------------------------------------
+
+describe('crps', () => {
+  it('rewards an accurate sharp interval over a far wide interval', () => {
+    const accurate = [
+      makeStep({
+        predictedReturn: 0,
+        actualReturn: 0,
+        ciLower: 98,
+        ciUpper: 102,
+        realizedPrice: 100,
+      }),
+    ];
+    const farWide = [
+      makeStep({
+        predictedReturn: 0.2,
+        actualReturn: 0,
+        ciLower: 80,
+        ciUpper: 120,
+        realizedPrice: 100,
+      }),
+    ];
+
+    expect(crps(accurate)).toBeLessThan(crps(farWide));
+  });
+
+  it('returns finite scaled scores for zero-width or invalid intervals', () => {
+    const score = scaledCrps([
+      makeStep({
+        predictedReturn: 0,
+        actualReturn: 0,
+        ciLower: 100,
+        ciUpper: 100,
+        realizedPrice: 100,
+      }),
+    ]);
+
+    expect(Number.isFinite(score)).toBe(true);
+    expect(score).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(crps([])).toBe(0);
+    expect(scaledCrps([])).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Murphy-Winkler interval score decomposition
+// ---------------------------------------------------------------------------
+
+describe('murphyWinklerDecomposition', () => {
+  it('equals interval width when the realization is covered', () => {
+    const decomposition = murphyWinklerDecomposition([
+      makeStep({ ciLower: 90, ciUpper: 110, realizedPrice: 100 }),
+    ]);
+
+    expect(decomposition.meanWidth).toBeCloseTo(20);
+    expect(decomposition.lowerMissPenalty).toBeCloseTo(0);
+    expect(decomposition.upperMissPenalty).toBeCloseTo(0);
+    expect(decomposition.totalScore).toBeCloseTo(20);
+    expect(decomposition.coverage).toBeCloseTo(1);
+  });
+
+  it('adds lower and upper miss penalties for uncovered realizations', () => {
+    const decomposition = murphyWinklerDecomposition([
+      makeStep({ ciLower: 90, ciUpper: 110, realizedPrice: 80 }),
+      makeStep({ ciLower: 90, ciUpper: 110, realizedPrice: 120 }),
+    ]);
+
+    expect(decomposition.meanWidth).toBeCloseTo(20);
+    expect(decomposition.lowerMissPenalty).toBeCloseTo(100);
+    expect(decomposition.upperMissPenalty).toBeCloseTo(100);
+    expect(decomposition.totalScore).toBeCloseTo(220);
+    expect(decomposition.coverage).toBeCloseTo(0);
+  });
+
+  it('returns zeros for empty input', () => {
+    expect(murphyWinklerDecomposition([])).toEqual({
+      meanWidth: 0,
+      lowerMissPenalty: 0,
+      upperMissPenalty: 0,
+      totalScore: 0,
+      coverage: 0,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // gofPassRate
 // ---------------------------------------------------------------------------
 
@@ -495,6 +588,10 @@ describe('generateReport', () => {
     expect(typeof report.directionalAccuracy).toBe('number');
     expect(typeof report.expectedReturnCorrelation).toBe('number');
     expect(typeof report.sharpness).toBe('number');
+    expect(typeof report.crps).toBe('number');
+    expect(typeof report.scaledCrps).toBe('number');
+    expect(typeof report.murphyWinklerScore).toBe('number');
+    expect(report.murphyWinklerDecomposition).toBeDefined();
     expect(report.reliabilityBins).toHaveLength(10);
     expect(typeof report.balancedDirectionalAccuracy).toBe('number');
     expect(typeof report.meanEdge).toBe('number');
