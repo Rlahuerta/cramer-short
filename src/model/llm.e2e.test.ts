@@ -19,7 +19,16 @@ import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
 import { callLlm } from '@/model/llm.js';
 
-const PREFERRED_MODEL = 'ollama:nemotron-3-super:cloud';
+const NEMOTRON_MODEL = 'ollama:nemotron-3-super:cloud';
+const GENERAL_CLOUD_MODEL_PREFERENCES = [
+  'glm-5.1:cloud',
+  'minimax-m2.7:cloud',
+  'glm-5:cloud',
+  'deepseek-v4-pro:cloud',
+  'qwen3.5:cloud',
+  'qwen3-next:80b-cloud',
+] as const;
+const GENERAL_CLOUD_CALL_TIMEOUT_MS = 75_000;
 
 // ---------------------------------------------------------------------------
 // Suite state — resolved once, shared across all tests
@@ -27,15 +36,22 @@ const PREFERRED_MODEL = 'ollama:nemotron-3-super:cloud';
 
 let resolvedModel: string | null = null;
 
+function resolveGeneralCloudModel(models: string[]): string | null {
+  for (const candidate of GENERAL_CLOUD_MODEL_PREFERENCES) {
+    if (models.includes(candidate)) return `ollama:${candidate}`;
+  }
+
+  const cloudModels = models
+    .filter((m) => m.includes(':cloud'))
+    .sort((a, b) => a.localeCompare(b));
+  return cloudModels[0] ? `ollama:${cloudModels[0]}` : null;
+}
+
 beforeAll(async () => {
   if (!RUN_E2E) return;
   const models = await getOllamaModels();
-  if (models.includes('nemotron-3-super:cloud')) {
-    resolvedModel = PREFERRED_MODEL;
-  } else {
-    const cloud = models.find((m) => m.includes(':cloud'));
-    resolvedModel = cloud ? `ollama:${cloud}` : null;
-  }
+  resolvedModel = resolveGeneralCloudModel(models);
+  console.log(`Resolved Ollama cloud model for general live-call e2e: ${resolvedModel ?? 'none'}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -73,7 +89,7 @@ describe('Ollama cloud model — live callLlm', () => {
         {
           model: resolvedModel,
           systemPrompt: 'You are a minimal test assistant. Follow instructions exactly.',
-          timeoutMs: 60_000,
+          timeoutMs: GENERAL_CLOUD_CALL_TIMEOUT_MS,
           thinkOverride: false,
         },
       );
@@ -95,11 +111,11 @@ describe('Ollama cloud model — live callLlm', () => {
       }
 
       const { response } = await callLlm(
-        'What is 2 + 2? Reply with only the number.',
+          'What is 2 + 2? Reply with only the number.',
         {
-          model: PREFERRED_MODEL,
+          model: NEMOTRON_MODEL,
           systemPrompt: 'Answer with a single number, no explanation.',
-          timeoutMs: 60_000,
+          timeoutMs: GENERAL_CLOUD_CALL_TIMEOUT_MS,
         },
       );
 
@@ -120,7 +136,7 @@ describe('Ollama cloud model — live callLlm', () => {
       const { response, usage } = await callLlm('Say hello in one word.', {
         model: resolvedModel,
         thinkOverride: false,
-        timeoutMs: 60_000,
+        timeoutMs: GENERAL_CLOUD_CALL_TIMEOUT_MS,
       });
 
       const text = extractText(response);

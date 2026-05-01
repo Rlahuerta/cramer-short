@@ -31,34 +31,43 @@ PY_PASS=0
 PY_FAIL=0
 TOTAL_EXIT=0
 
+# Accumulate failure details for the summary
+TS_FAILURES=""
+PY_FAILURES=""
+TMP_OUT="$(mktemp)"
+trap 'rm -f "$TMP_OUT"' EXIT
+
 # ─── TypeScript Unit Tests ──────────────────────────────────
 echo "── TypeScript Unit Tests ────────────────────────────────"
-if bun test --ignore 'src/**/*.integration.test.ts' --ignore 'src/**/*.e2e.test.ts' 2>&1; then
+if bun test --ignore 'src/**/*.integration.test.ts' --ignore 'src/**/*.e2e.test.ts' 2>&1 | tee "$TMP_OUT"; then
   TS_PASS=$((TS_PASS + 1))
 else
   TS_FAIL=$((TS_FAIL + 1))
   TOTAL_EXIT=1
+  TS_FAILURES+=$'\n'"$(grep -E '^\(fail\)' "$TMP_OUT" || true)"
 fi
 echo ""
 
 # ─── TypeScript Integration Tests ───────────────────────────
 echo "── TypeScript Integration Tests ─────────────────────────"
-if bun run test:integration 2>&1; then
+if bun run test:integration 2>&1 | tee "$TMP_OUT"; then
   TS_PASS=$((TS_PASS + 1))
 else
   TS_FAIL=$((TS_FAIL + 1))
   TOTAL_EXIT=1
+  TS_FAILURES+=$'\n'"$(grep -E '^\(fail\)' "$TMP_OUT" || true)"
 fi
 echo ""
 
 # ─── TypeScript E2E Tests ───────────────────────────────────
 if [[ "$SKIP_E2E" == false ]]; then
   echo "── TypeScript E2E Tests ─────────────────────────────────"
-  if bun run test:e2e 2>&1; then
+  if bun run test:e2e 2>&1 | tee "$TMP_OUT"; then
     TS_PASS=$((TS_PASS + 1))
   else
     TS_FAIL=$((TS_FAIL + 1))
     TOTAL_EXIT=1
+    TS_FAILURES+=$'\n'"$(grep -E '^\(fail\)' "$TMP_OUT" || true)"
   fi
   echo ""
 else
@@ -103,11 +112,12 @@ if [[ $PY_FAIL -eq 0 ]]; then
   # Install package in editable mode within the conda environment
   pip install -e "$REPO_ROOT/research" --quiet 2>&1
 
-  if python -m pytest research/tests -v 2>&1; then
+  if python -m pytest research/tests -v 2>&1 | tee "$TMP_OUT"; then
     PY_PASS=$((PY_PASS + 1))
   else
     PY_FAIL=$((PY_FAIL + 1))
     TOTAL_EXIT=1
+    PY_FAILURES+=$'\n'"$(grep -E '^FAILED' "$TMP_OUT" || true)"
   fi
 fi
 echo ""
@@ -123,6 +133,22 @@ echo ""
 
 if [[ "$SKIP_E2E" == true ]]; then
   echo "  (E2E tests were skipped — omit --skip-e2e to include)"
+  echo ""
+fi
+
+if [[ -n "$TS_FAILURES" ]]; then
+  echo "  ── Failed TypeScript tests ──"
+  echo "$TS_FAILURES" | sed '/^$/d' | while IFS= read -r line; do
+    echo "    $line"
+  done
+  echo ""
+fi
+
+if [[ -n "$PY_FAILURES" ]]; then
+  echo "  ── Failed Python tests ──"
+  echo "$PY_FAILURES" | sed '/^$/d' | while IFS= read -r line; do
+    echo "    $line"
+  done
   echo ""
 fi
 
