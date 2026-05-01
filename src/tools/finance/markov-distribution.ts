@@ -2796,6 +2796,36 @@ export function computeStartStateMixture(
   };
 }
 
+function normalizeStateWeightVector(weights: readonly number[]): number[] {
+  const sanitized = REGIME_STATES.map((_, index) => {
+    const value = weights[index] ?? 0;
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  });
+  const sum = sanitized.reduce((total, value) => total + value, 0);
+  if (!(sum > 0)) return Array(NUM_STATES).fill(1 / NUM_STATES);
+  return sanitized.map((value) => value / sum);
+}
+
+function computeTerminalStateWeights(
+  horizon: number,
+  P: TransitionMatrix,
+  initialState: RegimeState,
+  startMixture?: Record<RegimeState, number>,
+): number[] {
+  const Pn = matPow(P, horizon);
+  if (!startMixture) return [...Pn[STATE_INDEX[initialState]]];
+
+  const weights = [0, 0, 0];
+  for (const state of REGIME_STATES) {
+    const mixtureWeight = startMixture[state];
+    const idx = STATE_INDEX[state];
+    for (let j = 0; j < NUM_STATES; j++) {
+      weights[j] += mixtureWeight * Pn[idx][j];
+    }
+  }
+  return normalizeStateWeightVector(weights);
+}
+
 /**
  * Compute the effective n-step drift and volatility from the Markov chain.
  * Extracted so both interpolateDistribution and calibration logic can reuse it.
@@ -2811,22 +2841,11 @@ export function computeHorizonDriftVol(
   regimeSpecificSigma?: boolean,
   regimeSpecificSigmaThreshold?: number,
   garchScales?: readonly number[],
+  terminalStateWeights?: readonly number[],
 ): { mu_n: number; sigma_n: number } {
-  const Pn = matPow(P, horizon);
-  
-  let stateWeights: number[];
-  if (startMixture) {
-    stateWeights = [0, 0, 0];
-    for (const state of REGIME_STATES) {
-      const w = startMixture[state];
-      const idx = STATE_INDEX[state];
-      for (let j = 0; j < 3; j++) {
-        stateWeights[j] += w * Pn[idx][j];
-      }
-    }
-  } else {
-    stateWeights = Pn[STATE_INDEX[initialState]];
-  }
+  const stateWeights = terminalStateWeights
+    ? normalizeStateWeightVector(terminalStateWeights)
+    : computeTerminalStateWeights(horizon, P, initialState, startMixture);
 
   const mu_obs = REGIME_STATES.reduce(
     (s, state, i) => s + stateWeights[i] * regimeStats[state].meanReturn, 0,
@@ -3125,6 +3144,8 @@ export function interpolateDistribution(
   sampleSize?: number,
   /** Optional per-day GARCH volatility multipliers for distribution/CI variance. */
   garchScales?: readonly number[],
+  /** Optional horizon-level regime weights override for the final forecast state mix. */
+  terminalStateWeights?: readonly number[],
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -3161,7 +3182,7 @@ export function interpolateDistribution(
   // Compute regime-weighted drift and vol via shared helper
   const { mu_n, sigma_n } = computeHorizonDriftVol(
     horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
-    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales, terminalStateWeights,
   );
 
   // Nearest anchor lookup helper with distance-based dampening.
@@ -3775,6 +3796,18 @@ function oneHotRegimeMixture(state: RegimeState): Record<RegimeState, number> {
     bear: state === 'bear' ? 1 : 0,
     sideways: state === 'sideways' ? 1 : 0,
   };
+}
+
+function blendStateWeightVectors(
+  base: readonly number[],
+  overlay: readonly number[],
+  weight: number,
+): number[] {
+  const w = Math.max(0, Math.min(1, weight));
+  const mixed = REGIME_STATES.map((_, index) =>
+    (1 - w) * (base[index] ?? 0) + w * (overlay[index] ?? 0),
+  );
+  return normalizeStateWeightVector(mixed);
 }
 
 function blendRegimeMixtures(
@@ -4961,6 +4994,19 @@ export async function computeMarkovDistribution(params: {
     : undefined;
   const effectiveMixture = rndMixture ?? softBlendedMixture ?? mixture;
   const effectiveP = nudgedP ?? P;
+  const baseForecastStateWeights = computeTerminalStateWeights(
+    horizon,
+    effectiveP,
+    currentRegime,
+    effectiveMixture,
+  );
+  const forecastAdjustedStateWeights = params.enableSoftRegimeWeighting === true && softForecastRegimeMixture
+    ? blendStateWeightVectors(
+        baseForecastStateWeights,
+        regimeMixtureToArray(softForecastRegimeMixture),
+        softTransitionBlendWeight,
+      )
+    : baseForecastStateWeights;
   const transitionEntropy = computeTransitionEntropy(effectiveP);
   const transitionEntropyZ = enableEntropyCiModulation === true
     ? zScoreAgainstHistory(transitionEntropyHistory, transitionEntropy.entropyNorm)
@@ -5000,13 +5046,13 @@ export async function computeMarkovDistribution(params: {
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
-    logReturns.length, garchScalesForDistribution,
+    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
     horizon, effectiveP, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, effectiveMixture,
-    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScalesForDistribution,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScalesForDistribution, forecastAdjustedStateWeights,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -5021,27 +5067,7 @@ export async function computeMarkovDistribution(params: {
     ? (pr3gCryptoShortHorizonDecay ?? pr3gDefaultDecay ?? assetProfile.decayRate)
     : undefined;
   const regimeUpRates = computeRegimeUpRates(regimeSeq, logReturns, horizon, pr3gDecayRate);
-  const Pn = matPow(effectiveP, horizon);
-
-  let stateWeightsForUp: number[];
-  if (effectiveMixture) {
-    stateWeightsForUp = [0, 0, 0];
-    for (const state of REGIME_STATES) {
-      const w = effectiveMixture[state];
-      const idx = STATE_INDEX[state];
-      for (let j = 0; j < 3; j++) {
-        stateWeightsForUp[j] += w * Pn[idx][j];
-      }
-    }
-  } else {
-    stateWeightsForUp = Pn[STATE_INDEX[currentRegime]];
-  }
-  if (params.enableSoftRegimeWeighting === true && softForecastRegimeMixture) {
-    const forecastWeights = regimeMixtureToArray(softForecastRegimeMixture);
-    stateWeightsForUp = stateWeightsForUp.map((weight, index) =>
-      (1 - softTransitionBlendWeight) * weight + softTransitionBlendWeight * (forecastWeights[index] ?? 0),
-    );
-  }
+  const stateWeightsForUp = forecastAdjustedStateWeights;
 
   const conditionalPUp = (sidewaysSplitSafe && conditionalPUp_experiment !== undefined)
     ? conditionalPUp_experiment

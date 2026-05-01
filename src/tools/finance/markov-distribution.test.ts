@@ -72,6 +72,7 @@ import {
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 
 const realPolymarketModule = { ...(await import('./polymarket.js')) };
+const realHmmModule = { ...(await import('./hmm.js')) };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -149,6 +150,7 @@ function installDefaultPolymarketMock(): void {
 
 afterEach(() => {
   mock.module('./polymarket.js', () => realPolymarketModule);
+  mock.module('./hmm.js', () => realHmmModule);
 });
 
 function rowSums(m: number[][]): number[] {
@@ -5268,6 +5270,7 @@ describe('markov_distribution tool output envelope', () => {
       historicalPrices: choppyPrices,
       polymarketMarkets: [],
       predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: false,
     });
     const enabledChoppy = await computeMarkovDistribution({
       ticker: 'BTC-USD',
@@ -5318,6 +5321,67 @@ describe('markov_distribution tool output envelope', () => {
     expect(softTrend).toBeDefined();
     expect(softTrend!.posteriorEntropy).toBeLessThanOrEqual(softChoppy!.posteriorEntropy);
     expect(softTrend!.ciScale).toBeLessThanOrEqual(softChoppy!.ciScale);
+  });
+
+  it('pushes the raw forecast path toward the soft forecast regime mixture only when enabled', async () => {
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: () => ({
+        params: {
+          nStates: 3,
+          pi: [1 / 3, 1 / 3, 1 / 3],
+          A: [
+            [0.70, 0.20, 0.10],
+            [0.20, 0.60, 0.20],
+            [0.10, 0.20, 0.70],
+          ],
+          means: [-0.02, 0.0, 0.02],
+          stds: [0.01, 0.01, 0.01],
+        },
+        logLikelihood: -123,
+        iterations: 3,
+        converged: false,
+      }),
+      predict: () => ({
+        currentState: 1,
+        stateProbabilities: [],
+        currentStateProbabilities: [0, 1, 0],
+        forecastProbabilities: [0.10, 0.20, 0.70],
+        expectedReturn: 0,
+        expectedVolatility: 0.01,
+      }),
+    }));
+
+    const returns = Array.from({ length: 160 }, (_, i) => [0, 0.025, -0.025, 0][i % 4]);
+    const prices = [100];
+    for (const ret of returns) prices.push(prices[prices.length - 1] * Math.exp(ret));
+
+    const currentPrice = prices[prices.length - 1];
+    const upsideTarget = currentPrice * 1.05;
+
+    const disabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: false,
+    });
+    const enabled = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+    });
+
+    expect(
+      interpolateSurvival(enabled.rawDistribution, upsideTarget),
+    ).toBeGreaterThan(interpolateSurvival(disabled.rawDistribution, upsideTarget) + 0.03);
+    expect(enabled.actionSignal.expectedReturn).toBeGreaterThan(disabled.actionSignal.expectedReturn);
   });
 
   it('exposes ADWIN trim metadata when the historical window is mean-shifted', async () => {
