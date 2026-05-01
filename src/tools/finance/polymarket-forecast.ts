@@ -238,6 +238,15 @@ function daysUntilEndDate(endDate: string | null | undefined): number | null {
   return (target.getTime() - Date.now()) / 86_400_000;
 }
 
+function isResolutionAlignedToHorizon(daysUntilResolution: number | null, horizonDays: number): boolean {
+  if (daysUntilResolution === null) return false;
+  return Math.abs(daysUntilResolution - horizonDays) <= Math.max(1.5, horizonDays * 0.35);
+}
+
+function shouldFilterResolutionMismatch(assetClass: string, horizonDays: number): boolean {
+  return assetClass === 'crypto' && horizonDays <= 3;
+}
+
 function isThresholdChartAlignedToHorizon(markets: RawMarket[], horizonDays: number): boolean {
   const thresholds = extractPriceThresholds(markets);
   if (thresholds.length < 2) return false;
@@ -250,8 +259,7 @@ function isThresholdChartAlignedToHorizon(markets: RawMarket[], horizonDays: num
 
   const alignedMarkets = datedThresholdMarkets.filter((market) => {
     const days = daysUntilEndDate(market.endDate);
-    if (days === null) return false;
-    return Math.abs(days - horizonDays) <= Math.max(1.5, horizonDays * 0.35);
+    return isResolutionAlignedToHorizon(days, horizonDays);
   });
 
   return alignedMarkets.length >= 2;
@@ -504,6 +512,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         // preserving the signal category from whichever signal first found it
         const seen = new Set<string>();
         const rawMarkets: RawMarket[] = [];
+        const skippedResolutionMismatches: RawMarket[] = [];
         const allSnapshotRecords = readRecords(undefined);
         // Reader reused across all markets — avoids creating a closure per iteration
         const marketReader = (_filePath: string | undefined, marketId?: string) =>
@@ -518,9 +527,22 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             historyWarnings.push(...history.warnings);
             const rawMarket = toRawMarket(m, m.signalCategory, history);
             if (rawMarket) {
+              if (shouldFilterResolutionMismatch(assetClass, horizonDays)) {
+                const daysToResolution = daysUntilEndDate(rawMarket.endDate);
+                if (daysToResolution !== null && !isResolutionAlignedToHorizon(daysToResolution, horizonDays)) {
+                  skippedResolutionMismatches.push(rawMarket);
+                  continue;
+                }
+              }
               rawMarkets.push(rawMarket);
             }
           }
+        }
+
+        if (skippedResolutionMismatches.length > 0) {
+          historyWarnings.push(
+            `Skipped ${skippedResolutionMismatches.length} Polymarket market${skippedResolutionMismatches.length === 1 ? '' : 's'} because ${skippedResolutionMismatches.length === 1 ? 'its resolution date does' : 'their resolution dates do'} not align with the requested ${horizonDays}-day horizon.`,
+          );
         }
 
         if (recordReplayPolymarketCapture) {
@@ -553,12 +575,14 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           const probability = shouldApplyLiveCalibration
             ? applyLiveBrierReplayCalibration(m.probability)
             : m.probability;
+          const daysToExpiry = daysUntilEndDate(m.endDate);
           if (shouldApplyLiveCalibration && probability !== m.probability) calibratedMarketCount++;
           return {
             question: m.question,
             probability,
             volume24hUsd: m.volume24h,
             ageDays: m.ageDays,
+            daysToExpiry: daysToExpiry === null ? undefined : daysToExpiry,
             priceSpikeDetected: m.priceSpikeDetected,
             transitoryMove: m.transitoryMove,
             signalTier: categoryToTier(m.signalCategory),

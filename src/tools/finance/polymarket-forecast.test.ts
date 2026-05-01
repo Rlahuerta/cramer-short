@@ -361,6 +361,93 @@ describe('polymarketForecastTool', () => {
     ]);
   });
 
+  it('drops far-dated macro markets from 1-day BTC selection and emits a horizon warning', async () => {
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async () => [
+        {
+          marketId: 'btc-market-1d',
+          assetId: 'btc-market-1d-yes',
+          question: 'Will Bitcoin be above $72,000 tomorrow?',
+          probability: 0.61,
+          volume24h: 240_000,
+          ageDays: 2,
+          endDate: futureIso(1),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-macro-far',
+          assetId: 'btc-macro-far-yes',
+          question: 'US recession by end of 2026?',
+          probability: 0.24,
+          volume24h: 12_000,
+          ageDays: 20,
+          endDate: futureIso(180),
+          active: true,
+          closed: false,
+        },
+      ],
+      (capture) => { captures.push(capture); },
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 1, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-market-1d']);
+    expect(captures[0]?.polymarket.selectedMarkets.map((market) => market.marketId)).toEqual(['btc-market-1d']);
+    expect(result).toContain('Skipped 1 Polymarket market because its resolution date');
+    expect(result).not.toContain('US recession by end of 2026?');
+  });
+
+  it('preserves far-dated market inclusion for longer-horizon BTC forecasts', async () => {
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async () => [
+        {
+          marketId: 'btc-market-30d',
+          assetId: 'btc-market-30d-yes',
+          question: 'Will Bitcoin be above $80,000 by June 1?',
+          probability: 0.48,
+          volume24h: 180_000,
+          ageDays: 4,
+          endDate: futureIso(30),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-macro-60d',
+          assetId: 'btc-macro-60d-yes',
+          question: 'Will Fed decrease rates 25 bps after June 2026 FOMC?',
+          probability: 0.29,
+          volume24h: 210_000,
+          ageDays: 15,
+          endDate: futureIso(60),
+          active: true,
+          closed: false,
+        },
+      ],
+      (capture) => { captures.push(capture); },
+    );
+
+    await freshTool.func(
+      { ticker: 'BTC', horizon_days: 30, current_price: 68_000 },
+      undefined,
+    );
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-market-30d', 'btc-macro-60d']);
+  });
+
 });
 
 describe('evaluateMarketHistory', () => {
