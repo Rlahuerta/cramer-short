@@ -3,7 +3,12 @@ import { StructuredToolInterface } from '@langchain/core/tools';
 import { callLlm, streamCallLlm, getLlmCallTimeoutMs } from '../model/llm.js';
 import { getSetting } from '../utils/config.js';
 import { getTools } from '../tools/registry.js';
-import { buildSystemPrompt, buildIterationPrompt, loadSoulDocument } from './prompts.js';
+import {
+  buildSystemPrompt,
+  buildIterationPrompt,
+  injectForecastLabRoutingHint,
+  loadSoulDocument,
+} from './prompts.js';
 import { extractTextContent, hasToolCalls, extractReasoningContent } from '../utils/ai-message.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
 import { buildHistoryContext } from '../utils/history-context.js';
@@ -23,6 +28,10 @@ import { fetchPolymarketMarkets } from '../tools/finance/polymarket.js';
 import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
 import { resolveProvider } from '../providers.js';
 import type { ToolCallRecord } from './scratchpad.js';
+import {
+  getForecastLabRoutingHint,
+  type ForecastLabRoutingHint,
+} from './forecast-lab-routing.js';
 
 const DEFAULT_MODEL = 'gpt-5.4';
 export const DEFAULT_MAX_ITERATIONS = 25;
@@ -1754,9 +1763,10 @@ export class Agent {
     const ctx = createRunContext(query);
     const memoryFlushState = { alreadyFlushed: false };
     const periodicFlushState = { lastFlushedIteration: 0 };
+    const forecastLabRoutingHint = getForecastLabRoutingHint(query);
 
     // Build initial prompt with conversation history context
-    let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory);
+    let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory, forecastLabRoutingHint);
 
     // Auto-inject relevant prior research memories based on tickers mentioned
     currentPrompt = await injectMemoryContext(query, currentPrompt, {
@@ -1812,7 +1822,8 @@ export class Agent {
               currentPrompt = buildIterationPrompt(
                 query,
                 ctx.scratchpad.getToolResults(),
-                ctx.scratchpad.formatToolUsageForPrompt()
+                ctx.scratchpad.formatToolUsageForPrompt(),
+                forecastLabRoutingHint,
               );
               continue;
             }
@@ -1865,6 +1876,7 @@ export class Agent {
               query,
               ctx.scratchpad.getToolResults(),
               ctx.scratchpad.formatToolUsageForPrompt(),
+              forecastLabRoutingHint,
             );
             continue;
           }
@@ -1878,6 +1890,7 @@ export class Agent {
               query,
               ctx.scratchpad.getToolResults(),
               ctx.scratchpad.formatToolUsageForPrompt(),
+              forecastLabRoutingHint,
             );
             continue;
           }
@@ -1891,6 +1904,7 @@ export class Agent {
               query,
               ctx.scratchpad.getToolResults(),
               ctx.scratchpad.formatToolUsageForPrompt(),
+              forecastLabRoutingHint,
             );
             continue;
           }
@@ -1944,6 +1958,7 @@ export class Agent {
             query,
             ctx.scratchpad.getToolResults(),
             ctx.scratchpad.formatToolUsageForPrompt(),
+            forecastLabRoutingHint,
           );
           continue;
         }
@@ -1957,6 +1972,7 @@ export class Agent {
             query,
             ctx.scratchpad.getToolResults(),
             ctx.scratchpad.formatToolUsageForPrompt(),
+            forecastLabRoutingHint,
           );
           continue;
         }
@@ -1970,6 +1986,7 @@ export class Agent {
             query,
             ctx.scratchpad.getToolResults(),
             ctx.scratchpad.formatToolUsageForPrompt(),
+            forecastLabRoutingHint,
           );
           continue;
         }
@@ -1985,6 +2002,7 @@ export class Agent {
             query,
             ctx.scratchpad.getToolResults(),
             ctx.scratchpad.formatToolUsageForPrompt(),
+            forecastLabRoutingHint,
           );
           continue;
         }
@@ -2025,7 +2043,8 @@ export class Agent {
       currentPrompt = buildIterationPrompt(
         query,
         ctx.scratchpad.getToolResults(),
-        ctx.scratchpad.formatToolUsageForPrompt()
+        ctx.scratchpad.formatToolUsageForPrompt(),
+        forecastLabRoutingHint,
       );
 
       // After the cap is hit, redirect the model to stop planning and start
@@ -2054,6 +2073,7 @@ export class Agent {
           query,
           toolResults,
           ctx.scratchpad.formatToolUsageForPrompt(),
+          forecastLabRoutingHint,
         ) +
           `\n\n[SYSTEM NOTE: You have reached the maximum number of research steps (${this.maxIterations}). ` +
           `You MUST now write your best-effort final answer using ONLY the data gathered above. ` +
@@ -2454,20 +2474,21 @@ export class Agent {
    */
   private buildInitialPrompt(
     query: string,
-    inMemoryChatHistory?: InMemoryChatHistory
+    inMemoryChatHistory?: InMemoryChatHistory,
+    forecastLabRoutingHint?: ForecastLabRoutingHint | null,
   ): string {
     if (!inMemoryChatHistory?.hasMessages()) {
-      return query;
+      return injectForecastLabRoutingHint(query, forecastLabRoutingHint);
     }
 
     const recentTurns = inMemoryChatHistory.getRecentTurns();
     if (recentTurns.length === 0) {
-      return query;
+      return injectForecastLabRoutingHint(query, forecastLabRoutingHint);
     }
 
-    return buildHistoryContext({
+    return injectForecastLabRoutingHint(buildHistoryContext({
       entries: recentTurns,
       currentMessage: query,
-    });
+    }), forecastLabRoutingHint);
   }
 }

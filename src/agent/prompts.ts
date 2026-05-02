@@ -8,6 +8,7 @@ import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distri
 import { isExplicitPolymarketForecastRequest, shouldInjectBtcShortHorizonLowConfidencePrompt, shouldInjectBtcShortHorizonMixedEvidencePrompt } from './agent.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { cramerShortPath } from '../utils/paths.js';
+import type { ForecastLabRoutingHint } from './forecast-lab-routing.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -485,6 +486,33 @@ ${formatBullets}${tablesSection}${groupContext ? '\n\n' + buildGroupSection(grou
 // User Prompts
 // ============================================================================
 
+function formatBooleanPromptValue(value: boolean): string {
+  return value ? 'yes' : 'no';
+}
+
+function buildForecastLabRoutingHintSection(hint: ForecastLabRoutingHint): string {
+  return `## Forecast-Lab Routing Hint
+
+- Recommended profile: ${hint.recommendedProfileId ?? 'none'}
+- Why it matched: ${hint.whyMatched}
+- Mutation allowed: ${formatBooleanPromptValue(hint.mutationAllowed)}
+- Invoke skill("forecast-lab"): ${formatBooleanPromptValue(hint.shouldInvokeSkill)}
+- Safety: Do NOT auto-run mutation or any tool solely because of this hint.`;
+}
+
+export function injectForecastLabRoutingHint(
+  prompt: string,
+  hint?: ForecastLabRoutingHint | null,
+): string {
+  if (!hint) {
+    return prompt;
+  }
+
+  return `${buildForecastLabRoutingHintSection(hint)}
+
+${prompt}`;
+}
+
 /**
  * Build user prompt for agent iteration with full tool results.
  * Anthropic-style: full results in context for accurate decision-making.
@@ -497,7 +525,8 @@ ${formatBullets}${tablesSection}${groupContext ? '\n\n' + buildGroupSection(grou
 export function buildIterationPrompt(
   originalQuery: string,
   fullToolResults: string,
-  toolUsageStatus?: string | null
+  toolUsageStatus?: string | null,
+  forecastLabRoutingHint?: ForecastLabRoutingHint | null,
 ): string {
   let prompt = `Query: ${originalQuery}`;
 
@@ -589,5 +618,5 @@ For non-crypto forecast queries with a specific asset target (stocks, ETFs, comm
 
 Continue working toward answering the query. When you have gathered sufficient data to answer, write your complete answer directly and do not call more tools. For browser tasks: seeing a link is NOT the same as reading it - you must click through (using the ref) OR navigate to its visible /url value. NEVER guess at URLs - use ONLY URLs visible in snapshots.`;
 
-  return prompt;
+  return injectForecastLabRoutingHint(prompt, forecastLabRoutingHint);
 }

@@ -27,6 +27,7 @@ const {
   buildSystemPrompt,
   buildIterationPrompt,
   buildGroupSection,
+  injectForecastLabRoutingHint,
   loadSoulDocument,
 } = await import('./prompts.js');
 
@@ -301,6 +302,32 @@ describe('buildIterationPrompt', () => {
     const results = '### get_market_data(query=BTC)\n{"data":{"ticker":"BTC-USD"}}';
     const prompt = buildIterationPrompt('BTC query', results);
     expect(prompt).not.toContain('markov_distribution results are present');
+  });
+
+  it('injects a forecast-lab routing hint when one is provided', () => {
+    const prompt = buildIterationPrompt(
+      'Optimize the BTC forecast tool',
+      '',
+      null,
+      {
+        recommendedProfileId: 'btc-markov-ultra-short-horizon',
+        whyMatched: 'Matched improvement cues: optimize.',
+        mutationAllowed: true,
+        shouldInvokeSkill: true,
+      },
+    );
+    expect(prompt).toContain('Forecast-Lab Routing Hint');
+    expect(prompt).toContain('btc-markov-ultra-short-horizon');
+    expect(prompt).toContain('Matched improvement cues: optimize.');
+    expect(prompt).toContain('Mutation allowed: yes');
+    expect(prompt).toContain('Invoke skill("forecast-lab"): yes');
+    expect(prompt).toContain('Do NOT auto-run mutation or any tool');
+  });
+});
+
+describe('injectForecastLabRoutingHint', () => {
+  it('leaves prompts unchanged when no routing hint exists', () => {
+    expect(injectForecastLabRoutingHint('Query: hello', null)).toBe('Query: hello');
   });
 });
 
