@@ -8,9 +8,25 @@ export interface ForecastLabRoutingHint {
   readonly shouldInvokeSkill: boolean;
 }
 
-export function getForecastLabRoutingHint(query: string): ForecastLabRoutingHint | null {
+export interface ForecastLabRoutingOptions {
+  readonly enableAutoRoute?: boolean;
+  readonly enableSkillHint?: boolean;
+}
+
+export function getForecastLabRoutingHint(
+  query: string,
+  options: ForecastLabRoutingOptions = {},
+): ForecastLabRoutingHint | null {
+  if (options.enableAutoRoute === false) {
+    return null;
+  }
+
   const route = routeForecastLabQuery(query);
   if (route.intent !== 'improvement') {
+    return null;
+  }
+
+  if (options.enableSkillHint === false) {
     return null;
   }
 

@@ -205,6 +205,9 @@ describe('ConfigSchema — forecasting block', () => {
         enableJumpDiffusion: true,
         qToPMprCap: 2.0,
         enableMSM: false,
+        enableForecastLabAutoRoute: true,
+        enableForecastLabSkillHint: true,
+        enableForecastLabMutatorRanking: false,
       },
     };
     const result = validateAndSanitizeConfig(raw);
@@ -213,6 +216,9 @@ describe('ConfigSchema — forecasting block', () => {
     expect(f.enableJumpDiffusion).toBe(true);
     expect(f.qToPMprCap).toBe(2.0);
     expect(f.enableMSM).toBe(false);
+    expect(f.enableForecastLabAutoRoute).toBe(true);
+    expect(f.enableForecastLabSkillHint).toBe(true);
+    expect(f.enableForecastLabMutatorRanking).toBe(false);
   });
 
   it('accepts forecasting with only enableJumpDiffusion', () => {
@@ -234,6 +240,23 @@ describe('ConfigSchema — forecasting block', () => {
     const result = validateAndSanitizeConfig(raw);
     const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
     expect(f.enableJumpDiffusion).toBeUndefined();
+  });
+
+  it('strips invalid forecast-lab rollout flags while preserving valid forecasting fields', () => {
+    const raw = {
+      forecasting: {
+        enableJumpDiffusion: false,
+        enableForecastLabAutoRoute: true,
+        enableForecastLabSkillHint: 'yes',
+        enableForecastLabMutatorRanking: 1,
+      },
+    };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBe(false);
+    expect(f.enableForecastLabAutoRoute).toBe(true);
+    expect(f.enableForecastLabSkillHint).toBeUndefined();
+    expect(f.enableForecastLabMutatorRanking).toBeUndefined();
   });
 
   it('preserves other top-level keys alongside forecasting', () => {

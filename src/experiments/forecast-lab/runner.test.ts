@@ -17,6 +17,7 @@ import {
   ForecastLabRunnerError,
   createForecastLabCommandRunner,
   defaultForecastLabCommandRunner,
+  resolveForecastLabMutatorRankingEnabled,
   runForecastLab,
 } from './runner.js';
 
@@ -173,6 +174,25 @@ class FakeSpawnedChild extends EventEmitter {
 afterEach(cleanup);
 
 describe('forecast-lab runner', () => {
+  it('defaults mutator ranking off when the rollout flag is absent', () => {
+    expect(resolveForecastLabMutatorRankingEnabled(undefined, undefined)).toBe(false);
+  });
+
+  it('enables mutator ranking from config when no explicit runner override is provided', () => {
+    expect(resolveForecastLabMutatorRankingEnabled(undefined, {
+      enableForecastLabMutatorRanking: true,
+    })).toBe(true);
+  });
+
+  it('keeps explicit runner mutator-ranking overrides ahead of config', () => {
+    expect(resolveForecastLabMutatorRankingEnabled(false, {
+      enableForecastLabMutatorRanking: true,
+    })).toBe(false);
+    expect(resolveForecastLabMutatorRankingEnabled(true, {
+      enableForecastLabMutatorRanking: false,
+    })).toBe(true);
+  });
+
   it('dry-run completes baseline, candidate, decision, and ledger write with an injected command runner', async () => {
     const calls: string[] = [];
     const progress: string[] = [];

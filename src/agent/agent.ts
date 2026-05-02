@@ -1,7 +1,7 @@
 import { AIMessage } from '@langchain/core/messages';
 import { StructuredToolInterface } from '@langchain/core/tools';
 import { callLlm, streamCallLlm, getLlmCallTimeoutMs } from '../model/llm.js';
-import { getSetting } from '../utils/config.js';
+import { getSetting, loadConfig } from '../utils/config.js';
 import { getTools } from '../tools/registry.js';
 import {
   buildSystemPrompt,
@@ -1763,7 +1763,11 @@ export class Agent {
     const ctx = createRunContext(query);
     const memoryFlushState = { alreadyFlushed: false };
     const periodicFlushState = { lastFlushedIteration: 0 };
-    const forecastLabRoutingHint = getForecastLabRoutingHint(query);
+    const forecastingConfig = loadConfig().forecasting;
+    const forecastLabRoutingHint = getForecastLabRoutingHint(query, {
+      enableAutoRoute: forecastingConfig?.enableForecastLabAutoRoute,
+      enableSkillHint: forecastingConfig?.enableForecastLabSkillHint,
+    });
 
     // Build initial prompt with conversation history context
     let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory, forecastLabRoutingHint);

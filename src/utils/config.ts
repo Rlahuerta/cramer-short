@@ -45,6 +45,12 @@ export const ConfigSchema = z.object({
     qToPMprCap: z.number().min(0.1).max(10).optional(),
     /** Enable Markov-Switching Multifractal volatility model. Default: false. */
     enableMSM: z.boolean().optional(),
+    /** Enable forecast-lab query auto-routing hints in the agent. Default: true. */
+    enableForecastLabAutoRoute: z.boolean().optional(),
+    /** Inject forecast-lab skill hints when auto-routing matches. Default: true. */
+    enableForecastLabSkillHint: z.boolean().optional(),
+    /** Rank structured forecast-lab mutators from ledger evidence. Default: false. */
+    enableForecastLabMutatorRanking: z.boolean().optional(),
   }).optional(),
 }).passthrough(); // allow unknown keys without throwing
 

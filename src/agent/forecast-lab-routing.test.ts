@@ -21,6 +21,24 @@ describe('forecast-lab routing hint', () => {
     ).toBeNull();
   });
 
+  it('does not derive a hint when forecast-lab auto-routing is disabled', () => {
+    expect(
+      getForecastLabRoutingHint(
+        'Optimize the BTC 1d/2d/3d Markov forecast logic without broad self-editing.',
+        { enableAutoRoute: false },
+      ),
+    ).toBeNull();
+  });
+
+  it('does not inject a skill hint when forecast-lab skill hints are disabled', () => {
+    expect(
+      getForecastLabRoutingHint(
+        'Optimize the BTC 1d/2d/3d Markov forecast logic without broad self-editing.',
+        { enableSkillHint: false },
+      ),
+    ).toBeNull();
+  });
+
   it('disables mutation when improvement intent lacks a deterministic profile match', () => {
     const hint = getForecastLabRoutingHint(
       'Optimize the general forecasting workflow with better orchestration and review loops.',

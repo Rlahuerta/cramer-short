@@ -7,6 +7,7 @@ import {
   getExperimentRunManifestPath,
   getExperimentsDir,
 } from '../../utils/paths.js';
+import { loadConfig, type Config } from '../../utils/config.js';
 import {
   appendLedgerEntry,
   readLedgerEntries,
@@ -146,6 +147,8 @@ export interface ForecastLabRunResult {
 export class ForecastLabRunnerError extends Error {
   override name = 'ForecastLabRunnerError';
 }
+
+type ForecastingConfig = Config['forecasting'];
 
 const UNSAFE_SHELL_COMMAND_PATTERN = /[;&|`<>]|\$\(/;
 const UNSAFE_GIT_COMMAND_PATTERN = /\bgit\s+(?:add|commit|push|reset|checkout|clean)\b/;
@@ -533,6 +536,18 @@ function resolveMutationPlan(options: ForecastLabRunOptions): ForecastLabResolve
   };
 }
 
+export function resolveForecastLabMutatorRankingEnabled(
+  rankMutators: boolean | undefined,
+  forecastingConfig?: ForecastingConfig,
+): boolean {
+  if (rankMutators !== undefined) {
+    return rankMutators;
+  }
+
+  const effectiveForecastingConfig = forecastingConfig ?? loadConfig().forecasting;
+  return effectiveForecastingConfig?.enableForecastLabMutatorRanking === true;
+}
+
 function getStructuredMutationCatalog(
   profile: ForecastLabProfile,
 ): readonly ForecastLabMarkovParameterMutationCandidate[] {
@@ -783,6 +798,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   const skipMutation = mutationPlan.skipMutation;
   const progress = options.progress;
   const output = options.output;
+  const forecastingConfig = loadConfig().forecasting;
 
   const candidateBranch = makeForecastLabCandidateBranch(runId);
   const baselineCommit = getForecastLabBaselineCommit();
@@ -843,7 +859,11 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
     const executeCandidateRun = async (
       workspace: ReturnType<typeof prepareForecastLabCandidateWorkspace>,
     ) => {
-      const mutatorRanking = options.rankMutators === true && mutationPlan.mutator === undefined
+      const mutatorRankingEnabled = resolveForecastLabMutatorRankingEnabled(
+        options.rankMutators,
+        forecastingConfig,
+      );
+      const mutatorRanking = mutatorRankingEnabled && mutationPlan.mutator === undefined
         ? rankForecastLabMutators({
             profileId: profile.id,
             catalog: mutationCatalog!,
