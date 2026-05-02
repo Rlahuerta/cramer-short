@@ -133,6 +133,26 @@ function formatCommandParameters(commands: readonly ForecastLabCommand[]): strin
   });
 }
 
+function formatMutationParameterLabel(filePath: string, parameterId: string): string {
+  const fileName = filePath.split('/').at(-1) ?? filePath;
+  return `${fileName}: ${parameterId}`;
+}
+
+function formatMutationParameterSections(result: ForecastLabRunResult): {
+  readonly previous: string[];
+  readonly next: string[];
+} | undefined {
+  const replayPayload = result.manifest.mutationReplayPayload;
+  if (!replayPayload) {
+    return undefined;
+  }
+
+  return {
+    previous: replayPayload.edits.map((edit) => `  - ${formatMutationParameterLabel(edit.filePath, edit.parameterId)} = ${edit.beforeValue}`),
+    next: replayPayload.edits.map((edit) => `  - ${formatMutationParameterLabel(edit.filePath, edit.parameterId)} = ${edit.afterValue}`),
+  };
+}
+
 function readExitCode(summary: unknown): number | undefined {
   if (!summary || typeof summary !== 'object') {
     return undefined;
@@ -146,6 +166,7 @@ function printRunSummary(log: (message: string) => void, result: ForecastLabRunR
   const profile = getForecastLabProfile(result.manifest.profileId);
   const baselineExitCode = readExitCode(result.baseline);
   const candidateExitCode = readExitCode(result.candidate);
+  const mutationParameters = formatMutationParameterSections(result);
 
   log('');
   log('Evolution summary:');
@@ -164,20 +185,37 @@ function printRunSummary(log: (message: string) => void, result: ForecastLabRunR
   }
 
   log('');
-  log('Previous parameters (baseline gate):');
-  for (const line of formatCommandParameters(profile.baselineCommands)) {
-    log(line);
-  }
-
-  log('');
-  log('New parameters (candidate gate):');
-  for (const line of formatCommandParameters(profile.candidateCommands)) {
-    log(line);
-  }
-
-  if (result.manifest.candidateWorkspace === undefined && profile.baselineCommands === profile.candidateCommands) {
+  if (mutationParameters) {
+    log(`Mutation summary: ${result.manifest.mutationSummary ?? result.manifest.mutationReplayPayload?.specSummary.summary ?? 'n/a'}`);
+    if (result.manifest.mutationId) {
+      log(`  mutation id: ${result.manifest.mutationId}`);
+    }
     log('');
-    log('Note: with no candidate workspace, baseline and candidate parameters are typically identical.');
+    log('Previous parameters (baseline defaults):');
+    for (const line of mutationParameters.previous) {
+      log(line);
+    }
+    log('');
+    log('New parameters (candidate mutation):');
+    for (const line of mutationParameters.next) {
+      log(line);
+    }
+  } else {
+    log('Previous parameters (baseline gate):');
+    for (const line of formatCommandParameters(profile.baselineCommands)) {
+      log(line);
+    }
+
+    log('');
+    log('New parameters (candidate gate):');
+    for (const line of formatCommandParameters(profile.candidateCommands)) {
+      log(line);
+    }
+
+    if (result.manifest.candidateWorkspace === undefined && profile.baselineCommands === profile.candidateCommands) {
+      log('');
+      log('Note: with no candidate workspace, baseline and candidate parameters are typically identical.');
+    }
   }
 }
 

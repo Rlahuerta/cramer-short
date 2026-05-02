@@ -782,10 +782,15 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
 
   const commandRunner = options.commandRunner ?? defaultForecastLabCommandRunner;
   const baselineCwd = process.cwd();
-  progress?.('forecast-lab: starting baseline gate');
-  const baseline = await runGate('baseline', profile, runId, commandRunner, baselineCwd, progress, output);
-  writeJsonArtifact(baselinePath, baseline);
-  progress?.(`forecast-lab: baseline results written to ${baselinePath}`);
+  const runBaselineGate = async (): Promise<ForecastLabGateSummary> => {
+    progress?.('forecast-lab: starting baseline gate');
+    const baseline = await runGate('baseline', profile, runId, commandRunner, baselineCwd, progress, output);
+    writeJsonArtifact(baselinePath, baseline);
+    progress?.(`forecast-lab: baseline results written to ${baselinePath}`);
+    return baseline;
+  };
+
+  let baseline: ForecastLabGateSummary;
 
   let candidate: ForecastLabGateSummary;
   let structuredMutation: ForecastLabStructuredMutationSelection | undefined;
@@ -835,10 +840,11 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
       progress?.(`forecast-lab: selected mutator ${mutation.selectedMutatorId} (${mutation.mutatorId})`);
       progress?.(`forecast-lab: mutated files ${mutation.mutatedFiles.join(', ')}`);
       progress?.(`forecast-lab: patch summary ${mutation.patchSummary.join(' | ')}`);
+      const baseline = await runBaselineGate();
       progress?.('forecast-lab: starting candidate gate (structured mutation)');
 
       const gate = await runGate('candidate', profile, runId, commandRunner, workspace.metadata.rootDir, progress, output);
-      return { gate, mutation };
+      return { baseline, gate, mutation };
     };
 
     const candidateRun = mutationPlan.keepWorktree
@@ -856,9 +862,11 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
       })()
       : await withForecastLabCandidateWorkspace(runId, executeCandidateRun);
 
+    baseline = candidateRun.baseline;
     candidate = candidateRun.gate;
     structuredMutation = candidateRun.mutation;
   } else {
+    baseline = await runBaselineGate();
     progress?.(`forecast-lab: starting candidate gate (${dryRun ? 'dry-run' : 'skip-mutation'})`);
     candidate = await runGate('candidate', profile, runId, commandRunner, process.cwd(), progress, output);
   }

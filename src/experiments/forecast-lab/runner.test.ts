@@ -320,6 +320,8 @@ describe('forecast-lab runner', () => {
     expect(progress).toContain(
       'forecast-lab: patch summary markov-distribution.ts: momentumLookback 20 → 14 | markov-distribution.ts: structuralBreakMinLength 60 → 48 | conformal.ts: scoreAggregationMinSamples 20 → 16 | conformal.ts: scoreAggregationCalibrationWindow 120 → 96 | regime-calibrator.ts: minSamplesPerRegime 30 → 24',
     );
+    expect(progress.indexOf('forecast-lab: selected mutator markov-shorter-reactive-window (search-replace)'))
+      .toBeLessThan(progress.indexOf('forecast-lab: starting baseline gate'));
   });
 
   it('selects structured mutations against the clean candidate workspace instead of a dirty live checkout', async () => {
@@ -875,34 +877,77 @@ describe('forecast-lab CLI module', () => {
     const output: string[] = [];
     const writes: string[] = [];
 
-    await runForecastLabCommand(['run', 'multi-asset-markov-short-horizon', '--dry-run'], {
+    await runForecastLabCommand(['run', 'btc-markov-ultra-short-horizon', '--mutation', 'structured'], {
       log: (message) => output.push(message),
       write: (chunk) => writes.push(chunk),
       runLab: async () => ({
-        runId: 'runner-test-dry-run',
+        runId: 'runner-test-structured-summary',
         manifest: {
-          runId: 'runner-test-dry-run',
+          runId: 'runner-test-structured-summary',
           startedAt: '2026-05-02T00:00:00.000Z',
-          profileId: 'multi-asset-markov-short-horizon',
+          profileId: 'btc-markov-ultra-short-horizon',
           targetSubsystem: 'markov-distribution',
           baselineCommit: '0123456789abcdef0123456789abcdef01234567',
-          candidateBranch: 'topic/forecast-lab-runner-test-dry-run',
+          candidateBranch: 'topic/forecast-lab-runner-test-structured-summary',
           allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+          mutationMode: 'structured',
+          mutationId: 'markov-shorter-reactive-window',
+          mutationSummary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
+          mutationReplayPayload: {
+            kind: 'markov-parameter-candidate',
+            id: 'markov-shorter-reactive-window',
+            profileId: 'btc-markov-ultra-short-horizon',
+            mutatorId: 'search-replace',
+            specSummary: {
+              mutatorId: 'search-replace',
+              targetFiles: [
+                'src/tools/finance/markov-distribution.ts',
+                'src/tools/finance/conformal.ts',
+              ],
+              summary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
+            },
+            patchSummary: [
+              'markov-distribution.ts: momentumLookback 20 → 14',
+              'conformal.ts: scoreAggregationCalibrationWindow 120 → 96',
+            ],
+            edits: [
+              {
+                kind: 'search-replace',
+                parameterId: 'momentumLookback',
+                filePath: 'src/tools/finance/markov-distribution.ts',
+                beforeValue: 20,
+                afterValue: 14,
+                search: '  momentumLookback: 20,',
+                replace: '  momentumLookback: 14,',
+                expectedReplacements: 1,
+              },
+              {
+                kind: 'search-replace',
+                parameterId: 'scoreAggregationCalibrationWindow',
+                filePath: 'src/tools/finance/conformal.ts',
+                beforeValue: 120,
+                afterValue: 96,
+                search: '  scoreAggregationCalibrationWindow: 120,',
+                replace: '  scoreAggregationCalibrationWindow: 96,',
+                expectedReplacements: 1,
+              },
+            ],
+          },
           candidateWorkspace: {
             kind: 'candidate-worktree',
-            rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-dry-run'),
-            branch: 'topic/forecast-lab-runner-test-dry-run',
+            rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured-summary'),
+            branch: 'topic/forecast-lab-runner-test-structured-summary',
           },
-          artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run'),
+          artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-structured-summary'),
         },
         baseline: { exitCode: 0 },
         candidate: { exitCode: 0 },
         decision: {
           decision: 'keep',
-          reason: 'candidate walk-forward short-horizon test command must pass',
+          reason: 'candidate BTC ultra-short-horizon test command must pass',
           metrics: [
             {
-              name: 'walkForwardShortHorizonTestExitCode',
+              name: 'walkForwardBtcUltraShortHorizonTestExitCode',
               baseline: 0,
               candidate: 0,
               delta: 0,
@@ -910,35 +955,43 @@ describe('forecast-lab CLI module', () => {
           ],
         },
         ledgerEntry: {
-          runId: 'runner-test-dry-run',
+          runId: 'runner-test-structured-summary',
           startedAt: '2026-05-02T00:00:00.000Z',
-          profileId: 'multi-asset-markov-short-horizon',
+          profileId: 'btc-markov-ultra-short-horizon',
           targetSubsystem: 'markov-distribution',
-          candidateBranch: 'topic/forecast-lab-runner-test-dry-run',
+          candidateBranch: 'topic/forecast-lab-runner-test-structured-summary',
           allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+          mutationMode: 'structured',
+          mutationId: 'markov-shorter-reactive-window',
+          mutationSummary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
           candidateWorkspace: {
             kind: 'candidate-worktree',
-            rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-dry-run'),
-            branch: 'topic/forecast-lab-runner-test-dry-run',
+            rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured-summary'),
+            branch: 'topic/forecast-lab-runner-test-structured-summary',
           },
           baselineSummary: { exitCode: 0 },
           candidateSummary: { exitCode: 0 },
           decision: 'keep',
-          reason: 'candidate walk-forward short-horizon test command must pass',
-          artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run'),
+          reason: 'candidate BTC ultra-short-horizon test command must pass',
+          artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-structured-summary'),
         },
       }),
     });
 
     const text = output.join('\n');
-    expect(text).toContain('Running forecast-lab profile "multi-asset-markov-short-horizon"...');
+    expect(text).toContain('Running forecast-lab profile "btc-markov-ultra-short-horizon" with structured mutation...');
     expect(text).toContain('Evolution summary:');
     expect(text).toContain('baseline exitCode: 0');
     expect(text).toContain('candidate exitCode: 0');
-    expect(text).toContain('Previous parameters (baseline gate):');
-    expect(text).toContain('New parameters (candidate gate):');
-    expect(text).toContain('walk-forward-short-horizon: command=bun test src/tools/finance/backtest/walk-forward-short-horizon.test.ts --timeout 480000');
-    expect(text).toContain('forecast-lab keep: candidate walk-forward short-horizon test command must pass');
+    expect(text).toContain('Mutation summary: Shorten Markov/conformal calibration windows for faster short-horizon adaptation.');
+    expect(text).toContain('mutation id: markov-shorter-reactive-window');
+    expect(text).toContain('Previous parameters (baseline defaults):');
+    expect(text).toContain('New parameters (candidate mutation):');
+    expect(text).toContain('markov-distribution.ts: momentumLookback = 20');
+    expect(text).toContain('markov-distribution.ts: momentumLookback = 14');
+    expect(text).toContain('conformal.ts: scoreAggregationCalibrationWindow = 120');
+    expect(text).toContain('conformal.ts: scoreAggregationCalibrationWindow = 96');
+    expect(text).toContain('forecast-lab keep: candidate BTC ultra-short-horizon test command must pass');
     expect(writes).toEqual([]);
   });
 });

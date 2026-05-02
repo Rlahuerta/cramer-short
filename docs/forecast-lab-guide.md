@@ -166,6 +166,8 @@ If there is no compatible kept structured parent yet, the run starts from the cu
 
 The old id `btc-markov-short-horizon` is still accepted as a compatibility alias, but the canonical shipped profile name is now `multi-asset-markov-short-horizon`. The old name was misleading because this gate is not BTC-only.
 
+For real structured mutation runs, the CLI now prints the **selected mutator** and **patch summary** before the long baseline gate begins, and the final summary prints the concrete **previous parameter values** and **new mutated values** rather than only echoing the harness command.
+
 For debugging, you can keep the workspace around:
 
 ```bash
@@ -206,7 +208,7 @@ If you want the mutation feature to be useful instead of confusing, use it in th
    3. `manifest.json`
    4. `forecast-results.tsv`
 
-   `candidate.json` tells you what actually ran. `manifest.json` tells you the mutation contract, lineage, workspace, and replay payload that made the candidate reproducible.
+   `candidate.json` tells you what actually ran. `manifest.json` tells you the mutation contract, lineage, workspace, and replay payload that made the candidate reproducible. The terminal summary should also show a human-readable before/after parameter diff for the applied mutation.
 
 4. **Use `--mutator` only when you are debugging or comparing a specific shipped mutation.**
    If you do not force a mutator, Forecast Lab picks the first shipped mutation that is both:
