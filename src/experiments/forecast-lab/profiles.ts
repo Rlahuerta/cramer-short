@@ -64,9 +64,21 @@ export interface ForecastLabKeepDropRule {
   };
 }
 
+export interface ForecastLabProfileRoutingKeywordGroup {
+  readonly label: string;
+  readonly terms: readonly string[];
+  readonly weight?: number;
+}
+
+export interface ForecastLabProfileRoutingMetadata {
+  readonly summary: string;
+  readonly keywordGroups: readonly ForecastLabProfileRoutingKeywordGroup[];
+}
+
 export interface ForecastLabProfile {
   readonly id: ForecastLabProfileId;
   readonly targetSubsystem: ForecastLabTargetSubsystem;
+  readonly routing: ForecastLabProfileRoutingMetadata;
   readonly allowedGlobs: readonly string[];
   readonly mutation: ForecastLabProfileMutationConfig;
   readonly readOnlyHarnessFiles: readonly string[];
@@ -155,10 +167,68 @@ const POLYMARKET_SELECTION_COMMANDS = deepFreeze([
   },
 ] as const satisfies readonly ForecastLabCommand[]);
 
+const MULTI_ASSET_MARKOV_SHORT_HORIZON_ROUTING = deepFreeze({
+  summary: 'Improve multi-asset short-horizon Markov mechanics.',
+  keywordGroups: [
+    { label: 'multi-asset context', terms: ['multi-asset', 'multi asset', 'cross-asset', 'cross asset'] },
+    { label: 'short-horizon mechanics', terms: ['short-horizon', 'short horizon', 'mechanics'] },
+    { label: 'markov context', terms: ['markov'] },
+    {
+      label: 'profile id',
+      terms: ['multi-asset-markov-short-horizon', 'btc-markov-short-horizon'],
+      weight: 3,
+    },
+  ],
+} as const satisfies ForecastLabProfileRoutingMetadata);
+
+const BTC_MARKOV_ULTRA_SHORT_HORIZON_ROUTING = deepFreeze({
+  summary: 'Improve BTC ultra-short-horizon Markov behavior for 1d/2d/3d forecasts.',
+  keywordGroups: [
+    { label: 'btc asset', terms: ['btc', 'bitcoin'] },
+    {
+      label: 'ultra-short horizons',
+      terms: ['1d/2d/3d', '1d', '2d', '3d', 'ultra-short-horizon', 'ultra short horizon', 'ultra-short'],
+    },
+    { label: 'markov context', terms: ['markov', 'short-horizon', 'short horizon'] },
+    {
+      label: 'profile id',
+      terms: ['btc-markov-ultra-short-horizon'],
+      weight: 3,
+    },
+  ],
+} as const satisfies ForecastLabProfileRoutingMetadata);
+
+const BTC_ARBITER_REPLAY_ROUTING = deepFreeze({
+  summary: 'Improve BTC forecast arbiter replay behavior.',
+  keywordGroups: [
+    { label: 'arbiter context', terms: ['arbiter', 'arbitrator'] },
+    { label: 'replay context', terms: ['replay', 'replays'] },
+    {
+      label: 'profile id',
+      terms: ['btc-arbiter-replay'],
+      weight: 3,
+    },
+  ],
+} as const satisfies ForecastLabProfileRoutingMetadata);
+
+const POLYMARKET_SELECTION_ROUTING = deepFreeze({
+  summary: 'Improve Polymarket forecast selection sanity behavior.',
+  keywordGroups: [
+    { label: 'polymarket context', terms: ['polymarket'] },
+    { label: 'selection sanity', terms: ['selection', 'sanity'] },
+    {
+      label: 'profile id',
+      terms: ['polymarket-selection-sanity'],
+      weight: 3,
+    },
+  ],
+} as const satisfies ForecastLabProfileRoutingMetadata);
+
 const PROFILES_BY_ID = deepFreeze({
   'multi-asset-markov-short-horizon': {
     id: 'multi-asset-markov-short-horizon',
     targetSubsystem: 'markov-distribution',
+    routing: MULTI_ASSET_MARKOV_SHORT_HORIZON_ROUTING,
     allowedGlobs: MARKOV_MUTABLE_FILES,
     mutation: defineForecastLabProfileMutationConfig({
       mode: 'structured',
@@ -211,6 +281,7 @@ const PROFILES_BY_ID = deepFreeze({
   'btc-markov-ultra-short-horizon': {
     id: 'btc-markov-ultra-short-horizon',
     targetSubsystem: 'markov-distribution',
+    routing: BTC_MARKOV_ULTRA_SHORT_HORIZON_ROUTING,
     allowedGlobs: MARKOV_MUTABLE_FILES,
     mutation: defineForecastLabProfileMutationConfig({
       mode: 'structured',
@@ -262,6 +333,7 @@ const PROFILES_BY_ID = deepFreeze({
   'btc-arbiter-replay': {
     id: 'btc-arbiter-replay',
     targetSubsystem: 'forecast-arbiter',
+    routing: BTC_ARBITER_REPLAY_ROUTING,
     allowedGlobs: ARBITER_MUTABLE_FILES,
     mutation: defineForecastLabProfileMutationConfig({
       mode: 'dry-run',
@@ -313,6 +385,7 @@ const PROFILES_BY_ID = deepFreeze({
   'polymarket-selection-sanity': {
     id: 'polymarket-selection-sanity',
     targetSubsystem: 'polymarket-selection',
+    routing: POLYMARKET_SELECTION_ROUTING,
     allowedGlobs: POLYMARKET_MUTABLE_FILES,
     mutation: defineForecastLabProfileMutationConfig({
       mode: 'dry-run',
@@ -414,6 +487,12 @@ export function getForecastLabProfile(profileId: string): ForecastLabProfile {
     throw new ForecastLabProfileError(`Unknown forecast-lab profile id: ${profileId}`);
   }
   return PROFILES_BY_ID[normalized];
+}
+
+export function getForecastLabProfileRoutingMetadata(
+  profileId: string,
+): ForecastLabProfileRoutingMetadata {
+  return getForecastLabProfile(profileId).routing;
 }
 
 export function listForecastLabStructuredMutations(

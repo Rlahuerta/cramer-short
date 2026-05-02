@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'bun:test';
-import type { ForecastLabProfile, ForecastLabProfileId } from './profiles.js';
+import type {
+  ForecastLabProfile,
+  ForecastLabProfileId,
+  ForecastLabProfileRoutingMetadata,
+} from './profiles.js';
 import { listForecastLabMutatorIds } from './mutation.js';
 import {
   FORECAST_LAB_PROFILES,
   FORECAST_LAB_READ_ONLY_HARNESS_FILES,
   assertForecastLabProfileId,
   getForecastLabProfile,
+  getForecastLabProfileRoutingMetadata,
   isCanonicalForecastLabProfileId,
   isForecastLabProfileId,
   listForecastLabProfiles,
@@ -188,6 +193,30 @@ describe('forecast-lab profiles', () => {
     assertForecastLabProfileId(id);
     const narrowed = normalizeForecastLabProfileId(id);
     expect(narrowed).toBe('polymarket-selection-sanity');
+  });
+
+  it('exposes typed reusable routing metadata for each profile', () => {
+    for (const profileId of EXPECTED_PROFILE_IDS) {
+      const profile = getForecastLabProfile(profileId);
+      const routing: ForecastLabProfileRoutingMetadata = getForecastLabProfileRoutingMetadata(profileId);
+
+      expect(routing).toBe(profile.routing);
+      expect(Object.isFrozen(routing)).toBe(true);
+      expect(routing.summary.length).toBeGreaterThan(0);
+      expect(routing.keywordGroups.length).toBeGreaterThan(0);
+
+      for (const group of routing.keywordGroups) {
+        expect(group.label.length).toBeGreaterThan(0);
+        expect(group.terms.length).toBeGreaterThan(0);
+      }
+    }
+
+    expect(getForecastLabProfileRoutingMetadata('btc-markov-ultra-short-horizon').keywordGroups.map((group) => group.label)).toEqual(
+      expect.arrayContaining(['btc asset', 'ultra-short horizons']),
+    );
+    expect(getForecastLabProfileRoutingMetadata('btc-arbiter-replay').keywordGroups.map((group) => group.label)).toEqual(
+      expect.arrayContaining(['arbiter context', 'replay context']),
+    );
   });
 
   it('is immutable enough for callers to reuse safely', () => {
