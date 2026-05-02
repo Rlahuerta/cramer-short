@@ -1,10 +1,12 @@
-import { listForecastLabProfiles } from './experiments/forecast-lab/profiles.js';
+import { getForecastLabProfile, listForecastLabProfiles } from './experiments/forecast-lab/profiles.js';
+import type { ForecastLabCommand } from './experiments/forecast-lab/profiles.js';
 import { runForecastLab } from './experiments/forecast-lab/runner.js';
 import type { ForecastLabRunOptions, ForecastLabRunResult } from './experiments/forecast-lab/runner.js';
 
 type ForecastLabCliOptions = {
   readonly log?: (message: string) => void;
   readonly error?: (message: string) => void;
+  readonly write?: (chunk: string) => void;
   readonly exit?: (code: number) => void;
   readonly runLab?: (options: ForecastLabRunOptions) => Promise<ForecastLabRunResult>;
 };
@@ -37,9 +39,74 @@ function parseRunArgs(argv: string[]): ForecastLabRunOptions {
   };
 }
 
+function formatCommandParameters(commands: readonly ForecastLabCommand[]): string[] {
+  return commands.map((command) => {
+    const parts = [`command=${command.command}`];
+
+    if (command.timeoutMs !== undefined) {
+      parts.push(`timeoutMs=${command.timeoutMs}`);
+    }
+
+    if (command.env && Object.keys(command.env).length > 0) {
+      parts.push(`env=${JSON.stringify(command.env)}`);
+    }
+
+    return `  - ${command.id}: ${parts.join(', ')}`;
+  });
+}
+
+function readExitCode(summary: unknown): number | undefined {
+  if (!summary || typeof summary !== 'object') {
+    return undefined;
+  }
+
+  const exitCode = (summary as Record<string, unknown>).exitCode;
+  return typeof exitCode === 'number' ? exitCode : undefined;
+}
+
+function printRunSummary(log: (message: string) => void, result: ForecastLabRunResult): void {
+  const profile = getForecastLabProfile(result.manifest.profileId);
+  const baselineExitCode = readExitCode(result.baseline);
+  const candidateExitCode = readExitCode(result.candidate);
+
+  log('');
+  log('Evolution summary:');
+  if (baselineExitCode !== undefined) {
+    log(`  baseline exitCode: ${baselineExitCode}`);
+  }
+  if (candidateExitCode !== undefined) {
+    log(`  candidate exitCode: ${candidateExitCode}`);
+  }
+
+  if (result.decision.metrics.length > 0) {
+    log('  compared metrics:');
+    for (const metric of result.decision.metrics) {
+      log(`    - ${metric.name}: baseline=${metric.baseline}, candidate=${metric.candidate}, delta=${metric.delta}`);
+    }
+  }
+
+  log('');
+  log('Previous parameters (baseline gate):');
+  for (const line of formatCommandParameters(profile.baselineCommands)) {
+    log(line);
+  }
+
+  log('');
+  log('New parameters (candidate gate):');
+  for (const line of formatCommandParameters(profile.candidateCommands)) {
+    log(line);
+  }
+
+  if (profile.baselineCommands === profile.candidateCommands) {
+    log('');
+    log('Note: in V1 dry-run mode there is no source mutation, so baseline and candidate parameters are typically identical.');
+  }
+}
+
 export async function runForecastLabCommand(argv: string[], options: ForecastLabCliOptions = {}): Promise<void> {
   const log = options.log ?? console.log;
   const error = options.error ?? console.error;
+  const write = options.write ?? ((chunk: string) => process.stdout.write(chunk));
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const [subCmd] = argv;
 
@@ -66,7 +133,14 @@ export async function runForecastLabCommand(argv: string[], options: ForecastLab
 
     try {
       const runLab = options.runLab ?? runForecastLab;
-      const result = await runLab(parseRunArgs(argv));
+      const runOptions = parseRunArgs(argv);
+      log(`Running forecast-lab profile "${runOptions.profileId}"...`);
+      const result = await runLab({
+        ...runOptions,
+        progress: log,
+        output: write,
+      });
+      printRunSummary(log, result);
       log(`forecast-lab ${result.decision.decision}: ${result.decision.reason}`);
       log(`artifacts: ${result.manifest.artifactsPath}`);
     } catch (caught) {

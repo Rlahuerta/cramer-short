@@ -1,5 +1,4 @@
-import { exec } from 'node:child_process';
-import type { ExecException } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
 import {
@@ -20,6 +19,7 @@ export interface ForecastLabCommandRunContext {
   readonly phase: ForecastLabGatePhase;
   readonly profile: ForecastLabProfile;
   readonly runId: string;
+  readonly output?: (chunk: string) => void;
 }
 
 export interface ForecastLabCommandResult {
@@ -64,6 +64,8 @@ export interface ForecastLabRunOptions {
   readonly now?: () => Date;
   readonly commandRunner?: ForecastLabCommandRunner;
   readonly ledgerPath?: string;
+  readonly progress?: (message: string) => void;
+  readonly output?: (chunk: string) => void;
 }
 
 export interface ForecastLabRunResult {
@@ -101,47 +103,70 @@ function writeJsonArtifact(path: string, value: unknown): void {
   writeFileSync(path, `${stableJsonStringify(value)}\n`, 'utf8');
 }
 
-function toCommandResult(
-  command: ForecastLabCommand,
-  startedAtMs: number,
-  error: ExecException | null,
-  stdout: string,
-  stderr: string,
-): ForecastLabCommandResult {
-  return {
-    id: command.id,
-    command: command.command,
-    exitCode: typeof error?.code === 'number' ? error.code : error ? 1 : 0,
-    stdout,
-    stderr,
-    durationMs: Date.now() - startedAtMs,
-    timedOut: Boolean(error?.killed),
-  };
-}
-
 function assertSafeProfileCommand(command: ForecastLabCommand): void {
   if (UNSAFE_SHELL_COMMAND_PATTERN.test(command.command) || UNSAFE_GIT_COMMAND_PATTERN.test(command.command)) {
     throw new ForecastLabRunnerError(`Unsafe forecast-lab command "${command.id}" is not allowed`);
   }
 }
 
-export const defaultForecastLabCommandRunner: ForecastLabCommandRunner = async (command) => {
+export const defaultForecastLabCommandRunner: ForecastLabCommandRunner = async (command, context) => {
   assertSafeProfileCommand(command);
   const startedAtMs = Date.now();
 
   return await new Promise<ForecastLabCommandResult>((resolveResult) => {
-    exec(
-      command.command,
-      {
-        cwd: process.cwd(),
-        env: { ...process.env, ...(command.env ?? {}) },
-        maxBuffer: 10 * 1024 * 1024,
-        timeout: command.timeoutMs,
-      },
-      (error, stdout, stderr) => {
-        resolveResult(toCommandResult(command, startedAtMs, error, stdout, stderr));
-      },
-    );
+    const child = spawn(command.command, {
+      cwd: process.cwd(),
+      env: { ...process.env, ...(command.env ?? {}) },
+      shell: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let timeoutHandle: Timer | undefined;
+    let killHandle: Timer | undefined;
+
+    if (command.timeoutMs) {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGTERM');
+        killHandle = setTimeout(() => {
+          child.kill('SIGKILL');
+        }, 5_000);
+      }, command.timeoutMs);
+    }
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      const text = chunk.toString();
+      stdout += text;
+      context.output?.(text);
+    });
+
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      const text = chunk.toString();
+      stderr += text;
+      context.output?.(text);
+    });
+
+    child.on('close', (code) => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      if (killHandle) {
+        clearTimeout(killHandle);
+      }
+
+      resolveResult({
+        id: command.id,
+        command: command.command,
+        exitCode: typeof code === 'number' ? code : 1,
+        stdout,
+        stderr,
+        durationMs: Date.now() - startedAtMs,
+        timedOut,
+      });
+    });
   });
 };
 
@@ -150,12 +175,17 @@ async function runGate(
   profile: ForecastLabProfile,
   runId: string,
   commandRunner: ForecastLabCommandRunner,
+  progress?: (message: string) => void,
+  output?: (chunk: string) => void,
 ): Promise<ForecastLabGateSummary> {
   const commands = phase === 'baseline' ? profile.baselineCommands : profile.candidateCommands;
   const results: ForecastLabCommandResult[] = [];
 
   for (const command of commands) {
-    results.push(await commandRunner(command, { phase, profile, runId }));
+    progress?.(`${phase}: running ${command.id} — ${command.command}`);
+    const result = await commandRunner(command, { phase, profile, runId, output });
+    progress?.(`${phase}: completed ${command.id} (exit ${result.exitCode}, ${result.durationMs}ms)`);
+    results.push(result);
   }
 
   return {
@@ -277,6 +307,8 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   const runId = options.runId ?? makeRunId(profile.id, new Date(startedAt));
   const dryRun = options.dryRun === true;
   const skipMutation = options.skipMutation === true;
+  const progress = options.progress;
+  const output = options.output;
 
   if (!dryRun && !skipMutation) {
     throw new ForecastLabRunnerError(
@@ -307,21 +339,28 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   };
 
   writeRunManifest(manifestPath, manifest);
+  progress?.(`forecast-lab: started ${profile.id} (${runId})`);
+  progress?.(`forecast-lab: manifest written to ${manifestPath}`);
 
   const commandRunner = options.commandRunner ?? defaultForecastLabCommandRunner;
-  const baseline = await runGate('baseline', profile, runId, commandRunner);
+  progress?.('forecast-lab: starting baseline gate');
+  const baseline = await runGate('baseline', profile, runId, commandRunner, progress, output);
   writeJsonArtifact(baselinePath, baseline);
+  progress?.(`forecast-lab: baseline results written to ${baselinePath}`);
 
-  const candidate = await runGate('candidate', profile, runId, commandRunner);
+  progress?.(`forecast-lab: starting candidate gate (${dryRun ? 'dry-run' : 'skip-mutation'})`);
+  const candidate = await runGate('candidate', profile, runId, commandRunner, progress, output);
   const mutationStatus = dryRun ? 'dry-run: no code mutation attempted' : 'skipped by --skip-mutation';
   writeJsonArtifact(candidatePath, {
     ...candidate,
     mutation: mutationStatus,
   });
+  progress?.(`forecast-lab: candidate results written to ${candidatePath}`);
 
   const measuredDecision = decideRun(profile, baseline, candidate);
   const decision = skipMutation ? dropSkippedMutation(measuredDecision) : measuredDecision;
   writeJsonArtifact(decisionPath, decision);
+  progress?.(`forecast-lab: decision ${decision.decision} — ${decision.reason}`);
 
   const ledgerEntry: ForecastLabLedgerEntry = {
     runId,
@@ -338,6 +377,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   };
 
   appendLedgerEntry(ledgerPath, ledgerEntry);
+  progress?.(`forecast-lab: ledger appended at ${ledgerPath}`);
 
   return {
     runId,

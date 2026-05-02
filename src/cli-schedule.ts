@@ -228,6 +228,7 @@ async function runForecastLabJob(job: ForecastLabScheduleJob, options: ScheduleC
   const log = options.log ?? console.log;
   const now = options.now ?? (() => new Date());
   const runLab = options.runLab ?? runForecastLab;
+  const write = options.write ?? ((message: string) => process.stdout.write(message));
 
   assertForecastLabJob(job);
 
@@ -236,6 +237,8 @@ async function runForecastLabJob(job: ForecastLabScheduleJob, options: ScheduleC
     profileId: job.profileId,
     dryRun: job.dryRun ?? (job.skipMutation !== true),
     skipMutation: job.skipMutation === true,
+    progress: log,
+    output: write,
   });
 
   log(`forecast-lab ${result.decision.decision}: ${result.decision.reason}`);

@@ -44,6 +44,8 @@ afterEach(cleanup);
 describe('forecast-lab runner', () => {
   it('dry-run completes baseline, candidate, decision, and ledger write with an injected command runner', async () => {
     const calls: string[] = [];
+    const progress: string[] = [];
+    const output: string[] = [];
     const result = await runForecastLab({
       profileId: 'btc-markov-short-horizon',
       dryRun: true,
@@ -51,6 +53,8 @@ describe('forecast-lab runner', () => {
       now: () => new Date('2026-05-02T00:00:00.000Z'),
       ledgerPath: TEST_LEDGER_PATH,
       commandRunner: passingRunner(calls),
+      progress: (message) => progress.push(message),
+      output: (chunk) => output.push(chunk),
     });
 
     expect(calls).toEqual([
@@ -76,6 +80,21 @@ describe('forecast-lab runner', () => {
       decision: 'keep',
       artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run'),
     });
+    expect(progress).toEqual([
+      'forecast-lab: started btc-markov-short-horizon (runner-test-dry-run)',
+      `forecast-lab: manifest written to ${join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run', 'manifest.json')}`,
+      'forecast-lab: starting baseline gate',
+      'baseline: running walk-forward-short-horizon — bun test src/tools/finance/backtest/walk-forward-short-horizon.test.ts --timeout 480000',
+      'baseline: completed walk-forward-short-horizon (exit 0, 1ms)',
+      `forecast-lab: baseline results written to ${join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run', 'baseline.json')}`,
+      'forecast-lab: starting candidate gate (dry-run)',
+      'candidate: running walk-forward-short-horizon — bun test src/tools/finance/backtest/walk-forward-short-horizon.test.ts --timeout 480000',
+      'candidate: completed walk-forward-short-horizon (exit 0, 1ms)',
+      `forecast-lab: candidate results written to ${join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run', 'candidate.json')}`,
+      'forecast-lab: decision keep — candidate walk-forward short-horizon test command must pass; candidate walk-forward short-horizon test command must not regress versus baseline',
+      `forecast-lab: ledger appended at ${TEST_LEDGER_PATH}`,
+    ]);
+    expect(output).toEqual([]);
   });
 
   it('rejects unknown profiles before running commands', async () => {
@@ -203,5 +222,65 @@ describe('forecast-lab CLI module', () => {
     expect(exitCode).toBe(1);
     expect(errors.join('\n')).toContain('Missing forecast-lab profile id.');
     expect(output.join('\n')).toContain('cramer-short lab run <profileId> --dry-run');
+  });
+
+  it('prints evolution and parameter summaries after a successful run', async () => {
+    const output: string[] = [];
+    const writes: string[] = [];
+
+    await runForecastLabCommand(['run', 'btc-markov-short-horizon', '--dry-run'], {
+      log: (message) => output.push(message),
+      write: (chunk) => writes.push(chunk),
+      runLab: async () => ({
+        runId: 'runner-test-dry-run',
+        manifest: {
+          runId: 'runner-test-dry-run',
+          startedAt: '2026-05-02T00:00:00.000Z',
+          profileId: 'btc-markov-short-horizon',
+          targetSubsystem: 'markov-distribution',
+          candidateBranch: 'topic/forecast-lab-runner-test-dry-run',
+          allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+          artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run'),
+        },
+        baseline: { exitCode: 0 },
+        candidate: { exitCode: 0 },
+        decision: {
+          decision: 'keep',
+          reason: 'candidate walk-forward short-horizon test command must pass',
+          metrics: [
+            {
+              name: 'walkForwardShortHorizonTestExitCode',
+              baseline: 0,
+              candidate: 0,
+              delta: 0,
+            },
+          ],
+        },
+        ledgerEntry: {
+          runId: 'runner-test-dry-run',
+          startedAt: '2026-05-02T00:00:00.000Z',
+          profileId: 'btc-markov-short-horizon',
+          targetSubsystem: 'markov-distribution',
+          candidateBranch: 'topic/forecast-lab-runner-test-dry-run',
+          allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+          baselineSummary: { exitCode: 0 },
+          candidateSummary: { exitCode: 0 },
+          decision: 'keep',
+          reason: 'candidate walk-forward short-horizon test command must pass',
+          artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run'),
+        },
+      }),
+    });
+
+    const text = output.join('\n');
+    expect(text).toContain('Running forecast-lab profile "btc-markov-short-horizon"...');
+    expect(text).toContain('Evolution summary:');
+    expect(text).toContain('baseline exitCode: 0');
+    expect(text).toContain('candidate exitCode: 0');
+    expect(text).toContain('Previous parameters (baseline gate):');
+    expect(text).toContain('New parameters (candidate gate):');
+    expect(text).toContain('walk-forward-short-horizon: command=bun test src/tools/finance/backtest/walk-forward-short-horizon.test.ts --timeout 480000');
+    expect(text).toContain('forecast-lab keep: candidate walk-forward short-horizon test command must pass');
+    expect(writes).toEqual([]);
   });
 });

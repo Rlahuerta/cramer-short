@@ -11,6 +11,7 @@ import {
 
 const EXPECTED_PROFILE_IDS: readonly ForecastLabProfileId[] = [
   'btc-markov-short-horizon',
+  'btc-markov-ultra-short-horizon',
   'btc-arbiter-replay',
   'polymarket-selection-sanity',
 ];
@@ -31,6 +32,17 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
       },
     ],
     metricName: 'walkForwardShortHorizonTestExitCode',
+  },
+  'btc-markov-ultra-short-horizon': {
+    commands: [
+      {
+        id: 'walk-forward-btc-ultra-short-horizon',
+        command: 'bun test src/tools/finance/backtest/walk-forward-btc-ultra-short-horizon.test.ts --timeout 360000',
+        env: { RUN_INTEGRATION: '1' },
+        timeoutMs: 360_000,
+      },
+    ],
+    metricName: 'walkForwardBtcUltraShortHorizonTestExitCode',
   },
   'btc-arbiter-replay': {
     commands: [
@@ -64,6 +76,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
 
 const EXPECTED_READ_ONLY_HARNESSES = {
   'btc-markov-short-horizon': ['src/tools/finance/backtest/walk-forward.ts'],
+  'btc-markov-ultra-short-horizon': ['src/tools/finance/backtest/walk-forward.ts'],
   'btc-arbiter-replay': ['src/tools/finance/backtest/arbiter-replay-runner.ts'],
   'polymarket-selection-sanity': [],
 } as const satisfies Record<ForecastLabProfileId, readonly string[]>;
@@ -107,6 +120,7 @@ describe('forecast-lab profiles', () => {
 
   it('gets known profiles and rejects unknown profile ids', () => {
     expect(getForecastLabProfile('btc-markov-short-horizon').targetSubsystem).toBe('markov-distribution');
+    expect(getForecastLabProfile('btc-markov-ultra-short-horizon').targetSubsystem).toBe('markov-distribution');
     expect(isForecastLabProfileId('btc-arbiter-replay')).toBe(true);
     expect(isForecastLabProfileId('unknown-profile')).toBe(false);
     expect(() => getForecastLabProfile('unknown-profile')).toThrow(/Unknown forecast-lab profile id/);
@@ -162,6 +176,10 @@ describe('forecast-lab profiles', () => {
         harness: 'src/tools/finance/backtest/walk-forward.ts',
       },
       {
+        commandNeedle: 'walk-forward-btc-ultra-short-horizon.test.ts',
+        harness: 'src/tools/finance/backtest/walk-forward.ts',
+      },
+      {
         commandNeedle: 'arbiter-replay-runner.test.ts',
         harness: 'src/tools/finance/backtest/arbiter-replay-runner.ts',
       },
@@ -169,11 +187,15 @@ describe('forecast-lab profiles', () => {
 
     for (const profile of listForecastLabProfiles()) {
       const commands = profile.baselineCommands.map((command) => command.command);
+      const expectedHarnesses = new Set(
+        commandHarnessPairs
+          .filter(({ commandNeedle }) =>
+            commands.some((command) => command.includes(commandNeedle)))
+          .map(({ harness }) => harness),
+      );
 
-      for (const { commandNeedle, harness } of commandHarnessPairs) {
-        const runsRelatedCommand = commands.some((command) => command.includes(commandNeedle));
-
-        expect(profile.readOnlyHarnessFiles.includes(harness)).toBe(runsRelatedCommand);
+      for (const harness of FORECAST_LAB_READ_ONLY_HARNESS_FILES) {
+        expect(profile.readOnlyHarnessFiles.includes(harness)).toBe(expectedHarnesses.has(harness));
       }
     }
   });

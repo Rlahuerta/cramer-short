@@ -2,6 +2,7 @@ import type { ForecastLabDecision } from './types.js';
 
 export type ForecastLabProfileId =
   | 'btc-markov-short-horizon'
+  | 'btc-markov-ultra-short-horizon'
   | 'btc-arbiter-replay'
   | 'polymarket-selection-sanity';
 
@@ -93,6 +94,15 @@ const WALK_FORWARD_SHORT_HORIZON_COMMANDS = deepFreeze([
   },
 ] as const satisfies readonly ForecastLabCommand[]);
 
+const WALK_FORWARD_BTC_ULTRA_SHORT_HORIZON_COMMANDS = deepFreeze([
+  {
+    id: 'walk-forward-btc-ultra-short-horizon',
+    command: 'bun test src/tools/finance/backtest/walk-forward-btc-ultra-short-horizon.test.ts --timeout 360000',
+    env: { RUN_INTEGRATION: '1' },
+    timeoutMs: 360_000,
+  },
+] as const satisfies readonly ForecastLabCommand[]);
+
 const ARBITER_REPLAY_COMMANDS = deepFreeze([
   {
     id: 'arbiter-replay-runner',
@@ -156,6 +166,56 @@ const PROFILES_BY_ID = deepFreeze({
             operator: 'candidate-value-gte',
             value: 1,
             reason: 'drop when the walk-forward short-horizon test command fails',
+          },
+        ],
+      },
+    },
+  },
+  'btc-markov-ultra-short-horizon': {
+    id: 'btc-markov-ultra-short-horizon',
+    targetSubsystem: 'markov-distribution',
+    allowedGlobs: [
+      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/conformal.ts',
+      'src/tools/finance/regime-calibrator.ts',
+    ],
+    readOnlyHarnessFiles: ['src/tools/finance/backtest/walk-forward.ts'],
+    baselineCommands: WALK_FORWARD_BTC_ULTRA_SHORT_HORIZON_COMMANDS,
+    candidateCommands: WALK_FORWARD_BTC_ULTRA_SHORT_HORIZON_COMMANDS,
+    minimumMetrics: [
+      {
+        name: 'walkForwardBtcUltraShortHorizonTestExitCode',
+        baselinePath: 'baseline.exitCode',
+        candidatePath: 'candidate.exitCode',
+        direction: 'lower-is-better',
+        required: true,
+      },
+    ],
+    keepDropRule: {
+      defaultDecision: 'drop',
+      keepWhen: {
+        all: [
+          {
+            metric: 'walkForwardBtcUltraShortHorizonTestExitCode',
+            operator: 'candidate-value-lte',
+            value: 0,
+            reason: 'candidate BTC ultra-short-horizon test command must pass',
+          },
+          {
+            metric: 'walkForwardBtcUltraShortHorizonTestExitCode',
+            operator: 'candidate-delta-lte',
+            value: 0,
+            reason: 'candidate BTC ultra-short-horizon test command must not regress versus baseline',
+          },
+        ],
+      },
+      dropWhen: {
+        any: [
+          {
+            metric: 'walkForwardBtcUltraShortHorizonTestExitCode',
+            operator: 'candidate-value-gte',
+            value: 1,
+            reason: 'drop when the BTC ultra-short-horizon test command fails',
           },
         ],
       },
@@ -265,6 +325,7 @@ const PROFILES_BY_ID = deepFreeze({
 
 export const FORECAST_LAB_PROFILES = deepFreeze([
   PROFILES_BY_ID['btc-markov-short-horizon'],
+  PROFILES_BY_ID['btc-markov-ultra-short-horizon'],
   PROFILES_BY_ID['btc-arbiter-replay'],
   PROFILES_BY_ID['polymarket-selection-sanity'],
 ] as const satisfies readonly ForecastLabProfile[]);

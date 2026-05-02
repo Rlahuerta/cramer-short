@@ -177,11 +177,13 @@ describe('schedule command', () => {
     await runScheduleCommand(['run', 'nightly-lab'], options);
 
     expect(calls).toEqual([
-      {
+      expect.objectContaining({
         profileId: 'btc-markov-short-horizon',
         dryRun: true,
         skipMutation: false,
-      },
+        progress: expect.any(Function),
+        output: expect.any(Function),
+      }),
     ]);
     expect(output.join('\n')).toContain('forecast-lab keep: candidate passed');
   });
@@ -234,11 +236,13 @@ describe('schedule command', () => {
 
     expect(errors).toEqual([]);
     expect(calls).toEqual([
-      {
+      expect.objectContaining({
         profileId: 'btc-markov-short-horizon',
         dryRun: false,
         skipMutation: true,
-      },
+        progress: expect.any(Function),
+        output: expect.any(Function),
+      }),
     ]);
   });
 
