@@ -1,5 +1,7 @@
 """Backtest parity tests for walk-forward with optional HMM enhancement."""
 
+import math
+
 import numpy as np
 import pytest
 
@@ -236,3 +238,141 @@ def test_walk_forward_result_dataclass():
         realised_price=100, direction_correct=True, in_ci=True,
     ))
     assert len(result.steps) == 1
+
+
+# ---------------------------------------------------------------------------
+# CRPS / scaled CRPS / Murphy-Winkler parity tests
+# ---------------------------------------------------------------------------
+
+
+class TestCrpsParity:
+    """CRPS computed as normal approximation from step interval, matching TS."""
+
+    def test_crps_empty_returns_zero(self):
+        from research.backtest.metrics import crps
+        assert crps([]) == 0.0
+
+    def test_crps_single_step(self):
+        from research.backtest.metrics import crps
+        step = BacktestStep(
+            start_idx=0, predicted_prob=0.55, predicted_return=0.03,
+            ci_lower=90, ci_upper=110, realised_return=0.05,
+            realised_price=105, direction_correct=True, in_ci=True,
+        )
+        result = crps([step])
+        # fc = 105/(1.05)*1.03 = 103, sigma = 20/(2*1.64485) = 6.07957
+        # CRPS(105 | N(103, 6.07957))
+        assert result == pytest.approx(1.6809034392, rel=1e-9)
+
+    def test_crps_multiple_steps(self):
+        from research.backtest.metrics import crps
+        steps = [
+            BacktestStep(start_idx=0, predicted_prob=0.55, predicted_return=0.03,
+                         ci_lower=90, ci_upper=110, realised_return=0.05,
+                         realised_price=105, direction_correct=True, in_ci=True),
+            BacktestStep(start_idx=1, predicted_prob=0.60, predicted_return=0.01,
+                         ci_lower=95, ci_upper=105, realised_return=0.0,
+                         realised_price=100, direction_correct=False, in_ci=True),
+            BacktestStep(start_idx=2, predicted_prob=0.45, predicted_return=0.0,
+                         ci_lower=190, ci_upper=210, realised_return=-0.02,
+                         realised_price=195, direction_correct=False, in_ci=True),
+        ]
+        result = crps(steps)
+        assert result == pytest.approx(1.6485932011, rel=1e-9)
+
+    def test_crps_forecast_center_fallback(self):
+        """When realised_return ≈ -1, denominator → 0, uses CI midpoint fallback."""
+        from research.backtest.metrics import crps
+        step = BacktestStep(
+            start_idx=0, predicted_prob=0.5, predicted_return=0.0,
+            ci_lower=90, ci_upper=110, realised_return=-0.999999,
+            realised_price=100, direction_correct=False, in_ci=True,
+        )
+        # denominator = 1 + (-0.999999) ≈ 0 → fallback to (90+110)/2 = 100
+        # fc = 100 * (1+0) = 100, sigma = 20/(2*1.64485) = 6.07957
+        result = crps([step])
+        assert result > 0
+
+
+class TestScaledCrpsParity:
+    """Scaled CRPS divides each step CRPS by interval-implied sigma, matching TS."""
+
+    def test_scaled_crps_empty_returns_zero(self):
+        from research.backtest.metrics import scaled_crps
+        assert scaled_crps([]) == 0.0
+
+    def test_scaled_crps_multiple_steps(self):
+        from research.backtest.metrics import scaled_crps
+        steps = [
+            BacktestStep(start_idx=0, predicted_prob=0.55, predicted_return=0.03,
+                         ci_lower=90, ci_upper=110, realised_return=0.05,
+                         realised_price=105, direction_correct=True, in_ci=True),
+            BacktestStep(start_idx=1, predicted_prob=0.60, predicted_return=0.01,
+                         ci_lower=95, ci_upper=105, realised_return=0.0,
+                         realised_price=100, direction_correct=False, in_ci=True),
+            BacktestStep(start_idx=2, predicted_prob=0.45, predicted_return=0.0,
+                         ci_lower=190, ci_upper=210, realised_return=-0.02,
+                         realised_price=195, direction_correct=False, in_ci=True),
+        ]
+        result = scaled_crps(steps)
+        assert result == pytest.approx(0.3172501193, rel=1e-9)
+
+
+class TestMurphyWinklerParity:
+    """Murphy-Winkler interval score decomposition, matching TS."""
+
+    def test_empty_returns_zeros(self):
+        from research.backtest.metrics import murphy_winkler_decomposition
+        d = murphy_winkler_decomposition([])
+        assert d == {
+            "mean_width": 0.0,
+            "lower_miss_penalty": 0.0,
+            "upper_miss_penalty": 0.0,
+            "total_score": 0.0,
+            "coverage": 0.0,
+        }
+
+    def test_decomposition_known_values(self):
+        from research.backtest.metrics import murphy_winkler_decomposition
+        steps = [
+            BacktestStep(start_idx=0, predicted_prob=0.5, predicted_return=0.0,
+                         ci_lower=90, ci_upper=110, realised_return=0.0,
+                         realised_price=95, direction_correct=False, in_ci=True),
+            BacktestStep(start_idx=1, predicted_prob=0.5, predicted_return=0.0,
+                         ci_lower=90, ci_upper=110, realised_return=0.0,
+                         realised_price=85, direction_correct=False, in_ci=False),
+            BacktestStep(start_idx=2, predicted_prob=0.5, predicted_return=0.0,
+                         ci_lower=90, ci_upper=110, realised_return=0.0,
+                         realised_price=115, direction_correct=False, in_ci=False),
+            BacktestStep(start_idx=3, predicted_prob=0.5, predicted_return=0.0,
+                         ci_lower=90, ci_upper=110, realised_return=0.0,
+                         realised_price=105, direction_correct=False, in_ci=True),
+        ]
+        d = murphy_winkler_decomposition(steps)
+        assert d["mean_width"] == pytest.approx(20.0)
+        assert d["lower_miss_penalty"] == pytest.approx(25.0)
+        assert d["upper_miss_penalty"] == pytest.approx(25.0)
+        assert d["total_score"] == pytest.approx(70.0)
+        assert d["coverage"] == pytest.approx(0.5)
+
+    def test_decomposition_custom_alpha(self):
+        from research.backtest.metrics import murphy_winkler_decomposition
+        step = BacktestStep(
+            start_idx=0, predicted_prob=0.5, predicted_return=0.0,
+            ci_lower=90, ci_upper=110, realised_return=0.0,
+            realised_price=80, direction_correct=False, in_ci=False,
+        )
+        # alpha=0.05 → penalty_scale = 2/0.05 = 40
+        d = murphy_winkler_decomposition([step], alpha=0.05)
+        assert d["lower_miss_penalty"] == pytest.approx(40 * (90 - 80))
+
+    def test_score_is_total_from_decomposition(self):
+        from research.backtest.metrics import murphy_winkler_score, murphy_winkler_decomposition
+        steps = [
+            BacktestStep(start_idx=0, predicted_prob=0.5, predicted_return=0.0,
+                         ci_lower=90, ci_upper=110, realised_return=0.0,
+                         realised_price=85, direction_correct=False, in_ci=False),
+        ]
+        assert murphy_winkler_score(steps) == pytest.approx(
+            murphy_winkler_decomposition(steps)["total_score"]
+        )

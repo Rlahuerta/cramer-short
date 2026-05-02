@@ -3,12 +3,56 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import numpy as np
 
 if TYPE_CHECKING:
     from research.backtest.walk_forward import BacktestStep
+
+CENTRAL_90_Z = 1.6448536269514722
+SQRT_PI = math.sqrt(math.pi)
+MIN_SCALE = 1e-9
+
+
+def _normal_pdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+
+
+def _normal_cdf(x: float) -> float:
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def _derive_forecast_center(step: BacktestStep) -> float:
+    denominator = 1 + step.realised_return
+    if math.isfinite(denominator) and abs(denominator) > MIN_SCALE:
+        current_price = step.realised_price / denominator
+    else:
+        current_price = (step.ci_lower + step.ci_upper) / 2
+    forecast_center = current_price * (1 + step.predicted_return)
+    if math.isfinite(forecast_center):
+        return forecast_center
+    return (step.ci_lower + step.ci_upper) / 2
+
+
+def _derive_interval_scale(step: BacktestStep) -> float:
+    width = abs(step.ci_upper - step.ci_lower)
+    sigma = width / (2 * CENTRAL_90_Z)
+    if math.isfinite(sigma) and sigma > MIN_SCALE:
+        return sigma
+    return MIN_SCALE
+
+
+def _normal_crps(observed: float, mean: float, sigma: float) -> float:
+    z = (observed - mean) / sigma
+    return sigma * (z * (2 * _normal_cdf(z) - 1) + 2 * _normal_pdf(z) - 1 / SQRT_PI)
+
+
+def _step_crps(step: BacktestStep) -> float:
+    score = _normal_crps(step.realised_price, _derive_forecast_center(step), _derive_interval_scale(step))
+    if math.isfinite(score):
+        return max(0.0, score)
+    return 0.0
 
 
 def brier_score(steps: list[BacktestStep]) -> float:
@@ -129,3 +173,78 @@ def calibration_table(steps: list[BacktestStep], bins: int = 5) -> list[dict]:
                 }
             )
     return results
+
+
+# ---------------------------------------------------------------------------
+# CRPS / scaled CRPS / Murphy-Winkler interval score
+# ---------------------------------------------------------------------------
+
+
+class MurphyWinklerDecomposition(TypedDict):
+    mean_width: float
+    lower_miss_penalty: float
+    upper_miss_penalty: float
+    total_score: float
+    coverage: float
+
+
+def crps(steps: list[BacktestStep]) -> float:
+    """Continuous Ranked Probability Score using the backtest interval as a
+    central-normal approximation. Lower is better."""
+    if not steps:
+        return 0.0
+    return sum(_step_crps(s) for s in steps) / len(steps)
+
+
+def scaled_crps(steps: list[BacktestStep]) -> float:
+    """Locally scaled CRPS: step CRPS divided by interval-implied scale.
+    Lower is better."""
+    if not steps:
+        return 0.0
+    return sum(_step_crps(s) / _derive_interval_scale(s) for s in steps) / len(steps)
+
+
+def murphy_winkler_decomposition(
+    steps: list[BacktestStep],
+    alpha: float = 0.10,
+) -> MurphyWinklerDecomposition:
+    """Murphy-Winkler interval score decomposition for the primary step interval."""
+    if not steps:
+        return MurphyWinklerDecomposition(
+            mean_width=0.0,
+            lower_miss_penalty=0.0,
+            upper_miss_penalty=0.0,
+            total_score=0.0,
+            coverage=0.0,
+        )
+
+    penalty_scale = 2.0 / alpha
+    width_sum = 0.0
+    lower_penalty_sum = 0.0
+    upper_penalty_sum = 0.0
+    covered = 0
+
+    for step in steps:
+        lower = min(step.ci_lower, step.ci_upper)
+        upper = max(step.ci_lower, step.ci_upper)
+        width_sum += upper - lower
+        if step.realised_price < lower:
+            lower_penalty_sum += penalty_scale * (lower - step.realised_price)
+        elif step.realised_price > upper:
+            upper_penalty_sum += penalty_scale * (step.realised_price - upper)
+        else:
+            covered += 1
+
+    n = len(steps)
+    return MurphyWinklerDecomposition(
+        mean_width=width_sum / n,
+        lower_miss_penalty=lower_penalty_sum / n,
+        upper_miss_penalty=upper_penalty_sum / n,
+        total_score=(width_sum + lower_penalty_sum + upper_penalty_sum) / n,
+        coverage=covered / n,
+    )
+
+
+def murphy_winkler_score(steps: list[BacktestStep], alpha: float = 0.10) -> float:
+    """Total Murphy-Winkler interval score."""
+    return murphy_winkler_decomposition(steps, alpha)["total_score"]

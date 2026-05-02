@@ -122,3 +122,158 @@ class TestCoverageHelpers:
         c = ConformalPID()
         assert c.sample_count() == 0
         assert c.empirical_coverage() is None
+
+
+# ---------------------------------------------------------------------------
+# AdaptiveConformalPID parity tests
+# ---------------------------------------------------------------------------
+
+
+class TestAdaptiveConformalConstruction:
+    def test_defaults_match_ts(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID()
+        assert c.alpha == pytest.approx(0.1)
+        assert c.target_coverage == pytest.approx(0.9)
+        assert c.current_radius() > 0
+        assert c.current_mode() == "normal"
+
+    def test_enabled_with_custom_params(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(
+            alpha=0.05,
+            initial_radius=2.0,
+            enabled=True,
+            break_learning_rate_multiplier=2.0,
+            cooloff_window=3,
+        )
+        assert c.alpha == pytest.approx(0.05)
+        assert c.current_radius() == pytest.approx(2.0)
+        assert c.current_mode() == "normal"
+
+    def test_extends_base_conformal_pid(self):
+        from research.models.conformal import AdaptiveConformalPID, ConformalPID
+        c = AdaptiveConformalPID()
+        assert isinstance(c, ConformalPID)
+
+
+class TestAdaptiveConformalWrap:
+    def test_wrap_normal_mode_uses_current_radius(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(initial_radius=1.5, enabled=True)
+        iv = c.wrap(100.0)
+        assert iv.low == pytest.approx(98.5)
+        assert iv.high == pytest.approx(101.5)
+
+    def test_wrap_break_mode_inflates_radius(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(
+            initial_radius=1.0, enabled=True, break_learning_rate_multiplier=4.0,
+        )
+        iv = c.wrap(100.0, diagnostics={"structural_break": True})
+        assert iv.low == pytest.approx(98.0)
+        assert iv.high == pytest.approx(102.0)
+
+    def test_wrap_disabled_never_inflates(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(
+            initial_radius=1.0, enabled=False, break_learning_rate_multiplier=4.0,
+        )
+        iv = c.wrap(100.0, diagnostics={"structural_break": True})
+        assert iv.low == pytest.approx(99.0)
+        assert iv.high == pytest.approx(101.0)
+
+
+class TestAdaptiveConformalRecord:
+    def test_record_structural_break_triggers_break_mode(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(
+            initial_radius=1.0, enabled=True, learning_rate=0.05,
+        )
+        assert c.current_mode() == "normal"
+        c.record(0.0, 2.0, diagnostics={"structural_break": True})
+        assert c.current_mode() == "break"
+
+    def test_cooloff_keeps_break_mode_active(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(
+            initial_radius=1.0, enabled=True, cooloff_window=2,
+        )
+        c.record(0.0, 2.0, diagnostics={"structural_break": True})
+        assert c.current_mode() == "break"
+        c.record(0.0, 1.0)
+        assert c.current_mode() == "break"
+        c.record(0.0, 1.0)
+        assert c.current_mode() == "break"
+        c.record(0.0, 1.0)
+        assert c.current_mode() == "normal"
+
+    def test_break_mode_uses_multiplied_learning_rate(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(
+            initial_radius=0.5, enabled=True, learning_rate=0.05,
+            break_learning_rate_multiplier=10.0,
+        )
+        r_before = c.current_radius()
+        c.record(0.0, 0.0)
+        r_after_normal = c.current_radius()
+        c.record(0.0, 2.0, diagnostics={"structural_break": True})
+        r_after_break = c.current_radius()
+        assert r_after_break > r_after_normal
+
+
+class TestAdaptiveConformalDiagnostics:
+    def test_diagnostics_returns_metadata(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(initial_radius=1.5, enabled=True)
+        c.record(0.0, 1.0)
+        d = c.diagnostics()
+        assert d["applied"] is True
+        assert d["radius"] > 0
+        assert d["mode"] in ("normal", "break")
+        assert d["coverage_estimate"] is not None
+
+    def test_diagnostics_no_data(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID()
+        d = c.diagnostics()
+        assert d["coverage_estimate"] is None
+
+
+class TestAdaptiveConformalReset:
+    def test_reset_clears_adaptive_state(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(initial_radius=1.0, enabled=True, cooloff_window=2)
+        c.record(0.0, 2.0, diagnostics={"structural_break": True})
+        assert c.current_mode() == "break"
+        c.reset()
+        assert c.current_mode() == "normal"
+        assert c.current_radius() == pytest.approx(1.0)
+
+    def test_reset_with_custom_radius(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(initial_radius=1.0, enabled=True)
+        c.reset(radius=3.0)
+        assert c.current_radius() == pytest.approx(3.0)
+        assert c.current_mode() == "normal"
+
+
+class TestAdaptiveConformalVolatilityShock:
+    def test_volatility_shock_triggers_break(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(
+            initial_radius=1.0, enabled=True, break_learning_rate_multiplier=2.0,
+        )
+        for _ in range(50):
+            c.record(0.0, 0.5)
+        assert c.current_mode() == "normal"
+        c.record(0.0, 2.0, diagnostics={"realized_vol": 5.0})
+        assert c.current_mode() == "break"
+
+    def test_volatility_shock_ignored_when_disabled(self):
+        from research.models.conformal import AdaptiveConformalPID
+        c = AdaptiveConformalPID(initial_radius=1.0, enabled=False)
+        for _ in range(50):
+            c.record(0.0, 0.5)
+        c.record(0.0, 2.0, diagnostics={"realized_vol": 5.0})
+        assert c.current_mode() == "normal"

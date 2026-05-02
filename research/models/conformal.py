@@ -61,9 +61,11 @@ class ConformalPID:
         self._hits = 0
 
     # ------------------------------------------------------------------ #
-    def record(self, forecast_center: float, actual: float) -> None:
+    def _step(
+        self, forecast_center: float, actual: float, learning_rate: float,
+    ) -> dict | None:
         if not (math.isfinite(forecast_center) and math.isfinite(actual)):
-            return
+            return None
         residual = abs(actual - forecast_center)
         covered = 1 if residual <= self._q else 0
         err = 1 - covered
@@ -73,13 +75,17 @@ class ConformalPID:
         derivative = bias - self._prev_bias
         self._prev_bias = bias
 
-        update = self.lr * (
+        update = learning_rate * (
             self.kp * bias + self.ki * self._integral + self.kd * derivative
         )
         self._q = max(0.0, self._q + update)
 
         self._samples += 1
         self._hits += covered
+        return {"residual": residual, "covered": covered == 1}
+
+    def record(self, forecast_center: float, actual: float) -> None:
+        self._step(forecast_center, actual, self.lr)
 
     # ------------------------------------------------------------------ #
     def current_radius(self) -> float:
