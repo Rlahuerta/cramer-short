@@ -26,6 +26,36 @@ import {
 
 const TEST_ROOT = join(process.cwd(), '.cramer-short', 'experiments', '__ledger_test__');
 const PATH_TEST_RUN_ID = 'ledger-path-test';
+const LEGACY_LEDGER_HEADER = [
+  'runId',
+  'startedAt',
+  'profileId',
+  'targetSubsystem',
+  'candidateBranch',
+  'allowedGlobs',
+  'baselineSummary',
+  'candidateSummary',
+  'decision',
+  'reason',
+  'artifactsPath',
+].join('\t');
+const PRE_CONTRACT_LEDGER_HEADER = [
+  'runId',
+  'startedAt',
+  'profileId',
+  'targetSubsystem',
+  'candidateBranch',
+  'allowedGlobs',
+  'mutationMode',
+  'lineage',
+  'mutationSpecSummary',
+  'candidateWorkspace',
+  'baselineSummary',
+  'candidateSummary',
+  'decision',
+  'reason',
+  'artifactsPath',
+].join('\t');
 
 function makeEntry(overrides: Partial<ForecastLabLedgerEntry> = {}): ForecastLabLedgerEntry {
   return {
@@ -35,12 +65,42 @@ function makeEntry(overrides: Partial<ForecastLabLedgerEntry> = {}): ForecastLab
     targetSubsystem: 'markov-distribution',
     candidateBranch: 'topic/forecast-lab-run-1',
     allowedGlobs: ['src/tools/finance/markov-distribution.ts', 'src/tools/finance/polymarket-forecast.ts'],
+    effectiveMutationContract: {
+      mode: 'structured',
+      mutableFiles: ['src/tools/finance/markov-distribution.ts', 'src/tools/finance/polymarket-forecast.ts'],
+      allowedMutatorIds: ['replace-range', 'search-replace'],
+      allowMultipleCandidateAttempts: false,
+    },
     baselineSummary: { z: 2, rankIC: 0.12 },
     candidateSummary: { rankIC: 0.13, lift: 0.01 },
     decision: 'keep',
     reason: 'measurable lift',
     artifactsPath: '.cramer-short/experiments/runs/run-1',
     ...overrides,
+  };
+}
+
+function makeMutationMetadata(): Pick<
+  ForecastLabLedgerEntry,
+  'mutationMode' | 'lineage' | 'mutationSpecSummary' | 'candidateWorkspace'
+> {
+  return {
+    mutationMode: 'structured',
+    lineage: {
+      rootRunId: 'run-0',
+      parentRunId: 'run-0',
+      generation: 1,
+    },
+    mutationSpecSummary: {
+      mutatorId: 'search-replace',
+      targetFiles: ['src/tools/finance/markov-distribution.ts'],
+      summary: 'Tighten the Markov regime update step.',
+    },
+    candidateWorkspace: {
+      kind: 'current-worktree',
+      rootDir: '/repo',
+      branch: 'topic/forecast-lab-run-1',
+    },
   };
 }
 
@@ -58,6 +118,11 @@ describe('forecast-lab ledger serialization', () => {
       'targetSubsystem',
       'candidateBranch',
       'allowedGlobs',
+      'effectiveMutationContract',
+      'mutationMode',
+      'lineage',
+      'mutationSpecSummary',
+      'candidateWorkspace',
       'baselineSummary',
       'candidateSummary',
       'decision',
@@ -65,13 +130,13 @@ describe('forecast-lab ledger serialization', () => {
       'artifactsPath',
     ]);
     expect(LEDGER_HEADER).toBe(
-      'runId\tstartedAt\tprofileId\ttargetSubsystem\tcandidateBranch\tallowedGlobs\tbaselineSummary\tcandidateSummary\tdecision\treason\tartifactsPath',
+      'runId\tstartedAt\tprofileId\ttargetSubsystem\tcandidateBranch\tallowedGlobs\teffectiveMutationContract\tmutationMode\tlineage\tmutationSpecSummary\tcandidateWorkspace\tbaselineSummary\tcandidateSummary\tdecision\treason\tartifactsPath',
     );
   });
 
   it('serializes rows as deterministic reversible JSON fields', () => {
     expect(serializeLedgerRow(makeEntry())).toBe(
-      '"run-1"\t"2026-05-02T00:00:00.000Z"\t"btc-markov-short-horizon"\t"markov-distribution"\t"topic/forecast-lab-run-1"\t["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]\t{"rankIC":0.12,"z":2}\t{"lift":0.01,"rankIC":0.13}\t"keep"\t"measurable lift"\t".cramer-short/experiments/runs/run-1"',
+      '"run-1"\t"2026-05-02T00:00:00.000Z"\t"btc-markov-short-horizon"\t"markov-distribution"\t"topic/forecast-lab-run-1"\t["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]\t{"allowedMutatorIds":["replace-range","search-replace"],"allowMultipleCandidateAttempts":false,"mode":"structured","mutableFiles":["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]}\tnull\tnull\tnull\tnull\t{"rankIC":0.12,"z":2}\t{"lift":0.01,"rankIC":0.13}\t"keep"\t"measurable lift"\t".cramer-short/experiments/runs/run-1"',
     );
   });
 
@@ -93,6 +158,31 @@ describe('forecast-lab ledger serialization', () => {
 
     expect(parsed).toEqual(entry);
   });
+
+  it('round-trips optional mutation metadata through ledger rows and manifests', () => {
+    const entry = makeEntry(makeMutationMetadata());
+    const manifest: ForecastLabRunManifest = {
+      runId: entry.runId,
+      startedAt: entry.startedAt,
+      profileId: entry.profileId,
+      targetSubsystem: entry.targetSubsystem,
+      baselineCommit: '0123456789abcdef0123456789abcdef01234567',
+      candidateBranch: entry.candidateBranch,
+      allowedGlobs: entry.allowedGlobs,
+      effectiveMutationContract: entry.effectiveMutationContract,
+      mutationMode: entry.mutationMode,
+      lineage: entry.lineage,
+      mutationSpecSummary: entry.mutationSpecSummary,
+      candidateWorkspace: entry.candidateWorkspace,
+      artifactsPath: entry.artifactsPath,
+    };
+    const manifestPath = join(TEST_ROOT, 'runs', entry.runId, 'manifest.json');
+
+    expect(parseLedgerRow(serializeLedgerRow(entry))).toEqual(entry);
+
+    writeRunManifest(manifestPath, manifest);
+    expect(readRunManifest(manifestPath)).toEqual(manifest);
+  });
 });
 
 describe('forecast-lab ledger validation', () => {
@@ -109,7 +199,7 @@ describe('forecast-lab ledger validation', () => {
   });
 
   it('rejects malformed rows with the wrong field count', () => {
-    expect(() => parseLedgerRow('"run-1"\t"only-two-fields"')).toThrow(/expected 11 fields/);
+    expect(() => parseLedgerRow('"run-1"\t"only-two-fields"')).toThrow(/expected 16 fields/);
   });
 
   it('rejects malformed rows with invalid JSON fields', () => {
@@ -121,9 +211,84 @@ describe('forecast-lab ledger validation', () => {
 
   it('rejects malformed rows with invalid decisions', () => {
     const fields = serializeLedgerRow(makeEntry()).split('\t');
-    fields[8] = '"maybe"';
+    fields[13] = '"maybe"';
 
     expect(() => parseLedgerRow(fields.join('\t'))).toThrow(/decision/);
+  });
+
+  it('rejects invalid optional mutation metadata', () => {
+    expect(() =>
+      validateLedgerEntry({
+        ...makeEntry(),
+        mutationMode: 'manual-edit',
+      })).toThrow(/Unknown forecast-lab mutation mode/);
+
+    expect(() =>
+      validateLedgerEntry({
+        ...makeEntry(),
+        effectiveMutationContract: {
+          mode: 'llm',
+          mutableFiles: ['src/tools/finance/markov-distribution.ts'],
+          allowedMutatorIds: ['replace-range'],
+          allowMultipleCandidateAttempts: false,
+        } as never,
+      })).toThrow(/allowedMutatorIds is only supported for structured mutation mode/);
+
+    expect(() =>
+      validateLedgerEntry({
+        ...makeEntry(),
+        ...makeMutationMetadata(),
+        mutationSpecSummary: {
+          mutatorId: 'unknown-mutator',
+          targetFiles: ['src/tools/finance/markov-distribution.ts'],
+          summary: 'Bad mutator id',
+        },
+      })).toThrow(/Unknown forecast-lab mutator id/);
+
+    expect(() =>
+      validateRunManifest({
+        runId: 'run-1',
+        startedAt: '2026-05-02T00:00:00.000Z',
+        profileId: 'btc-markov-short-horizon',
+        targetSubsystem: 'markov-distribution',
+        baselineCommit: 'not-a-sha',
+        candidateBranch: 'topic/forecast-lab-run-1',
+        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        artifactsPath: '.cramer-short/experiments/runs/run-1',
+      })).toThrow(/baselineCommit must be a full git commit sha/);
+
+    expect(() =>
+      validateRunManifest({
+        runId: 'run-1',
+        startedAt: '2026-05-02T00:00:00.000Z',
+        profileId: 'btc-markov-short-horizon',
+        targetSubsystem: 'markov-distribution',
+        candidateBranch: 'topic/forecast-lab-run-1',
+        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        effectiveMutationContract: {
+          mode: 'structured',
+          mutableFiles: ['src/tools/finance/markov-distribution.ts'],
+          allowedMutatorIds: ['replace-range'],
+          allowMultipleCandidateAttempts: 'nope',
+        } as never,
+        artifactsPath: '.cramer-short/experiments/runs/run-1',
+      })).toThrow(/allowMultipleCandidateAttempts/);
+
+    expect(() =>
+      validateRunManifest({
+        runId: 'run-1',
+        startedAt: '2026-05-02T00:00:00.000Z',
+        profileId: 'btc-markov-short-horizon',
+        targetSubsystem: 'markov-distribution',
+        candidateBranch: 'topic/forecast-lab-run-1',
+        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        candidateWorkspace: {
+          kind: 'detached-worktree',
+          rootDir: '/repo',
+          branch: 'topic/forecast-lab-run-1',
+        },
+        artifactsPath: '.cramer-short/experiments/runs/run-1',
+      })).toThrow(/candidateWorkspace\.kind/);
   });
 });
 
@@ -155,6 +320,126 @@ describe('forecast-lab ledger file helpers', () => {
   it('returns no rows when the ledger file does not exist', () => {
     expect(readLedgerEntries(join(TEST_ROOT, 'missing.tsv'))).toEqual([]);
   });
+
+  it('reads legacy 11-column ledgers into the current entry shape', () => {
+    const ledgerPath = join(TEST_ROOT, 'forecast-results.tsv');
+    const legacyEntry = makeEntry();
+    const legacyRow = [
+      legacyEntry.runId,
+      legacyEntry.startedAt,
+      legacyEntry.profileId,
+      legacyEntry.targetSubsystem,
+      legacyEntry.candidateBranch,
+      legacyEntry.allowedGlobs,
+      legacyEntry.baselineSummary,
+      legacyEntry.candidateSummary,
+      legacyEntry.decision,
+      legacyEntry.reason,
+      legacyEntry.artifactsPath,
+    ].map((value) => stableJsonStringify(value)).join('\t');
+
+    mkdirSync(TEST_ROOT, { recursive: true });
+    writeFileSync(ledgerPath, `${LEGACY_LEDGER_HEADER}\n${legacyRow}\n`, 'utf8');
+
+    expect(readLedgerEntries(ledgerPath)).toEqual([{ ...legacyEntry, effectiveMutationContract: undefined }]);
+  });
+
+  it('reads pre-contract 15-column ledgers into the current entry shape', () => {
+    const ledgerPath = join(TEST_ROOT, 'forecast-results.tsv');
+    const legacyEntry = makeEntry(makeMutationMetadata());
+    const legacyRow = [
+      legacyEntry.runId,
+      legacyEntry.startedAt,
+      legacyEntry.profileId,
+      legacyEntry.targetSubsystem,
+      legacyEntry.candidateBranch,
+      legacyEntry.allowedGlobs,
+      legacyEntry.mutationMode,
+      legacyEntry.lineage,
+      legacyEntry.mutationSpecSummary,
+      legacyEntry.candidateWorkspace,
+      legacyEntry.baselineSummary,
+      legacyEntry.candidateSummary,
+      legacyEntry.decision,
+      legacyEntry.reason,
+      legacyEntry.artifactsPath,
+    ].map((value) => stableJsonStringify(value)).join('\t');
+
+    mkdirSync(TEST_ROOT, { recursive: true });
+    writeFileSync(ledgerPath, `${PRE_CONTRACT_LEDGER_HEADER}\n${legacyRow}\n`, 'utf8');
+
+    expect(readLedgerEntries(ledgerPath)).toEqual([{ ...legacyEntry, effectiveMutationContract: undefined }]);
+  });
+
+  it('migrates legacy ledgers to the current header before appending new rows', () => {
+    const ledgerPath = join(TEST_ROOT, 'forecast-results.tsv');
+    const legacyEntry = makeEntry({ effectiveMutationContract: undefined });
+    const newEntry = makeEntry({
+      runId: 'run-2',
+      decision: 'drop',
+      reason: 'no measurable lift',
+      ...makeMutationMetadata(),
+    });
+    const legacyRow = [
+      legacyEntry.runId,
+      legacyEntry.startedAt,
+      legacyEntry.profileId,
+      legacyEntry.targetSubsystem,
+      legacyEntry.candidateBranch,
+      legacyEntry.allowedGlobs,
+      legacyEntry.baselineSummary,
+      legacyEntry.candidateSummary,
+      legacyEntry.decision,
+      legacyEntry.reason,
+      legacyEntry.artifactsPath,
+    ].map((value) => stableJsonStringify(value)).join('\t');
+
+    mkdirSync(TEST_ROOT, { recursive: true });
+    writeFileSync(ledgerPath, `${LEGACY_LEDGER_HEADER}\n${legacyRow}\n`, 'utf8');
+
+    appendLedgerEntry(ledgerPath, newEntry);
+
+    expect(readFileSync(ledgerPath, 'utf8')).toBe(
+      `${LEDGER_HEADER}\n${serializeLedgerRow(legacyEntry)}\n${serializeLedgerRow(newEntry)}\n`,
+    );
+    expect(readLedgerEntries(ledgerPath)).toEqual([legacyEntry, newEntry]);
+  });
+
+  it('migrates pre-contract ledgers to the current header before appending new rows', () => {
+    const ledgerPath = join(TEST_ROOT, 'forecast-results.tsv');
+    const legacyEntry = makeEntry({
+      effectiveMutationContract: undefined,
+      ...makeMutationMetadata(),
+    });
+    const newEntry = makeEntry({ runId: 'run-2', decision: 'drop', reason: 'no measurable lift' });
+    const legacyRow = [
+      legacyEntry.runId,
+      legacyEntry.startedAt,
+      legacyEntry.profileId,
+      legacyEntry.targetSubsystem,
+      legacyEntry.candidateBranch,
+      legacyEntry.allowedGlobs,
+      legacyEntry.mutationMode,
+      legacyEntry.lineage,
+      legacyEntry.mutationSpecSummary,
+      legacyEntry.candidateWorkspace,
+      legacyEntry.baselineSummary,
+      legacyEntry.candidateSummary,
+      legacyEntry.decision,
+      legacyEntry.reason,
+      legacyEntry.artifactsPath,
+    ].map((value) => stableJsonStringify(value)).join('\t');
+
+    mkdirSync(TEST_ROOT, { recursive: true });
+    writeFileSync(ledgerPath, `${PRE_CONTRACT_LEDGER_HEADER}\n${legacyRow}\n`, 'utf8');
+
+    appendLedgerEntry(ledgerPath, newEntry);
+
+    expect(readFileSync(ledgerPath, 'utf8')).toBe(
+      `${LEDGER_HEADER}\n${serializeLedgerRow(legacyEntry)}\n${serializeLedgerRow(newEntry)}\n`,
+    );
+    expect(readLedgerEntries(ledgerPath)).toEqual([legacyEntry, newEntry]);
+  });
 });
 
 describe('forecast-lab manifest helpers', () => {
@@ -165,8 +450,20 @@ describe('forecast-lab manifest helpers', () => {
       startedAt: '2026-05-02T00:00:00.000Z',
       profileId: 'btc-markov-short-horizon',
       targetSubsystem: 'markov-distribution',
+      baselineCommit: '0123456789abcdef0123456789abcdef01234567',
       candidateBranch: 'topic/forecast-lab-run-1',
       allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+      candidateWorkspace: {
+        kind: 'candidate-worktree',
+        rootDir: '/repo/.cramer-short/experiments/worktrees/run-1',
+        branch: 'topic/forecast-lab-run-1',
+      },
+      effectiveMutationContract: {
+        mode: 'structured',
+        mutableFiles: ['src/tools/finance/markov-distribution.ts'],
+        allowedMutatorIds: ['replace-range'],
+        allowMultipleCandidateAttempts: false,
+      },
       artifactsPath: '.cramer-short/experiments/runs/run-1',
     };
 
@@ -175,7 +472,7 @@ describe('forecast-lab manifest helpers', () => {
     expect(readFileSync(manifestPath, 'utf8')).toBe(serializeManifest(manifest));
     expect(readRunManifest(manifestPath)).toEqual(manifest);
     expect(serializeManifest(manifest)).toBe(
-      '{\n  "allowedGlobs": [\n    "src/tools/finance/markov-distribution.ts"\n  ],\n  "artifactsPath": ".cramer-short/experiments/runs/run-1",\n  "candidateBranch": "topic/forecast-lab-run-1",\n  "profileId": "btc-markov-short-horizon",\n  "runId": "run-1",\n  "startedAt": "2026-05-02T00:00:00.000Z",\n  "targetSubsystem": "markov-distribution"\n}\n',
+      '{\n  "allowedGlobs": [\n    "src/tools/finance/markov-distribution.ts"\n  ],\n  "artifactsPath": ".cramer-short/experiments/runs/run-1",\n  "baselineCommit": "0123456789abcdef0123456789abcdef01234567",\n  "candidateBranch": "topic/forecast-lab-run-1",\n  "candidateWorkspace": {\n    "branch": "topic/forecast-lab-run-1",\n    "kind": "candidate-worktree",\n    "rootDir": "/repo/.cramer-short/experiments/worktrees/run-1"\n  },\n  "effectiveMutationContract": {\n    "allowedMutatorIds": [\n      "replace-range"\n    ],\n    "allowMultipleCandidateAttempts": false,\n    "mode": "structured",\n    "mutableFiles": [\n      "src/tools/finance/markov-distribution.ts"\n    ]\n  },\n  "profileId": "btc-markov-short-horizon",\n  "runId": "run-1",\n  "startedAt": "2026-05-02T00:00:00.000Z",\n  "targetSubsystem": "markov-distribution"\n}\n',
     );
   });
 

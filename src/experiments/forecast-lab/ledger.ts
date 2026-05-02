@@ -1,8 +1,53 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import {
+  assertForecastLabMutationMode,
+  validateForecastLabCandidateWorkspaceMetadata,
+  validateForecastLabMutationLineage,
+  validateForecastLabProfileMutationConfig,
+  validateForecastLabMutationSpecSummary,
+} from './mutation.js';
 import type { ForecastLabLedgerEntry, ForecastLabRunManifest } from './types.js';
 
 export const LEDGER_COLUMNS = [
+  'runId',
+  'startedAt',
+  'profileId',
+  'targetSubsystem',
+  'candidateBranch',
+  'allowedGlobs',
+  'effectiveMutationContract',
+  'mutationMode',
+  'lineage',
+  'mutationSpecSummary',
+  'candidateWorkspace',
+  'baselineSummary',
+  'candidateSummary',
+  'decision',
+  'reason',
+  'artifactsPath',
+] as const satisfies readonly (keyof ForecastLabLedgerEntry)[];
+
+export const LEDGER_HEADER = LEDGER_COLUMNS.join('\t');
+const LEGACY_LEDGER_COLUMNS = [
+  'runId',
+  'startedAt',
+  'profileId',
+  'targetSubsystem',
+  'candidateBranch',
+  'allowedGlobs',
+  'mutationMode',
+  'lineage',
+  'mutationSpecSummary',
+  'candidateWorkspace',
+  'baselineSummary',
+  'candidateSummary',
+  'decision',
+  'reason',
+  'artifactsPath',
+] as const satisfies readonly (keyof ForecastLabLedgerEntry)[];
+const LEGACY_LEDGER_HEADER = LEGACY_LEDGER_COLUMNS.join('\t');
+const INITIAL_LEDGER_COLUMNS = [
   'runId',
   'startedAt',
   'profileId',
@@ -15,11 +60,35 @@ export const LEDGER_COLUMNS = [
   'reason',
   'artifactsPath',
 ] as const satisfies readonly (keyof ForecastLabLedgerEntry)[];
-
-export const LEDGER_HEADER = LEDGER_COLUMNS.join('\t');
+const INITIAL_LEDGER_HEADER = INITIAL_LEDGER_COLUMNS.join('\t');
 
 type LedgerColumn = (typeof LEDGER_COLUMNS)[number];
+type SupportedLedgerColumn = keyof ForecastLabLedgerEntry;
+type LedgerSchema =
+  | {
+      name: 'current';
+      columns: typeof LEDGER_COLUMNS;
+      header: typeof LEDGER_HEADER;
+    }
+  | {
+      name: 'legacy';
+      columns: typeof LEGACY_LEDGER_COLUMNS;
+      header: typeof LEGACY_LEDGER_HEADER;
+    }
+  | {
+      name: 'initial';
+      columns: typeof INITIAL_LEDGER_COLUMNS;
+      header: typeof INITIAL_LEDGER_HEADER;
+    };
+const OPTIONAL_LEDGER_COLUMNS = new Set<LedgerColumn>([
+  'effectiveMutationContract',
+  'mutationMode',
+  'lineage',
+  'mutationSpecSummary',
+  'candidateWorkspace',
+]);
 const SAFE_RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/;
+const SAFE_BASELINE_COMMIT = /^[0-9a-f]{40}$/i;
 
 export class ForecastLabLedgerError extends Error {
   override name = 'ForecastLabLedgerError';
@@ -102,6 +171,57 @@ function assertSafeRunId(runId: string): void {
   }
 }
 
+function validateOptionalMutationMetadata(record: Record<string, unknown>): void {
+  if (record.mutationMode !== undefined) {
+    if (typeof record.mutationMode !== 'string') {
+      throw new ForecastLabLedgerError('mutationMode must be a string');
+    }
+    try {
+      assertForecastLabMutationMode(record.mutationMode);
+    } catch (error) {
+      throw new ForecastLabLedgerError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (record.lineage !== undefined) {
+    const lineage = record.lineage;
+    try {
+      validateForecastLabMutationLineage(lineage);
+    } catch (error) {
+      throw new ForecastLabLedgerError(error instanceof Error ? error.message : String(error));
+    }
+
+    assertSafeRunId(lineage.rootRunId);
+    if (lineage.parentRunId !== undefined) {
+      assertSafeRunId(lineage.parentRunId);
+    }
+  }
+
+  if (record.mutationSpecSummary !== undefined) {
+    try {
+      validateForecastLabMutationSpecSummary(record.mutationSpecSummary);
+    } catch (error) {
+      throw new ForecastLabLedgerError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (record.candidateWorkspace !== undefined) {
+    try {
+      validateForecastLabCandidateWorkspaceMetadata(record.candidateWorkspace);
+    } catch (error) {
+      throw new ForecastLabLedgerError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (record.effectiveMutationContract !== undefined) {
+    try {
+      validateForecastLabProfileMutationConfig(record.effectiveMutationContract);
+    } catch (error) {
+      throw new ForecastLabLedgerError(error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
 export function validateLedgerEntry(entry: unknown): asserts entry is ForecastLabLedgerEntry {
   if (!entry || typeof entry !== 'object') {
     throw new ForecastLabLedgerError('ledger entry must be an object');
@@ -123,6 +243,7 @@ export function validateLedgerEntry(entry: unknown): asserts entry is ForecastLa
     throw new ForecastLabLedgerError('decision must be keep or drop');
   }
 
+  validateOptionalMutationMetadata(record);
   assertJsonSerializable('baselineSummary', record.baselineSummary);
   assertJsonSerializable('candidateSummary', record.candidateSummary);
 }
@@ -144,28 +265,70 @@ export function validateRunManifest(manifest: unknown): asserts manifest is Fore
     throw new ForecastLabLedgerError('allowedGlobs must be an array of strings');
   }
 
+  if (record.baselineCommit !== undefined) {
+    const baselineCommit = requireString(record, 'baselineCommit');
+    if (!SAFE_BASELINE_COMMIT.test(baselineCommit)) {
+      throw new ForecastLabLedgerError('baselineCommit must be a full git commit sha');
+    }
+  }
+
+  validateOptionalMutationMetadata(record);
   assertJsonSerializable('manifest', record);
 }
 
 export function serializeLedgerRow(entry: ForecastLabLedgerEntry): string {
   validateLedgerEntry(entry);
-  return LEDGER_COLUMNS.map((column) => stableJsonStringify(entry[column])).join('\t');
+  return LEDGER_COLUMNS.map((column) => {
+    const value = entry[column];
+    return value === undefined && OPTIONAL_LEDGER_COLUMNS.has(column) ? 'null' : stableJsonStringify(value);
+  }).join('\t');
 }
 
-export function parseLedgerRow(row: string): ForecastLabLedgerEntry {
-  const fields = row.split('\t');
-
-  if (fields.length !== LEDGER_COLUMNS.length) {
-    throw new ForecastLabLedgerError(`Malformed ledger row: expected ${LEDGER_COLUMNS.length} fields, got ${fields.length}`);
+function getLedgerSchema(header: string): LedgerSchema {
+  if (header === LEDGER_HEADER) {
+    return {
+      name: 'current',
+      columns: LEDGER_COLUMNS,
+      header: LEDGER_HEADER,
+    };
   }
 
-  const parsed: Partial<Record<LedgerColumn, unknown>> = {};
+  if (header === LEGACY_LEDGER_HEADER) {
+    return {
+      name: 'legacy',
+      columns: LEGACY_LEDGER_COLUMNS,
+      header: LEGACY_LEDGER_HEADER,
+    };
+  }
 
-  for (let index = 0; index < LEDGER_COLUMNS.length; index += 1) {
-    const column = LEDGER_COLUMNS[index]!;
+  if (header === INITIAL_LEDGER_HEADER) {
+    return {
+      name: 'initial',
+      columns: INITIAL_LEDGER_COLUMNS,
+      header: INITIAL_LEDGER_HEADER,
+    };
+  }
+
+  throw new ForecastLabLedgerError('ledger header does not match expected schema');
+}
+
+function parseLedgerRowWithColumns(row: string, columns: readonly SupportedLedgerColumn[]): ForecastLabLedgerEntry {
+  const fields = row.split('\t');
+
+  if (fields.length !== columns.length) {
+    throw new ForecastLabLedgerError(`Malformed ledger row: expected ${columns.length} fields, got ${fields.length}`);
+  }
+
+  const parsed: Partial<Record<SupportedLedgerColumn, unknown>> = {};
+
+  for (let index = 0; index < columns.length; index += 1) {
+    const column = columns[index]!;
 
     try {
       parsed[column] = JSON.parse(fields[index]!);
+      if (parsed[column] === null && OPTIONAL_LEDGER_COLUMNS.has(column)) {
+        delete parsed[column];
+      }
     } catch (error) {
       throw new ForecastLabLedgerError(`Invalid JSON in ${column}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -173,6 +336,10 @@ export function parseLedgerRow(row: string): ForecastLabLedgerEntry {
 
   validateLedgerEntry(parsed);
   return parsed;
+}
+
+export function parseLedgerRow(row: string): ForecastLabLedgerEntry {
+  return parseLedgerRowWithColumns(row, LEDGER_COLUMNS);
 }
 
 function readLedgerText(path: string): string {
@@ -183,12 +350,18 @@ function readLedgerText(path: string): string {
   return readFileSync(path, 'utf8');
 }
 
-function assertLedgerHeader(text: string): void {
+function readLedgerFile(text: string): { schema: LedgerSchema; entries: ForecastLabLedgerEntry[] } {
   const firstLine = text.split(/\r?\n/, 1)[0] ?? '';
-
-  if (firstLine !== LEDGER_HEADER) {
-    throw new ForecastLabLedgerError('ledger header does not match expected schema');
+  const schema = getLedgerSchema(firstLine);
+  const lines = text.split(/\r?\n/).slice(1);
+  if (lines.at(-1) === '') {
+    lines.pop();
   }
+
+  return {
+    schema,
+    entries: lines.map((line) => parseLedgerRowWithColumns(line, schema.columns)),
+  };
 }
 
 export function appendLedgerEntry(path: string, entry: ForecastLabLedgerEntry): void {
@@ -208,7 +381,13 @@ export function appendLedgerEntry(path: string, entry: ForecastLabLedgerEntry): 
   }
 
   const existing = readLedgerText(path);
-  assertLedgerHeader(existing);
+  const { schema, entries } = readLedgerFile(existing);
+
+  if (schema.name !== 'current') {
+    writeFileSync(path, `${[LEDGER_HEADER, ...entries.map(serializeLedgerRow), row].join('\n')}\n`, 'utf8');
+    return;
+  }
+
   appendFileSync(path, `${existing.endsWith('\n') ? '' : '\n'}${row}\n`, 'utf8');
 }
 
@@ -219,14 +398,7 @@ export function readLedgerEntries(path: string): ForecastLabLedgerEntry[] {
     return [];
   }
 
-  assertLedgerHeader(text);
-
-  const lines = text.split(/\r?\n/).slice(1);
-  if (lines.at(-1) === '') {
-    lines.pop();
-  }
-
-  return lines.map(parseLedgerRow);
+  return readLedgerFile(text).entries;
 }
 
 export function serializeManifest(manifest: ForecastLabRunManifest): string {

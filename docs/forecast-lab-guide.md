@@ -159,11 +159,32 @@ Each profile tells the runner:
 
 - which subsystem is being evaluated,
 - which files are narrow candidate edit surfaces,
+- which mutation contract is allowed for that profile,
 - which harness files are read-only,
 - which baseline commands to run,
 - which candidate commands to run,
 - which metrics must exist,
 - which rules force `keep` or `drop`.
+
+### Phase 1 mutation contract
+
+Phase 1 adds **typed mutation metadata only**. It does **not** add real worktree mutation yet.
+
+Profiles now carry a bounded `mutation` config in `src/experiments/forecast-lab/profiles.ts`:
+
+- `mode`: `dry-run`, `structured`, or reserved `llm`
+- `mutableFiles`: the files the selected mutation mode may target
+- `allowedMutatorIds`: a bounded allowlist of structured mutators, present only when `mode` is `structured`
+- `allowMultipleCandidateAttempts`: reserved for later multi-candidate runs
+
+The shared contract lives in `src/experiments/forecast-lab/mutation.ts`. In this phase it exists to keep future mutation work typed and narrow:
+
+- unknown mutator ids fail loudly,
+- non-structured modes do not accept fake `allowedMutatorIds`,
+- mutation configs are deeply frozen before export,
+- run artifacts persist the effective mutation contract snapshot (`mode`, `mutableFiles`, structured `allowedMutatorIds`, and `allowMultipleCandidateAttempts`) and can also carry optional mutation lineage metadata (`mutationMode`, `lineage`, `mutationSpecSummary`, `candidateWorkspace`).
+
+`allowedGlobs` and `mutation.mutableFiles` are also intentionally related but not identical concepts. `allowedGlobs` defines the profile-level editable surface, while `mutableFiles` defines the mode-specific mutation input. The current Phase 1 structured profiles keep them aligned for simplicity, but later phases may narrow or expand one without changing the other.
 
 ### `btc-markov-short-horizon`
 
@@ -174,6 +195,12 @@ Allowed candidate surfaces:
 - `src/tools/finance/markov-distribution.ts`
 - `src/tools/finance/conformal.ts`
 - `src/tools/finance/regime-calibrator.ts`
+
+Structured mutation contract:
+
+- mode: `structured`
+- allowed mutators: `replace-range`, `search-replace`
+- multiple candidate attempts: `false`
 
 Read-only harness:
 
@@ -195,6 +222,12 @@ Allowed candidate surfaces:
 - `src/tools/finance/conformal.ts`
 - `src/tools/finance/regime-calibrator.ts`
 
+Structured mutation contract:
+
+- mode: `structured`
+- allowed mutators: `replace-range`, `search-replace`
+- multiple candidate attempts: `false`
+
 Read-only harness:
 
 - `src/tools/finance/backtest/walk-forward.ts`
@@ -214,6 +247,12 @@ Allowed candidate surfaces:
 - `src/tools/finance/forecast-arbitrator.ts`
 - `src/tools/finance/forecast-hooks.ts`
 
+Structured mutation contract:
+
+- mode: `structured`
+- allowed mutators: `replace-range`, `search-replace`
+- multiple candidate attempts: `false`
+
 Read-only harness:
 
 - `src/tools/finance/backtest/arbiter-replay-runner.ts`
@@ -232,6 +271,12 @@ Allowed candidate surfaces:
 
 - `src/tools/finance/polymarket-forecast.ts`
 - `src/tools/finance/polymarket.ts`
+
+Structured mutation contract:
+
+- mode: `structured`
+- allowed mutators: `replace-range`, `search-replace`
+- multiple candidate attempts: `false`
 
 Read-only harness:
 
@@ -328,7 +373,7 @@ The append-only ledger lives at:
 Header:
 
 ```text
-runId	startedAt	profileId	targetSubsystem	candidateBranch	allowedGlobs	baselineSummary	candidateSummary	decision	reason	artifactsPath
+runId	startedAt	profileId	targetSubsystem	candidateBranch	allowedGlobs	effectiveMutationContract	mutationMode	lineage	mutationSpecSummary	candidateWorkspace	baselineSummary	candidateSummary	decision	reason	artifactsPath
 ```
 
 ### Important format detail
@@ -351,6 +396,11 @@ That means a plain TSV parser can read the row shape, but a JSON-aware parser is
 | `targetSubsystem` | Logical subsystem covered by the run |
 | `candidateBranch` | Generated bookkeeping branch name |
 | `allowedGlobs` | Candidate edit surface allowed by the profile |
+| `effectiveMutationContract` | Persisted snapshot of the actual mutation contract for this run |
+| `mutationMode` | Optional applied mutation mode metadata for future/non-dry-run phases |
+| `lineage` | Optional parent/root lineage for derived candidates |
+| `mutationSpecSummary` | Optional compact summary of the concrete mutation request |
+| `candidateWorkspace` | Optional workspace metadata for where the candidate was evaluated |
 | `baselineSummary` | Compact baseline command summary |
 | `candidateSummary` | Compact candidate command summary |
 | `decision` | Final `keep` or `drop` |

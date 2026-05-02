@@ -31,23 +31,35 @@ decision.
 
 ## Editable forecast surfaces
 
-The default editable allowlist is narrow:
+Editable files are profile-driven, not an open-ended per-run allowlist. In Phase 1,
+the shipped profiles all use `structured` mutation mode and only permit the
+profile's declared files with the bounded mutators `replace-range` and
+`search-replace`.
 
-- `src/tools/finance/markov-distribution.ts`
-- `src/tools/finance/polymarket-forecast.ts`
-- `src/tools/finance/forecast-arbitrator.ts`
+- `btc-markov-short-horizon`
+  - `src/tools/finance/markov-distribution.ts`
+  - `src/tools/finance/conformal.ts`
+  - `src/tools/finance/regime-calibrator.ts`
+- `btc-markov-ultra-short-horizon`
+  - `src/tools/finance/markov-distribution.ts`
+  - `src/tools/finance/conformal.ts`
+  - `src/tools/finance/regime-calibrator.ts`
+- `btc-arbiter-replay`
+  - `src/tools/finance/forecast-arbitrator.ts`
+  - `src/tools/finance/forecast-hooks.ts`
+- `polymarket-selection-sanity`
+  - `src/tools/finance/polymarket-forecast.ts`
+  - `src/tools/finance/polymarket.ts`
 
-Additional files are read-only unless the user explicitly names another forecast
-file path as editable for that run.
+Do not widen the editable surface beyond the selected profile. If the user asks to
+edit a forecast file outside that profile contract, refuse that part and explain
+that forecast-lab is intentionally bounded in Phase 1.
 
 Read-only harnesses for acceptance include:
 
 - `src/tools/finance/backtest/walk-forward.ts`
 - `src/tools/finance/backtest/arbiter-replay-runner.ts`
 - existing targeted unit, integration, or E2E tests chosen by the profile
-
-If the user asks to edit outside the allowlist, refuse that part and explain that
-forecast-lab is intentionally bounded.
 
 ## Workflow
 

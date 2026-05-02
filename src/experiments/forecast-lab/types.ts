@@ -1,3 +1,11 @@
+import type {
+  ForecastLabCandidateWorkspaceMetadata,
+  ForecastLabMutationLineage,
+  ForecastLabMutationMode,
+  ForecastLabProfileMutationConfig,
+  ForecastLabMutationSpecSummary,
+} from './mutation.js';
+
 export type ForecastLabDecision = 'keep' | 'drop';
 
 export type JsonValue =
@@ -15,6 +23,11 @@ export interface ForecastLabLedgerEntry {
   targetSubsystem: string;
   candidateBranch: string;
   allowedGlobs: string[];
+  effectiveMutationContract?: ForecastLabProfileMutationConfig;
+  mutationMode?: ForecastLabMutationMode;
+  lineage?: ForecastLabMutationLineage;
+  mutationSpecSummary?: ForecastLabMutationSpecSummary;
+  candidateWorkspace?: ForecastLabCandidateWorkspaceMetadata;
   baselineSummary: JsonValue;
   candidateSummary: JsonValue;
   decision: ForecastLabDecision;
@@ -27,7 +40,13 @@ export interface ForecastLabRunManifest {
   startedAt: string;
   profileId: string;
   targetSubsystem: string;
+  baselineCommit?: string;
   candidateBranch: string;
   allowedGlobs: string[];
+  effectiveMutationContract?: ForecastLabProfileMutationConfig;
+  mutationMode?: ForecastLabMutationMode;
+  lineage?: ForecastLabMutationLineage;
+  mutationSpecSummary?: ForecastLabMutationSpecSummary;
+  candidateWorkspace?: ForecastLabCandidateWorkspaceMetadata;
   artifactsPath: string;
 }

@@ -1,4 +1,9 @@
 import type { ForecastLabDecision } from './types.js';
+import {
+  defineForecastLabProfileMutationConfig,
+  type ForecastLabMutatorId,
+  type ForecastLabProfileMutationConfig,
+} from './mutation.js';
 
 export type ForecastLabProfileId =
   | 'btc-markov-short-horizon'
@@ -55,6 +60,7 @@ export interface ForecastLabProfile {
   readonly id: ForecastLabProfileId;
   readonly targetSubsystem: ForecastLabTargetSubsystem;
   readonly allowedGlobs: readonly string[];
+  readonly mutation: ForecastLabProfileMutationConfig;
   readonly readOnlyHarnessFiles: readonly string[];
   readonly baselineCommands: readonly ForecastLabCommand[];
   readonly candidateCommands: readonly ForecastLabCommand[];
@@ -83,6 +89,27 @@ function deepFreeze<T>(value: T): DeepReadonly<T> {
 export const FORECAST_LAB_READ_ONLY_HARNESS_FILES = deepFreeze([
   'src/tools/finance/backtest/walk-forward.ts',
   'src/tools/finance/backtest/arbiter-replay-runner.ts',
+] as const);
+
+const DEFAULT_STRUCTURED_MUTATOR_IDS = deepFreeze([
+  'replace-range',
+  'search-replace',
+] as const satisfies readonly ForecastLabMutatorId[]);
+
+const MARKOV_MUTABLE_FILES = deepFreeze([
+  'src/tools/finance/markov-distribution.ts',
+  'src/tools/finance/conformal.ts',
+  'src/tools/finance/regime-calibrator.ts',
+] as const);
+
+const ARBITER_MUTABLE_FILES = deepFreeze([
+  'src/tools/finance/forecast-arbitrator.ts',
+  'src/tools/finance/forecast-hooks.ts',
+] as const);
+
+const POLYMARKET_MUTABLE_FILES = deepFreeze([
+  'src/tools/finance/polymarket-forecast.ts',
+  'src/tools/finance/polymarket.ts',
 ] as const);
 
 const WALK_FORWARD_SHORT_HORIZON_COMMANDS = deepFreeze([
@@ -123,11 +150,12 @@ const PROFILES_BY_ID = deepFreeze({
   'btc-markov-short-horizon': {
     id: 'btc-markov-short-horizon',
     targetSubsystem: 'markov-distribution',
-    allowedGlobs: [
-      'src/tools/finance/markov-distribution.ts',
-      'src/tools/finance/conformal.ts',
-      'src/tools/finance/regime-calibrator.ts',
-    ],
+    allowedGlobs: MARKOV_MUTABLE_FILES,
+    mutation: defineForecastLabProfileMutationConfig({
+      mode: 'structured',
+      mutableFiles: MARKOV_MUTABLE_FILES,
+      allowedMutatorIds: DEFAULT_STRUCTURED_MUTATOR_IDS,
+    }),
     readOnlyHarnessFiles: ['src/tools/finance/backtest/walk-forward.ts'],
     baselineCommands: WALK_FORWARD_SHORT_HORIZON_COMMANDS,
     candidateCommands: WALK_FORWARD_SHORT_HORIZON_COMMANDS,
@@ -174,11 +202,12 @@ const PROFILES_BY_ID = deepFreeze({
   'btc-markov-ultra-short-horizon': {
     id: 'btc-markov-ultra-short-horizon',
     targetSubsystem: 'markov-distribution',
-    allowedGlobs: [
-      'src/tools/finance/markov-distribution.ts',
-      'src/tools/finance/conformal.ts',
-      'src/tools/finance/regime-calibrator.ts',
-    ],
+    allowedGlobs: MARKOV_MUTABLE_FILES,
+    mutation: defineForecastLabProfileMutationConfig({
+      mode: 'structured',
+      mutableFiles: MARKOV_MUTABLE_FILES,
+      allowedMutatorIds: DEFAULT_STRUCTURED_MUTATOR_IDS,
+    }),
     readOnlyHarnessFiles: ['src/tools/finance/backtest/walk-forward.ts'],
     baselineCommands: WALK_FORWARD_BTC_ULTRA_SHORT_HORIZON_COMMANDS,
     candidateCommands: WALK_FORWARD_BTC_ULTRA_SHORT_HORIZON_COMMANDS,
@@ -224,10 +253,12 @@ const PROFILES_BY_ID = deepFreeze({
   'btc-arbiter-replay': {
     id: 'btc-arbiter-replay',
     targetSubsystem: 'forecast-arbiter',
-    allowedGlobs: [
-      'src/tools/finance/forecast-arbitrator.ts',
-      'src/tools/finance/forecast-hooks.ts',
-    ],
+    allowedGlobs: ARBITER_MUTABLE_FILES,
+    mutation: defineForecastLabProfileMutationConfig({
+      mode: 'structured',
+      mutableFiles: ARBITER_MUTABLE_FILES,
+      allowedMutatorIds: DEFAULT_STRUCTURED_MUTATOR_IDS,
+    }),
     readOnlyHarnessFiles: ['src/tools/finance/backtest/arbiter-replay-runner.ts'],
     baselineCommands: ARBITER_REPLAY_COMMANDS,
     candidateCommands: ARBITER_REPLAY_COMMANDS,
@@ -274,10 +305,12 @@ const PROFILES_BY_ID = deepFreeze({
   'polymarket-selection-sanity': {
     id: 'polymarket-selection-sanity',
     targetSubsystem: 'polymarket-selection',
-    allowedGlobs: [
-      'src/tools/finance/polymarket-forecast.ts',
-      'src/tools/finance/polymarket.ts',
-    ],
+    allowedGlobs: POLYMARKET_MUTABLE_FILES,
+    mutation: defineForecastLabProfileMutationConfig({
+      mode: 'structured',
+      mutableFiles: POLYMARKET_MUTABLE_FILES,
+      allowedMutatorIds: DEFAULT_STRUCTURED_MUTATOR_IDS,
+    }),
     readOnlyHarnessFiles: [],
     baselineCommands: POLYMARKET_SELECTION_COMMANDS,
     candidateCommands: POLYMARKET_SELECTION_COMMANDS,

@@ -1,11 +1,18 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { runForecastLabCommand } from '../../cli-forecast-lab.js';
 import { getExperimentRunDir } from '../../utils/paths.js';
 import { readLedgerEntries } from './ledger.js';
 import type { ForecastLabCommandRunner } from './runner.js';
-import { ForecastLabRunnerError, defaultForecastLabCommandRunner, runForecastLab } from './runner.js';
+import {
+  ForecastLabRunnerError,
+  createForecastLabCommandRunner,
+  defaultForecastLabCommandRunner,
+  runForecastLab,
+} from './runner.js';
 
 const TEST_LEDGER_DIR = join('.cramer-short', 'experiments', '__runner_test__');
 const TEST_LEDGER_PATH = join(TEST_LEDGER_DIR, 'forecast-results.tsv');
@@ -39,6 +46,17 @@ function passingRunner(calls: string[]): ForecastLabCommandRunner {
   };
 }
 
+class FakeSpawnedChild extends EventEmitter {
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly killSignals: Array<number | NodeJS.Signals | undefined> = [];
+
+  kill(signal?: number | NodeJS.Signals): boolean {
+    this.killSignals.push(signal);
+    return true;
+  }
+}
+
 afterEach(cleanup);
 
 describe('forecast-lab runner', () => {
@@ -63,6 +81,18 @@ describe('forecast-lab runner', () => {
     ]);
     expect(result.decision.decision).toBe('keep');
     expect(result.manifest.profileId).toBe('btc-markov-short-horizon');
+    expect(result.manifest.baselineCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(result.manifest.candidateWorkspace).toBeUndefined();
+    expect(result.manifest.effectiveMutationContract).toEqual({
+      mode: 'structured',
+      mutableFiles: [
+        'src/tools/finance/markov-distribution.ts',
+        'src/tools/finance/conformal.ts',
+        'src/tools/finance/regime-calibrator.ts',
+      ],
+      allowedMutatorIds: ['replace-range', 'search-replace'],
+      allowMultipleCandidateAttempts: false,
+    });
 
     const runDir = getExperimentRunDir('runner-test-dry-run');
     for (const fileName of ['manifest.json', 'baseline.json', 'candidate.json', 'decision.json']) {
@@ -72,6 +102,10 @@ describe('forecast-lab runner', () => {
 
     const candidate = JSON.parse(readFileSync(join(runDir, 'candidate.json'), 'utf8')) as Record<string, unknown>;
     expect(candidate.mutation).toBe('dry-run: no code mutation attempted');
+    const manifest = JSON.parse(readFileSync(join(runDir, 'manifest.json'), 'utf8')) as Record<string, unknown>;
+    expect(manifest.baselineCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(manifest).not.toHaveProperty('candidateWorkspace');
+    expect(manifest.effectiveMutationContract).toEqual(result.manifest.effectiveMutationContract);
 
     const entries = readLedgerEntries(TEST_LEDGER_PATH);
     expect(entries).toHaveLength(1);
@@ -79,7 +113,9 @@ describe('forecast-lab runner', () => {
       runId: 'runner-test-dry-run',
       decision: 'keep',
       artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run'),
+      effectiveMutationContract: result.manifest.effectiveMutationContract,
     });
+    expect(entries[0]).not.toHaveProperty('candidateWorkspace');
     expect(progress).toEqual([
       'forecast-lab: started btc-markov-short-horizon (runner-test-dry-run)',
       `forecast-lab: manifest written to ${join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run', 'manifest.json')}`,
@@ -157,10 +193,58 @@ describe('forecast-lab runner', () => {
 
     expect(result.decision.decision).toBe('drop');
     expect(result.decision.reason).toContain('mutation skipped by --skip-mutation');
+    expect(result.manifest.candidateWorkspace).toBeUndefined();
     expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).toMatchObject({
       runId: 'runner-test-skip-mutation',
       decision: 'drop',
+      effectiveMutationContract: {
+        mode: 'structured',
+        mutableFiles: ['src/tools/finance/forecast-arbitrator.ts', 'src/tools/finance/forecast-hooks.ts'],
+        allowedMutatorIds: ['replace-range', 'search-replace'],
+        allowMultipleCandidateAttempts: false,
+      },
     });
+    expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).not.toHaveProperty('candidateWorkspace');
+  });
+
+  it('returns a failed result when the child emits a spawn error and clears timeout cleanup', async () => {
+    const child = new FakeSpawnedChild();
+    const output: string[] = [];
+    const runner = createForecastLabCommandRunner((() => {
+      queueMicrotask(() => {
+        child.stderr.write('spawn stderr\n');
+        child.emit('error', new Error('bad cwd'));
+        child.emit('close');
+      });
+      return child as unknown as ReturnType<typeof import('node:child_process').spawn>;
+    }) as typeof import('node:child_process').spawn);
+
+    const result = await runner(
+      {
+        id: 'spawn-error-command',
+        command: 'bun --version',
+        timeoutMs: 10,
+      },
+      {
+        phase: 'candidate',
+        profile: {} as never,
+        runId: 'runner-test-spawn-error',
+        output: (chunk) => output.push(chunk),
+      },
+    );
+
+    expect(result).toMatchObject({
+      id: 'spawn-error-command',
+      command: 'bun --version',
+      exitCode: 1,
+      stdout: '',
+      timedOut: false,
+    });
+    expect(result.stderr).toBe('spawn stderr\nFailed to start command "spawn-error-command": bad cwd');
+    expect(output).toEqual(['spawn stderr\n']);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(child.killSignals).toEqual([]);
   });
 
   it('rejects unsafe profile commands before shell execution', async () => {
@@ -238,8 +322,14 @@ describe('forecast-lab CLI module', () => {
           startedAt: '2026-05-02T00:00:00.000Z',
           profileId: 'btc-markov-short-horizon',
           targetSubsystem: 'markov-distribution',
+          baselineCommit: '0123456789abcdef0123456789abcdef01234567',
           candidateBranch: 'topic/forecast-lab-runner-test-dry-run',
           allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+          candidateWorkspace: {
+            kind: 'candidate-worktree',
+            rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-dry-run'),
+            branch: 'topic/forecast-lab-runner-test-dry-run',
+          },
           artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run'),
         },
         baseline: { exitCode: 0 },
@@ -263,6 +353,11 @@ describe('forecast-lab CLI module', () => {
           targetSubsystem: 'markov-distribution',
           candidateBranch: 'topic/forecast-lab-runner-test-dry-run',
           allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+          candidateWorkspace: {
+            kind: 'candidate-worktree',
+            rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-dry-run'),
+            branch: 'topic/forecast-lab-runner-test-dry-run',
+          },
           baselineSummary: { exitCode: 0 },
           candidateSummary: { exitCode: 0 },
           decision: 'keep',

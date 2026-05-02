@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { ForecastLabProfile, ForecastLabProfileId } from './profiles.js';
+import { listForecastLabMutatorIds } from './mutation.js';
 import {
   FORECAST_LAB_PROFILES,
   FORECAST_LAB_READ_ONLY_HARNESS_FILES,
@@ -81,6 +82,52 @@ const EXPECTED_READ_ONLY_HARNESSES = {
   'polymarket-selection-sanity': [],
 } as const satisfies Record<ForecastLabProfileId, readonly string[]>;
 
+const EXPECTED_MUTATION_CONFIGS = {
+  'btc-markov-short-horizon': {
+    mode: 'structured',
+    mutableFiles: [
+      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/conformal.ts',
+      'src/tools/finance/regime-calibrator.ts',
+    ],
+    allowedMutatorIds: ['replace-range', 'search-replace'],
+    allowMultipleCandidateAttempts: false,
+  },
+  'btc-markov-ultra-short-horizon': {
+    mode: 'structured',
+    mutableFiles: [
+      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/conformal.ts',
+      'src/tools/finance/regime-calibrator.ts',
+    ],
+    allowedMutatorIds: ['replace-range', 'search-replace'],
+    allowMultipleCandidateAttempts: false,
+  },
+  'btc-arbiter-replay': {
+    mode: 'structured',
+    mutableFiles: [
+      'src/tools/finance/forecast-arbitrator.ts',
+      'src/tools/finance/forecast-hooks.ts',
+    ],
+    allowedMutatorIds: ['replace-range', 'search-replace'],
+    allowMultipleCandidateAttempts: false,
+  },
+  'polymarket-selection-sanity': {
+    mode: 'structured',
+    mutableFiles: [
+      'src/tools/finance/polymarket-forecast.ts',
+      'src/tools/finance/polymarket.ts',
+    ],
+    allowedMutatorIds: ['replace-range', 'search-replace'],
+    allowMultipleCandidateAttempts: false,
+  },
+} as const satisfies Record<ForecastLabProfileId, {
+  readonly mode: 'structured';
+  readonly mutableFiles: readonly string[];
+  readonly allowedMutatorIds: readonly string[];
+  readonly allowMultipleCandidateAttempts: false;
+}>;
+
 function comparableCommands(profile: ForecastLabProfile) {
   return {
     baseline: profile.baselineCommands.map((command) => ({
@@ -108,6 +155,12 @@ describe('forecast-lab profiles', () => {
     for (const profile of profiles) {
       expect(typeof profile.targetSubsystem).toBe('string');
       expect(profile.allowedGlobs.length).toBeGreaterThan(0);
+      expect(profile.mutation.mutableFiles.length).toBeGreaterThan(0);
+      if (profile.mutation.mode === 'structured') {
+        expect(profile.mutation.allowedMutatorIds.length).toBeGreaterThan(0);
+      } else {
+        expect('allowedMutatorIds' in profile.mutation).toBe(false);
+      }
       expect(Array.isArray(profile.readOnlyHarnessFiles)).toBe(true);
       expect(profile.baselineCommands.length).toBeGreaterThan(0);
       expect(profile.candidateCommands.length).toBeGreaterThan(0);
@@ -139,6 +192,11 @@ describe('forecast-lab profiles', () => {
     expect(Object.isFrozen(profiles)).toBe(true);
     expect(Object.isFrozen(markov)).toBe(true);
     expect(Object.isFrozen(markov.allowedGlobs)).toBe(true);
+    expect(Object.isFrozen(markov.mutation)).toBe(true);
+    expect(Object.isFrozen(markov.mutation.mutableFiles)).toBe(true);
+    if (markov.mutation.mode === 'structured') {
+      expect(Object.isFrozen(markov.mutation.allowedMutatorIds)).toBe(true);
+    }
     expect(Object.isFrozen(markov.readOnlyHarnessFiles)).toBe(true);
     expect(Object.isFrozen(markov.baselineCommands)).toBe(true);
     expect(Object.isFrozen(markov.baselineCommands[0])).toBe(true);
@@ -154,6 +212,16 @@ describe('forecast-lab profiles', () => {
       (markov.readOnlyHarnessFiles as unknown as string[]).push('src/tools/finance/backtest/arbiter-replay-runner.ts');
     }).toThrow();
     expect(markov.readOnlyHarnessFiles).toEqual(['src/tools/finance/backtest/walk-forward.ts']);
+
+    expect(() => {
+      if (markov.mutation.mode !== 'structured') {
+        throw new Error('expected structured mutation config');
+      }
+      (markov.mutation.allowedMutatorIds as unknown as string[]).push('insert-block');
+    }).toThrow();
+    if (markov.mutation.mode === 'structured') {
+      expect(markov.mutation.allowedMutatorIds).toEqual(['replace-range', 'search-replace']);
+    }
   });
 
   it('includes only applicable fixed read-only harness references', () => {
@@ -209,13 +277,48 @@ describe('forecast-lab profiles', () => {
         expect(allowedGlob.startsWith('docs/')).toBe(false);
       }
 
+      for (const mutableFile of profile.mutation.mutableFiles) {
+        expect(mutableFile.startsWith('src/tools/finance/')).toBe(true);
+        expect(mutableFile).not.toContain('/backtest/');
+        expect(mutableFile.endsWith('.test.ts')).toBe(false);
+        expect(mutableFile.startsWith('docs/')).toBe(false);
+      }
+
       for (const harness of FORECAST_LAB_READ_ONLY_HARNESS_FILES) {
         expect(profile.allowedGlobs).not.toContain(harness);
+        expect(profile.mutation.mutableFiles).not.toContain(harness);
       }
 
       for (const harness of profile.readOnlyHarnessFiles) {
         expect((FORECAST_LAB_READ_ONLY_HARNESS_FILES as readonly string[]).includes(harness)).toBe(true);
         expect(profile.allowedGlobs).not.toContain(harness);
+        expect(profile.mutation.mutableFiles).not.toContain(harness);
+      }
+    }
+  });
+
+  it('keeps profile edit surfaces and mutation surfaces compatible without requiring identity', () => {
+    for (const profile of listForecastLabProfiles()) {
+      const allowedGlobs = new Set(profile.allowedGlobs);
+
+      for (const mutableFile of profile.mutation.mutableFiles) {
+        expect(allowedGlobs.has(mutableFile)).toBe(true);
+      }
+    }
+  });
+
+  it('declares bounded immutable mutation configs for each profile', () => {
+    const knownMutators = new Set(listForecastLabMutatorIds());
+
+    for (const profileId of EXPECTED_PROFILE_IDS) {
+      const profile = getForecastLabProfile(profileId);
+      const expected = EXPECTED_MUTATION_CONFIGS[profileId];
+
+      expect(profile.mutation).toEqual(expected);
+      if (profile.mutation.mode === 'structured') {
+        for (const mutatorId of profile.mutation.allowedMutatorIds) {
+          expect(knownMutators.has(mutatorId)).toBe(true);
+        }
       }
     }
   });
