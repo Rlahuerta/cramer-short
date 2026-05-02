@@ -16,42 +16,104 @@ function printUsage(log: (message: string) => void): void {
     [
       'Usage:',
       '  cramer-short lab list',
-      '  cramer-short lab run <profileId>',
       '  cramer-short lab run <profileId> --dry-run',
       '  cramer-short lab run <profileId> --skip-mutation',
+      '  cramer-short lab run <profileId> --mutation structured [--mutator <id>] [--keep-worktree]',
       '',
-      'Shipped structured profiles can run a real mutation with no flag. --dry-run and --skip-mutation preserve the no-mutation paths.',
+      'Real mutation requires an explicit --mutation structured flag. Use --dry-run or --skip-mutation for the no-mutation paths.',
     ].join('\n'),
   );
 }
 
-const FORECAST_LAB_RUN_FLAGS = new Set(['--dry-run', '--skip-mutation']);
+const FORECAST_LAB_MUTATION_MODES = new Set(['structured']);
 
 function parseRunArgs(argv: string[]): ForecastLabRunOptions {
   const profileId = argv[1];
-  const flags = argv.slice(2);
+  const args = argv.slice(2);
 
   if (!profileId) {
     throw new Error('Missing forecast-lab profile id.');
   }
 
-  for (const flag of flags) {
-    if (!FORECAST_LAB_RUN_FLAGS.has(flag)) {
-      throw new Error(`Unknown forecast-lab flag: "${flag}"`);
-    }
-  }
+  let dryRun = false;
+  let skipMutation = false;
+  let mutationMode: ForecastLabRunOptions['mutationMode'];
+  let keepWorktree = false;
+  let mutator: string | undefined;
 
-  const dryRun = flags.includes('--dry-run');
-  const skipMutation = flags.includes('--skip-mutation');
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === '--dry-run') {
+      dryRun = true;
+      continue;
+    }
+
+    if (arg === '--skip-mutation') {
+      skipMutation = true;
+      continue;
+    }
+
+    if (arg === '--keep-worktree') {
+      keepWorktree = true;
+      continue;
+    }
+
+    if (arg === '--mutation') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) {
+        throw new Error('Missing value for --mutation. Expected: structured');
+      }
+      if (!FORECAST_LAB_MUTATION_MODES.has(value)) {
+        throw new Error(`Unknown forecast-lab mutation mode: "${value}"`);
+      }
+      mutationMode = value as ForecastLabRunOptions['mutationMode'];
+      index += 1;
+      continue;
+    }
+
+    if (arg === '--mutator') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) {
+        throw new Error('Missing value for --mutator.');
+      }
+      mutator = value;
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown forecast-lab flag: "${arg}"`);
+  }
 
   if (dryRun && skipMutation) {
     throw new Error('Conflicting forecast-lab flags: --dry-run and --skip-mutation cannot be used together.');
+  }
+
+  if (dryRun || skipMutation) {
+    if (mutationMode !== undefined) {
+      throw new Error('Conflicting forecast-lab flags: --mutation cannot be combined with --dry-run or --skip-mutation.');
+    }
+    if (keepWorktree) {
+      throw new Error('Conflicting forecast-lab flags: --keep-worktree requires --mutation structured.');
+    }
+    if (mutator !== undefined) {
+      throw new Error('Conflicting forecast-lab flags: --mutator requires --mutation structured.');
+    }
+  } else if (keepWorktree || mutator !== undefined) {
+    if (mutationMode !== 'structured') {
+      throw new Error('Conflicting forecast-lab flags: --keep-worktree and --mutator require --mutation structured.');
+    }
+  } else if (mutationMode === undefined) {
+    throw new Error('Real forecast-lab mutation requires an explicit flag: --mutation structured.');
   }
 
   return {
     profileId,
     dryRun,
     skipMutation,
+    mutationMode,
+    keepWorktree,
+    mutator,
   };
 }
 
@@ -150,7 +212,10 @@ export async function runForecastLabCommand(argv: string[], options: ForecastLab
     try {
       const runLab = options.runLab ?? runForecastLab;
       const runOptions = parseRunArgs(argv);
-      log(`Running forecast-lab profile "${runOptions.profileId}"...`);
+      log(
+        `Running forecast-lab profile "${runOptions.profileId}"` +
+          (runOptions.mutationMode ? ` with ${runOptions.mutationMode} mutation...` : '...'),
+      );
       const result = await runLab({
         ...runOptions,
         progress: log,

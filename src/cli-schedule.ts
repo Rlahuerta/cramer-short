@@ -51,6 +51,12 @@ export interface ForecastLabScheduleJob {
   dryRun?: boolean;
   /** Run the existing no-mutation mode instead of dry-run. */
   skipMutation?: boolean;
+  /** Explicit real-mutation mode. Required for scheduled mutation runs. */
+  mutationMode?: 'structured';
+  /** Preserve the candidate worktree after a real mutation run for debugging. */
+  keepWorktree?: boolean;
+  /** Optional shipped structured mutator id override for debugging. */
+  mutator?: string;
 }
 
 export type ScheduleJob = AgentScheduleJob | ForecastLabScheduleJob;
@@ -190,10 +196,41 @@ function assertForecastLabJob(job: ForecastLabScheduleJob): asserts job is Forec
     throw new Error(`Forecast-lab schedule job "${job.id}" is missing profileId.`);
   }
   assertForecastLabProfileId(job.profileId);
-  if (job.dryRun === false && job.skipMutation !== true) {
+
+  if (job.mutationMode !== undefined && job.mutationMode !== 'structured') {
     throw new Error(
-      `Forecast-lab schedule job "${job.id}" sets dryRun: false, but forecast-lab V1 does not support real mutation. ` +
-        `Set skipMutation: true or leave dryRun unset/true.`,
+      `Forecast-lab schedule job "${job.id}" has unsupported mutationMode "${job.mutationMode}". Expected "structured".`,
+    );
+  }
+
+  if (job.dryRun === true && job.skipMutation === true) {
+    throw new Error(
+      `Forecast-lab schedule job "${job.id}" cannot set both dryRun: true and skipMutation: true.`,
+    );
+  }
+
+  if (job.dryRun !== false && job.mutationMode !== undefined) {
+    throw new Error(
+      `Forecast-lab schedule job "${job.id}" sets mutationMode, but scheduled mutation runs must also set dryRun: false.`,
+    );
+  }
+
+  if (job.skipMutation === true && job.mutationMode !== undefined) {
+    throw new Error(
+      `Forecast-lab schedule job "${job.id}" cannot combine skipMutation: true with mutationMode.`,
+    );
+  }
+
+  if ((job.keepWorktree === true || job.mutator !== undefined) && job.mutationMode !== 'structured') {
+    throw new Error(
+      `Forecast-lab schedule job "${job.id}" uses keepWorktree/mutator debugging controls, but they require mutationMode: "structured".`,
+    );
+  }
+
+  if (job.dryRun === false && job.skipMutation !== true && job.mutationMode === undefined) {
+    throw new Error(
+      `Forecast-lab schedule job "${job.id}" sets dryRun: false without an explicit mutationMode. ` +
+        `Set mutationMode: "structured" for real mutation or set skipMutation: true for the no-mutation path.`,
     );
   }
 }
@@ -206,6 +243,27 @@ function formatForecastLabOutput(job: ForecastLabScheduleJob, result: ForecastLa
         ))
         .join('\n')
     : '| _none_ | | | |';
+  const selectedMutator = job.mutator;
+  const mutationOperator = result.manifest.mutationSpecSummary?.mutatorId;
+  const mutationLines = result.manifest.mutationMode
+    ? [
+        `- Mutation mode: ${result.manifest.mutationMode}`,
+        ...(selectedMutator ? [`- Selected mutator: ${selectedMutator}`] : []),
+        ...(mutationOperator ? [`- Mutation operator: ${mutationOperator}`] : []),
+        ...(result.manifest.lineage
+          ? [
+              `- Lineage: root=${result.manifest.lineage.rootRunId}, parent=${result.manifest.lineage.parentRunId ?? 'none'}, generation=${result.manifest.lineage.generation}`,
+            ]
+          : []),
+        ...(result.manifest.candidateWorkspace
+          ? [
+              `- Candidate workspace: ${result.manifest.candidateWorkspace.kind} @ ${result.manifest.candidateWorkspace.rootDir}`,
+              `- Candidate branch: ${result.manifest.candidateWorkspace.branch}`,
+            ]
+          : []),
+        '',
+      ]
+    : [];
 
   return [
     `# ${job.description ?? job.id}`,
@@ -217,6 +275,7 @@ function formatForecastLabOutput(job: ForecastLabScheduleJob, result: ForecastLa
     `- Reason: ${result.decision.reason}`,
     `- Artifacts: ${result.manifest.artifactsPath}`,
     '',
+    ...mutationLines,
     '| Metric | Baseline | Candidate | Delta |',
     '|---|---:|---:|---:|',
     metrics,
@@ -237,12 +296,34 @@ async function runForecastLabJob(job: ForecastLabScheduleJob, options: ScheduleC
     profileId: job.profileId,
     dryRun: job.dryRun ?? (job.skipMutation !== true),
     skipMutation: job.skipMutation === true,
+    mutationMode: job.mutationMode,
+    keepWorktree: job.keepWorktree === true,
+    mutator: job.mutator,
     progress: log,
     output: write,
   });
 
   log(`forecast-lab ${result.decision.decision}: ${result.decision.reason}`);
   log(`artifacts: ${result.manifest.artifactsPath}`);
+  if (result.manifest.mutationMode) {
+    log(`mutation: ${result.manifest.mutationMode}`);
+    if (job.mutator) {
+      log(`selected mutator: ${job.mutator}`);
+    }
+    if (result.manifest.mutationSpecSummary?.mutatorId) {
+      log(`mutation operator: ${result.manifest.mutationSpecSummary.mutatorId}`);
+    }
+    if (result.manifest.lineage) {
+      log(
+        `lineage: root=${result.manifest.lineage.rootRunId}, parent=${result.manifest.lineage.parentRunId ?? 'none'}, generation=${result.manifest.lineage.generation}`,
+      );
+    }
+    if (result.manifest.candidateWorkspace) {
+      log(
+        `candidate workspace: ${result.manifest.candidateWorkspace.kind} ${result.manifest.candidateWorkspace.rootDir} (${result.manifest.candidateWorkspace.branch})`,
+      );
+    }
+  }
 
   if (job.outputFile) {
     const outPath = resolveOutputPath(job.outputFile, options);
@@ -306,6 +387,9 @@ export async function runScheduleCommand(argv: string[], options: ScheduleComman
         log(`  ${job.id.padEnd(24)} ${forecastJob.description ?? forecastJob.profileId ?? ''}`);
         log(`  ${''.padEnd(24)} kind: forecast_lab`);
         log(`  ${''.padEnd(24)} profile: ${forecastJob.profileId ?? '(missing)'}`);
+        if (forecastJob.mutationMode) {
+          log(`  ${''.padEnd(24)} mutation: ${forecastJob.mutationMode}`);
+        }
       } else {
         log(`  ${job.id.padEnd(24)} ${job.description}`);
       }

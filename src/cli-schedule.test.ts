@@ -64,7 +64,23 @@ async function* fakeAgentRun(query: string, seenQueries: string[]): AsyncGenerat
   };
 }
 
-function fakeForecastLabResult(profileId = 'btc-markov-short-horizon'): ForecastLabRunResult {
+function fakeForecastLabResult(
+  profileId = 'btc-markov-short-horizon',
+  options: {
+    mutationMode?: 'structured';
+    mutatorId?: 'replace-range' | 'search-replace' | 'insert-block';
+    lineage?: {
+      rootRunId: string;
+      parentRunId?: string;
+      generation: number;
+    };
+    candidateWorkspace?: {
+      kind: 'current-worktree' | 'candidate-worktree';
+      rootDir: string;
+      branch: string;
+    };
+  } = {},
+): ForecastLabRunResult {
   return {
     runId: 'schedule-forecast-run',
     manifest: {
@@ -75,6 +91,16 @@ function fakeForecastLabResult(profileId = 'btc-markov-short-horizon'): Forecast
       candidateBranch: 'forecast-lab/schedule-forecast-run',
       allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
       artifactsPath: join('.cramer-short', 'experiments', 'runs', 'schedule-forecast-run'),
+      mutationMode: options.mutationMode,
+      lineage: options.lineage,
+      mutationSpecSummary: options.mutatorId
+        ? {
+            mutatorId: options.mutatorId,
+            targetFiles: ['src/tools/finance/markov-distribution.ts'],
+            summary: 'Adjust Markov stability window',
+          }
+        : undefined,
+      candidateWorkspace: options.candidateWorkspace,
     },
     baseline: { exitCode: 0 },
     candidate: { exitCode: 0 },
@@ -97,6 +123,16 @@ function fakeForecastLabResult(profileId = 'btc-markov-short-horizon'): Forecast
       targetSubsystem: 'markov-distribution',
       candidateBranch: 'forecast-lab/schedule-forecast-run',
       allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+      mutationMode: options.mutationMode,
+      lineage: options.lineage,
+      mutationSpecSummary: options.mutatorId
+        ? {
+            mutatorId: options.mutatorId,
+            targetFiles: ['src/tools/finance/markov-distribution.ts'],
+            summary: 'Adjust Markov stability window',
+          }
+        : undefined,
+      candidateWorkspace: options.candidateWorkspace,
       baselineSummary: { exitCode: 0 },
       candidateSummary: { exitCode: 0 },
       decision: 'keep',
@@ -188,7 +224,7 @@ describe('schedule command', () => {
     expect(output.join('\n')).toContain('forecast-lab keep: candidate passed');
   });
 
-  it('fails loudly before dispatching forecast_lab jobs with dryRun false and mutation enabled', async () => {
+  it('fails loudly before dispatching forecast_lab jobs with dryRun false and no explicit mutation mode', async () => {
     writeSchedules([
       {
         id: 'unsafe-lab',
@@ -210,8 +246,45 @@ describe('schedule command', () => {
 
     expect(dispatchCount).toBe(0);
     expect(exitCodes).toEqual([1]);
-    expect(errors.join('\n')).toContain('dryRun: false');
-    expect(errors.join('\n')).toContain('skipMutation: true');
+    expect(errors.join('\n')).toContain('dryRun: false without an explicit mutationMode');
+    expect(errors.join('\n')).toContain('mutationMode: "structured"');
+  });
+
+  it('allows forecast_lab jobs with dryRun false when mutationMode is explicit', async () => {
+    writeSchedules([
+      {
+        id: 'mutating-lab',
+        kind: 'forecast_lab',
+        profileId: 'btc-markov-short-horizon',
+        dryRun: false,
+        mutationMode: 'structured',
+        keepWorktree: true,
+        mutator: 'markov-longer-stability-window',
+      },
+    ]);
+    const calls: ForecastLabRunOptions[] = [];
+    const { options, errors } = makeOptions({
+      runLab: async (runOptions) => {
+        calls.push(runOptions);
+        return fakeForecastLabResult(runOptions.profileId);
+      },
+    });
+
+    await runScheduleCommand(['run', 'mutating-lab'], options);
+
+    expect(errors).toEqual([]);
+    expect(calls).toEqual([
+      expect.objectContaining({
+        profileId: 'btc-markov-short-horizon',
+        dryRun: false,
+        skipMutation: false,
+        mutationMode: 'structured',
+        keepWorktree: true,
+        mutator: 'markov-longer-stability-window',
+        progress: expect.any(Function),
+        output: expect.any(Function),
+      }),
+    ]);
   });
 
   it('allows forecast_lab jobs with dryRun false when skipMutation is true', async () => {
@@ -240,10 +313,37 @@ describe('schedule command', () => {
         profileId: 'btc-markov-short-horizon',
         dryRun: false,
         skipMutation: true,
+        keepWorktree: false,
         progress: expect.any(Function),
         output: expect.any(Function),
       }),
     ]);
+  });
+
+  it('fails loudly when mutation debugging controls are used without an explicit structured mutation mode', async () => {
+    writeSchedules([
+      {
+        id: 'bad-debug-lab',
+        kind: 'forecast_lab',
+        profileId: 'btc-markov-short-horizon',
+        dryRun: true,
+        keepWorktree: true,
+      } as ScheduleJob,
+    ]);
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      runLab: async () => {
+        dispatchCount += 1;
+        return fakeForecastLabResult();
+      },
+    });
+
+    await runScheduleCommand(['run', 'bad-debug-lab'], options);
+
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('keepWorktree/mutator debugging controls');
+    expect(errors.join('\n')).toContain('mutationMode: "structured"');
   });
 
   it('writes forecast_lab output summaries when outputFile is configured', async () => {
@@ -268,6 +368,52 @@ describe('schedule command', () => {
     expect(text).toContain('- Profile: btc-markov-short-horizon');
     expect(text).toContain('- Decision: keep');
     expect(text).toContain('| walkForwardShortHorizonTestExitCode | 0 | 0 | 0 |');
+  });
+
+  it('includes structured mutation metadata in schedule summaries', async () => {
+    writeSchedules([
+      {
+        id: 'mutating-lab',
+        kind: 'forecast_lab',
+        description: 'Mutating forecast lab',
+        profileId: 'btc-markov-short-horizon',
+        dryRun: false,
+        mutationMode: 'structured',
+        mutator: 'markov-longer-stability-window',
+        outputFile: `${TEST_ROOT}/reports/{date}-mutating-forecast-lab.md`,
+      },
+    ]);
+    const { options, output } = makeOptions({
+      runLab: async (runOptions) => fakeForecastLabResult(runOptions.profileId, {
+        mutationMode: 'structured',
+        mutatorId: 'search-replace',
+        lineage: {
+          rootRunId: 'forecast-lab-root-run',
+          parentRunId: 'forecast-lab-parent-run',
+          generation: 2,
+        },
+        candidateWorkspace: {
+          kind: 'candidate-worktree',
+          rootDir: join(TEST_ROOT, 'worktrees', 'schedule-forecast-run'),
+          branch: 'forecast-lab/schedule-forecast-run',
+        },
+      }),
+    });
+
+    await runScheduleCommand(['run', 'mutating-lab'], options);
+
+    const text = readFileSync(join(TEST_ROOT, 'reports', '2026-05-02-mutating-forecast-lab.md'), 'utf8');
+    expect(output.join('\n')).toContain('mutation: structured');
+    expect(output.join('\n')).toContain('selected mutator: markov-longer-stability-window');
+    expect(output.join('\n')).toContain('mutation operator: search-replace');
+    expect(output.join('\n')).toContain('lineage: root=forecast-lab-root-run, parent=forecast-lab-parent-run, generation=2');
+    expect(output.join('\n')).toContain(`candidate workspace: candidate-worktree ${join(TEST_ROOT, 'worktrees', 'schedule-forecast-run')} (forecast-lab/schedule-forecast-run)`);
+    expect(text).toContain('- Mutation mode: structured');
+    expect(text).toContain('- Selected mutator: markov-longer-stability-window');
+    expect(text).toContain('- Mutation operator: search-replace');
+    expect(text).toContain('- Lineage: root=forecast-lab-root-run, parent=forecast-lab-parent-run, generation=2');
+    expect(text).toContain(`- Candidate workspace: candidate-worktree @ ${join(TEST_ROOT, 'worktrees', 'schedule-forecast-run')}`);
+    expect(text).toContain('- Candidate branch: forecast-lab/schedule-forecast-run');
   });
 
   it('fails loudly and does not dispatch forecast_lab jobs with missing profile ids', async () => {
@@ -314,6 +460,32 @@ describe('schedule command', () => {
     expect(dispatchCount).toBe(0);
     expect(exitCodes).toEqual([1]);
     expect(errors.join('\n')).toContain('Unknown forecast-lab profile id: unknown-profile');
+  });
+
+  it('fails loudly before dispatching forecast_lab jobs with conflicting skipMutation and mutationMode flags', async () => {
+    writeSchedules([
+      {
+        id: 'ambiguous-lab',
+        kind: 'forecast_lab',
+        profileId: 'btc-markov-short-horizon',
+        dryRun: false,
+        skipMutation: true,
+        mutationMode: 'structured',
+      },
+    ]);
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      runLab: async () => {
+        dispatchCount += 1;
+        return fakeForecastLabResult();
+      },
+    });
+
+    await runScheduleCommand(['run', 'ambiguous-lab'], options);
+
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('cannot combine skipMutation: true with mutationMode');
   });
 
   it('reports unknown job ids without running any jobs', async () => {

@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, resolve, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { runForecastLabCommand } from '../../cli-forecast-lab.js';
 import { getExperimentRunDir } from '../../utils/paths.js';
+import {
+  getForecastLabCandidateWorktreePath,
+  makeForecastLabCandidateBranch,
+} from './git.js';
 import { readLedgerEntries } from './ledger.js';
 import type { ForecastLabCommandRunner } from './runner.js';
 import {
@@ -21,6 +26,7 @@ const RUN_IDS = [
   'runner-test-unknown',
   'runner-test-failed-candidate',
   'runner-test-structured',
+  'runner-test-structured-keep-worktree',
   'runner-test-skip-mutation',
   'runner-test-outside-ledger',
 ];
@@ -28,6 +34,11 @@ const RUN_IDS = [
 function cleanup(): void {
   rmSync(TEST_LEDGER_DIR, { recursive: true, force: true });
   for (const runId of RUN_IDS) {
+    const worktreePath = getForecastLabCandidateWorktreePath(runId);
+    if (existsSync(worktreePath)) {
+      spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { stdio: 'ignore' });
+    }
+    spawnSync('git', ['branch', '-D', makeForecastLabCandidateBranch(runId)], { stdio: 'ignore' });
     rmSync(getExperimentRunDir(runId), { recursive: true, force: true });
   }
 }
@@ -180,6 +191,7 @@ describe('forecast-lab runner', () => {
     const progress: string[] = [];
     const result = await runForecastLab({
       profileId: 'btc-markov-short-horizon',
+      mutationMode: 'structured',
       runId: 'runner-test-structured',
       ledgerPath: TEST_LEDGER_PATH,
       progress: (message) => progress.push(message),
@@ -290,9 +302,51 @@ describe('forecast-lab runner', () => {
     );
   });
 
+  it('preserves the candidate workspace when keepWorktree is enabled for a structured mutation run', async () => {
+    const worktreePath = getForecastLabCandidateWorktreePath('runner-test-structured-keep-worktree');
+    const progress: string[] = [];
+
+    const result = await runForecastLab({
+      profileId: 'btc-markov-short-horizon',
+      mutationMode: 'structured',
+      keepWorktree: true,
+      mutator: 'markov-longer-stability-window',
+      runId: 'runner-test-structured-keep-worktree',
+      ledgerPath: TEST_LEDGER_PATH,
+      progress: (message) => progress.push(message),
+      commandRunner: passingRunner([]),
+    });
+
+    expect(result.decision.decision).toBe('keep');
+    expect(result.manifest.candidateWorkspace?.rootDir).toBe(worktreePath);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(readFileSync(join(worktreePath, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+      '  momentumLookback: 28,',
+    );
+    expect(progress).toContain(`forecast-lab: keeping candidate workspace ${worktreePath}`);
+
+    const candidate = JSON.parse(
+      readFileSync(join(getExperimentRunDir('runner-test-structured-keep-worktree'), 'candidate.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    expect(candidate.selectedMutator).toEqual({
+      id: 'markov-longer-stability-window',
+      mutatorId: 'search-replace',
+    });
+  });
+
+  it('rejects ambiguous real mutation runs with no explicit mutation mode', async () => {
+    await expect(runForecastLab({
+      profileId: 'btc-markov-short-horizon',
+      runId: 'runner-test-skip-mutation',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    })).rejects.toThrow(/explicit mutationMode/i);
+  });
+
   it('fails loudly when real mutation is requested for a profile without a shipped structured catalog', async () => {
     await expect(runForecastLab({
       profileId: 'btc-arbiter-replay',
+      mutationMode: 'structured',
       runId: 'runner-test-skip-mutation',
       ledgerPath: TEST_LEDGER_PATH,
       commandRunner: passingRunner([]),
@@ -403,7 +457,9 @@ describe('forecast-lab CLI module', () => {
 
     await runForecastLabCommand([], { log: (message) => output.push(message) });
 
-    expect(output.join('\n')).toContain('cramer-short lab run <profileId>');
+    expect(output.join('\n')).not.toContain('  cramer-short lab run <profileId>\n');
+    expect(output.join('\n')).toContain('cramer-short lab run <profileId> --dry-run');
+    expect(output.join('\n')).toContain('--mutation structured');
   });
 
   it('prints useful usage for missing run profile ids', async () => {
@@ -421,7 +477,7 @@ describe('forecast-lab CLI module', () => {
 
     expect(exitCode).toBe(1);
     expect(errors.join('\n')).toContain('Missing forecast-lab profile id.');
-    expect(output.join('\n')).toContain('cramer-short lab run <profileId>');
+    expect(output.join('\n')).toContain('cramer-short lab run <profileId> --dry-run');
   });
 
   it('rejects unknown run flags instead of defaulting into a real mutation run', async () => {
@@ -469,6 +525,115 @@ describe('forecast-lab CLI module', () => {
     expect(errors.join('\n')).toContain(
       'Conflicting forecast-lab flags: --dry-run and --skip-mutation cannot be used together.',
     );
+  });
+
+  it('requires an explicit mutation mode before running a real mutation', async () => {
+    const errors: string[] = [];
+    let exitCode = 0;
+    let runLabCalls = 0;
+
+    await runForecastLabCommand(['run', 'btc-markov-short-horizon'], {
+      error: (message) => errors.push(message),
+      exit: (code) => {
+        exitCode = code;
+      },
+      runLab: async () => {
+        runLabCalls += 1;
+        throw new Error('runLab should not be called');
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(runLabCalls).toBe(0);
+    expect(errors.join('\n')).toContain('Real forecast-lab mutation requires an explicit flag: --mutation structured.');
+  });
+
+  it('passes explicit structured mutation controls through to the runner', async () => {
+    const output: string[] = [];
+    const runLabCalls: Array<Record<string, unknown>> = [];
+
+    await runForecastLabCommand([
+      'run',
+      'btc-markov-short-horizon',
+      '--mutation',
+      'structured',
+      '--mutator',
+      'markov-longer-stability-window',
+      '--keep-worktree',
+    ], {
+      log: (message) => output.push(message),
+      runLab: async (options) => {
+        runLabCalls.push(options as unknown as Record<string, unknown>);
+        return {
+          runId: 'runner-test-explicit-structured',
+          manifest: {
+            runId: 'runner-test-explicit-structured',
+            startedAt: '2026-05-02T00:00:00.000Z',
+            profileId: 'btc-markov-short-horizon',
+            targetSubsystem: 'markov-distribution',
+            baselineCommit: '0123456789abcdef0123456789abcdef01234567',
+            candidateBranch: 'topic/forecast-lab-runner-test-explicit-structured',
+            allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+            artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-explicit-structured'),
+          },
+          baseline: { exitCode: 0 },
+          candidate: { exitCode: 0 },
+          decision: {
+            decision: 'keep',
+            reason: 'candidate passed',
+            metrics: [],
+          },
+          ledgerEntry: {
+            runId: 'runner-test-explicit-structured',
+            startedAt: '2026-05-02T00:00:00.000Z',
+            profileId: 'btc-markov-short-horizon',
+            targetSubsystem: 'markov-distribution',
+            candidateBranch: 'topic/forecast-lab-runner-test-explicit-structured',
+            allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+            baselineSummary: { exitCode: 0 },
+            candidateSummary: { exitCode: 0 },
+            decision: 'keep',
+            reason: 'candidate passed',
+            artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-explicit-structured'),
+          },
+        };
+      },
+    });
+
+    expect(runLabCalls).toEqual([
+      expect.objectContaining({
+        profileId: 'btc-markov-short-horizon',
+        dryRun: false,
+        skipMutation: false,
+        mutationMode: 'structured',
+        keepWorktree: true,
+        mutator: 'markov-longer-stability-window',
+        progress: expect.any(Function),
+        output: expect.any(Function),
+      }),
+    ]);
+    expect(output.join('\n')).toContain('Running forecast-lab profile "btc-markov-short-horizon" with structured mutation...');
+  });
+
+  it('rejects mutator overrides without an explicit structured mutation mode', async () => {
+    const errors: string[] = [];
+    let exitCode = 0;
+    let runLabCalls = 0;
+
+    await runForecastLabCommand(['run', 'btc-markov-short-horizon', '--mutator', 'markov-longer-stability-window'], {
+      error: (message) => errors.push(message),
+      exit: (code) => {
+        exitCode = code;
+      },
+      runLab: async () => {
+        runLabCalls += 1;
+        throw new Error('runLab should not be called');
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(runLabCalls).toBe(0);
+    expect(errors.join('\n')).toContain('--keep-worktree and --mutator require --mutation structured');
   });
 
   it('prints evolution and parameter summaries after a successful run', async () => {

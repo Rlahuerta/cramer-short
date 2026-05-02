@@ -55,7 +55,7 @@ It helps to think of Forecast Lab as a 4-part loop:
    A profile defines the subsystem, commands, metrics, and keep/drop rules.
 
 2. **Run baseline and candidate gates**
-   Structured profiles now run a real candidate mutation in an isolated worktree by default. `--dry-run` and `--skip-mutation` still preserve the no-mutation paths, and unknown or conflicting flags are rejected instead of falling through to a real mutation.
+   Structured profiles can run a real candidate mutation in an isolated worktree, but only when you opt in with `--mutation structured`. `--dry-run` and `--skip-mutation` still preserve the no-mutation paths, and unknown or conflicting flags are rejected instead of falling through to a real mutation.
 
 3. **Write artifacts and ledger entries**
    Every run leaves a paper trail under `.cramer-short/experiments/`.
@@ -78,7 +78,7 @@ bun start lab list
 Then run a profile:
 
 ```bash
-bun start lab run btc-markov-short-horizon
+bun start lab run btc-markov-short-horizon --dry-run
 ```
 
 You should see output like:
@@ -135,12 +135,12 @@ bun start lab run btc-arbiter-replay --dry-run
 bun start lab run <profileId> --skip-mutation
 ```
 
-This is supported, but it is mostly useful for plumbing and schedule compatibility right now. In V1 it always ends in a **drop** because no candidate code change exists to keep.
+This is supported, but it is mostly useful for plumbing and schedule compatibility right now. It always ends in a **drop** because no candidate code change exists to keep.
 
 ### Run a shipped structured mutation
 
 ```bash
-bun start lab run btc-markov-short-horizon
+bun start lab run btc-markov-short-horizon --mutation structured
 ```
 
 Today this is supported for the shipped Markov profiles. Forecast Lab will:
@@ -151,6 +151,18 @@ Today this is supported for the shipped Markov profiles. Forecast Lab will:
 4. run the candidate gate in that worktree
 5. keep or drop through the normal acceptance path
 6. clean up the candidate worktree after recording artifacts
+
+For debugging, you can keep the workspace around:
+
+```bash
+bun start lab run btc-markov-short-horizon --mutation structured --keep-worktree
+```
+
+You can also force one shipped mutation candidate:
+
+```bash
+bun start lab run btc-markov-short-horizon --mutation structured --mutator markov-longer-stability-window
+```
 
 ### Show lab usage
 
@@ -181,9 +193,9 @@ Each profile tells the runner:
 - which metrics must exist,
 - which rules force `keep` or `drop`.
 
-### Phase 1 mutation contract
+### Current mutation contract
 
-Phase 1 adds **typed mutation metadata only**. It does **not** add real worktree mutation yet.
+Profiles now carry a bounded mutation contract, and shipped Markov profiles can execute a real structured mutation in an isolated candidate worktree when you opt in with `--mutation structured`.
 
 Profiles now carry a bounded `mutation` config in `src/experiments/forecast-lab/profiles.ts`:
 
@@ -192,14 +204,14 @@ Profiles now carry a bounded `mutation` config in `src/experiments/forecast-lab/
 - `allowedMutatorIds`: a bounded allowlist of structured mutators, present only when `mode` is `structured`
 - `allowMultipleCandidateAttempts`: reserved for later multi-candidate runs
 
-The shared contract lives in `src/experiments/forecast-lab/mutation.ts`. In this phase it exists to keep future mutation work typed and narrow:
+The shared contract lives in `src/experiments/forecast-lab/mutation.ts`. It keeps mutation behavior typed and narrow:
 
 - unknown mutator ids fail loudly,
 - non-structured modes do not accept fake `allowedMutatorIds`,
 - mutation configs are deeply frozen before export,
 - run artifacts persist the effective mutation contract snapshot (`mode`, `mutableFiles`, structured `allowedMutatorIds`, and `allowMultipleCandidateAttempts`) and can also carry optional mutation lineage metadata (`mutationMode`, `lineage`, `mutationSpecSummary`, `candidateWorkspace`).
 
-`allowedGlobs` and `mutation.mutableFiles` are also intentionally related but not identical concepts. `allowedGlobs` defines the profile-level editable surface, while `mutableFiles` defines the mode-specific mutation input. The current Phase 1 profiles keep them aligned for simplicity, but later phases may narrow or expand one without changing the other.
+`allowedGlobs` and `mutation.mutableFiles` are also intentionally related but not identical concepts. `allowedGlobs` defines the profile-level editable surface, while `mutableFiles` defines the mode-specific mutation input. The current profiles keep them aligned for simplicity, but later phases may narrow or expand one without changing the other.
 
 ### `btc-markov-short-horizon`
 
@@ -328,7 +340,7 @@ the runner does the following:
 
 1. Loads the profile.
 2. Creates a run ID like `forecast-lab-<profile>-<timestamp>`.
-3. Computes a candidate branch name for bookkeeping.
+3. Computes a candidate branch name.
 4. Creates the run directory under `.cramer-short/experiments/runs/<run-id>/`.
 5. Writes `manifest.json`.
 6. Runs the baseline commands.
@@ -341,7 +353,7 @@ the runner does the following:
 
 ### Important clarification about the candidate branch
 
-The run records a generated candidate branch name, but V1 does **not** create or switch git branches during the lab run. The branch name is bookkeeping metadata for future evolution of the workflow.
+`--dry-run` and `--skip-mutation` still only record the candidate branch name as bookkeeping metadata. A real structured mutation run also creates an isolated candidate worktree and branch, records that workspace in the manifest/ledger, and then cleans it up unless you pass `--keep-worktree`.
 
 ---
 
@@ -353,7 +365,7 @@ Each run writes directly under:
 .cramer-short/experiments/runs/<run-id>/
 ```
 
-Current V1 files:
+Current run files:
 
 | File | What it tells you | What to check first |
 |---|---|---|
@@ -410,9 +422,9 @@ That means a plain TSV parser can read the row shape, but a JSON-aware parser is
 | `candidateBranch` | Generated bookkeeping branch name |
 | `allowedGlobs` | Candidate edit surface allowed by the profile |
 | `effectiveMutationContract` | Persisted snapshot of the actual mutation contract for this run |
-| `mutationMode` | Optional applied mutation mode metadata for future/non-dry-run phases |
+| `mutationMode` | Optional applied mutation mode metadata (`structured` for real shipped mutations) |
 | `lineage` | Optional parent/root lineage for derived candidates |
-| `mutationSpecSummary` | Optional compact summary of the concrete mutation request |
+| `mutationSpecSummary` | Optional compact summary of the concrete mutation request, including the selected mutator |
 | `candidateWorkspace` | Optional workspace metadata for where the candidate was evaluated |
 | `baselineSummary` | Compact baseline command summary |
 | `candidateSummary` | Compact candidate command summary |
@@ -444,7 +456,7 @@ Those four fields tell you most of what you need quickly.
 
 Keep/drop decisions come from the profile's structured `keepDropRule`, not from natural-language impressions.
 
-Current V1 profiles use **command exit-code gates** as the measured metrics because the targeted Bun tests do not yet export richer JSON metrics.
+Current profiles use **command exit-code gates** as the measured metrics because the targeted Bun tests do not yet export richer JSON metrics.
 
 The runner logic is:
 
@@ -453,7 +465,7 @@ The runner logic is:
 3. else if all `keepWhen.all` rules match -> **keep**,
 4. else use the profile default decision -> currently **drop**.
 
-### What `keep` means in V1
+### What `keep` means
 
 For a dry run, `keep` does **not** mean:
 
@@ -461,13 +473,13 @@ For a dry run, `keep` does **not** mean:
 - the forecast got better,
 - or a mutation has been approved for merge.
 
-In V1, `keep` during `--dry-run` only means:
+During `--dry-run`, `keep` only means:
 
 > the orchestrated candidate pass satisfied the profile's declared gates.
 
-That is useful, but it is not yet the same thing as an accepted code improvement.
+For a real structured mutation run, `keep` means the mutated candidate satisfied the profile gates inside the isolated workspace. It still does **not** mean the change is auto-merged or exempt from review.
 
-### What `drop` means in V1
+### What `drop` means
 
 A drop usually means one of:
 
@@ -501,9 +513,9 @@ Use `--skip-mutation` only when you intentionally want:
 
 For most people, **use `--dry-run` first**.
 
-### Why `--dry-run` is still required
+### Why `--dry-run` is still useful
 
-Because V1 does **not** mutate source code yet.
+`--dry-run` remains the safest way to inspect a profile without creating a candidate workspace.
 
 Right now, the runner can:
 
@@ -514,14 +526,13 @@ Right now, the runner can:
 - write artifacts,
 - and record a keep/drop decision.
 
-What it does **not** do yet is automatically change model parameters or source code between baseline and candidate. That candidate-edit loop is the missing piece. Until that exists, `--dry-run` is the honest mode: it lets you run the optimization harness and inspect the output without pretending a source mutation happened.
+When you opt into `--mutation structured`, shipped Markov profiles can also create a bounded candidate workspace, apply one shipped mutator, and evaluate that candidate. `--dry-run` is still the honest default when you want orchestration and artifact checks without any candidate edit attempt.
 
 So today:
 
 - `--dry-run` = run the optimization harness safely with **no code mutation**
 - `--skip-mutation` = explicitly run the no-mutation path and force a **drop**
-
-If the mutation engine is added later, `--dry-run` can stop being mandatory for normal optimization runs.
+- `--mutation structured` = run one shipped bounded mutation in an isolated candidate workspace
 
 ---
 
@@ -652,7 +663,7 @@ Experiment artifacts remain project-local:
 .cramer-short/experiments/
 ```
 
-### Example `forecast_lab` job
+### Example `forecast_lab` dry-run job
 
 ```json
 [
@@ -683,26 +694,52 @@ bun start schedule run nightly-btc-markov-lab
 | `kind` | Yes | Must be `forecast_lab` |
 | `description` | No | Friendly label |
 | `profileId` | Yes | Must match a configured forecast-lab profile |
-| `maxIterations` | No | Reserved for future bounded mutation loops; unused in V1 |
+| `maxIterations` | No | Reserved for future bounded mutation loops; currently unused |
 | `outputFile` | No | Optional summary path; supports `~` and `{date}` |
 | `dryRun` | No | Defaults to `true` unless `skipMutation` is true |
 | `skipMutation` | No | Runs no-mutation mode and records a drop |
+| `mutationMode` | No | Explicit real-mutation mode. Set to `structured` to allow scheduled mutation runs |
+| `keepWorktree` | No | Preserves the candidate worktree after a scheduled structured mutation |
+| `mutator` | No | Optional shipped structured mutation id override for debugging |
 
 ### Important schedule rule
 
-If a scheduled forecast-lab job sets:
+Scheduled mutation is **not** the default. If a scheduled forecast-lab job sets:
 
 ```json
 "dryRun": false
 ```
 
-it **must** also set:
+it must choose exactly one explicit path:
+
+```json
+"mutationMode": "structured"
+```
+
+for a real structured mutation run, or:
 
 ```json
 "skipMutation": true
 ```
 
-Otherwise the schedule runner fails loudly because real mutation is not implemented in V1.
+Otherwise the schedule runner fails loudly instead of inferring a real mutation mode.
+
+### Example scheduled structured mutation
+
+```json
+[
+  {
+    "id": "nightly-btc-markov-mutation",
+    "kind": "forecast_lab",
+    "description": "Nightly BTC Markov structured mutation",
+    "profileId": "btc-markov-short-horizon",
+    "dryRun": false,
+    "mutationMode": "structured",
+    "mutator": "markov-longer-stability-window",
+    "outputFile": "~/.cramer-short/reports/{date}-btc-markov-mutation.md"
+  }
+]
+```
 
 ### Output path restrictions
 
@@ -761,7 +798,7 @@ Do **not** add profiles that:
 
 ### "I got `keep` from a dry run. Should I trust that as an improvement?"
 
-Not yet. In V1, treat it as:
+Not yet. Treat it as:
 
 > "the gates passed under orchestration"
 
@@ -830,7 +867,13 @@ and copy a valid profile id exactly.
 
 ### Error: real mutation requires a shipped structured profile
 
-Run a Markov profile with no flag for a real structured mutation, or use:
+Use a shipped Markov profile with:
+
+```bash
+--mutation structured
+```
+
+For the no-mutation paths, use:
 
 ```bash
 --dry-run
@@ -855,7 +898,7 @@ Your `outputFile` escaped the permitted schedule roots. Keep it under:
 
 ## Final guidance
 
-Forecast Lab is already useful, but its usefulness in V1 comes from **discipline**, not raw automation.
+Forecast Lab is already useful, but its usefulness still comes from **discipline**, not raw automation.
 
 Use it to:
 
