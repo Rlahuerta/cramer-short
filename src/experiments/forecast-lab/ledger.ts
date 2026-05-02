@@ -183,6 +183,13 @@ function validateOptionalMutationMetadata(record: Record<string, unknown>): void
     }
   }
 
+  const hasStructuredMutationMetadata = record.lineage !== undefined || record.mutationSpecSummary !== undefined;
+  if (hasStructuredMutationMetadata && record.mutationMode !== 'structured') {
+    throw new ForecastLabLedgerError(
+      'lineage and mutationSpecSummary require mutationMode="structured"',
+    );
+  }
+
   if (record.lineage !== undefined) {
     const lineage = record.lineage;
     try {
@@ -218,6 +225,14 @@ function validateOptionalMutationMetadata(record: Record<string, unknown>): void
       validateForecastLabProfileMutationConfig(record.effectiveMutationContract);
     } catch (error) {
       throw new ForecastLabLedgerError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (record.mutationMode === 'structured') {
+    for (const field of ['lineage', 'mutationSpecSummary', 'candidateWorkspace'] as const) {
+      if (record[field] === undefined) {
+        throw new ForecastLabLedgerError(`${field} is required when mutationMode="structured"`);
+      }
     }
   }
 }

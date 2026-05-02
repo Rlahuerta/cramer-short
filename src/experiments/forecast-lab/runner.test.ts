@@ -20,6 +20,7 @@ const RUN_IDS = [
   'runner-test-dry-run',
   'runner-test-unknown',
   'runner-test-failed-candidate',
+  'runner-test-structured',
   'runner-test-skip-mutation',
   'runner-test-outside-ledger',
 ];
@@ -102,6 +103,7 @@ describe('forecast-lab runner', () => {
 
     const candidate = JSON.parse(readFileSync(join(runDir, 'candidate.json'), 'utf8')) as Record<string, unknown>;
     expect(candidate.mutation).toBe('dry-run: no code mutation attempted');
+    expect(result.candidate as unknown).toEqual(candidate);
     const manifest = JSON.parse(readFileSync(join(runDir, 'manifest.json'), 'utf8')) as Record<string, unknown>;
     expect(manifest.baselineCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(manifest).not.toHaveProperty('candidateWorkspace');
@@ -173,13 +175,128 @@ describe('forecast-lab runner', () => {
     });
   });
 
-  it('fails loudly when real mutation is requested in V1', async () => {
+  it('runs one real structured mutation inside an isolated candidate workspace and records its metadata', async () => {
+    const calls: string[] = [];
+    const progress: string[] = [];
+    const result = await runForecastLab({
+      profileId: 'btc-markov-short-horizon',
+      runId: 'runner-test-structured',
+      ledgerPath: TEST_LEDGER_PATH,
+      progress: (message) => progress.push(message),
+      commandRunner: async (command, context) => {
+        calls.push(`${context.phase}:${command.id}:${context.cwd ?? ''}`);
+
+        if (context.phase === 'candidate') {
+          const candidateRoot = context.cwd!;
+          expect(candidateRoot).toBe(resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured'));
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            '  momentumLookback: 14,',
+          );
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
+            '  scoreAggregationCalibrationWindow: 96,',
+          );
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/regime-calibrator.ts'), 'utf8')).toContain(
+            '  minSamplesPerRegime: 24,',
+          );
+        } else {
+          expect(context.cwd).toBe(process.cwd());
+        }
+
+        return {
+          id: command.id,
+          command: command.command,
+          exitCode: 0,
+          stdout: `${context.phase} ok`,
+          stderr: '',
+          durationMs: 1,
+          timedOut: false,
+        };
+      },
+    });
+
+    expect(calls).toEqual([
+      `baseline:walk-forward-short-horizon:${process.cwd()}`,
+      `candidate:walk-forward-short-horizon:${resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured')}`,
+    ]);
+    expect(result.decision.decision).toBe('keep');
+    expect(result.manifest.mutationMode).toBe('structured');
+    expect(result.manifest.lineage).toEqual({
+      rootRunId: 'runner-test-structured',
+      generation: 0,
+    });
+    expect(result.manifest.mutationSpecSummary).toEqual({
+      mutatorId: 'search-replace',
+      targetFiles: [
+        'src/tools/finance/markov-distribution.ts',
+        'src/tools/finance/conformal.ts',
+        'src/tools/finance/regime-calibrator.ts',
+      ],
+      summary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
+    });
+    const candidateWorkspace = result.manifest.candidateWorkspace;
+    expect(candidateWorkspace).toEqual({
+      kind: 'candidate-worktree',
+      rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured'),
+      branch: 'topic/forecast-lab-runner-test-structured',
+    });
+    expect(candidateWorkspace).toBeDefined();
+    expect(existsSync(candidateWorkspace!.rootDir)).toBe(false);
+
+    const runDir = getExperimentRunDir('runner-test-structured');
+    const candidate = JSON.parse(readFileSync(join(runDir, 'candidate.json'), 'utf8')) as Record<string, unknown>;
+    expect(candidate.mutationMode).toBe('structured');
+    expect(candidate.mutatedFiles).toEqual([
+      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/conformal.ts',
+      'src/tools/finance/regime-calibrator.ts',
+    ]);
+    expect(result.candidate as unknown).toEqual(candidate);
+    expect(candidate.selectedMutator).toEqual({
+      id: 'markov-shorter-reactive-window',
+      mutatorId: 'search-replace',
+    });
+    expect(candidate.patchSummary).toEqual([
+      'markov-distribution.ts: momentumLookback 20 → 14',
+      'markov-distribution.ts: structuralBreakMinLength 60 → 48',
+      'conformal.ts: scoreAggregationMinSamples 20 → 16',
+      'conformal.ts: scoreAggregationCalibrationWindow 120 → 96',
+      'regime-calibrator.ts: minSamplesPerRegime 30 → 24',
+    ]);
+
+    const decision = JSON.parse(readFileSync(join(runDir, 'decision.json'), 'utf8')) as Record<string, unknown>;
+    expect(decision.mutationMode).toBe('structured');
+    expect(decision.candidateWorkspace).toEqual(candidateWorkspace);
+
+    expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).toMatchObject({
+      runId: 'runner-test-structured',
+      decision: 'keep',
+      mutationMode: 'structured',
+      lineage: {
+        rootRunId: 'runner-test-structured',
+        generation: 0,
+      },
+      mutationSpecSummary: result.manifest.mutationSpecSummary,
+      candidateWorkspace,
+    });
+    expect(progress).toContain(
+      `forecast-lab: candidate workspace ${resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured')}`,
+    );
+    expect(progress).toContain('forecast-lab: selected mutator markov-shorter-reactive-window (search-replace)');
+    expect(progress).toContain(
+      'forecast-lab: mutated files src/tools/finance/markov-distribution.ts, src/tools/finance/conformal.ts, src/tools/finance/regime-calibrator.ts',
+    );
+    expect(progress).toContain(
+      'forecast-lab: patch summary markov-distribution.ts: momentumLookback 20 → 14 | markov-distribution.ts: structuralBreakMinLength 60 → 48 | conformal.ts: scoreAggregationMinSamples 20 → 16 | conformal.ts: scoreAggregationCalibrationWindow 120 → 96 | regime-calibrator.ts: minSamplesPerRegime 30 → 24',
+    );
+  });
+
+  it('fails loudly when real mutation is requested for a profile without a shipped structured catalog', async () => {
     await expect(runForecastLab({
       profileId: 'btc-arbiter-replay',
-      runId: 'runner-test-dry-run',
+      runId: 'runner-test-skip-mutation',
       ledgerPath: TEST_LEDGER_PATH,
       commandRunner: passingRunner([]),
-    })).rejects.toThrow(ForecastLabRunnerError);
+    })).rejects.toThrow(/requires a structured profile with a shipped catalog/i);
   });
 
   it('drops --skip-mutation runs because no candidate code change exists', async () => {
@@ -286,7 +403,7 @@ describe('forecast-lab CLI module', () => {
 
     await runForecastLabCommand([], { log: (message) => output.push(message) });
 
-    expect(output.join('\n')).toContain('cramer-short lab run <profileId> --dry-run');
+    expect(output.join('\n')).toContain('cramer-short lab run <profileId>');
   });
 
   it('prints useful usage for missing run profile ids', async () => {
@@ -304,7 +421,54 @@ describe('forecast-lab CLI module', () => {
 
     expect(exitCode).toBe(1);
     expect(errors.join('\n')).toContain('Missing forecast-lab profile id.');
-    expect(output.join('\n')).toContain('cramer-short lab run <profileId> --dry-run');
+    expect(output.join('\n')).toContain('cramer-short lab run <profileId>');
+  });
+
+  it('rejects unknown run flags instead of defaulting into a real mutation run', async () => {
+    const output: string[] = [];
+    const errors: string[] = [];
+    let exitCode = 0;
+    let runLabCalls = 0;
+
+    await runForecastLabCommand(['run', 'btc-markov-short-horizon', '--dryrun'], {
+      log: (message) => output.push(message),
+      error: (message) => errors.push(message),
+      exit: (code) => {
+        exitCode = code;
+      },
+      runLab: async () => {
+        runLabCalls += 1;
+        throw new Error('runLab should not be called');
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(runLabCalls).toBe(0);
+    expect(errors.join('\n')).toContain('Unknown forecast-lab flag: "--dryrun"');
+    expect(output.join('\n')).not.toContain('Running forecast-lab profile');
+  });
+
+  it('rejects conflicting no-mutation flags', async () => {
+    const errors: string[] = [];
+    let exitCode = 0;
+    let runLabCalls = 0;
+
+    await runForecastLabCommand(['run', 'btc-markov-short-horizon', '--dry-run', '--skip-mutation'], {
+      error: (message) => errors.push(message),
+      exit: (code) => {
+        exitCode = code;
+      },
+      runLab: async () => {
+        runLabCalls += 1;
+        throw new Error('runLab should not be called');
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(runLabCalls).toBe(0);
+    expect(errors.join('\n')).toContain(
+      'Conflicting forecast-lab flags: --dry-run and --skip-mutation cannot be used together.',
+    );
   });
 
   it('prints evolution and parameter summaries after a successful run', async () => {

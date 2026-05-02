@@ -16,26 +16,42 @@ function printUsage(log: (message: string) => void): void {
     [
       'Usage:',
       '  cramer-short lab list',
+      '  cramer-short lab run <profileId>',
       '  cramer-short lab run <profileId> --dry-run',
       '  cramer-short lab run <profileId> --skip-mutation',
       '',
-      'Forecast-lab V1 requires --dry-run or --skip-mutation; real mutation is not supported yet.',
+      'Shipped structured profiles can run a real mutation with no flag. --dry-run and --skip-mutation preserve the no-mutation paths.',
     ].join('\n'),
   );
 }
 
+const FORECAST_LAB_RUN_FLAGS = new Set(['--dry-run', '--skip-mutation']);
+
 function parseRunArgs(argv: string[]): ForecastLabRunOptions {
   const profileId = argv[1];
-  const flags = new Set(argv.slice(2));
+  const flags = argv.slice(2);
 
   if (!profileId) {
     throw new Error('Missing forecast-lab profile id.');
   }
 
+  for (const flag of flags) {
+    if (!FORECAST_LAB_RUN_FLAGS.has(flag)) {
+      throw new Error(`Unknown forecast-lab flag: "${flag}"`);
+    }
+  }
+
+  const dryRun = flags.includes('--dry-run');
+  const skipMutation = flags.includes('--skip-mutation');
+
+  if (dryRun && skipMutation) {
+    throw new Error('Conflicting forecast-lab flags: --dry-run and --skip-mutation cannot be used together.');
+  }
+
   return {
     profileId,
-    dryRun: flags.has('--dry-run'),
-    skipMutation: flags.has('--skip-mutation'),
+    dryRun,
+    skipMutation,
   };
 }
 
@@ -97,9 +113,9 @@ function printRunSummary(log: (message: string) => void, result: ForecastLabRunR
     log(line);
   }
 
-  if (profile.baselineCommands === profile.candidateCommands) {
+  if (result.manifest.candidateWorkspace === undefined && profile.baselineCommands === profile.candidateCommands) {
     log('');
-    log('Note: in V1 dry-run mode there is no source mutation, so baseline and candidate parameters are typically identical.');
+    log('Note: with no candidate workspace, baseline and candidate parameters are typically identical.');
   }
 }
 

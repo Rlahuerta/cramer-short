@@ -31,8 +31,9 @@ decision.
 
 ## Editable forecast surfaces
 
-Editable files are profile-driven, not an open-ended per-run allowlist. In Phase 1,
-only the two Markov profiles advertise `structured` mutation mode, and their
+Editable files are profile-driven, not an open-ended per-run allowlist. In the
+current shipped implementation, only the two Markov profiles advertise
+`structured` mutation mode, and their
 shipped catalog is currently limited to `search-replace`. The arbiter and
 Polymarket profiles remain `dry-run` until they have concrete structured
 mutation catalogs.
@@ -78,9 +79,10 @@ change code until the baseline result is known.
 
 ### 3. Make one bounded candidate change
 
-If code mutation is authorized, inspect only the approved files with `read_file`
-and make the smallest candidate change with `edit_file`. Do not modify harnesses
-or unrelated files. Avoid speculative abstractions and avoid changing public
+If code mutation is authorized, use the isolated candidate workspace and touch
+only the approved files. Make the smallest candidate change that fits the
+profile's shipped structured mutator catalog. Do not modify harnesses or
+unrelated files. Avoid speculative abstractions and avoid changing public
 behavior outside the forecast target.
 
 ### 4. Run the same gates for the candidate

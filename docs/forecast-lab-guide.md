@@ -55,7 +55,7 @@ It helps to think of Forecast Lab as a 4-part loop:
    A profile defines the subsystem, commands, metrics, and keep/drop rules.
 
 2. **Run baseline and candidate gates**
-   In V1, both are run without source mutation unless you explicitly use `--skip-mutation`.
+   Structured profiles now run a real candidate mutation in an isolated worktree by default. `--dry-run` and `--skip-mutation` still preserve the no-mutation paths, and unknown or conflicting flags are rejected instead of falling through to a real mutation.
 
 3. **Write artifacts and ledger entries**
    Every run leaves a paper trail under `.cramer-short/experiments/`.
@@ -75,10 +75,10 @@ From the repository root:
 bun start lab list
 ```
 
-Then run a dry run:
+Then run a profile:
 
 ```bash
-bun start lab run btc-markov-short-horizon --dry-run
+bun start lab run btc-markov-short-horizon
 ```
 
 You should see output like:
@@ -136,6 +136,21 @@ bun start lab run <profileId> --skip-mutation
 ```
 
 This is supported, but it is mostly useful for plumbing and schedule compatibility right now. In V1 it always ends in a **drop** because no candidate code change exists to keep.
+
+### Run a shipped structured mutation
+
+```bash
+bun start lab run btc-markov-short-horizon
+```
+
+Today this is supported for the shipped Markov profiles. Forecast Lab will:
+
+1. run the baseline gate in the repo root
+2. create an isolated candidate worktree
+3. apply one structured mutation from the shipped catalog
+4. run the candidate gate in that worktree
+5. keep or drop through the normal acceptance path
+6. clean up the candidate worktree after recording artifacts
 
 ### Show lab usage
 
@@ -813,9 +828,9 @@ bun start lab list
 
 and copy a valid profile id exactly.
 
-### Error: real mutation is not supported yet
+### Error: real mutation requires a shipped structured profile
 
-Use either:
+Run a Markov profile with no flag for a real structured mutation, or use:
 
 ```bash
 --dry-run
@@ -827,7 +842,7 @@ or:
 --skip-mutation
 ```
 
-If you are just learning the system, prefer `--dry-run`.
+if you intentionally want the no-mutation paths.
 
 ### Error: schedule output outside allowed roots
 

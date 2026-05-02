@@ -246,6 +246,27 @@ describe('forecast-lab ledger validation', () => {
       })).toThrow(/Unknown forecast-lab mutator id/);
 
     expect(() =>
+      validateLedgerEntry({
+        ...makeEntry(),
+        ...makeMutationMetadata(),
+        mutationMode: undefined,
+      })).toThrow(/mutationMode="structured"/);
+
+    expect(() =>
+      validateRunManifest({
+        runId: 'run-1',
+        startedAt: '2026-05-02T00:00:00.000Z',
+        profileId: 'btc-markov-short-horizon',
+        targetSubsystem: 'markov-distribution',
+        candidateBranch: 'topic/forecast-lab-run-1',
+        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        mutationMode: 'structured',
+        mutationSpecSummary: makeMutationMetadata().mutationSpecSummary,
+        candidateWorkspace: makeMutationMetadata().candidateWorkspace,
+        artifactsPath: '.cramer-short/experiments/runs/run-1',
+      })).toThrow(/lineage is required when mutationMode="structured"/);
+
+    expect(() =>
       validateRunManifest({
         runId: 'run-1',
         startedAt: '2026-05-02T00:00:00.000Z',
