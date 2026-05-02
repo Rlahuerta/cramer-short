@@ -1,16 +1,16 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { runForecastLabCommand } from '../../cli-forecast-lab.js';
-import { getExperimentRunDir } from '../../utils/paths.js';
+import { getExperimentRunDir, getExperimentRunManifestPath } from '../../utils/paths.js';
 import {
   getForecastLabCandidateWorktreePath,
   makeForecastLabCandidateBranch,
 } from './git.js';
-import { readLedgerEntries } from './ledger.js';
+import { readLedgerEntries, writeRunManifest } from './ledger.js';
 import type { ForecastLabCommandRunner } from './runner.js';
 import {
   ForecastLabRunnerError,
@@ -26,6 +26,13 @@ const RUN_IDS = [
   'runner-test-unknown',
   'runner-test-failed-candidate',
   'runner-test-structured',
+  'runner-test-structured-dirty-live-checkout',
+  'runner-test-structured-parent-root',
+  'runner-test-structured-parent-child',
+  'runner-test-structured-auto-parent',
+  'runner-test-structured-auto-child',
+  'runner-test-structured-payload-parent',
+  'runner-test-structured-payload-child',
   'runner-test-structured-keep-worktree',
   'runner-test-skip-mutation',
   'runner-test-outside-ledger',
@@ -232,6 +239,11 @@ describe('forecast-lab runner', () => {
     ]);
     expect(result.decision.decision).toBe('keep');
     expect(result.manifest.mutationMode).toBe('structured');
+    expect(result.manifest.parentRunId).toBeUndefined();
+    expect(result.manifest.mutationId).toBe('markov-shorter-reactive-window');
+    expect(result.manifest.mutationSummary).toBe(
+      'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
+    );
     expect(result.manifest.lineage).toEqual({
       rootRunId: 'runner-test-structured',
       generation: 0,
@@ -244,6 +256,11 @@ describe('forecast-lab runner', () => {
         'src/tools/finance/regime-calibrator.ts',
       ],
       summary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
+    });
+    expect(result.manifest.mutationReplayPayload).toMatchObject({
+      kind: 'markov-parameter-candidate',
+      id: 'markov-shorter-reactive-window',
+      profileId: 'btc-markov-short-horizon',
     });
     const candidateWorkspace = result.manifest.candidateWorkspace;
     expect(candidateWorkspace).toEqual({
@@ -283,6 +300,8 @@ describe('forecast-lab runner', () => {
       runId: 'runner-test-structured',
       decision: 'keep',
       mutationMode: 'structured',
+      mutationId: 'markov-shorter-reactive-window',
+      mutationSummary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
       lineage: {
         rootRunId: 'runner-test-structured',
         generation: 0,
@@ -290,6 +309,7 @@ describe('forecast-lab runner', () => {
       mutationSpecSummary: result.manifest.mutationSpecSummary,
       candidateWorkspace,
     });
+    expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).not.toHaveProperty('parentRunId');
     expect(progress).toContain(
       `forecast-lab: candidate workspace ${resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured')}`,
     );
@@ -300,6 +320,221 @@ describe('forecast-lab runner', () => {
     expect(progress).toContain(
       'forecast-lab: patch summary markov-distribution.ts: momentumLookback 20 → 14 | markov-distribution.ts: structuralBreakMinLength 60 → 48 | conformal.ts: scoreAggregationMinSamples 20 → 16 | conformal.ts: scoreAggregationCalibrationWindow 120 → 96 | regime-calibrator.ts: minSamplesPerRegime 30 → 24',
     );
+  });
+
+  it('selects structured mutations against the clean candidate workspace instead of a dirty live checkout', async () => {
+    const liveCheckoutPath = join(process.cwd(), 'src/tools/finance/markov-distribution.ts');
+    const originalContents = readFileSync(liveCheckoutPath, 'utf8');
+    expect(originalContents).toContain('  momentumLookback: 20,');
+
+    writeFileSync(liveCheckoutPath, originalContents.replace('  momentumLookback: 20,', '  momentumLookback: 28,'));
+
+    try {
+      const result = await runForecastLab({
+        profileId: 'btc-markov-short-horizon',
+        mutationMode: 'structured',
+        runId: 'runner-test-structured-dirty-live-checkout',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: async (command, context) => {
+          if (context.phase === 'candidate') {
+            const candidateRoot = context.cwd!;
+            expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+              '  momentumLookback: 14,',
+            );
+            expect(readFileSync(liveCheckoutPath, 'utf8')).toContain('  momentumLookback: 28,');
+          }
+
+          return {
+            id: command.id,
+            command: command.command,
+            exitCode: 0,
+            stdout: `${context.phase} ok`,
+            stderr: '',
+            durationMs: 1,
+            timedOut: false,
+          };
+        },
+      });
+
+      expect(result.manifest.mutationId).toBe('markov-shorter-reactive-window');
+    } finally {
+      writeFileSync(liveCheckoutPath, originalContents);
+    }
+  });
+
+  it('seeds the next structured mutation from the last kept structured run lineage', async () => {
+    await runForecastLab({
+      profileId: 'btc-markov-short-horizon',
+      mutationMode: 'structured',
+      runId: 'runner-test-structured-parent-root',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+
+    const progress: string[] = [];
+    const calls: string[] = [];
+    const result = await runForecastLab({
+      profileId: 'btc-markov-short-horizon',
+      mutationMode: 'structured',
+      mutator: 'markov-faster-decay-reaction',
+      runId: 'runner-test-structured-parent-child',
+      ledgerPath: TEST_LEDGER_PATH,
+      progress: (message) => progress.push(message),
+      commandRunner: async (command, context) => {
+        calls.push(`${context.phase}:${command.id}:${context.cwd ?? ''}`);
+        if (context.phase === 'candidate') {
+          const candidateRoot = context.cwd!;
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            '  momentumLookback: 14,',
+          );
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            '  transitionDecay: 0.94,',
+          );
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
+            '  scoreAggregationCalibrationWindow: 96,',
+          );
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
+            '  adaptiveBreakLearningRateMultiplier: 1.75,',
+          );
+        }
+
+        return {
+          id: command.id,
+          command: command.command,
+          exitCode: 0,
+          stdout: `${context.phase} ok`,
+          stderr: '',
+          durationMs: 1,
+          timedOut: false,
+        };
+      },
+    });
+
+    expect(calls).toEqual([
+      `baseline:walk-forward-short-horizon:${process.cwd()}`,
+      `candidate:walk-forward-short-horizon:${resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured-parent-child')}`,
+    ]);
+    expect(result.manifest.parentRunId).toBe('runner-test-structured-parent-root');
+    expect(result.manifest.mutationId).toBe('markov-faster-decay-reaction');
+    expect(result.manifest.mutationSummary).toBe(
+      'Lower transition decay and raise adaptive conformal sensitivity for quicker regime resets.',
+    );
+    expect(result.manifest.lineage).toEqual({
+      rootRunId: 'runner-test-structured-parent-root',
+      parentRunId: 'runner-test-structured-parent-root',
+      generation: 1,
+    });
+    expect(progress).toContain(
+      'forecast-lab: seeded from kept run runner-test-structured-parent-root (1 replayed mutation)',
+    );
+    expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).toMatchObject({
+      runId: 'runner-test-structured-parent-child',
+      parentRunId: 'runner-test-structured-parent-root',
+      mutationId: 'markov-faster-decay-reaction',
+      mutationSummary: 'Lower transition decay and raise adaptive conformal sensitivity for quicker regime resets.',
+      lineage: {
+        rootRunId: 'runner-test-structured-parent-root',
+        parentRunId: 'runner-test-structured-parent-root',
+        generation: 1,
+      },
+    });
+  });
+
+  it('auto-selects the first applicable unused structured mutation after replay', async () => {
+    await runForecastLab({
+      profileId: 'btc-markov-short-horizon',
+      mutationMode: 'structured',
+      runId: 'runner-test-structured-auto-parent',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+
+    const progress: string[] = [];
+    const result = await runForecastLab({
+      profileId: 'btc-markov-short-horizon',
+      mutationMode: 'structured',
+      runId: 'runner-test-structured-auto-child',
+      ledgerPath: TEST_LEDGER_PATH,
+      progress: (message) => progress.push(message),
+      commandRunner: async (command, context) => {
+        if (context.phase === 'candidate') {
+          const candidateRoot = context.cwd!;
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            '  momentumLookback: 14,',
+          );
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            '  transitionDecay: 0.94,',
+          );
+        }
+
+        return {
+          id: command.id,
+          command: command.command,
+          exitCode: 0,
+          stdout: `${context.phase} ok`,
+          stderr: '',
+          durationMs: 1,
+          timedOut: false,
+        };
+      },
+    });
+
+    expect(result.manifest.parentRunId).toBe('runner-test-structured-auto-parent');
+    expect(result.manifest.mutationId).toBe('markov-faster-decay-reaction');
+    expect(progress).toContain('forecast-lab: selected mutator markov-faster-decay-reaction (search-replace)');
+  });
+
+  it('replays the persisted mutation payload even when the catalog entry is no longer available by mutationId', async () => {
+    const parent = await runForecastLab({
+      profileId: 'btc-markov-short-horizon',
+      mutationMode: 'structured',
+      mutator: 'markov-shorter-reactive-window',
+      runId: 'runner-test-structured-payload-parent',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+
+    expect(parent.manifest.mutationReplayPayload).toBeDefined();
+    writeRunManifest(getExperimentRunManifestPath('runner-test-structured-payload-parent'), {
+      ...parent.manifest,
+      mutationId: 'archived-shorter-reactive-window',
+      mutationReplayPayload: {
+        ...parent.manifest.mutationReplayPayload!,
+        id: 'archived-shorter-reactive-window',
+      },
+    });
+
+    const result = await runForecastLab({
+      profileId: 'btc-markov-short-horizon',
+      mutationMode: 'structured',
+      mutator: 'markov-faster-decay-reaction',
+      runId: 'runner-test-structured-payload-child',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: async (command, context) => {
+        if (context.phase === 'candidate') {
+          const candidateRoot = context.cwd!;
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            '  momentumLookback: 14,',
+          );
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            '  transitionDecay: 0.94,',
+          );
+        }
+
+        return {
+          id: command.id,
+          command: command.command,
+          exitCode: 0,
+          stdout: `${context.phase} ok`,
+          stderr: '',
+          durationMs: 1,
+          timedOut: false,
+        };
+      },
+    });
+
+    expect(result.manifest.parentRunId).toBe('runner-test-structured-payload-parent');
+    expect(result.manifest.mutationId).toBe('markov-faster-decay-reaction');
   });
 
   it('preserves the candidate workspace when keepWorktree is enabled for a structured mutation run', async () => {

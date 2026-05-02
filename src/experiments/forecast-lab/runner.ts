@@ -7,7 +7,13 @@ import {
   getExperimentRunManifestPath,
   getExperimentsDir,
 } from '../../utils/paths.js';
-import { appendLedgerEntry, stableJsonStringify, writeRunManifest } from './ledger.js';
+import {
+  appendLedgerEntry,
+  readLedgerEntries,
+  readRunManifest,
+  stableJsonStringify,
+  writeRunManifest,
+} from './ledger.js';
 import {
   applyForecastLabCandidateEdits,
   prepareForecastLabCandidateWorkspace,
@@ -21,7 +27,14 @@ import {
   makeForecastLabCandidateBranch,
 } from './git.js';
 import type { ForecastLabMutationLineage, ForecastLabMutationMode } from './mutation.js';
-import type { ForecastLabMarkovParameterMutationCandidate } from './mutators/markov-parameters.js';
+import {
+  replayForecastLabMarkovParameterMutation,
+  snapshotForecastLabMarkovParameterMutation,
+} from './mutators/markov-parameters.js';
+import type {
+  ForecastLabMarkovParameterMutationCandidate,
+  ForecastLabMarkovParameterMutationReplayPayload,
+} from './mutators/markov-parameters.js';
 
 export type ForecastLabGatePhase = 'baseline' | 'candidate';
 
@@ -70,12 +83,24 @@ interface ForecastLabDecisionSummary {
 
 interface ForecastLabStructuredMutationSelection {
   readonly mutationMode: 'structured';
+  readonly parentRunId?: string;
+  readonly mutationId: string;
+  readonly mutationSummary: string;
   readonly lineage: ForecastLabMutationLineage;
   readonly selectedMutatorId: string;
   readonly mutatorId: ForecastLabMarkovParameterMutationCandidate['mutatorId'];
   readonly mutatedFiles: readonly string[];
   readonly patchSummary: readonly string[];
   readonly mutationSpecSummary: ForecastLabMarkovParameterMutationCandidate['specSummary'];
+  readonly mutationReplayPayload: ForecastLabMarkovParameterMutationReplayPayload;
+}
+
+interface ForecastLabStructuredMutationSeed {
+  readonly parentRunId: string;
+  readonly rootRunId: string;
+  readonly generation: number;
+  readonly replayedMutations: readonly ForecastLabMarkovParameterMutationCandidate[];
+  readonly usedMutationIds: ReadonlySet<string>;
 }
 
 export interface ForecastLabRunOptions {
@@ -384,9 +409,12 @@ function buildCandidateArtifact(
     return {
       ...candidate,
       mutationMode: structuredMutation.mutationMode,
+      mutationId: structuredMutation.mutationId,
+      mutationSummary: structuredMutation.mutationSummary,
       lineage: structuredMutation.lineage,
       mutationSpecSummary: structuredMutation.mutationSpecSummary,
       candidateWorkspace: manifest.candidateWorkspace,
+      ...(structuredMutation.parentRunId !== undefined ? { parentRunId: structuredMutation.parentRunId } : {}),
       selectedMutator: {
         id: structuredMutation.selectedMutatorId,
         mutatorId: structuredMutation.mutatorId,
@@ -479,10 +507,9 @@ function resolveMutationPlan(options: ForecastLabRunOptions): ForecastLabResolve
   };
 }
 
-function selectStructuredMutation(
+function getStructuredMutationCatalog(
   profile: ForecastLabProfile,
-  requestedMutatorId?: string,
-): ForecastLabMarkovParameterMutationCandidate {
+): readonly ForecastLabMarkovParameterMutationCandidate[] {
   if (profile.mutation.mode !== 'structured') {
     throw new ForecastLabRunnerError(
       `Real forecast-lab mutation requires a structured profile with a shipped catalog. Profile "${profile.id}" uses "${profile.mutation.mode}".`,
@@ -496,15 +523,33 @@ function selectStructuredMutation(
     );
   }
 
+  return catalog;
+}
+
+function selectStructuredMutation(
+  profile: ForecastLabProfile,
+  catalog: readonly ForecastLabMarkovParameterMutationCandidate[],
+  requestedMutatorId?: string,
+  usedMutationIds?: ReadonlySet<string>,
+  isApplicable: (candidate: ForecastLabMarkovParameterMutationCandidate) => boolean = () => true,
+): ForecastLabMarkovParameterMutationCandidate {
+  if (profile.mutation.mode !== 'structured') {
+    throw new ForecastLabRunnerError(
+      `Real forecast-lab mutation requires a structured profile with a shipped catalog. Profile "${profile.id}" uses "${profile.mutation.mode}".`,
+    );
+  }
+
   const allowedMutatorIds = new Set(profile.mutation.allowedMutatorIds);
+  const allowedCandidates = catalog.filter((candidate) => allowedMutatorIds.has(candidate.mutatorId));
   const selected = requestedMutatorId
-    ? catalog.find((candidate) => candidate.id === requestedMutatorId)
-    : catalog.find((candidate) => allowedMutatorIds.has(candidate.mutatorId));
+    ? allowedCandidates.find((candidate) => candidate.id === requestedMutatorId)
+    : allowedCandidates.find((candidate) => !usedMutationIds?.has(candidate.id) && isApplicable(candidate))
+      ?? allowedCandidates.find((candidate) => isApplicable(candidate));
   if (!selected) {
     throw new ForecastLabRunnerError(
       requestedMutatorId
         ? `Unknown forecast-lab mutator "${requestedMutatorId}" for profile "${profile.id}". Expected one of: ${catalog.map((candidate) => candidate.id).join(', ')}`
-        : `No shipped structured mutator matches the allowed mutator contract for profile "${profile.id}".`,
+        : `No shipped structured mutator remains applicable after replaying the kept parent lineage for profile "${profile.id}".`,
     );
   }
 
@@ -514,20 +559,23 @@ function selectStructuredMutation(
     );
   }
 
+  if (requestedMutatorId && !isApplicable(selected)) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab mutator "${selected.id}" is not applicable after replaying the kept parent lineage for profile "${profile.id}".`,
+    );
+  }
+
   return selected;
 }
 
-function applyStructuredMutation(
-  workspaceRootDir: string,
-  profile: ForecastLabProfile,
+function applyStructuredMutationEdits(
+  rootDir: string,
+  updatedFiles: Map<string, string>,
   selectedMutation: ForecastLabMarkovParameterMutationCandidate,
-  runId: string,
-): ForecastLabStructuredMutationSelection {
-  const updatedFiles = new Map<string, string>();
-
+): void {
   for (const edit of selectedMutation.edits) {
     const existingContents = updatedFiles.get(edit.filePath)
-      ?? readFileSync(resolve(workspaceRootDir, edit.filePath), 'utf8');
+      ?? readFileSync(resolve(rootDir, edit.filePath), 'utf8');
     const replacementCount = countOccurrences(existingContents, edit.search);
 
     if (replacementCount !== edit.expectedReplacements) {
@@ -545,6 +593,121 @@ function applyStructuredMutation(
 
     updatedFiles.set(edit.filePath, nextContents);
   }
+}
+
+function canApplyStructuredMutation(
+  rootDir: string,
+  replayedMutations: readonly ForecastLabMarkovParameterMutationCandidate[],
+  selectedMutation: ForecastLabMarkovParameterMutationCandidate,
+): boolean {
+  const updatedFiles = new Map<string, string>();
+
+  try {
+    for (const replayedMutation of replayedMutations) {
+      applyStructuredMutationEdits(rootDir, updatedFiles, replayedMutation);
+    }
+    applyStructuredMutationEdits(rootDir, updatedFiles, selectedMutation);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readStructuredMutationSeed(
+  profile: ForecastLabProfile,
+  ledgerPath: string,
+): ForecastLabStructuredMutationSeed | undefined {
+  const catalog = getStructuredMutationCatalog(profile);
+  const parentEntries = readLedgerEntries(ledgerPath)
+    .filter((entry) => entry.profileId === profile.id && entry.decision === 'keep' && entry.mutationMode === 'structured')
+    .reverse();
+
+  for (const parentEntry of parentEntries) {
+    const replayedMutations: ForecastLabMarkovParameterMutationCandidate[] = [];
+    const seenRunIds = new Set<string>();
+    let currentRunId: string | undefined = parentEntry.runId;
+    let latestManifest: ForecastLabRunManifest = readRunManifest(getExperimentRunManifestPath(parentEntry.runId));
+
+    while (currentRunId) {
+      if (seenRunIds.has(currentRunId)) {
+        throw new ForecastLabRunnerError(`Forecast-lab mutation lineage for "${profile.id}" contains a cycle at run "${currentRunId}".`);
+      }
+      seenRunIds.add(currentRunId);
+
+      const manifest: ForecastLabRunManifest = currentRunId === parentEntry.runId
+        ? latestManifest
+        : readRunManifest(getExperimentRunManifestPath(currentRunId));
+      if (manifest.profileId !== profile.id) {
+        throw new ForecastLabRunnerError(
+          `Forecast-lab parent run "${currentRunId}" belongs to "${manifest.profileId}", expected "${profile.id}".`,
+        );
+      }
+      if (
+        manifest.mutationMode !== 'structured' ||
+        manifest.lineage === undefined ||
+        (manifest.mutationId === undefined && manifest.mutationReplayPayload === undefined)
+      ) {
+        replayedMutations.length = 0;
+        break;
+      }
+      if (manifest.parentRunId !== manifest.lineage.parentRunId) {
+        throw new ForecastLabRunnerError(`Forecast-lab parent run "${currentRunId}" has inconsistent parentRunId metadata.`);
+      }
+      if (manifest.mutationSummary !== undefined && manifest.mutationSummary !== manifest.mutationSpecSummary?.summary) {
+        throw new ForecastLabRunnerError(`Forecast-lab parent run "${currentRunId}" has inconsistent mutation summary metadata.`);
+      }
+
+      const replayedMutation = manifest.mutationReplayPayload
+        ? replayForecastLabMarkovParameterMutation(manifest.mutationReplayPayload)
+        : catalog.find((candidate) => candidate.id === manifest.mutationId);
+      if (!replayedMutation) {
+        throw new ForecastLabRunnerError(
+          `Forecast-lab parent run "${currentRunId}" references unknown mutation "${manifest.mutationId}" for profile "${profile.id}".`,
+        );
+      }
+      if (replayedMutation.profileId !== profile.id) {
+        throw new ForecastLabRunnerError(
+          `Forecast-lab parent run "${currentRunId}" replays a "${replayedMutation.profileId}" mutation in profile "${profile.id}".`,
+        );
+      }
+      if (manifest.mutationId !== undefined && replayedMutation.id !== manifest.mutationId) {
+        throw new ForecastLabRunnerError(`Forecast-lab parent run "${currentRunId}" has inconsistent mutation replay metadata.`);
+      }
+      replayedMutations.push(replayedMutation);
+      currentRunId = manifest.parentRunId;
+      latestManifest = manifest;
+    }
+
+    if (replayedMutations.length === 0) {
+      continue;
+    }
+
+    return {
+      parentRunId: parentEntry.runId,
+      rootRunId: latestManifest.lineage!.rootRunId,
+      generation: parentEntry.lineage!.generation + 1,
+      replayedMutations: replayedMutations.reverse(),
+      usedMutationIds: new Set(replayedMutations.map((mutation) => mutation.id)),
+    };
+  }
+
+  return undefined;
+}
+
+function applyStructuredMutation(
+  workspaceRootDir: string,
+  profile: ForecastLabProfile,
+  selectedMutation: ForecastLabMarkovParameterMutationCandidate,
+  runId: string,
+  seed?: ForecastLabStructuredMutationSeed,
+): ForecastLabStructuredMutationSelection {
+  const updatedFiles = new Map<string, string>();
+
+  for (const replayedMutation of seed?.replayedMutations ?? []) {
+    applyStructuredMutationEdits(workspaceRootDir, updatedFiles, replayedMutation);
+  }
+
+  applyStructuredMutationEdits(workspaceRootDir, updatedFiles, selectedMutation);
 
   const mutatedFiles = applyForecastLabCandidateEdits(
     workspaceRootDir,
@@ -557,15 +720,20 @@ function applyStructuredMutation(
 
   return {
     mutationMode: 'structured',
+    parentRunId: seed?.parentRunId,
+    mutationId: selectedMutation.id,
+    mutationSummary: selectedMutation.specSummary.summary,
     lineage: {
-      rootRunId: runId,
-      generation: 0,
+      rootRunId: seed?.rootRunId ?? runId,
+      generation: seed?.generation ?? 0,
+      ...(seed?.parentRunId !== undefined ? { parentRunId: seed.parentRunId } : {}),
     },
     selectedMutatorId: selectedMutation.id,
     mutatorId: selectedMutation.mutatorId,
     mutatedFiles,
     patchSummary: [...selectedMutation.patchSummary],
     mutationSpecSummary: selectedMutation.specSummary,
+    mutationReplayPayload: snapshotForecastLabMarkovParameterMutation(selectedMutation),
   };
 }
 
@@ -580,10 +748,6 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   const progress = options.progress;
   const output = options.output;
 
-  const selectedMutation = mutationPlan.runRealMutation
-    ? selectStructuredMutation(profile, mutationPlan.mutator)
-    : undefined;
-
   const candidateBranch = makeForecastLabCandidateBranch(runId);
   const baselineCommit = getForecastLabBaselineCommit();
   const runDir = getExperimentRunDir(runId, { create: true });
@@ -593,6 +757,8 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   const decisionPath = `${runDir}/decision.json`;
   const ledgerPath = options.ledgerPath ?? getExperimentLedgerPath({ create: true });
   const effectiveMutationContract = snapshotEffectiveMutationContract(profile);
+  const mutationCatalog = mutationPlan.runRealMutation ? getStructuredMutationCatalog(profile) : undefined;
+  const mutationSeed = mutationPlan.runRealMutation ? readStructuredMutationSeed(profile, ledgerPath) : undefined;
 
   for (const path of [runDir, manifestPath, baselinePath, candidatePath, decisionPath, ledgerPath]) {
     assertInsideExperiments(path);
@@ -625,21 +791,47 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   let structuredMutation: ForecastLabStructuredMutationSelection | undefined;
 
   if (mutationPlan.runRealMutation) {
-    if (!selectedMutation) {
-      throw new ForecastLabRunnerError(`Missing structured mutation selection for profile "${profile.id}".`);
-    }
-
     const executeCandidateRun = async (
       workspace: ReturnType<typeof prepareForecastLabCandidateWorkspace>,
     ) => {
-      const mutation = applyStructuredMutation(workspace.metadata.rootDir, profile, selectedMutation, runId);
+      const selectedMutation = selectStructuredMutation(
+        profile,
+        mutationCatalog!,
+        mutationPlan.mutator,
+        mutationSeed?.usedMutationIds,
+        (candidate) => canApplyStructuredMutation(
+          workspace.metadata.rootDir,
+          mutationSeed?.replayedMutations ?? [],
+          candidate,
+        ),
+      );
+      const mutation = applyStructuredMutation(
+        workspace.metadata.rootDir,
+        profile,
+        selectedMutation,
+        runId,
+        mutationSeed,
+      );
       manifest.mutationMode = mutation.mutationMode;
+      manifest.mutationId = mutation.mutationId;
+      manifest.mutationSummary = mutation.mutationSummary;
       manifest.lineage = mutation.lineage;
       manifest.mutationSpecSummary = mutation.mutationSpecSummary;
+      manifest.mutationReplayPayload = mutation.mutationReplayPayload;
       manifest.candidateWorkspace = workspace.metadata;
+      if (mutation.parentRunId !== undefined) {
+        manifest.parentRunId = mutation.parentRunId;
+      } else {
+        delete manifest.parentRunId;
+      }
       writeRunManifest(manifestPath, manifest);
 
       progress?.(`forecast-lab: candidate workspace ${workspace.metadata.rootDir}`);
+      if (mutationSeed) {
+        progress?.(
+          `forecast-lab: seeded from kept run ${mutationSeed.parentRunId} (${mutationSeed.replayedMutations.length} replayed mutation${mutationSeed.replayedMutations.length === 1 ? '' : 's'})`,
+        );
+      }
       progress?.(`forecast-lab: selected mutator ${mutation.selectedMutatorId} (${mutation.mutatorId})`);
       progress?.(`forecast-lab: mutated files ${mutation.mutatedFiles.join(', ')}`);
       progress?.(`forecast-lab: patch summary ${mutation.patchSummary.join(' | ')}`);
@@ -682,9 +874,12 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
     ? {
         ...decision,
         mutationMode: structuredMutation.mutationMode,
+        mutationId: structuredMutation.mutationId,
+        mutationSummary: structuredMutation.mutationSummary,
         lineage: structuredMutation.lineage,
         mutationSpecSummary: structuredMutation.mutationSpecSummary,
         candidateWorkspace: manifest.candidateWorkspace,
+        ...(structuredMutation.parentRunId !== undefined ? { parentRunId: structuredMutation.parentRunId } : {}),
         selectedMutator: {
           id: structuredMutation.selectedMutatorId,
           mutatorId: structuredMutation.mutatorId,
@@ -704,6 +899,9 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
     allowedGlobs: [...profile.allowedGlobs],
     effectiveMutationContract,
     mutationMode: structuredMutation?.mutationMode,
+    parentRunId: structuredMutation?.parentRunId,
+    mutationId: structuredMutation?.mutationId,
+    mutationSummary: structuredMutation?.mutationSummary,
     lineage: structuredMutation?.lineage,
     mutationSpecSummary: structuredMutation?.mutationSpecSummary,
     candidateWorkspace: manifest.candidateWorkspace,

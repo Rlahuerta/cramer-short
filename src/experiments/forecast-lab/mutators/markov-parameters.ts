@@ -1,3 +1,7 @@
+import {
+  assertForecastLabMutatorId,
+  validateForecastLabMutationSpecSummary,
+} from '../mutation.js';
 import type { ForecastLabMutatorId, ForecastLabMutationSpecSummary } from '../mutation.js';
 import {
   FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS,
@@ -53,6 +57,11 @@ export interface ForecastLabMarkovParameterMutationCandidate {
   readonly edits: readonly ForecastLabMarkovParameterMutationEdit[];
 }
 
+export interface ForecastLabMarkovParameterMutationReplayPayload
+  extends ForecastLabMarkovParameterMutationCandidate {
+  readonly kind: 'markov-parameter-candidate';
+}
+
 const MARKOV_FILE = 'src/tools/finance/markov-distribution.ts';
 const CONFORMAL_FILE = 'src/tools/finance/conformal.ts';
 const REGIME_CALIBRATOR_FILE = 'src/tools/finance/regime-calibrator.ts';
@@ -99,6 +108,137 @@ function buildCandidate(params: {
     patchSummary: [...params.patchSummary],
     edits: [...params.edits],
   });
+}
+
+function cloneCandidate(
+  candidate: ForecastLabMarkovParameterMutationCandidate,
+): ForecastLabMarkovParameterMutationCandidate {
+  return deepFreeze({
+    id: candidate.id,
+    profileId: candidate.profileId,
+    mutatorId: candidate.mutatorId,
+    specSummary: {
+      mutatorId: candidate.specSummary.mutatorId,
+      targetFiles: [...candidate.specSummary.targetFiles],
+      summary: candidate.specSummary.summary,
+    },
+    patchSummary: [...candidate.patchSummary],
+    edits: candidate.edits.map((edit) => ({
+      kind: edit.kind,
+      parameterId: edit.parameterId,
+      filePath: edit.filePath,
+      beforeValue: edit.beforeValue,
+      afterValue: edit.afterValue,
+      search: edit.search,
+      replace: edit.replace,
+      expectedReplacements: edit.expectedReplacements,
+    })),
+  });
+}
+
+function requireNonEmptyString(record: Record<string, unknown>, field: string): string {
+  const value = record[field];
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+function validateScalarValue(field: string, value: unknown): asserts value is ForecastLabMutationScalarValue {
+  if (typeof value === 'boolean') {
+    return;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return;
+  }
+
+  throw new Error(`${field} must be a finite number or boolean`);
+}
+
+function validateEdit(edit: unknown): asserts edit is ForecastLabMarkovParameterMutationEdit {
+  if (!edit || typeof edit !== 'object') {
+    throw new Error('mutation edit must be an object');
+  }
+
+  const record = edit as Record<string, unknown>;
+  if (record.kind !== 'search-replace') {
+    throw new Error('mutation edit kind must be "search-replace"');
+  }
+  requireNonEmptyString(record, 'parameterId');
+  requireNonEmptyString(record, 'filePath');
+  requireNonEmptyString(record, 'search');
+  if (typeof record.replace !== 'string') {
+    throw new Error('replace must be a string');
+  }
+  validateScalarValue('beforeValue', record.beforeValue);
+  validateScalarValue('afterValue', record.afterValue);
+  if (record.expectedReplacements !== 1) {
+    throw new Error('expectedReplacements must be 1');
+  }
+}
+
+export function validateForecastLabMarkovParameterMutationCandidate(
+  candidate: unknown,
+): asserts candidate is ForecastLabMarkovParameterMutationCandidate {
+  if (!candidate || typeof candidate !== 'object') {
+    throw new Error('mutation candidate must be an object');
+  }
+
+  const record = candidate as Record<string, unknown>;
+  requireNonEmptyString(record, 'id');
+  const profileId = requireNonEmptyString(record, 'profileId');
+  if (!isForecastLabMarkovMutatorProfileId(profileId)) {
+    throw new Error(`Unknown markov mutation profile: ${profileId}`);
+  }
+
+  const mutatorId = requireNonEmptyString(record, 'mutatorId');
+  assertForecastLabMutatorId(mutatorId);
+  validateForecastLabMutationSpecSummary(record.specSummary);
+  if (record.specSummary.mutatorId !== mutatorId) {
+    throw new Error('specSummary.mutatorId must match mutatorId');
+  }
+
+  if (!Array.isArray(record.patchSummary) || record.patchSummary.some((entry) => typeof entry !== 'string')) {
+    throw new Error('patchSummary must be an array of strings');
+  }
+
+  if (!Array.isArray(record.edits) || record.edits.length === 0) {
+    throw new Error('edits must contain at least one edit');
+  }
+  for (const edit of record.edits) {
+    validateEdit(edit);
+  }
+}
+
+export function validateForecastLabMarkovParameterMutationReplayPayload(
+  payload: unknown,
+): asserts payload is ForecastLabMarkovParameterMutationReplayPayload {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('mutationReplayPayload must be an object');
+  }
+
+  const record = payload as Record<string, unknown>;
+  if (record.kind !== 'markov-parameter-candidate') {
+    throw new Error('mutationReplayPayload.kind must be "markov-parameter-candidate"');
+  }
+  validateForecastLabMarkovParameterMutationCandidate(record);
+}
+
+export function snapshotForecastLabMarkovParameterMutation(
+  candidate: ForecastLabMarkovParameterMutationCandidate,
+): ForecastLabMarkovParameterMutationReplayPayload {
+  return deepFreeze({
+    kind: 'markov-parameter-candidate',
+    ...cloneCandidate(candidate),
+  });
+}
+
+export function replayForecastLabMarkovParameterMutation(
+  payload: ForecastLabMarkovParameterMutationReplayPayload,
+): ForecastLabMarkovParameterMutationCandidate {
+  validateForecastLabMarkovParameterMutationReplayPayload(payload);
+  return cloneCandidate(payload);
 }
 
 function buildCatalog(profileId: ForecastLabMarkovMutatorProfileId): readonly ForecastLabMarkovParameterMutationCandidate[] {

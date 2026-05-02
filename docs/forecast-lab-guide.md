@@ -146,11 +146,15 @@ bun start lab run btc-markov-short-horizon --mutation structured
 Today this is supported for the shipped Markov profiles. Forecast Lab will:
 
 1. run the baseline gate in the repo root
-2. create an isolated candidate worktree
-3. apply one structured mutation from the shipped catalog
-4. run the candidate gate in that worktree
-5. keep or drop through the normal acceptance path
-6. clean up the candidate worktree after recording artifacts
+2. reuse the last kept structured run as the parent seed when lineage metadata is available
+3. create an isolated candidate worktree
+4. replay the kept parent lineage into that worktree
+5. apply one new structured mutation from the shipped catalog
+6. run the candidate gate in that worktree
+7. store `parentRunId`, `mutationId`, `mutationSummary`, and an immutable structured replay payload in the run manifest (the ledger keeps the lighter lineage summary)
+8. keep or drop through the normal acceptance path, then clean up the candidate worktree unless you kept it for debugging
+
+If there is no compatible kept structured parent yet, the run starts from the current repo baseline just like the first structured mutation run.
 
 For debugging, you can keep the workspace around:
 
@@ -209,7 +213,7 @@ The shared contract lives in `src/experiments/forecast-lab/mutation.ts`. It keep
 - unknown mutator ids fail loudly,
 - non-structured modes do not accept fake `allowedMutatorIds`,
 - mutation configs are deeply frozen before export,
-- run artifacts persist the effective mutation contract snapshot (`mode`, `mutableFiles`, structured `allowedMutatorIds`, and `allowMultipleCandidateAttempts`) and can also carry optional mutation lineage metadata (`mutationMode`, `lineage`, `mutationSpecSummary`, `candidateWorkspace`).
+- run artifacts persist the effective mutation contract snapshot (`mode`, `mutableFiles`, structured `allowedMutatorIds`, and `allowMultipleCandidateAttempts`) and can also carry optional mutation lineage metadata (`mutationMode`, `parentRunId`, `mutationId`, `mutationSummary`, `lineage`, `mutationSpecSummary`, `candidateWorkspace`). Structured manifests now also persist the exact replay payload for the kept mutation so future lineage replays do not depend on whatever catalog entry happens to ship later.
 
 `allowedGlobs` and `mutation.mutableFiles` are also intentionally related but not identical concepts. `allowedGlobs` defines the profile-level editable surface, while `mutableFiles` defines the mode-specific mutation input. The current profiles keep them aligned for simplicity, but later phases may narrow or expand one without changing the other.
 
@@ -353,7 +357,7 @@ the runner does the following:
 
 ### Important clarification about the candidate branch
 
-`--dry-run` and `--skip-mutation` still only record the candidate branch name as bookkeeping metadata. A real structured mutation run also creates an isolated candidate worktree and branch, records that workspace in the manifest/ledger, and then cleans it up unless you pass `--keep-worktree`.
+`--dry-run` and `--skip-mutation` still only record the candidate branch name as bookkeeping metadata. A real structured mutation run also creates an isolated candidate worktree and branch, records that workspace in the manifest/ledger, and then cleans it up unless you pass `--keep-worktree`. After you have one kept structured run, the next structured run can replay that kept lineage before applying the new mutation.
 
 ---
 
@@ -398,7 +402,7 @@ The append-only ledger lives at:
 Header:
 
 ```text
-runId	startedAt	profileId	targetSubsystem	candidateBranch	allowedGlobs	effectiveMutationContract	mutationMode	lineage	mutationSpecSummary	candidateWorkspace	baselineSummary	candidateSummary	decision	reason	artifactsPath
+runId	startedAt	profileId	targetSubsystem	candidateBranch	allowedGlobs	effectiveMutationContract	mutationMode	parentRunId	mutationId	mutationSummary	lineage	mutationSpecSummary	candidateWorkspace	baselineSummary	candidateSummary	decision	reason	artifactsPath
 ```
 
 ### Important format detail
@@ -423,6 +427,9 @@ That means a plain TSV parser can read the row shape, but a JSON-aware parser is
 | `allowedGlobs` | Candidate edit surface allowed by the profile |
 | `effectiveMutationContract` | Persisted snapshot of the actual mutation contract for this run |
 | `mutationMode` | Optional applied mutation mode metadata (`structured` for real shipped mutations) |
+| `parentRunId` | Explicit kept-parent pointer for replaying the next structured run |
+| `mutationId` | The shipped mutation candidate id that was actually applied |
+| `mutationSummary` | Short human-auditable description of the applied mutation |
 | `lineage` | Optional parent/root lineage for derived candidates |
 | `mutationSpecSummary` | Optional compact summary of the concrete mutation request, including the selected mutator |
 | `candidateWorkspace` | Optional workspace metadata for where the candidate was evaluated |

@@ -7,6 +7,7 @@ import {
   validateForecastLabProfileMutationConfig,
   validateForecastLabMutationSpecSummary,
 } from './mutation.js';
+import { validateForecastLabMarkovParameterMutationReplayPayload } from './mutators/markov-parameters.js';
 import type { ForecastLabLedgerEntry, ForecastLabRunManifest } from './types.js';
 
 export const LEDGER_COLUMNS = [
@@ -18,6 +19,9 @@ export const LEDGER_COLUMNS = [
   'allowedGlobs',
   'effectiveMutationContract',
   'mutationMode',
+  'parentRunId',
+  'mutationId',
+  'mutationSummary',
   'lineage',
   'mutationSpecSummary',
   'candidateWorkspace',
@@ -36,6 +40,7 @@ const LEGACY_LEDGER_COLUMNS = [
   'targetSubsystem',
   'candidateBranch',
   'allowedGlobs',
+  'effectiveMutationContract',
   'mutationMode',
   'lineage',
   'mutationSpecSummary',
@@ -47,6 +52,24 @@ const LEGACY_LEDGER_COLUMNS = [
   'artifactsPath',
 ] as const satisfies readonly (keyof ForecastLabLedgerEntry)[];
 const LEGACY_LEDGER_HEADER = LEGACY_LEDGER_COLUMNS.join('\t');
+const PRE_CONTRACT_LEDGER_COLUMNS = [
+  'runId',
+  'startedAt',
+  'profileId',
+  'targetSubsystem',
+  'candidateBranch',
+  'allowedGlobs',
+  'mutationMode',
+  'lineage',
+  'mutationSpecSummary',
+  'candidateWorkspace',
+  'baselineSummary',
+  'candidateSummary',
+  'decision',
+  'reason',
+  'artifactsPath',
+] as const satisfies readonly (keyof ForecastLabLedgerEntry)[];
+const PRE_CONTRACT_LEDGER_HEADER = PRE_CONTRACT_LEDGER_COLUMNS.join('\t');
 const INITIAL_LEDGER_COLUMNS = [
   'runId',
   'startedAt',
@@ -64,7 +87,7 @@ const INITIAL_LEDGER_HEADER = INITIAL_LEDGER_COLUMNS.join('\t');
 
 type LedgerColumn = (typeof LEDGER_COLUMNS)[number];
 type SupportedLedgerColumn = keyof ForecastLabLedgerEntry;
-type LedgerSchema =
+type BaseLedgerSchema =
   | {
       name: 'current';
       columns: typeof LEDGER_COLUMNS;
@@ -76,19 +99,29 @@ type LedgerSchema =
       header: typeof LEGACY_LEDGER_HEADER;
     }
   | {
-      name: 'initial';
-      columns: typeof INITIAL_LEDGER_COLUMNS;
-      header: typeof INITIAL_LEDGER_HEADER;
+      name: 'pre-contract';
+      columns: typeof PRE_CONTRACT_LEDGER_COLUMNS;
+      header: typeof PRE_CONTRACT_LEDGER_HEADER;
     };
+type InitialLedgerSchema = {
+  name: 'initial';
+  columns: typeof INITIAL_LEDGER_COLUMNS;
+  header: typeof INITIAL_LEDGER_HEADER;
+};
+type LedgerSchema = BaseLedgerSchema | InitialLedgerSchema;
 const OPTIONAL_LEDGER_COLUMNS = new Set<LedgerColumn>([
   'effectiveMutationContract',
   'mutationMode',
+  'parentRunId',
+  'mutationId',
+  'mutationSummary',
   'lineage',
   'mutationSpecSummary',
   'candidateWorkspace',
 ]);
 const SAFE_RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/;
 const SAFE_BASELINE_COMMIT = /^[0-9a-f]{40}$/i;
+const SAFE_MUTATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export class ForecastLabLedgerError extends Error {
   override name = 'ForecastLabLedgerError';
@@ -183,10 +216,32 @@ function validateOptionalMutationMetadata(record: Record<string, unknown>): void
     }
   }
 
-  const hasStructuredMutationMetadata = record.lineage !== undefined || record.mutationSpecSummary !== undefined;
+  if (record.parentRunId !== undefined) {
+    const parentRunId = requireString(record, 'parentRunId');
+    assertSafeRunId(parentRunId);
+  }
+
+  if (record.mutationId !== undefined) {
+    const mutationId = requireString(record, 'mutationId');
+    if (!SAFE_MUTATION_ID_PATTERN.test(mutationId)) {
+      throw new ForecastLabLedgerError('mutationId must be a safe identifier');
+    }
+  }
+
+  if (record.mutationSummary !== undefined) {
+    requireString(record, 'mutationSummary');
+  }
+
+  const hasStructuredMutationMetadata = (
+    record.parentRunId !== undefined ||
+    record.mutationId !== undefined ||
+    record.mutationSummary !== undefined ||
+    record.lineage !== undefined ||
+    record.mutationSpecSummary !== undefined
+  );
   if (hasStructuredMutationMetadata && record.mutationMode !== 'structured') {
     throw new ForecastLabLedgerError(
-      'lineage and mutationSpecSummary require mutationMode="structured"',
+      'structured mutation lineage metadata requires mutationMode="structured"',
     );
   }
 
@@ -202,6 +257,10 @@ function validateOptionalMutationMetadata(record: Record<string, unknown>): void
     if (lineage.parentRunId !== undefined) {
       assertSafeRunId(lineage.parentRunId);
     }
+
+    if (record.parentRunId !== undefined && record.parentRunId !== lineage.parentRunId) {
+      throw new ForecastLabLedgerError('parentRunId must match lineage.parentRunId');
+    }
   }
 
   if (record.mutationSpecSummary !== undefined) {
@@ -209,6 +268,10 @@ function validateOptionalMutationMetadata(record: Record<string, unknown>): void
       validateForecastLabMutationSpecSummary(record.mutationSpecSummary);
     } catch (error) {
       throw new ForecastLabLedgerError(error instanceof Error ? error.message : String(error));
+    }
+
+    if (record.mutationSummary !== undefined && record.mutationSummary !== record.mutationSpecSummary.summary) {
+      throw new ForecastLabLedgerError('mutationSummary must match mutationSpecSummary.summary');
     }
   }
 
@@ -288,6 +351,36 @@ export function validateRunManifest(manifest: unknown): asserts manifest is Fore
   }
 
   validateOptionalMutationMetadata(record);
+  if (record.mutationReplayPayload !== undefined) {
+    if (record.mutationMode !== 'structured') {
+      throw new ForecastLabLedgerError(
+        'mutationReplayPayload is only supported when mutationMode="structured"',
+      );
+    }
+
+    try {
+      validateForecastLabMarkovParameterMutationReplayPayload(record.mutationReplayPayload);
+    } catch (error) {
+      throw new ForecastLabLedgerError(error instanceof Error ? error.message : String(error));
+    }
+
+    const payload = record.mutationReplayPayload;
+    if (payload.profileId !== record.profileId) {
+      throw new ForecastLabLedgerError('mutationReplayPayload.profileId must match profileId');
+    }
+    if (record.mutationId !== undefined && payload.id !== record.mutationId) {
+      throw new ForecastLabLedgerError('mutationReplayPayload.id must match mutationId');
+    }
+    if (record.mutationSummary !== undefined && payload.specSummary.summary !== record.mutationSummary) {
+      throw new ForecastLabLedgerError('mutationReplayPayload summary must match mutationSummary');
+    }
+    if (
+      record.mutationSpecSummary !== undefined &&
+      stableJsonStringify(payload.specSummary) !== stableJsonStringify(record.mutationSpecSummary)
+    ) {
+      throw new ForecastLabLedgerError('mutationReplayPayload.specSummary must match mutationSpecSummary');
+    }
+  }
   assertJsonSerializable('manifest', record);
 }
 
@@ -313,6 +406,14 @@ function getLedgerSchema(header: string): LedgerSchema {
       name: 'legacy',
       columns: LEGACY_LEDGER_COLUMNS,
       header: LEGACY_LEDGER_HEADER,
+    };
+  }
+
+  if (header === PRE_CONTRACT_LEDGER_HEADER) {
+    return {
+      name: 'pre-contract',
+      columns: PRE_CONTRACT_LEDGER_COLUMNS,
+      header: PRE_CONTRACT_LEDGER_HEADER,
     };
   }
 
@@ -414,6 +515,29 @@ export function readLedgerEntries(path: string): ForecastLabLedgerEntry[] {
   }
 
   return readLedgerFile(text).entries;
+}
+
+export function findLatestKeptLedgerEntry(
+  path: string,
+  profileId: string,
+  options?: {
+    readonly mutationMode?: ForecastLabLedgerEntry['mutationMode'];
+  },
+): ForecastLabLedgerEntry | undefined {
+  const entries = readLedgerEntries(path);
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (entry.profileId !== profileId || entry.decision !== 'keep') {
+      continue;
+    }
+    if (options?.mutationMode !== undefined && entry.mutationMode !== options.mutationMode) {
+      continue;
+    }
+    return entry;
+  }
+
+  return undefined;
 }
 
 export function serializeManifest(manifest: ForecastLabRunManifest): string {

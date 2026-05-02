@@ -5,6 +5,7 @@ import type {
   ForecastLabProfileMutationConfig,
   ForecastLabMutationSpecSummary,
 } from './mutation.js';
+import type { ForecastLabMarkovParameterMutationReplayPayload } from './mutators/markov-parameters.js';
 
 export type ForecastLabDecision = 'keep' | 'drop';
 
@@ -25,6 +26,9 @@ export interface ForecastLabLedgerEntry {
   allowedGlobs: string[];
   effectiveMutationContract?: ForecastLabProfileMutationConfig;
   mutationMode?: ForecastLabMutationMode;
+  parentRunId?: string;
+  mutationId?: string;
+  mutationSummary?: string;
   lineage?: ForecastLabMutationLineage;
   mutationSpecSummary?: ForecastLabMutationSpecSummary;
   candidateWorkspace?: ForecastLabCandidateWorkspaceMetadata;
@@ -45,8 +49,12 @@ export interface ForecastLabRunManifest {
   allowedGlobs: string[];
   effectiveMutationContract?: ForecastLabProfileMutationConfig;
   mutationMode?: ForecastLabMutationMode;
+  parentRunId?: string;
+  mutationId?: string;
+  mutationSummary?: string;
   lineage?: ForecastLabMutationLineage;
   mutationSpecSummary?: ForecastLabMutationSpecSummary;
+  mutationReplayPayload?: ForecastLabMarkovParameterMutationReplayPayload;
   candidateWorkspace?: ForecastLabCandidateWorkspaceMetadata;
   artifactsPath: string;
 }
