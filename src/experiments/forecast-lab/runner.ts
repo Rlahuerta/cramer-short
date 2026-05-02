@@ -14,6 +14,7 @@ import {
   stableJsonStringify,
   writeRunManifest,
 } from './ledger.js';
+import { updateForecastLabRoutingStats } from './router-memory.js';
 import {
   applyForecastLabCandidateEdits,
   prepareForecastLabCandidateWorkspace,
@@ -21,7 +22,13 @@ import {
 } from './git.js';
 import { getForecastLabProfile, listForecastLabStructuredMutations } from './profiles.js';
 import type { ForecastLabCommand, ForecastLabProfile } from './profiles.js';
-import type { ForecastLabDecision, ForecastLabLedgerEntry, ForecastLabRunManifest, JsonValue } from './types.js';
+import type {
+  ForecastLabDecision,
+  ForecastLabLedgerEntry,
+  ForecastLabRoutingContext,
+  ForecastLabRunManifest,
+  JsonValue,
+} from './types.js';
 import {
   getForecastLabBaselineCommit,
   makeForecastLabCandidateBranch,
@@ -114,6 +121,8 @@ export interface ForecastLabRunOptions {
   readonly now?: () => Date;
   readonly commandRunner?: ForecastLabCommandRunner;
   readonly ledgerPath?: string;
+  readonly routingContext?: ForecastLabRoutingContext;
+  readonly routingStatsPath?: string;
   readonly progress?: (message: string) => void;
   readonly output?: (chunk: string) => void;
 }
@@ -775,6 +784,9 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
     effectiveMutationContract,
     artifactsPath: runDir,
   };
+  if (options.routingContext) {
+    manifest.routingContext = options.routingContext;
+  }
 
   writeRunManifest(manifestPath, manifest);
   progress?.(`forecast-lab: started ${profile.id} (${runId})`);
@@ -905,6 +917,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
     targetSubsystem: profile.targetSubsystem,
     candidateBranch,
     allowedGlobs: [...profile.allowedGlobs],
+    routingContext: options.routingContext,
     effectiveMutationContract,
     mutationMode: structuredMutation?.mutationMode,
     parentRunId: structuredMutation?.parentRunId,
@@ -921,6 +934,15 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   };
 
   appendLedgerEntry(ledgerPath, ledgerEntry);
+  if (options.routingContext) {
+    updateForecastLabRoutingStats(
+      profile.id,
+      decision.decision,
+      startedAt,
+      options.routingContext.invocationSource,
+      options.routingStatsPath,
+    );
+  }
   progress?.(`forecast-lab: ledger appended at ${ledgerPath}`);
 
   return {

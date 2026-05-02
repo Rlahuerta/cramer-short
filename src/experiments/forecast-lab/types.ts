@@ -8,6 +8,7 @@ import type {
 import type { ForecastLabMarkovParameterMutationReplayPayload } from './mutators/markov-parameters.js';
 
 export type ForecastLabDecision = 'keep' | 'drop';
+export type ForecastLabRoutingInvocationSource = 'auto-routed' | 'manual-request';
 
 export type JsonValue =
   | null
@@ -17,6 +18,28 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
+export interface ForecastLabRoutingContext {
+  originatingQuery: string;
+  selectedProfileId: string;
+  routerReason: string;
+  invocationSource: ForecastLabRoutingInvocationSource;
+}
+
+export interface ForecastLabProfileRoutingStats {
+  totalRuns: number;
+  keptRuns: number;
+  droppedRuns: number;
+  autoRoutedRuns: number;
+  manualRequestedRuns: number;
+  lastDecision: ForecastLabDecision;
+  lastRunAt: string;
+}
+
+export interface ForecastLabRoutingStats {
+  version: 1;
+  profiles: Record<string, ForecastLabProfileRoutingStats>;
+}
+
 export interface ForecastLabLedgerEntry {
   runId: string;
   startedAt: string;
@@ -24,6 +47,7 @@ export interface ForecastLabLedgerEntry {
   targetSubsystem: string;
   candidateBranch: string;
   allowedGlobs: string[];
+  routingContext?: ForecastLabRoutingContext;
   effectiveMutationContract?: ForecastLabProfileMutationConfig;
   mutationMode?: ForecastLabMutationMode;
   parentRunId?: string;
@@ -47,6 +71,7 @@ export interface ForecastLabRunManifest {
   baselineCommit?: string;
   candidateBranch: string;
   allowedGlobs: string[];
+  routingContext?: ForecastLabRoutingContext;
   effectiveMutationContract?: ForecastLabProfileMutationConfig;
   mutationMode?: ForecastLabMutationMode;
   parentRunId?: string;

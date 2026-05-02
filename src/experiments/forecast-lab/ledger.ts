@@ -8,9 +8,33 @@ import {
   validateForecastLabMutationSpecSummary,
 } from './mutation.js';
 import { validateForecastLabMarkovParameterMutationReplayPayload } from './mutators/markov-parameters.js';
-import type { ForecastLabLedgerEntry, ForecastLabRunManifest } from './types.js';
+import type { ForecastLabLedgerEntry, ForecastLabRunManifest, ForecastLabRoutingContext } from './types.js';
 
 export const LEDGER_COLUMNS = [
+  'runId',
+  'startedAt',
+  'profileId',
+  'targetSubsystem',
+  'candidateBranch',
+  'allowedGlobs',
+  'routingContext',
+  'effectiveMutationContract',
+  'mutationMode',
+  'parentRunId',
+  'mutationId',
+  'mutationSummary',
+  'lineage',
+  'mutationSpecSummary',
+  'candidateWorkspace',
+  'baselineSummary',
+  'candidateSummary',
+  'decision',
+  'reason',
+  'artifactsPath',
+] as const satisfies readonly (keyof ForecastLabLedgerEntry)[];
+
+export const LEDGER_HEADER = LEDGER_COLUMNS.join('\t');
+const PRE_ROUTING_LEDGER_COLUMNS = [
   'runId',
   'startedAt',
   'profileId',
@@ -31,8 +55,7 @@ export const LEDGER_COLUMNS = [
   'reason',
   'artifactsPath',
 ] as const satisfies readonly (keyof ForecastLabLedgerEntry)[];
-
-export const LEDGER_HEADER = LEDGER_COLUMNS.join('\t');
+const PRE_ROUTING_LEDGER_HEADER = PRE_ROUTING_LEDGER_COLUMNS.join('\t');
 const LEGACY_LEDGER_COLUMNS = [
   'runId',
   'startedAt',
@@ -94,6 +117,11 @@ type BaseLedgerSchema =
       header: typeof LEDGER_HEADER;
     }
   | {
+      name: 'pre-routing';
+      columns: typeof PRE_ROUTING_LEDGER_COLUMNS;
+      header: typeof PRE_ROUTING_LEDGER_HEADER;
+    }
+  | {
       name: 'legacy';
       columns: typeof LEGACY_LEDGER_COLUMNS;
       header: typeof LEGACY_LEDGER_HEADER;
@@ -110,6 +138,7 @@ type InitialLedgerSchema = {
 };
 type LedgerSchema = BaseLedgerSchema | InitialLedgerSchema;
 const OPTIONAL_LEDGER_COLUMNS = new Set<LedgerColumn>([
+  'routingContext',
   'effectiveMutationContract',
   'mutationMode',
   'parentRunId',
@@ -171,6 +200,25 @@ function stableValue(value: unknown): unknown {
   }
 
   return value;
+}
+
+function validateRoutingContext(value: unknown): asserts value is ForecastLabRoutingContext {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ForecastLabLedgerError('routingContext must be an object');
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const field of ['originatingQuery', 'selectedProfileId', 'routerReason'] as const) {
+    if (typeof record[field] !== 'string' || record[field].trim() === '') {
+      throw new ForecastLabLedgerError(`routingContext.${field} must be a non-empty string`);
+    }
+  }
+
+  if (record.invocationSource !== 'auto-routed' && record.invocationSource !== 'manual-request') {
+    throw new ForecastLabLedgerError(
+      'routingContext.invocationSource must be "auto-routed" or "manual-request"',
+    );
+  }
 }
 
 export function stableJsonStringify(value: unknown): string {
@@ -300,6 +348,12 @@ function validateOptionalMutationMetadata(record: Record<string, unknown>): void
   }
 }
 
+function validateOptionalRoutingMetadata(record: Record<string, unknown>): void {
+  if (record.routingContext !== undefined) {
+    validateRoutingContext(record.routingContext);
+  }
+}
+
 export function validateLedgerEntry(entry: unknown): asserts entry is ForecastLabLedgerEntry {
   if (!entry || typeof entry !== 'object') {
     throw new ForecastLabLedgerError('ledger entry must be an object');
@@ -321,6 +375,7 @@ export function validateLedgerEntry(entry: unknown): asserts entry is ForecastLa
     throw new ForecastLabLedgerError('decision must be keep or drop');
   }
 
+  validateOptionalRoutingMetadata(record);
   validateOptionalMutationMetadata(record);
   assertJsonSerializable('baselineSummary', record.baselineSummary);
   assertJsonSerializable('candidateSummary', record.candidateSummary);
@@ -350,6 +405,7 @@ export function validateRunManifest(manifest: unknown): asserts manifest is Fore
     }
   }
 
+  validateOptionalRoutingMetadata(record);
   validateOptionalMutationMetadata(record);
   if (record.mutationReplayPayload !== undefined) {
     if (record.mutationMode !== 'structured') {
@@ -406,6 +462,14 @@ function getLedgerSchema(header: string): LedgerSchema {
       name: 'legacy',
       columns: LEGACY_LEDGER_COLUMNS,
       header: LEGACY_LEDGER_HEADER,
+    };
+  }
+
+  if (header === PRE_ROUTING_LEDGER_HEADER) {
+    return {
+      name: 'pre-routing',
+      columns: PRE_ROUTING_LEDGER_COLUMNS,
+      header: PRE_ROUTING_LEDGER_HEADER,
     };
   }
 

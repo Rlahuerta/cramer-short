@@ -21,6 +21,7 @@ import {
 
 const TEST_LEDGER_DIR = join('.cramer-short', 'experiments', '__runner_test__');
 const TEST_LEDGER_PATH = join(TEST_LEDGER_DIR, 'forecast-results.tsv');
+const TEST_ROUTING_STATS_PATH = join('.cramer-short', '__runner_test__', 'forecast-lab-routing-stats.json');
 const RUN_IDS = [
   'runner-test-dry-run',
   'runner-test-unknown',
@@ -40,6 +41,7 @@ const RUN_IDS = [
 
 function cleanup(): void {
   rmSync(TEST_LEDGER_DIR, { recursive: true, force: true });
+  rmSync(TEST_ROUTING_STATS_PATH, { force: true });
   for (const runId of RUN_IDS) {
     const worktreePath = getForecastLabCandidateWorktreePath(runId);
     if (existsSync(worktreePath)) {
@@ -190,6 +192,95 @@ describe('forecast-lab runner', () => {
     expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).toMatchObject({
       runId: 'runner-test-failed-candidate',
       decision: 'drop',
+    });
+  });
+
+  it('persists routing context to manifests and ledgers while updating per-profile routing stats', async () => {
+    const autoRoutedResult = await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      dryRun: true,
+      runId: 'runner-test-dry-run',
+      now: () => new Date('2026-05-02T00:00:00.000Z'),
+      ledgerPath: TEST_LEDGER_PATH,
+      routingStatsPath: TEST_ROUTING_STATS_PATH,
+      routingContext: {
+        originatingQuery: 'Improve the short-horizon Markov calibration.',
+        selectedProfileId: 'multi-asset-markov-short-horizon',
+        routerReason: 'Matched improvement intent and Markov short-horizon routing keywords.',
+        invocationSource: 'auto-routed',
+      },
+      commandRunner: passingRunner([]),
+    });
+
+    const manualResult = await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      dryRun: true,
+      runId: 'runner-test-failed-candidate',
+      now: () => new Date('2026-05-03T00:00:00.000Z'),
+      ledgerPath: TEST_LEDGER_PATH,
+      routingStatsPath: TEST_ROUTING_STATS_PATH,
+      routingContext: {
+        originatingQuery: 'Run the Markov short-horizon skill manually.',
+        selectedProfileId: 'multi-asset-markov-short-horizon',
+        routerReason: 'User explicitly requested the shipped Markov short-horizon skill.',
+        invocationSource: 'manual-request',
+      },
+      commandRunner: async (command, context) => ({
+        id: command.id,
+        command: command.command,
+        exitCode: context.phase === 'candidate' ? 1 : 0,
+        stdout: '',
+        stderr: context.phase === 'candidate' ? 'failed' : '',
+        durationMs: 1,
+        timedOut: false,
+      }),
+    });
+
+    expect(autoRoutedResult.manifest.routingContext).toEqual({
+      originatingQuery: 'Improve the short-horizon Markov calibration.',
+      selectedProfileId: 'multi-asset-markov-short-horizon',
+      routerReason: 'Matched improvement intent and Markov short-horizon routing keywords.',
+      invocationSource: 'auto-routed',
+    });
+    expect(manualResult.ledgerEntry.routingContext).toEqual({
+      originatingQuery: 'Run the Markov short-horizon skill manually.',
+      selectedProfileId: 'multi-asset-markov-short-horizon',
+      routerReason: 'User explicitly requested the shipped Markov short-horizon skill.',
+      invocationSource: 'manual-request',
+    });
+
+    expect(
+      JSON.parse(readFileSync(join(getExperimentRunDir('runner-test-dry-run'), 'manifest.json'), 'utf8')),
+    ).toMatchObject({
+      routingContext: autoRoutedResult.manifest.routingContext,
+    });
+
+    expect(readLedgerEntries(TEST_LEDGER_PATH)).toEqual([
+      expect.objectContaining({
+        runId: 'runner-test-dry-run',
+        routingContext: autoRoutedResult.manifest.routingContext,
+        decision: 'keep',
+      }),
+      expect.objectContaining({
+        runId: 'runner-test-failed-candidate',
+        routingContext: manualResult.manifest.routingContext,
+        decision: 'drop',
+      }),
+    ]);
+
+    expect(JSON.parse(readFileSync(TEST_ROUTING_STATS_PATH, 'utf8'))).toEqual({
+      profiles: {
+        'multi-asset-markov-short-horizon': {
+          autoRoutedRuns: 1,
+          droppedRuns: 1,
+          keptRuns: 1,
+          lastDecision: 'drop',
+          lastRunAt: '2026-05-03T00:00:00.000Z',
+          manualRequestedRuns: 1,
+          totalRuns: 2,
+        },
+      },
+      version: 1,
     });
   });
 
