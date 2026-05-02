@@ -142,6 +142,16 @@ describe('forecast-lab ledger file helpers', () => {
     expect(readLedgerEntries(ledgerPath)).toEqual([first, second]);
   });
 
+  it('rejects an existing empty ledger as an invalid schema', () => {
+    const ledgerPath = join(TEST_ROOT, 'forecast-results.tsv');
+    const first = makeEntry();
+    mkdirSync(TEST_ROOT, { recursive: true });
+    writeFileSync(ledgerPath, '', 'utf8');
+
+    expect(() => appendLedgerEntry(ledgerPath, first)).toThrow(/ledger header does not match expected schema/);
+    expect(readFileSync(ledgerPath, 'utf8')).toBe('');
+  });
+
   it('returns no rows when the ledger file does not exist', () => {
     expect(readLedgerEntries(join(TEST_ROOT, 'missing.tsv'))).toEqual([]);
   });

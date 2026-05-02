@@ -193,15 +193,21 @@ function assertLedgerHeader(text: string): void {
 
 export function appendLedgerEntry(path: string, entry: ForecastLabLedgerEntry): void {
   const row = serializeLedgerRow(entry);
-  const existing = readLedgerText(path);
 
   mkdirSync(dirname(path), { recursive: true });
 
-  if (existing.length === 0) {
-    writeFileSync(path, `${LEDGER_HEADER}\n${row}\n`, 'utf8');
-    return;
+  if (!existsSync(path)) {
+    try {
+      appendFileSync(path, `${LEDGER_HEADER}\n${row}\n`, { encoding: 'utf8', flag: 'wx' });
+      return;
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST')) {
+        throw error;
+      }
+    }
   }
 
+  const existing = readLedgerText(path);
   assertLedgerHeader(existing);
   appendFileSync(path, `${existing.endsWith('\n') ? '' : '\n'}${row}\n`, 'utf8');
 }

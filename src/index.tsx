@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { config } from 'dotenv';
 import { runCli } from './cli.js';
+import { runForecastLabCommand } from './cli-forecast-lab.js';
 import { runScheduleCommand } from './cli-schedule.js';
 import { closeBrowser } from './tools/browser/index.js';
 
@@ -31,6 +32,9 @@ process.on('SIGTERM', () => void shutdown(143));
 const subCommand = process.argv[2];
 if (subCommand === 'schedule') {
   await runScheduleCommand(process.argv.slice(3));
+  await closeBrowser().catch(() => {});
+} else if (subCommand === 'lab') {
+  await runForecastLabCommand(process.argv.slice(3));
   await closeBrowser().catch(() => {});
 } else {
   await runCli();
