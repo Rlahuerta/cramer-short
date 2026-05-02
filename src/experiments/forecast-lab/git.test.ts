@@ -196,7 +196,7 @@ describe('forecast-lab git helpers', () => {
 
   it('applies edits only inside the allowed mutation set', async () => {
     const runId = 'git-test-edit-policy';
-    const profile = getForecastLabProfile('btc-markov-short-horizon');
+    const profile = getForecastLabProfile('multi-asset-markov-short-horizon');
 
     await withForecastLabCandidateWorkspace(runId, (workspace) => {
       const allowedPath = profile.mutation.mutableFiles[0]!;

@@ -9,7 +9,7 @@ It is **not**:
 - a replacement for human review,
 - or permission to change the evaluation harness to make a candidate pass.
 
-The current V1 implementation is intentionally conservative. It is designed to make the workflow **safe, inspectable, and repeatable** before it becomes more powerful.
+The current implementation is intentionally conservative about **what** can mutate and **how** it mutates. Real structured mutation is now supported for the shipped Markov profiles, but it is still bounded, typed, and auditable rather than free-form.
 
 ---
 
@@ -39,9 +39,10 @@ For most people, the most efficient workflow is:
 1. **List profiles** to see what already exists.
 2. **Pick the narrowest profile** that matches the subsystem you care about.
 3. **Run a dry run** first.
-4. **Inspect the run artifacts** in `.cramer-short/experiments/runs/<run-id>/`.
-5. **Check the ledger** to see the historical keep/drop record.
-6. **Use schedules** only after the manual dry-run workflow is clear.
+4. **If the profile is one of the shipped Markov profiles, run one explicit structured mutation** with `--mutation structured`.
+5. **Inspect the run artifacts** in `.cramer-short/experiments/runs/<run-id>/`.
+6. **Check the ledger** to see the historical keep/drop and lineage record.
+7. **Use schedules** only after the manual workflow is clear.
 
 That sequence is the safest way to learn the system and the fastest way to avoid confusion.
 
@@ -63,7 +64,7 @@ It helps to think of Forecast Lab as a 4-part loop:
 4. **Interpret the outcome carefully**
    A `keep` during dry-run means "the orchestration passed the gates," not "new code was proven better."
 
-This distinction matters a lot in V1.
+This distinction matters a lot: the system can now run one real bounded mutation, but it still does not behave like an unbounded self-editing search loop.
 
 ---
 
@@ -75,10 +76,16 @@ From the repository root:
 bun start lab list
 ```
 
-Then run a profile:
+Then start with a dry run:
 
 ```bash
-bun start lab run btc-markov-short-horizon --dry-run
+bun start lab run multi-asset-markov-short-horizon --dry-run
+```
+
+If that profile is the one you actually want to optimize, follow it with one explicit structured mutation:
+
+```bash
+bun start lab run multi-asset-markov-short-horizon --mutation structured
 ```
 
 You should see output like:
@@ -91,10 +98,11 @@ artifacts: .cramer-short/experiments/runs/<run-id>
 After that, inspect:
 
 1. `.cramer-short/experiments/runs/<run-id>/decision.json`
-2. `.cramer-short/experiments/runs/<run-id>/baseline.json`
-3. `.cramer-short/experiments/forecast-results.tsv`
+2. `.cramer-short/experiments/runs/<run-id>/candidate.json`
+3. `.cramer-short/experiments/runs/<run-id>/manifest.json`
+4. `.cramer-short/experiments/forecast-results.tsv`
 
-If you do just those three checks, you already understand the main V1 workflow.
+If you do just those four checks, you already understand the main Forecast Lab workflow.
 
 ---
 
@@ -108,11 +116,11 @@ bun start lab list
 
 This prints all configured Forecast Lab profiles and their target subsystems.
 
-Current V1 profiles:
+Current shipped profiles:
 
 | Profile | Target subsystem |
 |---|---|
-| `btc-markov-short-horizon` | `markov-distribution` |
+| `multi-asset-markov-short-horizon` | `markov-distribution` |
 | `btc-markov-ultra-short-horizon` | `markov-distribution` |
 | `btc-arbiter-replay` | `forecast-arbiter` |
 | `polymarket-selection-sanity` | `polymarket-selection` |
@@ -140,7 +148,7 @@ This is supported, but it is mostly useful for plumbing and schedule compatibili
 ### Run a shipped structured mutation
 
 ```bash
-bun start lab run btc-markov-short-horizon --mutation structured
+bun start lab run multi-asset-markov-short-horizon --mutation structured
 ```
 
 Today this is supported for the shipped Markov profiles. Forecast Lab will:
@@ -156,17 +164,66 @@ Today this is supported for the shipped Markov profiles. Forecast Lab will:
 
 If there is no compatible kept structured parent yet, the run starts from the current repo baseline just like the first structured mutation run.
 
+The old id `btc-markov-short-horizon` is still accepted as a compatibility alias, but the canonical shipped profile name is now `multi-asset-markov-short-horizon`. The old name was misleading because this gate is not BTC-only.
+
 For debugging, you can keep the workspace around:
 
 ```bash
-bun start lab run btc-markov-short-horizon --mutation structured --keep-worktree
+bun start lab run multi-asset-markov-short-horizon --mutation structured --keep-worktree
 ```
 
 You can also force one shipped mutation candidate:
 
 ```bash
-bun start lab run btc-markov-short-horizon --mutation structured --mutator markov-longer-stability-window
+bun start lab run multi-asset-markov-short-horizon --mutation structured --mutator markov-longer-stability-window
 ```
+
+### How to use mutation effectively
+
+If you want the mutation feature to be useful instead of confusing, use it in this order:
+
+1. **Start with a dry run.**
+   That tells you whether the profile and harness are the right fit before any candidate edit is attempted.
+
+2. **Move to one explicit structured mutation.**
+   Use:
+
+   ```bash
+   bun start lab run multi-asset-markov-short-horizon --mutation structured
+   ```
+
+   or:
+
+   ```bash
+   bun start lab run btc-markov-ultra-short-horizon --mutation structured
+   ```
+
+3. **Read the mutation evidence, not just the decision.**
+   For structured runs, inspect:
+
+   1. `decision.json`
+   2. `candidate.json`
+   3. `manifest.json`
+   4. `forecast-results.tsv`
+
+   `candidate.json` tells you what actually ran. `manifest.json` tells you the mutation contract, lineage, workspace, and replay payload that made the candidate reproducible.
+
+4. **Use `--mutator` only when you are debugging or comparing a specific shipped mutation.**
+   If you do not force a mutator, Forecast Lab picks the first shipped mutation that is both:
+   - allowed by the profile contract, and
+   - still applicable after replaying the last kept parent lineage.
+
+5. **Use `--keep-worktree` only when you need to inspect the mutated checkout itself.**
+   This is mainly for debugging why a structured run passed or failed.
+
+6. **Expect lineage to matter after your first kept structured run.**
+   The next structured run for the same profile can reuse that kept run as its parent, replay the parent mutation payload into a fresh worktree, and then apply one new shipped mutation on top.
+
+This is the most important practical difference between:
+
+- `--dry-run`: orchestration only, no candidate edit
+- `--skip-mutation`: explicit no-op mutation path that always drops
+- `--mutation structured`: one real shipped mutation in an isolated worktree
 
 ### Show lab usage
 
@@ -217,9 +274,9 @@ The shared contract lives in `src/experiments/forecast-lab/mutation.ts`. It keep
 
 `allowedGlobs` and `mutation.mutableFiles` are also intentionally related but not identical concepts. `allowedGlobs` defines the profile-level editable surface, while `mutableFiles` defines the mode-specific mutation input. The current profiles keep them aligned for simplicity, but later phases may narrow or expand one without changing the other.
 
-### `btc-markov-short-horizon`
+### `multi-asset-markov-short-horizon`
 
-Use this when you want to work on the short-horizon Markov-side forecast path.
+Use this when you want to work on the **multi-asset** short-horizon Markov forecast path.
 
 Allowed candidate surfaces:
 
@@ -242,6 +299,17 @@ Gate command:
 ```bash
 bun test src/tools/finance/backtest/walk-forward-short-horizon.test.ts --timeout 480000
 ```
+
+This harness currently evaluates:
+
+- `SPY`
+- `QQQ`
+- `GLD`
+- `VOO`
+- `NVDA`
+- `MSFT`
+
+across 7d, 14d, and 30d horizons.
 
 ### `btc-markov-ultra-short-horizon`
 
@@ -323,16 +391,37 @@ Use this simple rule:
 
 | If you want to evaluate... | Start with... |
 |---|---|
-| Markov forecast mechanics | `btc-markov-short-horizon` |
+| Multi-asset Markov forecast mechanics | `multi-asset-markov-short-horizon` |
 | BTC-only 1d/2d/3d Markov optimization | `btc-markov-ultra-short-horizon` |
 | Arbitrator behavior or replay behavior | `btc-arbiter-replay` |
 | Polymarket forecast selection/sanity | `polymarket-selection-sanity` |
 
 When in doubt, choose the **narrowest** profile that still matches your goal.
 
+If your goal is specifically **BTC**, start with `btc-markov-ultra-short-horizon`, not `multi-asset-markov-short-horizon`.
+
 ---
 
 ## What happens during a run
+
+Every run does the same base orchestration:
+
+1. loads the profile,
+2. creates a run ID like `forecast-lab-<profile>-<timestamp>`,
+3. computes a candidate branch name,
+4. creates the run directory under `.cramer-short/experiments/runs/<run-id>/`,
+5. writes `manifest.json`,
+6. runs the baseline commands,
+7. writes `baseline.json`,
+8. evaluates the candidate path,
+9. writes `candidate.json`,
+10. evaluates the keep/drop rule,
+11. writes `decision.json`,
+12. appends one ledger row to `.cramer-short/experiments/forecast-results.tsv`.
+
+The important difference is **what the candidate path means**.
+
+### Candidate path for `--dry-run`
 
 When you run:
 
@@ -340,20 +429,37 @@ When you run:
 bun start lab run <profile> --dry-run
 ```
 
-the runner does the following:
+the candidate gate still runs, but it runs without creating a candidate worktree or applying any edit. This is the safest way to inspect the profile, harness, artifact shape, and ledger plumbing.
 
-1. Loads the profile.
-2. Creates a run ID like `forecast-lab-<profile>-<timestamp>`.
-3. Computes a candidate branch name.
-4. Creates the run directory under `.cramer-short/experiments/runs/<run-id>/`.
-5. Writes `manifest.json`.
-6. Runs the baseline commands.
-7. Writes `baseline.json`.
-8. Runs the candidate commands.
-9. Writes `candidate.json`.
-10. Evaluates the keep/drop rule.
-11. Writes `decision.json`.
-12. Appends one ledger row to `.cramer-short/experiments/forecast-results.tsv`.
+### Candidate path for `--skip-mutation`
+
+When you run:
+
+```bash
+bun start lab run <profile> --skip-mutation
+```
+
+the runner still exercises the no-mutation candidate path, but it rewrites the final outcome to a drop because no candidate code change exists to keep.
+
+### Candidate path for `--mutation structured`
+
+When you run:
+
+```bash
+bun start lab run <markov-profile> --mutation structured
+```
+
+the runner:
+
+1. resolves the effective mutation contract,
+2. looks for the last kept structured parent run for the same profile,
+3. creates a fresh candidate worktree,
+4. replays the parent's immutable mutation payload when lineage exists,
+5. selects either the requested shipped mutator or the first applicable unused shipped mutation,
+6. applies that mutation inside the worktree,
+7. runs the candidate gate in that worktree,
+8. persists mutation metadata to artifacts and the ledger,
+9. cleans up the worktree unless you passed `--keep-worktree`.
 
 ### Important clarification about the candidate branch
 
@@ -373,9 +479,9 @@ Current run files:
 
 | File | What it tells you | What to check first |
 |---|---|---|
-| `manifest.json` | Which profile ran, when, and with which allowed globs | Confirm you ran the profile you intended |
+| `manifest.json` | Which profile ran, baseline commit, mutation contract, lineage, and workspace metadata | Confirm you ran the profile and mutation mode you intended |
 | `baseline.json` | Raw baseline command results | Check `exitCode`, command IDs, and timing |
-| `candidate.json` | Raw candidate command results plus mutation status | Check `exitCode` and `mutation` |
+| `candidate.json` | Raw candidate command results plus mutation metadata | Check `exitCode`, `mutationMode`, `mutationSummary`, `mutationSpecSummary`, and mutated files |
 | `decision.json` | Final keep/drop decision and compared metrics | Read this first when diagnosing outcomes |
 
 ### Fastest inspection order
@@ -388,6 +494,8 @@ If you want to be efficient, inspect in this order:
 4. `manifest.json`
 
 That gives you the answer first, then the evidence.
+
+For structured mutation runs, `manifest.json` is especially important because it is where the immutable replay payload lives. The ledger keeps the lighter summary needed for triage; the manifest keeps the exact replay material needed for deterministic lineage replay later.
 
 ---
 
@@ -456,6 +564,13 @@ If you are scanning many runs, start with:
 - `artifactsPath`
 
 Those four fields tell you most of what you need quickly.
+
+For structured mutation history, also look at:
+
+- `parentRunId`
+- `mutationId`
+- `mutationSummary`
+- `candidateWorkspace`
 
 ---
 
@@ -563,7 +678,7 @@ These are fixed acceptance infrastructure and should not be edited to make a run
 
 ### Safe-command restrictions
 
-The runner rejects unsafe profile commands before shell execution. In V1 it blocks:
+The runner rejects unsafe profile commands before shell execution. It blocks:
 
 - shell metacharacters such as `;`, `&`, `|`, `` ` ``, `<`, `>`, and `$()`
 - mutating git commands such as:
@@ -626,14 +741,16 @@ Do not start with a broad goal like "improve forecasting." Start with one subsys
 - arbitrator,
 - or Polymarket selection.
 
-### 3. Prefer `--dry-run` for normal interactive use
+### 3. Start with `--dry-run`, then graduate to `--mutation structured`
 
-This is the clearest mode to learn from because:
+`--dry-run` is the clearest mode to learn from because:
 
 - the workflow runs fully,
 - artifacts are written,
 - no mutation is attempted,
 - and the decision is still recorded.
+
+Once that feels obvious, use `--mutation structured` on the shipped Markov profiles to run one real bounded candidate edit.
 
 ### 4. Use the ledger for history, not just the latest run
 
@@ -644,15 +761,16 @@ The ledger tells you what keeps happening.
 
 If you cannot explain one manual run from `decision.json`, do not automate it yet.
 
-### 6. Treat the current V1 as governance, not optimization magic
+### 6. Treat the current system as bounded optimization, not optimization magic
 
 The current system is strongest at:
 
 - enforcing boundaries,
 - recording evidence,
+- applying one bounded mutation safely,
 - and preventing unsafe experimentation.
 
-It is not yet a full autonomous improvement engine.
+It is still **not** a free-form autonomous improvement engine.
 
 ---
 
@@ -678,7 +796,7 @@ Experiment artifacts remain project-local:
     "id": "nightly-btc-markov-lab",
     "kind": "forecast_lab",
     "description": "Nightly BTC Markov forecast-lab dry run",
-    "profileId": "btc-markov-short-horizon",
+    "profileId": "multi-asset-markov-short-horizon",
     "dryRun": true,
     "outputFile": "~/.cramer-short/reports/{date}-btc-markov-lab.md"
   }
@@ -692,6 +810,8 @@ bun start schedule list
 bun start schedule run
 bun start schedule run nightly-btc-markov-lab
 ```
+
+When a scheduled run uses real structured mutation, the headless summary now includes the mutation mode, selected mutator, mutation operator, lineage, and candidate workspace so the report tells you that a real candidate edit happened.
 
 ### Fields for `forecast_lab` jobs
 
@@ -739,7 +859,7 @@ Otherwise the schedule runner fails loudly instead of inferring a real mutation 
     "id": "nightly-btc-markov-mutation",
     "kind": "forecast_lab",
     "description": "Nightly BTC Markov structured mutation",
-    "profileId": "btc-markov-short-horizon",
+    "profileId": "multi-asset-markov-short-horizon",
     "dryRun": false,
     "mutationMode": "structured",
     "mutator": "markov-longer-stability-window",
@@ -821,6 +941,15 @@ Use a scheduled `forecast_lab` job with:
 - an `outputFile`
 - and the narrowest profile that matches your goal
 
+### "I want the lab to actually try one shipped mutation each night."
+
+Use a scheduled `forecast_lab` job with:
+
+- `dryRun: false`
+- `mutationMode: "structured"`
+- optionally `mutator` if you want one exact shipped candidate
+- optionally `keepWorktree: true` only when you are debugging a failure or unexpected keep
+
 ### "I want to understand why a run dropped."
 
 Read in this order:
@@ -859,7 +988,7 @@ bun start lab run
 without a profile. Re-run with a profile id:
 
 ```bash
-bun start lab run btc-markov-short-horizon --dry-run
+bun start lab run multi-asset-markov-short-horizon --dry-run
 ```
 
 ### Error: unknown forecast-lab profile id
@@ -893,6 +1022,42 @@ or:
 ```
 
 if you intentionally want the no-mutation paths.
+
+### Error: real mutation requires an explicit mutation mode
+
+You probably ran a real mutation shape without:
+
+```bash
+--mutation structured
+```
+
+Forecast Lab fails closed here on purpose. A bare:
+
+```bash
+bun start lab run multi-asset-markov-short-horizon
+```
+
+does **not** silently fall through to a real mutation run.
+
+### Error: unknown forecast-lab flag
+
+The CLI rejects typos like:
+
+```bash
+--dryrun
+```
+
+or conflicting combinations like:
+
+```bash
+--dry-run --skip-mutation
+```
+
+Use one explicit path only:
+
+- `--dry-run`
+- `--skip-mutation`
+- or `--mutation structured`
 
 ### Error: schedule output outside allowed roots
 

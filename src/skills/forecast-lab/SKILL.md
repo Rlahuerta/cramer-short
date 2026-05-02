@@ -38,7 +38,7 @@ shipped catalog is currently limited to `search-replace`. The arbiter and
 Polymarket profiles remain `dry-run` until they have concrete structured
 mutation catalogs.
 
-- `btc-markov-short-horizon`
+- `multi-asset-markov-short-horizon`
   - `src/tools/finance/markov-distribution.ts`
   - `src/tools/finance/conformal.ts`
   - `src/tools/finance/regime-calibrator.ts`

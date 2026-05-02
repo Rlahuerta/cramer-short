@@ -28,7 +28,7 @@ function makeMutationReplayPayload() {
   return {
     kind: 'markov-parameter-candidate' as const,
     id: 'markov-shorter-reactive-window',
-    profileId: 'btc-markov-short-horizon' as const,
+    profileId: 'multi-asset-markov-short-horizon' as const,
     mutatorId: 'search-replace' as const,
     specSummary: {
       mutatorId: 'search-replace' as const,
@@ -88,7 +88,7 @@ function makeEntry(overrides: Partial<ForecastLabLedgerEntry> = {}): ForecastLab
   return {
     runId: 'run-1',
     startedAt: '2026-05-02T00:00:00.000Z',
-    profileId: 'btc-markov-short-horizon',
+    profileId: 'multi-asset-markov-short-horizon',
     targetSubsystem: 'markov-distribution',
     candidateBranch: 'topic/forecast-lab-run-1',
     allowedGlobs: ['src/tools/finance/markov-distribution.ts', 'src/tools/finance/polymarket-forecast.ts'],
@@ -169,7 +169,7 @@ describe('forecast-lab ledger serialization', () => {
 
   it('serializes rows as deterministic reversible JSON fields', () => {
     expect(serializeLedgerRow(makeEntry())).toBe(
-      '"run-1"\t"2026-05-02T00:00:00.000Z"\t"btc-markov-short-horizon"\t"markov-distribution"\t"topic/forecast-lab-run-1"\t["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]\t{"allowedMutatorIds":["replace-range","search-replace"],"allowMultipleCandidateAttempts":false,"mode":"structured","mutableFiles":["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]}\tnull\tnull\tnull\tnull\tnull\tnull\tnull\t{"rankIC":0.12,"z":2}\t{"lift":0.01,"rankIC":0.13}\t"keep"\t"measurable lift"\t".cramer-short/experiments/runs/run-1"',
+      '"run-1"\t"2026-05-02T00:00:00.000Z"\t"multi-asset-markov-short-horizon"\t"markov-distribution"\t"topic/forecast-lab-run-1"\t["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]\t{"allowedMutatorIds":["replace-range","search-replace"],"allowMultipleCandidateAttempts":false,"mode":"structured","mutableFiles":["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]}\tnull\tnull\tnull\tnull\tnull\tnull\tnull\t{"rankIC":0.12,"z":2}\t{"lift":0.01,"rankIC":0.13}\t"keep"\t"measurable lift"\t".cramer-short/experiments/runs/run-1"',
     );
   });
 
@@ -307,7 +307,7 @@ describe('forecast-lab ledger validation', () => {
       validateRunManifest({
         runId: 'run-1',
         startedAt: '2026-05-02T00:00:00.000Z',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         targetSubsystem: 'markov-distribution',
         candidateBranch: 'topic/forecast-lab-run-1',
         allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
@@ -324,7 +324,7 @@ describe('forecast-lab ledger validation', () => {
       validateRunManifest({
         runId: 'run-1',
         startedAt: '2026-05-02T00:00:00.000Z',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         targetSubsystem: 'markov-distribution',
         baselineCommit: 'not-a-sha',
         candidateBranch: 'topic/forecast-lab-run-1',
@@ -336,7 +336,7 @@ describe('forecast-lab ledger validation', () => {
       validateRunManifest({
         runId: 'run-1',
         startedAt: '2026-05-02T00:00:00.000Z',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         targetSubsystem: 'markov-distribution',
         candidateBranch: 'topic/forecast-lab-run-1',
         allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
@@ -353,7 +353,7 @@ describe('forecast-lab ledger validation', () => {
       validateRunManifest({
         runId: 'run-1',
         startedAt: '2026-05-02T00:00:00.000Z',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         targetSubsystem: 'markov-distribution',
         candidateBranch: 'topic/forecast-lab-run-1',
         allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
@@ -558,7 +558,7 @@ describe('forecast-lab manifest helpers', () => {
     const manifest: ForecastLabRunManifest = {
       runId: 'run-1',
       startedAt: '2026-05-02T00:00:00.000Z',
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       targetSubsystem: 'markov-distribution',
       baselineCommit: '0123456789abcdef0123456789abcdef01234567',
       candidateBranch: 'topic/forecast-lab-run-1',
@@ -582,7 +582,7 @@ describe('forecast-lab manifest helpers', () => {
     expect(readFileSync(manifestPath, 'utf8')).toBe(serializeManifest(manifest));
     expect(readRunManifest(manifestPath)).toEqual(manifest);
     expect(serializeManifest(manifest)).toBe(
-      '{\n  "allowedGlobs": [\n    "src/tools/finance/markov-distribution.ts"\n  ],\n  "artifactsPath": ".cramer-short/experiments/runs/run-1",\n  "baselineCommit": "0123456789abcdef0123456789abcdef01234567",\n  "candidateBranch": "topic/forecast-lab-run-1",\n  "candidateWorkspace": {\n    "branch": "topic/forecast-lab-run-1",\n    "kind": "candidate-worktree",\n    "rootDir": "/repo/.cramer-short/experiments/worktrees/run-1"\n  },\n  "effectiveMutationContract": {\n    "allowedMutatorIds": [\n      "replace-range"\n    ],\n    "allowMultipleCandidateAttempts": false,\n    "mode": "structured",\n    "mutableFiles": [\n      "src/tools/finance/markov-distribution.ts"\n    ]\n  },\n  "profileId": "btc-markov-short-horizon",\n  "runId": "run-1",\n  "startedAt": "2026-05-02T00:00:00.000Z",\n  "targetSubsystem": "markov-distribution"\n}\n',
+      '{\n  "allowedGlobs": [\n    "src/tools/finance/markov-distribution.ts"\n  ],\n  "artifactsPath": ".cramer-short/experiments/runs/run-1",\n  "baselineCommit": "0123456789abcdef0123456789abcdef01234567",\n  "candidateBranch": "topic/forecast-lab-run-1",\n  "candidateWorkspace": {\n    "branch": "topic/forecast-lab-run-1",\n    "kind": "candidate-worktree",\n    "rootDir": "/repo/.cramer-short/experiments/worktrees/run-1"\n  },\n  "effectiveMutationContract": {\n    "allowedMutatorIds": [\n      "replace-range"\n    ],\n    "allowMultipleCandidateAttempts": false,\n    "mode": "structured",\n    "mutableFiles": [\n      "src/tools/finance/markov-distribution.ts"\n    ]\n  },\n  "profileId": "multi-asset-markov-short-horizon",\n  "runId": "run-1",\n  "startedAt": "2026-05-02T00:00:00.000Z",\n  "targetSubsystem": "markov-distribution"\n}\n',
     );
   });
 

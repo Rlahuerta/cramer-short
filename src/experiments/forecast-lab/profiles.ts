@@ -11,10 +11,13 @@ import {
 } from './mutators/markov-parameters.js';
 
 export type ForecastLabProfileId =
-  | 'btc-markov-short-horizon'
+  | 'multi-asset-markov-short-horizon'
   | 'btc-markov-ultra-short-horizon'
   | 'btc-arbiter-replay'
   | 'polymarket-selection-sanity';
+
+export type ForecastLabProfileAliasId = 'btc-markov-short-horizon';
+export type ForecastLabAnyProfileId = ForecastLabProfileId | ForecastLabProfileAliasId;
 
 export type ForecastLabTargetSubsystem =
   | 'markov-distribution'
@@ -153,8 +156,8 @@ const POLYMARKET_SELECTION_COMMANDS = deepFreeze([
 ] as const satisfies readonly ForecastLabCommand[]);
 
 const PROFILES_BY_ID = deepFreeze({
-  'btc-markov-short-horizon': {
-    id: 'btc-markov-short-horizon',
+  'multi-asset-markov-short-horizon': {
+    id: 'multi-asset-markov-short-horizon',
     targetSubsystem: 'markov-distribution',
     allowedGlobs: MARKOV_MUTABLE_FILES,
     mutation: defineForecastLabProfileMutationConfig({
@@ -360,8 +363,12 @@ const PROFILES_BY_ID = deepFreeze({
   },
 } as const satisfies Record<ForecastLabProfileId, ForecastLabProfile>);
 
+const PROFILE_ALIASES = deepFreeze({
+  'btc-markov-short-horizon': 'multi-asset-markov-short-horizon',
+} as const satisfies Record<ForecastLabProfileAliasId, ForecastLabProfileId>);
+
 export const FORECAST_LAB_PROFILES = deepFreeze([
-  PROFILES_BY_ID['btc-markov-short-horizon'],
+  PROFILES_BY_ID['multi-asset-markov-short-horizon'],
   PROFILES_BY_ID['btc-markov-ultra-short-horizon'],
   PROFILES_BY_ID['btc-arbiter-replay'],
   PROFILES_BY_ID['polymarket-selection-sanity'],
@@ -375,19 +382,38 @@ export function listForecastLabProfiles(): readonly ForecastLabProfile[] {
   return FORECAST_LAB_PROFILES;
 }
 
-export function isForecastLabProfileId(profileId: string): profileId is ForecastLabProfileId {
+export function normalizeForecastLabProfileId(profileId: string): ForecastLabProfileId | undefined {
+  if (Object.hasOwn(PROFILES_BY_ID, profileId)) {
+    return profileId as ForecastLabProfileId;
+  }
+
+  if (Object.hasOwn(PROFILE_ALIASES, profileId)) {
+    return PROFILE_ALIASES[profileId as ForecastLabProfileAliasId];
+  }
+
+  return undefined;
+}
+
+export function isForecastLabProfileId(profileId: string): profileId is ForecastLabAnyProfileId {
+  return normalizeForecastLabProfileId(profileId) !== undefined;
+}
+
+export function isCanonicalForecastLabProfileId(profileId: string): profileId is ForecastLabProfileId {
   return Object.hasOwn(PROFILES_BY_ID, profileId);
 }
 
-export function assertForecastLabProfileId(profileId: string): asserts profileId is ForecastLabProfileId {
+export function assertForecastLabProfileId(profileId: string): asserts profileId is ForecastLabAnyProfileId {
   if (!isForecastLabProfileId(profileId)) {
     throw new ForecastLabProfileError(`Unknown forecast-lab profile id: ${profileId}`);
   }
 }
 
 export function getForecastLabProfile(profileId: string): ForecastLabProfile {
-  assertForecastLabProfileId(profileId);
-  return PROFILES_BY_ID[profileId];
+  const normalized = normalizeForecastLabProfileId(profileId);
+  if (!normalized) {
+    throw new ForecastLabProfileError(`Unknown forecast-lab profile id: ${profileId}`);
+  }
+  return PROFILES_BY_ID[normalized];
 }
 
 export function listForecastLabStructuredMutations(

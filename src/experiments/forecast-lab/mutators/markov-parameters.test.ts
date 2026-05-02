@@ -9,13 +9,13 @@ import {
 
 const REPO_ROOT = process.cwd();
 const MARKOV_PROFILE_IDS = [
-  'btc-markov-short-horizon',
+  'multi-asset-markov-short-horizon',
   'btc-markov-ultra-short-horizon',
 ] as const;
 
 describe('forecast-lab markov parameter mutators', () => {
   it('only exposes bounded deterministic mutators for the first markov profiles', () => {
-    expect(isForecastLabMarkovMutatorProfileId('btc-markov-short-horizon')).toBe(true);
+    expect(isForecastLabMarkovMutatorProfileId('multi-asset-markov-short-horizon')).toBe(true);
     expect(isForecastLabMarkovMutatorProfileId('btc-markov-ultra-short-horizon')).toBe(true);
     expect(isForecastLabMarkovMutatorProfileId('btc-arbiter-replay')).toBe(false);
 

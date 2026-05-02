@@ -6,13 +6,15 @@ import {
   FORECAST_LAB_READ_ONLY_HARNESS_FILES,
   assertForecastLabProfileId,
   getForecastLabProfile,
+  isCanonicalForecastLabProfileId,
   isForecastLabProfileId,
   listForecastLabProfiles,
   listForecastLabStructuredMutations,
+  normalizeForecastLabProfileId,
 } from './profiles.js';
 
 const EXPECTED_PROFILE_IDS: readonly ForecastLabProfileId[] = [
-  'btc-markov-short-horizon',
+  'multi-asset-markov-short-horizon',
   'btc-markov-ultra-short-horizon',
   'btc-arbiter-replay',
   'polymarket-selection-sanity',
@@ -24,7 +26,7 @@ const COMMAND_STATUS_METRIC_PATHS = {
 } as const;
 
 const EXPECTED_COMMAND_STATUS_PROFILES = {
-  'btc-markov-short-horizon': {
+  'multi-asset-markov-short-horizon': {
     commands: [
       {
         id: 'walk-forward-short-horizon',
@@ -77,14 +79,14 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
 }>;
 
 const EXPECTED_READ_ONLY_HARNESSES = {
-  'btc-markov-short-horizon': ['src/tools/finance/backtest/walk-forward.ts'],
+  'multi-asset-markov-short-horizon': ['src/tools/finance/backtest/walk-forward.ts'],
   'btc-markov-ultra-short-horizon': ['src/tools/finance/backtest/walk-forward.ts'],
   'btc-arbiter-replay': ['src/tools/finance/backtest/arbiter-replay-runner.ts'],
   'polymarket-selection-sanity': [],
 } as const satisfies Record<ForecastLabProfileId, readonly string[]>;
 
 const EXPECTED_MUTATION_CONFIGS = {
-  'btc-markov-short-horizon': {
+  'multi-asset-markov-short-horizon': {
     mode: 'structured',
     mutableFiles: [
       'src/tools/finance/markov-distribution.ts',
@@ -171,22 +173,26 @@ describe('forecast-lab profiles', () => {
   });
 
   it('gets known profiles and rejects unknown profile ids', () => {
-    expect(getForecastLabProfile('btc-markov-short-horizon').targetSubsystem).toBe('markov-distribution');
+    expect(getForecastLabProfile('multi-asset-markov-short-horizon').targetSubsystem).toBe('markov-distribution');
     expect(getForecastLabProfile('btc-markov-ultra-short-horizon').targetSubsystem).toBe('markov-distribution');
     expect(isForecastLabProfileId('btc-arbiter-replay')).toBe(true);
+    expect(isForecastLabProfileId('btc-markov-short-horizon')).toBe(true);
+    expect(isCanonicalForecastLabProfileId('btc-markov-short-horizon')).toBe(false);
+    expect(normalizeForecastLabProfileId('btc-markov-short-horizon')).toBe('multi-asset-markov-short-horizon');
+    expect(getForecastLabProfile('btc-markov-short-horizon').id).toBe('multi-asset-markov-short-horizon');
     expect(isForecastLabProfileId('unknown-profile')).toBe(false);
     expect(() => getForecastLabProfile('unknown-profile')).toThrow(/Unknown forecast-lab profile id/);
     expect(() => assertForecastLabProfileId('unknown-profile')).toThrow(/Unknown forecast-lab profile id/);
 
     let id: string = 'polymarket-selection-sanity';
     assertForecastLabProfileId(id);
-    const narrowed: ForecastLabProfileId = id;
+    const narrowed = normalizeForecastLabProfileId(id);
     expect(narrowed).toBe('polymarket-selection-sanity');
   });
 
   it('is immutable enough for callers to reuse safely', () => {
     const profiles = listForecastLabProfiles();
-    const markov = getForecastLabProfile('btc-markov-short-horizon');
+    const markov = getForecastLabProfile('multi-asset-markov-short-horizon');
 
     expect(Object.isFrozen(profiles)).toBe(true);
     expect(Object.isFrozen(markov)).toBe(true);

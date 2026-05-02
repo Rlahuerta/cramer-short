@@ -84,7 +84,7 @@ describe('forecast-lab runner', () => {
     const progress: string[] = [];
     const output: string[] = [];
     const result = await runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       dryRun: true,
       runId: 'runner-test-dry-run',
       now: () => new Date('2026-05-02T00:00:00.000Z'),
@@ -99,7 +99,7 @@ describe('forecast-lab runner', () => {
       'candidate:walk-forward-short-horizon',
     ]);
     expect(result.decision.decision).toBe('keep');
-    expect(result.manifest.profileId).toBe('btc-markov-short-horizon');
+    expect(result.manifest.profileId).toBe('multi-asset-markov-short-horizon');
     expect(result.manifest.baselineCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(result.manifest.candidateWorkspace).toBeUndefined();
     expect(result.manifest.effectiveMutationContract).toEqual({
@@ -137,7 +137,7 @@ describe('forecast-lab runner', () => {
     });
     expect(entries[0]).not.toHaveProperty('candidateWorkspace');
     expect(progress).toEqual([
-      'forecast-lab: started btc-markov-short-horizon (runner-test-dry-run)',
+      'forecast-lab: started multi-asset-markov-short-horizon (runner-test-dry-run)',
       `forecast-lab: manifest written to ${join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run', 'manifest.json')}`,
       'forecast-lab: starting baseline gate',
       'baseline: running walk-forward-short-horizon — bun test src/tools/finance/backtest/walk-forward-short-horizon.test.ts --timeout 480000',
@@ -197,7 +197,7 @@ describe('forecast-lab runner', () => {
     const calls: string[] = [];
     const progress: string[] = [];
     const result = await runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       mutationMode: 'structured',
       runId: 'runner-test-structured',
       ledgerPath: TEST_LEDGER_PATH,
@@ -260,7 +260,7 @@ describe('forecast-lab runner', () => {
     expect(result.manifest.mutationReplayPayload).toMatchObject({
       kind: 'markov-parameter-candidate',
       id: 'markov-shorter-reactive-window',
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
     });
     const candidateWorkspace = result.manifest.candidateWorkspace;
     expect(candidateWorkspace).toEqual({
@@ -331,7 +331,7 @@ describe('forecast-lab runner', () => {
 
     try {
       const result = await runForecastLab({
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         mutationMode: 'structured',
         runId: 'runner-test-structured-dirty-live-checkout',
         ledgerPath: TEST_LEDGER_PATH,
@@ -364,7 +364,7 @@ describe('forecast-lab runner', () => {
 
   it('seeds the next structured mutation from the last kept structured run lineage', async () => {
     await runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       mutationMode: 'structured',
       runId: 'runner-test-structured-parent-root',
       ledgerPath: TEST_LEDGER_PATH,
@@ -374,7 +374,7 @@ describe('forecast-lab runner', () => {
     const progress: string[] = [];
     const calls: string[] = [];
     const result = await runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       mutationMode: 'structured',
       mutator: 'markov-faster-decay-reaction',
       runId: 'runner-test-structured-parent-child',
@@ -442,7 +442,7 @@ describe('forecast-lab runner', () => {
 
   it('auto-selects the first applicable unused structured mutation after replay', async () => {
     await runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       mutationMode: 'structured',
       runId: 'runner-test-structured-auto-parent',
       ledgerPath: TEST_LEDGER_PATH,
@@ -451,7 +451,7 @@ describe('forecast-lab runner', () => {
 
     const progress: string[] = [];
     const result = await runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       mutationMode: 'structured',
       runId: 'runner-test-structured-auto-child',
       ledgerPath: TEST_LEDGER_PATH,
@@ -486,7 +486,7 @@ describe('forecast-lab runner', () => {
 
   it('replays the persisted mutation payload even when the catalog entry is no longer available by mutationId', async () => {
     const parent = await runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       mutationMode: 'structured',
       mutator: 'markov-shorter-reactive-window',
       runId: 'runner-test-structured-payload-parent',
@@ -505,7 +505,7 @@ describe('forecast-lab runner', () => {
     });
 
     const result = await runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       mutationMode: 'structured',
       mutator: 'markov-faster-decay-reaction',
       runId: 'runner-test-structured-payload-child',
@@ -542,7 +542,7 @@ describe('forecast-lab runner', () => {
     const progress: string[] = [];
 
     const result = await runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       mutationMode: 'structured',
       keepWorktree: true,
       mutator: 'markov-longer-stability-window',
@@ -571,7 +571,7 @@ describe('forecast-lab runner', () => {
 
   it('rejects ambiguous real mutation runs with no explicit mutation mode', async () => {
     await expect(runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       runId: 'runner-test-skip-mutation',
       ledgerPath: TEST_LEDGER_PATH,
       commandRunner: passingRunner([]),
@@ -668,7 +668,7 @@ describe('forecast-lab runner', () => {
 
   it('refuses broad path writes outside .cramer-short/experiments', async () => {
     await expect(runForecastLab({
-      profileId: 'btc-markov-short-horizon',
+      profileId: 'multi-asset-markov-short-horizon',
       dryRun: true,
       runId: 'runner-test-outside-ledger',
       ledgerPath: join('.cramer-short', 'forecast-results.tsv'),
@@ -684,7 +684,7 @@ describe('forecast-lab CLI module', () => {
     await runForecastLabCommand(['list'], { log: (message) => output.push(message) });
 
     expect(output.join('\n')).toContain('Forecast-lab profiles:');
-    expect(output.join('\n')).toContain('btc-markov-short-horizon');
+    expect(output.join('\n')).toContain('multi-asset-markov-short-horizon');
   });
 
   it('prints useful usage for missing commands', async () => {
@@ -721,7 +721,7 @@ describe('forecast-lab CLI module', () => {
     let exitCode = 0;
     let runLabCalls = 0;
 
-    await runForecastLabCommand(['run', 'btc-markov-short-horizon', '--dryrun'], {
+    await runForecastLabCommand(['run', 'multi-asset-markov-short-horizon', '--dryrun'], {
       log: (message) => output.push(message),
       error: (message) => errors.push(message),
       exit: (code) => {
@@ -744,7 +744,7 @@ describe('forecast-lab CLI module', () => {
     let exitCode = 0;
     let runLabCalls = 0;
 
-    await runForecastLabCommand(['run', 'btc-markov-short-horizon', '--dry-run', '--skip-mutation'], {
+    await runForecastLabCommand(['run', 'multi-asset-markov-short-horizon', '--dry-run', '--skip-mutation'], {
       error: (message) => errors.push(message),
       exit: (code) => {
         exitCode = code;
@@ -767,7 +767,7 @@ describe('forecast-lab CLI module', () => {
     let exitCode = 0;
     let runLabCalls = 0;
 
-    await runForecastLabCommand(['run', 'btc-markov-short-horizon'], {
+    await runForecastLabCommand(['run', 'multi-asset-markov-short-horizon'], {
       error: (message) => errors.push(message),
       exit: (code) => {
         exitCode = code;
@@ -789,7 +789,7 @@ describe('forecast-lab CLI module', () => {
 
     await runForecastLabCommand([
       'run',
-      'btc-markov-short-horizon',
+      'multi-asset-markov-short-horizon',
       '--mutation',
       'structured',
       '--mutator',
@@ -804,7 +804,7 @@ describe('forecast-lab CLI module', () => {
           manifest: {
             runId: 'runner-test-explicit-structured',
             startedAt: '2026-05-02T00:00:00.000Z',
-            profileId: 'btc-markov-short-horizon',
+            profileId: 'multi-asset-markov-short-horizon',
             targetSubsystem: 'markov-distribution',
             baselineCommit: '0123456789abcdef0123456789abcdef01234567',
             candidateBranch: 'topic/forecast-lab-runner-test-explicit-structured',
@@ -821,7 +821,7 @@ describe('forecast-lab CLI module', () => {
           ledgerEntry: {
             runId: 'runner-test-explicit-structured',
             startedAt: '2026-05-02T00:00:00.000Z',
-            profileId: 'btc-markov-short-horizon',
+            profileId: 'multi-asset-markov-short-horizon',
             targetSubsystem: 'markov-distribution',
             candidateBranch: 'topic/forecast-lab-runner-test-explicit-structured',
             allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
@@ -837,7 +837,7 @@ describe('forecast-lab CLI module', () => {
 
     expect(runLabCalls).toEqual([
       expect.objectContaining({
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: false,
         skipMutation: false,
         mutationMode: 'structured',
@@ -847,7 +847,7 @@ describe('forecast-lab CLI module', () => {
         output: expect.any(Function),
       }),
     ]);
-    expect(output.join('\n')).toContain('Running forecast-lab profile "btc-markov-short-horizon" with structured mutation...');
+    expect(output.join('\n')).toContain('Running forecast-lab profile "multi-asset-markov-short-horizon" with structured mutation...');
   });
 
   it('rejects mutator overrides without an explicit structured mutation mode', async () => {
@@ -855,7 +855,7 @@ describe('forecast-lab CLI module', () => {
     let exitCode = 0;
     let runLabCalls = 0;
 
-    await runForecastLabCommand(['run', 'btc-markov-short-horizon', '--mutator', 'markov-longer-stability-window'], {
+    await runForecastLabCommand(['run', 'multi-asset-markov-short-horizon', '--mutator', 'markov-longer-stability-window'], {
       error: (message) => errors.push(message),
       exit: (code) => {
         exitCode = code;
@@ -875,7 +875,7 @@ describe('forecast-lab CLI module', () => {
     const output: string[] = [];
     const writes: string[] = [];
 
-    await runForecastLabCommand(['run', 'btc-markov-short-horizon', '--dry-run'], {
+    await runForecastLabCommand(['run', 'multi-asset-markov-short-horizon', '--dry-run'], {
       log: (message) => output.push(message),
       write: (chunk) => writes.push(chunk),
       runLab: async () => ({
@@ -883,7 +883,7 @@ describe('forecast-lab CLI module', () => {
         manifest: {
           runId: 'runner-test-dry-run',
           startedAt: '2026-05-02T00:00:00.000Z',
-          profileId: 'btc-markov-short-horizon',
+          profileId: 'multi-asset-markov-short-horizon',
           targetSubsystem: 'markov-distribution',
           baselineCommit: '0123456789abcdef0123456789abcdef01234567',
           candidateBranch: 'topic/forecast-lab-runner-test-dry-run',
@@ -912,7 +912,7 @@ describe('forecast-lab CLI module', () => {
         ledgerEntry: {
           runId: 'runner-test-dry-run',
           startedAt: '2026-05-02T00:00:00.000Z',
-          profileId: 'btc-markov-short-horizon',
+          profileId: 'multi-asset-markov-short-horizon',
           targetSubsystem: 'markov-distribution',
           candidateBranch: 'topic/forecast-lab-runner-test-dry-run',
           allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
@@ -931,7 +931,7 @@ describe('forecast-lab CLI module', () => {
     });
 
     const text = output.join('\n');
-    expect(text).toContain('Running forecast-lab profile "btc-markov-short-horizon"...');
+    expect(text).toContain('Running forecast-lab profile "multi-asset-markov-short-horizon"...');
     expect(text).toContain('Evolution summary:');
     expect(text).toContain('baseline exitCode: 0');
     expect(text).toContain('candidate exitCode: 0');

@@ -65,7 +65,7 @@ async function* fakeAgentRun(query: string, seenQueries: string[]): AsyncGenerat
 }
 
 function fakeForecastLabResult(
-  profileId = 'btc-markov-short-horizon',
+  profileId = 'multi-asset-markov-short-horizon',
   options: {
     mutationMode?: 'structured';
     mutatorId?: 'replace-range' | 'search-replace' | 'insert-block';
@@ -197,7 +197,7 @@ describe('schedule command', () => {
         id: 'nightly-lab',
         kind: 'forecast_lab',
         description: 'Nightly forecast lab',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         maxIterations: 3,
         outputFile: `${TEST_ROOT}/reports/{date}-forecast-lab.md`,
       },
@@ -214,7 +214,7 @@ describe('schedule command', () => {
 
     expect(calls).toEqual([
       expect.objectContaining({
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: true,
         skipMutation: false,
         progress: expect.any(Function),
@@ -230,7 +230,7 @@ describe('schedule command', () => {
         id: 'unsafe-lab',
         kind: 'forecast_lab',
         description: 'Unsafe lab',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: false,
       },
     ]);
@@ -255,7 +255,7 @@ describe('schedule command', () => {
       {
         id: 'mutating-lab',
         kind: 'forecast_lab',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: false,
         mutationMode: 'structured',
         keepWorktree: true,
@@ -275,7 +275,7 @@ describe('schedule command', () => {
     expect(errors).toEqual([]);
     expect(calls).toEqual([
       expect.objectContaining({
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: false,
         skipMutation: false,
         mutationMode: 'structured',
@@ -292,7 +292,7 @@ describe('schedule command', () => {
       {
         id: 'no-mutation-lab',
         kind: 'forecast_lab',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: false,
         skipMutation: true,
       },
@@ -310,7 +310,7 @@ describe('schedule command', () => {
     expect(errors).toEqual([]);
     expect(calls).toEqual([
       expect.objectContaining({
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: false,
         skipMutation: true,
         keepWorktree: false,
@@ -325,7 +325,7 @@ describe('schedule command', () => {
       {
         id: 'bad-debug-lab',
         kind: 'forecast_lab',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: true,
         keepWorktree: true,
       } as ScheduleJob,
@@ -352,7 +352,7 @@ describe('schedule command', () => {
         id: 'nightly-lab',
         kind: 'forecast_lab',
         description: 'Nightly forecast lab',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         outputFile: `${TEST_ROOT}/reports/{date}-forecast-lab.md`,
       },
     ]);
@@ -365,7 +365,7 @@ describe('schedule command', () => {
     const outPath = join(TEST_ROOT, 'reports', '2026-05-02-forecast-lab.md');
     const text = readFileSync(outPath, 'utf8');
     expect(text).toContain('# Nightly forecast lab');
-    expect(text).toContain('- Profile: btc-markov-short-horizon');
+    expect(text).toContain('- Profile: multi-asset-markov-short-horizon');
     expect(text).toContain('- Decision: keep');
     expect(text).toContain('| walkForwardShortHorizonTestExitCode | 0 | 0 | 0 |');
   });
@@ -376,7 +376,7 @@ describe('schedule command', () => {
         id: 'mutating-lab',
         kind: 'forecast_lab',
         description: 'Mutating forecast lab',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: false,
         mutationMode: 'structured',
         mutator: 'markov-longer-stability-window',
@@ -467,7 +467,7 @@ describe('schedule command', () => {
       {
         id: 'ambiguous-lab',
         kind: 'forecast_lab',
-        profileId: 'btc-markov-short-horizon',
+        profileId: 'multi-asset-markov-short-horizon',
         dryRun: false,
         skipMutation: true,
         mutationMode: 'structured',
