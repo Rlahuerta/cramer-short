@@ -60,12 +60,14 @@ export interface FitOptions {
   tol?: number;
 }
 
-const DEFAULTS: Required<FitOptions> = {
+export const FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS: Required<FitOptions> = {
   minSamplesPerRegime: 30,
   learningRate: 0.05,
   maxIter: 500,
   tol: 1e-6,
 };
+
+const DEFAULTS = FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS;
 
 /**
  * Fit a Platt logistic on a single regime's samples.

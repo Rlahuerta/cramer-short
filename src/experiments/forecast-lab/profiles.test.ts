@@ -8,6 +8,7 @@ import {
   getForecastLabProfile,
   isForecastLabProfileId,
   listForecastLabProfiles,
+  listForecastLabStructuredMutations,
 } from './profiles.js';
 
 const EXPECTED_PROFILE_IDS: readonly ForecastLabProfileId[] = [
@@ -90,7 +91,7 @@ const EXPECTED_MUTATION_CONFIGS = {
       'src/tools/finance/conformal.ts',
       'src/tools/finance/regime-calibrator.ts',
     ],
-    allowedMutatorIds: ['replace-range', 'search-replace'],
+    allowedMutatorIds: ['search-replace'],
     allowMultipleCandidateAttempts: false,
   },
   'btc-markov-ultra-short-horizon': {
@@ -100,31 +101,29 @@ const EXPECTED_MUTATION_CONFIGS = {
       'src/tools/finance/conformal.ts',
       'src/tools/finance/regime-calibrator.ts',
     ],
-    allowedMutatorIds: ['replace-range', 'search-replace'],
+    allowedMutatorIds: ['search-replace'],
     allowMultipleCandidateAttempts: false,
   },
   'btc-arbiter-replay': {
-    mode: 'structured',
+    mode: 'dry-run',
     mutableFiles: [
       'src/tools/finance/forecast-arbitrator.ts',
       'src/tools/finance/forecast-hooks.ts',
     ],
-    allowedMutatorIds: ['replace-range', 'search-replace'],
     allowMultipleCandidateAttempts: false,
   },
   'polymarket-selection-sanity': {
-    mode: 'structured',
+    mode: 'dry-run',
     mutableFiles: [
       'src/tools/finance/polymarket-forecast.ts',
       'src/tools/finance/polymarket.ts',
     ],
-    allowedMutatorIds: ['replace-range', 'search-replace'],
     allowMultipleCandidateAttempts: false,
   },
 } as const satisfies Record<ForecastLabProfileId, {
-  readonly mode: 'structured';
+  readonly mode: 'structured' | 'dry-run';
   readonly mutableFiles: readonly string[];
-  readonly allowedMutatorIds: readonly string[];
+  readonly allowedMutatorIds?: readonly string[];
   readonly allowMultipleCandidateAttempts: false;
 }>;
 
@@ -220,7 +219,7 @@ describe('forecast-lab profiles', () => {
       (markov.mutation.allowedMutatorIds as unknown as string[]).push('insert-block');
     }).toThrow();
     if (markov.mutation.mode === 'structured') {
-      expect(markov.mutation.allowedMutatorIds).toEqual(['replace-range', 'search-replace']);
+      expect(markov.mutation.allowedMutatorIds).toEqual(['search-replace']);
     }
   });
 
@@ -320,6 +319,23 @@ describe('forecast-lab profiles', () => {
           expect(knownMutators.has(mutatorId)).toBe(true);
         }
       }
+    }
+  });
+
+  it('keeps structured mutator contracts aligned with shipped structured catalogs', () => {
+    for (const profile of listForecastLabProfiles()) {
+      const catalogMutatorIds = [...new Set(
+        listForecastLabStructuredMutations(profile.id).map((candidate) => candidate.mutatorId),
+      )];
+
+      if (profile.mutation.mode !== 'structured') {
+        expect(catalogMutatorIds).toEqual([]);
+        expect('allowedMutatorIds' in profile.mutation).toBe(false);
+        continue;
+      }
+
+      expect(catalogMutatorIds.length).toBeGreaterThan(0);
+      expect(profile.mutation.allowedMutatorIds).toEqual(catalogMutatorIds);
     }
   });
 

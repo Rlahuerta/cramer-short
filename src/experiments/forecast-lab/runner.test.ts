@@ -90,7 +90,7 @@ describe('forecast-lab runner', () => {
         'src/tools/finance/conformal.ts',
         'src/tools/finance/regime-calibrator.ts',
       ],
-      allowedMutatorIds: ['replace-range', 'search-replace'],
+      allowedMutatorIds: ['search-replace'],
       allowMultipleCandidateAttempts: false,
     });
 
@@ -198,9 +198,8 @@ describe('forecast-lab runner', () => {
       runId: 'runner-test-skip-mutation',
       decision: 'drop',
       effectiveMutationContract: {
-        mode: 'structured',
+        mode: 'dry-run',
         mutableFiles: ['src/tools/finance/forecast-arbitrator.ts', 'src/tools/finance/forecast-hooks.ts'],
-        allowedMutatorIds: ['replace-range', 'search-replace'],
         allowMultipleCandidateAttempts: false,
       },
     });

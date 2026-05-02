@@ -184,7 +184,7 @@ The shared contract lives in `src/experiments/forecast-lab/mutation.ts`. In this
 - mutation configs are deeply frozen before export,
 - run artifacts persist the effective mutation contract snapshot (`mode`, `mutableFiles`, structured `allowedMutatorIds`, and `allowMultipleCandidateAttempts`) and can also carry optional mutation lineage metadata (`mutationMode`, `lineage`, `mutationSpecSummary`, `candidateWorkspace`).
 
-`allowedGlobs` and `mutation.mutableFiles` are also intentionally related but not identical concepts. `allowedGlobs` defines the profile-level editable surface, while `mutableFiles` defines the mode-specific mutation input. The current Phase 1 structured profiles keep them aligned for simplicity, but later phases may narrow or expand one without changing the other.
+`allowedGlobs` and `mutation.mutableFiles` are also intentionally related but not identical concepts. `allowedGlobs` defines the profile-level editable surface, while `mutableFiles` defines the mode-specific mutation input. The current Phase 1 profiles keep them aligned for simplicity, but later phases may narrow or expand one without changing the other.
 
 ### `btc-markov-short-horizon`
 
@@ -199,7 +199,7 @@ Allowed candidate surfaces:
 Structured mutation contract:
 
 - mode: `structured`
-- allowed mutators: `replace-range`, `search-replace`
+- allowed mutators: `search-replace`
 - multiple candidate attempts: `false`
 
 Read-only harness:
@@ -225,7 +225,7 @@ Allowed candidate surfaces:
 Structured mutation contract:
 
 - mode: `structured`
-- allowed mutators: `replace-range`, `search-replace`
+- allowed mutators: `search-replace`
 - multiple candidate attempts: `false`
 
 Read-only harness:
@@ -247,10 +247,9 @@ Allowed candidate surfaces:
 - `src/tools/finance/forecast-arbitrator.ts`
 - `src/tools/finance/forecast-hooks.ts`
 
-Structured mutation contract:
+Current mutation contract:
 
-- mode: `structured`
-- allowed mutators: `replace-range`, `search-replace`
+- mode: `dry-run`
 - multiple candidate attempts: `false`
 
 Read-only harness:
@@ -272,10 +271,9 @@ Allowed candidate surfaces:
 - `src/tools/finance/polymarket-forecast.ts`
 - `src/tools/finance/polymarket.ts`
 
-Structured mutation contract:
+Current mutation contract:
 
-- mode: `structured`
-- allowed mutators: `replace-range`, `search-replace`
+- mode: `dry-run`
 - multiple candidate attempts: `false`
 
 Read-only harness:

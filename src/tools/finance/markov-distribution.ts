@@ -181,6 +181,28 @@ export const STATE_INDEX: Record<RegimeState, number> = {
   sideways: 2,
 };
 
+export const FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS: {
+  readonly recommendedConfidenceThreshold: number;
+  readonly transitionMinObservations: number;
+  readonly transitionDecay: number;
+  readonly structuralBreakMinLength: number;
+  readonly momentumLookback: number;
+  readonly momentumAdjustmentScale: number;
+  readonly momentumAdjustmentClamp: number;
+  readonly trendPenaltyOnlyBreakConfidence: boolean;
+  readonly divergenceWeightedBreakConfidence: boolean;
+} = {
+  recommendedConfidenceThreshold: 0.25,
+  transitionMinObservations: 30,
+  transitionDecay: 0.97,
+  structuralBreakMinLength: 60,
+  momentumLookback: 20,
+  momentumAdjustmentScale: 0.25,
+  momentumAdjustmentClamp: 0.003,
+  trendPenaltyOnlyBreakConfidence: false,
+  divergenceWeightedBreakConfidence: false,
+};
+
 /**
  * Recommended confidence threshold for selective prediction.
  * Based on coverage-milestone analysis (2026-04-04, 14 tickers × 6 horizons):
@@ -191,7 +213,7 @@ export const STATE_INDEX: Record<RegimeState, number> = {
  * Use this threshold to filter low-confidence predictions when accuracy matters more than coverage.
  * For full coverage (no filtering), ignore this threshold.
  */
-export const RECOMMENDED_CONFIDENCE_THRESHOLD = 0.25;
+export const RECOMMENDED_CONFIDENCE_THRESHOLD = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.recommendedConfidenceThreshold;
 
 export type PredictionConfidenceMode = 'legacy' | 'rebalanced';
 
@@ -1934,7 +1956,10 @@ export interface MomentumSignal {
  * @param prices  Historical prices (at least lookback+1 entries)
  * @param lookback  Number of days to look back (default 20)
  */
-export function computeMomentumSignal(prices: number[], lookback = 20): MomentumSignal {
+export function computeMomentumSignal(
+  prices: number[],
+  lookback = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback,
+): MomentumSignal {
   const nil: MomentumSignal = { velocity: 0, acceleration: 0, trendStrength: 0, adjustment: 0 };
   if (prices.length < lookback + 1) return nil;
 
@@ -1969,8 +1994,11 @@ export function computeMomentumSignal(prices: number[], lookback = 20): Momentum
 
   // Adjustment: daily drift tilt = velocity/252 × trendStrength × scaling factor
   // Clamped to ±0.003 per day (~±0.75 annualized) to prevent extreme adjustments
-  const rawAdj = (velocity / 252) * trendStrength * 0.25;
-  const adjustment = Math.max(-0.003, Math.min(0.003, rawAdj));
+  const rawAdj = (velocity / 252) * trendStrength * FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumAdjustmentScale;
+  const adjustment = Math.max(
+    -FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumAdjustmentClamp,
+    Math.min(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumAdjustmentClamp, rawAdj),
+  );
 
   return { velocity, acceleration, trendStrength, adjustment };
 }
@@ -2080,8 +2108,8 @@ export function computeEnsembleSignal(prices: number[]): EnsembleSignal {
 export function estimateTransitionMatrix(
   states: RegimeState[],
   alpha?: number,     // Dirichlet smoothing constant (auto-tuned if omitted)
-  minObservations = 30,
-  decayRate = 0.97,   // Exponential decay: recent transitions weighted more (1.0 = no decay)
+  minObservations = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionMinObservations,
+  decayRate = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay,   // Exponential decay: recent transitions weighted more (1.0 = no decay)
 ): TransitionMatrix {
   if (states.length < minObservations) {
     return buildDefaultMatrix();
@@ -2316,8 +2344,8 @@ export function detectStructuralBreak(
   states: RegimeState[],
   divergenceThreshold = 0.05,
   alpha = 0.1,
-  decayRate = 0.97,
-  minLength = 60,
+  decayRate = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay,
+  minLength = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.structuralBreakMinLength,
 ): StructuralBreakResult {
   // Each half must have enough observations for a meaningful chi-square-like
   // comparison. With NUM_STATES² = 9 transition cells and the rule of thumb of
@@ -3357,7 +3385,7 @@ function computeValidationR2OS(params: {
   transitionDecayOverride?: number;
 }): { r2os: number | null; validationMetric: 'daily_return' | 'horizon_return' } {
   const { assetType, horizon, regimeSeq, logReturns, assetProfile, transitionDecayOverride } = params;
-  const effectiveDecayRate = transitionDecayOverride ?? 0.97;
+  const effectiveDecayRate = transitionDecayOverride ?? FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay;
 
   const useHorizonValidator = assetType === 'crypto' && horizon >= 7 && horizon <= 14;
   if (useHorizonValidator) {
@@ -4563,6 +4591,10 @@ export async function computeMarkovDistribution(params: {
     crossAssetReturns,
     crossAssetLassoLambda,
   } = params;
+  const effectiveTrendPenaltyOnlyBreakConfidence = trendPenaltyOnlyBreakConfidence
+    ?? FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.trendPenaltyOnlyBreakConfidence;
+  const effectiveDivergenceWeightedBreakConfidence = divergenceWeightedBreakConfidence
+    ?? FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.divergenceWeightedBreakConfidence;
 
   // W3R2 ADWIN trim — opt-in. Default OFF preserves byte-identical behaviour.
   let historicalPrices = historicalPricesParam;
@@ -4652,7 +4684,7 @@ export async function computeMarkovDistribution(params: {
   const sparseStates = findSparseStates(stateObservationCounts);
 
   // --- Tier 1b: Structural break detection ---
-  const effectiveTransitionDecay = transitionDecayOverride ?? 0.97;
+  const effectiveTransitionDecay = transitionDecayOverride ?? FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay;
   const effectiveBreakDivergenceThreshold = btcBreakDivergenceThreshold !== undefined
     && isBtcTicker
     ? btcBreakDivergenceThreshold
@@ -5317,12 +5349,12 @@ export async function computeMarkovDistribution(params: {
     trustedAnchors: anchorCoverage.trustedAnchors,
     horizonDays: horizon,
     outOfSampleR2: r2os,
-    breakConfidencePolicy: divergenceWeightedBreakConfidence
+    breakConfidencePolicy: effectiveDivergenceWeightedBreakConfidence
       ? 'divergence_weighted'
-      : trendPenaltyOnlyBreakConfidence
+      : effectiveTrendPenaltyOnlyBreakConfidence
         ? 'trend_penalty_only'
         : 'default',
-    skipSidewaysBreakPenalty: trendPenaltyOnlyBreakConfidence === true,
+    skipSidewaysBreakPenalty: effectiveTrendPenaltyOnlyBreakConfidence === true,
     regimeState: currentRegime,
     structuralBreakDivergence: breakResult.divergence,
     divergencePenaltySchedule,
@@ -5686,8 +5718,8 @@ export async function computeMarkovDistribution(params: {
       startStateMixtureActive: useStartStateMixture,
       sidewaysSplitActive,
       matureBullCalibrationActive,
-      trendPenaltyOnlyBreakConfidenceActive: trendPenaltyOnlyBreakConfidence ? true : undefined,
-      divergenceWeightedBreakConfidenceActive: divergenceWeightedBreakConfidence ? true : undefined,
+      trendPenaltyOnlyBreakConfidenceActive: effectiveTrendPenaltyOnlyBreakConfidence ? true : undefined,
+      divergenceWeightedBreakConfidenceActive: effectiveDivergenceWeightedBreakConfidence ? true : undefined,
       bearishBreakRecommendationGateActive: bearishBreakRecommendationGateActive || undefined,
       regimeSpecificSigmaActive: regimeSpecificSigma === true &&
         Math.max(...stateWeightsForUp) > (regimeSpecificSigmaThreshold ?? 0.60),

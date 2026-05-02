@@ -71,6 +71,24 @@ export interface ScoreAggregatedConformalInterval extends ConformalInterval {
   multiplier: number | null;
 }
 
+export const FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS: {
+  readonly pidLearningRate: number;
+  readonly integralDecay: number;
+  readonly adaptiveBreakEnabled: boolean;
+  readonly adaptiveBreakLearningRateMultiplier: number;
+  readonly adaptiveBreakCooloffWindow: number;
+  readonly scoreAggregationMinSamples: number;
+  readonly scoreAggregationCalibrationWindow: number;
+} = {
+  pidLearningRate: 0.05,
+  integralDecay: 1.0,
+  adaptiveBreakEnabled: false,
+  adaptiveBreakLearningRateMultiplier: 1.5,
+  adaptiveBreakCooloffWindow: 0,
+  scoreAggregationMinSamples: 20,
+  scoreAggregationCalibrationWindow: 120,
+};
+
 export class ConformalPID {
   readonly alpha: number;
   readonly targetCoverage: number;
@@ -90,11 +108,11 @@ export class ConformalPID {
     this.alpha = opts.alpha ?? 0.1;
     this.targetCoverage = 1 - this.alpha;
     this.q = Math.max(0, opts.initialRadius ?? 1.0);
-    this.lr = opts.learningRate ?? 0.05;
+    this.lr = opts.learningRate ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.pidLearningRate;
     this.kp = opts.kp ?? 1.0;
     this.ki = opts.ki ?? 0.1;
     this.kd = opts.kd ?? 0.1;
-    this.gamma = opts.integralDecay ?? 1.0;
+    this.gamma = opts.integralDecay ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.integralDecay;
     this.integral = 0;
     this.prevBias = 0;
     this.samples = 0;
@@ -174,9 +192,15 @@ export class AdaptiveConformalPID extends ConformalPID {
 
   constructor(opts: AdaptiveConformalPIDOptions = {}) {
     super(opts);
-    this.enabled = opts.enabled ?? false;
-    this.breakLearningRateMultiplier = Math.max(1, opts.breakLearningRateMultiplier ?? 1.5);
-    this.cooloffWindow = Math.max(0, Math.round(opts.cooloffWindow ?? 0));
+    this.enabled = opts.enabled ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakEnabled;
+    this.breakLearningRateMultiplier = Math.max(
+      1,
+      opts.breakLearningRateMultiplier ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier,
+    );
+    this.cooloffWindow = Math.max(
+      0,
+      Math.round(opts.cooloffWindow ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakCooloffWindow),
+    );
     this.lastAppliedRadius = this.q;
   }
 
@@ -289,8 +313,11 @@ export class ScoreAggregatedConformal {
 
   constructor(opts: ScoreAggregatedConformalOptions = {}) {
     this.alpha = opts.alpha ?? 0.1;
-    this.minSamples = Math.max(1, Math.round(opts.minSamples ?? 20));
-    this.calibrationWindow = Math.max(this.minSamples, Math.round(opts.calibrationWindow ?? 120));
+    this.minSamples = Math.max(1, Math.round(opts.minSamples ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationMinSamples));
+    this.calibrationWindow = Math.max(
+      this.minSamples,
+      Math.round(opts.calibrationWindow ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow),
+    );
   }
 
   wrap(

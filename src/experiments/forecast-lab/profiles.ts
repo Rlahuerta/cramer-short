@@ -4,6 +4,11 @@ import {
   type ForecastLabMutatorId,
   type ForecastLabProfileMutationConfig,
 } from './mutation.js';
+import {
+  isForecastLabMarkovMutatorProfileId,
+  listMarkovParameterMutations,
+  type ForecastLabMarkovParameterMutationCandidate,
+} from './mutators/markov-parameters.js';
 
 export type ForecastLabProfileId =
   | 'btc-markov-short-horizon'
@@ -91,8 +96,7 @@ export const FORECAST_LAB_READ_ONLY_HARNESS_FILES = deepFreeze([
   'src/tools/finance/backtest/arbiter-replay-runner.ts',
 ] as const);
 
-const DEFAULT_STRUCTURED_MUTATOR_IDS = deepFreeze([
-  'replace-range',
+const MARKOV_ALLOWED_MUTATOR_IDS = deepFreeze([
   'search-replace',
 ] as const satisfies readonly ForecastLabMutatorId[]);
 
@@ -111,6 +115,8 @@ const POLYMARKET_MUTABLE_FILES = deepFreeze([
   'src/tools/finance/polymarket-forecast.ts',
   'src/tools/finance/polymarket.ts',
 ] as const);
+
+const NO_STRUCTURED_MUTATIONS = deepFreeze([] as const satisfies readonly ForecastLabMarkovParameterMutationCandidate[]);
 
 const WALK_FORWARD_SHORT_HORIZON_COMMANDS = deepFreeze([
   {
@@ -154,7 +160,7 @@ const PROFILES_BY_ID = deepFreeze({
     mutation: defineForecastLabProfileMutationConfig({
       mode: 'structured',
       mutableFiles: MARKOV_MUTABLE_FILES,
-      allowedMutatorIds: DEFAULT_STRUCTURED_MUTATOR_IDS,
+      allowedMutatorIds: MARKOV_ALLOWED_MUTATOR_IDS,
     }),
     readOnlyHarnessFiles: ['src/tools/finance/backtest/walk-forward.ts'],
     baselineCommands: WALK_FORWARD_SHORT_HORIZON_COMMANDS,
@@ -206,7 +212,7 @@ const PROFILES_BY_ID = deepFreeze({
     mutation: defineForecastLabProfileMutationConfig({
       mode: 'structured',
       mutableFiles: MARKOV_MUTABLE_FILES,
-      allowedMutatorIds: DEFAULT_STRUCTURED_MUTATOR_IDS,
+      allowedMutatorIds: MARKOV_ALLOWED_MUTATOR_IDS,
     }),
     readOnlyHarnessFiles: ['src/tools/finance/backtest/walk-forward.ts'],
     baselineCommands: WALK_FORWARD_BTC_ULTRA_SHORT_HORIZON_COMMANDS,
@@ -255,9 +261,8 @@ const PROFILES_BY_ID = deepFreeze({
     targetSubsystem: 'forecast-arbiter',
     allowedGlobs: ARBITER_MUTABLE_FILES,
     mutation: defineForecastLabProfileMutationConfig({
-      mode: 'structured',
+      mode: 'dry-run',
       mutableFiles: ARBITER_MUTABLE_FILES,
-      allowedMutatorIds: DEFAULT_STRUCTURED_MUTATOR_IDS,
     }),
     readOnlyHarnessFiles: ['src/tools/finance/backtest/arbiter-replay-runner.ts'],
     baselineCommands: ARBITER_REPLAY_COMMANDS,
@@ -307,9 +312,8 @@ const PROFILES_BY_ID = deepFreeze({
     targetSubsystem: 'polymarket-selection',
     allowedGlobs: POLYMARKET_MUTABLE_FILES,
     mutation: defineForecastLabProfileMutationConfig({
-      mode: 'structured',
+      mode: 'dry-run',
       mutableFiles: POLYMARKET_MUTABLE_FILES,
-      allowedMutatorIds: DEFAULT_STRUCTURED_MUTATOR_IDS,
     }),
     readOnlyHarnessFiles: [],
     baselineCommands: POLYMARKET_SELECTION_COMMANDS,
@@ -384,4 +388,14 @@ export function assertForecastLabProfileId(profileId: string): asserts profileId
 export function getForecastLabProfile(profileId: string): ForecastLabProfile {
   assertForecastLabProfileId(profileId);
   return PROFILES_BY_ID[profileId];
+}
+
+export function listForecastLabStructuredMutations(
+  profileId: ForecastLabProfileId,
+): readonly ForecastLabMarkovParameterMutationCandidate[] {
+  if (!isForecastLabMarkovMutatorProfileId(profileId)) {
+    return NO_STRUCTURED_MUTATIONS;
+  }
+
+  return listMarkovParameterMutations(profileId);
 }

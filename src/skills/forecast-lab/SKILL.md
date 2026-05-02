@@ -32,9 +32,10 @@ decision.
 ## Editable forecast surfaces
 
 Editable files are profile-driven, not an open-ended per-run allowlist. In Phase 1,
-the shipped profiles all use `structured` mutation mode and only permit the
-profile's declared files with the bounded mutators `replace-range` and
-`search-replace`.
+only the two Markov profiles advertise `structured` mutation mode, and their
+shipped catalog is currently limited to `search-replace`. The arbiter and
+Polymarket profiles remain `dry-run` until they have concrete structured
+mutation catalogs.
 
 - `btc-markov-short-horizon`
   - `src/tools/finance/markov-distribution.ts`
