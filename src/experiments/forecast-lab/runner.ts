@@ -8,7 +8,11 @@ import {
   getExperimentsDir,
 } from '../../utils/paths.js';
 import { appendLedgerEntry, stableJsonStringify, writeRunManifest } from './ledger.js';
-import { applyForecastLabCandidateEdits, withForecastLabCandidateWorkspace } from './git.js';
+import {
+  applyForecastLabCandidateEdits,
+  prepareForecastLabCandidateWorkspace,
+  withForecastLabCandidateWorkspace,
+} from './git.js';
 import { getForecastLabProfile, listForecastLabStructuredMutations } from './profiles.js';
 import type { ForecastLabCommand, ForecastLabProfile } from './profiles.js';
 import type { ForecastLabDecision, ForecastLabLedgerEntry, ForecastLabRunManifest, JsonValue } from './types.js';
@@ -16,7 +20,7 @@ import {
   getForecastLabBaselineCommit,
   makeForecastLabCandidateBranch,
 } from './git.js';
-import type { ForecastLabMutationLineage } from './mutation.js';
+import type { ForecastLabMutationLineage, ForecastLabMutationMode } from './mutation.js';
 import type { ForecastLabMarkovParameterMutationCandidate } from './mutators/markov-parameters.js';
 
 export type ForecastLabGatePhase = 'baseline' | 'candidate';
@@ -78,6 +82,9 @@ export interface ForecastLabRunOptions {
   readonly profileId: string;
   readonly dryRun?: boolean;
   readonly skipMutation?: boolean;
+  readonly mutationMode?: ForecastLabMutationMode;
+  readonly keepWorktree?: boolean;
+  readonly mutator?: string;
   readonly runId?: string;
   readonly now?: () => Date;
   readonly commandRunner?: ForecastLabCommandRunner;
@@ -399,7 +406,83 @@ function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-function selectStructuredMutation(profile: ForecastLabProfile): ForecastLabMarkovParameterMutationCandidate {
+interface ForecastLabResolvedMutationPlan {
+  readonly dryRun: boolean;
+  readonly skipMutation: boolean;
+  readonly mutationMode?: 'structured';
+  readonly keepWorktree: boolean;
+  readonly mutator?: string;
+  readonly runRealMutation: boolean;
+}
+
+function resolveMutationPlan(options: ForecastLabRunOptions): ForecastLabResolvedMutationPlan {
+  const dryRun = options.dryRun === true;
+  const skipMutation = options.skipMutation === true;
+  const mutationMode = options.mutationMode;
+  const keepWorktree = options.keepWorktree === true;
+  const mutator = options.mutator?.trim();
+
+  if (mutator !== undefined && mutator.length === 0) {
+    throw new ForecastLabRunnerError('Forecast-lab mutator override must not be empty.');
+  }
+
+  if (dryRun && skipMutation) {
+    throw new ForecastLabRunnerError(
+      'Conflicting forecast-lab options: dryRun and skipMutation cannot both be true.',
+    );
+  }
+
+  if (dryRun || skipMutation) {
+    if (mutationMode !== undefined) {
+      throw new ForecastLabRunnerError(
+        'Mutation mode is only supported for real forecast-lab mutation runs. Remove dryRun/skipMutation or omit mutationMode.',
+      );
+    }
+    if (keepWorktree) {
+      throw new ForecastLabRunnerError(
+        'keepWorktree is only supported for real forecast-lab mutation runs.',
+      );
+    }
+    if (mutator !== undefined) {
+      throw new ForecastLabRunnerError(
+        'Mutator overrides are only supported for real forecast-lab mutation runs.',
+      );
+    }
+
+    return {
+      dryRun,
+      skipMutation,
+      keepWorktree: false,
+      runRealMutation: false,
+    };
+  }
+
+  if (mutationMode === undefined) {
+    throw new ForecastLabRunnerError(
+      'Real forecast-lab mutation requires an explicit mutationMode. Pass mutationMode: "structured" (CLI: --mutation structured).',
+    );
+  }
+
+  if (mutationMode !== 'structured') {
+    throw new ForecastLabRunnerError(
+      `Unsupported forecast-lab mutation mode "${mutationMode}". Only "structured" is currently implemented.`,
+    );
+  }
+
+  return {
+    dryRun: false,
+    skipMutation: false,
+    mutationMode,
+    keepWorktree,
+    mutator,
+    runRealMutation: true,
+  };
+}
+
+function selectStructuredMutation(
+  profile: ForecastLabProfile,
+  requestedMutatorId?: string,
+): ForecastLabMarkovParameterMutationCandidate {
   if (profile.mutation.mode !== 'structured') {
     throw new ForecastLabRunnerError(
       `Real forecast-lab mutation requires a structured profile with a shipped catalog. Profile "${profile.id}" uses "${profile.mutation.mode}".`,
@@ -414,10 +497,20 @@ function selectStructuredMutation(profile: ForecastLabProfile): ForecastLabMarko
   }
 
   const allowedMutatorIds = new Set(profile.mutation.allowedMutatorIds);
-  const selected = catalog.find((candidate) => allowedMutatorIds.has(candidate.mutatorId));
+  const selected = requestedMutatorId
+    ? catalog.find((candidate) => candidate.id === requestedMutatorId)
+    : catalog.find((candidate) => allowedMutatorIds.has(candidate.mutatorId));
   if (!selected) {
     throw new ForecastLabRunnerError(
-      `No shipped structured mutator matches the allowed mutator contract for profile "${profile.id}".`,
+      requestedMutatorId
+        ? `Unknown forecast-lab mutator "${requestedMutatorId}" for profile "${profile.id}". Expected one of: ${catalog.map((candidate) => candidate.id).join(', ')}`
+        : `No shipped structured mutator matches the allowed mutator contract for profile "${profile.id}".`,
+    );
+  }
+
+  if (!allowedMutatorIds.has(selected.mutatorId)) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab mutator "${selected.id}" is not allowed by the structured mutation contract for profile "${profile.id}".`,
     );
   }
 
@@ -481,13 +574,15 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   const now = options.now ?? (() => new Date());
   const startedAt = now().toISOString();
   const runId = options.runId ?? makeRunId(profile.id, new Date(startedAt));
-  const dryRun = options.dryRun === true;
-  const skipMutation = options.skipMutation === true;
+  const mutationPlan = resolveMutationPlan(options);
+  const dryRun = mutationPlan.dryRun;
+  const skipMutation = mutationPlan.skipMutation;
   const progress = options.progress;
   const output = options.output;
 
-  const runRealMutation = !dryRun && !skipMutation;
-  const selectedMutation = runRealMutation ? selectStructuredMutation(profile) : undefined;
+  const selectedMutation = mutationPlan.runRealMutation
+    ? selectStructuredMutation(profile, mutationPlan.mutator)
+    : undefined;
 
   const candidateBranch = makeForecastLabCandidateBranch(runId);
   const baselineCommit = getForecastLabBaselineCommit();
@@ -529,12 +624,14 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   let candidate: ForecastLabGateSummary;
   let structuredMutation: ForecastLabStructuredMutationSelection | undefined;
 
-  if (runRealMutation) {
+  if (mutationPlan.runRealMutation) {
     if (!selectedMutation) {
       throw new ForecastLabRunnerError(`Missing structured mutation selection for profile "${profile.id}".`);
     }
 
-    const candidateRun = await withForecastLabCandidateWorkspace(runId, async (workspace) => {
+    const executeCandidateRun = async (
+      workspace: ReturnType<typeof prepareForecastLabCandidateWorkspace>,
+    ) => {
       const mutation = applyStructuredMutation(workspace.metadata.rootDir, profile, selectedMutation, runId);
       manifest.mutationMode = mutation.mutationMode;
       manifest.lineage = mutation.lineage;
@@ -550,7 +647,22 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
 
       const gate = await runGate('candidate', profile, runId, commandRunner, workspace.metadata.rootDir, progress, output);
       return { gate, mutation };
-    });
+    };
+
+    const candidateRun = mutationPlan.keepWorktree
+      ? await (async () => {
+        const workspace = prepareForecastLabCandidateWorkspace(runId);
+
+        try {
+          const result = await executeCandidateRun(workspace);
+          progress?.(`forecast-lab: keeping candidate workspace ${workspace.metadata.rootDir}`);
+          return result;
+        } catch (error) {
+          progress?.(`forecast-lab: keeping candidate workspace ${workspace.metadata.rootDir} for debugging after failure`);
+          throw error;
+        }
+      })()
+      : await withForecastLabCandidateWorkspace(runId, executeCandidateRun);
 
     candidate = candidateRun.gate;
     structuredMutation = candidateRun.mutation;
