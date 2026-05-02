@@ -10,7 +10,8 @@ import {
   getForecastLabCandidateWorktreePath,
   makeForecastLabCandidateBranch,
 } from './git.js';
-import { readLedgerEntries, writeRunManifest } from './ledger.js';
+import { appendLedgerEntry, readLedgerEntries, writeRunManifest } from './ledger.js';
+import { getForecastLabProfile, listForecastLabStructuredMutations } from './profiles.js';
 import type { ForecastLabCommandRunner } from './runner.js';
 import {
   ForecastLabRunnerError,
@@ -35,6 +36,11 @@ const RUN_IDS = [
   'runner-test-structured-payload-parent',
   'runner-test-structured-payload-child',
   'runner-test-structured-keep-worktree',
+  'runner-test-ranked-history-long-keep',
+  'runner-test-ranked-history-short-drop',
+  'runner-test-ranked-history-seed-parent',
+  'runner-test-ranked-auto-child',
+  'runner-test-ranked-override-child',
   'runner-test-skip-mutation',
   'runner-test-outside-ledger',
 ];
@@ -65,6 +71,92 @@ function passingRunner(calls: string[]): ForecastLabCommandRunner {
       timedOut: false,
     };
   };
+}
+
+function appendStructuredMutationHistory(params: {
+  readonly runId: string;
+  readonly mutationId: string;
+  readonly decision: 'keep' | 'drop';
+  readonly startedAt: string;
+}): void {
+  const profile = getForecastLabProfile('multi-asset-markov-short-horizon');
+  const mutation = listForecastLabStructuredMutations(profile.id).find((candidate) => candidate.id === params.mutationId);
+
+  if (!mutation) {
+    throw new Error(`Unknown test mutation: ${params.mutationId}`);
+  }
+
+  const artifactsPath = getExperimentRunDir(params.runId, { create: true });
+  writeRunManifest(getExperimentRunManifestPath(params.runId, { create: true }), {
+    runId: params.runId,
+    startedAt: params.startedAt,
+    profileId: profile.id,
+    targetSubsystem: profile.targetSubsystem,
+    candidateBranch: makeForecastLabCandidateBranch(params.runId),
+    allowedGlobs: [...profile.allowedGlobs],
+    mutationMode: 'structured',
+    mutationId: mutation.id,
+    mutationSummary: mutation.specSummary.summary,
+    lineage: {
+      rootRunId: params.runId,
+      generation: 0,
+    },
+    mutationSpecSummary: mutation.specSummary,
+    candidateWorkspace: {
+      kind: 'candidate-worktree',
+      rootDir: resolve('.cramer-short', 'experiments', 'worktrees', params.runId),
+      branch: makeForecastLabCandidateBranch(params.runId),
+    },
+    artifactsPath,
+  });
+
+  const candidateExitCode = params.decision === 'keep' ? 0 : 1;
+  appendLedgerEntry(TEST_LEDGER_PATH, {
+    runId: params.runId,
+    startedAt: params.startedAt,
+    profileId: profile.id,
+    targetSubsystem: profile.targetSubsystem,
+    candidateBranch: makeForecastLabCandidateBranch(params.runId),
+    allowedGlobs: [...profile.allowedGlobs],
+    mutationMode: 'structured',
+    mutationId: mutation.id,
+    mutationSummary: mutation.specSummary.summary,
+    lineage: {
+      rootRunId: params.runId,
+      generation: 0,
+    },
+    mutationSpecSummary: mutation.specSummary,
+    candidateWorkspace: {
+      kind: 'candidate-worktree',
+      rootDir: resolve('.cramer-short', 'experiments', 'worktrees', params.runId),
+      branch: makeForecastLabCandidateBranch(params.runId),
+    },
+    baselineSummary: {
+      exitCode: 0,
+      commands: [
+        {
+          id: 'walk-forward-short-horizon',
+          exitCode: 0,
+          durationMs: 1,
+          timedOut: false,
+        },
+      ],
+    },
+    candidateSummary: {
+      exitCode: candidateExitCode,
+      commands: [
+        {
+          id: 'walk-forward-short-horizon',
+          exitCode: candidateExitCode,
+          durationMs: 1,
+          timedOut: false,
+        },
+      ],
+    },
+    decision: params.decision,
+    reason: params.decision === 'keep' ? 'fixture keep' : 'fixture drop',
+    artifactsPath,
+  });
 }
 
 class FakeSpawnedChild extends EventEmitter {
@@ -575,6 +667,116 @@ describe('forecast-lab runner', () => {
     expect(result.manifest.parentRunId).toBe('runner-test-structured-auto-parent');
     expect(result.manifest.mutationId).toBe('markov-faster-decay-reaction');
     expect(progress).toContain('forecast-lab: selected mutator markov-faster-decay-reaction (search-replace)');
+  });
+
+  it('prefers better-ranked kept structured mutations when ranking is enabled', async () => {
+    appendStructuredMutationHistory({
+      runId: 'runner-test-ranked-history-long-keep',
+      mutationId: 'markov-longer-stability-window',
+      decision: 'keep',
+      startedAt: '2026-05-01T00:00:00.000Z',
+    });
+    appendStructuredMutationHistory({
+      runId: 'runner-test-ranked-history-short-drop',
+      mutationId: 'markov-shorter-reactive-window',
+      decision: 'drop',
+      startedAt: '2026-05-02T00:00:00.000Z',
+    });
+    appendStructuredMutationHistory({
+      runId: 'runner-test-ranked-history-seed-parent',
+      mutationId: 'markov-faster-decay-reaction',
+      decision: 'keep',
+      startedAt: '2026-05-03T00:00:00.000Z',
+    });
+
+    const progress: string[] = [];
+    const result = await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      mutationMode: 'structured',
+      rankMutators: true,
+      runId: 'runner-test-ranked-auto-child',
+      ledgerPath: TEST_LEDGER_PATH,
+      progress: (message) => progress.push(message),
+      commandRunner: async (command, context) => {
+        if (context.phase === 'candidate') {
+          const candidateRoot = context.cwd!;
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            '  transitionDecay: 0.94,',
+          );
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            '  momentumLookback: 28,',
+          );
+        }
+
+        return {
+          id: command.id,
+          command: command.command,
+          exitCode: 0,
+          stdout: `${context.phase} ok`,
+          stderr: '',
+          durationMs: 1,
+          timedOut: false,
+        };
+      },
+    });
+
+    expect(result.manifest.parentRunId).toBe('runner-test-ranked-history-seed-parent');
+    expect(result.manifest.mutationId).toBe('markov-longer-stability-window');
+    const mutatorRanking = (result.candidate as Record<string, unknown>).mutatorRanking as {
+      enabled: boolean;
+      profileId: string;
+      totalStructuredRuns: number;
+      rankedMutators: Array<Record<string, unknown>>;
+    };
+    expect(mutatorRanking.enabled).toBe(true);
+    expect(mutatorRanking.profileId).toBe('multi-asset-markov-short-horizon');
+    expect(mutatorRanking.totalStructuredRuns).toBe(3);
+    expect(mutatorRanking.rankedMutators[0]).toMatchObject({
+      id: 'markov-longer-stability-window',
+      health: 'healthy',
+    });
+    expect(mutatorRanking.rankedMutators).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'markov-shorter-reactive-window',
+        health: 'underperforming',
+        regressedRuns: 1,
+      }),
+    ]));
+    expect(progress.join('\n')).toContain('markov-shorter-reactive-window');
+  });
+
+  it('keeps explicit mutator overrides ahead of ranked ordering', async () => {
+    appendStructuredMutationHistory({
+      runId: 'runner-test-ranked-history-long-keep',
+      mutationId: 'markov-longer-stability-window',
+      decision: 'keep',
+      startedAt: '2026-05-01T00:00:00.000Z',
+    });
+    appendStructuredMutationHistory({
+      runId: 'runner-test-ranked-history-short-drop',
+      mutationId: 'markov-shorter-reactive-window',
+      decision: 'drop',
+      startedAt: '2026-05-02T00:00:00.000Z',
+    });
+    appendStructuredMutationHistory({
+      runId: 'runner-test-ranked-history-seed-parent',
+      mutationId: 'markov-faster-decay-reaction',
+      decision: 'keep',
+      startedAt: '2026-05-03T00:00:00.000Z',
+    });
+
+    const result = await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      mutationMode: 'structured',
+      rankMutators: true,
+      mutator: 'markov-shorter-reactive-window',
+      runId: 'runner-test-ranked-override-child',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+
+    expect(result.manifest.parentRunId).toBe('runner-test-ranked-history-seed-parent');
+    expect(result.manifest.mutationId).toBe('markov-shorter-reactive-window');
   });
 
   it('replays the persisted mutation payload even when the catalog entry is no longer available by mutationId', async () => {

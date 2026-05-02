@@ -42,6 +42,11 @@ import type {
   ForecastLabMarkovParameterMutationCandidate,
   ForecastLabMarkovParameterMutationReplayPayload,
 } from './mutators/markov-parameters.js';
+import {
+  formatForecastLabMutatorHealthProgress,
+  rankForecastLabMutators,
+} from './mutator-ranker.js';
+import type { ForecastLabMutatorRanking } from './mutator-ranker.js';
 
 export type ForecastLabGatePhase = 'baseline' | 'candidate';
 
@@ -100,6 +105,7 @@ interface ForecastLabStructuredMutationSelection {
   readonly patchSummary: readonly string[];
   readonly mutationSpecSummary: ForecastLabMarkovParameterMutationCandidate['specSummary'];
   readonly mutationReplayPayload: ForecastLabMarkovParameterMutationReplayPayload;
+  readonly mutatorRanking?: ForecastLabMutatorRanking;
 }
 
 interface ForecastLabStructuredMutationSeed {
@@ -117,6 +123,7 @@ export interface ForecastLabRunOptions {
   readonly mutationMode?: ForecastLabMutationMode;
   readonly keepWorktree?: boolean;
   readonly mutator?: string;
+  readonly rankMutators?: boolean;
   readonly runId?: string;
   readonly now?: () => Date;
   readonly commandRunner?: ForecastLabCommandRunner;
@@ -428,6 +435,16 @@ function buildCandidateArtifact(
         id: structuredMutation.selectedMutatorId,
         mutatorId: structuredMutation.mutatorId,
       },
+      ...(structuredMutation.mutatorRanking
+        ? {
+            mutatorRanking: {
+              enabled: true,
+              profileId: structuredMutation.mutatorRanking.profileId,
+              totalStructuredRuns: structuredMutation.mutatorRanking.totalStructuredRuns,
+              rankedMutators: structuredMutation.mutatorRanking.rankedMutators,
+            },
+          }
+        : {}),
       mutatedFiles: [...structuredMutation.mutatedFiles],
       patchSummary: [...structuredMutation.patchSummary],
     } as unknown as JsonValue;
@@ -541,6 +558,7 @@ function selectStructuredMutation(
   requestedMutatorId?: string,
   usedMutationIds?: ReadonlySet<string>,
   isApplicable: (candidate: ForecastLabMarkovParameterMutationCandidate) => boolean = () => true,
+  ranking?: ForecastLabMutatorRanking,
 ): ForecastLabMarkovParameterMutationCandidate {
   if (profile.mutation.mode !== 'structured') {
     throw new ForecastLabRunnerError(
@@ -550,9 +568,16 @@ function selectStructuredMutation(
 
   const allowedMutatorIds = new Set(profile.mutation.allowedMutatorIds);
   const allowedCandidates = catalog.filter((candidate) => allowedMutatorIds.has(candidate.mutatorId));
+  const allowedCandidateIds = new Set(allowedCandidates.map((candidate) => candidate.id));
   const selected = requestedMutatorId
     ? allowedCandidates.find((candidate) => candidate.id === requestedMutatorId)
-    : allowedCandidates.find((candidate) => !usedMutationIds?.has(candidate.id) && isApplicable(candidate))
+    : ranking?.rankedCandidates.find((candidate) =>
+        allowedCandidateIds.has(candidate.id) && candidate.unused && candidate.applicable
+      )?.candidate
+      ?? ranking?.rankedCandidates.find((candidate) =>
+        allowedCandidateIds.has(candidate.id) && candidate.applicable
+      )?.candidate
+      ?? allowedCandidates.find((candidate) => !usedMutationIds?.has(candidate.id) && isApplicable(candidate))
       ?? allowedCandidates.find((candidate) => isApplicable(candidate));
   if (!selected) {
     throw new ForecastLabRunnerError(
@@ -624,10 +649,10 @@ function canApplyStructuredMutation(
 
 function readStructuredMutationSeed(
   profile: ForecastLabProfile,
-  ledgerPath: string,
+  ledgerEntries: readonly ForecastLabLedgerEntry[],
 ): ForecastLabStructuredMutationSeed | undefined {
   const catalog = getStructuredMutationCatalog(profile);
-  const parentEntries = readLedgerEntries(ledgerPath)
+  const parentEntries = ledgerEntries
     .filter((entry) => entry.profileId === profile.id && entry.decision === 'keep' && entry.mutationMode === 'structured')
     .reverse();
 
@@ -709,6 +734,7 @@ function applyStructuredMutation(
   selectedMutation: ForecastLabMarkovParameterMutationCandidate,
   runId: string,
   seed?: ForecastLabStructuredMutationSeed,
+  ranking?: ForecastLabMutatorRanking,
 ): ForecastLabStructuredMutationSelection {
   const updatedFiles = new Map<string, string>();
 
@@ -743,6 +769,7 @@ function applyStructuredMutation(
     patchSummary: [...selectedMutation.patchSummary],
     mutationSpecSummary: selectedMutation.specSummary,
     mutationReplayPayload: snapshotForecastLabMarkovParameterMutation(selectedMutation),
+    mutatorRanking: ranking,
   };
 }
 
@@ -767,10 +794,15 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   const ledgerPath = options.ledgerPath ?? getExperimentLedgerPath({ create: true });
   const effectiveMutationContract = snapshotEffectiveMutationContract(profile);
   const mutationCatalog = mutationPlan.runRealMutation ? getStructuredMutationCatalog(profile) : undefined;
-  const mutationSeed = mutationPlan.runRealMutation ? readStructuredMutationSeed(profile, ledgerPath) : undefined;
+  let ledgerEntries: readonly ForecastLabLedgerEntry[] = [];
+  let mutationSeed: ForecastLabStructuredMutationSeed | undefined;
 
   for (const path of [runDir, manifestPath, baselinePath, candidatePath, decisionPath, ledgerPath]) {
     assertInsideExperiments(path);
+  }
+  if (mutationPlan.runRealMutation) {
+    ledgerEntries = readLedgerEntries(ledgerPath);
+    mutationSeed = readStructuredMutationSeed(profile, ledgerEntries);
   }
 
   const manifest: ForecastLabRunManifest = {
@@ -811,6 +843,19 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
     const executeCandidateRun = async (
       workspace: ReturnType<typeof prepareForecastLabCandidateWorkspace>,
     ) => {
+      const mutatorRanking = options.rankMutators === true && mutationPlan.mutator === undefined
+        ? rankForecastLabMutators({
+            profileId: profile.id,
+            catalog: mutationCatalog!,
+            ledgerEntries,
+            usedMutationIds: mutationSeed?.usedMutationIds,
+            isApplicable: (candidate) => canApplyStructuredMutation(
+              workspace.metadata.rootDir,
+              mutationSeed?.replayedMutations ?? [],
+              candidate,
+            ),
+          })
+        : undefined;
       const selectedMutation = selectStructuredMutation(
         profile,
         mutationCatalog!,
@@ -821,6 +866,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
           mutationSeed?.replayedMutations ?? [],
           candidate,
         ),
+        mutatorRanking,
       );
       const mutation = applyStructuredMutation(
         workspace.metadata.rootDir,
@@ -828,6 +874,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
         selectedMutation,
         runId,
         mutationSeed,
+        mutatorRanking,
       );
       manifest.mutationMode = mutation.mutationMode;
       manifest.mutationId = mutation.mutationId;
@@ -848,6 +895,9 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
         progress?.(
           `forecast-lab: seeded from kept run ${mutationSeed.parentRunId} (${mutationSeed.replayedMutations.length} replayed mutation${mutationSeed.replayedMutations.length === 1 ? '' : 's'})`,
         );
+      }
+      if (mutatorRanking) {
+        progress?.(formatForecastLabMutatorHealthProgress(mutatorRanking));
       }
       progress?.(`forecast-lab: selected mutator ${mutation.selectedMutatorId} (${mutation.mutatorId})`);
       progress?.(`forecast-lab: mutated files ${mutation.mutatedFiles.join(', ')}`);
