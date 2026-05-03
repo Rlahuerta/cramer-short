@@ -542,6 +542,40 @@ the runner:
 
 `--dry-run` and `--skip-mutation` still only record the candidate branch name as bookkeeping metadata. A real structured mutation run also creates an isolated candidate worktree and branch, records that workspace in the manifest/ledger, and then cleans it up unless you pass `--keep-worktree`. After you have one kept structured run, the next structured run can replay that kept lineage before applying the new mutation.
 
+### Promotion, activation, and reset
+
+A kept structured run is not automatically live. The lifecycle is:
+
+1. run the bounded structured mutation and get a `keep`
+2. explicitly approve promotion for that kept run
+3. verify and activate the promoted parameters
+4. let ordinary forecasts use that activated baseline
+5. reset explicitly if the promoted baseline proves misleading
+
+After explicit approval, Forecast Lab now activates the promoted parameter set in two places:
+
+- **live source defaults** for future restarts
+- **the current running process** so ordinary forecasts use the promoted baseline immediately
+
+The active baseline is recorded under:
+
+```text
+.cramer-short/experiments/active-promotions/<profile-id>.json
+```
+
+If you need to roll back, use the bounded reset flow instead of editing the source files manually:
+
+- **reset to shipped defaults** — restore the canonical repo defaults and clear the active promotion record
+- **reset to last known-good** — restore the previous activated baseline when you want the prior live configuration back
+
+Prompt examples for the agent:
+
+```text
+Approve forecast-lab promotion for btc-markov-ultra-short-horizon run <kept-run-id>.
+Reset the forecast-lab baseline for btc-markov-ultra-short-horizon to shipped defaults.
+Restore the forecast-lab baseline for btc-markov-ultra-short-horizon to the last known good activation.
+```
+
 ---
 
 ## Run artifacts: what each file is for
