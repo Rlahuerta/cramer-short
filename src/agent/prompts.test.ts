@@ -321,6 +321,8 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('Matched improvement cues: optimize.');
     expect(prompt).toContain('Mutation allowed: yes');
     expect(prompt).toContain('Invoke skill("forecast-lab"): yes');
+    expect(prompt).toContain('bounded forecast-workflow improvement task');
+    expect(prompt).toContain('Call skill("forecast-lab") before ordinary forecast/data tools');
     expect(prompt).toContain('Do NOT auto-run mutation or any tool');
   });
 });

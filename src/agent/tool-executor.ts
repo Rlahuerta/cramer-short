@@ -1,7 +1,9 @@
 import { AIMessage } from '@langchain/core/messages';
 import { StructuredToolInterface } from '@langchain/core/tools';
+import { resolve, sep } from 'node:path';
 import { createProgressChannel } from '../utils/progress-channel.js';
 import { loadCacheFromDisk, saveCacheToDisk } from '../utils/cross-session-cache.js';
+import { getExperimentsDir } from '../utils/paths.js';
 import { getSetting } from '../utils/config.js';
 import type {
   ApprovalDecision,
@@ -25,6 +27,13 @@ type ToolExecutionEvent =
   | ToolLimitEvent;
 
 const TOOLS_REQUIRING_APPROVAL = ['write_file', 'edit_file'] as const;
+const FORECAST_LAB_GUARDED_TOOLS = new Set(['write_file', 'edit_file', 'create_file']);
+
+function isInsideForecastLabExperiments(path: string): boolean {
+  const experimentsRoot = resolve(getExperimentsDir());
+  const resolved = resolve(path);
+  return resolved === experimentsRoot || resolved.startsWith(experimentsRoot + sep);
+}
 
 /**
  * Executes tool calls and emits streaming tool lifecycle events.
@@ -168,6 +177,22 @@ export class AgentToolExecutor {
     ctx: RunContext
   ): AsyncGenerator<ToolExecutionEvent, void> {
     const toolQuery = this.extractQueryFromArgs(toolArgs);
+    const toolPath = typeof toolArgs.path === 'string' ? toolArgs.path : null;
+
+    if (ctx.forecastLabGuard && FORECAST_LAB_GUARDED_TOOLS.has(toolName)) {
+      if (!toolPath || !isInsideForecastLabExperiments(toolPath)) {
+        const profileLabel = ctx.forecastLabGuard.recommendedProfileId
+          ? ` for profile "${ctx.forecastLabGuard.recommendedProfileId}"`
+          : '';
+        const error =
+          `Forecast-lab routed improvement queries${profileLabel} cannot write tracked source files directly. ` +
+          `Write artifacts only under .cramer-short/experiments/ or use the bounded forecast-lab runner instead.`;
+        yield { type: 'tool_error', tool: toolName, error };
+        ctx.scratchpad.recordToolCall(toolName, toolQuery);
+        ctx.scratchpad.addToolResult(toolName, toolArgs, error);
+        return;
+      }
+    }
 
     if (this.requiresApproval(toolName) && !this.sessionApprovedTools.has(toolName)) {
       const decision = (await this.requestToolApproval?.({ tool: toolName, args: toolArgs })) ?? 'deny';

@@ -32,6 +32,8 @@ import {
   getForecastLabRoutingHint,
   type ForecastLabRoutingHint,
 } from './forecast-lab-routing.js';
+import { routeForecastLabQuery } from '../experiments/forecast-lab/router.js';
+import { discoverSkills } from '../skills/registry.js';
 
 const DEFAULT_MODEL = 'gpt-5.4';
 export const DEFAULT_MAX_ITERATIONS = 25;
@@ -385,11 +387,17 @@ export function buildForcedMarkovArgs(query: string): { ticker: string; horizon:
 }
 
 export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCallRecord[]): boolean {
+  if (isForecastLabImprovementQuery(query)) return false;
   return (isExplicitTerminalDistributionQuery(query) || inferTrajectoryRequest(query))
     && !toolCalls.some((call) => call.tool === 'markov_distribution');
 }
 
+export function isForecastLabImprovementQuery(query: string): boolean {
+  return routeForecastLabQuery(query).intent === 'improvement';
+}
+
 export function isCryptoForecastQuery(query: string): boolean {
+  if (isForecastLabImprovementQuery(query)) return false;
   if (isExplicitTerminalDistributionQuery(query)) return false;
 
   if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;
@@ -411,6 +419,7 @@ export function isCryptoForecastQuery(query: string): boolean {
  * a forced get_market_data + polymarket_forecast fallback.
  */
 export function isNonCryptoForecastQuery(query: string): boolean {
+  if (isForecastLabImprovementQuery(query)) return false;
   if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;
 
   // Exclude crypto — that path has its own dedicated forcing
@@ -428,6 +437,15 @@ export function isNonCryptoForecastQuery(query: string): boolean {
   const hasFutureHorizon = /over the next\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|next\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|in\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|\bnext\s+month\b|\bnext\s+quarter\b|\b(?:by\s+)?end\s+of\s+q[1-4](?:\s+\d{4})?\b|\bthrough\s+q[1-4](?:\s+\d{4})?\b/.test(lower);
 
   return hasForecastLanguage || hasFutureHorizon;
+}
+
+export function detectExplicitSkillRequest(query: string): string | null {
+  const match = query.match(/\buse (?:the )?([a-z0-9_-]+) skill\b/i);
+  if (!match) return null;
+
+  const requested = match[1].toLowerCase();
+  const skill = discoverSkills().find((entry) => entry.name.toLowerCase() === requested);
+  return skill?.name ?? null;
 }
 
 type ForcedNonCryptoPolymarketForecastArgs = {
@@ -1470,6 +1488,28 @@ function hasPrematureForecastArbitratorCall(response: AIMessage, query: string, 
     && !hasCompletedMarkovDistributionForQuery(query, toolCalls);
 }
 
+export function isAcceptedFirstPlanningToolCall(
+  response: AIMessage,
+  forecastLabRoutingHint?: ForecastLabRoutingHint | null,
+  explicitlyRequestedSkill?: string | null,
+): boolean {
+  const firstToolCall = response.tool_calls?.[0];
+  if (!firstToolCall) return true;
+  if (firstToolCall.name === 'sequential_thinking') return true;
+  if (
+    explicitlyRequestedSkill
+    && firstToolCall.name === 'skill'
+    && firstToolCall.args?.skill === explicitlyRequestedSkill
+  ) {
+    return true;
+  }
+  return Boolean(
+    forecastLabRoutingHint?.shouldInvokeSkill
+      && firstToolCall.name === 'skill'
+      && firstToolCall.args?.skill === 'forecast-lab',
+  );
+}
+
 function detectBtcShortHorizonDisagreement(query: string, toolCalls: ToolCallRecord[]): boolean {
   if (!isCryptoForecastQuery(query)) return false;
   const ticker = inferDistributionTicker(query);
@@ -1768,6 +1808,11 @@ export class Agent {
       enableAutoRoute: forecastingConfig?.enableForecastLabAutoRoute,
       enableSkillHint: forecastingConfig?.enableForecastLabSkillHint,
     });
+    if (forecastLabRoutingHint?.shouldInvokeSkill) {
+      ctx.forecastLabGuard = {
+        recommendedProfileId: forecastLabRoutingHint.recommendedProfileId,
+      };
+    }
 
     // Build initial prompt with conversation history context
     let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory, forecastLabRoutingHint);
@@ -1784,6 +1829,8 @@ export class Agent {
       fetchMarkets: (q, limit) => fetchPolymarketMarkets(q, limit),
     });
 
+    const explicitlyRequestedSkill = detectExplicitSkillRequest(query);
+
     // Track whether sequential_thinking has been used at least once this session
     let sequentialThinkingUsed = false;
     // Cap retries for the sequential_thinking compliance reminder to avoid
@@ -1795,6 +1842,23 @@ export class Agent {
     // 10-15 thoughts on complex queries, leaving no budget for actual research.
     let sequentialThinkingCallCount = 0;
     const MAX_SEQUENTIAL_THOUGHTS = 6;
+
+    if (explicitlyRequestedSkill) {
+      for await (const event of this.toolExecutor.executeTool(
+        'skill',
+        { skill: explicitlyRequestedSkill },
+        ctx,
+      )) {
+        yield event;
+      }
+
+      const toolResults = ctx.scratchpad.getToolResults().trim();
+      if (toolResults) {
+        currentPrompt = `${currentPrompt}\n\nData retrieved from tool calls:\n${toolResults}`;
+      }
+
+      sequentialThinkingUsed = true;
+    }
 
     // Main agent loop
     let overflowRetries = 0;
@@ -1933,11 +1997,20 @@ export class Agent {
       // prevent an infinite loop when a model persistently ignores the reminder.
       if (!sequentialThinkingUsed) {
         const firstTool = (response as AIMessage).tool_calls?.[0]?.name;
-        if (firstTool && firstTool !== 'sequential_thinking') {
+        if (
+          firstTool
+          && !isAcceptedFirstPlanningToolCall(
+            response as AIMessage,
+            forecastLabRoutingHint,
+            explicitlyRequestedSkill,
+          )
+        ) {
           if (sequentialThinkingRetries < MAX_ST_RETRIES) {
             sequentialThinkingRetries++;
             ctx.iteration--; // don't charge this iteration
-            currentPrompt = `${currentPrompt}\n\nIMPORTANT REMINDER: You MUST call sequential_thinking FIRST before calling any other tool. Start with sequential_thinking to plan your approach, then proceed.`;
+            currentPrompt = forecastLabRoutingHint?.shouldInvokeSkill
+              ? `${currentPrompt}\n\nIMPORTANT REMINDER: This routed forecast-lab improvement query must start with skill(\"forecast-lab\") or sequential_thinking. Do NOT start with ordinary forecast/data tools.`
+              : `${currentPrompt}\n\nIMPORTANT REMINDER: You MUST call sequential_thinking FIRST before calling any other tool. Start with sequential_thinking to plan your approach, then proceed.`;
             continue;
           }
           // Retries exhausted — proceed without sequential_thinking rather than
@@ -1949,7 +2022,13 @@ export class Agent {
       // Mark sequential_thinking as satisfied once it appears in any tool call
       if (!sequentialThinkingUsed) {
         const stToolCalls = (response as AIMessage).tool_calls ?? [];
-        if (stToolCalls.some((tc) => tc.name === 'sequential_thinking')) {
+        if (
+          stToolCalls.some((tc) => tc.name === 'sequential_thinking')
+          || (
+            forecastLabRoutingHint?.shouldInvokeSkill
+            && stToolCalls.some((tc) => tc.name === 'skill' && tc.args?.skill === 'forecast-lab')
+          )
+        ) {
           sequentialThinkingUsed = true;
         }
       }

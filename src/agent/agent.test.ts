@@ -133,10 +133,14 @@ const {
     shouldForceForecastArbitrator,
   buildForcedOnchainArgs,
   buildForcedFixedIncomeArgs,
-  buildForcedCryptoForecastMarkovArgs,
+ buildForcedCryptoForecastMarkovArgs,
   shouldForceCryptoForecastTools,
   shouldPreserveAbstainingBtcShortHorizonForecast,
-} = await import('./agent.js');
+  isForecastLabImprovementQuery,
+  isAcceptedFirstPlanningToolCall,
+  detectExplicitSkillRequest,
+  } = await import('./agent.js');
+ const { getForecastLabRoutingHint } = await import('./forecast-lab-routing.js');
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -206,6 +210,24 @@ describe('Agent', () => {
       expect(typeof done!.totalTime).toBe('number');
       expect(done!.iterations).toBeGreaterThanOrEqual(1);
       expect(done!.totalTime).toBeGreaterThanOrEqual(0);
+    });
+
+    it('preloads an explicitly requested runtime skill before the first model turn', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      const events = await collectEvents(
+        agent.run('Use the portfolio_risk skill to analyse risk for AAPL and MSFT'),
+      );
+
+      const toolStart = events.find(e => e.type === 'tool_start');
+      const done = events.find(e => e.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStart).toBeDefined();
+      expect(toolStart?.type).toBe('tool_start');
+      if (toolStart?.type === 'tool_start') {
+        expect(toolStart.tool).toBe('skill');
+      }
+      expect(done).toBeDefined();
+      expect(done!.answer).toContain('Direct answer');
     });
 
     it('yields done with error message when LLM throws', async () => {
@@ -449,10 +471,16 @@ describe('Agent', () => {
     it('detects crypto forecast queries without matching explicit distribution requests', () => {
       expect(isCryptoForecastQuery('Provide a BTC forecast for the next 7 days')).toBe(true);
       expect(isCryptoForecastQuery('What will ETH trade at next week?')).toBe(true);
+      expect(isCryptoForecastQuery('Improve the BTC short-horizon forecast workflow.')).toBe(false);
       expect(isCryptoForecastQuery('Use the probability_assessment skill for BTC price movement in the next 30 days')).toBe(false);
       expect(isCryptoForecastQuery('What is the market cap of BTC?')).toBe(false);
       expect(isCryptoForecastQuery('What is the probability distribution for BTC-USD in 7 days?')).toBe(false);
       expect(isCryptoForecastQuery('Provide an AAPL forecast for the next 7 days')).toBe(false);
+    });
+
+    it('classifies routed forecast-lab workflow asks as improvement queries', () => {
+      expect(isForecastLabImprovementQuery('Improve the BTC short-horizon forecast workflow.')).toBe(true);
+      expect(isForecastLabImprovementQuery('Give me a BTC forecast for the next 7 days.')).toBe(false);
     });
 
     it('builds forced crypto enrichment args for BTC forecasts', () => {
@@ -1334,6 +1362,56 @@ describe('Agent', () => {
         'What is the probability distribution for BTC-USD in 7 days?',
         [],
       )).toBe(false);
+
+      expect(shouldForceCryptoForecastTools(
+        'Improve the BTC short-horizon forecast workflow.',
+        [],
+      )).toBe(false);
+    });
+
+    it('does not force markov or non-crypto forecast fallbacks for workflow-improvement queries', () => {
+      expect(shouldForceMarkovDistribution(
+        'Improve the BTC markov short-horizon forecast workflow.',
+        [],
+      )).toBe(false);
+
+      expect(shouldForceNonCryptoForecastFallback(
+        'Improve the NVDA short-horizon forecast workflow.',
+        [],
+      )).toBe(false);
+    });
+
+    it('accepts forecast-lab skill as the first planning tool for routed improvement queries', () => {
+      const hint = getForecastLabRoutingHint('Improve the BTC short-horizon forecast workflow.');
+      const response = {
+        content: '',
+        tool_calls: [
+          { id: 'skill-1', name: 'skill', args: { skill: 'forecast-lab' }, type: 'tool_call' as const },
+        ],
+        additional_kwargs: {},
+      } as any;
+
+      expect(isAcceptedFirstPlanningToolCall(response, hint)).toBe(true);
+      expect(isAcceptedFirstPlanningToolCall(response, null)).toBe(false);
+    });
+
+    it('detects explicit skill requests by exact runtime skill name', () => {
+      expect(detectExplicitSkillRequest('Use the portfolio_risk skill to analyse AAPL risk')).toBe('portfolio_risk');
+      expect(detectExplicitSkillRequest('Use the peer-comparison skill for semis')).toBe('peer-comparison');
+      expect(detectExplicitSkillRequest('Use the DCF skill to value Apple')).toBeNull();
+    });
+
+    it('accepts an explicitly requested skill as the first planning tool', () => {
+      const response = {
+        content: '',
+        tool_calls: [
+          { id: 'skill-1', name: 'skill', args: { skill: 'portfolio_risk' }, type: 'tool_call' as const },
+        ],
+        additional_kwargs: {},
+      } as any;
+
+      expect(isAcceptedFirstPlanningToolCall(response, null, 'portfolio_risk')).toBe(true);
+      expect(isAcceptedFirstPlanningToolCall(response, null, 'peer-comparison')).toBe(false);
     });
 
     it('preserves BTC short-horizon abstention once markov_distribution has abstained', () => {

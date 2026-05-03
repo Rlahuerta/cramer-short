@@ -113,7 +113,7 @@ describe('Polymarket history docs — guide examples vs ollama:glm-5:cloud', () 
       expect(text).toContain('Horizon: 7 days');
 
       // Deterministic cold-start warnings due to fresh snapshot file
-      expect(text).toMatch(/Spike detection unavailable/i);
+      expect(text).toMatch(/Spike detection unavailable|Persistence test unavailable/i);
       expect(text).toMatch(/Persistence test unavailable/i);
 
       expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);

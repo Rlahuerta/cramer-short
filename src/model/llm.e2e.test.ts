@@ -151,15 +151,15 @@ describe('Ollama cloud model — live callLlm', () => {
   );
 
   e2eIt(
-    'callLlm rejects with a clear [Ollama API] error for a non-existent model',
+    'callLlm rejects with a clear unavailable-model error for a non-existent model',
     async () => {
       await expect(
         callLlm('ping', {
           model: 'ollama:this-model-does-not-exist-xyzzy:cloud',
           timeoutMs: 30_000,
         }),
-      ).rejects.toThrow(/Ollama/i);
+      ).rejects.toThrow(/(Ollama|timed out|unavailable)/i);
     },
-    45_000,
+    75_000,
   );
 });

@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 mock.module('../utils/paths.js', () => ({
   cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
   getCramerShortDir: mock(() => '.dexter'),
+  getExperimentsDir: mock(() => join('.cramer-short', 'experiments')),
 }));
 
 const { AgentToolExecutor } = await import('./tool-executor.js');
@@ -259,6 +260,100 @@ describe('AgentToolExecutor — uncacheable tools bypass cache', () => {
     await drainEvents(executor.executeAll(msg, ctx));
 
     expect(fakeTool.invocationCount).toBe(2);
+  });
+});
+
+describe('AgentToolExecutor — forecast-lab edit guard', () => {
+  it('blocks direct edit_file calls before forecast-lab skill runs for routed improvement queries', async () => {
+    const fakeTool = makeFakeTool('edit_file', 'edited');
+    const executor = new AgentToolExecutor(
+      new Map([['edit_file', fakeTool]]),
+      undefined,
+      async () => 'allow-once' as const,
+      new Set(['edit_file']),
+    );
+    const ctx = makeCtx();
+    ctx.forecastLabGuard = { recommendedProfileId: 'btc-markov-ultra-short-horizon' };
+
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{
+        id: 'c1',
+        name: 'edit_file',
+        args: { path: 'src/tools/finance/conformal.ts', old_string: 'before', new_string: 'after' },
+        type: 'tool_call' as const,
+      }],
+    });
+
+    const events = await drainEvents(executor.executeAll(msg, ctx));
+
+    expect(fakeTool.invocationCount).toBe(0);
+    expect(events.some((e) => e.type === 'tool_start')).toBe(false);
+    const error = events.find((e) => e.type === 'tool_error');
+    expect(error).toBeDefined();
+    expect((error as { error: string }).error).toContain('.cramer-short/experiments');
+  });
+
+  it('still blocks direct source edits even after forecast-lab skill already ran', async () => {
+    const fakeTool = makeFakeTool('edit_file', 'edited');
+    const executor = new AgentToolExecutor(
+      new Map([['edit_file', fakeTool]]),
+      undefined,
+      async () => 'allow-once' as const,
+      new Set(['edit_file']),
+    );
+    const ctx = makeCtx();
+    ctx.forecastLabGuard = { recommendedProfileId: 'btc-markov-ultra-short-horizon' };
+    ctx.scratchpad.addToolResult('skill', { skill: 'forecast-lab' }, 'ok');
+
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{
+        id: 'c1',
+        name: 'edit_file',
+        args: { path: 'src/tools/finance/conformal.ts', old_string: 'before', new_string: 'after' },
+        type: 'tool_call' as const,
+      }],
+    });
+
+    const events = await drainEvents(executor.executeAll(msg, ctx));
+
+    expect(fakeTool.invocationCount).toBe(0);
+    expect(events.some((e) => e.type === 'tool_start')).toBe(false);
+    const error = events.find((e) => e.type === 'tool_error');
+    expect(error).toBeDefined();
+    expect((error as { error: string }).error).toContain('.cramer-short/experiments');
+  });
+
+  it('allows writes inside .cramer-short/experiments for routed improvement queries', async () => {
+    const fakeTool = makeFakeTool('write_file', 'written');
+    const executor = new AgentToolExecutor(
+      new Map([['write_file', fakeTool]]),
+      undefined,
+      async () => 'allow-once' as const,
+      new Set(['write_file']),
+    );
+    const ctx = makeCtx();
+    ctx.forecastLabGuard = { recommendedProfileId: 'btc-markov-ultra-short-horizon' };
+
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{
+        id: 'c1',
+        name: 'write_file',
+        args: {
+          path: '.cramer-short/experiments/runs/test-run/notes.txt',
+          content: 'artifact',
+        },
+        type: 'tool_call' as const,
+      }],
+    });
+
+    const events = await drainEvents(executor.executeAll(msg, ctx));
+
+    expect(fakeTool.invocationCount).toBe(1);
+    expect(events.some((e) => e.type === 'tool_start')).toBe(true);
+    expect(events.some((e) => e.type === 'tool_end')).toBe(true);
   });
 });
 

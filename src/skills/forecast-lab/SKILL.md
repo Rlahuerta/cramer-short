@@ -33,7 +33,7 @@ decision.
 
 Editable files are profile-driven, not an open-ended per-run allowlist. In the
 current shipped implementation, only the two Markov profiles advertise
-`structured` mutation mode, and their
+the structured mutation mode, and their
 shipped catalog is currently limited to `search-replace`. The arbiter and
 Polymarket profiles remain `dry-run` until they have concrete structured
 mutation catalogs.
@@ -83,9 +83,9 @@ Automatic Forecast Lab routing is a hint layer, not a mutation trigger.
 - If the operator forces a mutator, require
   `--mutation structured --mutator <id>`. If they do not force one, leave
   selection to the runner. Ledger-based mutator ranking is only considered when
-  `forecasting.enableForecastLabMutatorRanking` is `true`, and it defaults to
+  the `forecasting.enableForecastLabMutatorRanking` setting is enabled, and it defaults to
   off.
-- When a routed or manually requested run executes, preserve `routingContext`
+- When a routed or manually requested run executes, preserve the routing context
   in the manifest and ledger and let the runner update
   `.cramer-short/forecast-lab-routing-stats.json`. This is telemetry for future
   evidence-driven evolution work, not a current multi-iteration self-evolution

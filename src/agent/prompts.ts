@@ -497,6 +497,8 @@ function buildForecastLabRoutingHintSection(hint: ForecastLabRoutingHint): strin
 - Why it matched: ${hint.whyMatched}
 - Mutation allowed: ${formatBooleanPromptValue(hint.mutationAllowed)}
 - Invoke skill("forecast-lab"): ${formatBooleanPromptValue(hint.shouldInvokeSkill)}
+- Mode: Treat this as a bounded forecast-workflow improvement task, not an ordinary live forecast request.
+- First step: Call skill("forecast-lab") before ordinary forecast/data tools. Use repo-local forecast surfaces, not live market-enrichment tools, unless the user explicitly asks for live market evidence.
 - Safety: Do NOT auto-run mutation or any tool solely because of this hint.`;
 }
 

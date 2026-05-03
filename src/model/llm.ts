@@ -103,14 +103,18 @@ export function getLlmCallTimeoutMs(): number {
   return resolveLlmCallTimeoutMs().value;
 }
 
-async function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
+async function withTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  timeoutLabel = 'LLM call',
+): Promise<T> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
     return await fn(ac.signal);
   } catch (e) {
     if (ac.signal.aborted) {
-      throw new Error(`LLM call timed out after ${timeoutMs / 1000}s. The model may be slow or unavailable.`);
+      throw new Error(`${timeoutLabel} timed out after ${timeoutMs / 1000}s. The model may be slow or unavailable.`);
     }
     throw e;
   } finally {
@@ -322,7 +326,7 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
       const messages = [new SystemMessage(finalSystemPrompt), new HumanMessage(prompt)];
       return withRetry(() => runnable.invoke(messages, invokeOpts), provider.displayName);
     }
-  }, timeoutMs ?? getLlmCallTimeoutMs());
+  }, timeoutMs ?? getLlmCallTimeoutMs(), `${provider.displayName} call (${model})`);
   const usage = extractUsage(result);
 
   // If no outputSchema and no tools, extract content from AIMessage
