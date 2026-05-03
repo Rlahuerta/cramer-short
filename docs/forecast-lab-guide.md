@@ -106,6 +106,79 @@ If you do just those four checks, you already understand the main Forecast Lab w
 
 ---
 
+## Automatic profile routing: what it does and what it does not do
+
+Forecast Lab now has an **agent-side routing hint layer** for improvement requests, but it is still intentionally conservative.
+
+The current knobs live under `forecasting` in `.cramer-short/settings.json`:
+
+```json
+{
+  "forecasting": {
+    "enableForecastLabAutoRoute": true,
+    "enableForecastLabSkillHint": true,
+    "enableForecastLabMutatorRanking": false
+  }
+}
+```
+
+Current behavior:
+
+- `forecasting.enableForecastLabAutoRoute` gates whether the agent derives Forecast Lab routing hints from a user query.
+- `forecasting.enableForecastLabSkillHint` gates whether a matched route is injected back into the agent prompt as a Forecast Lab hint.
+- `forecasting.enableForecastLabMutatorRanking` gates ledger-based ranking for shipped structured mutators during real structured runs, and it defaults to **off**.
+
+### Improvement intent is separate from ordinary forecast usage
+
+The router only treats a query as Forecast Lab input when it sees **improvement intent** plus enough profile-specific routing signal.
+
+That means there is a hard distinction between:
+
+- **improvement queries** like "improve", "optimize", "tune", "calibrate", or "fix", and
+- **ordinary usage queries** like asking for a BTC forecast or asking how to use the forecast tool.
+
+So:
+
+- a BTC topic match by itself is **not enough**,
+- a Markov topic match by itself is **not enough**,
+- and ordinary BTC forecast/use questions do **not** auto-enter Forecast Lab improvement mode.
+
+### Why a topic match does not mean immediate mutation
+
+Even when the agent produces a Forecast Lab routing hint, the injected prompt explicitly says:
+
+> **Do NOT auto-run mutation or any tool solely because of this hint.**
+
+That hint can recommend a profile and say whether that profile supports structured mutation, but it is still only a **routing hint**. A real candidate edit still requires an explicit Forecast Lab run with:
+
+```bash
+bun start lab run <profileId> --mutation structured
+```
+
+If you do not opt into `--mutation structured`, there is no real mutation run.
+
+### Operator-facing examples
+
+| Operator input | Router outcome | Safe next step |
+|---|---|---|
+| “improve BTC short-horizon forecast” | Improvement intent; prefers `btc-markov-ultra-short-horizon` when auto-route + skill hints are enabled | Start with `bun start lab run btc-markov-ultra-short-horizon --dry-run`. This does **not** auto-run mutation. |
+| “use BTC forecast tool” | Ordinary usage intent; no Forecast Lab routing hint | Stay in normal forecast-tool usage. Do **not** enter Forecast Lab automatically. |
+| “force a specific mutator” | Requires an explicit structured run, not just a routed query | `bun start lab run btc-markov-ultra-short-horizon --mutation structured --mutator markov-longer-stability-window` |
+
+### How routing telemetry feeds future evolution
+
+When a Forecast Lab run actually starts with routing context, the runner records:
+
+- `routingContext` in `manifest.json`,
+- `routingContext` in the ledger entry,
+- and per-profile counts in `.cramer-short/forecast-lab-routing-stats.json`.
+
+That telemetry records the originating query, selected profile id, router reason, invocation source (`auto-routed` vs `manual-request`), keep/drop totals, and last-run timing.
+
+Today this is **evidence collection**, not multi-iteration self-evolution. It gives operators an auditable picture of what was auto-routed versus manually requested, and it gives later structured runs historical ledger evidence that can inform mutator ranking **only when** `forecasting.enableForecastLabMutatorRanking` is turned on. The router alone does not mutate code.
+
+---
+
 ## Available lab commands
 
 ### List profiles
@@ -211,9 +284,11 @@ If you want the mutation feature to be useful instead of confusing, use it in th
    `candidate.json` tells you what actually ran. `manifest.json` tells you the mutation contract, lineage, workspace, and replay payload that made the candidate reproducible. The terminal summary should also show a human-readable before/after parameter diff for the applied mutation.
 
 4. **Use `--mutator` only when you are debugging or comparing a specific shipped mutation.**
-   If you do not force a mutator, Forecast Lab picks the first shipped mutation that is both:
-   - allowed by the profile contract, and
-   - still applicable after replaying the last kept parent lineage.
+   If you do not force a mutator, Forecast Lab either:
+   - uses ledger-based mutator ranking when `forecasting.enableForecastLabMutatorRanking` is `true`, or
+   - falls back to the first shipped mutation that is both allowed by the profile contract and still applicable after replaying the last kept parent lineage.
+
+   Mutator ranking defaults to **off**.
 
 5. **Use `--keep-worktree` only when you need to inspect the mutated checkout itself.**
    This is mainly for debugging why a structured run passed or failed.
@@ -457,7 +532,7 @@ the runner:
 2. looks for the last kept structured parent run for the same profile,
 3. creates a fresh candidate worktree,
 4. replays the parent's immutable mutation payload when lineage exists,
-5. selects either the requested shipped mutator or the first applicable unused shipped mutation,
+5. selects either the requested shipped mutator, the highest-ranked applicable shipped mutation when ledger-based ranking is enabled, or the first applicable unused shipped mutation as the default fallback,
 6. applies that mutation inside the worktree,
 7. runs the candidate gate in that worktree,
 8. persists mutation metadata to artifacts and the ledger,

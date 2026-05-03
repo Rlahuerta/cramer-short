@@ -55,13 +55,51 @@ mutation catalogs.
 
 Do not widen the editable surface beyond the selected profile. If the user asks to
 edit a forecast file outside that profile contract, refuse that part and explain
-that forecast-lab is intentionally bounded in Phase 1.
+that forecast-lab is intentionally bounded in the shipped implementation.
 
 Read-only harnesses for acceptance include:
 
 - `src/tools/finance/backtest/walk-forward.ts`
 - `src/tools/finance/backtest/arbiter-replay-runner.ts`
 - existing targeted unit, integration, or E2E tests chosen by the profile
+
+## Routing intent and auto-route boundaries
+
+Automatic Forecast Lab routing is a hint layer, not a mutation trigger.
+
+- Agent-side routing hints are only injected when both
+  `forecasting.enableForecastLabAutoRoute` and
+  `forecasting.enableForecastLabSkillHint` are enabled.
+- Improvement intent is separate from ordinary tool usage. Queries need explicit
+  improvement cues such as "improve", "optimize", "tune", "calibrate", or
+  "fix" plus enough profile keywords before Forecast Lab should be considered.
+- Plain usage queries such as "use BTC forecast tool" or "What is the BTC
+  forecast?" are ordinary forecast requests and must not auto-enter Forecast Lab
+  improvement mode.
+- A profile/topic match does not authorize immediate mutation. Even when a
+  routed query points at `btc-markov-ultra-short-horizon` or
+  `multi-asset-markov-short-horizon`, real candidate edits still require an
+  explicit structured run.
+- If the operator forces a mutator, require
+  `--mutation structured --mutator <id>`. If they do not force one, leave
+  selection to the runner. Ledger-based mutator ranking is only considered when
+  `forecasting.enableForecastLabMutatorRanking` is `true`, and it defaults to
+  off.
+- When a routed or manually requested run executes, preserve `routingContext`
+  in the manifest and ledger and let the runner update
+  `.cramer-short/forecast-lab-routing-stats.json`. This is telemetry for future
+  evidence-driven evolution work, not a current multi-iteration self-evolution
+  loop.
+
+Examples:
+
+- "improve BTC short-horizon forecast" → improvement intent; prefer
+  `btc-markov-ultra-short-horizon`; start with `bun start lab run
+  btc-markov-ultra-short-horizon --dry-run`.
+- "use BTC forecast tool" → ordinary usage; do not switch into Forecast Lab.
+- "force a specific mutator" → use `bun start lab run
+  btc-markov-ultra-short-horizon --mutation structured --mutator
+  markov-longer-stability-window`.
 
 ## Workflow
 
