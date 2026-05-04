@@ -256,6 +256,8 @@ describe('forecast_lab_run tool', () => {
       frameworkOperatorIds: ['replace-range', 'search-replace', 'insert-block'],
     });
     expect(payload?.answer).toContain('Forecast-lab shipped mutator ids for btc-markov-ultra-short-horizon.');
+    expect(payload?.answer).toContain('| Field | Value |');
+    expect(payload?.answer).toContain('| # | Mutator id |');
     expect(payload?.answer).toContain('markov-shorter-reactive-window');
   });
 
@@ -285,6 +287,8 @@ describe('forecast_lab_run tool', () => {
       dryRunProfiles: ['btc-arbiter-replay', 'polymarket-selection-sanity'],
     });
     expect(payload?.answer).toContain('Forecast-lab shipped mutator catalog summary.');
+    expect(payload?.answer).toContain('| Profile id | Target subsystem | Mutation mode | Shipped ids | Allowed operators |');
+    expect(payload?.answer).toContain('Shipped candidate catalog ids for btc-markov-ultra-short-horizon:');
     expect(payload?.answer).toContain('btc-markov-ultra-short-horizon');
   });
 
@@ -302,7 +306,7 @@ describe('forecast_lab_run tool', () => {
         ],
         mutationMode: 'structured',
         mutationId: 'markov-lower-confidence-trend-penalty',
-        mutationSummary: 'Lower the confidence gate and enable the trend-only break penalty ablation.',
+        mutationSummary: 'Lower the confidence gate while keeping the trend-only break penalty path active.',
         baselineSummary: { exitCode: 0 },
         candidateSummary: { exitCode: 0 },
         decision: 'keep',
@@ -318,10 +322,10 @@ describe('forecast_lab_run tool', () => {
         allowedGlobs: [],
         mutationMode: 'structured',
         mutationId: 'markov-lower-confidence-trend-penalty',
-        mutationSummary: 'Lower the confidence gate and enable the trend-only break penalty ablation.',
+        mutationSummary: 'Lower the confidence gate while keeping the trend-only break penalty path active.',
         lineage: { generation: 2, rootRunId: 'root-run' },
-        mutationSpecSummary: { mutatorId: 'search-replace', summary: 'Lower the confidence gate and enable the trend-only break penalty ablation.', targetFiles: ['src/tools/finance/markov-distribution.ts'] },
-        mutationReplayPayload: { kind: 'markov-parameter-candidate', id: 'markov-lower-confidence-trend-penalty', profileId: 'btc-markov-ultra-short-horizon', mutatorId: 'search-replace', edits: [], patchSummary: [], specSummary: { mutatorId: 'search-replace', summary: 'Lower the confidence gate and enable the trend-only break penalty ablation.', targetFiles: ['src/tools/finance/markov-distribution.ts'] } },
+        mutationSpecSummary: { mutatorId: 'search-replace', summary: 'Lower the confidence gate while keeping the trend-only break penalty path active.', targetFiles: ['src/tools/finance/markov-distribution.ts'] },
+        mutationReplayPayload: { kind: 'markov-parameter-candidate', id: 'markov-lower-confidence-trend-penalty', profileId: 'btc-markov-ultra-short-horizon', mutatorId: 'search-replace', edits: [], patchSummary: [], specSummary: { mutatorId: 'search-replace', summary: 'Lower the confidence gate while keeping the trend-only break penalty path active.', targetFiles: ['src/tools/finance/markov-distribution.ts'] } },
         candidateWorkspace: { kind: 'candidate-worktree', rootDir: '/tmp/worktree', branch: 'topic/forecast-lab-btc-markov-ultra-short-horizon.keep-1' },
         artifactsPath: '.cramer-short/experiments/runs/btc-markov-ultra-short-horizon.keep-1',
       } as any),
@@ -437,7 +441,7 @@ describe('forecast_lab_run tool', () => {
         allowedGlobs: [],
         mutationMode: 'structured',
         mutationId: 'markov-lower-confidence-trend-penalty',
-        mutationSummary: 'Lower the confidence gate and enable the trend-only break penalty ablation.',
+        mutationSummary: 'Lower the confidence gate while keeping the trend-only break penalty path active.',
         baselineSummary: { exitCode: 0 },
         candidateSummary: { exitCode: 0 },
         decision: 'keep',
@@ -684,5 +688,309 @@ describe('forecast_lab_run tool', () => {
       status: 'error',
     });
     expect(payload?.answer).toContain('resetMode');
+  });
+
+  it('formats structured mutator lineage exhaustion errors as readable sections', async () => {
+    const runForecastLabFn = mock(async () => {
+      throw new Error(
+        'Forecast-lab mutator "markov-faster-decay-reaction" is not applicable after replaying the kept parent lineage for profile "btc-markov-ultra-short-horizon". '
+        + 'No shipped structured mutator remains applicable after replaying the kept parent lineage for profile "btc-markov-ultra-short-horizon". '
+        + 'Current kept lineage already applied: markov-shorter-reactive-window, markov-faster-decay-reaction, markov-lower-confidence-trend-penalty. '
+        + 'Remaining shipped mutators checked and found inapplicable: markov-longer-stability-window, markov-slower-decay-persistence, markov-higher-confidence-divergence-weighted, markov-calibrator-higher-sample-floor, markov-calibrator-lower-sample-floor. '
+        + 'Next actions: keep the current best candidate, add a new shipped structured mutator, or intentionally reset the forecast-lab lineage outside the CLI.',
+      );
+    });
+    const tool = createForecastLabRunTool({ runForecastLabFn: runForecastLabFn as any });
+
+    const result = await tool.invoke({
+      action: 'guided-improve',
+      profileId: 'btc-markov-ultra-short-horizon',
+      mutator: 'markov-faster-decay-reaction',
+      query: 'Improve the BTC 1d/2d/3d Markov forecast workflow using mutator markov-faster-decay-reaction',
+    });
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(payload).toMatchObject({
+      _tool: 'forecast_lab_run',
+      action: 'guided-improve',
+      status: 'error',
+      error: expect.stringContaining('markov-faster-decay-reaction'),
+    });
+    expect(payload?.answer).toContain('Forecast-lab guided-improve could not continue.');
+    expect(payload?.answer).toContain('| Field | Value |');
+    expect(payload?.answer).toContain('| Requested mutator | markov-faster-decay-reaction |');
+    expect(payload?.answer).toContain('Already applied in the kept lineage:');
+    expect(payload?.answer).toContain('| # | Mutator id |');
+    expect(payload?.answer).toContain('Remaining shipped mutators checked and found inapplicable:');
+    expect(payload?.answer).toContain('1. Keep the current best candidate');
+    expect(payload?.answer).toContain('2. Add a new shipped structured mutator');
+  });
+
+  it('returns mutator scorecard with explicit profile', async () => {
+    const readLedgerEntriesFn = mock(() => [
+      {
+        runId: 'run-1',
+        profileId: 'btc-markov-ultra-short-horizon',
+        startedAt: '2026-05-03T00:00:00.000Z',
+        targetSubsystem: 'markov-distribution',
+        candidateBranch: 'topic/run-1',
+        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        mutationMode: 'structured',
+        mutationId: 'markov-shorter-reactive-window',
+        decision: 'keep',
+        reason: 'passed',
+        artifactsPath: '.cramer-short/experiments/runs/run-1',
+        baselineSummary: { exitCode: 0 },
+        candidateSummary: { exitCode: 0 },
+      } as any,
+      {
+        runId: 'run-2',
+        profileId: 'btc-markov-ultra-short-horizon',
+        startedAt: '2026-05-04T00:00:00.000Z',
+        targetSubsystem: 'markov-distribution',
+        candidateBranch: 'topic/run-2',
+        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        mutationMode: 'structured',
+        mutationId: 'markov-lower-confidence-trend-penalty',
+        decision: 'drop',
+        reason: 'regressed',
+        artifactsPath: '.cramer-short/experiments/runs/run-2',
+        baselineSummary: { exitCode: 0 },
+        candidateSummary: { exitCode: 1 },
+      } as any,
+    ]);
+    const readRunManifestFn = mock(() => {
+      throw new Error('should not read manifest');
+    });
+    const readTextFileFn = mock(() => {
+      throw new Error('should not read artifact');
+    });
+    const tool = createForecastLabRunTool({
+      readLedgerEntriesFn: readLedgerEntriesFn as any,
+      readRunManifestFn: readRunManifestFn as any,
+      readTextFileFn,
+    });
+
+    const result = await tool.invoke({
+      action: 'mutator-scorecard',
+      profileId: 'btc-markov-ultra-short-horizon',
+    });
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(readLedgerEntriesFn).toHaveBeenCalled();
+    expect(readRunManifestFn).not.toHaveBeenCalled();
+    expect(readTextFileFn).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({
+      _tool: 'forecast_lab_run',
+      action: 'mutator-scorecard',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      totalStructuredRuns: 2,
+    });
+    if (payload && 'rankedMutators' in payload) {
+      expect(payload.rankedMutators.length).toBeGreaterThan(0);
+    }
+    expect(payload?.answer).toContain('Forecast-lab mutator scorecard for btc-markov-ultra-short-horizon.');
+    expect(payload?.answer).toContain('Total structured runs: 2');
+    expect(payload?.answer).toContain('| Mutator ID | Status | Behavior | Attempts | Kept | Regressed | Health | Score |');
+  });
+
+  it('returns error when mutator-scorecard is called with ambiguous profile resolution', async () => {
+    const tool = createForecastLabRunTool();
+
+    const result = await tool.invoke({
+      action: 'mutator-scorecard',
+      query: 'show me mutator health',
+    });
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(payload).toMatchObject({
+      _tool: 'forecast_lab_run',
+      action: 'mutator-scorecard',
+      status: 'error',
+    });
+    if (payload && 'error' in payload) {
+      expect(payload.error).toContain('Multiple structured forecast-lab profiles exist');
+      expect(payload.error).toContain('Please specify profileId');
+    }
+  });
+
+  it('runs batch-replay-mutators and returns a comparative matrix', async () => {
+    const runForecastLabFn = mock(async (options: any) => {
+      const mutatorId = options.mutator;
+      return makeRunResult({
+        manifest: {
+          runId: `replay-${mutatorId}`,
+          profileId: 'btc-markov-ultra-short-horizon',
+          artifactsPath: `.cramer-short/experiments/runs/replay-${mutatorId}`,
+          mutationId: mutatorId,
+          mutationSummary: `Test mutator ${mutatorId}`,
+        },
+        decision: {
+          decision: mutatorId === 'markov-warmup-120' ? 'keep' : 'drop',
+          reason: mutatorId === 'markov-warmup-120' ? 'passed gates' : 'failed gates',
+          metrics: [],
+        },
+      });
+    });
+
+    const readTextFileFn = mock((path: string) => {
+      if (path.endsWith('baseline.json')) {
+        return JSON.stringify({
+          commands: [{
+            id: 'walk-forward-btc-ultra-short-horizon',
+            stdout: 'BTC-USD horizon 1d\nbaseline warmup=120 stride=3 │ 100 │ 50 │ 60.0% │ 0.200 │ 95.0%\n',
+          }],
+        });
+      }
+      if (path.endsWith('candidate.json')) {
+        return JSON.stringify({
+          commands: [{
+            id: 'walk-forward-btc-ultra-short-horizon',
+            stdout: 'BTC-USD horizon 1d\nbaseline warmup=120 stride=3 │ 100 │ 50 │ 62.0% │ 0.190 │ 96.0%\n',
+          }],
+        });
+      }
+      return '{}';
+    });
+
+    const tool = createForecastLabRunTool({
+      runForecastLabFn: runForecastLabFn as any,
+      readTextFileFn: readTextFileFn as any,
+    });
+
+    const result = await tool.invoke({
+      action: 'batch-replay-mutators',
+      profileId: 'btc-markov-ultra-short-horizon',
+      limit: 2,
+    });
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(runForecastLabFn).toHaveBeenCalledTimes(2);
+    expect(runForecastLabFn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mutationMode: 'structured',
+        forceNoParent: true,
+        diagnosticOnly: true,
+      }),
+    );
+
+    expect(payload).toMatchObject({
+      _tool: 'forecast_lab_run',
+      action: 'batch-replay-mutators',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      baselineDescription: 'shipped defaults (fresh runs with no parent lineage)',
+      replayedCount: 2,
+    });
+    expect(Array.isArray((payload as any)?.results)).toBe(true);
+    expect(payload?.answer).toContain('batch replay');
+    expect(payload?.answer).toContain('shipped defaults');
+  });
+
+  it('rejects batch-replay-mutators when profileId is missing', async () => {
+    const runForecastLabFn = mock(async () => makeRunResult());
+    const tool = createForecastLabRunTool({ runForecastLabFn: runForecastLabFn as any });
+
+    const result = await tool.invoke({
+      action: 'batch-replay-mutators',
+    } as any);
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(runForecastLabFn).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({
+      _tool: 'forecast_lab_run',
+      action: 'batch-replay-mutators',
+      status: 'error',
+    });
+    expect(payload?.answer).toContain('batch-replay-mutators requires profileId');
+  });
+
+  it('handles batch-replay-mutators errors gracefully', async () => {
+    const runForecastLabFn = mock(async (options: any) => {
+      const mutatorId = options.mutator;
+      if (mutatorId === 'markov-shorter-reactive-window') {
+        throw new Error('Replay failed for markov-shorter-reactive-window');
+      }
+      return makeRunResult({
+        manifest: {
+          runId: `replay-${mutatorId}`,
+          profileId: 'btc-markov-ultra-short-horizon',
+          artifactsPath: `.cramer-short/experiments/runs/replay-${mutatorId}`,
+        },
+      });
+    });
+
+    const readTextFileFn = mock(() => JSON.stringify({ commands: [] }));
+    const tool = createForecastLabRunTool({
+      runForecastLabFn: runForecastLabFn as any,
+      readTextFileFn: readTextFileFn as any,
+    });
+
+    const result = await tool.invoke({
+      action: 'batch-replay-mutators',
+      profileId: 'btc-markov-ultra-short-horizon',
+      limit: 2,
+    });
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(payload).toMatchObject({
+      _tool: 'forecast_lab_run',
+      action: 'batch-replay-mutators',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      replayedCount: 2,
+    });
+
+    const errorResult = (payload as any)?.results?.find((r: any) => r.mutatorId === 'markov-shorter-reactive-window');
+    expect(errorResult).toMatchObject({
+      mutatorId: 'markov-shorter-reactive-window',
+      decision: 'drop',
+      reason: expect.stringContaining('error:'),
+    });
+  });
+
+  it('rejects batch-replay-mutators with invalid limit values', async () => {
+    const runForecastLabFn = mock(async () => makeRunResult());
+    const tool = createForecastLabRunTool({ runForecastLabFn: runForecastLabFn as any });
+
+    // Test negative limit
+    await expect(
+      tool.invoke({
+        action: 'batch-replay-mutators',
+        profileId: 'btc-markov-ultra-short-horizon',
+        limit: -1,
+      } as any),
+    ).rejects.toThrow();
+
+    // Test zero limit
+    await expect(
+      tool.invoke({
+        action: 'batch-replay-mutators',
+        profileId: 'btc-markov-ultra-short-horizon',
+        limit: 0,
+      } as any),
+    ).rejects.toThrow();
+
+    // Test exceeding max limit
+    await expect(
+      tool.invoke({
+        action: 'batch-replay-mutators',
+        profileId: 'btc-markov-ultra-short-horizon',
+        limit: 51,
+      } as any),
+    ).rejects.toThrow();
+
+    // Test non-integer limit
+    await expect(
+      tool.invoke({
+        action: 'batch-replay-mutators',
+        profileId: 'btc-markov-ultra-short-horizon',
+        limit: 3.5,
+      } as any),
+    ).rejects.toThrow();
+
+    expect(runForecastLabFn).not.toHaveBeenCalled();
   });
 });

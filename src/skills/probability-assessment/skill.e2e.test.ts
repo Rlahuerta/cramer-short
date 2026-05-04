@@ -90,9 +90,13 @@ describe('probability_assessment skill E2E', () => {
       /░|█|▓|▒/.test(answer) ||
       /─{3,}/.test(answer) ||
       /chart|distribution/i.test(answer);
+    const hasInlineYesProbability =
+      /\d+\.?\d*\s*%\s*YES/i.test(answer) || /\bYES\b.*\d+\.?\d*\s*%/i.test(answer);
+    const hasTabularYesProbability =
+      /\|\s*% YES\s*\|/i.test(answer) && /\|\s*\d+\.?\d*\s*\|/i.test(answer);
     const hasThresholdEvidence =
       /(exceed|reach|above|below)\s+\$\d|(exceed|reach|above|below).*\$\d/i.test(answer) &&
-      (/\d+\.?\d*\s*%\s*YES/i.test(answer) || /\bYES\b.*\d+\.?\d*\s*%/i.test(answer));
+      (hasInlineYesProbability || hasTabularYesProbability);
     expect(
       hasChartTool || hasChartContent || hasThresholdEvidence,
       'price_distribution_chart must be called, chart content must appear, or raw threshold evidence must appear in the answer',
@@ -105,8 +109,12 @@ describe('probability_assessment skill E2E', () => {
     // The SKILL.md mandates showing exact market question text and YES probability
     expect(answer.toLowerCase()).toMatch(/signal evidence|evidence/);
 
-    // Must contain at least one Polymarket market entry: "X% YES" or "YES: X%"
-    expect(answer).toMatch(/\d+\.?\d*\s*%\s*YES|\bYES\b.*\d+\.?\d*\s*%/i);
+    // Must contain at least one Polymarket market entry, either inline or in a table.
+    const hasInlineYesProbability =
+      /\d+\.?\d*\s*%\s*YES/i.test(answer) || /\bYES\b.*\d+\.?\d*\s*%/i.test(answer);
+    const hasTabularYesProbability =
+      /\|\s*% YES\s*\|/i.test(answer) && /\|\s*\d+\.?\d*\s*\|/i.test(answer);
+    expect(hasInlineYesProbability || hasTabularYesProbability).toBe(true);
 
     // Must reference real dollar price thresholds from the markets
     expect(answer).toMatch(/\$\d{2,3}[,.]?\d*[Kk]?|\$\d{1,3},\d{3}/);

@@ -94,6 +94,8 @@ When the answer uses **both** \`markov_distribution\` and \`polymarket_forecast\
 7. **Keep terminal vs trajectory semantics separate** — the Markov headline should come from the terminal canonical block (scenarios, diagnostics, actionSignal). If a trajectory is present, present it as a path detail, not as a replacement for the terminal expected return / P(up).
 8. **Do not invent internal contradictions** — a difference between diagnostics.regimeState and the last trajectory regime, or between terminal expected return and day-7 trajectory drift, is not automatically a bug. Only call it a contradiction if the canonical payload explicitly says an override or warning caused it.
 9. **Do not merge confidence fields** — predictionConfidence and actionSignal.confidence are different metrics. Do not write labels like "Prediction confidence 0.43 — LOW" unless the Markov tool explicitly gives a qualitative label for prediction confidence.
+10. **Explain regime/action mismatches explicitly** — if diagnostics.regimeState points one way (for example, bull) but actionSignal.recommendation points the other way (for example, SELL), say in plain English that the latent regime is the recent HMM backdrop while the action signal is the next-horizon terminal tilt after scenario/threshold logic. Do not leave this as an unexplained "bull but SELL" pair.
+11. **Weak tilt is not the trade decision** — if actionSignal.confidence is LOW, recommendationProvenance says the signal was converted from HOLD, or the dominant bucket is flat/range-bound, describe BUY/SELL as a weak bullish/bearish tilt or lean rather than a direct trade command. If forecast_arbitrator returns NO_TRADE or a conditional verdict, that arbiter verdict is the actual trade decision and the weaker Markov tilt is only supporting evidence.
 
 For CLI answers, prefer short labeled subsections or a compact table over dense prose. The user should be able to separately inspect **Markov**, **Polymarket**, **Whales/On-chain**, and **Trade decision** without hunting through paragraphs.
 
@@ -585,6 +587,23 @@ IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, 
     prompt += `
 
 IMPORTANT: This markov_distribution result includes both a terminal canonical forecast and a day-by-day trajectory. Keep them separate. The Markov headline must use the canonical terminal fields (scenario probabilities, expected return/price, P(up), diagnostics, and actionSignal). The trajectory is path context only. Do NOT claim an "internal inconsistency" solely because the trajectory's last-day regime or drift differs from diagnostics.regimeState or the terminal expected return. Treat diagnostics.regimeState as the latent HMM backdrop, not as a synonym for actionSignal.recommendation; if you mention it to the user, label it as a latent regime/backdrop rather than the trade side. Do NOT relabel predictionConfidence with LOW/MEDIUM/HIGH unless that label appears explicitly in the Markov payload. If diagnostics.recommendationProvenance is present, use it as the explanation for any recommendation override instead of inventing a new reason.`;
+  }
+
+  const hasMarkovRegimeActionMismatch =
+    /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"actionSignal"\s*:\s*\{[\s\S]*?"recommendation"\s*:\s*"SELL"[\s\S]*?"diagnostics"\s*:\s*\{[\s\S]*?"regimeState"\s*:\s*"bull"/.test(fullToolResults)
+    || /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"actionSignal"\s*:\s*\{[\s\S]*?"recommendation"\s*:\s*"BUY"[\s\S]*?"diagnostics"\s*:\s*\{[\s\S]*?"regimeState"\s*:\s*"bear"/.test(fullToolResults);
+  if (hasMarkovRegimeActionMismatch) {
+    prompt += `
+
+IMPORTANT: The canonical Markov payload contains a regime/action mismatch. You MUST explain this in plain English: diagnostics.regimeState is the recent latent HMM backdrop, while actionSignal.recommendation is the next-horizon terminal tilt after scenario and threshold logic. Do NOT leave the user with an unexplained "bull but SELL" or "bear but BUY" pairing. If actionSignal.confidence is LOW or recommendationProvenance shows a HOLD→BUY/SELL conversion, phrase the Markov action signal as a weak tilt/lean, not as the final trade instruction.`;
+  }
+
+  const hasForecastArbiterNoTrade =
+    /"result"\s*:\s*\{[\s\S]*?"verdict"\s*:\s*"NO_TRADE"/.test(fullToolResults);
+  if (hasForecastArbiterNoTrade) {
+    prompt += `
+
+IMPORTANT: forecast_arbitrator returned NO_TRADE. That is the final trading decision. You may still show the raw Markov actionSignal inside the Markov evidence block, but frame it as subordinate model evidence (for example, a weak bearish tilt inside a no-trade setup), not as the action the user should take.`;
   }
 
   const hasAbstainingMarkovOutput =

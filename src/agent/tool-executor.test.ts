@@ -13,16 +13,14 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+const actualPaths = await import('../utils/paths.js');
+
 // Keep paths relative so chdir isolation works. Override any absolute-path
 // mock that parallel worker (agent.test.ts) might have registered.
 mock.module('../utils/paths.js', () => ({
+  ...actualPaths,
   cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
   getCramerShortDir: mock(() => '.dexter'),
-  getExperimentsDir: mock(() => join('.cramer-short', 'experiments')),
-  getExperimentLedgerPath: mock(() => join('.cramer-short', 'experiments', 'forecast-results.tsv')),
-  getExperimentRunsDir: mock(() => join('.cramer-short', 'experiments', 'runs')),
-  getExperimentRunDir: mock((runId: string) => join('.cramer-short', 'experiments', 'runs', runId)),
-  getExperimentRunManifestPath: mock((runId: string) => join('.cramer-short', 'experiments', 'runs', runId, 'manifest.json')),
 }));
 
 const { AgentToolExecutor } = await import('./tool-executor.js');

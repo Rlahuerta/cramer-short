@@ -11,6 +11,10 @@ import {
   type ForecastLabProfile,
 } from '../experiments/forecast-lab/profiles.js';
 import {
+  rankForecastLabMutators,
+  type ForecastLabRankedMutator,
+} from '../experiments/forecast-lab/mutator-ranker.js';
+import {
   promoteForecastLab,
   resetForecastLab,
   runForecastLab,
@@ -50,6 +54,8 @@ Run the bounded forecast-lab workflow for repo-native forecast experiments.
 - \`compare-best-vs-shipped\`: compare either the latest kept structured run against its shipped-default baseline, or a named mutator against the active/live promoted run when \`mutationId\` is supplied
 - \`list-mutators\`: list the shipped mutator ids for one forecast-lab profile, or summarize every structured profile when no unique profile is specified
 - \`catalog-extension-plan\`: explain the bounded code-change path for adding a new shipped mutator outside the current catalog, without reading experiment artifacts or running lineage commands
+- \`mutator-scorecard\`: summarize shipped mutators for a profile in a readable table for operator decision support, showing per-mutator status, attempts, kept, regressed, health, and score
+- \`batch-replay-mutators\`: replay shipped mutators from a common baseline (shipped defaults) and return a readable comparative matrix for operator decision support
 - \`promote-approved\`: run the bounded promotion verification path only after the user explicitly approves promotion, then activate the verified parameters for normal forecasts
 - \`reset-live\`: roll the live forecast-lab baseline back to shipped defaults or the last known-good activated baseline
 
@@ -62,7 +68,7 @@ Run the bounded forecast-lab workflow for repo-native forecast experiments.
 `.trim();
 
 const forecastLabRunSchema = z.object({
-  action: z.enum(['guided-improve', 'compare-best-vs-shipped', 'list-mutators', 'catalog-extension-plan', 'promote-approved', 'reset-live']),
+  action: z.enum(['guided-improve', 'compare-best-vs-shipped', 'list-mutators', 'catalog-extension-plan', 'mutator-scorecard', 'batch-replay-mutators', 'promote-approved', 'reset-live']),
   query: z.string().optional().describe('Original user request. Required when profileId is omitted for guided-improve.'),
   profileId: z.string().optional().describe('Forecast-lab profile id. Optional when the tool can resolve a unique profile automatically.'),
   sourceRunId: z.string().optional().describe('Kept run id to promote. Optional when there is a unique pending promotion source.'),
@@ -72,6 +78,7 @@ const forecastLabRunSchema = z.object({
   mutator: z.string().optional().describe('Optional structured mutator override for guided-improve execution.'),
   rankMutators: z.boolean().optional().describe('Enable ledger-based mutator ranking for guided-improve execution.'),
   routingSource: z.enum(['auto-routed', 'manual-request']).optional().describe('How the improvement request reached forecast-lab. Defaults to manual-request.'),
+  limit: z.number().int().min(1).max(50).optional().describe('For batch-replay-mutators: maximum number of mutators to replay. Defaults to 5. Must be between 1 and 50.'),
 });
 
 type ForecastLabRunToolInput = z.infer<typeof forecastLabRunSchema>;
@@ -215,12 +222,53 @@ interface ForecastLabResetPayload {
   readonly answer: string;
 }
 
+interface ForecastLabMutatorScorecardPayload {
+  readonly _tool: 'forecast_lab_run';
+  readonly action: 'mutator-scorecard';
+  readonly status: 'ok';
+  readonly profileId: string;
+  readonly totalStructuredRuns: number;
+  readonly rankedMutators: readonly {
+    readonly id: string;
+    readonly mutatorId: string;
+    readonly applicable: boolean;
+    readonly unused: boolean;
+    readonly attempts: number;
+    readonly keptRuns: number;
+    readonly regressedRuns: number;
+    readonly health: string;
+    readonly score: number;
+  }[];
+  readonly answer: string;
+}
+
+interface ForecastLabBatchReplayMutatorResult {
+  readonly mutatorId: string;
+  readonly decision: 'keep' | 'drop';
+  readonly reason: string;
+  readonly behaviorSummary: string;
+  readonly metrics?: readonly ForecastLabMetricComparison[];
+}
+
+interface ForecastLabBatchReplayPayload {
+  readonly _tool: 'forecast_lab_run';
+  readonly action: 'batch-replay-mutators';
+  readonly status: 'ok';
+  readonly profileId: string;
+  readonly baselineDescription: string;
+  readonly replayedCount: number;
+  readonly results: readonly ForecastLabBatchReplayMutatorResult[];
+  readonly answer: string;
+}
+
 export type ForecastLabRunToolPayload =
   | ForecastLabPlanPayload
   | ForecastLabGuidedImprovePayload
   | ForecastLabComparePayload
   | ForecastLabMutatorListPayload
   | ForecastLabCatalogExtensionPayload
+  | ForecastLabMutatorScorecardPayload
+  | ForecastLabBatchReplayPayload
   | ForecastLabPromotePayload
   | ForecastLabResetPayload
   | ForecastLabErrorPayload;
@@ -785,6 +833,62 @@ function summarizeForecastLabMutators(profile: ForecastLabProfile): ForecastLabM
   } satisfies ForecastLabMutatorListProfileSummary;
 }
 
+function buildMarkdownTable(
+  headers: readonly string[],
+  rows: readonly (readonly string[])[],
+): string {
+  const normalizeCell = (value: string | undefined): string => {
+    const normalized = (value ?? '—').replaceAll('|', '\\|').replaceAll('\n', ' ').trim();
+    return normalized.length > 0 ? normalized : '—';
+  };
+
+  return [
+    `| ${headers.map((header) => normalizeCell(header)).join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map((row) => `| ${headers.map((_, index) => normalizeCell(row[index])).join(' | ')} |`),
+  ].join('\n');
+}
+
+function buildIndexedListRows(values: readonly string[]): string[][] {
+  if (values.length === 0) {
+    return [['—', 'none']];
+  }
+
+  return values.map((value, index) => [String(index + 1), value]);
+}
+
+function buildBatchReplayAnswer(
+  profile: ForecastLabProfile,
+  results: readonly ForecastLabBatchReplayMutatorResult[],
+): string {
+  const rows = results.map((result) => {
+    const metricsStr = result.metrics && result.metrics.length > 0
+      ? result.metrics.map((m) => `${m.horizon}: ${formatSignedDelta(m.deltaDirAcc, 'pp')}`).join(', ')
+      : '—';
+    return [
+      result.mutatorId,
+      result.decision.toUpperCase(),
+      result.behaviorSummary,
+      result.reason,
+      metricsStr,
+    ];
+  });
+
+  return [
+    `Forecast-lab batch replay for ${profile.id}.`,
+    '',
+    `Baseline: shipped defaults (fresh runs with no parent lineage)`,
+    `Replayed: ${results.length} mutator${results.length === 1 ? '' : 's'}`,
+    '',
+    buildMarkdownTable(
+      ['Mutator ID', 'Verdict', 'Behavior', 'Reason', 'Horizon Deltas'],
+      rows,
+    ),
+    '',
+    'These runs were replayed from shipped defaults, not current kept lineage.',
+  ].join('\n');
+}
+
 function resolveMutatorListProfiles(
   input: ForecastLabRunToolInput,
 ): { profiles: readonly ForecastLabProfile[]; routingReason: string } | { error: string } {
@@ -847,24 +951,158 @@ function buildMutatorListAnswer(
     return [
       `Forecast-lab shipped mutator ids for ${summary.profileId}.`,
       '',
-      `Target subsystem: ${summary.targetSubsystem}.`,
-      `Current mutation mode: ${summary.mutationMode}.`,
-      `Shipped candidate catalog ids: ${summary.currentCatalogIds.length > 0 ? summary.currentCatalogIds.join(', ') : 'none'}.`,
-      `Allowed structured operator ids for this profile: ${summary.allowedOperatorIds.length > 0 ? summary.allowedOperatorIds.join(', ') : 'none'}.`,
-      `Built-in structured mutator operators in the framework: ${frameworkOperatorIds.join(', ')}.`,
-      `Dry-run-only profiles today: ${dryRunProfiles.length > 0 ? dryRunProfiles.join(', ') : 'none'}.`,
-      `Routing: ${routingReason}`,
+      buildMarkdownTable(
+        ['Field', 'Value'],
+        [
+          ['Target subsystem', summary.targetSubsystem],
+          ['Current mutation mode', summary.mutationMode],
+          ['Allowed structured operator ids', summary.allowedOperatorIds.length > 0 ? summary.allowedOperatorIds.join(', ') : 'none'],
+          ['Built-in structured mutator operators', frameworkOperatorIds.join(', ')],
+          ['Dry-run-only profiles today', dryRunProfiles.length > 0 ? dryRunProfiles.join(', ') : 'none'],
+          ['Routing', routingReason],
+        ],
+      ),
+      '',
+      'Shipped candidate catalog ids:',
+      buildMarkdownTable(['#', 'Mutator id'], buildIndexedListRows(summary.currentCatalogIds)),
     ].join('\n');
   }
 
   return [
     'Forecast-lab shipped mutator catalog summary.',
     '',
-    'Structured profiles and their shipped candidate catalog ids:',
-    ...summaries.map((summary) => `- ${summary.profileId}: ${summary.currentCatalogIds.length > 0 ? summary.currentCatalogIds.join(', ') : 'none'}`),
-    `Built-in structured mutator operators in the framework: ${frameworkOperatorIds.join(', ')}.`,
-    `Dry-run-only profiles today: ${dryRunProfiles.length > 0 ? dryRunProfiles.join(', ') : 'none'}.`,
+    buildMarkdownTable(
+      ['Profile id', 'Target subsystem', 'Mutation mode', 'Shipped ids', 'Allowed operators'],
+      summaries.map((summary) => [
+        summary.profileId,
+        summary.targetSubsystem,
+        summary.mutationMode,
+        String(summary.currentCatalogIds.length),
+        summary.allowedOperatorIds.length > 0 ? summary.allowedOperatorIds.join(', ') : 'none',
+      ]),
+    ),
+    '',
+    ...summaries.flatMap((summary) => [
+      `Shipped candidate catalog ids for ${summary.profileId}:`,
+      buildMarkdownTable(['#', 'Mutator id'], buildIndexedListRows(summary.currentCatalogIds)),
+      '',
+    ]),
+    buildMarkdownTable(
+      ['Field', 'Value'],
+      [
+        ['Built-in structured mutator operators', frameworkOperatorIds.join(', ')],
+        ['Dry-run-only profiles today', dryRunProfiles.length > 0 ? dryRunProfiles.join(', ') : 'none'],
+        ['Routing', routingReason],
+      ],
+    ),
+    '',
     'If you want one profile only, specify the profile id in the request.',
+  ].join('\n');
+}
+
+function resolveScorecardProfile(
+  input: ForecastLabRunToolInput,
+): { profile: ForecastLabProfile; routingReason: string } | { error: string } {
+  if (input.profileId?.trim()) {
+    const profile = getForecastLabProfile(input.profileId);
+    if (profile.mutation.mode !== 'structured') {
+      return {
+        error: `Profile "${profile.id}" does not have structured mutations enabled.`,
+      };
+    }
+    return {
+      profile,
+      routingReason: 'Profile supplied explicitly.',
+    };
+  }
+
+  const query = input.query?.trim();
+  if (query) {
+    const explicitProfileId = extractExplicitProfileId(query);
+    if (explicitProfileId) {
+      const profile = getForecastLabProfile(explicitProfileId);
+      if (profile.mutation.mode !== 'structured') {
+        return {
+          error: `Profile "${profile.id}" does not have structured mutations enabled.`,
+        };
+      }
+      return {
+        profile,
+        routingReason: 'Profile supplied explicitly.',
+      };
+    }
+
+    const route = routeForecastLabQuery(query);
+    if (route.preferredProfileId) {
+      const profile = getForecastLabProfile(route.preferredProfileId);
+      if (profile.mutation.mode !== 'structured') {
+        return {
+          error: `Profile "${profile.id}" does not have structured mutations enabled.`,
+        };
+      }
+      return {
+        profile,
+        routingReason: route.reasons.join(' '),
+      };
+    }
+  }
+
+  const structuredProfiles = listForecastLabProfiles().filter((profile) => profile.mutation.mode === 'structured');
+  if (structuredProfiles.length === 0) {
+    return {
+      error: 'No structured forecast-lab profiles are available.',
+    };
+  }
+
+  if (structuredProfiles.length === 1) {
+    return {
+      profile: structuredProfiles[0]!,
+      routingReason: 'Only one structured profile exists.',
+    };
+  }
+
+  return {
+    error: `Multiple structured forecast-lab profiles exist (${structuredProfiles.map((p) => p.id).join(', ')}). Please specify profileId.`,
+  };
+}
+
+function getMutatorStatusLabel(mutator: ForecastLabRankedMutator): string {
+  if (!mutator.applicable) {
+    return 'inapplicable';
+  }
+  if (!mutator.unused) {
+    return 'already applied';
+  }
+  return 'available';
+}
+
+function buildMutatorScorecardAnswer(
+  profile: ForecastLabProfile,
+  totalStructuredRuns: number,
+  rankedMutators: readonly ForecastLabRankedMutator[],
+  routingReason: string,
+): string {
+  const mutatorRows = rankedMutators.map((mutator) => [
+    mutator.id,
+    getMutatorStatusLabel(mutator),
+    mutator.mutatorId,
+    String(mutator.attempts),
+    String(mutator.keptRuns),
+    String(mutator.regressedRuns),
+    mutator.health,
+    String(mutator.score),
+  ]);
+
+  return [
+    `Forecast-lab mutator scorecard for ${profile.id}.`,
+    '',
+    `Profile: ${profile.id} | Total structured runs: ${totalStructuredRuns}`,
+    '',
+    buildMarkdownTable(
+      ['Mutator ID', 'Status', 'Behavior', 'Attempts', 'Kept', 'Regressed', 'Health', 'Score'],
+      mutatorRows,
+    ),
+    '',
     `Routing: ${routingReason}`,
   ].join('\n');
 }
@@ -873,13 +1111,113 @@ function extractErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function splitCommaList(text: string | undefined): string[] {
+  return (text ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function splitNextActions(text: string | undefined): string[] {
+  return (text ?? '')
+    .split(/,\s+|\s+or\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function formatStructuredMutationApplicabilityError(
+  action: ForecastLabRunToolInput['action'],
+  message: string,
+): string | null {
+  const requestedMutatorMatch = message.match(
+    /^Forecast-lab mutator "([^"]+)" is not applicable after replaying the kept parent lineage for profile "([^"]+)"\.\s*(.*)$/s,
+  );
+  const exhaustedMatch = message.match(
+    /^No shipped structured mutator remains applicable after replaying the kept parent lineage for profile "([^"]+)"\.\s*(.*)$/s,
+  );
+
+  const requestedMutatorId = requestedMutatorMatch?.[1];
+  const profileId = requestedMutatorMatch?.[2] ?? exhaustedMatch?.[1];
+  const remainder = requestedMutatorMatch?.[3] ?? exhaustedMatch?.[2];
+  if (!profileId || !remainder) {
+    return null;
+  }
+
+  const appliedCandidateIds = splitCommaList(
+    remainder.match(/Current kept lineage already applied: ([^.]+)\./)?.[1],
+  );
+  const inapplicableCandidateIds = splitCommaList(
+    remainder.match(/Remaining shipped mutators checked and found inapplicable: ([^.]+)\./)?.[1],
+  );
+  const alternativeCandidateIds = splitCommaList(
+    remainder.match(/Try one of the remaining applicable shipped mutators instead: ([^.]+)\./)?.[1],
+  );
+  const nextActions = splitNextActions(
+    remainder.match(/Next actions: ([^.]+)\./)?.[1],
+  );
+  const requestedMutatorState = requestedMutatorId
+    ? appliedCandidateIds.includes(requestedMutatorId)
+      ? 'Already applied in the current kept lineage'
+      : 'Not applicable in the current kept lineage state'
+    : 'No unused shipped mutator remains applicable';
+  const catalogStatus = exhaustedMatch
+    ? 'Shipped structured mutator catalog exhausted for this lineage'
+    : alternativeCandidateIds.length > 0
+      ? 'Requested mutator rejected, but other shipped options remain'
+      : 'Requested mutator rejected and no shipped fallback remains';
+
+  return [
+    `Forecast-lab ${action} could not continue.`,
+    '',
+    buildMarkdownTable(
+      ['Field', 'Value'],
+      [
+        ['Profile', profileId],
+        ...(requestedMutatorId ? [['Requested mutator', requestedMutatorId]] : []),
+        ['Mutator status', requestedMutatorState],
+        ['Catalog status', catalogStatus],
+      ],
+    ),
+    ...(appliedCandidateIds.length > 0
+      ? [
+          '',
+          'Already applied in the kept lineage:',
+          buildMarkdownTable(['#', 'Mutator id'], buildIndexedListRows(appliedCandidateIds)),
+        ]
+      : []),
+    ...(inapplicableCandidateIds.length > 0
+      ? [
+          '',
+          'Remaining shipped mutators checked and found inapplicable:',
+          buildMarkdownTable(['#', 'Mutator id'], buildIndexedListRows(inapplicableCandidateIds)),
+        ]
+      : []),
+    ...(alternativeCandidateIds.length > 0
+      ? [
+          '',
+          'Remaining applicable shipped mutators:',
+          buildMarkdownTable(['#', 'Mutator id'], buildIndexedListRows(alternativeCandidateIds)),
+        ]
+      : []),
+    ...(nextActions.length > 0
+      ? [
+          '',
+          'Next actions:',
+          ...nextActions.map((step, index) => `${index + 1}. ${step.charAt(0).toUpperCase()}${step.slice(1)}`),
+        ]
+      : []),
+  ].join('\n');
+}
+
 function buildErrorPayload(action: ForecastLabRunToolInput['action'], message: string): string {
+  const formattedAnswer = formatStructuredMutationApplicabilityError(action, message)
+    ?? `Forecast-lab ${action} failed: ${message}`;
   return formatToolResult({
     _tool: 'forecast_lab_run',
     action,
     status: 'error',
     error: message,
-    answer: `Forecast-lab ${action} failed: ${message}`,
+    answer: formattedAnswer,
   } satisfies ForecastLabErrorPayload);
 }
 
@@ -1253,6 +1591,120 @@ export function createForecastLabRunTool({
             operatorMutatorIds: [...listForecastLabMutatorIds()],
             answer: buildCatalogExtensionAnswer(profile, routingReason, input.query),
           } satisfies ForecastLabCatalogExtensionPayload);
+        }
+
+        if (input.action === 'mutator-scorecard') {
+          const resolved = resolveScorecardProfile(input);
+          if ('error' in resolved) {
+            return buildErrorPayload(input.action, resolved.error);
+          }
+
+          const { profile, routingReason } = resolved;
+          const ledgerPath = getLedgerPathFn();
+          const ledgerEntries = readLedgerEntriesFn(ledgerPath);
+          const catalog = listForecastLabStructuredMutations(profile.id);
+
+          const ranking = rankForecastLabMutators({
+            profileId: profile.id,
+            catalog,
+            ledgerEntries,
+          });
+
+          return formatToolResult({
+            _tool: 'forecast_lab_run',
+            action: 'mutator-scorecard',
+            status: 'ok',
+            profileId: profile.id,
+            totalStructuredRuns: ranking.totalStructuredRuns,
+            rankedMutators: ranking.rankedMutators.map((mutator) => ({
+              id: mutator.id,
+              mutatorId: mutator.mutatorId,
+              applicable: mutator.applicable,
+              unused: mutator.unused,
+              attempts: mutator.attempts,
+              keptRuns: mutator.keptRuns,
+              regressedRuns: mutator.regressedRuns,
+              health: mutator.health,
+              score: mutator.score,
+            })),
+            answer: buildMutatorScorecardAnswer(profile, ranking.totalStructuredRuns, ranking.rankedMutators, routingReason),
+          } satisfies ForecastLabMutatorScorecardPayload);
+        }
+
+        if (input.action === 'batch-replay-mutators') {
+          if (!input.profileId?.trim()) {
+            return buildErrorPayload(input.action, 'batch-replay-mutators requires profileId.');
+          }
+
+          const profile = getForecastLabProfile(input.profileId);
+          if (profile.mutation.mode !== 'structured') {
+            return buildErrorPayload(
+              input.action,
+              `Profile "${profile.id}" does not support structured mutation replay.`,
+            );
+          }
+
+          const catalog = listForecastLabStructuredMutations(profile.id);
+          const limit = input.limit ?? 5;
+          const mutatorsToReplay = catalog.slice(0, limit);
+
+          if (mutatorsToReplay.length === 0) {
+            return buildErrorPayload(
+              input.action,
+              `Profile "${profile.id}" has no shipped mutators to replay.`,
+            );
+          }
+
+          const results: ForecastLabBatchReplayMutatorResult[] = [];
+
+          for (const mutator of mutatorsToReplay) {
+            try {
+              onProgress?.(`batch-replay: running ${mutator.id}`);
+              const result = await runForecastLabFn({
+                profileId: profile.id,
+                mutationMode: 'structured',
+                mutator: mutator.id,
+                forceNoParent: true,
+                diagnosticOnly: true,
+                progress: onProgress,
+              });
+
+              const baselineArtifact = readJsonObject(join(result.manifest.artifactsPath, 'baseline.json'), readTextFileFn);
+              const candidateArtifact = readJsonObject(join(result.manifest.artifactsPath, 'candidate.json'), readTextFileFn);
+              const baselineStdout = extractComparisonStdout(baselineArtifact);
+              const candidateStdout = extractComparisonStdout(candidateArtifact);
+              const comparisons = typeof baselineStdout === 'string' && typeof candidateStdout === 'string'
+                ? buildMetricComparisons(baselineStdout, candidateStdout)
+                : [];
+
+              results.push({
+                mutatorId: mutator.id,
+                decision: result.decision.decision,
+                reason: result.decision.reason,
+                behaviorSummary: mutator.specSummary.summary,
+                ...(comparisons.length > 0 ? { metrics: comparisons } : {}),
+              });
+            } catch (error) {
+              const errorMessage = extractErrorMessage(error);
+              results.push({
+                mutatorId: mutator.id,
+                decision: 'drop',
+                reason: `error: ${errorMessage}`,
+                behaviorSummary: mutator.specSummary.summary,
+              });
+            }
+          }
+
+          return formatToolResult({
+            _tool: 'forecast_lab_run',
+            action: 'batch-replay-mutators',
+            status: 'ok',
+            profileId: profile.id,
+            baselineDescription: 'shipped defaults (fresh runs with no parent lineage)',
+            replayedCount: results.length,
+            results,
+            answer: buildBatchReplayAnswer(profile, results),
+          } satisfies ForecastLabBatchReplayPayload);
         }
 
         if (input.action === 'promote-approved') {

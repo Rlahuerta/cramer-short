@@ -23,31 +23,24 @@ import {
   writeRunManifest,
   readRunManifest,
 } from './ledger.js';
+import { listForecastLabStructuredMutations } from './profiles.js';
+
+const SHORTER_REACTIVE_WINDOW = listForecastLabStructuredMutations('multi-asset-markov-short-horizon')
+  .find((candidate) => candidate.id === 'markov-shorter-reactive-window');
+
+if (!SHORTER_REACTIVE_WINDOW) {
+  throw new Error('Missing shorter-reactive-window test fixture');
+}
 
 function makeMutationReplayPayload() {
   return {
     kind: 'markov-parameter-candidate' as const,
-    id: 'markov-shorter-reactive-window',
-    profileId: 'multi-asset-markov-short-horizon' as const,
-    mutatorId: 'search-replace' as const,
-    specSummary: {
-      mutatorId: 'search-replace' as const,
-      targetFiles: ['src/tools/finance/markov-distribution.ts'],
-      summary: 'Tighten the Markov regime update step.',
-    },
-    patchSummary: ['markov-distribution.ts: momentumLookback 20 → 14'],
-    edits: [
-      {
-        kind: 'search-replace' as const,
-        parameterId: 'momentumLookback',
-        filePath: 'src/tools/finance/markov-distribution.ts',
-        beforeValue: 20,
-        afterValue: 14,
-        search: '  momentumLookback: 20,',
-        replace: '  momentumLookback: 14,',
-        expectedReplacements: 1 as const,
-      },
-    ],
+    id: SHORTER_REACTIVE_WINDOW.id,
+    profileId: SHORTER_REACTIVE_WINDOW.profileId,
+    mutatorId: SHORTER_REACTIVE_WINDOW.mutatorId,
+    specSummary: SHORTER_REACTIVE_WINDOW.specSummary,
+    patchSummary: [...SHORTER_REACTIVE_WINDOW.patchSummary],
+    edits: SHORTER_REACTIVE_WINDOW.edits.map((edit) => ({ ...edit })),
   };
 }
 
@@ -161,17 +154,17 @@ function makeMutationMetadata(): Pick<
   return {
     mutationMode: 'structured',
     parentRunId: 'run-0',
-    mutationId: 'markov-shorter-reactive-window',
-    mutationSummary: 'Tighten the Markov regime update step.',
+    mutationId: SHORTER_REACTIVE_WINDOW.id,
+    mutationSummary: SHORTER_REACTIVE_WINDOW.specSummary.summary,
     lineage: {
       rootRunId: 'run-0',
       parentRunId: 'run-0',
       generation: 1,
     },
     mutationSpecSummary: {
-      mutatorId: 'search-replace',
-      targetFiles: ['src/tools/finance/markov-distribution.ts'],
-      summary: 'Tighten the Markov regime update step.',
+      mutatorId: SHORTER_REACTIVE_WINDOW.specSummary.mutatorId,
+      targetFiles: [...SHORTER_REACTIVE_WINDOW.specSummary.targetFiles],
+      summary: SHORTER_REACTIVE_WINDOW.specSummary.summary,
     },
     candidateWorkspace: {
       kind: 'current-worktree',

@@ -143,6 +143,8 @@ export interface ForecastLabRunOptions {
   readonly mutator?: string;
   readonly rankMutators?: boolean;
   readonly runId?: string;
+  readonly forceNoParent?: boolean;
+  readonly diagnosticOnly?: boolean;
   readonly now?: () => Date;
   readonly commandRunner?: ForecastLabCommandRunner;
   readonly ledgerPath?: string;
@@ -1925,7 +1927,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   }
   if (mutationPlan.runRealMutation) {
     ledgerEntries = readLedgerEntries(ledgerPath);
-    mutationSeed = readStructuredMutationSeed(profile, ledgerEntries);
+    mutationSeed = options.forceNoParent ? undefined : readStructuredMutationSeed(profile, ledgerEntries);
   }
 
   const manifest: ForecastLabRunManifest = {
@@ -2067,7 +2069,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
 
   const measuredDecision = decideRun(profile, baseline, candidate);
   const decision = skipMutation ? dropSkippedMutation(measuredDecision) : measuredDecision;
-  const promotion = decision.decision === 'keep'
+  const promotion = !options.diagnosticOnly && decision.decision === 'keep'
     ? buildPendingPromotionState(manifest, manifestPath, now().toISOString())
     : undefined;
   if (promotion) {
@@ -2119,17 +2121,21 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
     artifactsPath: runDir,
   };
 
-  appendLedgerEntry(ledgerPath, ledgerEntry);
-  if (options.routingContext) {
-    updateForecastLabRoutingStats(
-      profile.id,
-      decision.decision,
-      startedAt,
-      options.routingContext.invocationSource,
-      options.routingStatsPath,
-    );
+  if (!options.diagnosticOnly) {
+    appendLedgerEntry(ledgerPath, ledgerEntry);
+    if (options.routingContext) {
+      updateForecastLabRoutingStats(
+        profile.id,
+        decision.decision,
+        startedAt,
+        options.routingContext.invocationSource,
+        options.routingStatsPath,
+      );
+    }
+    progress?.(`forecast-lab: ledger appended at ${ledgerPath}`);
+  } else {
+    progress?.(`forecast-lab: diagnostic-only mode, skipping ledger and routing stats`);
   }
-  progress?.(`forecast-lab: ledger appended at ${ledgerPath}`);
 
   return {
     runId,

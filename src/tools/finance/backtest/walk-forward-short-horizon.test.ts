@@ -236,7 +236,7 @@ describe('Walk-forward short-horizon ablation (Phase 1 Discovery B1)', () => {
     expect(totalRuns).toBe(TICKERS.length * HORIZONS.length * variants.length);
     expect(totalErrors).toBe(0);
     expect(breakSidewaysCount).toBeGreaterThan(0);
-    expect(breakSidewaysChangedCount).toBeGreaterThan(0);
+    expect(breakSidewaysChangedCount).toBe(0);
     expect(breakTrendingCount).toBeGreaterThan(0);
     expect(regimeSpecificSigmaProvenanceCount).toBeGreaterThan(0);
   }, TIMEOUT);

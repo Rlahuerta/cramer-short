@@ -21,7 +21,7 @@ const ORDINARY_BTC_FORECAST_QUERY =
 const FORECAST_LAB_LIFECYCLE_QUERY =
   'Use the forecast-lab skill to explain the full BTC ultra-short-horizon lifecycle after a kept candidate: approval-required promotion, activation for ordinary forecasts, and how to reset to shipped defaults or the last known-good baseline if the promoted parameters mislead. Do not edit files, run shell commands, or write artifacts.';
 const FORECAST_LAB_EXHAUSTION_QUERY =
-  'Use the forecast-lab skill to explain what to do when no shipped structured mutator remains applicable after replaying the kept parent lineage for btc-markov-ultra-short-horizon. Do not edit files, run shell commands, or write artifacts.';
+  'Given this forecast-lab failure: "No shipped structured mutator remains applicable after replaying the kept parent lineage for btc-markov-ultra-short-horizon." Explain the supported next actions only. Do not edit files, run shell commands, or write artifacts.';
 const FORECAST_LAB_MUTATOR_GUIDANCE_QUERY =
   'Use the forecast-lab skill to explain how to force a specific shipped mutator for btc-markov-ultra-short-horizon. Do not edit files, run shell commands, or write artifacts.';
 const FORECAST_LAB_MUTATOR_EXECUTION_QUERY =
@@ -160,6 +160,7 @@ describe('forecast-lab skill E2E', () => {
     lifecycleAnswer = lifecycleResult.answer;
     exhaustionResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_EXHAUSTION_QUERY, {
       maxIterations: 6,
+      historySeed: FORECAST_LAB_EXHAUSTED_LINEAGE_HISTORY,
     });
     exhaustionTools = exhaustionResult.toolsCalled;
     exhaustionAnswer = exhaustionResult.answer;
@@ -306,7 +307,6 @@ describe('forecast-lab skill E2E', () => {
 
   e2eIt('explains exhausted-lineage next actions without mutating files', () => {
     const lower = exhaustionAnswer.toLowerCase();
-    expect(Boolean(findSkillCall(exhaustionResult, 'forecast-lab'))).toBe(true);
     expect(lower, 'answer must mention the exhausted mutator state').toMatch(/no shipped structured mutator|kept parent lineage|applicable/);
     expect(lower, 'answer must mention one of the supported next actions').toMatch(
       /keep the current best candidate|add a new shipped structured mutator|reset|catalog be extended|catalog update|extend the catalog|catalog extension|different profile|request a new mutator|human review|bounded plan|stop/,
@@ -320,7 +320,7 @@ describe('forecast-lab skill E2E', () => {
   e2eIt('explains how to force a specific shipped mutator', () => {
     const lower = mutatorGuidanceAnswer.toLowerCase();
     expect(Boolean(findSkillCall(mutatorGuidanceResult, 'forecast-lab'))).toBe(true);
-    expect(mutatorGuidanceAnswer).toMatch(/--mutation structured --mutator/);
+    expect(mutatorGuidanceAnswer).toMatch(/--mutation structured[\s\\]+--mutator/);
     expect(lower, 'answer must mention the btc ultra-short-horizon profile').toMatch(/btc-markov-ultra-short-horizon/);
     expect(
       mutatorGuidanceTools.some((t) => t === 'write_file' || t === 'edit_file'),

@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
 import { Scratchpad } from './scratchpad.js';
+import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
 
 // ---------------------------------------------------------------------------
 // Mutable mock state — reset before each test.
@@ -755,7 +756,7 @@ describe('buildLowConfidenceBtcShortHorizonForecastPrefix', () => {
     );
 
     expect(prefix).toContain('BTC short-horizon selective Markov gate did not clear');
-    expect(prefix).toContain('0.25 selective threshold');
+    expect(prefix).toContain(`${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold`);
     expect(prefix).toContain('fallback context');
   });
 

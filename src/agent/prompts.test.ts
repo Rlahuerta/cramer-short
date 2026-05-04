@@ -3,6 +3,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 const testDir = join(tmpdir(), `dexter-prompts-test-${Date.now()}`);
+const actualPaths = await import('../utils/paths.js');
 
 mock.module('../tools/registry.js', () => ({
   buildToolDescriptions: mock(() => 'mock tool descriptions'),
@@ -18,10 +19,12 @@ mock.module('../tools/registry.js', () => ({
 // in tests because no assertion here checks for skill presence or absence.
 
 mock.module('../utils/paths.js', () => ({
-  cramerShortPath: mock((sub: string) => join(testDir, sub ?? 'SOUL.md')),
+  ...actualPaths,
+  cramerShortPath: mock((...segments: string[]) => join(testDir, ...segments)),
   getCramerShortDir: mock(() => testDir),
 }));
 
+const { RECOMMENDED_CONFIDENCE_THRESHOLD } = await import('../tools/finance/markov-distribution.js');
 const {
   getCurrentDate,
   buildSystemPrompt,
@@ -219,7 +222,9 @@ describe('buildIterationPrompt', () => {
       '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.18}}}}',
     ].join('\n');
     const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
-    expect(prompt).toContain('predictionConfidence is below the 0.25 selective threshold');
+    expect(prompt).toContain(
+      `predictionConfidence is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold`,
+    );
     expect(prompt).toContain('fallback context');
   });
 
@@ -232,7 +237,9 @@ describe('buildIterationPrompt', () => {
     ].join('\n');
     const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
     expect(prompt).not.toContain('BTC short-horizon signals are mixed');
-    expect(prompt).toContain('predictionConfidence is below the 0.25 selective threshold');
+    expect(prompt).toContain(
+      `predictionConfidence is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold`,
+    );
   });
 
   it('injects trajectory-semantics guard when markov_distribution includes a trajectory payload', () => {
@@ -246,6 +253,30 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('latent HMM backdrop');
     expect(prompt).toContain('Do NOT relabel predictionConfidence with LOW/MEDIUM/HIGH');
     expect(prompt).toContain('recommendationProvenance');
+  });
+
+  it('injects regime-action mismatch guidance for latent bull with SELL action signal', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"SELL","confidence":"LOW"},"diagnostics":{"predictionConfidence":0.44,"regimeState":"bull","recommendationProvenance":"converted from HOLD because P(up) is 49.3%"}}}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Give me a BTC forecast for the next 24 hours', results);
+    expect(prompt).toContain('contains a regime/action mismatch');
+    expect(prompt).toContain('latent HMM backdrop');
+    expect(prompt).toContain('weak tilt/lean');
+  });
+
+  it('injects arbiter precedence guidance when forecast_arbitrator returns NO_TRADE', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"SELL","confidence":"LOW"},"diagnostics":{"predictionConfidence":0.44,"regimeState":"bull"}}}}',
+      '### forecast_arbitrator(ticker=BTC-USD)',
+      '{"data":{"result":{"verdict":"NO_TRADE","preferredDirection":"neutral","shouldEnterNow":false}}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Give me a BTC forecast for the next 24 hours with trade setup', results);
+    expect(prompt).toContain('forecast_arbitrator returned NO_TRADE');
+    expect(prompt).toContain('final trading decision');
+    expect(prompt).toContain('subordinate model evidence');
   });
 
   it('does not inject mixed-evidence guard for BTC horizons above 14 days', () => {

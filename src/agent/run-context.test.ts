@@ -9,9 +9,12 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+const actualPaths = await import('../utils/paths.js');
+
 // Keep paths relative so chdir isolation works. Override any absolute-path
 // mock that parallel worker (agent.test.ts) might have registered.
 mock.module('../utils/paths.js', () => ({
+  ...actualPaths,
   cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
   getCramerShortDir: mock(() => '.dexter'),
 }));

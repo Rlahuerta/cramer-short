@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join, resolve, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -24,7 +25,10 @@ import {
   promoteForecastLab,
   resetForecastLab,
 } from './runner.js';
-import { snapshotForecastLabMarkovParameterMutation } from './mutators/markov-parameters.js';
+import {
+  snapshotForecastLabMarkovParameterMutation,
+  type ForecastLabMarkovParameterMutationCandidate,
+} from './mutators/markov-parameters.js';
 import { FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS } from '../../tools/finance/markov-distribution.js';
 import { FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS } from '../../tools/finance/conformal.js';
 import { FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS } from '../../tools/finance/regime-calibrator.js';
@@ -159,34 +163,54 @@ const ORIGINAL_RUNTIME_DEFAULTS = snapshotRuntimeDefaults();
 const SHIPPED_LIVE_FILES = new Map(
   LIVE_MUTABLE_FILES.map((filePath) => [filePath, readHeadTrackedFile(filePath)]),
 );
-const SHIPPED_RUNTIME_DEFAULTS = {
-  markov: {
-    recommendedConfidenceThreshold: 0.25,
-    transitionMinObservations: 30,
-    transitionDecay: 0.97,
-    structuralBreakMinLength: 60,
-    momentumLookback: 20,
-    momentumAdjustmentScale: 0.25,
-    momentumAdjustmentClamp: 0.003,
-    trendPenaltyOnlyBreakConfidence: false,
-    divergenceWeightedBreakConfidence: false,
-  },
-  conformal: {
-    pidLearningRate: 0.05,
-    integralDecay: 1.0,
-    adaptiveBreakEnabled: false,
-    adaptiveBreakLearningRateMultiplier: 1.5,
-    adaptiveBreakCooloffWindow: 0,
-    scoreAggregationMinSamples: 20,
-    scoreAggregationCalibrationWindow: 120,
-  },
-  regime: {
-    minSamplesPerRegime: 30,
-    learningRate: 0.05,
-    maxIter: 500,
-    tol: 1e-6,
-  },
-} as const;
+const SHIPPED_RUNTIME_DEFAULTS = snapshotRuntimeDefaults();
+
+function getStructuredMutationFixture(
+  profileId: 'multi-asset-markov-short-horizon' | 'btc-markov-ultra-short-horizon',
+  mutationId: string,
+): ForecastLabMarkovParameterMutationCandidate {
+  const mutation = listForecastLabStructuredMutations(profileId).find((candidate) => candidate.id === mutationId);
+  if (!mutation) {
+    throw new Error(`Missing test mutation fixture: ${profileId}/${mutationId}`);
+  }
+  return mutation;
+}
+
+function getStructuredMutationEdit(
+  mutation: ForecastLabMarkovParameterMutationCandidate,
+  parameterId: string,
+) {
+  const edit = mutation.edits.find((candidateEdit) => candidateEdit.parameterId === parameterId);
+  if (!edit) {
+    throw new Error(`Missing edit "${parameterId}" for mutation ${mutation.id}`);
+  }
+  return edit;
+}
+
+function getStructuredMutationLine(
+  mutation: ForecastLabMarkovParameterMutationCandidate,
+  parameterId: string,
+): string {
+  const edit = getStructuredMutationEdit(mutation, parameterId);
+  return `  ${parameterId}: ${edit.afterValue},`;
+}
+
+const MULTI_ASSET_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
+  'multi-asset-markov-short-horizon',
+  'markov-shorter-reactive-window',
+);
+const MULTI_ASSET_FASTER_DECAY_REACTION = getStructuredMutationFixture(
+  'multi-asset-markov-short-horizon',
+  'markov-faster-decay-reaction',
+);
+const MULTI_ASSET_LONGER_STABILITY_WINDOW = getStructuredMutationFixture(
+  'multi-asset-markov-short-horizon',
+  'markov-longer-stability-window',
+);
+const BTC_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
+  'btc-markov-ultra-short-horizon',
+  'markov-shorter-reactive-window',
+);
 
 function appendStructuredMutationHistory(params: {
   readonly profileId?: string;
@@ -558,13 +582,13 @@ describe('forecast-lab runner', () => {
           const candidateRoot = context.cwd!;
           expect(candidateRoot).toBe(resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured'));
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-            '  momentumLookback: 14,',
+            getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
-            '  scoreAggregationCalibrationWindow: 96,',
+            getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/regime-calibrator.ts'), 'utf8')).toContain(
-            '  minSamplesPerRegime: 24,',
+            getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'),
           );
         } else {
           expect(context.cwd).toBe(process.cwd());
@@ -590,21 +614,15 @@ describe('forecast-lab runner', () => {
     expect(result.manifest.mutationMode).toBe('structured');
     expect(result.manifest.parentRunId).toBeUndefined();
     expect(result.manifest.mutationId).toBe('markov-shorter-reactive-window');
-    expect(result.manifest.mutationSummary).toBe(
-      'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
-    );
+    expect(result.manifest.mutationSummary).toBe(MULTI_ASSET_SHORTER_REACTIVE_WINDOW.specSummary.summary);
     expect(result.manifest.lineage).toEqual({
       rootRunId: 'runner-test-structured',
       generation: 0,
     });
     expect(result.manifest.mutationSpecSummary).toEqual({
       mutatorId: 'search-replace',
-      targetFiles: [
-        'src/tools/finance/markov-distribution.ts',
-        'src/tools/finance/conformal.ts',
-        'src/tools/finance/regime-calibrator.ts',
-      ],
-      summary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
+      targetFiles: [...MULTI_ASSET_SHORTER_REACTIVE_WINDOW.specSummary.targetFiles],
+      summary: MULTI_ASSET_SHORTER_REACTIVE_WINDOW.specSummary.summary,
     });
     expect(result.manifest.mutationReplayPayload).toMatchObject({
       kind: 'markov-parameter-candidate',
@@ -641,13 +659,7 @@ describe('forecast-lab runner', () => {
       id: 'markov-shorter-reactive-window',
       mutatorId: 'search-replace',
     });
-    expect(candidate.patchSummary).toEqual([
-      'markov-distribution.ts: momentumLookback 20 → 14',
-      'markov-distribution.ts: structuralBreakMinLength 60 → 48',
-      'conformal.ts: scoreAggregationMinSamples 20 → 16',
-      'conformal.ts: scoreAggregationCalibrationWindow 120 → 96',
-      'regime-calibrator.ts: minSamplesPerRegime 30 → 24',
-    ]);
+    expect(candidate.patchSummary).toEqual([...MULTI_ASSET_SHORTER_REACTIVE_WINDOW.patchSummary]);
 
     const decision = JSON.parse(readFileSync(join(runDir, 'decision.json'), 'utf8')) as Record<string, unknown>;
     expect(decision.mutationMode).toBe('structured');
@@ -659,7 +671,7 @@ describe('forecast-lab runner', () => {
       decision: 'keep',
       mutationMode: 'structured',
       mutationId: 'markov-shorter-reactive-window',
-      mutationSummary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
+      mutationSummary: MULTI_ASSET_SHORTER_REACTIVE_WINDOW.specSummary.summary,
       lineage: {
         rootRunId: 'runner-test-structured',
         generation: 0,
@@ -677,7 +689,7 @@ describe('forecast-lab runner', () => {
       'forecast-lab: mutated files src/tools/finance/markov-distribution.ts, src/tools/finance/conformal.ts, src/tools/finance/regime-calibrator.ts',
     );
     expect(progress).toContain(
-      'forecast-lab: patch summary markov-distribution.ts: momentumLookback 20 → 14 | markov-distribution.ts: structuralBreakMinLength 60 → 48 | conformal.ts: scoreAggregationMinSamples 20 → 16 | conformal.ts: scoreAggregationCalibrationWindow 120 → 96 | regime-calibrator.ts: minSamplesPerRegime 30 → 24',
+      `forecast-lab: patch summary ${MULTI_ASSET_SHORTER_REACTIVE_WINDOW.patchSummary.join(' | ')}`,
     );
     expect(progress.indexOf('forecast-lab: selected mutator markov-shorter-reactive-window (search-replace)'))
       .toBeLessThan(progress.indexOf('forecast-lab: starting baseline gate'));
@@ -686,9 +698,16 @@ describe('forecast-lab runner', () => {
   it('selects structured mutations against the clean candidate workspace instead of a dirty live checkout', async () => {
     const liveCheckoutPath = join(process.cwd(), 'src/tools/finance/markov-distribution.ts');
     const originalContents = readFileSync(liveCheckoutPath, 'utf8');
-    expect(originalContents).toContain('  momentumLookback: 20,');
+    const shippedMomentumLookback = SHIPPED_RUNTIME_DEFAULTS.markov.momentumLookback;
+    expect(originalContents).toContain(`  momentumLookback: ${shippedMomentumLookback},`);
 
-    writeFileSync(liveCheckoutPath, originalContents.replace('  momentumLookback: 20,', '  momentumLookback: 28,'));
+    writeFileSync(
+      liveCheckoutPath,
+      originalContents.replace(
+        `  momentumLookback: ${shippedMomentumLookback},`,
+        '  momentumLookback: 999,',
+      ),
+    );
 
     try {
       const result = await runForecastLab({
@@ -700,9 +719,9 @@ describe('forecast-lab runner', () => {
           if (context.phase === 'candidate') {
             const candidateRoot = context.cwd!;
             expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-              '  momentumLookback: 14,',
+              getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
             );
-            expect(readFileSync(liveCheckoutPath, 'utf8')).toContain('  momentumLookback: 28,');
+            expect(readFileSync(liveCheckoutPath, 'utf8')).toContain('  momentumLookback: 999,');
           }
 
           return {
@@ -746,16 +765,16 @@ describe('forecast-lab runner', () => {
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-            '  momentumLookback: 14,',
+            getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-            '  transitionDecay: 0.94,',
+            getStructuredMutationLine(MULTI_ASSET_FASTER_DECAY_REACTION, 'transitionDecay'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
-            '  scoreAggregationCalibrationWindow: 96,',
+            getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
-            '  adaptiveBreakLearningRateMultiplier: 1.75,',
+            getStructuredMutationLine(MULTI_ASSET_FASTER_DECAY_REACTION, 'adaptiveBreakLearningRateMultiplier'),
           );
         }
 
@@ -777,9 +796,7 @@ describe('forecast-lab runner', () => {
     ]);
     expect(result.manifest.parentRunId).toBe('runner-test-structured-parent-root');
     expect(result.manifest.mutationId).toBe('markov-faster-decay-reaction');
-    expect(result.manifest.mutationSummary).toBe(
-      'Lower transition decay and raise adaptive conformal sensitivity for quicker regime resets.',
-    );
+    expect(result.manifest.mutationSummary).toBe(MULTI_ASSET_FASTER_DECAY_REACTION.specSummary.summary);
     expect(result.manifest.lineage).toEqual({
       rootRunId: 'runner-test-structured-parent-root',
       parentRunId: 'runner-test-structured-parent-root',
@@ -792,7 +809,7 @@ describe('forecast-lab runner', () => {
       runId: 'runner-test-structured-parent-child',
       parentRunId: 'runner-test-structured-parent-root',
       mutationId: 'markov-faster-decay-reaction',
-      mutationSummary: 'Lower transition decay and raise adaptive conformal sensitivity for quicker regime resets.',
+      mutationSummary: MULTI_ASSET_FASTER_DECAY_REACTION.specSummary.summary,
       lineage: {
         rootRunId: 'runner-test-structured-parent-root',
         parentRunId: 'runner-test-structured-parent-root',
@@ -821,10 +838,10 @@ describe('forecast-lab runner', () => {
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-            '  momentumLookback: 14,',
+            getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-            '  transitionDecay: 0.94,',
+            getStructuredMutationLine(MULTI_ASSET_FASTER_DECAY_REACTION, 'transitionDecay'),
           );
         }
 
@@ -877,10 +894,10 @@ describe('forecast-lab runner', () => {
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-            '  transitionDecay: 0.94,',
+            getStructuredMutationLine(MULTI_ASSET_FASTER_DECAY_REACTION, 'transitionDecay'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-            '  momentumLookback: 28,',
+            getStructuredMutationLine(MULTI_ASSET_LONGER_STABILITY_WINDOW, 'momentumLookback'),
           );
         }
 
@@ -985,10 +1002,10 @@ describe('forecast-lab runner', () => {
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-            '  momentumLookback: 14,',
+            getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-            '  transitionDecay: 0.94,',
+            getStructuredMutationLine(MULTI_ASSET_FASTER_DECAY_REACTION, 'transitionDecay'),
           );
         }
 
@@ -1035,10 +1052,10 @@ describe('forecast-lab runner', () => {
           if (context.phase === 'candidate') {
             expect(context.cwd).toBe(promotionWorktreePath);
             expect(readFileSync(join(promotionWorktreePath, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
-              '  momentumLookback: 14,',
+              getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
             );
             expect(readFileSync(join(promotionWorktreePath, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
-              '  scoreAggregationCalibrationWindow: 96,',
+              getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'),
             );
           } else {
             expect(context.cwd).toBe(process.cwd());
@@ -1102,12 +1119,18 @@ describe('forecast-lab runner', () => {
       expect(activationArtifact.promotion).toEqual(activatedState);
       expect(activationArtifact.mutationReplayPayload).toEqual(source.manifest.mutationReplayPayload);
       expect(activationArtifact.activeStatePath).toBe(result.activeStatePath);
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8')).toContain('  momentumLookback: 14,');
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8')).toContain('  scoreAggregationCalibrationWindow: 96,');
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8')).toContain('  minSamplesPerRegime: 24,');
-      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback).toBe(14);
-      expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow).toBe(96);
-      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime).toBe(24);
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback)
+        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback').afterValue);
+      expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow)
+        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow').afterValue);
+      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime)
+        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime').afterValue);
       const activeState = JSON.parse(readFileSync(result.activeStatePath, 'utf8')) as Record<string, unknown>;
       expect(activeState.profileId).toBe('multi-asset-markov-short-horizon');
       expect(activeState.sourceRunId).toBe('runner-test-promote-source');
@@ -1184,7 +1207,10 @@ describe('forecast-lab runner', () => {
       const originalMarkov = readFileSync(liveMarkovPath, 'utf8');
       writeFileSync(
         liveMarkovPath,
-        originalMarkov.replace('  momentumLookback: 20,', '  momentumLookback: 999,'),
+        originalMarkov.replace(
+          `  momentumLookback: ${runtimeDefaults.markov.momentumLookback},`,
+          '  momentumLookback: 999,',
+        ),
         'utf8',
       );
 
@@ -1237,9 +1263,12 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('defaults');
       expect(result.activeStatePath).toBeUndefined();
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8')).toContain('  momentumLookback: 20,');
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8')).toContain('  scoreAggregationCalibrationWindow: 120,');
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8')).toContain('  minSamplesPerRegime: 30,');
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .toContain(`  momentumLookback: ${runtimeDefaults.markov.momentumLookback},`);
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .toContain(`  scoreAggregationCalibrationWindow: ${runtimeDefaults.conformal.scoreAggregationCalibrationWindow},`);
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+        .toContain(`  minSamplesPerRegime: ${runtimeDefaults.regime.minSamplesPerRegime},`);
       expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback).toBe(runtimeDefaults.markov.momentumLookback);
       expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow).toBe(runtimeDefaults.conformal.scoreAggregationCalibrationWindow);
       expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime).toBe(runtimeDefaults.regime.minSamplesPerRegime);
@@ -1298,14 +1327,20 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('last-known-good');
       expect(result.activeStatePath).toBe(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'));
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8')).toContain('  momentumLookback: 14,');
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8')).toContain('  transitionDecay: 0.97,');
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8')).toContain('  adaptiveBreakLearningRateMultiplier: 1.5,');
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8')).toContain('  minSamplesPerRegime: 24,');
-      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback).toBe(14);
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .toContain(`  transitionDecay: ${SHIPPED_RUNTIME_DEFAULTS.markov.transitionDecay},`);
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .toContain(`  adaptiveBreakLearningRateMultiplier: ${SHIPPED_RUNTIME_DEFAULTS.conformal.adaptiveBreakLearningRateMultiplier},`);
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback)
+        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback').afterValue);
       expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay).toBe(0.97);
       expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier).toBe(1.5);
-      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime).toBe(24);
+      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime)
+        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime').afterValue);
       const activeState = JSON.parse(readFileSync(result.activeStatePath!, 'utf8')) as Record<string, unknown>;
       expect(activeState.sourceRunId).toBe(firstPromotion.sourceRunId);
       expect(activeState.promotionRunId).toBe(firstPromotion.runId);
@@ -1898,47 +1933,8 @@ describe('forecast-lab CLI module', () => {
           allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
           mutationMode: 'structured',
           mutationId: 'markov-shorter-reactive-window',
-          mutationSummary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
-          mutationReplayPayload: {
-            kind: 'markov-parameter-candidate',
-            id: 'markov-shorter-reactive-window',
-            profileId: 'btc-markov-ultra-short-horizon',
-            mutatorId: 'search-replace',
-            specSummary: {
-              mutatorId: 'search-replace',
-              targetFiles: [
-                'src/tools/finance/markov-distribution.ts',
-                'src/tools/finance/conformal.ts',
-              ],
-              summary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
-            },
-            patchSummary: [
-              'markov-distribution.ts: momentumLookback 20 → 14',
-              'conformal.ts: scoreAggregationCalibrationWindow 120 → 96',
-            ],
-            edits: [
-              {
-                kind: 'search-replace',
-                parameterId: 'momentumLookback',
-                filePath: 'src/tools/finance/markov-distribution.ts',
-                beforeValue: 20,
-                afterValue: 14,
-                search: '  momentumLookback: 20,',
-                replace: '  momentumLookback: 14,',
-                expectedReplacements: 1,
-              },
-              {
-                kind: 'search-replace',
-                parameterId: 'scoreAggregationCalibrationWindow',
-                filePath: 'src/tools/finance/conformal.ts',
-                beforeValue: 120,
-                afterValue: 96,
-                search: '  scoreAggregationCalibrationWindow: 120,',
-                replace: '  scoreAggregationCalibrationWindow: 96,',
-                expectedReplacements: 1,
-              },
-            ],
-          },
+          mutationSummary: BTC_SHORTER_REACTIVE_WINDOW.specSummary.summary,
+          mutationReplayPayload: snapshotForecastLabMarkovParameterMutation(BTC_SHORTER_REACTIVE_WINDOW),
           candidateWorkspace: {
             kind: 'candidate-worktree',
             rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured-summary'),
@@ -1969,7 +1965,7 @@ describe('forecast-lab CLI module', () => {
           allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
           mutationMode: 'structured',
           mutationId: 'markov-shorter-reactive-window',
-          mutationSummary: 'Shorten Markov/conformal calibration windows for faster short-horizon adaptation.',
+          mutationSummary: BTC_SHORTER_REACTIVE_WINDOW.specSummary.summary,
           candidateWorkspace: {
             kind: 'candidate-worktree',
             rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured-summary'),
@@ -1989,15 +1985,124 @@ describe('forecast-lab CLI module', () => {
     expect(text).toContain('Evolution summary:');
     expect(text).toContain('baseline exitCode: 0');
     expect(text).toContain('candidate exitCode: 0');
-    expect(text).toContain('Mutation summary: Shorten Markov/conformal calibration windows for faster short-horizon adaptation.');
+    expect(text).toContain(`Mutation summary: ${BTC_SHORTER_REACTIVE_WINDOW.specSummary.summary}`);
     expect(text).toContain('mutation id: markov-shorter-reactive-window');
     expect(text).toContain('Previous parameters (baseline defaults):');
     expect(text).toContain('New parameters (candidate mutation):');
-    expect(text).toContain('markov-distribution.ts: momentumLookback = 20');
-    expect(text).toContain('markov-distribution.ts: momentumLookback = 14');
-    expect(text).toContain('conformal.ts: scoreAggregationCalibrationWindow = 120');
-    expect(text).toContain('conformal.ts: scoreAggregationCalibrationWindow = 96');
+    expect(text).toContain(
+      `markov-distribution.ts: momentumLookback = ${getStructuredMutationEdit(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback').beforeValue}`,
+    );
+    expect(text).toContain(
+      `markov-distribution.ts: momentumLookback = ${getStructuredMutationEdit(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback').afterValue}`,
+    );
+    expect(text).toContain(
+      `conformal.ts: scoreAggregationCalibrationWindow = ${getStructuredMutationEdit(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow').beforeValue}`,
+    );
+    expect(text).toContain(
+      `conformal.ts: scoreAggregationCalibrationWindow = ${getStructuredMutationEdit(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow').afterValue}`,
+    );
     expect(text).toContain('forecast-lab keep: candidate BTC ultra-short-horizon test command must pass');
     expect(writes).toEqual([]);
+  });
+
+  it('diagnostic-only mode prevents promotion state, ledger entries, and routing stats', async () => {
+    const profile = getForecastLabProfile('btc-markov-ultra-short-horizon');
+    const tempRoot = join('.cramer-short', 'experiments', 'diagnostic-only-test');
+    const ledgerPath = join(tempRoot, 'ledger.jsonl');
+    const routingStatsPath = join(tempRoot, 'routing-stats.json');
+
+    // Clean up any existing test artifacts
+    rmSync(tempRoot, { recursive: true, force: true });
+
+    const commandRunner = async (command: any, context: any) => ({
+      id: command.id,
+      command: command.command,
+      exitCode: 0,
+      stdout: context.phase === 'baseline' ? 'baseline OK' : 'candidate OK',
+      stderr: '',
+      durationMs: 1,
+      timedOut: false,
+    });
+
+    const result = await runForecastLab({
+      profileId: profile.id,
+      mutationMode: 'structured',
+      // Let auto-selection pick an applicable mutator
+      forceNoParent: true,
+      diagnosticOnly: true,
+      ledgerPath,
+      routingContext: {
+        originatingQuery: 'diagnostic test',
+        selectedProfileId: profile.id,
+        routerReason: 'test',
+        invocationSource: 'manual-request',
+      },
+      routingStatsPath,
+      commandRunner: commandRunner as any,
+    });
+
+    // Verify no promotion state was set
+    expect(result.manifest.promotion).toBeUndefined();
+
+    // Verify no ledger file was created
+    expect(existsSync(ledgerPath)).toBe(false);
+
+    // Verify no routing stats were created
+    expect(existsSync(routingStatsPath)).toBe(false);
+
+    // Clean up
+    rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  it('normal mode (diagnosticOnly=false) creates promotion state, ledger entries, and routing stats', async () => {
+    const profile = getForecastLabProfile('btc-markov-ultra-short-horizon');
+    const tempRoot = join('.cramer-short', 'experiments', 'normal-mode-test');
+    const ledgerPath = join(tempRoot, 'ledger.jsonl');
+    const routingStatsPath = join(tempRoot, 'routing-stats.json');
+
+    // Clean up any existing test artifacts
+    rmSync(tempRoot, { recursive: true, force: true });
+
+    const commandRunner = async (command: any, context: any) => ({
+      id: command.id,
+      command: command.command,
+      exitCode: 0,
+      stdout: context.phase === 'baseline' ? 'baseline OK' : 'candidate OK',
+      stderr: '',
+      durationMs: 1,
+      timedOut: false,
+    });
+
+    const result = await runForecastLab({
+      profileId: profile.id,
+      mutationMode: 'structured',
+      // Let auto-selection pick an applicable mutator
+      forceNoParent: true,
+      diagnosticOnly: false,
+      ledgerPath,
+      routingContext: {
+        originatingQuery: 'normal test',
+        selectedProfileId: profile.id,
+        routerReason: 'test',
+        invocationSource: 'manual-request',
+      },
+      routingStatsPath,
+      commandRunner: commandRunner as any,
+    });
+
+    // Verify promotion state was set for kept runs
+    if (result.decision.decision === 'keep') {
+      expect(result.manifest.promotion).toBeDefined();
+      expect(result.manifest.promotion?.status).toBe('approval-required');
+    }
+
+    // Verify ledger file was created
+    expect(existsSync(ledgerPath)).toBe(true);
+
+    // Verify routing stats were created
+    expect(existsSync(routingStatsPath)).toBe(true);
+
+    // Clean up
+    rmSync(tempRoot, { recursive: true, force: true });
   });
 });
