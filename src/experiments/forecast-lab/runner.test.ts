@@ -195,6 +195,17 @@ function getStructuredMutationLine(
   return `  ${parameterId}: ${edit.afterValue},`;
 }
 
+function getStructuredMutationNumericAfterValue(
+  mutation: ForecastLabMarkovParameterMutationCandidate,
+  parameterId: string,
+): number {
+  const value = getStructuredMutationEdit(mutation, parameterId).afterValue;
+  if (typeof value !== 'number') {
+    throw new Error(`Expected numeric afterValue for ${mutation.id}/${parameterId}`);
+  }
+  return value;
+}
+
 const MULTI_ASSET_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
   'multi-asset-markov-short-horizon',
   'markov-shorter-reactive-window',
@@ -1126,11 +1137,11 @@ describe('forecast-lab runner', () => {
       expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
       expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback)
-        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback').afterValue);
+        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
       expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow)
-        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow').afterValue);
+        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
       expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime)
-        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime').afterValue);
+        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
       const activeState = JSON.parse(readFileSync(result.activeStatePath, 'utf8')) as Record<string, unknown>;
       expect(activeState.profileId).toBe('multi-asset-markov-short-horizon');
       expect(activeState.sourceRunId).toBe('runner-test-promote-source');
@@ -1336,11 +1347,11 @@ describe('forecast-lab runner', () => {
       expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
       expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback)
-        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback').afterValue);
+        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
       expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay).toBe(0.97);
       expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier).toBe(1.5);
       expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime)
-        .toBe(getStructuredMutationEdit(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime').afterValue);
+        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
       const activeState = JSON.parse(readFileSync(result.activeStatePath!, 'utf8')) as Record<string, unknown>;
       expect(activeState.sourceRunId).toBe(firstPromotion.sourceRunId);
       expect(activeState.promotionRunId).toBe(firstPromotion.runId);

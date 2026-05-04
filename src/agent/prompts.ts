@@ -569,6 +569,13 @@ IMPORTANT: One or more data tools returned an error or empty result. Per your Fi
 IMPORTANT: markov_distribution results are present. Treat the canonical Markov payload as authoritative. Use the reported scenario bucket probabilities and diagnostics verbatim. Do NOT recompute, sum, or infer scenario probabilities from raw Polymarket titles, threshold questions, or price_distribution_chart output — those are inputs/visual aids, not the canonical distribution.`;
   }
 
+  const requestedBucketMatch = originalQuery.match(/\b(\d+)\s*(?:parts|buckets|bins|segments)\b/i);
+  if (hasCanonicalMarkovOutput && requestedBucketMatch) {
+    prompt += `
+
+IMPORTANT: The user explicitly requested the probability range be divided into ${requestedBucketMatch[1]} parts. Preserve that ${requestedBucketMatch[1]}-part bucket granularity in the final answer when presenting the canonical Markov distribution. Do NOT compress it into fewer buckets or replace it with a coarser summary. When the user asks for density probabilities, that means per-bucket probability mass (for example, P(bucket) or P(in bucket)), not just survival probabilities like P(price > level). If you also show a survival-style view, label it separately and do NOT substitute it for the requested density table.`;
+  }
+
   if (shouldInjectBtcShortHorizonMixedEvidencePrompt(originalQuery, fullToolResults)) {
     prompt += `
 

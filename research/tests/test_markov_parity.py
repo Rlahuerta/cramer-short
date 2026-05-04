@@ -4,11 +4,13 @@ import numpy as np
 import pytest
 
 from research.models.markov import (
+    BtcShortHorizonLivePolicy,
     classify_regime,
     classify_regime_series,
     estimate_transition_matrix,
     detect_structural_break,
     compute_markov_forecast,
+    get_btc_short_horizon_live_policy,
     _default_matrix,
     NUM_STATES,
     STATE_INDEX,
@@ -133,6 +135,35 @@ def test_detect_structural_break_no_break():
     result = detect_structural_break(states, divergence_threshold=1.0)
     assert result["detected"] is False
     assert result["divergence"] < 1.0
+
+
+def test_get_btc_short_horizon_live_policy_matches_ts_horizons():
+    assert get_btc_short_horizon_live_policy("ETH-USD", 1) is None
+    assert get_btc_short_horizon_live_policy("BTC-USD", 30) is None
+    assert get_btc_short_horizon_live_policy("BTC-USD", 1) == BtcShortHorizonLivePolicy(
+        history_days=252,
+        break_divergence_threshold=0.10,
+        rerun_on_break=True,
+        rerun_window_days=60,
+    )
+    assert get_btc_short_horizon_live_policy("BTC", 3) == BtcShortHorizonLivePolicy(
+        history_days=252,
+        break_divergence_threshold=0.20,
+        rerun_on_break=True,
+        rerun_window_days=60,
+    )
+    assert get_btc_short_horizon_live_policy("BTC-USD", 2) == BtcShortHorizonLivePolicy(
+        history_days=252,
+        break_divergence_threshold=0.15,
+        rerun_on_break=False,
+        rerun_window_days=None,
+    )
+    assert get_btc_short_horizon_live_policy("BTC-USD", 14) == BtcShortHorizonLivePolicy(
+        history_days=252,
+        break_divergence_threshold=0.15,
+        rerun_on_break=False,
+        rerun_window_days=None,
+    )
 
 
 # ---------------------------------------------------------------------------

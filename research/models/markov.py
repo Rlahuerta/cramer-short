@@ -10,6 +10,7 @@ Mirrors TS logic:
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
@@ -21,6 +22,53 @@ RegimeState = Literal["bull", "bear", "sideways"]
 REGIME_STATES: list[RegimeState] = ["bull", "bear", "sideways"]
 STATE_INDEX: dict[RegimeState, int] = {"bull": 0, "bear": 1, "sideways": 2}
 NUM_STATES = len(REGIME_STATES)
+
+BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS = 252
+BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS = 60
+BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.15
+
+
+@dataclass(frozen=True)
+class BtcShortHorizonLivePolicy:
+    history_days: int
+    break_divergence_threshold: float
+    rerun_on_break: bool
+    rerun_window_days: int | None = None
+
+
+def is_btc_ticker_symbol(ticker: str) -> bool:
+    upper = ticker.strip().upper()
+    return upper in {"BTC", "BTC-USD"}
+
+
+def get_btc_short_horizon_live_policy(
+    ticker: str,
+    horizon: int,
+) -> BtcShortHorizonLivePolicy | None:
+    if not is_btc_ticker_symbol(ticker) or horizon < 1 or horizon > 14:
+        return None
+
+    if horizon == 1:
+        return BtcShortHorizonLivePolicy(
+            history_days=BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
+            break_divergence_threshold=0.10,
+            rerun_on_break=True,
+            rerun_window_days=BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS,
+        )
+
+    if horizon == 3:
+        return BtcShortHorizonLivePolicy(
+            history_days=BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
+            break_divergence_threshold=0.20,
+            rerun_on_break=True,
+            rerun_window_days=BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS,
+        )
+
+    return BtcShortHorizonLivePolicy(
+        history_days=BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
+        break_divergence_threshold=BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
+        rerun_on_break=False,
+    )
 
 
 def classify_regime(

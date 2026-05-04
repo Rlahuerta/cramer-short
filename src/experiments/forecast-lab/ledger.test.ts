@@ -25,12 +25,14 @@ import {
 } from './ledger.js';
 import { listForecastLabStructuredMutations } from './profiles.js';
 
-const SHORTER_REACTIVE_WINDOW = listForecastLabStructuredMutations('multi-asset-markov-short-horizon')
-  .find((candidate) => candidate.id === 'markov-shorter-reactive-window');
-
-if (!SHORTER_REACTIVE_WINDOW) {
-  throw new Error('Missing shorter-reactive-window test fixture');
-}
+const SHORTER_REACTIVE_WINDOW = (() => {
+  const mutation = listForecastLabStructuredMutations('multi-asset-markov-short-horizon')
+    .find((candidate) => candidate.id === 'markov-shorter-reactive-window');
+  if (!mutation) {
+    throw new Error('Missing shorter-reactive-window test fixture');
+  }
+  return mutation;
+})();
 
 function makeMutationReplayPayload() {
   return {

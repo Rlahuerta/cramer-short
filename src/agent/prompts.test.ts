@@ -279,6 +279,22 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('subordinate model evidence');
   });
 
+  it('preserves explicit bucket-count requests when canonical Markov output is present', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"scenarios":{"flat":0.8}}}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt(
+      'Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts.',
+      results,
+    );
+    expect(prompt).toContain('divided into 9 parts');
+    expect(prompt).toContain('Preserve that 9-part bucket granularity');
+    expect(prompt).toContain('Do NOT compress it into fewer buckets');
+    expect(prompt).toContain('density probabilities, that means per-bucket probability mass');
+    expect(prompt).toContain('do NOT substitute it for the requested density table');
+  });
+
   it('does not inject mixed-evidence guard for BTC horizons above 14 days', () => {
     const results = [
       '### markov_distribution(ticker=BTC-USD)',

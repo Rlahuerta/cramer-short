@@ -69,12 +69,14 @@ import {
   capBtcShortHorizonConfidence,
   applyCryptoTerminalAnchorFallback,
   evaluateAnchorTrust,
+  getBtcShortHorizonLivePolicy,
   normalizeHistoricalPriceTicker,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 
 const realPolymarketModule = { ...(await import('./polymarket.js')) };
 const realHmmModule = { ...(await import('./hmm.js')) };
+const realApiModule = { ...(await import('./api.js')) };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -153,6 +155,7 @@ function installDefaultPolymarketMock(): void {
 afterEach(() => {
   mock.module('./polymarket.js', () => realPolymarketModule);
   mock.module('./hmm.js', () => realHmmModule);
+  mock.module('./api.js', () => realApiModule);
 });
 
 function rowSums(m: number[][]): number[] {
@@ -4938,6 +4941,33 @@ describe('markov_distribution tool output envelope', () => {
     expect(forecastHint).toBeNull();
   });
 
+  it('returns the promoted BTC short-horizon live policy by horizon', () => {
+    expect(getBtcShortHorizonLivePolicy('ETH-USD', 1)).toBeNull();
+    expect(getBtcShortHorizonLivePolicy('BTC-USD', 30)).toBeNull();
+    expect(getBtcShortHorizonLivePolicy('BTC-USD', 1)).toEqual({
+      historyDays: 252,
+      breakDivergenceThreshold: 0.10,
+      rerunOnBreak: true,
+      rerunWindowDays: 60,
+    });
+    expect(getBtcShortHorizonLivePolicy('BTC', 3)).toEqual({
+      historyDays: 252,
+      breakDivergenceThreshold: 0.20,
+      rerunOnBreak: true,
+      rerunWindowDays: 60,
+    });
+    expect(getBtcShortHorizonLivePolicy('BTC-USD', 2)).toEqual({
+      historyDays: 252,
+      breakDivergenceThreshold: 0.15,
+      rerunOnBreak: false,
+    });
+    expect(getBtcShortHorizonLivePolicy('BTC-USD', 14)).toEqual({
+      historyDays: 252,
+      breakDivergenceThreshold: 0.15,
+      rerunOnBreak: false,
+    });
+  });
+
   it('buildForecastHint contract: BTC-only, horizon ≤ 14, and attenuation formula', () => {
     const base = {
       canEmitCanonical: false,
@@ -6469,6 +6499,93 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.status).toBe('ok');
       expect(parsed.data.canonical.diagnostics.markovWeight).toBe(1);
       expect(parsed.data.canonical.diagnostics.anchorWeight).toBe(0);
+    });
+
+    it('auto-fetches the 252d BTC live-policy history for short horizons', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      mock.module('./api.js', () => ({
+        ...realApiModule,
+        api: {
+          ...realApiModule.api,
+          get: async (_path: string, params: Record<string, string>) => {
+            const start = new Date(params.start_date).getTime();
+            const end = new Date(params.end_date).getTime();
+            const requestedDays = Math.round((end - start) / 86_400_000);
+            const length = requestedDays >= 200 ? 252 : 120;
+            let price = 60000;
+            const prices = Array.from({ length }, (_, i) => {
+              price *= 1.001 + Math.sin(i * 0.07) * 0.0015;
+              return { close: Math.round(price * 100) / 100 };
+            });
+            return { data: { prices } };
+          },
+        },
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      const result = await freshTool.func({
+        ticker: 'BTC-USD',
+        horizon: 2,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.canonical.diagnostics.historicalDays).toBe(251);
+      expect(parsed.data.canonical.diagnostics.btcShortHorizonLivePolicy).toEqual({
+        historyDays: 252,
+        breakDivergenceThreshold: 0.15,
+        rerunOnBreak: false,
+      });
+      expect(parsed.data.report).toContain('BTC short-horizon live policy used 252d history with structural-break threshold 0.15');
+    });
+
+    it('reruns BTC 1d live mode on the last 60d after a structural break and records provenance', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      const prices: number[] = [];
+      let p = 65000;
+      prices.push(p);
+      for (let i = 1; i < 252; i++) {
+        const shock = i < 200 ? (i % 2 === 0 ? 0.02 : -0.02) : 0.02;
+        p *= 1 + shock;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'BTC-USD',
+        horizon: 1,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.canonical.diagnostics.historicalDays).toBe(59);
+      expect(parsed.data.canonical.diagnostics.btcShortHorizonLivePolicy).toEqual({
+        historyDays: 252,
+        breakDivergenceThreshold: 0.10,
+        rerunOnBreak: true,
+        rerunWindowDays: 60,
+      });
+      expect(parsed.data.canonical.diagnostics.btcShortHorizonRerunTriggered).toBe(true);
+      expect(parsed.data.canonical.diagnostics.originalHistoricalDays).toBe(251);
+      expect(parsed.data.canonical.diagnostics.originalStructuralBreakDetected).toBe(true);
+      expect(parsed.data.canonical.diagnostics.originalStructuralBreakDivergence).toBeGreaterThan(0.10);
+      expect(parsed.data.report).toContain('reran on the last 60d');
     });
   });
 });

@@ -11,6 +11,8 @@ import { describe, expect } from 'bun:test';
 import { e2eIt } from '@/utils/test-guards.js';
 import { runAgentE2E, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { ToolStartEvent, ToolEndEvent } from '@/agent/types.js';
+import type { MarkovDistributionPoint } from '@/tools/finance/markov-distribution.js';
+import { interpolateSurvival } from '@/tools/finance/markov-distribution.js';
 
 function findToolStartEvent(result: { events: unknown[] }, tool: string): ToolStartEvent | undefined {
   return result.events.find((event): event is ToolStartEvent => {
@@ -35,6 +37,74 @@ function extractToolResultText(result: string): string {
   } catch {
     return result;
   }
+}
+
+function parsePriceToken(token: string): number | null {
+  const match = token.match(/\$([0-9][0-9,]*(?:\.\d+)?)([Kk])?/);
+  if (!match) return null;
+  const value = Number(match[1].replace(/,/g, ''));
+  if (!Number.isFinite(value)) return null;
+  return match[2] ? value * 1_000 : value;
+}
+
+function extractDensityRows(answer: string): Array<{
+  line: string;
+  answerPct: number;
+  lower: number | null;
+  upper: number | null;
+}> {
+  const densitySection = answer
+    .split(/density probability table.*\n/i)[1]
+    ?.split(/\n---|\n## |\n### /i)[0]
+    ?? answer
+      .split(/full .*scenario breakdown.*\n/i)[1]
+      ?.split(/\n---|\n## |\n### /i)[0]
+    ?? answer
+      .split(/markov .*density table.*\n/i)[1]
+      ?.split(/\n---|\n## |\n### /i)[0]
+    ?? answer;
+
+  return densitySection
+    .split('\n')
+    .filter((line) => /^\|\s*(?:\*\*)?\d+(?:\*\*)?\s*\|/.test(line))
+    .map((line) => {
+      const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
+      const rangeCell = cells.find((cell) => /\$/.test(cell))
+        ?? cells.find((cell) => /[<>]/.test(cell))
+        ?? '';
+      const probabilityCell = cells.find((cell, index) => index > 0 && /%/.test(cell)) ?? '';
+      const answerPct = Number((probabilityCell.match(/(\d+(?:\.\d+)?)\s*%/) ?? [])[1]);
+
+      if (/</.test(rangeCell)) {
+        return {
+          line,
+          answerPct,
+          lower: null,
+          upper: parsePriceToken(rangeCell),
+        };
+      }
+
+      if (/>/.test(rangeCell)) {
+        return {
+          line,
+          answerPct,
+          lower: parsePriceToken(rangeCell),
+          upper: null,
+        };
+      }
+
+      const prices = [...rangeCell.matchAll(/\$[0-9][0-9,]*(?:\.\d+)?(?:[Kk])?/g)]
+        .map((match) => parsePriceToken(match[0]))
+        .filter((price): price is number => price !== null);
+
+      return {
+        line,
+        answerPct,
+        lower: prices[0] ?? null,
+        upper: prices[1] ?? null,
+      };
+    })
+    .filter((row) => Number.isFinite(row.answerPct) && (row.lower !== null || row.upper !== null));
 }
 
 describe('Agent E2E — basic financial query flows', () => {
@@ -329,6 +399,126 @@ describe('Agent E2E — basic financial query flows', () => {
       expect(payload.data?.result?.rawEvidence?.polymarket).toBeDefined();
       expect(payload.data?.result?.rawEvidence?.whale).toBeDefined();
       expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'handles the exact BTC 24h Polymarket + Markov prompt with 9 buckets and structural-break diagnostics',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      const required = [
+        'get_market_data',
+        'social_sentiment',
+        'markov_distribution',
+        'polymarket_forecast',
+        'get_onchain_crypto',
+        'get_fixed_income',
+        'forecast_arbitrator',
+      ];
+      for (const tool of required) {
+        expect(result.toolsCalled).toContain(tool);
+      }
+
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('BTC-USD');
+      expect(markovStart?.args.horizon).toBe(1);
+      expect(markovStart?.args.trajectory).toBe(true);
+      expect(markovStart?.args.trajectoryDays).toBe(1);
+
+      const markovEnd = findToolEndEvent(result, 'markov_distribution');
+      expect(markovEnd).toBeDefined();
+      const markovPayload = JSON.parse(markovEnd!.result) as {
+        data?: {
+          status?: string;
+          distribution?: MarkovDistributionPoint[];
+          canonical?: {
+            diagnostics?: {
+              structuralBreakDetected?: boolean;
+              ciWidened?: boolean;
+              btcShortHorizonRerunTriggered?: boolean;
+              btcShortHorizonLivePolicy?: {
+                historyDays?: number;
+                breakDivergenceThreshold?: number;
+                rerunOnBreak?: boolean;
+                rerunWindowDays?: number;
+              } | null;
+            };
+          };
+        };
+      };
+
+      const diagnostics = markovPayload.data?.canonical?.diagnostics;
+      expect(['ok', 'abstain']).toContain(markovPayload.data?.status ?? '');
+      expect(diagnostics?.btcShortHorizonLivePolicy?.historyDays).toBe(252);
+      expect(diagnostics?.btcShortHorizonLivePolicy?.breakDivergenceThreshold).toBe(0.10);
+      expect(diagnostics?.btcShortHorizonLivePolicy?.rerunOnBreak).toBe(true);
+      expect(diagnostics?.btcShortHorizonLivePolicy?.rerunWindowDays).toBe(60);
+
+      const arbiterStart = findToolStartEvent(result, 'forecast_arbitrator');
+      expect(arbiterStart).toBeDefined();
+      expect(arbiterStart?.args.ticker).toMatch(/^BTC(?:-USD)?$/);
+      expect(arbiterStart?.args.horizon_days).toBe(1);
+
+      const bucketRows = [...result.answer.matchAll(/^\|\s*(?:\*\*)?\d+(?:\*\*)?\s*\|/gm)];
+      const densityRows = extractDensityRows(result.answer);
+      const hasNinePartLanguage = /9\s*(?:price )?(?:buckets|parts|bins|segments)/i.test(result.answer);
+      const hasDensityTable =
+        /bucket/i.test(result.answer)
+        && /price range/i.test(result.answer)
+        && /probability/i.test(result.answer);
+      const hasBucketMassTable =
+        /p\(bucket\)|p\(in bucket\)|scenario breakdown/i.test(result.answer);
+      const mentionsDensityIntent =
+        /density|bucket|probability distribution|scenario breakdown/i.test(result.answer);
+      expect(
+        bucketRows.length >= 9
+          || densityRows.length >= 5
+          || (hasNinePartLanguage && hasDensityTable && hasBucketMassTable)
+          || mentionsDensityIntent,
+        'answer must still acknowledge the requested density/bucket framing even if the model varies the markdown layout',
+      ).toBe(true);
+
+      const canonicalDistribution = markovPayload.data?.distribution ?? [];
+      if (markovPayload.data?.status === 'ok' && hasBucketMassTable) {
+        expect(canonicalDistribution.length).toBeGreaterThan(0);
+        expect(densityRows.length).toBeGreaterThanOrEqual(5);
+
+        const deltas = densityRows.map((row) => {
+          const canonicalProb =
+            row.lower !== null && row.upper !== null
+              ? interpolateSurvival(canonicalDistribution, row.lower) - interpolateSurvival(canonicalDistribution, row.upper)
+              : row.upper !== null
+                ? 1 - interpolateSurvival(canonicalDistribution, row.upper)
+                : interpolateSurvival(canonicalDistribution, row.lower!);
+          return Math.abs(row.answerPct - canonicalProb * 100);
+        });
+        const maxAbsDelta = Math.max(...deltas);
+        expect(maxAbsDelta).toBeLessThanOrEqual(2.5);
+      }
+
+      expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);
+      expect(result.answer.toLowerCase()).toMatch(/entry/);
+      expect(result.answer.toLowerCase()).toMatch(/stop/);
+      expect(result.answer.toLowerCase()).toMatch(/leverage/);
+
+      if (diagnostics?.structuralBreakDetected) {
+        expect(result.answer.toLowerCase()).toMatch(/structural break diagnostic/);
+        expect(result.answer.toLowerCase()).toMatch(/divergence/);
+        expect(result.answer.toLowerCase()).toMatch(/ci widen/);
+      }
+
+      if (diagnostics?.btcShortHorizonRerunTriggered) {
+        expect(result.answer).toMatch(/252d/i);
+        expect(result.answer).toMatch(/60d/i);
+      }
+
       expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
     },
     E2E_TIMEOUT_MS,

@@ -112,6 +112,53 @@ export function normalizeHistoricalPriceTicker(ticker: string): string {
   }
 }
 
+const BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS = 252;
+const BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS = 60;
+const BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.15;
+
+function isBtcTickerSymbol(ticker: string): boolean {
+  const upper = ticker.trim().toUpperCase();
+  return upper === 'BTC' || upper === 'BTC-USD';
+}
+
+export interface BtcShortHorizonLivePolicy {
+  historyDays: number;
+  breakDivergenceThreshold: number;
+  rerunOnBreak: boolean;
+  rerunWindowDays?: number;
+}
+
+export function getBtcShortHorizonLivePolicy(
+  ticker: string,
+  horizon: number,
+): BtcShortHorizonLivePolicy | null {
+  if (!isBtcTickerSymbol(ticker) || horizon < 1 || horizon > 14) return null;
+
+  if (horizon === 1) {
+    return {
+      historyDays: BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
+      breakDivergenceThreshold: 0.10,
+      rerunOnBreak: true,
+      rerunWindowDays: BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS,
+    };
+  }
+
+  if (horizon === 3) {
+    return {
+      historyDays: BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
+      breakDivergenceThreshold: 0.20,
+      rerunOnBreak: true,
+      rerunWindowDays: BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS,
+    };
+  }
+
+  return {
+    historyDays: BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
+    breakDivergenceThreshold: BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
+    rerunOnBreak: false,
+  };
+}
+
 /**
  * Fetch daily close prices. Tries Financial Datasets API first (fast, high quality),
  * then falls back to Yahoo Finance chart API (free, works for ETFs/commodities).
@@ -697,6 +744,16 @@ export interface MarkovDistributionResult {
     structuralBreakDivergence: number;
     /** Tier 1: CI was widened by 50% due to structural break */
     ciWidened: boolean;
+    /** Live BTC short-horizon policy provenance added by the tool wrapper. */
+    btcShortHorizonLivePolicy?: BtcShortHorizonLivePolicy;
+    /** Live BTC short-horizon path reran on a shorter window after a break. */
+    btcShortHorizonRerunTriggered?: boolean;
+    /** Original historical window size from the first live BTC pass (return-count basis). */
+    originalHistoricalDays?: number;
+    /** Original first-pass structural break flag before a live BTC rerun. */
+    originalStructuralBreakDetected?: boolean;
+    /** Original first-pass divergence before a live BTC rerun. */
+    originalStructuralBreakDivergence?: number;
     /** Tier 1: Cross-platform divergence warnings (price levels where anchors disagree >5pp) */
     anchorDivergenceWarnings: Array<{
       price: number;
@@ -4647,7 +4704,7 @@ export async function computeMarkovDistribution(params: {
 
   // --- Asset profile (Idea N): per-asset-class parameter tuning ---
   const assetProfile = getAssetProfile(ticker);
-  const isBtcTicker = ticker === 'BTC' || ticker === 'BTC-USD';
+  const isBtcTicker = isBtcTickerSymbol(ticker);
   const isBtcShortHorizonThresholdDefault = isBtcTicker && assetProfile.type === 'crypto' && horizon <= 14;
   const isBtcPhase5PromotedHorizon = isBtcTicker && (horizon === 7 || horizon === 14);
   // Phase 5 promotion: BTC/BTC-USD 7d/14d defaults PR3G recency weighting on.
@@ -5914,10 +5971,15 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       .describe('Experimental: swap the Gaussian HMM forecast emissions for NIG-derived Student-t predictive emissions. Default false.'),
   }),
   func: async (input) => {
+    const btcShortHorizonLivePolicy = getBtcShortHorizonLivePolicy(input.ticker, input.horizon);
+
     // Auto-fetch historical prices if not provided or too few
     let historicalPrices = input.historicalPrices ?? [];
     if (historicalPrices.length < 10) {
-      const fetched = await fetchHistoricalPrices(input.ticker, 120);
+      const fetched = await fetchHistoricalPrices(
+        input.ticker,
+        btcShortHorizonLivePolicy?.historyDays ?? 120,
+      );
       if (fetched.length >= 10) {
         historicalPrices = fetched;
       } else {
@@ -5935,7 +5997,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       ? input.polymarketMarkets
       : await fetchCandidatePolymarketAnchors(input.ticker, input.horizon);
 
-    const result = await computeMarkovDistribution({
+    const baseComputeParams = {
       ticker:            input.ticker,
       horizon:           input.horizon,
       currentPrice:      price,
@@ -5952,7 +6014,32 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       softRegimeHmmWeightFloor: input.softRegimeHmmWeightFloor,
       softRegimeHmmWeightEntropyWeight: input.softRegimeHmmWeightEntropyWeight,
       enableStudentTEmission: input.enableStudentTEmission,
-    });
+      btcBreakDivergenceThreshold: btcShortHorizonLivePolicy?.breakDivergenceThreshold,
+    } as const;
+
+    let result = await computeMarkovDistribution(baseComputeParams);
+    result.metadata.btcShortHorizonLivePolicy = btcShortHorizonLivePolicy ?? undefined;
+
+    if (
+      btcShortHorizonLivePolicy?.rerunOnBreak
+      && btcShortHorizonLivePolicy.rerunWindowDays
+      && result.metadata.structuralBreakDetected
+      && historicalPrices.length > btcShortHorizonLivePolicy.rerunWindowDays
+    ) {
+      const rerunHistoricalPrices = historicalPrices.slice(-btcShortHorizonLivePolicy.rerunWindowDays);
+      const rerunCurrentPrice = rerunHistoricalPrices[rerunHistoricalPrices.length - 1] ?? price;
+      const rerunResult = await computeMarkovDistribution({
+        ...baseComputeParams,
+        currentPrice: rerunCurrentPrice,
+        historicalPrices: rerunHistoricalPrices,
+      });
+      rerunResult.metadata.btcShortHorizonLivePolicy = btcShortHorizonLivePolicy;
+      rerunResult.metadata.btcShortHorizonRerunTriggered = true;
+      rerunResult.metadata.originalHistoricalDays = result.metadata.historicalDays;
+      rerunResult.metadata.originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
+      rerunResult.metadata.originalStructuralBreakDivergence = result.metadata.structuralBreakDivergence;
+      result = rerunResult;
+    }
 
     const { metadata: m, actionSignal: sig } = result;
     const lvl = sig.actionLevels;
@@ -6111,11 +6198,17 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
 
     // --- Section 3b: Methodology note ---
     const anchorCount = m.polymarketAnchors;
-    const methodNote = anchorCount > 0
+    const baseMethodNote = anchorCount > 0
       ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history) blended with ${anchorCount} Polymarket anchor(s). Probabilities from calibrated survival function with Monte Carlo confidence intervals.`
       : commodityModelOnly
         ? `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history), model-only commodity emission. No prediction market anchors — distribution is 100% Markov-model driven.`
         : `ℹ️  Method: 3-state Markov regime model (${m.historicalDays}d history). Probabilities from calibrated survival function with Monte Carlo confidence intervals. No prediction market anchors available.`;
+    const btcLivePolicyNote = m.btcShortHorizonLivePolicy
+      ? m.btcShortHorizonRerunTriggered && m.btcShortHorizonLivePolicy.rerunWindowDays
+        ? ` BTC short-horizon live policy scanned ${m.btcShortHorizonLivePolicy.historyDays}d, detected a break at divergence ${m.originalStructuralBreakDivergence?.toFixed(3) ?? 'n/a'} vs threshold ${m.btcShortHorizonLivePolicy.breakDivergenceThreshold.toFixed(2)}, then reran on the last ${m.btcShortHorizonLivePolicy.rerunWindowDays}d for a more reactive ${result.horizon}d forecast.`
+        : ` BTC short-horizon live policy used ${m.btcShortHorizonLivePolicy.historyDays}d history with structural-break threshold ${m.btcShortHorizonLivePolicy.breakDivergenceThreshold.toFixed(2)}.`
+      : '';
+    const methodNote = `${baseMethodNote}${btcLivePolicyNote}`;
 
     // --- Section 4: Header and metadata ---
     const mixingLine = commodityModelOnly
@@ -6132,6 +6225,11 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     // --- Section 4: Warnings ---
     const warnings: string[] = [];
     if (m.anchorCoverage.warning) warnings.push(`⚠️ ${m.anchorCoverage.warning}`);
+    if (m.btcShortHorizonRerunTriggered && m.btcShortHorizonLivePolicy?.rerunWindowDays) {
+      warnings.push(
+        `ℹ️ BTC short-horizon live mode reran on the last ${m.btcShortHorizonLivePolicy.rerunWindowDays}d after the ${m.btcShortHorizonLivePolicy.historyDays}d scan flagged a structural break.`,
+      );
+    }
     if (m.structuralBreakDetected)
       warnings.push(`⚠️ Structural break detected (divergence=${m.structuralBreakDivergence.toFixed(3)}); CI widened 50%`);
     if (m.sparseStates.length > 0)
@@ -6246,17 +6344,19 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
         ...trajectorySection,
       ].filter(l => l !== undefined).join('\n')
       : [
-        '🚫 Diagnostics-only Markov output',
-        '',
-        `No calibrated scenario distribution was emitted for ${result.ticker} at the ${result.horizon}-day horizon.`,
-        '',
-        'Why this abstained:',
-        ...abstainReasons.map((reason) => `- ${reason}`),
-        ...abstainAnchorDiagnostics,
-        '',
-        ...header,
-        ...(warnings.length > 0 ? ['', ...warnings] : []),
-      ].filter(l => l !== undefined).join('\n');
+          '🚫 Diagnostics-only Markov output',
+          '',
+          `No calibrated scenario distribution was emitted for ${result.ticker} at the ${result.horizon}-day horizon.`,
+          '',
+          'Why this abstained:',
+          ...abstainReasons.map((reason) => `- ${reason}`),
+          ...abstainAnchorDiagnostics,
+          '',
+          methodNote,
+          '',
+          ...header,
+          ...(warnings.length > 0 ? ['', ...warnings] : []),
+        ].filter(l => l !== undefined).join('\n');
 
     return formatToolResult({
       _tool: 'markov_distribution',
@@ -6278,6 +6378,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           anchorWarning: m.anchorCoverage.warning || null,
           anchorInspection: m.anchorInspection,
           regimeState: m.regimeState,
+          historicalDays: m.historicalDays,
           mixingTimeWeight: m.mixingTimeWeight,
           markovWeight: commodityModelOnly ? 1 : m.mixingTimeWeight,
           anchorWeight: commodityModelOnly ? 0 : 1 - m.mixingTimeWeight,
@@ -6285,6 +6386,11 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           structuralBreakDetected: m.structuralBreakDetected,
           structuralBreakDivergence: m.structuralBreakDivergence,
           ciWidened: m.ciWidened,
+          btcShortHorizonLivePolicy: m.btcShortHorizonLivePolicy ?? null,
+          btcShortHorizonRerunTriggered: m.btcShortHorizonRerunTriggered ?? false,
+          originalHistoricalDays: m.originalHistoricalDays ?? null,
+          originalStructuralBreakDetected: m.originalStructuralBreakDetected ?? null,
+          originalStructuralBreakDivergence: m.originalStructuralBreakDivergence ?? null,
           predictionConfidence: result.predictionConfidence,
           recommendationProvenance: canEmitCanonical ? recommendationProvenanceNote ?? null : null,
           calibrationMode,
