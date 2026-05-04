@@ -9,6 +9,7 @@ import type { ForecastLabMarkovParameterMutationReplayPayload } from './mutators
 
 export type ForecastLabDecision = 'keep' | 'drop';
 export type ForecastLabRoutingInvocationSource = 'auto-routed' | 'manual-request';
+export type ForecastLabPromotionStatus = 'approval-required' | 'approved' | 'promoted' | 'activated';
 
 export type JsonValue =
   | null
@@ -40,6 +41,74 @@ export interface ForecastLabRoutingStats {
   profiles: Record<string, ForecastLabProfileRoutingStats>;
 }
 
+export interface ForecastLabPromotionSourceRef {
+  runId: string;
+  manifestPath: string;
+}
+
+export interface ForecastLabPromotionActivationRef {
+  runId: string;
+  manifestPath: string;
+  artifactsPath: string;
+  workspace: ForecastLabCandidateWorkspaceMetadata;
+}
+
+export interface ForecastLabApprovalRequiredPromotionState {
+  status: 'approval-required';
+  source: ForecastLabPromotionSourceRef;
+  requestedAt: string;
+}
+
+export interface ForecastLabApprovedPromotionState {
+  status: 'approved';
+  source: ForecastLabPromotionSourceRef;
+  requestedAt: string;
+  approvedAt: string;
+}
+
+export interface ForecastLabPromotedPromotionState {
+  status: 'promoted';
+  source: ForecastLabPromotionSourceRef;
+  requestedAt: string;
+  approvedAt: string;
+  promotedAt: string;
+  activation: ForecastLabPromotionActivationRef;
+}
+
+export interface ForecastLabActivatedPromotionState {
+  status: 'activated';
+  source: ForecastLabPromotionSourceRef;
+  requestedAt: string;
+  approvedAt: string;
+  promotedAt: string;
+  activatedAt: string;
+  activation: ForecastLabPromotionActivationRef;
+}
+
+export type ForecastLabPromotionState =
+  | ForecastLabApprovalRequiredPromotionState
+  | ForecastLabApprovedPromotionState
+  | ForecastLabPromotedPromotionState
+  | ForecastLabActivatedPromotionState;
+
+export type ForecastLabPromotionOutcome =
+  | {
+      kind: 'approval-required';
+      promotion: ForecastLabApprovalRequiredPromotionState;
+    }
+  | {
+      kind: 'approved';
+      promotion: ForecastLabApprovedPromotionState;
+    }
+  | {
+      kind: 'promoted';
+      promotion: ForecastLabPromotedPromotionState;
+    }
+  | {
+      kind: 'activated';
+      promotion: ForecastLabActivatedPromotionState;
+    };
+
 export interface ForecastLabLedgerEntry {
   runId: string;
   startedAt: string;
@@ -56,6 +125,7 @@ export interface ForecastLabLedgerEntry {
   lineage?: ForecastLabMutationLineage;
   mutationSpecSummary?: ForecastLabMutationSpecSummary;
   candidateWorkspace?: ForecastLabCandidateWorkspaceMetadata;
+  promotion?: ForecastLabPromotionState;
   baselineSummary: JsonValue;
   candidateSummary: JsonValue;
   decision: ForecastLabDecision;
@@ -81,5 +151,7 @@ export interface ForecastLabRunManifest {
   mutationSpecSummary?: ForecastLabMutationSpecSummary;
   mutationReplayPayload?: ForecastLabMarkovParameterMutationReplayPayload;
   candidateWorkspace?: ForecastLabCandidateWorkspaceMetadata;
+  promotion?: ForecastLabPromotionState;
+  promotionSource?: ForecastLabPromotionSourceRef;
   artifactsPath: string;
 }

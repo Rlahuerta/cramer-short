@@ -26,6 +26,9 @@ decision.
 - Compare the candidate against the same fixed gates used for the baseline.
 - Keep only candidates with measurable improvement that pass all required gates.
 - Drop or revert failed candidates instead of leaving speculative code in place.
+- A kept structured result is only promotion-ready. Do not promote it until the user explicitly approves promotion.
+- After explicit approval, the verified promotion activates the new parameters for ordinary forecasts immediately in the running process and on disk for later restarts.
+- If a promoted baseline proves misleading, reset it explicitly to shipped defaults or the last known-good activated baseline instead of hand-editing parameter files.
 - Record results under `.cramer-short/experiments/`; these are runtime artifacts,
   not source files to commit.
 
@@ -153,6 +156,16 @@ artifacts under `.cramer-short/experiments/`, such as:
 - `.cramer-short/experiments/runs/<run-id>/decision.json`
 
 Do not write planning notes into the repository.
+
+### 7. Promotion, activation, and reset lifecycle
+
+- A kept structured run is **approval-required**, not automatically live.
+- When the user explicitly approves promotion, verify the kept run, promote it, and explain that the parameters are now live for ordinary forecasts.
+- After activation, normal forecast calls use the promoted defaults without requiring the operator to rerun forecast-lab first.
+- If the user asks to undo a misleading activation, use the bounded reset flow:
+  - reset to **shipped defaults** when they want the canonical baseline back
+  - reset to **last known-good** when they want the previous activated baseline restored
+- Keep reset guidance explicit. Do not imply that deleting artifacts or manually editing source files is the supported rollback path.
 
 ## Output format
 

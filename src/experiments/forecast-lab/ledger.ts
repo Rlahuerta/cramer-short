@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { getExperimentRunManifestPath } from '../../utils/paths.js';
 import {
   assertForecastLabMutationMode,
   validateForecastLabCandidateWorkspaceMetadata,
@@ -8,9 +9,39 @@ import {
   validateForecastLabMutationSpecSummary,
 } from './mutation.js';
 import { validateForecastLabMarkovParameterMutationReplayPayload } from './mutators/markov-parameters.js';
-import type { ForecastLabLedgerEntry, ForecastLabRunManifest, ForecastLabRoutingContext } from './types.js';
+import type {
+  ForecastLabLedgerEntry,
+  ForecastLabPromotionState,
+  ForecastLabRunManifest,
+  ForecastLabRoutingContext,
+} from './types.js';
 
 export const LEDGER_COLUMNS = [
+  'runId',
+  'startedAt',
+  'profileId',
+  'targetSubsystem',
+  'candidateBranch',
+  'allowedGlobs',
+  'routingContext',
+  'effectiveMutationContract',
+  'mutationMode',
+  'parentRunId',
+  'mutationId',
+  'mutationSummary',
+  'lineage',
+  'mutationSpecSummary',
+  'candidateWorkspace',
+  'promotion',
+  'baselineSummary',
+  'candidateSummary',
+  'decision',
+  'reason',
+  'artifactsPath',
+] as const satisfies readonly (keyof ForecastLabLedgerEntry)[];
+
+export const LEDGER_HEADER = LEDGER_COLUMNS.join('\t');
+const PRE_PROMOTION_LEDGER_COLUMNS = [
   'runId',
   'startedAt',
   'profileId',
@@ -32,8 +63,7 @@ export const LEDGER_COLUMNS = [
   'reason',
   'artifactsPath',
 ] as const satisfies readonly (keyof ForecastLabLedgerEntry)[];
-
-export const LEDGER_HEADER = LEDGER_COLUMNS.join('\t');
+const PRE_PROMOTION_LEDGER_HEADER = PRE_PROMOTION_LEDGER_COLUMNS.join('\t');
 const PRE_ROUTING_LEDGER_COLUMNS = [
   'runId',
   'startedAt',
@@ -117,6 +147,11 @@ type BaseLedgerSchema =
       header: typeof LEDGER_HEADER;
     }
   | {
+      name: 'pre-promotion';
+      columns: typeof PRE_PROMOTION_LEDGER_COLUMNS;
+      header: typeof PRE_PROMOTION_LEDGER_HEADER;
+    }
+  | {
       name: 'pre-routing';
       columns: typeof PRE_ROUTING_LEDGER_COLUMNS;
       header: typeof PRE_ROUTING_LEDGER_HEADER;
@@ -147,6 +182,7 @@ const OPTIONAL_LEDGER_COLUMNS = new Set<LedgerColumn>([
   'lineage',
   'mutationSpecSummary',
   'candidateWorkspace',
+  'promotion',
 ]);
 const SAFE_RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$/;
 const SAFE_BASELINE_COMMIT = /^[0-9a-f]{40}$/i;
@@ -221,6 +257,53 @@ function validateRoutingContext(value: unknown): asserts value is ForecastLabRou
   }
 }
 
+function validatePromotionSourceRef(
+  value: unknown,
+  options?: {
+    readonly runId?: string;
+    readonly fieldName?: string;
+  },
+): void {
+  const fieldName = options?.fieldName ?? 'promotion.source';
+
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ForecastLabLedgerError(`${fieldName} must be an object`);
+  }
+
+  const sourceRecord = value as Record<string, unknown>;
+  const sourceRunId = requireString(sourceRecord, 'runId');
+  assertSafeRunId(sourceRunId);
+  if (options?.runId !== undefined && sourceRunId !== options.runId) {
+    throw new ForecastLabLedgerError(`${fieldName}.runId must match runId`);
+  }
+
+  const manifestPath = requireString(sourceRecord, 'manifestPath');
+  if (manifestPath !== getExperimentRunManifestPath(sourceRunId)) {
+    throw new ForecastLabLedgerError(`${fieldName}.manifestPath must match the source run manifest path`);
+  }
+}
+
+function validatePromotionActivationRef(value: unknown): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ForecastLabLedgerError('promotion.activation must be an object');
+  }
+
+  const activation = value as Record<string, unknown>;
+  const runId = requireString(activation, 'runId');
+  assertSafeRunId(runId);
+  const manifestPath = requireString(activation, 'manifestPath');
+  if (manifestPath !== getExperimentRunManifestPath(runId)) {
+    throw new ForecastLabLedgerError('promotion.activation.manifestPath must match the promotion run manifest path');
+  }
+  requireString(activation, 'artifactsPath');
+
+  try {
+    validateForecastLabCandidateWorkspaceMetadata(activation.workspace);
+  } catch (error) {
+    throw new ForecastLabLedgerError(error instanceof Error ? error.message : String(error));
+  }
+}
+
 export function stableJsonStringify(value: unknown): string {
   assertJsonSerializable('value', value);
   const serialized = JSON.stringify(stableValue(value));
@@ -249,6 +332,75 @@ function requireString(entry: Record<string, unknown>, field: string): string {
 function assertSafeRunId(runId: string): void {
   if (!SAFE_RUN_ID_PATTERN.test(runId)) {
     throw new ForecastLabLedgerError('runId must be a safe path segment');
+  }
+}
+
+function validatePromotionState(
+  value: unknown,
+  record: Record<string, unknown>,
+): asserts value is ForecastLabPromotionState {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ForecastLabLedgerError('promotion must be an object');
+  }
+
+  if (record.mutationMode !== 'structured') {
+    throw new ForecastLabLedgerError('promotion metadata requires mutationMode="structured"');
+  }
+
+  if (typeof record.runId !== 'string') {
+    throw new ForecastLabLedgerError('promotion metadata requires runId');
+  }
+
+  const promotion = value as Record<string, unknown>;
+  validatePromotionSourceRef(promotion.source, { runId: String(record.runId), fieldName: 'promotion.source' });
+
+  const status = requireString(promotion, 'status');
+  requireString(promotion, 'requestedAt');
+  const requireTimestamp = (field: 'approvedAt' | 'promotedAt' | 'activatedAt'): void => {
+    const timestamp = promotion[field];
+    if (typeof timestamp !== 'string' || timestamp.trim() === '') {
+      throw new ForecastLabLedgerError(`promotion.${field} must be a non-empty string`);
+    }
+  };
+  const expectAbsent = (field: 'approvedAt' | 'promotedAt' | 'activatedAt'): void => {
+    if (promotion[field] !== undefined) {
+      throw new ForecastLabLedgerError(`promotion.${field} is not allowed when status="${status}"`);
+    }
+  };
+
+  switch (status) {
+    case 'approval-required':
+      expectAbsent('approvedAt');
+      expectAbsent('promotedAt');
+      expectAbsent('activatedAt');
+      if (promotion.activation !== undefined) {
+        throw new ForecastLabLedgerError('promotion.activation is not allowed when status="approval-required"');
+      }
+      return;
+    case 'approved':
+      requireTimestamp('approvedAt');
+      expectAbsent('promotedAt');
+      expectAbsent('activatedAt');
+      if (promotion.activation !== undefined) {
+        throw new ForecastLabLedgerError('promotion.activation is not allowed when status="approved"');
+      }
+      return;
+    case 'promoted':
+      requireTimestamp('approvedAt');
+      requireTimestamp('promotedAt');
+      expectAbsent('activatedAt');
+      validatePromotionActivationRef(promotion.activation);
+      return;
+    case 'activated':
+      requireTimestamp('approvedAt');
+      requireTimestamp('promotedAt');
+      requireTimestamp('activatedAt');
+      validatePromotionActivationRef(promotion.activation);
+      return;
+    default:
+      throw new ForecastLabLedgerError(
+        'promotion.status must be "approval-required", "approved", "promoted", or "activated"',
+      );
   }
 }
 
@@ -331,6 +483,10 @@ function validateOptionalMutationMetadata(record: Record<string, unknown>): void
     }
   }
 
+  if (record.promotion !== undefined) {
+    validatePromotionState(record.promotion, record);
+  }
+
   if (record.effectiveMutationContract !== undefined) {
     try {
       validateForecastLabProfileMutationConfig(record.effectiveMutationContract);
@@ -374,6 +530,9 @@ export function validateLedgerEntry(entry: unknown): asserts entry is ForecastLa
   if (record.decision !== 'keep' && record.decision !== 'drop') {
     throw new ForecastLabLedgerError('decision must be keep or drop');
   }
+  if (record.promotion !== undefined && record.decision !== 'keep') {
+    throw new ForecastLabLedgerError('promotion metadata is only supported for kept runs');
+  }
 
   validateOptionalRoutingMetadata(record);
   validateOptionalMutationMetadata(record);
@@ -407,6 +566,9 @@ export function validateRunManifest(manifest: unknown): asserts manifest is Fore
 
   validateOptionalRoutingMetadata(record);
   validateOptionalMutationMetadata(record);
+  if (record.promotionSource !== undefined) {
+    validatePromotionSourceRef(record.promotionSource, { fieldName: 'promotionSource' });
+  }
   if (record.mutationReplayPayload !== undefined) {
     if (record.mutationMode !== 'structured') {
       throw new ForecastLabLedgerError(
@@ -454,6 +616,14 @@ function getLedgerSchema(header: string): LedgerSchema {
       name: 'current',
       columns: LEDGER_COLUMNS,
       header: LEDGER_HEADER,
+    };
+  }
+
+  if (header === PRE_PROMOTION_LEDGER_HEADER) {
+    return {
+      name: 'pre-promotion',
+      columns: PRE_PROMOTION_LEDGER_COLUMNS,
+      header: PRE_PROMOTION_LEDGER_HEADER,
     };
   }
 

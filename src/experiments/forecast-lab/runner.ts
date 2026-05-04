@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 import {
   getExperimentLedgerPath,
   getExperimentRunDir,
@@ -10,6 +10,7 @@ import {
 import { loadConfig, type Config } from '../../utils/config.js';
 import {
   appendLedgerEntry,
+  findLatestKeptLedgerEntry,
   readLedgerEntries,
   readRunManifest,
   stableJsonStringify,
@@ -19,6 +20,7 @@ import { updateForecastLabRoutingStats } from './router-memory.js';
 import {
   applyForecastLabCandidateEdits,
   prepareForecastLabCandidateWorkspace,
+  prepareForecastLabPromotionWorkspace,
   withForecastLabCandidateWorkspace,
 } from './git.js';
 import { getForecastLabProfile, listForecastLabStructuredMutations } from './profiles.js';
@@ -26,6 +28,8 @@ import type { ForecastLabCommand, ForecastLabProfile } from './profiles.js';
 import type {
   ForecastLabDecision,
   ForecastLabLedgerEntry,
+  ForecastLabPromotionActivationRef,
+  ForecastLabPromotionState,
   ForecastLabRoutingContext,
   ForecastLabRunManifest,
   JsonValue,
@@ -36,18 +40,24 @@ import {
 } from './git.js';
 import type { ForecastLabMutationLineage, ForecastLabMutationMode } from './mutation.js';
 import {
+  isForecastLabMarkovMutatorProfileId,
   replayForecastLabMarkovParameterMutation,
   snapshotForecastLabMarkovParameterMutation,
+  validateForecastLabMarkovParameterMutationReplayPayload,
 } from './mutators/markov-parameters.js';
 import type {
   ForecastLabMarkovParameterMutationCandidate,
   ForecastLabMarkovParameterMutationReplayPayload,
+  ForecastLabMutationScalarValue,
 } from './mutators/markov-parameters.js';
 import {
   formatForecastLabMutatorHealthProgress,
   rankForecastLabMutators,
 } from './mutator-ranker.js';
 import type { ForecastLabMutatorRanking } from './mutator-ranker.js';
+import { FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS } from '../../tools/finance/markov-distribution.js';
+import { FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS } from '../../tools/finance/conformal.js';
+import { FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS } from '../../tools/finance/regime-calibrator.js';
 
 export type ForecastLabGatePhase = 'baseline' | 'candidate';
 
@@ -117,6 +127,13 @@ interface ForecastLabStructuredMutationSeed {
   readonly usedMutationIds: ReadonlySet<string>;
 }
 
+interface ForecastLabPromotionSourceSelection {
+  readonly ledgerEntry: ForecastLabLedgerEntry;
+  readonly manifestPath: string;
+  readonly manifest: ForecastLabRunManifest;
+  readonly replayPayload: ForecastLabMarkovParameterMutationReplayPayload;
+}
+
 export interface ForecastLabRunOptions {
   readonly profileId: string;
   readonly dryRun?: boolean;
@@ -144,17 +161,113 @@ export interface ForecastLabRunResult {
   readonly ledgerEntry: ForecastLabLedgerEntry;
 }
 
+export interface ForecastLabPromotionOptions {
+  readonly profileId: string;
+  readonly sourceRunId?: string;
+  readonly runId?: string;
+  readonly now?: () => Date;
+  readonly commandRunner?: ForecastLabCommandRunner;
+  readonly ledgerPath?: string;
+  readonly progress?: (message: string) => void;
+  readonly output?: (chunk: string) => void;
+}
+
+export interface ForecastLabPromotionResult {
+  readonly runId: string;
+  readonly sourceRunId: string;
+  readonly manifest: ForecastLabRunManifest;
+  readonly sourceManifest: ForecastLabRunManifest;
+  readonly baseline: JsonValue;
+  readonly candidate: JsonValue;
+  readonly decision: ForecastLabDecisionSummary;
+  readonly activation: ForecastLabPromotionActivationRef;
+  readonly activeStatePath: string;
+}
+
+export type ForecastLabResetMode = 'defaults' | 'last-known-good';
+
+export interface ForecastLabResetOptions {
+  readonly profileId: string;
+  readonly mode: ForecastLabResetMode;
+  readonly runId?: string;
+  readonly now?: () => Date;
+  readonly progress?: (message: string) => void;
+}
+
+export interface ForecastLabResetResult {
+  readonly runId: string;
+  readonly profileId: string;
+  readonly mode: ForecastLabResetMode;
+  readonly artifactsPath: string;
+  readonly resetArtifactPath: string;
+  readonly activeStatePath?: string;
+}
+
 export class ForecastLabRunnerError extends Error {
   override name = 'ForecastLabRunnerError';
+}
+
+interface StructuredMutationCatalogState {
+  readonly appliedCandidateIds: readonly string[];
+  readonly applicableCandidateIds: readonly string[];
+  readonly inapplicableCandidateIds: readonly string[];
 }
 
 type ForecastingConfig = Config['forecasting'];
 
 const UNSAFE_SHELL_COMMAND_PATTERN = /[;&|`<>]|\$\(/;
 const UNSAFE_GIT_COMMAND_PATTERN = /\bgit\s+(?:add|commit|push|reset|checkout|clean)\b/;
+const SAFE_PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const FORECAST_LAB_ACTIVE_STATE_DIR = 'active-promotions';
+
+type ForecastLabMutableParameterDefaults = Record<string, ForecastLabMutationScalarValue>;
+
+interface ForecastLabRuntimeDefaultsSnapshot {
+  readonly filePath: string;
+  readonly parameterId: string;
+  readonly value: ForecastLabMutationScalarValue;
+}
+
+interface ForecastLabActivePromotionSnapshot {
+  readonly profileId: string;
+  readonly sourceRunId: string;
+  readonly promotionRunId: string;
+  readonly activatedAt: string;
+  readonly promotion: Extract<ForecastLabPromotionState, { status: 'activated' }>;
+  readonly mutationReplayPayload: ForecastLabMarkovParameterMutationReplayPayload;
+  readonly mutatedFiles: readonly string[];
+  readonly patchSummary: readonly string[];
+}
+
+interface ForecastLabActivePromotionRecord extends ForecastLabActivePromotionSnapshot {
+  readonly version: 1;
+  readonly promotion: Extract<ForecastLabPromotionState, { status: 'activated' }>;
+  readonly activeStatePath: string;
+  readonly previousActive?: ForecastLabActivePromotionSnapshot;
+}
+
+const LIVE_PARAMETER_DEFAULT_TARGETS: Record<string, ForecastLabMutableParameterDefaults> = {
+  'src/tools/finance/markov-distribution.ts': FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS as ForecastLabMutableParameterDefaults,
+  'src/tools/finance/conformal.ts': FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS as ForecastLabMutableParameterDefaults,
+  'src/tools/finance/regime-calibrator.ts': FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS as ForecastLabMutableParameterDefaults,
+};
+
+const SHIPPED_PARAMETER_DEFAULT_TARGETS: Record<string, ForecastLabMutableParameterDefaults> = {
+  'src/tools/finance/markov-distribution.ts': { ...FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS },
+  'src/tools/finance/conformal.ts': { ...FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS },
+  'src/tools/finance/regime-calibrator.ts': { ...FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS },
+};
 
 function makeRunId(profileId: string, now: Date): string {
   return `forecast-lab-${profileId}-${now.toISOString().replace(/[:.]/g, '-')}`;
+}
+
+function makePromotionRunId(profileId: string, now: Date): string {
+  return `forecast-lab-promote-${profileId}-${now.toISOString().replace(/[:.]/g, '-')}`;
+}
+
+function makeResetRunId(profileId: string, now: Date): string {
+  return `forecast-lab-reset-${profileId}-${now.toISOString().replace(/[:.]/g, '-')}`;
 }
 
 function assertInsideExperiments(path: string): void {
@@ -170,6 +283,191 @@ function writeJsonArtifact(path: string, value: unknown): void {
   assertInsideExperiments(path);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${stableJsonStringify(value)}\n`, 'utf8');
+}
+
+function getForecastLabActiveStatePath(profileId: string): string {
+  if (!SAFE_PROFILE_ID_PATTERN.test(profileId)) {
+    throw new ForecastLabRunnerError(`Unsafe forecast-lab profile id for activation state path: ${profileId}`);
+  }
+
+  return join(getExperimentsDir({ create: true }), FORECAST_LAB_ACTIVE_STATE_DIR, `${profileId}.json`);
+}
+
+function readForecastLabActiveState(path: string, profileId: string): ForecastLabActivePromotionRecord | undefined {
+  if (!existsSync(path)) {
+    return undefined;
+  }
+
+  const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} must be a JSON object.`);
+  }
+
+  const record = parsed as Record<string, unknown>;
+  if (record.version !== 1) {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} has unsupported version metadata.`);
+  }
+  if (record.profileId !== profileId) {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} does not match profile "${profileId}".`);
+  }
+  if (typeof record.sourceRunId !== 'string' || record.sourceRunId.trim() === '') {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} is missing sourceRunId.`);
+  }
+  if (typeof record.promotionRunId !== 'string' || record.promotionRunId.trim() === '') {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} is missing promotionRunId.`);
+  }
+  if (typeof record.activatedAt !== 'string' || record.activatedAt.trim() === '') {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} is missing activatedAt.`);
+  }
+  if (typeof record.activeStatePath !== 'string' || resolve(record.activeStatePath) !== resolve(path)) {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} has inconsistent activeStatePath metadata.`);
+  }
+  if (!Array.isArray(record.mutatedFiles) || record.mutatedFiles.some((filePath) => typeof filePath !== 'string')) {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} has invalid mutatedFiles metadata.`);
+  }
+  if (!Array.isArray(record.patchSummary) || record.patchSummary.some((entry) => typeof entry !== 'string')) {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} has invalid patchSummary metadata.`);
+  }
+
+  try {
+    validateForecastLabMarkovParameterMutationReplayPayload(record.mutationReplayPayload);
+  } catch (error) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab active state at ${path} has invalid mutationReplayPayload: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  const promotion = record.promotion;
+  if (!promotion || typeof promotion !== 'object' || Array.isArray(promotion)) {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} is missing promotion metadata.`);
+  }
+  if ((promotion as Record<string, unknown>).status !== 'activated') {
+    throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} must reference an activated promotion.`);
+  }
+
+  const previousActive = record.previousActive;
+  if (previousActive !== undefined) {
+    if (!previousActive || typeof previousActive !== 'object' || Array.isArray(previousActive)) {
+      throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} has invalid previousActive metadata.`);
+    }
+
+    const previous = previousActive as Record<string, unknown>;
+    for (const field of ['profileId', 'sourceRunId', 'promotionRunId', 'activatedAt'] as const) {
+      if (typeof previous[field] !== 'string' || previous[field].trim() === '') {
+        throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} has invalid previousActive.${field}.`);
+      }
+    }
+    if (!Array.isArray(previous.mutatedFiles) || previous.mutatedFiles.some((filePath) => typeof filePath !== 'string')) {
+      throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} has invalid previousActive.mutatedFiles.`);
+    }
+    if (!Array.isArray(previous.patchSummary) || previous.patchSummary.some((entry) => typeof entry !== 'string')) {
+      throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} has invalid previousActive.patchSummary.`);
+    }
+    if (!previous.promotion || typeof previous.promotion !== 'object' || Array.isArray(previous.promotion)) {
+      throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} has invalid previousActive.promotion.`);
+    }
+    if ((previous.promotion as Record<string, unknown>).status !== 'activated') {
+      throw new ForecastLabRunnerError(`Forecast-lab active state at ${path} must keep previousActive.promotion as activated.`);
+    }
+    try {
+      validateForecastLabMarkovParameterMutationReplayPayload(previous.mutationReplayPayload);
+    } catch (error) {
+      throw new ForecastLabRunnerError(
+        `Forecast-lab active state at ${path} has invalid previousActive.mutationReplayPayload: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  return parsed as ForecastLabActivePromotionRecord;
+}
+
+function formatMutationScalarLiteral(value: ForecastLabMutationScalarValue): string {
+  return typeof value === 'boolean' ? String(value) : `${value}`;
+}
+
+function buildResetMutationFromActiveState(
+  profile: ForecastLabProfile,
+  activeState: ForecastLabActivePromotionRecord,
+  mode: ForecastLabResetMode,
+): ForecastLabMarkovParameterMutationCandidate {
+  if (!isForecastLabMarkovMutatorProfileId(profile.id)) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab reset is only supported for markov-parameter profiles. Profile "${profile.id}" is unsupported.`,
+    );
+  }
+
+  const currentMutation = replayForecastLabMarkovParameterMutation(activeState.mutationReplayPayload);
+  const previousValues = mode === 'last-known-good'
+    ? activeState.previousActive
+    : undefined;
+  if (mode === 'last-known-good' && !previousValues) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab reset for "${profile.id}" cannot restore a previous activated baseline because none was recorded.`,
+    );
+  }
+
+  const previousValueMap = new Map<string, ForecastLabMutationScalarValue>();
+  if (previousValues) {
+    const previousMutation = replayForecastLabMarkovParameterMutation(previousValues.mutationReplayPayload);
+    for (const edit of previousMutation.edits) {
+      previousValueMap.set(`${edit.filePath}:${edit.parameterId}`, edit.afterValue);
+    }
+  }
+
+  const edits = currentMutation.edits
+    .map((edit) => {
+      const defaultTarget = SHIPPED_PARAMETER_DEFAULT_TARGETS[edit.filePath]?.[edit.parameterId];
+      if (defaultTarget === undefined) {
+        throw new ForecastLabRunnerError(
+          `Forecast-lab reset could not find shipped default for ${edit.parameterId} in ${edit.filePath}.`,
+        );
+      }
+
+      const targetValue = mode === 'last-known-good'
+        ? (previousValueMap.get(`${edit.filePath}:${edit.parameterId}`) ?? defaultTarget)
+        : defaultTarget;
+      if (targetValue === edit.afterValue) {
+        return null;
+      }
+
+      return {
+        kind: 'search-replace' as const,
+        parameterId: edit.parameterId,
+        filePath: edit.filePath,
+        beforeValue: edit.afterValue,
+        afterValue: targetValue,
+        search: `  ${edit.parameterId}: ${formatMutationScalarLiteral(edit.afterValue)},`,
+        replace: `  ${edit.parameterId}: ${formatMutationScalarLiteral(targetValue)},`,
+        expectedReplacements: 1 as const,
+      };
+    })
+    .filter((edit) => edit !== null);
+
+  if (edits.length === 0) {
+    throw new ForecastLabRunnerError(
+      mode === 'defaults'
+        ? `Forecast-lab reset for "${profile.id}" found no live parameter drift from shipped defaults.`
+        : `Forecast-lab reset for "${profile.id}" is already aligned with the previously activated baseline.`,
+    );
+  }
+
+  const targetFiles = [...new Set(edits.map((edit) => edit.filePath))];
+  return {
+    id: mode === 'defaults' ? 'forecast-lab-reset-defaults' : 'forecast-lab-reset-last-known-good',
+    profileId: profile.id,
+    mutatorId: 'search-replace',
+    specSummary: {
+      mutatorId: 'search-replace',
+      targetFiles,
+      summary: mode === 'defaults'
+        ? 'Reset live forecast-lab parameters back to shipped defaults.'
+        : 'Restore the previously activated forecast-lab baseline.',
+    },
+    patchSummary: edits.map(
+      (edit) => `${edit.filePath.split('/').at(-1)}: ${edit.parameterId} ${edit.beforeValue} → ${edit.afterValue}`,
+    ),
+    edits,
+  };
 }
 
 function assertSafeProfileCommand(command: ForecastLabCommand): void {
@@ -459,6 +757,25 @@ function buildCandidateArtifact(
   } as unknown as JsonValue;
 }
 
+function buildPendingPromotionState(
+  manifest: ForecastLabRunManifest,
+  manifestPath: string,
+  requestedAt: string,
+): ForecastLabPromotionState | undefined {
+  if (manifest.mutationMode !== 'structured') {
+    return undefined;
+  }
+
+  return {
+    status: 'approval-required',
+    source: {
+      runId: manifest.runId,
+      manifestPath,
+    },
+    requestedAt,
+  };
+}
+
 function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
@@ -567,6 +884,59 @@ function getStructuredMutationCatalog(
   return catalog;
 }
 
+function summarizeStructuredMutationCatalogState(
+  candidates: readonly ForecastLabMarkovParameterMutationCandidate[],
+  usedMutationIds: ReadonlySet<string> | undefined,
+  isApplicable: (candidate: ForecastLabMarkovParameterMutationCandidate) => boolean,
+): StructuredMutationCatalogState {
+  const appliedCandidateIds: string[] = [];
+  const applicableCandidateIds: string[] = [];
+  const inapplicableCandidateIds: string[] = [];
+
+  for (const candidate of candidates) {
+    if (usedMutationIds?.has(candidate.id)) {
+      appliedCandidateIds.push(candidate.id);
+      continue;
+    }
+
+    if (isApplicable(candidate)) {
+      applicableCandidateIds.push(candidate.id);
+      continue;
+    }
+
+    inapplicableCandidateIds.push(candidate.id);
+  }
+
+  return {
+    appliedCandidateIds,
+    applicableCandidateIds,
+    inapplicableCandidateIds,
+  };
+}
+
+function formatStructuredMutationCatalogStateMessage(
+  profileId: string,
+  state: StructuredMutationCatalogState,
+): string {
+  const parts = [
+    `No shipped structured mutator remains applicable after replaying the kept parent lineage for profile "${profileId}".`,
+  ];
+
+  if (state.appliedCandidateIds.length > 0) {
+    parts.push(`Current kept lineage already applied: ${state.appliedCandidateIds.join(', ')}.`);
+  }
+
+  if (state.inapplicableCandidateIds.length > 0) {
+    parts.push(`Remaining shipped mutators checked and found inapplicable: ${state.inapplicableCandidateIds.join(', ')}.`);
+  }
+
+  parts.push(
+    'Next actions: keep the current best candidate, add a new shipped structured mutator, or intentionally reset the forecast-lab lineage outside the CLI.',
+  );
+
+  return parts.join(' ');
+}
+
 function selectStructuredMutation(
   profile: ForecastLabProfile,
   catalog: readonly ForecastLabMarkovParameterMutationCandidate[],
@@ -584,6 +954,7 @@ function selectStructuredMutation(
   const allowedMutatorIds = new Set(profile.mutation.allowedMutatorIds);
   const allowedCandidates = catalog.filter((candidate) => allowedMutatorIds.has(candidate.mutatorId));
   const allowedCandidateIds = new Set(allowedCandidates.map((candidate) => candidate.id));
+  const catalogState = summarizeStructuredMutationCatalogState(allowedCandidates, usedMutationIds, isApplicable);
   const selected = requestedMutatorId
     ? allowedCandidates.find((candidate) => candidate.id === requestedMutatorId)
     : ranking?.rankedCandidates.find((candidate) =>
@@ -598,7 +969,7 @@ function selectStructuredMutation(
     throw new ForecastLabRunnerError(
       requestedMutatorId
         ? `Unknown forecast-lab mutator "${requestedMutatorId}" for profile "${profile.id}". Expected one of: ${catalog.map((candidate) => candidate.id).join(', ')}`
-        : `No shipped structured mutator remains applicable after replaying the kept parent lineage for profile "${profile.id}".`,
+        : formatStructuredMutationCatalogStateMessage(profile.id, catalogState),
     );
   }
 
@@ -609,8 +980,12 @@ function selectStructuredMutation(
   }
 
   if (requestedMutatorId && !isApplicable(selected)) {
+    const remainingApplicableCandidateIds = catalogState.applicableCandidateIds.filter((candidateId) => candidateId !== selected.id);
+    const fallback = remainingApplicableCandidateIds.length > 0
+      ? `Try one of the remaining applicable shipped mutators instead: ${remainingApplicableCandidateIds.join(', ')}.`
+      : formatStructuredMutationCatalogStateMessage(profile.id, catalogState);
     throw new ForecastLabRunnerError(
-      `Forecast-lab mutator "${selected.id}" is not applicable after replaying the kept parent lineage for profile "${profile.id}".`,
+      `Forecast-lab mutator "${selected.id}" is not applicable after replaying the kept parent lineage for profile "${profile.id}". ${fallback}`,
     );
   }
 
@@ -788,6 +1163,738 @@ function applyStructuredMutation(
   };
 }
 
+function buildStructuredMutationFileUpdates(
+  rootDir: string,
+  mutation: ForecastLabMarkovParameterMutationCandidate,
+): {
+  readonly updatedFiles: Map<string, string>;
+  readonly previousContents: Map<string, string>;
+} {
+  const updatedFiles = new Map<string, string>();
+  applyStructuredMutationEdits(rootDir, updatedFiles, mutation);
+  return {
+    updatedFiles,
+    previousContents: new Map(
+      [...updatedFiles.keys()].map((filePath) => [filePath, readFileSync(resolve(rootDir, filePath), 'utf8')]),
+    ),
+  };
+}
+
+function applyStructuredMutationRuntimeDefaults(
+  mutation: ForecastLabMarkovParameterMutationCandidate,
+): readonly ForecastLabRuntimeDefaultsSnapshot[] {
+  const snapshots: ForecastLabRuntimeDefaultsSnapshot[] = [];
+
+  try {
+    for (const edit of mutation.edits) {
+      const target = LIVE_PARAMETER_DEFAULT_TARGETS[edit.filePath];
+      if (!target) {
+        throw new ForecastLabRunnerError(
+          `Forecast-lab activation does not support runtime default updates for ${edit.filePath}.`,
+        );
+      }
+
+      const previousValue = target[edit.parameterId];
+      if (typeof previousValue !== 'boolean' && typeof previousValue !== 'number') {
+        throw new ForecastLabRunnerError(
+          `Forecast-lab activation could not find runtime parameter "${edit.parameterId}" in ${edit.filePath}.`,
+        );
+      }
+
+      snapshots.push({
+        filePath: edit.filePath,
+        parameterId: edit.parameterId,
+        value: previousValue,
+      });
+      target[edit.parameterId] = edit.afterValue;
+    }
+  } catch (error) {
+    restoreStructuredMutationRuntimeDefaults(snapshots);
+    throw error;
+  }
+
+  return snapshots;
+}
+
+function restoreStructuredMutationRuntimeDefaults(
+  snapshots: readonly ForecastLabRuntimeDefaultsSnapshot[],
+): void {
+  for (const snapshot of snapshots) {
+    const target = LIVE_PARAMETER_DEFAULT_TARGETS[snapshot.filePath];
+    if (!target) {
+      throw new ForecastLabRunnerError(
+        `Forecast-lab activation could not restore runtime defaults for ${snapshot.filePath}.`,
+      );
+    }
+    target[snapshot.parameterId] = snapshot.value;
+  }
+}
+
+function applyStructuredMutationToLiveSource(
+  profile: ForecastLabProfile,
+  mutation: ForecastLabMarkovParameterMutationCandidate,
+): {
+  readonly mutatedFiles: readonly string[];
+  readonly previousContents: Map<string, string>;
+  readonly runtimeDefaults: readonly ForecastLabRuntimeDefaultsSnapshot[];
+} {
+  const rootDir = process.cwd();
+  const { updatedFiles, previousContents } = buildStructuredMutationFileUpdates(rootDir, mutation);
+  const mutatedFiles = applyForecastLabCandidateEdits(
+    rootDir,
+    [...updatedFiles.entries()].map(([path, contents]) => ({ path, contents })),
+    {
+      allowedPaths: profile.mutation.mutableFiles,
+      readOnlyPaths: profile.readOnlyHarnessFiles,
+    },
+  );
+
+  try {
+    return {
+      mutatedFiles,
+      previousContents,
+      runtimeDefaults: applyStructuredMutationRuntimeDefaults(mutation),
+    };
+  } catch (error) {
+    applyForecastLabCandidateEdits(
+      rootDir,
+      [...previousContents.entries()].map(([path, contents]) => ({ path, contents })),
+      {
+        allowedPaths: profile.mutation.mutableFiles,
+        readOnlyPaths: profile.readOnlyHarnessFiles,
+      },
+    );
+    throw error;
+  }
+}
+
+function cleanupPreparedWorkspaceOnError(
+  workspace: ReturnType<typeof prepareForecastLabPromotionWorkspace>,
+  error: unknown,
+): never {
+  try {
+    workspace.cleanup();
+  } catch (cleanupError) {
+    if (error instanceof Error) {
+      const cleanupDetail = cleanupError instanceof Error
+        ? (cleanupError.stack ?? `${cleanupError.name}: ${cleanupError.message}`)
+        : String(cleanupError);
+      const baseStack = error.stack ?? `${error.name}: ${error.message}`;
+      error.stack = `${baseStack}\nSuppressed forecast-lab workspace cleanup failure: ${cleanupDetail}`;
+    }
+  }
+
+  throw error;
+}
+
+function validatePromotionSourceManifest(
+  profile: ForecastLabProfile,
+  sourceEntry: ForecastLabLedgerEntry,
+  manifest: ForecastLabRunManifest,
+): ForecastLabMarkovParameterMutationReplayPayload {
+  if (manifest.runId !== sourceEntry.runId) {
+    throw new ForecastLabRunnerError(`Forecast-lab promotion source manifest runId mismatch for "${sourceEntry.runId}".`);
+  }
+  if (manifest.profileId !== profile.id) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab promotion source run "${sourceEntry.runId}" belongs to "${manifest.profileId}", expected "${profile.id}".`,
+    );
+  }
+  if (manifest.mutationMode !== 'structured') {
+    throw new ForecastLabRunnerError(`Forecast-lab promotion source run "${sourceEntry.runId}" is not a structured mutation run.`);
+  }
+  if (!manifest.promotion) {
+    throw new ForecastLabRunnerError(`Forecast-lab promotion source run "${sourceEntry.runId}" is missing promotion metadata.`);
+  }
+  if (manifest.promotion.status === 'promoted' || manifest.promotion.status === 'activated') {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab promotion source run "${sourceEntry.runId}" is already ${manifest.promotion.status}.`,
+    );
+  }
+  if (!manifest.mutationReplayPayload) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab promotion source run "${sourceEntry.runId}" is missing its structured mutation replay payload.`,
+    );
+  }
+  if (manifest.lineage === undefined || manifest.candidateWorkspace === undefined || manifest.mutationSpecSummary === undefined) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab promotion source run "${sourceEntry.runId}" is missing structured mutation lineage metadata.`,
+    );
+  }
+  if (sourceEntry.mutationId !== undefined && manifest.mutationId !== sourceEntry.mutationId) {
+    throw new ForecastLabRunnerError(`Forecast-lab promotion source run "${sourceEntry.runId}" has inconsistent mutationId metadata.`);
+  }
+  if (
+    sourceEntry.mutationSummary !== undefined &&
+    manifest.mutationSummary !== undefined &&
+    manifest.mutationSummary !== sourceEntry.mutationSummary
+  ) {
+    throw new ForecastLabRunnerError(`Forecast-lab promotion source run "${sourceEntry.runId}" has inconsistent mutation summary metadata.`);
+  }
+  if (
+    sourceEntry.lineage !== undefined &&
+    stableJsonStringify(sourceEntry.lineage) !== stableJsonStringify(manifest.lineage)
+  ) {
+    throw new ForecastLabRunnerError(`Forecast-lab promotion source run "${sourceEntry.runId}" has inconsistent lineage metadata.`);
+  }
+  if (
+    sourceEntry.mutationSpecSummary !== undefined &&
+    stableJsonStringify(sourceEntry.mutationSpecSummary) !== stableJsonStringify(manifest.mutationSpecSummary)
+  ) {
+    throw new ForecastLabRunnerError(`Forecast-lab promotion source run "${sourceEntry.runId}" has inconsistent mutation spec metadata.`);
+  }
+
+  const replayedMutation = replayForecastLabMarkovParameterMutation(manifest.mutationReplayPayload);
+  const replaySnapshot = snapshotForecastLabMarkovParameterMutation(replayedMutation);
+  if (stableJsonStringify(replaySnapshot) !== stableJsonStringify(manifest.mutationReplayPayload)) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab promotion source run "${sourceEntry.runId}" has a replay payload that cannot be losslessly reconstructed.`,
+    );
+  }
+
+  return replaySnapshot;
+}
+
+function repairPromotionSourceManifestIfNeeded(
+  profile: ForecastLabProfile,
+  sourceEntry: ForecastLabLedgerEntry,
+  manifestPath: string,
+  manifest: ForecastLabRunManifest,
+): ForecastLabRunManifest {
+  if (manifest.promotion) {
+    return manifest;
+  }
+
+  const normalizedSource = {
+    runId: sourceEntry.runId,
+    manifestPath,
+  };
+  const activeStatePath = getForecastLabActiveStatePath(profile.id);
+  const activeState = readForecastLabActiveState(activeStatePath, profile.id);
+  const repairedPromotion = activeState?.sourceRunId === sourceEntry.runId
+    ? activeState.promotion
+    : sourceEntry.promotion
+      ? {
+          ...sourceEntry.promotion,
+          source: normalizedSource,
+        }
+      : {
+          status: 'approval-required' as const,
+          source: normalizedSource,
+          requestedAt: sourceEntry.startedAt,
+        };
+  const repairedManifest: ForecastLabRunManifest = {
+    ...manifest,
+    promotion: repairedPromotion,
+  };
+  writeRunManifest(manifestPath, repairedManifest);
+  return repairedManifest;
+}
+
+function snapshotPromotionSourceInvariants(manifest: ForecastLabRunManifest): unknown {
+  return {
+    runId: manifest.runId,
+    startedAt: manifest.startedAt,
+    profileId: manifest.profileId,
+    targetSubsystem: manifest.targetSubsystem,
+    ...(manifest.baselineCommit !== undefined ? { baselineCommit: manifest.baselineCommit } : {}),
+    candidateBranch: manifest.candidateBranch,
+    allowedGlobs: [...manifest.allowedGlobs],
+    ...(manifest.routingContext !== undefined ? { routingContext: manifest.routingContext } : {}),
+    ...(manifest.effectiveMutationContract !== undefined
+      ? { effectiveMutationContract: manifest.effectiveMutationContract }
+      : {}),
+    ...(manifest.mutationMode !== undefined ? { mutationMode: manifest.mutationMode } : {}),
+    ...(manifest.parentRunId !== undefined ? { parentRunId: manifest.parentRunId } : {}),
+    ...(manifest.mutationId !== undefined ? { mutationId: manifest.mutationId } : {}),
+    ...(manifest.mutationSummary !== undefined ? { mutationSummary: manifest.mutationSummary } : {}),
+    ...(manifest.lineage !== undefined ? { lineage: manifest.lineage } : {}),
+    ...(manifest.mutationSpecSummary !== undefined ? { mutationSpecSummary: manifest.mutationSpecSummary } : {}),
+    ...(manifest.mutationReplayPayload !== undefined ? { mutationReplayPayload: manifest.mutationReplayPayload } : {}),
+    ...(manifest.candidateWorkspace !== undefined ? { candidateWorkspace: manifest.candidateWorkspace } : {}),
+    ...(manifest.promotion
+      ? {
+          promotion: {
+            source: manifest.promotion.source,
+            requestedAt: manifest.promotion.requestedAt,
+          },
+        }
+      : {}),
+    ...(manifest.promotionSource !== undefined ? { promotionSource: manifest.promotionSource } : {}),
+    artifactsPath: manifest.artifactsPath,
+  };
+}
+
+function revalidatePromotionSourceAfterVerification(
+  profile: ForecastLabProfile,
+  source: ForecastLabPromotionSourceSelection,
+): ForecastLabRunManifest {
+  const manifest = readRunManifest(source.manifestPath);
+  validatePromotionSourceManifest(profile, source.ledgerEntry, manifest);
+
+  if (
+    stableJsonStringify(snapshotPromotionSourceInvariants(manifest))
+    !== stableJsonStringify(snapshotPromotionSourceInvariants(source.manifest))
+  ) {
+    throw new ForecastLabRunnerError(
+      `Forecast-lab promotion source run "${source.manifest.runId}" changed while promotion verification was running.`,
+    );
+  }
+
+  return manifest;
+}
+
+function acquirePromotionSourceLock(source: ForecastLabPromotionSourceSelection, promotionRunId: string): () => void {
+  const lockPath = `${dirname(source.manifestPath)}/promotion.lock`;
+  assertInsideExperiments(lockPath);
+
+  try {
+    writeFileSync(lockPath, `${promotionRunId}\n`, { encoding: 'utf8', flag: 'wx' });
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
+    if (code === 'EEXIST') {
+      throw new ForecastLabRunnerError(
+        `Forecast-lab promotion source run "${source.manifest.runId}" is already being promoted by another process.`,
+      );
+    }
+    throw error;
+  }
+
+  return () => {
+    try {
+      unlinkSync(lockPath);
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  };
+}
+
+function resolvePromotionSource(
+  profile: ForecastLabProfile,
+  ledgerPath: string,
+  requestedRunId?: string,
+): ForecastLabPromotionSourceSelection {
+  const sourceEntry = requestedRunId
+    ? readLedgerEntries(ledgerPath)
+      .findLast((entry) => entry.runId === requestedRunId && entry.profileId === profile.id && entry.decision === 'keep' && entry.mutationMode === 'structured')
+    : findLatestKeptLedgerEntry(ledgerPath, profile.id, { mutationMode: 'structured' });
+
+  if (!sourceEntry) {
+    throw new ForecastLabRunnerError(
+      requestedRunId
+        ? `Forecast-lab promotion source run "${requestedRunId}" was not found as a kept structured run for "${profile.id}".`
+        : `Forecast-lab promotion requires a kept structured run for "${profile.id}".`,
+    );
+  }
+
+  const manifestPath = sourceEntry.promotion?.source.manifestPath ?? getExperimentRunManifestPath(sourceEntry.runId);
+  const manifest = repairPromotionSourceManifestIfNeeded(
+    profile,
+    sourceEntry,
+    manifestPath,
+    readRunManifest(manifestPath),
+  );
+  const replaySnapshot = validatePromotionSourceManifest(profile, sourceEntry, manifest);
+
+  return {
+    ledgerEntry: sourceEntry,
+    manifestPath,
+    manifest,
+    replayPayload: replaySnapshot,
+  };
+}
+
+function stageStructuredMutationReplay(
+  workspaceRootDir: string,
+  profile: ForecastLabProfile,
+  replayPayload: ForecastLabMarkovParameterMutationReplayPayload,
+  sourceManifest: ForecastLabRunManifest,
+): ForecastLabStructuredMutationSelection {
+  const replayedMutation = replayForecastLabMarkovParameterMutation(replayPayload);
+  const updatedFiles = new Map<string, string>();
+  applyStructuredMutationEdits(workspaceRootDir, updatedFiles, replayedMutation);
+
+  const mutatedFiles = applyForecastLabCandidateEdits(
+    workspaceRootDir,
+    [...updatedFiles.entries()].map(([path, contents]) => ({ path, contents })),
+    {
+      allowedPaths: profile.mutation.mutableFiles,
+      readOnlyPaths: profile.readOnlyHarnessFiles,
+    },
+  );
+
+  return {
+    mutationMode: 'structured',
+    parentRunId: sourceManifest.parentRunId,
+    mutationId: replayedMutation.id,
+    mutationSummary: replayedMutation.specSummary.summary,
+    lineage: sourceManifest.lineage!,
+    selectedMutatorId: replayedMutation.id,
+    mutatorId: replayedMutation.mutatorId,
+    mutatedFiles,
+    patchSummary: [...replayedMutation.patchSummary],
+    mutationSpecSummary: replayedMutation.specSummary,
+    mutationReplayPayload: replayPayload,
+  };
+}
+
+export async function promoteForecastLab(options: ForecastLabPromotionOptions): Promise<ForecastLabPromotionResult> {
+  const profile = getForecastLabProfile(options.profileId);
+  const now = options.now ?? (() => new Date());
+  const startedAt = now().toISOString();
+  const runId = options.runId ?? makePromotionRunId(profile.id, new Date(startedAt));
+  const progress = options.progress;
+  const output = options.output;
+  const ledgerPath = options.ledgerPath ?? getExperimentLedgerPath({ create: true });
+  const commandRunner = options.commandRunner ?? defaultForecastLabCommandRunner;
+  const source = resolvePromotionSource(profile, ledgerPath, options.sourceRunId);
+  const releaseSourceLock = acquirePromotionSourceLock(source, runId);
+  const runDir = getExperimentRunDir(runId, { create: true });
+  const manifestPath = getExperimentRunManifestPath(runId, { create: true });
+  const baselinePath = `${runDir}/baseline.json`;
+  const candidatePath = `${runDir}/candidate.json`;
+  const decisionPath = `${runDir}/decision.json`;
+  const activationPath = `${runDir}/activation.json`;
+  const activeStatePath = getForecastLabActiveStatePath(profile.id);
+
+  for (const path of [runDir, manifestPath, baselinePath, candidatePath, decisionPath, activationPath, activeStatePath]) {
+    assertInsideExperiments(path);
+  }
+
+  try {
+    progress?.(`forecast-lab: promoting kept run ${source.manifest.runId} for ${profile.id} (${runId})`);
+    const workspace = prepareForecastLabPromotionWorkspace(runId);
+
+    try {
+      const structuredMutation = stageStructuredMutationReplay(
+        workspace.metadata.rootDir,
+        profile,
+        source.replayPayload,
+        source.manifest,
+      );
+      const manifest: ForecastLabRunManifest = {
+        runId,
+        startedAt,
+        profileId: profile.id,
+        targetSubsystem: profile.targetSubsystem,
+        baselineCommit: workspace.baselineCommit,
+        candidateBranch: workspace.metadata.branch,
+        allowedGlobs: [...profile.allowedGlobs],
+        effectiveMutationContract: source.manifest.effectiveMutationContract ?? snapshotEffectiveMutationContract(profile),
+        mutationMode: 'structured',
+        ...(source.manifest.parentRunId !== undefined ? { parentRunId: source.manifest.parentRunId } : {}),
+        mutationId: structuredMutation.mutationId,
+        mutationSummary: structuredMutation.mutationSummary,
+        lineage: structuredMutation.lineage,
+        mutationSpecSummary: structuredMutation.mutationSpecSummary,
+        mutationReplayPayload: structuredMutation.mutationReplayPayload,
+        candidateWorkspace: workspace.metadata,
+        promotionSource: {
+          runId: source.manifest.runId,
+          manifestPath: source.manifestPath,
+        },
+        artifactsPath: runDir,
+      };
+
+      writeRunManifest(manifestPath, manifest);
+      progress?.(`forecast-lab: promotion manifest written to ${manifestPath}`);
+      progress?.(`forecast-lab: promotion staging workspace ${workspace.metadata.rootDir}`);
+      progress?.(`forecast-lab: replaying kept mutation ${structuredMutation.mutationId} from ${source.manifest.runId}`);
+      progress?.(`forecast-lab: promoted files ${structuredMutation.mutatedFiles.join(', ')}`);
+      progress?.(`forecast-lab: promoted patch summary ${structuredMutation.patchSummary.join(' | ')}`);
+
+      progress?.('forecast-lab: starting promotion baseline gate');
+      const baseline = await runGate('baseline', profile, runId, commandRunner, process.cwd(), progress, output);
+      writeJsonArtifact(baselinePath, baseline);
+      progress?.(`forecast-lab: promotion baseline results written to ${baselinePath}`);
+
+      progress?.('forecast-lab: starting promotion candidate gate');
+      const candidate = await runGate(
+        'candidate',
+        profile,
+        runId,
+        commandRunner,
+        workspace.metadata.rootDir,
+        progress,
+        output,
+      );
+      const candidateArtifact = buildCandidateArtifact(candidate, manifest, structuredMutation, false);
+      writeJsonArtifact(candidatePath, candidateArtifact);
+      progress?.(`forecast-lab: promotion candidate results written to ${candidatePath}`);
+
+      const decision = decideRun(profile, baseline, candidate);
+      if (decision.decision !== 'keep') {
+        writeJsonArtifact(decisionPath, {
+          ...decision,
+          sourceRunId: source.manifest.runId,
+          promotionSource: manifest.promotionSource,
+          mutationMode: structuredMutation.mutationMode,
+          mutationId: structuredMutation.mutationId,
+          mutationSummary: structuredMutation.mutationSummary,
+          candidateWorkspace: manifest.candidateWorkspace,
+          mutatedFiles: [...structuredMutation.mutatedFiles],
+          patchSummary: [...structuredMutation.patchSummary],
+        });
+        progress?.(`forecast-lab: promotion verification failed — ${decision.reason}`);
+        throw new ForecastLabRunnerError(
+          `Forecast-lab promotion for "${profile.id}" regressed while verifying kept run "${source.manifest.runId}": ${decision.reason}`,
+        );
+      }
+
+      const refreshedSourceManifest = revalidatePromotionSourceAfterVerification(profile, source);
+      const sourcePromotion = refreshedSourceManifest.promotion;
+      if (!sourcePromotion || sourcePromotion.status === 'promoted' || sourcePromotion.status === 'activated') {
+        throw new ForecastLabRunnerError(
+          `Forecast-lab promotion source run "${source.manifest.runId}" is no longer promotable.`,
+        );
+      }
+
+      const approvedAt = sourcePromotion.status === 'approval-required'
+        ? startedAt
+        : sourcePromotion.approvedAt;
+      const promotedAt = now().toISOString();
+      const previouslyActive = readForecastLabActiveState(activeStatePath, profile.id);
+      const activation: ForecastLabPromotionActivationRef = {
+        runId,
+        manifestPath,
+        artifactsPath: runDir,
+        workspace: workspace.metadata,
+      };
+      const liveReplayMutation = replayForecastLabMarkovParameterMutation(structuredMutation.mutationReplayPayload);
+      const liveActivation = applyStructuredMutationToLiveSource(profile, liveReplayMutation);
+      const activatedAt = now().toISOString();
+      const promotion: Extract<ForecastLabPromotionState, { status: 'activated' }> = {
+        status: 'activated',
+        source: sourcePromotion.source,
+        requestedAt: sourcePromotion.requestedAt,
+        approvedAt,
+        promotedAt,
+        activatedAt,
+        activation,
+      };
+      const updatedSourceManifest: ForecastLabRunManifest = {
+        ...refreshedSourceManifest,
+        promotion,
+      };
+
+      const activeStateRecord: ForecastLabActivePromotionRecord = {
+        version: 1,
+        profileId: profile.id,
+        sourceRunId: source.manifest.runId,
+        promotionRunId: runId,
+        activatedAt,
+        promotion,
+        mutationReplayPayload: structuredMutation.mutationReplayPayload,
+        mutatedFiles: [...liveActivation.mutatedFiles],
+        patchSummary: [...structuredMutation.patchSummary],
+        activeStatePath,
+        ...(previouslyActive
+          ? {
+              previousActive: {
+                profileId: previouslyActive.profileId,
+                sourceRunId: previouslyActive.sourceRunId,
+                promotionRunId: previouslyActive.promotionRunId,
+                activatedAt: previouslyActive.activatedAt,
+                promotion: previouslyActive.promotion,
+                mutationReplayPayload: previouslyActive.mutationReplayPayload,
+                mutatedFiles: [...previouslyActive.mutatedFiles],
+                patchSummary: [...previouslyActive.patchSummary],
+              },
+            }
+          : {}),
+      };
+
+      try {
+        writeRunManifest(source.manifestPath, updatedSourceManifest);
+        writeJsonArtifact(activeStatePath, activeStateRecord);
+        writeJsonArtifact(activationPath, {
+          sourceRunId: source.manifest.runId,
+          promotion,
+          promotionSource: manifest.promotionSource,
+          mutationId: structuredMutation.mutationId,
+          mutationSummary: structuredMutation.mutationSummary,
+          mutationSpecSummary: structuredMutation.mutationSpecSummary,
+          mutationReplayPayload: structuredMutation.mutationReplayPayload,
+          mutatedFiles: [...liveActivation.mutatedFiles],
+          patchSummary: [...structuredMutation.patchSummary],
+          allowedGlobs: [...profile.allowedGlobs],
+          baselineCommit: workspace.baselineCommit,
+          candidateWorkspace: workspace.metadata,
+          activeStatePath,
+          runtimeDefaultsUpdated: true,
+        });
+        writeJsonArtifact(decisionPath, {
+          ...decision,
+          sourceRunId: source.manifest.runId,
+          promotion,
+          promotionSource: manifest.promotionSource,
+          mutationMode: structuredMutation.mutationMode,
+          mutationId: structuredMutation.mutationId,
+          mutationSummary: structuredMutation.mutationSummary,
+          candidateWorkspace: manifest.candidateWorkspace,
+          mutatedFiles: [...liveActivation.mutatedFiles],
+          patchSummary: [...structuredMutation.patchSummary],
+        });
+      } catch (error) {
+        try {
+          writeRunManifest(source.manifestPath, refreshedSourceManifest);
+          applyForecastLabCandidateEdits(
+            process.cwd(),
+            [...liveActivation.previousContents.entries()].map(([path, contents]) => ({ path, contents })),
+            {
+              allowedPaths: profile.mutation.mutableFiles,
+              readOnlyPaths: profile.readOnlyHarnessFiles,
+            },
+          );
+          restoreStructuredMutationRuntimeDefaults(liveActivation.runtimeDefaults);
+        } catch (restoreError) {
+          if (error instanceof Error) {
+            const restoreDetail = restoreError instanceof Error
+              ? (restoreError.stack ?? `${restoreError.name}: ${restoreError.message}`)
+              : String(restoreError);
+            error.stack = `${error.stack ?? `${error.name}: ${error.message}`}\nSuppressed forecast-lab activation rollback failure: ${restoreDetail}`;
+          }
+        }
+        throw error;
+      }
+
+      progress?.(`forecast-lab: promotion source manifest updated at ${source.manifestPath}`);
+      progress?.(`forecast-lab: live activation recorded at ${activeStatePath}`);
+      progress?.(`forecast-lab: activation artifacts written to ${activationPath}`);
+      progress?.(`forecast-lab: promotion decision ${decision.decision} — ${decision.reason}`);
+
+      return {
+        runId,
+        sourceRunId: source.manifest.runId,
+        manifest,
+        sourceManifest: updatedSourceManifest,
+        baseline: baseline as unknown as JsonValue,
+        candidate: candidateArtifact,
+        decision,
+        activation,
+        activeStatePath,
+      };
+    } catch (error) {
+      cleanupPreparedWorkspaceOnError(workspace, error);
+      throw error;
+    }
+  } finally {
+    releaseSourceLock();
+  }
+}
+
+export async function resetForecastLab(options: ForecastLabResetOptions): Promise<ForecastLabResetResult> {
+  const profile = getForecastLabProfile(options.profileId);
+  const now = options.now ?? (() => new Date());
+  const startedAt = now().toISOString();
+  const runId = options.runId ?? makeResetRunId(profile.id, new Date(startedAt));
+  const progress = options.progress;
+  const activeStatePath = getForecastLabActiveStatePath(profile.id);
+  const activeState = readForecastLabActiveState(activeStatePath, profile.id);
+
+  if (!activeState) {
+    throw new ForecastLabRunnerError(`Forecast-lab reset requires an active promoted baseline for "${profile.id}".`);
+  }
+
+  const resetMutation = buildResetMutationFromActiveState(profile, activeState, options.mode);
+  const runDir = getExperimentRunDir(runId, { create: true });
+  const resetArtifactPath = `${runDir}/reset.json`;
+  for (const path of [runDir, resetArtifactPath]) {
+    assertInsideExperiments(path);
+  }
+
+  progress?.(`forecast-lab: resetting live parameters for ${profile.id} (${runId})`);
+  const liveReset = applyStructuredMutationToLiveSource(profile, resetMutation);
+  const resetAt = now().toISOString();
+
+  try {
+    writeJsonArtifact(resetArtifactPath, {
+      version: 1,
+      runId,
+      startedAt,
+      resetAt,
+      profileId: profile.id,
+      mode: options.mode,
+      previousActiveStatePath: activeStatePath,
+      sourceRunId: activeState.sourceRunId,
+      promotionRunId: activeState.promotionRunId,
+      mutationReplayPayload: activeState.mutationReplayPayload,
+      resetMutation,
+      mutatedFiles: [...liveReset.mutatedFiles],
+      patchSummary: [...resetMutation.patchSummary],
+      ...(options.mode === 'last-known-good'
+        ? { restoredActive: activeState.previousActive }
+        : {}),
+    });
+
+    if (options.mode === 'defaults') {
+      if (existsSync(activeStatePath)) {
+        unlinkSync(activeStatePath);
+      }
+    } else {
+      const restoredActive = activeState.previousActive;
+      if (!restoredActive) {
+        throw new ForecastLabRunnerError(
+          `Forecast-lab reset for "${profile.id}" could not restore the previous activation metadata.`,
+        );
+      }
+
+      const restoredActiveState: ForecastLabActivePromotionRecord = {
+        version: 1,
+        profileId: restoredActive.profileId,
+        sourceRunId: restoredActive.sourceRunId,
+        promotionRunId: restoredActive.promotionRunId,
+        activatedAt: restoredActive.activatedAt,
+        promotion: restoredActive.promotion,
+        mutationReplayPayload: restoredActive.mutationReplayPayload,
+        mutatedFiles: [...restoredActive.mutatedFiles],
+        patchSummary: [...restoredActive.patchSummary],
+        activeStatePath,
+      };
+      writeJsonArtifact(activeStatePath, restoredActiveState);
+    }
+  } catch (error) {
+    try {
+      restoreStructuredMutationRuntimeDefaults(liveReset.runtimeDefaults);
+      applyForecastLabCandidateEdits(
+        process.cwd(),
+        [...liveReset.previousContents.entries()].map(([path, contents]) => ({ path, contents })),
+        {
+          allowedPaths: profile.mutation.mutableFiles,
+          readOnlyPaths: profile.readOnlyHarnessFiles,
+        },
+      );
+    } catch (restoreError) {
+      if (error instanceof Error) {
+        const restoreDetail = restoreError instanceof Error
+          ? (restoreError.stack ?? `${restoreError.name}: ${restoreError.message}`)
+          : String(restoreError);
+        error.stack = `${error.stack ?? `${error.name}: ${error.message}`}\nSuppressed forecast-lab reset rollback failure: ${restoreDetail}`;
+      }
+    }
+    throw error;
+  }
+
+  progress?.(`forecast-lab: reset artifacts written to ${resetArtifactPath}`);
+  progress?.(
+    options.mode === 'defaults'
+      ? `forecast-lab: ${profile.id} now uses shipped defaults`
+      : `forecast-lab: ${profile.id} now uses the previously activated baseline`,
+  );
+
+  return {
+    runId,
+    profileId: profile.id,
+    mode: options.mode,
+    artifactsPath: runDir,
+    resetArtifactPath,
+    ...(options.mode === 'last-known-good' ? { activeStatePath } : {}),
+  };
+}
+
 export async function runForecastLab(options: ForecastLabRunOptions): Promise<ForecastLabRunResult> {
   const profile = getForecastLabProfile(options.profileId);
   const now = options.now ?? (() => new Date());
@@ -960,6 +2067,13 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
 
   const measuredDecision = decideRun(profile, baseline, candidate);
   const decision = skipMutation ? dropSkippedMutation(measuredDecision) : measuredDecision;
+  const promotion = decision.decision === 'keep'
+    ? buildPendingPromotionState(manifest, manifestPath, now().toISOString())
+    : undefined;
+  if (promotion) {
+    manifest.promotion = promotion;
+    writeRunManifest(manifestPath, manifest);
+  }
   writeJsonArtifact(decisionPath, structuredMutation
     ? {
         ...decision,
@@ -976,6 +2090,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
         },
         mutatedFiles: [...structuredMutation.mutatedFiles],
         patchSummary: [...structuredMutation.patchSummary],
+        ...(promotion ? { promotion } : {}),
       }
     : decision);
   progress?.(`forecast-lab: decision ${decision.decision} — ${decision.reason}`);
@@ -996,6 +2111,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
     lineage: structuredMutation?.lineage,
     mutationSpecSummary: structuredMutation?.mutationSpecSummary,
     candidateWorkspace: manifest.candidateWorkspace,
+    promotion,
     baselineSummary: summarizeForLedger(baseline),
     candidateSummary: summarizeForLedger(candidate),
     decision: decision.decision,

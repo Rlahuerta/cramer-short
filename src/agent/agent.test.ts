@@ -46,6 +46,139 @@ const mockState = {
   callCount: 0,
 };
 
+const forecastLabMockState = {
+  calls: [] as Array<Record<string, unknown>>,
+  guidedImproveResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'guided-improve',
+      status: 'ok',
+      execute: true,
+      profileId: 'btc-markov-ultra-short-horizon',
+      runId: 'btc-markov-ultra-short-horizon.keep-1',
+      decision: 'keep',
+      reason: 'candidate passed the fixed gates',
+      artifactsPath: '.cramer-short/experiments/runs/btc-markov-ultra-short-horizon.keep-1',
+      promotionReady: true,
+      promotionStatus: 'approval-required',
+      sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      answer: 'Guided keep. Approval required before promotion. Reply "approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1" to continue.',
+    },
+  }),
+  planResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'guided-improve',
+      status: 'ok',
+      execute: false,
+      profileId: 'btc-markov-ultra-short-horizon',
+      promotionReady: false,
+      answer: 'Forecast-lab bounded plan for btc-markov-ultra-short-horizon. Baseline harness first. Candidate compare. Artifacts stay under .cramer-short/experiments.',
+    },
+  }),
+  promotionResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'promote-approved',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      runId: 'forecast-lab-promo-1',
+      sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      decision: 'keep',
+      reason: 'promotion verification passed',
+      artifactsPath: '.cramer-short/experiments/runs/forecast-lab-promo-1',
+      activationArtifactsPath: '.cramer-short/experiments/runs/forecast-lab-promo-1',
+      activeStatePath: '.cramer-short/experiments/active-promotions/btc-markov-ultra-short-horizon.json',
+      answer: 'Promotion completed for btc-markov-ultra-short-horizon from kept run btc-markov-ultra-short-horizon.keep-1. Promoted parameters are now live for normal forecasts.',
+    },
+  }),
+  compareResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'compare-best-vs-shipped',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      decision: 'keep',
+      reason: 'candidate passed the fixed gates',
+      artifactsPath: '.cramer-short/experiments/runs/btc-markov-ultra-short-horizon.keep-1',
+      liveStatus: 'ready-to-promote',
+      promotionCommand: 'Approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1.',
+      answer: 'Forecast-lab comparison for btc-markov-ultra-short-horizon. Regular forecasts: not live yet. Reply "Approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1." to activate this kept run for ordinary forecast queries.',
+    },
+  }),
+  listMutatorsResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'list-mutators',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      profiles: [
+        {
+          profileId: 'btc-markov-ultra-short-horizon',
+          targetSubsystem: 'markov-distribution',
+          mutationMode: 'structured',
+          currentCatalogIds: [
+            'markov-shorter-reactive-window',
+            'markov-faster-decay-reaction',
+            'markov-lower-confidence-trend-penalty',
+          ],
+          allowedOperatorIds: ['search-replace'],
+        },
+      ],
+      dryRunProfiles: ['btc-arbiter-replay', 'polymarket-selection-sanity'],
+      frameworkOperatorIds: ['replace-range', 'search-replace', 'insert-block'],
+      answer: 'Forecast-lab shipped mutator ids for btc-markov-ultra-short-horizon. Shipped candidate catalog ids: markov-shorter-reactive-window, markov-faster-decay-reaction, markov-lower-confidence-trend-penalty.',
+    },
+  }),
+  catalogExtensionResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'catalog-extension-plan',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      targetSubsystem: 'markov-distribution',
+      allowedGlobs: [
+        'src/tools/finance/markov-distribution.ts',
+        'src/tools/finance/conformal.ts',
+        'src/tools/finance/regime-calibrator.ts',
+      ],
+      mutationMode: 'structured',
+      allowedMutatorIds: ['search-replace'],
+      currentCatalogIds: [
+        'markov-shorter-reactive-window',
+        'markov-faster-decay-reaction',
+        'markov-lower-confidence-trend-penalty',
+      ],
+      catalogFiles: [
+        'src/experiments/forecast-lab/mutators/markov-parameters.ts',
+        'src/experiments/forecast-lab/profiles.ts',
+      ],
+      validationFiles: [
+        'src/experiments/forecast-lab/mutators/markov-parameters.test.ts',
+        'src/experiments/forecast-lab/profiles.test.ts',
+        'src/tools/finance/markov-distribution.test.ts',
+        'src/tools/finance/backtest/walk-forward-r5.test.ts',
+      ],
+      operatorMutatorIds: ['replace-range', 'search-replace', 'insert-block'],
+      answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. This is a bounded code-change plan. It is not a safe runtime mutation request, so I did not inspect experiment artifacts or try to rerun the lineage directly. Catalog files to open directly next: src/experiments/forecast-lab/mutators/markov-parameters.ts, src/experiments/forecast-lab/profiles.ts. Validation files to open directly next: src/experiments/forecast-lab/mutators/markov-parameters.test.ts, src/experiments/forecast-lab/profiles.test.ts, src/tools/finance/markov-distribution.test.ts, src/tools/finance/backtest/walk-forward-r5.test.ts. After the new mutator is implemented and allowed for btc-markov-ultra-short-horizon, rerun the lineage with forecast_lab_run(action="guided-improve", profileId="btc-markov-ultra-short-horizon").',
+    },
+  }),
+  resetResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'reset-live',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      resetMode: 'defaults',
+      runId: 'forecast-lab-reset-1',
+      artifactsPath: '.cramer-short/experiments/runs/forecast-lab-reset-1',
+      resetArtifactPath: '.cramer-short/experiments/runs/forecast-lab-reset-1/reset.json',
+      answer: 'Forecast-lab reset completed for btc-markov-ultra-short-horizon. Mode: shipped defaults.',
+    },
+  }),
+};
+
 /** Sequential thinking call stub (satisfies the ST-first enforcement). */
 const ST_TOOL_CALL = {
   id: 'st1',
@@ -105,6 +238,7 @@ mock.module('@langchain/ollama', () => ({
 }));
 
 const { Agent } = await import('./agent.js');
+const { AgentToolExecutor } = await import('./tool-executor.js');
 const {
   inferDistributionTicker,
   inferDistributionHorizon,
@@ -139,8 +273,17 @@ const {
   isForecastLabImprovementQuery,
   isAcceptedFirstPlanningToolCall,
   detectExplicitSkillRequest,
-  } = await import('./agent.js');
+  isForecastLabPlanOnlyQuery,
+  detectForecastLabPromotionApproval,
+  detectForecastLabResetRequest,
+  detectForecastLabComparisonRequest,
+  detectForecastLabResultsRequest,
+  detectForecastLabMutatorListRequest,
+  detectForecastLabKeepCurrentBestRequest,
+  detectForecastLabCatalogExtensionRequest,
+} = await import('./agent.js');
  const { getForecastLabRoutingHint } = await import('./forecast-lab-routing.js');
+const { InMemoryChatHistory } = await import('../utils/in-memory-chat-history.js');
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -149,6 +292,35 @@ async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEven
   const events: AgentEvent[] = [];
   for await (const e of gen) events.push(e);
   return events;
+}
+
+function installForecastLabTool(agent: any): void {
+  agent.toolMap.set('forecast_lab_run', {
+    name: 'forecast_lab_run',
+    invoke: async (input: Record<string, unknown>) => {
+      forecastLabMockState.calls.push(input);
+      if (input.action === 'compare-best-vs-shipped') {
+        return forecastLabMockState.compareResult;
+      }
+      if (input.action === 'list-mutators') {
+        return forecastLabMockState.listMutatorsResult;
+      }
+      if (input.action === 'catalog-extension-plan') {
+        return forecastLabMockState.catalogExtensionResult;
+      }
+      if (input.action === 'promote-approved') {
+        return forecastLabMockState.promotionResult;
+      }
+      if (input.action === 'reset-live') {
+        return forecastLabMockState.resetResult;
+      }
+      if (input.execute === false) {
+        return forecastLabMockState.planResult;
+      }
+      return forecastLabMockState.guidedImproveResult;
+    },
+  });
+  agent.toolExecutor = new AgentToolExecutor(agent.toolMap);
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +336,7 @@ describe('Agent', () => {
     mockState.streamChunks = ['streaming answer'];
     mockState.streamThrows = false;
     mockState.callCount = 0;
+    forecastLabMockState.calls = [];
   });
 
   describe('Agent.create', () => {
@@ -228,6 +401,411 @@ describe('Agent', () => {
       }
       expect(done).toBeDefined();
       expect(done!.answer).toContain('Direct answer');
+    });
+
+    it('auto-runs the bounded forecast-lab improvement flow for routed execution queries', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('Improve the BTC 1d/2d/3d Markov forecast workflow.'),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['skill', 'forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'guided-improve',
+          query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+          profileId: 'btc-markov-ultra-short-horizon',
+          routingSource: 'auto-routed',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Approval required before promotion');
+    });
+
+    it('passes explicit mutator ids through the routed forecast-lab improvement flow', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('Improve the BTC 1d/2d/3d Markov forecast workflow using mutator markov-faster-decay-reaction.'),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['skill', 'forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'guided-improve',
+          query: 'Improve the BTC 1d/2d/3d Markov forecast workflow using mutator markov-faster-decay-reaction.',
+          profileId: 'btc-markov-ultra-short-horizon',
+          mutator: 'markov-faster-decay-reaction',
+          routingSource: 'auto-routed',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Approval required before promotion');
+    });
+
+    it('uses the bounded forecast-lab plan path when the routed query forbids execution', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('Optimize the BTC 1d/2d/3d Markov forecast workflow. Do not edit files, run shell commands, or write artifacts; explain the exact experiment plan you would follow.'),
+      );
+
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'guided-improve',
+          query: 'Optimize the BTC 1d/2d/3d Markov forecast workflow. Do not edit files, run shell commands, or write artifacts; explain the exact experiment plan you would follow.',
+          profileId: 'btc-markov-ultra-short-horizon',
+          execute: false,
+          routingSource: 'auto-routed',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('bounded plan');
+      expect(done?.answer).toContain('.cramer-short/experiments');
+    });
+
+    it('runs bounded promotion on explicit approval prompts without another model turn', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished. Approval required before promotion. Reply "approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1" to continue.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('Yes, approve forecast-lab promotion for that kept run.', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'promote-approved',
+          profileId: 'btc-markov-ultra-short-horizon',
+          sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Promotion completed');
+      expect(done?.answer).toContain('now live for normal forecasts');
+    });
+
+    it('runs bounded reset on explicit reset prompts without another model turn', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Approve the BTC ultra-short-horizon promotion.',
+        answer: 'Promotion completed for btc-markov-ultra-short-horizon from kept run btc-markov-ultra-short-horizon.keep-1. Promoted parameters are now live for normal forecasts. Active baseline: .cramer-short/experiments/active-promotions/btc-markov-ultra-short-horizon.json',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('Reset the forecast-lab active baseline for btc-markov-ultra-short-horizon back to shipped defaults.', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'reset-live',
+          profileId: 'btc-markov-ultra-short-horizon',
+          resetMode: 'defaults',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('reset completed');
+      expect(done?.answer).toContain('shipped defaults');
+    });
+
+    it('routes current-best vs shipped-baseline questions into the bounded forecast-lab comparison flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished for btc-markov-ultra-short-horizon. Approval required before promotion.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('Is the current best better than the shipped default baseline?', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query: 'Is the current best better than the shipped default baseline?',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('not live yet');
+      expect(done?.answer).toContain('Approve forecast-lab promotion');
+    });
+
+    it('routes named mutator-vs-active comparison prompts into the bounded forecast-lab comparison flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Name it something like: markov-entropy-adaptive-anchor-weighting.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const query = 'I need to compare the markov-entropy-adaptive-anchor-weighting with the active one, I need to see the accurace numbers';
+      const events = await collectEvents(agent.run(query, history));
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          profileId: 'btc-markov-ultra-short-horizon',
+          mutationId: 'markov-entropy-adaptive-anchor-weighting',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+    });
+
+    it('routes history-based live-vs-new-mutator prompts into the bounded forecast-lab comparison flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Name it something like: markov-entropy-adaptive-anchor-weighting.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const query = 'I need to compare the live one with the new mutate one that I created and it is not promoted';
+      const events = await collectEvents(agent.run(query, history));
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          profileId: 'btc-markov-ultra-short-horizon',
+          mutationId: 'markov-entropy-adaptive-anchor-weighting',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+    });
+
+    it('routes bare named mutator-vs-active comparison prompts into the bounded forecast-lab comparison flow', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const query = 'I need to compare the markov-entropy-adaptive-anchor-weighting with the active one, I need to see the accurace numbers';
+      const events = await collectEvents(agent.run(query));
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          mutationId: 'markov-entropy-adaptive-anchor-weighting',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+    });
+
+    it('routes forecast-lab results prompts into the bounded comparison flow instead of guided improvement', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow'),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query: 'provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Approve forecast-lab promotion');
+    });
+
+    it('routes mutator-list prompts into the bounded forecast-lab catalog flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished for btc-markov-ultra-short-horizon. Approval required before promotion.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const query = 'List the mutate availible';
+      const events = await collectEvents(agent.run(query, history));
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'list-mutators',
+          query,
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('shipped mutator ids');
+      expect(done?.answer).toContain('markov-shorter-reactive-window');
+    });
+
+    it('routes keep-the-current-best follow-ups into the bounded results flow instead of file edits', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow',
+        answer: 'Forecast-lab comparison for btc-markov-ultra-short-horizon. Current best is not live yet. Reply "Approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1." to activate it.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('keep the current best candidate', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query: 'keep the current best candidate',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Approve forecast-lab promotion');
+    });
+
+    it('routes catalog-extension prompts into the bounded forecast-lab plan flow instead of generic exploration', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Use the forecast-lab skill to explain what to do when no shipped structured mutator remains applicable after replaying the kept parent lineage for btc-markov-ultra-short-horizon.',
+        answer: 'No shipped structured mutator remains applicable after replaying the kept parent lineage for profile "btc-markov-ultra-short-horizon". Next actions: keep the current best candidate, add a new shipped structured mutator, or intentionally reset the forecast-lab lineage outside the CLI.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('design a new shipped mutator outside the existing catalog and re-run the lineage', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'catalog-extension-plan',
+          query: 'design a new shipped mutator outside the existing catalog and re-run the lineage',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('bounded code-change plan');
+      expect(done?.answer).toContain('did not inspect experiment artifacts');
+    });
+
+    it('routes detailed shipped-mutator implementation briefs into the bounded forecast-lab plan flow', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const query = [
+        'Target anchor trust weighting.',
+        'Add a new shipped structured mutator for btc-markov-ultra-short-horizon that makes the Markov/anchor blend more adaptive under high posterior entropy using the existing soft-regime weighting controls in src/tools/finance/markov-distribution.ts.',
+        'Mutator goal:',
+        '- reduce retained HMM weight when the regime posterior is ambiguous,',
+        '- widen CI slightly more under entropy,',
+        '- lower confidence more under entropy,',
+        '- keep the change bounded to the existing soft-regime weighting parameters.',
+        'Suggested starting values:',
+        '- softRegimeConfidenceFloor: 0.65 -> 0.55',
+        '- softRegimeConfidenceEntropyWeight: 0.35 -> 0.50',
+        '- softRegimeCiEntropyWeight: 0.35 -> 0.50',
+        '- softRegimeHmmWeightFloor: 0.50 -> 0.35',
+        '- softRegimeHmmWeightEntropyWeight: 0.40 -> 0.60',
+        'Name it something like:',
+        'markov-entropy-adaptive-anchor-weighting',
+        'Keep it bounded, add the shipped mutator to the catalog, and validate it with the existing BTC ultra-short-horizon walk-forward gate.',
+      ].join('\n');
+
+      const events = await collectEvents(agent.run(query));
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'catalog-extension-plan',
+          query,
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('src/experiments/forecast-lab/mutators/markov-parameters.ts');
+      expect(forecastLabMockState.calls[0]).toMatchObject({
+        query: expect.stringContaining('markov-entropy-adaptive-anchor-weighting'),
+      });
+    });
+
+    it('routes implement-and-run requests for non-shipped mutators into the bounded catalog-extension flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent as any);
+      const events = await collectEvents(
+        agent.run('implement and run the markov-entropy-adaptive-anchor-weighting', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'catalog-extension-plan',
+          query: 'implement and run the markov-entropy-adaptive-anchor-weighting',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('bounded code-change plan');
+      expect(done?.answer).toContain('did not inspect experiment artifacts');
     });
 
     it('yields done with error message when LLM throws', async () => {
@@ -481,6 +1059,211 @@ describe('Agent', () => {
     it('classifies routed forecast-lab workflow asks as improvement queries', () => {
       expect(isForecastLabImprovementQuery('Improve the BTC short-horizon forecast workflow.')).toBe(true);
       expect(isForecastLabImprovementQuery('Give me a BTC forecast for the next 7 days.')).toBe(false);
+    });
+
+    it('detects plan-only forecast-lab prompts that should not execute the runner', () => {
+      expect(
+        isForecastLabPlanOnlyQuery(
+          'Optimize the BTC 1d/2d/3d workflow. Do not edit files, run shell commands, or write artifacts; explain the exact experiment plan you would follow.',
+        ),
+      ).toBe(true);
+      expect(isForecastLabPlanOnlyQuery('Improve the BTC 1d/2d/3d workflow and run the bounded experiment.')).toBe(false);
+    });
+
+    it('detects explicit forecast-lab promotion approvals from history context', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished. Approval required before promotion. Reply "approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1" to continue.',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabPromotionApproval('Yes, approve forecast-lab promotion for that kept run.', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      });
+      expect(
+        detectForecastLabPromotionApproval(
+          'Use the forecast-lab skill to explain the full BTC ultra-short-horizon lifecycle after a kept candidate: approval-required promotion, activation for ordinary forecasts, and how to reset to shipped defaults or the last-known-good baseline if the promoted parameters mislead. Do not edit files, run shell commands, or write artifacts.',
+          history,
+        ),
+      ).toBeNull();
+      expect(detectForecastLabPromotionApproval('How do I promote these improvements?', history)).toBeNull();
+      expect(detectForecastLabPromotionApproval('What is BTC doing next week?', history)).toBeNull();
+    });
+
+    it('detects explicit forecast-lab reset requests from history context', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Approve the BTC ultra-short-horizon promotion.',
+        answer: 'Promotion completed for btc-markov-ultra-short-horizon from kept run btc-markov-ultra-short-horizon.keep-1. Promoted parameters are now live for normal forecasts. Active baseline: .cramer-short/experiments/active-promotions/btc-markov-ultra-short-horizon.json',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabResetRequest(
+          'Please reset the forecast-lab baseline for btc-markov-ultra-short-horizon to shipped defaults.',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mode: 'defaults',
+      });
+      expect(
+        detectForecastLabResetRequest(
+          'Restore the forecast-lab baseline for btc-markov-ultra-short-horizon to the last known good activation.',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mode: 'last-known-good',
+      });
+      expect(detectForecastLabResetRequest('Reset BTC to defaults.', history)).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mode: 'defaults',
+      });
+      expect(detectForecastLabResetRequest('Reset BTC to defaults.')).toBeNull();
+    });
+
+    it('detects current-best vs shipped-baseline comparison requests from history context', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished for btc-markov-ultra-short-horizon. Approval required before promotion.',
+        summary: null,
+      });
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Name it something like: markov-entropy-adaptive-anchor-weighting.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabComparisonRequest('Is the current best better than the shipped default baseline?', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(
+        detectForecastLabComparisonRequest(
+          'I need to compare the markov-entropy-adaptive-anchor-weighting with the active one, I need to see the accurace numbers',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mutationId: 'markov-entropy-adaptive-anchor-weighting',
+      });
+      expect(
+        detectForecastLabComparisonRequest(
+          'I need to compare the live one with the new mutate one that I created and it is not promoted',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mutationId: 'markov-entropy-adaptive-anchor-weighting',
+      });
+      expect(
+        detectForecastLabComparisonRequest(
+          'I need to compare the markov-entropy-adaptive-anchor-weighting with the active one, I need to see the accurace numbers',
+        ),
+      ).toEqual({
+        mutationId: 'markov-entropy-adaptive-anchor-weighting',
+      });
+      expect(detectForecastLabComparisonRequest('Is BTC going up next week?', history)).toBeNull();
+    });
+
+    it('detects forecast-lab results requests and resolves the routed profile', () => {
+      expect(
+        detectForecastLabResultsRequest('provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow'),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(detectForecastLabResultsRequest('show me BTC results for next week')).toBeNull();
+    });
+
+    it('detects mutator-list requests and reuses forecast-lab profile context when available', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished for btc-markov-ultra-short-horizon. Approval required before promotion.',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabMutatorListRequest('List the mutator ids for btc-markov-ultra-short-horizon.', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(
+        detectForecastLabMutatorListRequest('List the mutate availible', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(detectForecastLabMutatorListRequest('List the mutate availible')).toEqual({});
+      expect(detectForecastLabMutatorListRequest('List the plugins for my toy parser')).toBeNull();
+    });
+
+    it('detects keep-the-current-best follow-ups only in forecast-lab context', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow',
+        answer: 'Forecast-lab comparison for btc-markov-ultra-short-horizon. Current best is not live yet.',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabKeepCurrentBestRequest('keep the current best candidate', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(detectForecastLabKeepCurrentBestRequest('keep the current best candidate')).toBeNull();
+    });
+
+    it('detects catalog-extension requests and reuses forecast-lab profile context when available', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Use the forecast-lab skill to explain what to do when no shipped structured mutator remains applicable after replaying the kept parent lineage for btc-markov-ultra-short-horizon.',
+        answer: 'No shipped structured mutator remains applicable after replaying the kept parent lineage for profile "btc-markov-ultra-short-horizon".',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabCatalogExtensionRequest(
+          'design a new shipped mutator outside the existing catalog and re-run the lineage',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(
+        detectForecastLabCatalogExtensionRequest('design a new shipped mutator outside the existing catalog and re-run the lineage'),
+      ).toEqual({});
+      expect(
+        detectForecastLabCatalogExtensionRequest(
+          [
+            'Target anchor trust weighting.',
+            'Add a new shipped structured mutator for btc-markov-ultra-short-horizon that makes the Markov/anchor blend more adaptive under high posterior entropy using the existing soft-regime weighting controls in src/tools/finance/markov-distribution.ts.',
+            'Keep it bounded, add the shipped mutator to the catalog, and validate it with the existing BTC ultra-short-horizon walk-forward gate.',
+          ].join('\n'),
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+      expect(
+        detectForecastLabCatalogExtensionRequest(
+          'implement and run the markov-entropy-adaptive-anchor-weighting',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(detectForecastLabCatalogExtensionRequest('design a new mutator for my toy parser')).toBeNull();
     });
 
     it('builds forced crypto enrichment args for BTC forecasts', () => {

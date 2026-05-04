@@ -85,8 +85,8 @@ export const FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS: {
   adaptiveBreakEnabled: false,
   adaptiveBreakLearningRateMultiplier: 1.5,
   adaptiveBreakCooloffWindow: 0,
-  scoreAggregationMinSamples: 20,
-  scoreAggregationCalibrationWindow: 120,
+  scoreAggregationMinSamples: 16,
+  scoreAggregationCalibrationWindow: 96,
 };
 
 export class ConformalPID {

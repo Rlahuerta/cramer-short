@@ -237,7 +237,7 @@ export class AgentToolExecutor {
       // intentionally non-deterministic.
       const UNCACHEABLE_TOOLS = new Set([
         'browser', 'skill', 'sequential_thinking',
-        'write_file', 'edit_file', 'create_file', 'memory_store',
+        'write_file', 'edit_file', 'create_file', 'memory_store', 'forecast_lab_run',
       ]);
       const isCacheable = !UNCACHEABLE_TOOLS.has(toolName);
       cacheKey = isCacheable

@@ -129,10 +129,18 @@ export function assertSafeGitBranchName(branchName: string): void {
   }
 }
 
-export function makeForecastLabCandidateBranch(runId: string): string {
-  const branchName = `topic/forecast-lab-${runId}`;
+function makeForecastLabWorkspaceBranch(runId: string, prefix: string): string {
+  const branchName = `topic/${prefix}-${runId}`;
   assertSafeGitBranchName(branchName);
   return branchName;
+}
+
+export function makeForecastLabCandidateBranch(runId: string): string {
+  return makeForecastLabWorkspaceBranch(runId, 'forecast-lab');
+}
+
+export function makeForecastLabPromotionBranch(runId: string): string {
+  return makeForecastLabWorkspaceBranch(runId, 'forecast-lab-promote');
 }
 
 export function assertSafeForecastLabWorktreePath(worktreePath: string, repoRoot = process.cwd()): void {
@@ -151,10 +159,35 @@ export function assertSafeForecastLabWorktreePath(worktreePath: string, repoRoot
   }
 }
 
-export function getForecastLabCandidateWorktreePath(runId: string, repoRoot = process.cwd()): string {
-  const worktreePath = resolve(repoRoot, getExperimentsDir(), 'worktrees', runId);
+function getForecastLabWorkspacePath(worktreeDirName: string, repoRoot = process.cwd()): string {
+  const worktreePath = resolve(repoRoot, getExperimentsDir(), 'worktrees', worktreeDirName);
   assertSafeForecastLabWorktreePath(worktreePath, repoRoot);
   return worktreePath;
+}
+
+export function getForecastLabCandidateWorktreePath(runId: string, repoRoot = process.cwd()): string {
+  return getForecastLabWorkspacePath(runId, repoRoot);
+}
+
+export function getForecastLabPromotionWorktreePath(runId: string, repoRoot = process.cwd()): string {
+  return getForecastLabWorkspacePath(`promote-${runId}`, repoRoot);
+}
+
+function describeForecastLabWorkspace(
+  runId: string,
+  options?: {
+    readonly branchName?: string;
+    readonly repoRoot?: string;
+    readonly branchFactory?: (runId: string) => string;
+    readonly worktreePathFactory?: (runId: string, repoRoot?: string) => string;
+  },
+): ForecastLabCandidateWorkspaceMetadata {
+  const branch = options?.branchName ?? (options?.branchFactory ?? makeForecastLabCandidateBranch)(runId);
+  return {
+    kind: 'candidate-worktree',
+    rootDir: (options?.worktreePathFactory ?? getForecastLabCandidateWorktreePath)(runId, options?.repoRoot),
+    branch,
+  };
 }
 
 export function describeForecastLabCandidateWorkspace(
@@ -164,12 +197,21 @@ export function describeForecastLabCandidateWorkspace(
     readonly repoRoot?: string;
   },
 ): ForecastLabCandidateWorkspaceMetadata {
-  const branch = options?.branchName ?? makeForecastLabCandidateBranch(runId);
-  return {
-    kind: 'candidate-worktree',
-    rootDir: getForecastLabCandidateWorktreePath(runId, options?.repoRoot),
-    branch,
-  };
+  return describeForecastLabWorkspace(runId, options);
+}
+
+export function describeForecastLabPromotionWorkspace(
+  runId: string,
+  options?: {
+    readonly branchName?: string;
+    readonly repoRoot?: string;
+  },
+): ForecastLabCandidateWorkspaceMetadata {
+  return describeForecastLabWorkspace(runId, {
+    ...options,
+    branchFactory: makeForecastLabPromotionBranch,
+    worktreePathFactory: getForecastLabPromotionWorktreePath,
+  });
 }
 
 export function getForecastLabBaselineCommit(
@@ -194,17 +236,24 @@ export function getForecastLabBaselineCommit(
   return baselineCommit;
 }
 
-export function prepareForecastLabCandidateWorkspace(
+function prepareForecastLabWorkspace(
   runId: string,
   options?: {
     readonly branchName?: string;
     readonly repoRoot?: string;
     readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+    readonly describeWorkspace?: (
+      runId: string,
+      options?: {
+        readonly branchName?: string;
+        readonly repoRoot?: string;
+      },
+    ) => ForecastLabCandidateWorkspaceMetadata;
   },
 ): ForecastLabPreparedCandidateWorkspace {
   const repoRoot = options?.repoRoot ?? process.cwd();
   const gitCommandRunner = options?.gitCommandRunner ?? defaultForecastLabGitCommandRunner;
-  const metadata = describeForecastLabCandidateWorkspace(runId, {
+  const metadata = (options?.describeWorkspace ?? describeForecastLabCandidateWorkspace)(runId, {
     branchName: options?.branchName,
     repoRoot,
   });
@@ -251,16 +300,49 @@ export function prepareForecastLabCandidateWorkspace(
   };
 }
 
-export async function withForecastLabCandidateWorkspace<T>(
+export function prepareForecastLabCandidateWorkspace(
+  runId: string,
+  options?: {
+    readonly branchName?: string;
+    readonly repoRoot?: string;
+    readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+  },
+): ForecastLabPreparedCandidateWorkspace {
+  return prepareForecastLabWorkspace(runId, options);
+}
+
+export function prepareForecastLabPromotionWorkspace(
+  runId: string,
+  options?: {
+    readonly branchName?: string;
+    readonly repoRoot?: string;
+    readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+  },
+): ForecastLabPreparedCandidateWorkspace {
+  return prepareForecastLabWorkspace(runId, {
+    ...options,
+    describeWorkspace: describeForecastLabPromotionWorkspace,
+  });
+}
+
+async function withForecastLabWorkspace<T>(
   runId: string,
   callback: (workspace: ForecastLabPreparedCandidateWorkspace) => Promise<T> | T,
   options?: {
     readonly branchName?: string;
     readonly repoRoot?: string;
     readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+    readonly prepareWorkspace?: (
+      runId: string,
+      options?: {
+        readonly branchName?: string;
+        readonly repoRoot?: string;
+        readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+      },
+    ) => ForecastLabPreparedCandidateWorkspace;
   },
 ): Promise<T> {
-  const workspace = prepareForecastLabCandidateWorkspace(runId, options);
+  const workspace = (options?.prepareWorkspace ?? prepareForecastLabCandidateWorkspace)(runId, options);
   let callbackError: unknown;
   let result: T | undefined;
 
@@ -295,6 +377,33 @@ export async function withForecastLabCandidateWorkspace<T>(
   }
 
   return result as T;
+}
+
+export async function withForecastLabCandidateWorkspace<T>(
+  runId: string,
+  callback: (workspace: ForecastLabPreparedCandidateWorkspace) => Promise<T> | T,
+  options?: {
+    readonly branchName?: string;
+    readonly repoRoot?: string;
+    readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+  },
+): Promise<T> {
+  return withForecastLabWorkspace(runId, callback, options);
+}
+
+export async function withForecastLabPromotionWorkspace<T>(
+  runId: string,
+  callback: (workspace: ForecastLabPreparedCandidateWorkspace) => Promise<T> | T,
+  options?: {
+    readonly branchName?: string;
+    readonly repoRoot?: string;
+    readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+  },
+): Promise<T> {
+  return withForecastLabWorkspace(runId, callback, {
+    ...options,
+    prepareWorkspace: prepareForecastLabPromotionWorkspace,
+  });
 }
 
 export function isPathAllowedByForecastLab(path: string, allowedGlobs: readonly string[]): boolean {

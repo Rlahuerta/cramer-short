@@ -243,6 +243,7 @@ describe('buildIterationPrompt', () => {
     const prompt = buildIterationPrompt('Provide a BTC forecast for the next 7 days', results);
     expect(prompt).toContain('includes both a terminal canonical forecast and a day-by-day trajectory');
     expect(prompt).toContain('Do NOT claim an "internal inconsistency" solely because');
+    expect(prompt).toContain('latent HMM backdrop');
     expect(prompt).toContain('Do NOT relabel predictionConfidence with LOW/MEDIUM/HIGH');
     expect(prompt).toContain('recommendationProvenance');
   });

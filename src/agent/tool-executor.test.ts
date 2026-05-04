@@ -19,6 +19,10 @@ mock.module('../utils/paths.js', () => ({
   cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
   getCramerShortDir: mock(() => '.dexter'),
   getExperimentsDir: mock(() => join('.cramer-short', 'experiments')),
+  getExperimentLedgerPath: mock(() => join('.cramer-short', 'experiments', 'forecast-results.tsv')),
+  getExperimentRunsDir: mock(() => join('.cramer-short', 'experiments', 'runs')),
+  getExperimentRunDir: mock((runId: string) => join('.cramer-short', 'experiments', 'runs', runId)),
+  getExperimentRunManifestPath: mock((runId: string) => join('.cramer-short', 'experiments', 'runs', runId, 'manifest.json')),
 }));
 
 const { AgentToolExecutor } = await import('./tool-executor.js');

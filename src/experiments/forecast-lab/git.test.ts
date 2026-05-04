@@ -7,10 +7,13 @@ import {
   ForecastLabGitError,
   applyForecastLabCandidateEdits,
   prepareForecastLabCandidateWorkspace,
+  prepareForecastLabPromotionWorkspace,
   assertSafeForecastLabWorktreePath,
   assertSafeGitBranchName,
   getForecastLabCandidateWorktreePath,
+  getForecastLabPromotionWorktreePath,
   makeForecastLabCandidateBranch,
+  makeForecastLabPromotionBranch,
   withForecastLabCandidateWorkspace,
 } from './git.js';
 
@@ -20,11 +23,30 @@ const WORKTREE_RUN_IDS = [
   'git-test-edit-policy',
   'git-test-existing-worktree',
   'git-test-cleanup-secondary-error',
+  'git-test-promotion-safe-path',
+  'git-test-promotion-cleanup',
 ] as const;
 
 function cleanupWorktree(runId: string): void {
   const branch = makeForecastLabCandidateBranch(runId);
   const worktreePath = getForecastLabCandidateWorktreePath(runId);
+
+  spawnSync('git', ['worktree', 'remove', '--force', worktreePath], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  rmSync(worktreePath, { recursive: true, force: true });
+  spawnSync('git', ['branch', '-D', branch], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function cleanupPromotionWorktree(runId: string): void {
+  const branch = makeForecastLabPromotionBranch(runId);
+  const worktreePath = getForecastLabPromotionWorktreePath(runId);
 
   spawnSync('git', ['worktree', 'remove', '--force', worktreePath], {
     cwd: process.cwd(),
@@ -52,6 +74,7 @@ function branchExists(branch: string): boolean {
 afterEach(() => {
   for (const runId of WORKTREE_RUN_IDS) {
     cleanupWorktree(runId);
+    cleanupPromotionWorktree(runId);
   }
 });
 
@@ -77,6 +100,15 @@ describe('forecast-lab git helpers', () => {
     );
   });
 
+  it('creates promotion staging worktrees with isolated branch and path names', () => {
+    const runId = 'git-test-promotion-safe-path';
+
+    expect(makeForecastLabPromotionBranch(runId)).toBe('topic/forecast-lab-promote-git-test-promotion-safe-path');
+    expect(getForecastLabPromotionWorktreePath(runId)).toBe(
+      resolve('.cramer-short', 'experiments', 'worktrees', 'promote-git-test-promotion-safe-path'),
+    );
+  });
+
   it('cleans up the candidate branch and worktree after callback failure', async () => {
     const runId = 'git-test-cleanup';
     const branch = makeForecastLabCandidateBranch(runId);
@@ -89,6 +121,23 @@ describe('forecast-lab git helpers', () => {
         throw new Error('boom');
       }),
     ).rejects.toThrow('boom');
+
+    expect(existsSync(worktreePath)).toBe(false);
+    expect(branchExists(branch)).toBe(false);
+  });
+
+  it('cleans up the promotion staging branch and worktree after a verification failure', () => {
+    const runId = 'git-test-promotion-cleanup';
+    const branch = makeForecastLabPromotionBranch(runId);
+    const worktreePath = getForecastLabPromotionWorktreePath(runId);
+    const workspace = prepareForecastLabPromotionWorkspace(runId);
+
+    expect(workspace.metadata.branch).toBe(branch);
+    expect(workspace.metadata.rootDir).toBe(worktreePath);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(branchExists(branch)).toBe(true);
+
+    workspace.cleanup();
 
     expect(existsSync(worktreePath)).toBe(false);
     expect(branchExists(branch)).toBe(false);

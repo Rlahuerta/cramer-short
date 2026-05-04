@@ -108,6 +108,28 @@ const PRE_ROUTING_LEDGER_HEADER = [
   'reason',
   'artifactsPath',
 ].join('\t');
+const PRE_PROMOTION_LEDGER_HEADER = [
+  'runId',
+  'startedAt',
+  'profileId',
+  'targetSubsystem',
+  'candidateBranch',
+  'allowedGlobs',
+  'routingContext',
+  'effectiveMutationContract',
+  'mutationMode',
+  'parentRunId',
+  'mutationId',
+  'mutationSummary',
+  'lineage',
+  'mutationSpecSummary',
+  'candidateWorkspace',
+  'baselineSummary',
+  'candidateSummary',
+  'decision',
+  'reason',
+  'artifactsPath',
+].join('\t');
 
 function makeEntry(overrides: Partial<ForecastLabLedgerEntry> = {}): ForecastLabLedgerEntry {
   return {
@@ -168,6 +190,17 @@ function makeRoutingContext() {
   };
 }
 
+function makePendingPromotion(runId = 'run-1') {
+  return {
+    status: 'approval-required' as const,
+    source: {
+      runId,
+      manifestPath: getExperimentRunManifestPath(runId),
+    },
+    requestedAt: '2026-05-02T00:30:00.000Z',
+  };
+}
+
 afterEach(() => {
   rmSync(TEST_ROOT, { recursive: true, force: true });
   rmSync(getExperimentRunDir(PATH_TEST_RUN_ID), { recursive: true, force: true });
@@ -191,6 +224,7 @@ describe('forecast-lab ledger serialization', () => {
       'lineage',
       'mutationSpecSummary',
       'candidateWorkspace',
+      'promotion',
       'baselineSummary',
       'candidateSummary',
       'decision',
@@ -198,13 +232,13 @@ describe('forecast-lab ledger serialization', () => {
       'artifactsPath',
     ]);
     expect(LEDGER_HEADER).toBe(
-      'runId\tstartedAt\tprofileId\ttargetSubsystem\tcandidateBranch\tallowedGlobs\troutingContext\teffectiveMutationContract\tmutationMode\tparentRunId\tmutationId\tmutationSummary\tlineage\tmutationSpecSummary\tcandidateWorkspace\tbaselineSummary\tcandidateSummary\tdecision\treason\tartifactsPath',
+      'runId\tstartedAt\tprofileId\ttargetSubsystem\tcandidateBranch\tallowedGlobs\troutingContext\teffectiveMutationContract\tmutationMode\tparentRunId\tmutationId\tmutationSummary\tlineage\tmutationSpecSummary\tcandidateWorkspace\tpromotion\tbaselineSummary\tcandidateSummary\tdecision\treason\tartifactsPath',
     );
   });
 
   it('serializes rows as deterministic reversible JSON fields', () => {
     expect(serializeLedgerRow(makeEntry())).toBe(
-      '"run-1"\t"2026-05-02T00:00:00.000Z"\t"multi-asset-markov-short-horizon"\t"markov-distribution"\t"topic/forecast-lab-run-1"\t["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]\tnull\t{"allowedMutatorIds":["replace-range","search-replace"],"allowMultipleCandidateAttempts":false,"mode":"structured","mutableFiles":["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]}\tnull\tnull\tnull\tnull\tnull\tnull\tnull\t{"rankIC":0.12,"z":2}\t{"lift":0.01,"rankIC":0.13}\t"keep"\t"measurable lift"\t".cramer-short/experiments/runs/run-1"',
+      '"run-1"\t"2026-05-02T00:00:00.000Z"\t"multi-asset-markov-short-horizon"\t"markov-distribution"\t"topic/forecast-lab-run-1"\t["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]\tnull\t{"allowedMutatorIds":["replace-range","search-replace"],"allowMultipleCandidateAttempts":false,"mode":"structured","mutableFiles":["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]}\tnull\tnull\tnull\tnull\tnull\tnull\tnull\tnull\t{"rankIC":0.12,"z":2}\t{"lift":0.01,"rankIC":0.13}\t"keep"\t"measurable lift"\t".cramer-short/experiments/runs/run-1"',
     );
   });
 
@@ -231,6 +265,7 @@ describe('forecast-lab ledger serialization', () => {
     const entry = makeEntry({
       ...makeMutationMetadata(),
       routingContext: makeRoutingContext(),
+      promotion: makePendingPromotion(),
     });
     const manifest: ForecastLabRunManifest = {
       runId: entry.runId,
@@ -250,6 +285,7 @@ describe('forecast-lab ledger serialization', () => {
       mutationSpecSummary: entry.mutationSpecSummary,
       mutationReplayPayload: makeMutationReplayPayload(),
       candidateWorkspace: entry.candidateWorkspace,
+      promotion: entry.promotion,
       artifactsPath: entry.artifactsPath,
     };
     const manifestPath = join(TEST_ROOT, 'runs', entry.runId, 'manifest.json');
@@ -275,7 +311,7 @@ describe('forecast-lab ledger validation', () => {
   });
 
   it('rejects malformed rows with the wrong field count', () => {
-    expect(() => parseLedgerRow('"run-1"\t"only-two-fields"')).toThrow(/expected 20 fields/);
+    expect(() => parseLedgerRow('"run-1"\t"only-two-fields"')).toThrow(/expected 21 fields/);
   });
 
   it('rejects malformed rows with invalid JSON fields', () => {
@@ -287,7 +323,7 @@ describe('forecast-lab ledger validation', () => {
 
   it('rejects malformed rows with invalid decisions', () => {
     const fields = serializeLedgerRow(makeEntry()).split('\t');
-    fields[17] = '"maybe"';
+    fields[18] = '"maybe"';
 
     expect(() => parseLedgerRow(fields.join('\t'))).toThrow(/decision/);
   });
@@ -327,6 +363,45 @@ describe('forecast-lab ledger validation', () => {
         ...makeMutationMetadata(),
         mutationMode: undefined,
       })).toThrow(/structured mutation lineage metadata requires mutationMode="structured"/);
+
+    expect(() =>
+      validateLedgerEntry({
+        ...makeEntry(),
+        promotion: makePendingPromotion(),
+      })).toThrow(/promotion metadata requires mutationMode="structured"/);
+
+    expect(() =>
+      validateLedgerEntry({
+        ...makeEntry({
+          ...makeMutationMetadata(),
+          decision: 'drop',
+        }),
+        promotion: makePendingPromotion(),
+      })).toThrow(/promotion metadata is only supported for kept runs/);
+
+    expect(() =>
+      validateLedgerEntry({
+        ...makeEntry({
+          ...makeMutationMetadata(),
+          promotion: {
+            ...makePendingPromotion(),
+            source: {
+              runId: 'run-2',
+              manifestPath: getExperimentRunManifestPath('run-2'),
+            },
+          },
+        }),
+      })).toThrow(/promotion\.source\.runId must match runId/);
+
+    expect(() =>
+      validateRunManifest({
+        ...makeEntry(makeMutationMetadata()),
+        baselineCommit: '0123456789abcdef0123456789abcdef01234567',
+        promotion: {
+          ...makePendingPromotion(),
+          status: 'approved',
+        },
+      })).toThrow(/promotion\.approvedAt must be a non-empty string/);
 
     expect(() =>
       validateLedgerEntry({
@@ -531,6 +606,41 @@ describe('forecast-lab ledger file helpers', () => {
     expect(readLedgerEntries(ledgerPath)).toEqual([{ ...legacyEntry, routingContext: undefined }]);
   });
 
+  it('reads pre-promotion ledgers into the current entry shape', () => {
+    const ledgerPath = join(TEST_ROOT, 'forecast-results.tsv');
+    const legacyEntry = makeEntry({
+      ...makeMutationMetadata(),
+      routingContext: makeRoutingContext(),
+    });
+    const legacyRow = [
+      legacyEntry.runId,
+      legacyEntry.startedAt,
+      legacyEntry.profileId,
+      legacyEntry.targetSubsystem,
+      legacyEntry.candidateBranch,
+      legacyEntry.allowedGlobs,
+      legacyEntry.routingContext,
+      legacyEntry.effectiveMutationContract,
+      legacyEntry.mutationMode,
+      legacyEntry.parentRunId,
+      legacyEntry.mutationId,
+      legacyEntry.mutationSummary,
+      legacyEntry.lineage,
+      legacyEntry.mutationSpecSummary,
+      legacyEntry.candidateWorkspace,
+      legacyEntry.baselineSummary,
+      legacyEntry.candidateSummary,
+      legacyEntry.decision,
+      legacyEntry.reason,
+      legacyEntry.artifactsPath,
+    ].map((value) => serializeLegacyLedgerField(value)).join('\t');
+
+    mkdirSync(TEST_ROOT, { recursive: true });
+    writeFileSync(ledgerPath, `${PRE_PROMOTION_LEDGER_HEADER}\n${legacyRow}\n`, 'utf8');
+
+    expect(readLedgerEntries(ledgerPath)).toEqual([{ ...legacyEntry, promotion: undefined }]);
+  });
+
   it('migrates legacy ledgers to the current header before appending new rows', () => {
     const ledgerPath = join(TEST_ROOT, 'forecast-results.tsv');
     const legacyEntry = makeEntry({ effectiveMutationContract: undefined });
@@ -665,6 +775,59 @@ describe('forecast-lab ledger file helpers', () => {
     );
     expect(readLedgerEntries(ledgerPath)).toEqual([
       { ...legacyEntry, routingContext: undefined },
+      newEntry,
+    ]);
+  });
+
+  it('migrates pre-promotion ledgers to the current header before appending new rows', () => {
+    const ledgerPath = join(TEST_ROOT, 'forecast-results.tsv');
+    const legacyEntry = makeEntry({
+      ...makeMutationMetadata(),
+      routingContext: makeRoutingContext(),
+    });
+    const newEntry = makeEntry({
+      runId: 'run-2',
+      decision: 'keep',
+      reason: 'promotion pending',
+      ...makeMutationMetadata(),
+      promotion: makePendingPromotion('run-2'),
+    });
+    const legacyRow = [
+      legacyEntry.runId,
+      legacyEntry.startedAt,
+      legacyEntry.profileId,
+      legacyEntry.targetSubsystem,
+      legacyEntry.candidateBranch,
+      legacyEntry.allowedGlobs,
+      legacyEntry.routingContext,
+      legacyEntry.effectiveMutationContract,
+      legacyEntry.mutationMode,
+      legacyEntry.parentRunId,
+      legacyEntry.mutationId,
+      legacyEntry.mutationSummary,
+      legacyEntry.lineage,
+      legacyEntry.mutationSpecSummary,
+      legacyEntry.candidateWorkspace,
+      legacyEntry.baselineSummary,
+      legacyEntry.candidateSummary,
+      legacyEntry.decision,
+      legacyEntry.reason,
+      legacyEntry.artifactsPath,
+    ].map((value) => serializeLegacyLedgerField(value)).join('\t');
+
+    mkdirSync(TEST_ROOT, { recursive: true });
+    writeFileSync(ledgerPath, `${PRE_PROMOTION_LEDGER_HEADER}\n${legacyRow}\n`, 'utf8');
+
+    appendLedgerEntry(ledgerPath, newEntry);
+
+    expect(readFileSync(ledgerPath, 'utf8')).toBe(
+      `${LEDGER_HEADER}\n${serializeLedgerRow({
+        ...legacyEntry,
+        promotion: undefined,
+      })}\n${serializeLedgerRow(newEntry)}\n`,
+    );
+    expect(readLedgerEntries(ledgerPath)).toEqual([
+      { ...legacyEntry, promotion: undefined },
       newEntry,
     ]);
   });

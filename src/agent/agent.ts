@@ -33,7 +33,9 @@ import {
   type ForecastLabRoutingHint,
 } from './forecast-lab-routing.js';
 import { routeForecastLabQuery } from '../experiments/forecast-lab/router.js';
+import { listForecastLabProfiles, listForecastLabStructuredMutations } from '../experiments/forecast-lab/profiles.js';
 import { discoverSkills } from '../skills/registry.js';
+import { extractForecastLabRunToolAnswer } from '../tools/forecast-lab-run.js';
 
 const DEFAULT_MODEL = 'gpt-5.4';
 export const DEFAULT_MAX_ITERATIONS = 25;
@@ -394,6 +396,408 @@ export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCall
 
 export function isForecastLabImprovementQuery(query: string): boolean {
   return routeForecastLabQuery(query).intent === 'improvement';
+}
+
+const FORECAST_LAB_PLAN_ONLY_PATTERNS = [
+  /\bdo not edit files\b/i,
+  /\bdon't edit files\b/i,
+  /\bdo not run shell commands\b/i,
+  /\bdon't run shell commands\b/i,
+  /\bdo not write artifacts\b/i,
+  /\bdon't write artifacts\b/i,
+  /\bexplain the exact experiment plan\b/i,
+  /\bexplain (?:the )?plan\b/i,
+  /\bwhat plan would you follow\b/i,
+  /\bwhat would you do\b/i,
+] as const;
+
+const FORECAST_LAB_APPROVAL_PATTERNS = [
+  /\bapprove(?:d|s|ing)?\b/i,
+  /\bgo ahead\b/i,
+  /\bproceed\b/i,
+  /\bpromote\b/i,
+  /^\s*yes\b/i,
+  /^\s*sure\b/i,
+  /^\s*do it\b/i,
+] as const;
+
+const FORECAST_LAB_RESET_PATTERNS = [
+  /\breset\b/i,
+  /\brestore\b/i,
+  /\broll\s+back\b/i,
+] as const;
+
+const SAFE_FORECAST_LAB_RUN_ID = /[A-Za-z0-9][A-Za-z0-9_.-]*/;
+
+export interface ForecastLabPromotionApprovalHint {
+  readonly profileId?: string;
+  readonly sourceRunId?: string;
+}
+
+export interface ForecastLabResetHint {
+  readonly profileId?: string;
+  readonly mode: 'defaults' | 'last-known-good';
+}
+
+export interface ForecastLabComparisonHint {
+  readonly profileId?: string;
+  readonly mutationId?: string;
+}
+
+export interface ForecastLabResultsHint {
+  readonly profileId?: string;
+}
+
+export interface ForecastLabMutatorListHint {
+  readonly profileId?: string;
+}
+
+export interface ForecastLabKeepCurrentBestHint {
+  readonly profileId?: string;
+}
+
+export interface ForecastLabCatalogExtensionHint {
+  readonly profileId?: string;
+}
+
+export function isForecastLabPlanOnlyQuery(query: string): boolean {
+  return FORECAST_LAB_PLAN_ONLY_PATTERNS.some((pattern) => pattern.test(query));
+}
+
+function extractForecastLabProfileId(text: string): string | undefined {
+  const lower = text.toLowerCase();
+  return listForecastLabProfiles().find((profile) => lower.includes(profile.id.toLowerCase()))?.id;
+}
+
+function extractForecastLabSourceRunId(text: string): string | undefined {
+  const match = text.match(new RegExp(`(?:source\\s+run|run)\\s+(${SAFE_FORECAST_LAB_RUN_ID.source})`, 'i'));
+  const candidate = match?.[1];
+  if (!candidate) {
+    return undefined;
+  }
+  if (!candidate.includes('-') && !candidate.includes('.')) {
+    return undefined;
+  }
+  return candidate;
+}
+
+function isForecastLabApprovalIntent(query: string): boolean {
+  if (
+    /\bhow\s+(?:do\s+i\s+)?(?:approve|promote)\b/i.test(query)
+    || /\bhow\s+to\s+(?:approve|promote)\b/i.test(query)
+    || /\bwhat(?:'s| is)\b[\s\S]{0,40}\b(?:approve|promote)\b/i.test(query)
+    || /\bwhich\s+command\b[\s\S]{0,40}\b(?:approve|promote)\b/i.test(query)
+  ) {
+    return false;
+  }
+  return FORECAST_LAB_APPROVAL_PATTERNS.some((pattern) => pattern.test(query));
+}
+
+function isForecastLabResetIntent(query: string): boolean {
+  return FORECAST_LAB_RESET_PATTERNS.some((pattern) => pattern.test(query));
+}
+
+function isForecastLabComparisonIntent(query: string): boolean {
+  const hasBestReference = /\bcurrent best\b|\bbest kept\b|\bbest lineage\b|\blatest kept\b/i.test(query);
+  const hasBaselineReference = /\bshipped default baseline\b|\bshipped baseline\b|\bdefault baseline\b/i.test(query);
+  const hasComparisonCue = /\bbetter than\b|\bcompare\b|\bcomparison\b|\bversus\b|\bvs\.?\b|\bstack up\b/i.test(query);
+  return (hasBestReference && hasBaselineReference) || (hasBaselineReference && hasComparisonCue);
+}
+
+function extractForecastLabNamedMutationId(query: string): string | undefined {
+  const candidate = query.match(/\b(markov-[A-Za-z0-9][A-Za-z0-9_.-]*)\b/i)?.[1];
+  return candidate?.replace(/[.,!?;:]+$/, '');
+}
+
+function extractForecastLabComparisonMutationId(query: string): string | undefined {
+  return extractForecastLabNamedMutationId(query);
+}
+
+function extractForecastLabRequestedMutationId(text: string): string | undefined {
+  const matches = [...text.matchAll(/\brequested\s+mutator\s+id:\s*(markov-[A-Za-z0-9][A-Za-z0-9_.-]*)/gi)];
+  const candidate = matches.at(-1)?.[1];
+  return candidate?.replace(/[.,!?;:]+$/, '');
+}
+
+function isKnownForecastLabStructuredMutationId(mutationId: string): boolean {
+  const candidate = mutationId.toLowerCase();
+  return listForecastLabProfiles().some((profile) =>
+    profile.mutation.mode === 'structured'
+    && listForecastLabStructuredMutations(profile.id).some((entry) => entry.id.toLowerCase() === candidate),
+  );
+}
+
+function isForecastLabMutatorVsActiveIntent(query: string, historyText = ''): boolean {
+  const mutationId = extractForecastLabComparisonMutationId(query)
+    ?? extractForecastLabRequestedMutationId(historyText);
+  if (!mutationId) {
+    return false;
+  }
+
+  const hasComparisonCue = /\bcompare\b|\bcomparison\b|\bversus\b|\bvs\.?\b/i.test(query);
+  const hasMetricCue = /\baccurac\w*\b|\baccurace\b|\bnumbers\b|\bmetrics?\b/i.test(query);
+  const hasActiveCue = /\bactive one\b|\bactive baseline\b|\bactive run\b|\bactive mutation\b|\blive one\b|\blive baseline\b|\blive run\b|\bcurrently live\b/i.test(query);
+  const hasCreatedCandidateCue = /\bnew\s+mutat(?:e|or)\b|\bnew\s+one\b|\bthat\s+i\s+created\b|\bi\s+created\b|\bnot\s+promoted\b|\bunpromoted\b/i.test(query);
+  const contextText = `${query}\n${historyText}`;
+  const hasForecastLabContext =
+    mutationId !== undefined
+    || /\bforecast-lab\b/i.test(contextText)
+    || /\bbtc-markov-ultra-short-horizon\b/i.test(contextText)
+    || /\bactive baseline\b/i.test(contextText)
+    || /\bpromoted parameters\b/i.test(contextText)
+    || /src\/tools\/finance\/markov-distribution\.ts/i.test(contextText);
+
+  return hasForecastLabContext && hasActiveCue && (hasComparisonCue || hasMetricCue || hasCreatedCandidateCue);
+}
+
+function isForecastLabResultsIntent(query: string): boolean {
+  const hasResultsCue = /\bresult(?:s)?\b|\boutcome(?:s)?\b|\bstatus\b|\bsummary\b|\brecap\b|\bwhat happened\b/i.test(query);
+  const hasRequestCue = /\bprovide\b|\bshow\b|\bgive\b|\bsummarize\b|\breport\b|\brecap\b|\bwhat\b/i.test(query);
+  const hasWorkflowCue = /\boptimi[sz]e\b|\bimprov(?:e|ement)\b|\bworkflow\b|\bforecast-lab\b/i.test(query);
+  return hasResultsCue && hasRequestCue && hasWorkflowCue;
+}
+
+function isForecastLabMutatorListIntent(query: string): boolean {
+  const hasListCue = /\blist\b|\bshow\b|\bgive\b|\bwhat\b|\bwhich\b/i.test(query);
+  const hasMutatorCue = /\bmutat(?:e|or|ors|ion|ions)\b/i.test(query);
+  const hasCatalogCue = /\bids?\b|\bavail\w*\b|\bshipped\b|\bcatalog\b|\bcurrent\b/i.test(query);
+  return hasMutatorCue && hasListCue && hasCatalogCue;
+}
+
+function isForecastLabKeepCurrentBestIntent(query: string): boolean {
+  return /\bkeep\b[\s\S]{0,30}\bcurrent best candidate\b/i.test(query)
+    || /\bkeep\b[\s\S]{0,20}\bbest candidate\b/i.test(query)
+    || /\bkeep\b[\s\S]{0,20}\bbest run\b/i.test(query);
+}
+
+function hasForecastLabCatalogExtensionContext(text: string): boolean {
+  return /\bforecast-lab\b/i.test(text)
+    || /\bbtc-markov-ultra-short-horizon\b/i.test(text)
+    || /\bbtc\s+1d\/2d\/3d\b/i.test(text)
+    || /\bmarkov forecast workflow\b/i.test(text)
+    || /\bultra-short-horizon\b/i.test(text)
+    || /src\/tools\/finance\/markov-distribution\.ts/i.test(text);
+}
+
+function hasForecastLabCatalogImplementationCue(text: string): boolean {
+  return /\bkeep it bounded\b/i.test(text)
+    || /\badd\b[\s\S]{0,30}\bcatalog\b/i.test(text)
+    || /\bvalidate\b[\s\S]{0,40}\b(?:walk-forward|gate)\b/i.test(text)
+    || /\bsuggested starting values\b/i.test(text)
+    || /\bsearch-replace\b/i.test(text)
+    || /\bsoft-regime weighting\b/i.test(text);
+}
+
+function isForecastLabCatalogExtensionIntent(query: string, historyText = ''): boolean {
+  const requestedMutationId = extractForecastLabNamedMutationId(query)
+    ?? extractForecastLabRequestedMutationId(historyText);
+  const hasImplementationExecutionCue =
+    requestedMutationId !== undefined
+    && !isKnownForecastLabStructuredMutationId(requestedMutationId)
+    && /\bimplement\b|\bregister\b/i.test(query)
+    && /\brun\b|\bre-?run\b|\bexecute\b/i.test(query);
+  const hasMutatorCue = /\bmutator\b/i.test(query);
+  const hasCatalogCue = /\bcatalog\b|\bshipped\b/i.test(query);
+  const hasExtensionCue = /\bdesign\b|\badd\b|\bcreate\b|\bnew\b|\bextend\b|\boutside\b/i.test(query);
+  const hasLineageCue = /\blineage\b|\bre-?run\b/i.test(query);
+  const contextText = `${query}\n${historyText}`;
+  return (
+    hasImplementationExecutionCue
+    && (
+      /\bcatalog-extension plan\b/i.test(historyText)
+      || /\brequested mutator id:\s*markov-/i.test(historyText)
+      || hasForecastLabCatalogExtensionContext(contextText)
+    )
+  ) || (
+    hasMutatorCue
+    && hasCatalogCue
+    && hasExtensionCue
+    && (
+      hasLineageCue
+      || hasForecastLabCatalogExtensionContext(contextText)
+      || hasForecastLabCatalogImplementationCue(query)
+    )
+  );
+}
+
+export function detectForecastLabPromotionApproval(
+  query: string,
+  inMemoryHistory?: InMemoryChatHistory,
+): ForecastLabPromotionApprovalHint | null {
+  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
+  const assistantHistory = recentTurns
+    .filter((entry) => entry.role === 'assistant')
+    .map((entry) => entry.content)
+    .join('\n\n');
+  const contextText = `${query}\n${assistantHistory}`;
+  const hasForecastLabContext =
+    /\bforecast-lab\b/i.test(contextText)
+    || /\bpromotion-ready\b/i.test(contextText)
+    || /\bapproval required\b/i.test(contextText);
+
+  if (!hasForecastLabContext || !isForecastLabApprovalIntent(query)) {
+    return null;
+  }
+
+  const profileId = extractForecastLabProfileId(contextText);
+  const sourceRunId = extractForecastLabSourceRunId(query) ?? extractForecastLabSourceRunId(assistantHistory);
+
+  if (!profileId && !sourceRunId && !/\bforecast-lab\b/i.test(query)) {
+    return null;
+  }
+
+  return {
+    ...(profileId ? { profileId } : {}),
+    ...(sourceRunId ? { sourceRunId } : {}),
+  };
+}
+
+export function detectForecastLabResetRequest(
+  query: string,
+  inMemoryHistory?: InMemoryChatHistory,
+): ForecastLabResetHint | null {
+  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
+  const assistantHistory = recentTurns
+    .filter((entry) => entry.role === 'assistant')
+    .map((entry) => entry.content)
+    .join('\n\n');
+  const contextText = `${query}\n${assistantHistory}`;
+  const hasForecastLabContext =
+    /\bforecast-lab\b/i.test(contextText)
+    || /\bactive baseline\b/i.test(contextText)
+    || /\bpromoted parameters\b/i.test(contextText);
+
+  if (!hasForecastLabContext || !isForecastLabResetIntent(query)) {
+    return null;
+  }
+
+  const mode = /\bdefault(?:s)?\b|\bshipped defaults\b/i.test(query)
+    ? 'defaults'
+    : /\blast known good\b|\bprevious(?:ly)? activated\b|\bprevious baseline\b/i.test(query)
+      ? 'last-known-good'
+      : null;
+  if (!mode) {
+    return null;
+  }
+
+  const profileId = extractForecastLabProfileId(contextText);
+  if (!profileId) {
+    return null;
+  }
+
+  return { profileId, mode };
+}
+
+export function detectForecastLabComparisonRequest(
+  query: string,
+  inMemoryHistory?: InMemoryChatHistory,
+): ForecastLabComparisonHint | null {
+  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
+  const historyText = recentTurns
+    .map((entry) => entry.content)
+    .join('\n\n');
+  const contextText = `${query}\n${historyText}`;
+  const mutationId = extractForecastLabComparisonMutationId(query)
+    ?? extractForecastLabRequestedMutationId(historyText);
+  const routedProfileId = routeForecastLabQuery(query).preferredProfileId ?? undefined;
+  const profileId = extractForecastLabProfileId(contextText) ?? routedProfileId;
+
+  if (isForecastLabComparisonIntent(query)) {
+    return profileId ? { profileId } : {};
+  }
+
+  if (!isForecastLabMutatorVsActiveIntent(query, historyText)) {
+    return null;
+  }
+
+  return {
+    ...(profileId ? { profileId } : {}),
+    ...(mutationId ? { mutationId } : {}),
+  };
+}
+
+export function detectForecastLabResultsRequest(
+  query: string,
+  inMemoryHistory?: InMemoryChatHistory,
+): ForecastLabResultsHint | null {
+  if (!isForecastLabResultsIntent(query)) {
+    return null;
+  }
+
+  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
+  const historyText = recentTurns
+    .map((entry) => entry.content)
+    .join('\n\n');
+  const contextText = `${query}\n${historyText}`;
+  const routedProfileId = routeForecastLabQuery(query).preferredProfileId ?? undefined;
+  const profileId = extractForecastLabProfileId(contextText) ?? routedProfileId;
+
+  return profileId ? { profileId } : {};
+}
+
+export function detectForecastLabMutatorListRequest(
+  query: string,
+  inMemoryHistory?: InMemoryChatHistory,
+): ForecastLabMutatorListHint | null {
+  if (!isForecastLabMutatorListIntent(query)) {
+    return null;
+  }
+
+  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
+  const historyText = recentTurns
+    .map((entry) => entry.content)
+    .join('\n\n');
+  const contextText = `${query}\n${historyText}`;
+  const routedProfileId = routeForecastLabQuery(query).preferredProfileId ?? undefined;
+  const profileId = extractForecastLabProfileId(contextText) ?? routedProfileId;
+
+  return profileId ? { profileId } : {};
+}
+
+export function detectForecastLabKeepCurrentBestRequest(
+  query: string,
+  inMemoryHistory?: InMemoryChatHistory,
+): ForecastLabKeepCurrentBestHint | null {
+  if (!isForecastLabKeepCurrentBestIntent(query)) {
+    return null;
+  }
+
+  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
+  const historyText = recentTurns
+    .map((entry) => entry.content)
+    .join('\n\n');
+  const explicitProfileId = extractForecastLabProfileId(query);
+  const contextText = explicitProfileId ? `${query}\n${historyText}` : historyText;
+  const hasForecastLabContext =
+    /\bforecast-lab\b/i.test(query)
+    || explicitProfileId !== undefined
+    || /\bforecast-lab\b/i.test(historyText)
+    || /\bapproval required\b/i.test(historyText)
+    || /\bcurrent best\b/i.test(historyText)
+    || /\bkept lineage\b/i.test(historyText)
+    || /\bbtc-markov-ultra-short-horizon\b/i.test(historyText);
+  if (!hasForecastLabContext) {
+    return null;
+  }
+
+  const profileId = explicitProfileId ?? extractForecastLabProfileId(historyText);
+  return profileId ? { profileId } : {};
+}
+
+export function detectForecastLabCatalogExtensionRequest(
+  query: string,
+  inMemoryHistory?: InMemoryChatHistory,
+): ForecastLabCatalogExtensionHint | null {
+  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
+  const historyText = recentTurns
+    .map((entry) => entry.content)
+    .join('\n\n');
+  if (!isForecastLabCatalogExtensionIntent(query, historyText)) {
+    return null;
+  }
+  const profileId = extractForecastLabProfileId(`${query}\n${historyText}`);
+
+  return profileId ? { profileId } : {};
 }
 
 export function isCryptoForecastQuery(query: string): boolean {
@@ -1808,10 +2212,44 @@ export class Agent {
       enableAutoRoute: forecastingConfig?.enableForecastLabAutoRoute,
       enableSkillHint: forecastingConfig?.enableForecastLabSkillHint,
     });
+    const forecastLabResetRequest = detectForecastLabResetRequest(query, inMemoryHistory);
+    const forecastLabPromotionApproval = detectForecastLabPromotionApproval(query, inMemoryHistory);
+    const forecastLabKeepCurrentBestRequest = detectForecastLabKeepCurrentBestRequest(query, inMemoryHistory);
+    const forecastLabCatalogExtensionRequest = detectForecastLabCatalogExtensionRequest(query, inMemoryHistory);
+    const forecastLabComparisonRequest = detectForecastLabComparisonRequest(query, inMemoryHistory);
+    const forecastLabResultsRequest = detectForecastLabResultsRequest(query, inMemoryHistory);
+    const forecastLabMutatorListRequest = detectForecastLabMutatorListRequest(query, inMemoryHistory);
+    if (forecastLabResetRequest) {
+      yield* this.runForecastLabResetFlow(ctx, forecastLabResetRequest);
+      return;
+    }
+    if (forecastLabPromotionApproval) {
+      yield* this.runForecastLabApprovalFlow(ctx, forecastLabPromotionApproval);
+      return;
+    }
+    if (forecastLabKeepCurrentBestRequest) {
+      yield* this.runForecastLabResultsFlow(ctx, query, forecastLabKeepCurrentBestRequest);
+      return;
+    }
+    if (forecastLabCatalogExtensionRequest) {
+      yield* this.runForecastLabCatalogExtensionFlow(ctx, query, forecastLabCatalogExtensionRequest);
+      return;
+    }
+    if (forecastLabResultsRequest) {
+      yield* this.runForecastLabResultsFlow(ctx, query, forecastLabResultsRequest);
+      return;
+    }
+    if (forecastLabMutatorListRequest) {
+      yield* this.runForecastLabMutatorListFlow(ctx, query, forecastLabMutatorListRequest);
+      return;
+    }
+    if (forecastLabComparisonRequest) {
+      yield* this.runForecastLabComparisonFlow(ctx, query, forecastLabComparisonRequest);
+      return;
+    }
     if (forecastLabRoutingHint?.shouldInvokeSkill) {
-      ctx.forecastLabGuard = {
-        recommendedProfileId: forecastLabRoutingHint.recommendedProfileId,
-      };
+      yield* this.runForecastLabImprovementFlow(ctx, query, forecastLabRoutingHint, isForecastLabPlanOnlyQuery(query));
+      return;
     }
 
     // Build initial prompt with conversation history context
@@ -2165,6 +2603,245 @@ export class Agent {
       : query;
 
     yield* this.handleDirectResponse('', ctx, synthesisPrompt);
+  }
+
+  private extractForecastLabAnswer(ctx: RunContext, fallback: string): string {
+    const toolCalls = ctx.scratchpad.getToolCallRecords();
+    for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+      const call = toolCalls[index];
+      if (call.tool !== 'forecast_lab_run') continue;
+      const answer = extractForecastLabRunToolAnswer(call.result);
+      if (answer) {
+        return answer;
+      }
+    }
+
+    return fallback;
+  }
+
+  private async *runForecastLabImprovementFlow(
+    ctx: RunContext,
+    query: string,
+    forecastLabRoutingHint: ForecastLabRoutingHint,
+    planOnly: boolean,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: forecastLabRoutingHint.recommendedProfileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'skill',
+        { skill: 'forecast-lab' },
+        ctx,
+      )) {
+        yield event;
+      }
+
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'guided-improve',
+          query,
+          ...(forecastLabRoutingHint.recommendedProfileId
+            ? { profileId: forecastLabRoutingHint.recommendedProfileId }
+            : {}),
+          ...(forecastLabRoutingHint.requestedMutatorId
+            ? { mutator: forecastLabRoutingHint.requestedMutatorId }
+            : {}),
+          ...(planOnly ? { execute: false } : {}),
+          routingSource: 'auto-routed',
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    const fallback = planOnly
+      ? 'Forecast-lab plan generated.'
+      : 'Forecast-lab guided improvement finished.';
+    yield* this.handleDirectResponse(this.extractForecastLabAnswer(ctx, fallback), ctx);
+  }
+
+  private async *runForecastLabApprovalFlow(
+    ctx: RunContext,
+    approvalHint: ForecastLabPromotionApprovalHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: approvalHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'promote-approved',
+          ...(approvalHint.profileId ? { profileId: approvalHint.profileId } : {}),
+          ...(approvalHint.sourceRunId ? { sourceRunId: approvalHint.sourceRunId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab promotion request finished.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabResetFlow(
+    ctx: RunContext,
+    resetHint: ForecastLabResetHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: resetHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'reset-live',
+          ...(resetHint.profileId ? { profileId: resetHint.profileId } : {}),
+          resetMode: resetHint.mode,
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab reset request finished.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabComparisonFlow(
+    ctx: RunContext,
+    query: string,
+    comparisonHint: ForecastLabComparisonHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: comparisonHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          ...(comparisonHint.profileId ? { profileId: comparisonHint.profileId } : {}),
+          ...(comparisonHint.mutationId ? { mutationId: comparisonHint.mutationId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab comparison finished.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabResultsFlow(
+    ctx: RunContext,
+    query: string,
+    resultsHint: ForecastLabResultsHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: resultsHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          ...(resultsHint.profileId ? { profileId: resultsHint.profileId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab results retrieved.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabMutatorListFlow(
+    ctx: RunContext,
+    query: string,
+    mutatorListHint: ForecastLabMutatorListHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: mutatorListHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'list-mutators',
+          query,
+          ...(mutatorListHint.profileId ? { profileId: mutatorListHint.profileId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab mutator list retrieved.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabCatalogExtensionFlow(
+    ctx: RunContext,
+    query: string,
+    catalogExtensionHint: ForecastLabCatalogExtensionHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: catalogExtensionHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'catalog-extension-plan',
+          query,
+          ...(catalogExtensionHint.profileId ? { profileId: catalogExtensionHint.profileId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab catalog-extension guidance generated.'),
+      ctx,
+    );
   }
 
   /**

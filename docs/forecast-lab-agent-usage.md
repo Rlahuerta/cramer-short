@@ -80,6 +80,8 @@ now route into a dedicated bounded comparison flow instead of falling back into 
 | Plan only | `Optimize the BTC 1d/2d/3d Markov forecast workflow. Do not edit files, run shell commands, or write artifacts; explain the exact experiment plan you would follow.` | Forecast Lab returns the bounded plan only |
 | Run improvement | `Improve the BTC 1d/2d/3d Markov forecast workflow.` | Runs the bounded baseline vs candidate path |
 | Force a mutator | `Improve the BTC 1d/2d/3d Markov forecast workflow using mutator markov-faster-decay-reaction.` | Runs the bounded improvement path with that requested mutator if allowed |
+| List shipped mutator ids | `List the shipped mutator ids for btc-markov-ultra-short-horizon.` | Returns the bounded shipped catalog for that profile without repo or web probing |
+| Implement a non-shipped mutator | `implement and run the markov-entropy-adaptive-anchor-weighting` | Returns bounded catalog-extension guidance instead of probing the repo or attempting edits in agent mode |
 | Compare best vs shipped | `Is the current best better than the shipped default baseline?` | Returns the latest kept-vs-shipped comparison and tells you whether it is already live |
 | Ask how to promote | `How do I promote these improvements?` | Guidance only; does **not** execute promotion |
 | Actually promote | `Approve forecast-lab promotion for btc-markov-ultra-short-horizon run <run-id>.` | Verifies and activates the kept run |
@@ -220,6 +222,48 @@ This means:
 It does **not** mean:
 
 > "Ignore lineage safety and force the edit anyway."
+
+### List the shipped mutator ids
+
+Use this when you want the current shipped candidate ids for one profile:
+
+```text
+List the shipped mutator ids for btc-markov-ultra-short-horizon.
+```
+
+Expected behavior:
+
+- the agent stays inside the bounded Forecast Lab tool flow,
+- it returns the shipped candidate catalog ids for that profile,
+- it also tells you the allowed structured operator ids for that profile,
+- it does **not** search the web or probe the repo to discover the catalog.
+
+If you omit the profile in a Forecast Lab context, the agent can fall back to the current profile or summarize every structured profile.
+
+### Request a new non-shipped mutator implementation
+
+Use this when the mutator does **not** exist in the shipped catalog yet:
+
+```text
+implement and run the markov-entropy-adaptive-anchor-weighting
+```
+
+Expected behavior:
+
+- the agent stays inside the bounded Forecast Lab tool flow,
+- it returns the **catalog-extension plan** for the target profile,
+- it points you to the catalog files and validation files that must be updated first,
+- it does **not** treat the request as permission to read arbitrary repo files, browse the web, or attempt source edits on its own.
+
+Practical meaning:
+
+> "This mutator is not shipped yet. Tell me the bounded code-change path first."
+
+It does **not** mean:
+
+> "The agent should improvise after an unknown-mutator error and start exploring or editing the repo."
+
+Once the new mutator actually exists in the shipped catalog and profile contract, rerun the normal Forecast Lab improvement flow.
 
 ### Compare current best vs shipped baseline
 
@@ -425,6 +469,24 @@ Practical meaning:
 - do not manually inspect `.cramer-short/experiments` unless you actually want artifact-level evidence,
 - the agent should stay inside the Forecast Lab tool flow.
 
+### Non-shipped mutator implementation requests are also bounded
+
+Requests such as:
+
+```text
+implement and run the markov-entropy-adaptive-anchor-weighting
+```
+
+now stay in the bounded catalog-extension path when the named mutator is not part of the shipped catalog yet.
+
+Practical meaning:
+
+- Forecast Lab returns the catalog-extension guidance,
+- names the catalog and validation files to change,
+- and stops there until the new mutator is implemented and allowed by the profile contract.
+
+It should **not** fall through into generic `read_file`, web search, or edit attempts after the unknown-mutator result.
+
 ---
 
 ## Where the evidence lives
@@ -485,6 +547,25 @@ What to do:
 1. try a different shipped mutator,
 2. reset the lineage if you intentionally want a restart,
 3. or stop and keep the current best candidate.
+
+### "Unknown mutator" or "the mutator does not exist in the catalog"
+
+Meaning:
+
+- the requested mutator is not part of the currently shipped Forecast Lab catalog,
+- so there is nothing safe to execute yet in the bounded mutation runner.
+
+What to do:
+
+1. ask for the bounded catalog-extension plan,
+2. update the shipped mutator catalog and profile contract in code,
+3. update the focused validation tests,
+4. only then rerun the bounded improvement flow.
+
+Current agent expectation:
+
+- prompts like `implement and run the markov-entropy-adaptive-anchor-weighting` should return catalog-extension guidance,
+- they should **not** trigger repo exploration or direct source-edit attempts just because the mutator name was recognized.
 
 ### "Promotion source was not found"
 
@@ -555,4 +636,4 @@ How do I promote these improvements?
 
 ## One-line summary
 
-> Use Forecast Lab through the agent for bounded forecast improvement, use the comparison prompt to check the current best against shipped defaults, approve kept runs explicitly to make them live, then use normal forecast prompts afterward, and reset explicitly when the active promoted baseline is no longer the one you want.
+> Use Forecast Lab through the agent for bounded forecast improvement, use comparison prompts to check kept results against shipped defaults, treat non-shipped mutator implementation requests as catalog-extension guidance first, approve kept runs explicitly to make them live, then use normal forecast prompts afterward, and reset explicitly when the active promoted baseline is no longer the one you want.

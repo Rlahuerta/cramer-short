@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -9,8 +9,10 @@ import { getExperimentRunDir, getExperimentRunManifestPath } from '../../utils/p
 import {
   getForecastLabCandidateWorktreePath,
   makeForecastLabCandidateBranch,
+  getForecastLabPromotionWorktreePath,
+  makeForecastLabPromotionBranch,
 } from './git.js';
-import { appendLedgerEntry, readLedgerEntries, writeRunManifest } from './ledger.js';
+import { appendLedgerEntry, readLedgerEntries, readRunManifest, writeRunManifest } from './ledger.js';
 import { getForecastLabProfile, listForecastLabStructuredMutations } from './profiles.js';
 import type { ForecastLabCommandRunner } from './runner.js';
 import {
@@ -19,7 +21,13 @@ import {
   defaultForecastLabCommandRunner,
   resolveForecastLabMutatorRankingEnabled,
   runForecastLab,
+  promoteForecastLab,
+  resetForecastLab,
 } from './runner.js';
+import { snapshotForecastLabMarkovParameterMutation } from './mutators/markov-parameters.js';
+import { FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS } from '../../tools/finance/markov-distribution.js';
+import { FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS } from '../../tools/finance/conformal.js';
+import { FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS } from '../../tools/finance/regime-calibrator.js';
 
 const TEST_LEDGER_DIR = join('.cramer-short', 'experiments', '__runner_test__');
 const TEST_LEDGER_PATH = join(TEST_LEDGER_DIR, 'forecast-results.tsv');
@@ -42,19 +50,48 @@ const RUN_IDS = [
   'runner-test-ranked-history-seed-parent',
   'runner-test-ranked-auto-child',
   'runner-test-ranked-override-child',
+  'runner-test-btc-structured-parent-1',
+  'runner-test-btc-structured-parent-2',
+  'runner-test-btc-structured-parent-3',
+  'runner-test-btc-structured-exhausted',
   'runner-test-skip-mutation',
   'runner-test-outside-ledger',
+  'runner-test-promote-source',
+  'runner-test-promote-verify',
+  'runner-test-promote-legacy-source',
+  'runner-test-promote-legacy-verify',
+  'runner-test-promote-concurrent-source',
+  'runner-test-promote-concurrent-verify-a',
+  'runner-test-promote-concurrent-verify-b',
+  'runner-test-promote-stale-source',
+  'runner-test-promote-stale-verify',
+  'runner-test-promote-missing-payload-source',
+  'runner-test-promote-missing-payload-verify',
+  'runner-test-promote-regression-source',
+  'runner-test-promote-regression-verify',
+  'runner-test-reset-source-a',
+  'runner-test-reset-promote-a',
+  'runner-test-reset-source-b',
+  'runner-test-reset-promote-b',
+  'runner-test-reset-defaults',
+  'runner-test-reset-last-known-good',
 ];
 
 function cleanup(): void {
   rmSync(TEST_LEDGER_DIR, { recursive: true, force: true });
   rmSync(TEST_ROUTING_STATS_PATH, { force: true });
+  rmSync(join('.cramer-short', 'experiments', 'active-promotions'), { recursive: true, force: true });
   for (const runId of RUN_IDS) {
     const worktreePath = getForecastLabCandidateWorktreePath(runId);
     if (existsSync(worktreePath)) {
       spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { stdio: 'ignore' });
     }
     spawnSync('git', ['branch', '-D', makeForecastLabCandidateBranch(runId)], { stdio: 'ignore' });
+    const promotionWorktreePath = getForecastLabPromotionWorktreePath(runId);
+    if (existsSync(promotionWorktreePath)) {
+      spawnSync('git', ['worktree', 'remove', '--force', promotionWorktreePath], { stdio: 'ignore' });
+    }
+    spawnSync('git', ['branch', '-D', makeForecastLabPromotionBranch(runId)], { stdio: 'ignore' });
     rmSync(getExperimentRunDir(runId), { recursive: true, force: true });
   }
 }
@@ -74,20 +111,118 @@ function passingRunner(calls: string[]): ForecastLabCommandRunner {
   };
 }
 
+const LIVE_MUTABLE_FILES = [
+  'src/tools/finance/markov-distribution.ts',
+  'src/tools/finance/conformal.ts',
+  'src/tools/finance/regime-calibrator.ts',
+] as const;
+
+function snapshotLiveMutableFiles(): Map<(typeof LIVE_MUTABLE_FILES)[number], string> {
+  return new Map(
+    LIVE_MUTABLE_FILES.map((filePath) => [filePath, readFileSync(filePath, 'utf8')]),
+  );
+}
+
+function restoreLiveMutableFiles(snapshot: Map<(typeof LIVE_MUTABLE_FILES)[number], string>): void {
+  for (const [filePath, contents] of snapshot.entries()) {
+    writeFileSync(filePath, contents, 'utf8');
+  }
+}
+
+function snapshotRuntimeDefaults() {
+  return {
+    markov: { ...FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS },
+    conformal: { ...FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS },
+    regime: { ...FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS },
+  };
+}
+
+function restoreRuntimeDefaults(snapshot: ReturnType<typeof snapshotRuntimeDefaults>): void {
+  Object.assign(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS as Record<string, unknown>, snapshot.markov);
+  Object.assign(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS as Record<string, unknown>, snapshot.conformal);
+  Object.assign(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS as Record<string, unknown>, snapshot.regime);
+}
+
+function readHeadTrackedFile(filePath: (typeof LIVE_MUTABLE_FILES)[number]): string {
+  const result = spawnSync('git', ['show', `HEAD:${filePath}`], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.status !== 0) {
+    throw new Error(`Failed to read ${filePath} from HEAD: ${result.stderr || result.stdout || `exit ${result.status}`}`);
+  }
+  return result.stdout;
+}
+
+const ORIGINAL_LIVE_FILES = snapshotLiveMutableFiles();
+const ORIGINAL_RUNTIME_DEFAULTS = snapshotRuntimeDefaults();
+const SHIPPED_LIVE_FILES = new Map(
+  LIVE_MUTABLE_FILES.map((filePath) => [filePath, readHeadTrackedFile(filePath)]),
+);
+const SHIPPED_RUNTIME_DEFAULTS = {
+  markov: {
+    recommendedConfidenceThreshold: 0.25,
+    transitionMinObservations: 30,
+    transitionDecay: 0.97,
+    structuralBreakMinLength: 60,
+    momentumLookback: 20,
+    momentumAdjustmentScale: 0.25,
+    momentumAdjustmentClamp: 0.003,
+    trendPenaltyOnlyBreakConfidence: false,
+    divergenceWeightedBreakConfidence: false,
+  },
+  conformal: {
+    pidLearningRate: 0.05,
+    integralDecay: 1.0,
+    adaptiveBreakEnabled: false,
+    adaptiveBreakLearningRateMultiplier: 1.5,
+    adaptiveBreakCooloffWindow: 0,
+    scoreAggregationMinSamples: 20,
+    scoreAggregationCalibrationWindow: 120,
+  },
+  regime: {
+    minSamplesPerRegime: 30,
+    learningRate: 0.05,
+    maxIter: 500,
+    tol: 1e-6,
+  },
+} as const;
+
 function appendStructuredMutationHistory(params: {
+  readonly profileId?: string;
   readonly runId: string;
   readonly mutationId: string;
   readonly decision: 'keep' | 'drop';
   readonly startedAt: string;
+  readonly parentRunId?: string;
 }): void {
-  const profile = getForecastLabProfile('multi-asset-markov-short-horizon');
+  const profile = getForecastLabProfile(params.profileId ?? 'multi-asset-markov-short-horizon');
   const mutation = listForecastLabStructuredMutations(profile.id).find((candidate) => candidate.id === params.mutationId);
 
   if (!mutation) {
     throw new Error(`Unknown test mutation: ${params.mutationId}`);
   }
 
+  const parentManifest = params.parentRunId
+    ? readRunManifest(getExperimentRunManifestPath(params.parentRunId))
+    : undefined;
+  const lineage = {
+    rootRunId: parentManifest?.lineage?.rootRunId ?? params.runId,
+    ...(params.parentRunId ? { parentRunId: params.parentRunId } : {}),
+    generation: (parentManifest?.lineage?.generation ?? -1) + 1,
+  } as const;
+
   const artifactsPath = getExperimentRunDir(params.runId, { create: true });
+  const promotion = params.decision === 'keep'
+    ? {
+        status: 'approval-required' as const,
+        source: {
+          runId: params.runId,
+          manifestPath: getExperimentRunManifestPath(params.runId),
+        },
+        requestedAt: params.startedAt,
+      }
+    : undefined;
   writeRunManifest(getExperimentRunManifestPath(params.runId, { create: true }), {
     runId: params.runId,
     startedAt: params.startedAt,
@@ -96,18 +231,17 @@ function appendStructuredMutationHistory(params: {
     candidateBranch: makeForecastLabCandidateBranch(params.runId),
     allowedGlobs: [...profile.allowedGlobs],
     mutationMode: 'structured',
+    ...(params.parentRunId ? { parentRunId: params.parentRunId } : {}),
     mutationId: mutation.id,
     mutationSummary: mutation.specSummary.summary,
-    lineage: {
-      rootRunId: params.runId,
-      generation: 0,
-    },
+    lineage,
     mutationSpecSummary: mutation.specSummary,
     candidateWorkspace: {
       kind: 'candidate-worktree',
       rootDir: resolve('.cramer-short', 'experiments', 'worktrees', params.runId),
       branch: makeForecastLabCandidateBranch(params.runId),
     },
+    ...(promotion ? { promotion } : {}),
     artifactsPath,
   });
 
@@ -120,18 +254,17 @@ function appendStructuredMutationHistory(params: {
     candidateBranch: makeForecastLabCandidateBranch(params.runId),
     allowedGlobs: [...profile.allowedGlobs],
     mutationMode: 'structured',
+    ...(params.parentRunId ? { parentRunId: params.parentRunId } : {}),
     mutationId: mutation.id,
     mutationSummary: mutation.specSummary.summary,
-    lineage: {
-      rootRunId: params.runId,
-      generation: 0,
-    },
+    lineage,
     mutationSpecSummary: mutation.specSummary,
     candidateWorkspace: {
       kind: 'candidate-worktree',
       rootDir: resolve('.cramer-short', 'experiments', 'worktrees', params.runId),
       branch: makeForecastLabCandidateBranch(params.runId),
     },
+    ...(promotion ? { promotion } : {}),
     baselineSummary: {
       exitCode: 0,
       commands: [
@@ -171,7 +304,17 @@ class FakeSpawnedChild extends EventEmitter {
   }
 }
 
-afterEach(cleanup);
+beforeEach(() => {
+  cleanup();
+  restoreLiveMutableFiles(SHIPPED_LIVE_FILES);
+  restoreRuntimeDefaults(SHIPPED_RUNTIME_DEFAULTS);
+});
+
+afterEach(() => {
+  cleanup();
+  restoreLiveMutableFiles(ORIGINAL_LIVE_FILES);
+  restoreRuntimeDefaults(ORIGINAL_RUNTIME_DEFAULTS);
+});
 
 describe('forecast-lab runner', () => {
   it('defaults mutator ranking off when the rollout flag is absent', () => {
@@ -216,6 +359,7 @@ describe('forecast-lab runner', () => {
     expect(result.manifest.profileId).toBe('multi-asset-markov-short-horizon');
     expect(result.manifest.baselineCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(result.manifest.candidateWorkspace).toBeUndefined();
+    expect(result.manifest.promotion).toBeUndefined();
     expect(result.manifest.effectiveMutationContract).toEqual({
       mode: 'structured',
       mutableFiles: [
@@ -239,6 +383,7 @@ describe('forecast-lab runner', () => {
     const manifest = JSON.parse(readFileSync(join(runDir, 'manifest.json'), 'utf8')) as Record<string, unknown>;
     expect(manifest.baselineCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(manifest).not.toHaveProperty('candidateWorkspace');
+    expect(manifest).not.toHaveProperty('promotion');
     expect(manifest.effectiveMutationContract).toEqual(result.manifest.effectiveMutationContract);
 
     const entries = readLedgerEntries(TEST_LEDGER_PATH);
@@ -250,6 +395,7 @@ describe('forecast-lab runner', () => {
       effectiveMutationContract: result.manifest.effectiveMutationContract,
     });
     expect(entries[0]).not.toHaveProperty('candidateWorkspace');
+    expect(entries[0]).not.toHaveProperty('promotion');
     expect(progress).toEqual([
       'forecast-lab: started multi-asset-markov-short-horizon (runner-test-dry-run)',
       `forecast-lab: manifest written to ${join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run', 'manifest.json')}`,
@@ -465,6 +611,14 @@ describe('forecast-lab runner', () => {
       id: 'markov-shorter-reactive-window',
       profileId: 'multi-asset-markov-short-horizon',
     });
+    expect(result.manifest.promotion).toMatchObject({
+      status: 'approval-required',
+      source: {
+        runId: 'runner-test-structured',
+        manifestPath: getExperimentRunManifestPath('runner-test-structured'),
+      },
+    });
+    expect(result.manifest.promotion?.requestedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     const candidateWorkspace = result.manifest.candidateWorkspace;
     expect(candidateWorkspace).toEqual({
       kind: 'candidate-worktree',
@@ -498,6 +652,7 @@ describe('forecast-lab runner', () => {
     const decision = JSON.parse(readFileSync(join(runDir, 'decision.json'), 'utf8')) as Record<string, unknown>;
     expect(decision.mutationMode).toBe('structured');
     expect(decision.candidateWorkspace).toEqual(candidateWorkspace);
+    expect(decision.promotion).toEqual(result.manifest.promotion);
 
     expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).toMatchObject({
       runId: 'runner-test-structured',
@@ -511,6 +666,7 @@ describe('forecast-lab runner', () => {
       },
       mutationSpecSummary: result.manifest.mutationSpecSummary,
       candidateWorkspace,
+      promotion: result.manifest.promotion,
     });
     expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).not.toHaveProperty('parentRunId');
     expect(progress).toContain(
@@ -852,6 +1008,491 @@ describe('forecast-lab runner', () => {
     expect(result.manifest.mutationId).toBe('markov-faster-decay-reaction');
   });
 
+  it('promotes the latest kept structured run by replaying its persisted payload in an isolated staging workspace', async () => {
+    const liveFiles = snapshotLiveMutableFiles();
+    const runtimeDefaults = snapshotRuntimeDefaults();
+
+    try {
+      const source = await runForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'markov-shorter-reactive-window',
+        runId: 'runner-test-promote-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+      const progress: string[] = [];
+      const calls: string[] = [];
+      const promotionWorktreePath = getForecastLabPromotionWorktreePath('runner-test-promote-verify');
+      const result = await promoteForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        runId: 'runner-test-promote-verify',
+        ledgerPath: TEST_LEDGER_PATH,
+        progress: (message) => progress.push(message),
+        commandRunner: async (command, context) => {
+          calls.push(`${context.phase}:${command.id}:${context.cwd ?? ''}`);
+
+          if (context.phase === 'candidate') {
+            expect(context.cwd).toBe(promotionWorktreePath);
+            expect(readFileSync(join(promotionWorktreePath, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+              '  momentumLookback: 14,',
+            );
+            expect(readFileSync(join(promotionWorktreePath, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
+              '  scoreAggregationCalibrationWindow: 96,',
+            );
+          } else {
+            expect(context.cwd).toBe(process.cwd());
+          }
+
+          return {
+            id: command.id,
+            command: command.command,
+            exitCode: 0,
+            stdout: `${context.phase} ok`,
+            stderr: '',
+            durationMs: 1,
+            timedOut: false,
+          };
+        },
+      });
+
+      expect(calls).toEqual([
+        `baseline:walk-forward-short-horizon:${process.cwd()}`,
+        `candidate:walk-forward-short-horizon:${promotionWorktreePath}`,
+      ]);
+      expect(result.sourceRunId).toBe('runner-test-promote-source');
+      expect(result.activation).toEqual({
+        runId: 'runner-test-promote-verify',
+        manifestPath: getExperimentRunManifestPath('runner-test-promote-verify'),
+        artifactsPath: getExperimentRunDir('runner-test-promote-verify'),
+        workspace: {
+          kind: 'candidate-worktree',
+          rootDir: promotionWorktreePath,
+          branch: 'topic/forecast-lab-promote-runner-test-promote-verify',
+        },
+      });
+      expect(result.activeStatePath).toBe(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'));
+      if (!source.manifest.promotion || source.manifest.promotion.status !== 'approval-required') {
+        throw new Error('expected the promotion source fixture to start in approval-required state');
+      }
+      if (!result.sourceManifest.promotion || result.sourceManifest.promotion.status !== 'activated') {
+        throw new Error('expected an activated forecast-lab source manifest state');
+      }
+      const activatedState = result.sourceManifest.promotion;
+      expect(activatedState).toEqual({
+        status: 'activated',
+        source: {
+          runId: 'runner-test-promote-source',
+          manifestPath: getExperimentRunManifestPath('runner-test-promote-source'),
+        },
+        requestedAt: source.manifest.promotion.requestedAt,
+        approvedAt: activatedState.approvedAt,
+        promotedAt: activatedState.promotedAt,
+        activatedAt: activatedState.activatedAt,
+        activation: result.activation,
+      });
+      expect(readRunManifest(getExperimentRunManifestPath('runner-test-promote-source')).promotion).toEqual(
+        activatedState,
+      );
+      expect(readLedgerEntries(TEST_LEDGER_PATH)).toHaveLength(1);
+
+      const activationArtifact = JSON.parse(
+        readFileSync(join(getExperimentRunDir('runner-test-promote-verify'), 'activation.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      expect(activationArtifact.promotion).toEqual(activatedState);
+      expect(activationArtifact.mutationReplayPayload).toEqual(source.manifest.mutationReplayPayload);
+      expect(activationArtifact.activeStatePath).toBe(result.activeStatePath);
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8')).toContain('  momentumLookback: 14,');
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8')).toContain('  scoreAggregationCalibrationWindow: 96,');
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8')).toContain('  minSamplesPerRegime: 24,');
+      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback).toBe(14);
+      expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow).toBe(96);
+      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime).toBe(24);
+      const activeState = JSON.parse(readFileSync(result.activeStatePath, 'utf8')) as Record<string, unknown>;
+      expect(activeState.profileId).toBe('multi-asset-markov-short-horizon');
+      expect(activeState.sourceRunId).toBe('runner-test-promote-source');
+      expect(activeState.promotionRunId).toBe('runner-test-promote-verify');
+      expect(activeState.promotion).toEqual(activatedState);
+      expect(progress).toContain(`forecast-lab: promotion staging workspace ${promotionWorktreePath}`);
+      expect(progress).toContain(`forecast-lab: live activation recorded at ${result.activeStatePath}`);
+      expect(progress).toContain(
+        `forecast-lab: activation artifacts written to ${join(getExperimentRunDir('runner-test-promote-verify'), 'activation.json')}`,
+      );
+    } finally {
+      restoreLiveMutableFiles(liveFiles);
+      restoreRuntimeDefaults(runtimeDefaults);
+    }
+  });
+
+  it('repairs missing promotion metadata on a legacy kept source manifest before promotion', async () => {
+    const liveFiles = snapshotLiveMutableFiles();
+    const runtimeDefaults = snapshotRuntimeDefaults();
+
+    try {
+      await runForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'markov-shorter-reactive-window',
+        runId: 'runner-test-promote-legacy-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+
+      const sourceManifestPath = getExperimentRunManifestPath('runner-test-promote-legacy-source');
+      const sourceManifest = readRunManifest(sourceManifestPath);
+      const { promotion: _omittedPromotion, ...legacyManifest } = sourceManifest;
+      writeRunManifest(sourceManifestPath, {
+        ...legacyManifest,
+      });
+
+      const result = await promoteForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        runId: 'runner-test-promote-legacy-verify',
+        sourceRunId: 'runner-test-promote-legacy-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+
+      expect(result.sourceRunId).toBe('runner-test-promote-legacy-source');
+      const repairedManifest = readRunManifest(sourceManifestPath);
+      expect(repairedManifest.promotion?.status).toBe('activated');
+      expect(repairedManifest.promotion?.source).toEqual({
+        runId: 'runner-test-promote-legacy-source',
+        manifestPath: sourceManifestPath,
+      });
+    } finally {
+      restoreLiveMutableFiles(liveFiles);
+      restoreRuntimeDefaults(runtimeDefaults);
+    }
+  });
+
+  it('fails closed when live source drift blocks activation after verification passes', async () => {
+    const liveFiles = snapshotLiveMutableFiles();
+    const runtimeDefaults = snapshotRuntimeDefaults();
+
+    try {
+      const source = await runForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'markov-shorter-reactive-window',
+        runId: 'runner-test-promote-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+
+      const liveMarkovPath = 'src/tools/finance/markov-distribution.ts';
+      const originalMarkov = readFileSync(liveMarkovPath, 'utf8');
+      writeFileSync(
+        liveMarkovPath,
+        originalMarkov.replace('  momentumLookback: 20,', '  momentumLookback: 999,'),
+        'utf8',
+      );
+
+      await expect(promoteForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        runId: 'runner-test-promote-verify',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      })).rejects.toThrow(/expected 1 match\(es\) for momentumLookback/);
+
+      expect(readRunManifest(getExperimentRunManifestPath('runner-test-promote-source')).promotion).toEqual(
+        source.manifest.promotion,
+      );
+      expect(existsSync(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'))).toBe(
+        false,
+      );
+      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback).toBe(runtimeDefaults.markov.momentumLookback);
+    } finally {
+      restoreLiveMutableFiles(liveFiles);
+      restoreRuntimeDefaults(runtimeDefaults);
+    }
+  });
+
+  it('resets the live profile back to shipped defaults and removes the active baseline record', async () => {
+    const liveFiles = snapshotLiveMutableFiles();
+    const runtimeDefaults = snapshotRuntimeDefaults();
+
+    try {
+      await runForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'markov-shorter-reactive-window',
+        runId: 'runner-test-reset-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+      await promoteForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        runId: 'runner-test-reset-promote-a',
+        sourceRunId: 'runner-test-reset-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+
+      const result = await resetForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        mode: 'defaults',
+        runId: 'runner-test-reset-defaults',
+      });
+
+      expect(result.mode).toBe('defaults');
+      expect(result.activeStatePath).toBeUndefined();
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8')).toContain('  momentumLookback: 20,');
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8')).toContain('  scoreAggregationCalibrationWindow: 120,');
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8')).toContain('  minSamplesPerRegime: 30,');
+      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback).toBe(runtimeDefaults.markov.momentumLookback);
+      expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow).toBe(runtimeDefaults.conformal.scoreAggregationCalibrationWindow);
+      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime).toBe(runtimeDefaults.regime.minSamplesPerRegime);
+      expect(existsSync(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'))).toBe(false);
+      const resetArtifact = JSON.parse(readFileSync(result.resetArtifactPath, 'utf8')) as Record<string, unknown>;
+      expect(resetArtifact.mode).toBe('defaults');
+      expect(resetArtifact.profileId).toBe('multi-asset-markov-short-horizon');
+    } finally {
+      restoreLiveMutableFiles(liveFiles);
+      restoreRuntimeDefaults(runtimeDefaults);
+    }
+  });
+
+  it('resets the live profile back to the previously activated baseline when requested', async () => {
+    const liveFiles = snapshotLiveMutableFiles();
+    const runtimeDefaults = snapshotRuntimeDefaults();
+
+    try {
+      await runForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'markov-shorter-reactive-window',
+        runId: 'runner-test-reset-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+      const firstPromotion = await promoteForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        runId: 'runner-test-reset-promote-a',
+        sourceRunId: 'runner-test-reset-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+
+      await runForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'markov-faster-decay-reaction',
+        runId: 'runner-test-reset-source-b',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+      await promoteForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        runId: 'runner-test-reset-promote-b',
+        sourceRunId: 'runner-test-reset-source-b',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+
+      const result = await resetForecastLab({
+        profileId: 'multi-asset-markov-short-horizon',
+        mode: 'last-known-good',
+        runId: 'runner-test-reset-last-known-good',
+      });
+
+      expect(result.mode).toBe('last-known-good');
+      expect(result.activeStatePath).toBe(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'));
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8')).toContain('  momentumLookback: 14,');
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8')).toContain('  transitionDecay: 0.97,');
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8')).toContain('  adaptiveBreakLearningRateMultiplier: 1.5,');
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8')).toContain('  minSamplesPerRegime: 24,');
+      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback).toBe(14);
+      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay).toBe(0.97);
+      expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier).toBe(1.5);
+      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime).toBe(24);
+      const activeState = JSON.parse(readFileSync(result.activeStatePath!, 'utf8')) as Record<string, unknown>;
+      expect(activeState.sourceRunId).toBe(firstPromotion.sourceRunId);
+      expect(activeState.promotionRunId).toBe(firstPromotion.runId);
+      const resetArtifact = JSON.parse(readFileSync(result.resetArtifactPath, 'utf8')) as Record<string, unknown>;
+      expect(resetArtifact.mode).toBe('last-known-good');
+      expect(resetArtifact.restoredActive).toMatchObject({
+        sourceRunId: firstPromotion.sourceRunId,
+        promotionRunId: firstPromotion.runId,
+      });
+    } finally {
+      restoreLiveMutableFiles(liveFiles);
+      restoreRuntimeDefaults(runtimeDefaults);
+    }
+  }, 15_000);
+
+  it('fails closed when another promotion attempt is already verifying the same source run', async () => {
+    await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      mutationMode: 'structured',
+      mutator: 'markov-shorter-reactive-window',
+      runId: 'runner-test-promote-concurrent-source',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+
+    let releaseBaselineGate: (() => void) | undefined;
+    let baselineGateStarted!: () => void;
+    const baselineGateStartedPromise = new Promise<void>((resolve) => {
+      baselineGateStarted = resolve;
+    });
+
+    const firstPromotion = promoteForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      runId: 'runner-test-promote-concurrent-verify-a',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: async (command, context) => {
+        if (context.phase === 'baseline') {
+          baselineGateStarted();
+          await new Promise<void>((resolve) => {
+            releaseBaselineGate = resolve;
+          });
+        }
+
+        return {
+          id: command.id,
+          command: command.command,
+          exitCode: 0,
+          stdout: `${context.phase} ok`,
+          stderr: '',
+          durationMs: 1,
+          timedOut: false,
+        };
+      },
+    });
+
+    await baselineGateStartedPromise;
+
+    await expect(promoteForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      runId: 'runner-test-promote-concurrent-verify-b',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    })).rejects.toThrow(/already being promoted by another process/);
+
+    expect(existsSync(getExperimentRunDir('runner-test-promote-concurrent-verify-b'))).toBe(false);
+
+    releaseBaselineGate?.();
+    const result = await firstPromotion;
+    expect(result.sourceManifest.promotion?.status).toBe('activated');
+  });
+
+  it('re-validates the source manifest after verification and fails when source metadata changes mid-promotion', async () => {
+    await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      mutationMode: 'structured',
+      mutator: 'markov-shorter-reactive-window',
+      runId: 'runner-test-promote-stale-source',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+
+    const sourceManifestPath = getExperimentRunManifestPath('runner-test-promote-stale-source');
+    let mutatedSourceManifest = false;
+
+    await expect(promoteForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      runId: 'runner-test-promote-stale-verify',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: async (command, context) => {
+        if (context.phase === 'candidate' && !mutatedSourceManifest) {
+          const manifest = readRunManifest(sourceManifestPath);
+          if (!manifest.effectiveMutationContract || manifest.effectiveMutationContract.mode !== 'structured') {
+            throw new Error('expected structured effective mutation contract');
+          }
+
+          writeRunManifest(sourceManifestPath, {
+            ...manifest,
+            effectiveMutationContract: {
+              ...manifest.effectiveMutationContract,
+              allowMultipleCandidateAttempts: true,
+            },
+          });
+          mutatedSourceManifest = true;
+        }
+
+        return {
+          id: command.id,
+          command: command.command,
+          exitCode: 0,
+          stdout: `${context.phase} ok`,
+          stderr: '',
+          durationMs: 1,
+          timedOut: false,
+        };
+      },
+    })).rejects.toThrow(/changed while promotion verification was running/);
+
+    expect(mutatedSourceManifest).toBe(true);
+    expect(existsSync(getForecastLabPromotionWorktreePath('runner-test-promote-stale-verify'))).toBe(false);
+    expect(readRunManifest(sourceManifestPath).effectiveMutationContract).toMatchObject({
+      allowMultipleCandidateAttempts: true,
+    });
+  });
+
+  it('fails closed when the kept structured source run is missing its replay payload', async () => {
+    const source = await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      mutationMode: 'structured',
+      mutator: 'markov-shorter-reactive-window',
+      runId: 'runner-test-promote-missing-payload-source',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+    const sourceManifestPath = getExperimentRunManifestPath('runner-test-promote-missing-payload-source');
+    const { mutationReplayPayload: _removedReplayPayload, ...manifestWithoutReplayPayload } = source.manifest;
+
+    writeRunManifest(sourceManifestPath, manifestWithoutReplayPayload);
+
+    await expect(promoteForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      runId: 'runner-test-promote-missing-payload-verify',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    })).rejects.toThrow(/missing its structured mutation replay payload/);
+
+    expect(existsSync(getForecastLabPromotionWorktreePath('runner-test-promote-missing-payload-verify'))).toBe(false);
+    expect(readRunManifest(sourceManifestPath).promotion).toEqual(source.manifest.promotion);
+  });
+
+  it('fails closed and cleans up the promotion staging workspace when verification regresses', async () => {
+    const source = await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      mutationMode: 'structured',
+      mutator: 'markov-shorter-reactive-window',
+      runId: 'runner-test-promote-regression-source',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+    const promotionRunId = 'runner-test-promote-regression-verify';
+
+    await expect(promoteForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      runId: promotionRunId,
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: async (command, context) => ({
+        id: command.id,
+        command: command.command,
+        exitCode: context.phase === 'candidate' ? 1 : 0,
+        stdout: '',
+        stderr: context.phase === 'candidate' ? 'promotion failed' : '',
+        durationMs: 1,
+        timedOut: false,
+      }),
+    })).rejects.toThrow(/regressed while verifying kept run "runner-test-promote-regression-source"/);
+
+    expect(existsSync(getForecastLabPromotionWorktreePath(promotionRunId))).toBe(false);
+    expect(readRunManifest(getExperimentRunManifestPath('runner-test-promote-regression-source')).promotion).toEqual(
+      source.manifest.promotion,
+    );
+    expect(
+      JSON.parse(readFileSync(join(getExperimentRunDir(promotionRunId), 'decision.json'), 'utf8')),
+    ).toMatchObject({
+      sourceRunId: 'runner-test-promote-regression-source',
+      decision: 'drop',
+    });
+  });
+
   it('preserves the candidate workspace when keepWorktree is enabled for a structured mutation run', async () => {
     const worktreePath = getForecastLabCandidateWorktreePath('runner-test-structured-keep-worktree');
     const progress: string[] = [];
@@ -882,6 +1523,58 @@ describe('forecast-lab runner', () => {
       id: 'markov-longer-stability-window',
       mutatorId: 'search-replace',
     });
+  });
+
+  it('explains the next valid actions when a structured mutation catalog is exhausted', async () => {
+    const btcProfileId = 'btc-markov-ultra-short-horizon';
+
+    appendStructuredMutationHistory({
+      profileId: btcProfileId,
+      runId: 'runner-test-btc-structured-parent-1',
+      mutationId: 'markov-shorter-reactive-window',
+      decision: 'keep',
+      startedAt: '2026-05-01T00:00:00.000Z',
+    });
+    appendStructuredMutationHistory({
+      profileId: btcProfileId,
+      runId: 'runner-test-btc-structured-parent-2',
+      mutationId: 'markov-faster-decay-reaction',
+      decision: 'keep',
+      startedAt: '2026-05-02T00:00:00.000Z',
+      parentRunId: 'runner-test-btc-structured-parent-1',
+    });
+    appendStructuredMutationHistory({
+      profileId: btcProfileId,
+      runId: 'runner-test-btc-structured-parent-3',
+      mutationId: 'markov-lower-confidence-trend-penalty',
+      decision: 'keep',
+      startedAt: '2026-05-03T00:00:00.000Z',
+      parentRunId: 'runner-test-btc-structured-parent-2',
+    });
+
+    let error: unknown;
+    try {
+      await runForecastLab({
+        profileId: btcProfileId,
+        mutationMode: 'structured',
+        runId: 'runner-test-btc-structured-exhausted',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: passingRunner([]),
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(ForecastLabRunnerError);
+    expect((error as Error).message).toMatch(
+      /Current kept lineage already applied: markov-shorter-reactive-window, markov-faster-decay-reaction, markov-lower-confidence-trend-penalty\./,
+    );
+    expect((error as Error).message).toMatch(
+      /Remaining shipped mutators checked and found inapplicable: markov-longer-stability-window, markov-slower-decay-persistence, markov-higher-confidence-divergence-weighted, markov-calibrator-higher-sample-floor, markov-calibrator-lower-sample-floor\./,
+    );
+    expect((error as Error).message).toMatch(
+      /Next actions: keep the current best candidate, add a new shipped structured mutator, or intentionally reset the forecast-lab lineage outside the CLI\./,
+    );
   });
 
   it('rejects ambiguous real mutation runs with no explicit mutation mode', async () => {

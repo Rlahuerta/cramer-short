@@ -6,7 +6,7 @@
  *   2. A concrete fix hint (what to do next)
  */
 import { describe, it, expect } from 'bun:test';
-import { formatUserFacingError } from './errors.js';
+import { formatUserFacingError, isTimeoutError } from './errors.js';
 
 // ---------------------------------------------------------------------------
 // Rate limit
@@ -95,6 +95,10 @@ describe('formatUserFacingError — timeout', () => {
   it('suggests a fix', () => {
     const msg = formatUserFacingError('deadline exceeded');
     expect(msg).toMatch(/shorter|faster|\/model|again/i);
+  });
+
+  it('does not classify command timeout flags as timeout failures', () => {
+    expect(isTimeoutError('bun test src/skills/forecast-lab/skill.e2e.test.ts --timeout 360000')).toBe(false);
   });
 });
 

@@ -61,7 +61,7 @@ export interface FitOptions {
 }
 
 export const FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS: Required<FitOptions> = {
-  minSamplesPerRegime: 30,
+  minSamplesPerRegime: 24,
   learningRate: 0.05,
   maxIter: 500,
   tol: 1e-6,

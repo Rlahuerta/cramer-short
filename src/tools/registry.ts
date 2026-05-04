@@ -28,6 +28,7 @@ import { forecastArbitratorTool, FORECAST_ARBITRATOR_DESCRIPTION } from './finan
 import { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION } from './finance/price-distribution-chart.js';
 import { markovDistributionTool, MARKOV_DISTRIBUTION_DESCRIPTION } from './finance/markov-distribution.js';
 import { trumpPressureIndexTool, TRUMP_PRESSURE_DESCRIPTION } from './finance/trump-pressure-index.js';
+import { forecastLabRunTool, FORECAST_LAB_RUN_DESCRIPTION } from './forecast-lab-run.js';
 
 /**
  * A registered tool with its rich description for system prompt injection.
@@ -157,6 +158,11 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       name: 'get_onchain_crypto',
       tool: getOnchainCrypto,
       description: ONCHAIN_CRYPTO_DESCRIPTION,
+    },
+    {
+      name: 'forecast_lab_run',
+      tool: forecastLabRunTool,
+      description: FORECAST_LAB_RUN_DESCRIPTION,
     },
     {
       name: 'web_fetch',

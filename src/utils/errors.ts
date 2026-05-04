@@ -43,10 +43,12 @@ const ERROR_PATTERNS = {
     'high demand',
   ],
   timeout: [
-    'timeout',
-    'timed out',
-    'deadline exceeded',
-    'context deadline exceeded',
+    /\btimed out\b/i,
+    /\bdeadline exceeded\b/i,
+    /\bcontext deadline exceeded\b/i,
+    /"type"\s*:\s*"timeout"/i,
+    /\brequest timeout\b/i,
+    /\btimeout error\b/i,
   ],
   billing: [
     /["']?(?:status|code)["']?\s*[:=]\s*402\b/i,

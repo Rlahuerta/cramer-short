@@ -2194,6 +2194,50 @@ describe('computeActionSignal', () => {
     expect(note).toContain('final SELL overrides the base BUY');
   });
 
+  it('builds a provenance note when the latent regime and final trade side differ', () => {
+    const note = buildRecommendationProvenanceNote({
+      ticker: 'BTC-USD',
+      horizon: 1,
+      regimeState: 'bull',
+      actionSignal: {
+        buyProbability: 0.31,
+        holdProbability: 0.38,
+        sellProbability: 0.31,
+        recommendation: 'SELL',
+        confidence: 'LOW',
+        expectedReturn: -0.004,
+        riskRewardRatio: 0.97,
+        buyThreshold: 0.05,
+        sellThreshold: 0.03,
+        actionLevels: {
+          targetPrice: 80800,
+          stopLoss: 77500,
+          medianPrice: 79850,
+          bullCase: 81100,
+          bearCase: 78600,
+        },
+        baseRecommendation: 'SELL',
+        recommendationSource: 'expected_return',
+      },
+      scenarios: {
+        buckets: [
+          { label: 'Down >5%', probability: 0.029, priceRange: [null, 75907] },
+          { label: 'Down 3–5%', probability: 0.072, priceRange: [75907, 77505] },
+          { label: 'Flat ±3%', probability: 0.822, priceRange: [77505, 82300] },
+          { label: 'Up 3–5%', probability: 0.056, priceRange: [82300, 83898] },
+          { label: 'Up >5%', probability: 0.022, priceRange: [83898, null] },
+        ],
+        expectedPrice: 79873.21,
+        expectedReturn: -0.0004,
+        pUp: 0.499,
+      },
+    });
+
+    expect(note).toContain('latent HMM backdrop');
+    expect(note).toContain('Final SELL');
+    expect(note).toContain('P(up) is 49.9%');
+  });
+
   it('raw-direction hybrid preserves calibrated output surfaces while enabling BTC short-horizon provenance', async () => {
     const prices = Array.from({ length: 140 }, (_, i) => 100 + i * 0.15 + Math.sin(i * 0.25) * 2.5);
     const currentPrice = prices[prices.length - 1]!;
@@ -6194,6 +6238,7 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.actionSignal).toBeDefined();
     expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
     expect(parsed.data.canonical.diagnostics).toHaveProperty('recommendationProvenance');
+    expect(parsed.data.report).toContain('Latent regime:');
     expect(Array.isArray(parsed.data.distribution)).toBe(true);
   });
 

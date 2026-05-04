@@ -9,6 +9,7 @@
  */
 import { Agent } from '../agent/agent.js';
 import type { AgentEvent, DoneEvent } from '../agent/types.js';
+import { InMemoryChatHistory } from './in-memory-chat-history.js';
 import { isTimeoutError } from './errors.js';
 import { withRetry } from './retry.js';
 
@@ -28,9 +29,16 @@ export interface E2EResult {
   iterations: number;
 }
 
+export interface E2ESeedMessage {
+  query: string;
+  answer: string;
+  summary: string | null;
+}
+
 interface E2EOptions {
   maxIterations?: number;
   model?: string;
+  historySeed?: readonly E2ESeedMessage[];
 }
 
 interface E2ERetryOptions extends E2EOptions {
@@ -66,6 +74,15 @@ export async function runAgentE2E(
     maxIterations,
     memoryEnabled: false, // keep E2E tests hermetic — no cross-test memory bleed
   });
+  const inMemoryHistory = opts.historySeed?.length
+    ? (() => {
+        const history = new InMemoryChatHistory(model);
+        for (const message of opts.historySeed) {
+          history.seedMessage(message);
+        }
+        return history;
+      })()
+    : undefined;
 
   const events: AgentEvent[] = [];
   const toolsCalled: string[] = [];
@@ -76,7 +93,7 @@ export async function runAgentE2E(
   const timer = setTimeout(() => ac.abort(), E2E_TIMEOUT_MS);
 
   try {
-    for await (const event of agent.run(actualQuery)) {
+    for await (const event of agent.run(actualQuery, inMemoryHistory)) {
       if (ac.signal.aborted) break;
       events.push(event);
       if (event.type === 'tool_start') toolsCalled.push(event.tool);

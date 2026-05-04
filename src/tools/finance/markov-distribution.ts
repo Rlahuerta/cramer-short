@@ -192,14 +192,14 @@ export const FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS: {
   readonly trendPenaltyOnlyBreakConfidence: boolean;
   readonly divergenceWeightedBreakConfidence: boolean;
 } = {
-  recommendedConfidenceThreshold: 0.25,
+  recommendedConfidenceThreshold: 0.22,
   transitionMinObservations: 30,
   transitionDecay: 0.97,
-  structuralBreakMinLength: 60,
-  momentumLookback: 20,
+  structuralBreakMinLength: 48,
+  momentumLookback: 14,
   momentumAdjustmentScale: 0.25,
   momentumAdjustmentClamp: 0.003,
-  trendPenaltyOnlyBreakConfidence: false,
+  trendPenaltyOnlyBreakConfidence: true,
   divergenceWeightedBreakConfidence: false,
 };
 
@@ -431,6 +431,7 @@ export function buildRecommendationProvenanceNote(params: {
   ticker: string;
   horizon: number;
   actionSignal: ActionSignal;
+  regimeState?: RegimeState;
   scenarios?: ScenarioProbabilities;
   bearishBreakRecommendationGateActive?: boolean;
 }): string | null {
@@ -442,6 +443,16 @@ export function buildRecommendationProvenanceNote(params: {
 
   if (params.actionSignal.recommendationSource === 'short_horizon_scenario' && params.scenarios) {
     return `ℹ️ Recommendation provenance: short-horizon crypto converted a ${baseRecommendation} into ${params.actionSignal.recommendation} because scenario P(up) is ${(params.scenarios.pUp * 100).toFixed(1)}%.`;
+  }
+
+  const hasDirectionalRegimeMismatch =
+    (params.regimeState === 'bull' && params.actionSignal.recommendation === 'SELL')
+    || (params.regimeState === 'bear' && params.actionSignal.recommendation === 'BUY');
+  if (hasDirectionalRegimeMismatch) {
+    const scenarioContext = params.scenarios
+      ? `terminal expected return is ${(params.scenarios.expectedReturn >= 0 ? '+' : '')}${(params.scenarios.expectedReturn * 100).toFixed(1)}% and P(up) is ${(params.scenarios.pUp * 100).toFixed(1)}%`
+      : 'terminal distribution and action thresholds lean the other way';
+    return `ℹ️ Recommendation provenance: ${params.regimeState} is the latent HMM backdrop, not the trade side. Final ${params.actionSignal.recommendation} is based on the next-${params.horizon}d terminal forecast, where ${scenarioContext}.`;
   }
 
   return null;
@@ -6047,6 +6058,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       ticker: result.ticker,
       horizon: result.horizon,
       actionSignal: sig,
+      regimeState: m.regimeState,
       scenarios: result.scenarios,
       bearishBreakRecommendationGateActive: m.bearishBreakRecommendationGateActive,
     });
@@ -6112,7 +6124,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     const header = [
       '',
       `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,
-      `Current: $${fmt(result.currentPrice)} | Regime: ${m.regimeState}`,
+      `Current: $${fmt(result.currentPrice)} | Latent regime: ${m.regimeState}`,
       `Anchors: ${m.polymarketAnchors} trusted | ${m.anchorInspection.lowTrustAnchors} low-trust | Anchor quality: ${m.anchorCoverage.quality.toUpperCase()}`,
       mixingLine,
     ];
@@ -6152,7 +6164,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       const trajDays = result.trajectory.length;
       trajectorySection.push('');
       trajectorySection.push(`═══ ${trajDays}-DAY PRICE TRAJECTORY: ${result.ticker} ═══`);
-      trajectorySection.push(`Current: $${fmt(result.currentPrice)} | Regime: ${m.regimeState} | Confidence: ${result.predictionConfidence.toFixed(2)}`);
+      trajectorySection.push(`Current: $${fmt(result.currentPrice)} | Latent regime: ${m.regimeState} | Confidence: ${result.predictionConfidence.toFixed(2)}`);
       trajectorySection.push('');
       trajectorySection.push('Day │ Expected │     90% CI Range    │ P(up) │ Return');
       trajectorySection.push('────┼──────────┼─────────────────────┼───────┼────────');
