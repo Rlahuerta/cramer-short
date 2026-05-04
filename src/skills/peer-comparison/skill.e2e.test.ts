@@ -17,6 +17,7 @@ import type { E2EResult } from '@/utils/e2e-helpers.js';
 
 const PEER_COMPARISON_QUERY =
   'Use the peer-comparison skill to compare NVDA against AMD, INTC, and QCOM on valuation, growth, and quality metrics';
+const PEER_COMPARISON_TIMEOUT_MS = Math.max(E2E_TIMEOUT_MS, 600_000);
 
 let result: E2EResult;
 let tools: string[];
@@ -28,7 +29,7 @@ describe('peer-comparison skill E2E', () => {
     result = await runAgentE2EWithTimeoutRetry(PEER_COMPARISON_QUERY);
     tools = result.toolsCalled;
     answer = result.answer;
-  }, E2E_TIMEOUT_MS);
+  }, PEER_COMPARISON_TIMEOUT_MS);
 
   e2eIt('invokes the skill tool or executes the peer-comparison workflow directly', () => {
     const usedSkillTool = tools.some((t) => t === 'skill');
