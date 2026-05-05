@@ -22,9 +22,18 @@ import { extractSignals, scoreMarketRelevance } from './signal-extractor.js';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { lookupImpact, inferAssetClass } from './impact-map.js';
 import { runEnsemble, computePolymarketSignal, computeEnsemble, computeConditionalReturn, adjustYesBias, type MarketInput } from '../../utils/ensemble.js';
-import { buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
+import {
+  buildPriceDistributionChart,
+  extractPriceThresholds as extractChartPriceThresholds,
+} from './price-distribution-chart.js';
 import type { PolymarketSnapshotRecord } from './polymarket-snapshots.js';
-import { buildPolymarketAnchorQueryVariants } from './markov-distribution.js';
+import {
+  applyCryptoTerminalAnchorFallback,
+  buildPolymarketAnchorQueryVariants,
+  evaluateAnchorTrust,
+  extractPriceThresholds as extractAnchorPriceThresholds,
+  type PriceThreshold,
+} from './markov-distribution.js';
 import {
   appendReplayCachePolymarketCapture,
   createRawPolymarketReplayRow,
@@ -73,6 +82,7 @@ type HistoryFlags = {
   warnings: string[];
 };
 
+const DAY_MS = 86_400_000;
 const TWO_HOURS_MS = 2 * 3_600_000;
 const FOUR_HOURS_MS = 4 * 3_600_000;
 const TWENTY_FOUR_HOURS_MS = 24 * 3_600_000;
@@ -278,13 +288,117 @@ function resolveAnchorSignalCategory(
     : signals.find((signal) => signal.category === 'btc_price_target')?.category ?? bestCategory;
 }
 
+type AnchorCandidateMarket = {
+  question: string;
+  probability: number;
+  volume?: number;
+  createdAt?: number;
+  endDate?: string | null;
+};
+
+type ShortHorizonAnchorSelection = {
+  selectedMarkets: RawMarket[];
+  selectedThresholds: PriceThreshold[];
+  skippedResolutionMismatches: RawMarket[];
+};
+
+function toAnchorCandidateMarket(market: RawMarket, referenceTimeMs: number): AnchorCandidateMarket {
+  return {
+    question: market.question,
+    probability: market.probability,
+    volume: market.volume24h,
+    createdAt: market.ageDays != null ? referenceTimeMs - market.ageDays * DAY_MS : undefined,
+    endDate: market.endDate ?? null,
+  };
+}
+
+function buildAnchorSelectionKey(
+  anchor: Pick<PriceThreshold, 'price' | 'rawProbability' | 'endDate'>,
+): string {
+  return `${anchor.price}|${anchor.rawProbability}|${anchor.endDate ?? ''}`;
+}
+
+function evaluateShortHorizonAnchorTrust(
+  market: RawMarket,
+  horizonDays: number,
+): ReturnType<typeof evaluateAnchorTrust> {
+  const daysToResolution = daysUntilEndDate(market.endDate);
+  return evaluateAnchorTrust({
+    hasVolume: market.volume24h > 0,
+    isYoung: (market.ageDays ?? Number.POSITIVE_INFINITY) < 2,
+    isShortHorizonCrypto: true,
+    isLongHorizonCrypto: false,
+    isNearTargetResolution: daysToResolution !== null && Math.abs(daysToResolution - horizonDays) <= 2,
+  });
+}
+
+function selectShortHorizonCryptoAnchorMarkets(
+  markets: RawMarket[],
+  ticker: string,
+  horizonDays: number,
+  referenceTimeMs: number,
+): ShortHorizonAnchorSelection {
+  const candidates = markets.map((market) => ({
+    market,
+    candidate: toAnchorCandidateMarket(market, referenceTimeMs),
+  }));
+  const strictCandidates = candidates.filter(({ market }) => {
+    const daysToResolution = daysUntilEndDate(market.endDate);
+    return daysToResolution === null || isResolutionAlignedToHorizon(daysToResolution, horizonDays);
+  });
+  const trustedStrictCandidates = strictCandidates.filter(
+    ({ market }) => evaluateShortHorizonAnchorTrust(market, horizonDays).trustScore === 'high',
+  );
+  const strictThresholdSource = trustedStrictCandidates.length > 0 ? trustedStrictCandidates : strictCandidates;
+  const strictThresholds = extractAnchorPriceThresholds(
+    strictThresholdSource.map(({ candidate }) => candidate),
+    { ticker, horizonDays, referenceTimeMs },
+  );
+  const selectedThresholds = applyCryptoTerminalAnchorFallback(
+    candidates.map(({ candidate }) => candidate),
+    strictThresholds,
+    ticker,
+    horizonDays,
+    referenceTimeMs,
+  );
+
+  const marketByKey = new Map<string, RawMarket>();
+  for (const { market, candidate } of candidates) {
+    const [threshold] = extractAnchorPriceThresholds([candidate], { ticker, horizonDays, referenceTimeMs });
+    if (!threshold) continue;
+    const key = buildAnchorSelectionKey(threshold);
+    if (!marketByKey.has(key)) {
+      marketByKey.set(key, market);
+    }
+  }
+
+  const selectedMarkets = selectedThresholds
+    .map((threshold) => marketByKey.get(buildAnchorSelectionKey(threshold)))
+    .filter((market): market is RawMarket => market != null);
+  const selectedIds = new Set(selectedMarkets.map((market) => market.marketId ?? market.question));
+  const skippedResolutionMismatches = candidates
+    .filter(({ market }) => {
+      const daysToResolution = daysUntilEndDate(market.endDate);
+      return daysToResolution !== null
+        && !isResolutionAlignedToHorizon(daysToResolution, horizonDays)
+        && !selectedIds.has(market.marketId ?? market.question);
+    })
+    .map(({ market }) => market);
+
+  return {
+    selectedMarkets,
+    selectedThresholds,
+    skippedResolutionMismatches,
+  };
+}
+
 function isThresholdChartAlignedToHorizon(markets: RawMarket[], horizonDays: number): boolean {
-  const thresholds = extractPriceThresholds(markets);
+  const thresholds = extractChartPriceThresholds(markets);
   if (thresholds.length < 2) return false;
 
   const datedThresholdMarkets = markets.filter((market) => {
     if (!market.endDate) return false;
-    return extractPriceThresholds([{ question: market.question, probability: market.probability }]).length > 0;
+    return extractChartPriceThresholds([{ question: market.question, probability: market.probability }]).length > 0;
   });
   if (datedThresholdMarkets.length < 2) return false;
 
@@ -528,6 +642,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           : [];
         const rawMarkets: RawMarket[] = [];
         const skippedResolutionMismatches: RawMarket[] = [];
+        let shortHorizonAnchorThresholds: PriceThreshold[] = [];
         const allSnapshotRecords = readRecords(undefined);
         let replayQuerySet = genericReplayQuerySet;
         // Reader reused across all markets — avoids creating a closure per iteration
@@ -535,6 +650,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           allSnapshotRecords.filter((r) => !marketId || r.marketId === marketId);
         const addStructuredMarkets = (
           markets: Array<PolymarketMarketResult & { signalCategory: string }>,
+          options?: { skipResolutionMismatchFilter?: boolean },
         ) => {
           const seen = new Set<string>();
           for (const market of markets) {
@@ -544,7 +660,10 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             historyWarnings.push(...history.warnings);
             const rawMarket = toRawMarket(market, market.signalCategory, history);
             if (!rawMarket) continue;
-            if (shouldFilterResolutionMismatch(assetClass, horizonDays)) {
+            if (
+              shouldFilterResolutionMismatch(assetClass, horizonDays)
+              && !options?.skipResolutionMismatchFilter
+            ) {
               const daysToResolution = daysUntilEndDate(rawMarket.endDate);
               if (daysToResolution !== null && !isResolutionAlignedToHorizon(daysToResolution, horizonDays)) {
                 skippedResolutionMismatches.push(rawMarket);
@@ -593,10 +712,23 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             });
           }
 
-          addStructuredMarkets(anchorMarkets.map((market) => ({
-            ...market,
-            signalCategory: resolveAnchorSignalCategory(market.question, signals),
-          })));
+          addStructuredMarkets(
+            anchorMarkets.map((market) => ({
+              ...market,
+              signalCategory: resolveAnchorSignalCategory(market.question, signals),
+            })),
+            { skipResolutionMismatchFilter: true },
+          );
+
+          const shortHorizonSelection = selectShortHorizonCryptoAnchorMarkets(
+            rawMarkets,
+            searchIdentity.canonicalTicker,
+            horizonDays,
+            nowMs,
+          );
+          rawMarkets.splice(0, rawMarkets.length, ...shortHorizonSelection.selectedMarkets);
+          shortHorizonAnchorThresholds = shortHorizonSelection.selectedThresholds;
+          skippedResolutionMismatches.push(...shortHorizonSelection.skippedResolutionMismatches);
 
           if (rawMarkets.length === 0) {
             replayQuerySet = [...new Set([...anchorReplayQuerySet, ...genericReplayQuerySet])];
@@ -818,8 +950,12 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           lines.push('  Options skew:       [signal omitted — not provided]');
         }
 
-        const thresholds = extractPriceThresholds(rawMarkets);
-        const thresholdChartAligned = isThresholdChartAlignedToHorizon(rawMarkets, horizonDays);
+        const thresholds = shortHorizonAnchorThresholds.length > 0
+          ? shortHorizonAnchorThresholds
+          : extractChartPriceThresholds(rawMarkets);
+        const thresholdChartAligned = shortHorizonAnchorThresholds.length > 0
+          ? true
+          : isThresholdChartAlignedToHorizon(rawMarkets, horizonDays);
         if (thresholds.length >= 2 && thresholdChartAligned) {
           const chart = buildPriceDistributionChart(thresholds, currentPrice, ticker);
           if (chart) {

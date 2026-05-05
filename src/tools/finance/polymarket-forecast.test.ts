@@ -749,6 +749,200 @@ describe('polymarketForecastTool', () => {
     expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-market-30d', 'btc-macro-60d']);
   });
 
+  it('excludes barrier and path questions from short-horizon BTC terminal anchor selection', async () => {
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async () => [],
+      (capture) => { captures.push(capture); },
+      async () => [
+        {
+          marketId: 'btc-barrier-1d',
+          assetId: 'btc-barrier-1d-yes',
+          question: 'Will Bitcoin reach $72,000 tomorrow?',
+          probability: 0.63,
+          volume24h: 250_000,
+          ageDays: 3,
+          endDate: futureIso(1),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-path-1d',
+          assetId: 'btc-path-1d-yes',
+          question: 'Will Bitcoin stay above $70,000 through tomorrow?',
+          probability: 0.55,
+          volume24h: 240_000,
+          ageDays: 3,
+          endDate: futureIso(1),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-terminal-1d',
+          assetId: 'btc-terminal-1d-yes',
+          question: 'Will the price of Bitcoin be above $71,000 tomorrow?',
+          probability: 0.58,
+          volume24h: 260_000,
+          ageDays: 3,
+          endDate: futureIso(1),
+          active: true,
+          closed: false,
+        },
+      ],
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 1, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-terminal-1d']);
+    expect(captures[0]?.polymarket.selectedMarkets.map((market) => market.question)).toEqual([
+      'Will the price of Bitcoin be above $71,000 tomorrow?',
+    ]);
+    expect(result).not.toContain('Will Bitcoin reach $72,000 tomorrow?');
+    expect(result).not.toContain('Will Bitcoin stay above $70,000 through tomorrow?');
+  });
+
+  it('falls back to off-horizon terminal BTC anchors when strict short-horizon anchors are empty', async () => {
+    const genericCalls: string[] = [];
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async (query) => {
+        genericCalls.push(query);
+        return [];
+      },
+      (capture) => { captures.push(capture); },
+      async () => [
+        {
+          marketId: 'btc-barrier-fallback-1d',
+          assetId: 'btc-barrier-fallback-1d-yes',
+          question: 'Will Bitcoin reach $72,000 tomorrow?',
+          probability: 0.61,
+          volume24h: 220_000,
+          ageDays: 3,
+          endDate: futureIso(1),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-path-fallback-1d',
+          assetId: 'btc-path-fallback-1d-yes',
+          question: 'Will Bitcoin dip to $66,000 tomorrow?',
+          probability: 0.29,
+          volume24h: 210_000,
+          ageDays: 3,
+          endDate: futureIso(1),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-fallback-75k',
+          assetId: 'btc-fallback-75k-yes',
+          question: 'Will the price of Bitcoin be above $75,000 in 5 days?',
+          probability: 0.44,
+          volume24h: 200_000,
+          ageDays: 4,
+          endDate: futureIso(5),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-fallback-78k',
+          assetId: 'btc-fallback-78k-yes',
+          question: 'Will the price of Bitcoin be above $78,000 in 6 days?',
+          probability: 0.31,
+          volume24h: 180_000,
+          ageDays: 4,
+          endDate: futureIso(6),
+          active: true,
+          closed: false,
+        },
+      ],
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 1, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(genericCalls).toEqual([]);
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-fallback-75k', 'btc-fallback-78k']);
+    expect(captures[0]?.polymarket.selectedMarkets.map((market) => market.question)).toEqual([
+      'Will the price of Bitcoin be above $75,000 in 5 days?',
+      'Will the price of Bitcoin be above $78,000 in 6 days?',
+    ]);
+    expect(result).toContain('BTC Price Distribution');
+    expect(result).not.toContain('Threshold-style markets were omitted from the distribution chart');
+  });
+
+  it('renders the threshold chart from the same selected short-horizon BTC anchor set', async () => {
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async () => [],
+      (capture) => { captures.push(capture); },
+      async () => [
+        {
+          marketId: 'btc-chart-71k',
+          assetId: 'btc-chart-71k-yes',
+          question: 'Will the price of Bitcoin be above $71,000 in 2 days?',
+          probability: 0.64,
+          volume24h: 260_000,
+          ageDays: 3,
+          endDate: futureIso(2),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-chart-74k',
+          assetId: 'btc-chart-74k-yes',
+          question: 'Will the price of Bitcoin be above $74,000 in 2 days?',
+          probability: 0.39,
+          volume24h: 230_000,
+          ageDays: 3,
+          endDate: futureIso(2),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-chart-90k-offhorizon',
+          assetId: 'btc-chart-90k-offhorizon-yes',
+          question: 'Will the price of Bitcoin be above $90,000 in 6 days?',
+          probability: 0.09,
+          volume24h: 210_000,
+          ageDays: 3,
+          endDate: futureIso(6),
+          active: true,
+          closed: false,
+        },
+      ],
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 2, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-chart-71k', 'btc-chart-74k']);
+    expect(result).toContain('BTC Price Distribution');
+    expect(result).toContain('71K');
+    expect(result).toContain('74K');
+    expect(result).not.toContain('90K');
+    expect(result).not.toContain('Threshold-style markets were omitted from the distribution chart');
+  });
+
 });
 
 describe('evaluateMarketHistory', () => {
