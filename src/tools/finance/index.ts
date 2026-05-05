@@ -25,4 +25,9 @@ export { evaluateReplayLabelEligibility, labelReplayBundle, labelReplaySemanticM
 export { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION, buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
 export { markovDistributionTool, computeMarkovDistribution, MARKOV_DISTRIBUTION_DESCRIPTION } from './markov-distribution.js';
 export { runArbiterReplay, compareReplayEvaluators } from './backtest/arbiter-replay-runner.js';
+export {
+  formatShortHorizonReplayBenchmarkReport,
+  runShortHorizonReplayBenchmark,
+  runShortHorizonReplayBenchmarkFromFile,
+} from './backtest/polymarket-short-horizon-benchmark.js';
 export { trumpPressureIndexTool, TRUMP_PRESSURE_DESCRIPTION, computeTrumpPressureIndex, checkTacoAlert } from './trump-pressure-index.js';
