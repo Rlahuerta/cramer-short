@@ -30,11 +30,13 @@ function makeHermeticTool(
     limit: number,
     options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
   ) => Promise<PolymarketMarketResult[]> = async (queries, limit) => fetchMarkets(queries[0] ?? '', limit),
+  readReplayBundles: (() => ArbiterReplayBundle[]) | undefined = () => [],
 ): ReturnType<typeof createPolymarketForecastTool> {
   return createPolymarketForecastTool({
     fetchMarkets,
     fetchAnchorMarketsWithQueries,
     readRecords: () => [], // hermetic: always empty snapshot history
+    readReplayBundles,
     recordReplayPolymarketCapture,
   });
 }
@@ -61,6 +63,49 @@ function extractAverageQuality(output: string): number {
   const match = output.match(/w̄ = ([0-9.]+)/);
   expect(match).not.toBeNull();
   return Number(match![1]);
+}
+
+function makeReplayBundle(params: {
+  horizonDays: 1 | 2 | 3;
+  marketId: string;
+  probability: number;
+  outcome: 'yes' | 'no';
+  capturedAt?: string;
+}): ArbiterReplayBundle {
+  return {
+    capturedAt: params.capturedAt ?? '2026-05-01T00:00:00.000Z',
+    ticker: 'BTC',
+    horizonDays: params.horizonDays,
+    currentPrice: 68_000,
+    polymarket: {
+      querySet: ['bitcoin price'],
+      selectedMarketIds: [params.marketId],
+      selectedMarkets: [
+        {
+          marketId: params.marketId,
+          assetId: `${params.marketId}-yes`,
+          question: `Will Bitcoin be above $70,000 in ${params.horizonDays} day${params.horizonDays === 1 ? '' : 's'}?`,
+          probability: params.probability,
+          volume24h: 250_000,
+          endDate: futureIso(params.horizonDays),
+          semantics: 'terminal',
+          extractedPriceLevels: [70_000],
+        },
+      ],
+      warnings: [],
+    },
+    warnings: [],
+    labels: {
+      semantic: [
+        {
+          marketId: params.marketId,
+          semantics: 'terminal',
+          outcome: params.outcome,
+          labeledAt: '2026-05-08T12:00:00.000Z',
+        },
+      ],
+    },
+  };
 }
 
 beforeEach(() => {
@@ -134,6 +179,70 @@ describe('polymarketForecastTool', () => {
     expect(enabled.forecastReturn).toBeNumber();
     expect(enabled.forecastReturn).not.toBe(baseline.forecastReturn);
     expect(enabled.result).not.toBe(baseline.result);
+  });
+
+  it('applies horizon-aware BTC calibration only when labeled short-horizon replay evidence exists', async () => {
+    process.env[LIVE_BRIER_REPLAY_FLAG] = '1';
+    const tool = makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 in 2 days?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(2),
+        },
+      ],
+      undefined,
+      undefined,
+      () => [
+        makeReplayBundle({ horizonDays: 2, marketId: 'btc-2d-a', probability: 0.58, outcome: 'no' }),
+        makeReplayBundle({ horizonDays: 2, marketId: 'btc-2d-b', probability: 0.57, outcome: 'no' }),
+        makeReplayBundle({ horizonDays: 2, marketId: 'btc-2d-c', probability: 0.56, outcome: 'yes' }),
+        makeReplayBundle({ horizonDays: 2, marketId: 'btc-2d-d', probability: 0.55, outcome: 'no' }),
+        makeReplayBundle({ horizonDays: 2, marketId: 'btc-2d-e', probability: 0.54, outcome: 'yes' }),
+        makeReplayBundle({ horizonDays: 2, marketId: 'btc-2d-f', probability: 0.53, outcome: 'no' }),
+      ],
+    );
+
+    const enabled = parsePayload(await tool.func(
+      { ticker: 'BTC', horizon_days: 2, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(enabled.forecastReturn).toBeNumber();
+    expect(enabled.result).toContain('Horizon-aware replay calibration is active');
+    expect(enabled.result).not.toContain('Live replay calibration blocked');
+  });
+
+  it('blocks short-horizon BTC calibration when the requested horizon lacks labeled replay evidence', async () => {
+    process.env[LIVE_BRIER_REPLAY_FLAG] = '1';
+    const tool = makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 tomorrow?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(1),
+        },
+      ],
+      undefined,
+      undefined,
+      () => [
+        makeReplayBundle({ horizonDays: 2, marketId: 'btc-2d-a', probability: 0.58, outcome: 'no' }),
+        makeReplayBundle({ horizonDays: 2, marketId: 'btc-2d-b', probability: 0.57, outcome: 'no' }),
+      ],
+    );
+
+    const blocked = parsePayload(await tool.func(
+      { ticker: 'BTC', horizon_days: 1, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(blocked.forecastReturn).toBeUndefined();
+    expect(blocked.result).toContain('Live replay calibration blocked');
+    expect(blocked.result).not.toContain('Horizon-aware replay calibration is active');
   });
 
   it('skips non-finite probabilities before the live calibrator path', async () => {
@@ -1338,6 +1447,34 @@ describe('evaluateMarketHistory', () => {
     expect(evaluation.priceSpikeDetected).toBe(false);
   });
 
+  it('uses shorter crypto windows plus volume-relative thresholds for seeded 1-3d BTC spikes', () => {
+    const records = [
+      {
+        marketId: 'm1',
+        question: 'Q',
+        probability: 0.34,
+        volume24h: 150_000,
+        endDate: '2026-12-31T23:59:59Z',
+        capturedAt: '2026-04-20T10:00:00.000Z',
+      },
+    ];
+
+    const generic = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.41, volume24h: 150_000 },
+      records,
+      nowMs,
+    );
+    const shortHorizonCrypto = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.41, volume24h: 150_000 },
+      records,
+      nowMs,
+      { assetClass: 'crypto', horizonDays: 2 },
+    );
+
+    expect(generic.priceSpikeDetected).toBe(false);
+    expect(shortHorizonCrypto.priceSpikeDetected).toBe(true);
+  });
+
   it('emits a warning when no spike snapshot exists', () => {
     const evaluation = evaluateMarketHistory(
       { marketId: 'm1', probability: 0.42, volume24h: 80_000 },
@@ -1374,6 +1511,79 @@ describe('evaluateMarketHistory', () => {
     );
 
     expect(evaluation.transitoryMove).toBe(true);
+  });
+
+  it('uses 12-36h persistence windows for seeded short-horizon BTC transitory moves', () => {
+    const records = [
+      {
+        marketId: 'm1',
+        question: 'Q',
+        probability: 0.38,
+        volume24h: 90_000,
+        endDate: '2026-12-31T23:59:59Z',
+        capturedAt: '2026-04-20T10:00:00.000Z',
+      },
+      {
+        marketId: 'm1',
+        question: 'Q',
+        probability: 0.22,
+        volume24h: 90_000,
+        endDate: '2026-12-31T23:59:59Z',
+        capturedAt: '2026-04-19T18:00:00.000Z',
+      },
+    ];
+
+    const generic = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.27, volume24h: 90_000 },
+      records,
+      nowMs,
+    );
+    const shortHorizonCrypto = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.27, volume24h: 90_000 },
+      records,
+      nowMs,
+      { assetClass: 'crypto', horizonDays: 3 },
+    );
+
+    expect(generic.transitoryMove).toBe(false);
+    expect(generic.warnings.some((warning) => warning.includes('24-48h window'))).toBe(true);
+    expect(shortHorizonCrypto.transitoryMove).toBe(true);
+  });
+
+  it('raises the crypto spike threshold when recent BTC snapshot volatility is already elevated', () => {
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.46, volume24h: 95_000 },
+      [
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.39,
+          volume24h: 95_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-20T10:00:00.000Z',
+        },
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.35,
+          volume24h: 95_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-20T09:00:00.000Z',
+        },
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.31,
+          volume24h: 95_000,
+          endDate: '2026-12-31T23:59:59Z',
+          capturedAt: '2026-04-20T08:00:00.000Z',
+        },
+      ],
+      nowMs,
+      { assetClass: 'crypto', horizonDays: 1 },
+    );
+
+    expect(evaluation.priceSpikeDetected).toBe(false);
   });
 
   it('does not mark a market as transitory when the move has persisted', () => {

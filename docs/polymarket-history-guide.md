@@ -125,12 +125,12 @@ Use these as copy-paste starting points when you want to work the feature manual
 
 ## Time-Window Detection in `polymarket_forecast`
 
-When `polymarket_forecast` runs, it reads past snapshots for each market and checks two time windows:
+When `polymarket_forecast` runs, it reads past snapshots for each market and checks two time windows. The default windows stay conservative for non-crypto or longer-dated markets, while short-horizon crypto (`BTC`, 1–3 day requests) uses tighter windows and dynamic thresholds:
 
-| Window | Timespan | What it detects | Key thresholds |
-|--------|----------|-----------------|----------------|
-| **Spike window** | 2–4 hours before now | Whale-driven price spike | \|delta\| > 8pp (0.08) **and** volume24h < $100K |
-| **Persistence window** | 24–48 hours before now | Transitory (reversing) move | Original move > 10pp (0.10), moved toward baseline, reversal > 50% of original move |
+| Mode | Spike window | Persistence window | Key thresholds |
+|------|--------------|--------------------|----------------|
+| **Default** | 2–4 hours before now | 24–48 hours before now | Spike: \|delta\| > 8pp (0.08) **and** volume24h < $100K. Transitory: original move > 10pp (0.10), moved toward baseline, reversal > 50% of original move |
+| **Short-horizon crypto (1–3d)** | 1–3 hours before now | 12–36 hours before now | Spike: threshold starts at 5pp and scales up with recent snapshot volatility / relative liquidity. Transitory: original move > 8pp (0.08), moved toward baseline, reversal > 45% of original move |
 
 These are **explanatory descriptions** of the code logic, not live-validated example outputs. Whether a specific run triggers a spike or transitory flag depends on which snapshots already exist in your local file and the live market state at query time. You cannot deterministically reproduce a spike/transitory warning without a seeded test harness.
 
@@ -143,7 +143,7 @@ When prior data is **missing**, you see cold-start warnings in the Warnings sect
 ⚠ Persistence test unavailable: no prior snapshot found for market 0xabc123 in 24-48h window
 ```
 
-These are normal on your first runs for a market. They mean the history check was skipped, not that something is broken.
+For short-horizon crypto, the same messages mention `1-3h` and `12-36h` instead. These are normal on your first runs for a market. They mean the history check was skipped, not that something is broken.
 
 When a spike **is** detected, you see:
 
@@ -154,7 +154,7 @@ When a spike **is** detected, you see:
 When a transitory move **is** detected, you see:
 
 ```
-⚠ Market "…" shows a transitory 24-48h move — quality discounted 30%
+⚠ Market "…" shows a transitory historical move — quality discounted 30%
 ```
 
 ### How quality discounts work
@@ -177,11 +177,11 @@ The feature has a cold-start period for each market. The two history checks do *
 |------------------------------------------|----------------|----------------------|
 | No prior snapshot | Unavailable (warning) | Unavailable (warning) |
 | Only current-run snapshots | Unavailable (same-run writes do not count) | Unavailable |
-| At least one snapshot in the **2–4h** window | **Active** | Still unavailable unless a **24–48h** snapshot also exists |
-| At least one snapshot in the **24–48h** window only | Unavailable | Unavailable — transitory logic still needs a **2–4h** snapshot too |
+| At least one snapshot in the active **spike** window | **Active** | Still unavailable unless a snapshot also exists in the active persistence window |
+| At least one snapshot in the active persistence window only | Unavailable | Unavailable — transitory logic still needs a recent spike-window snapshot too |
 | At least one snapshot in **both** windows | **Active** | **Active** |
 
-In practice, spike warnings can disappear after a later run with usable 2–4h history. Transitory warnings need usable history in **both** the 2–4h and 24–48h windows.
+In practice, spike warnings can disappear after a later run with usable spike-window history. Transitory warnings need usable history in **both** active windows for that mode (`2–4h` + `24–48h` by default, `1–3h` + `12–36h` for short-horizon crypto).
 
 ---
 

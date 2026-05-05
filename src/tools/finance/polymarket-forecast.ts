@@ -38,10 +38,12 @@ import {
   appendReplayCachePolymarketCapture,
   createRawPolymarketReplayRow,
   freezePolymarketReplayBlock,
+  readArbiterReplayBundles,
   type ArbiterReplayBundle,
   type RawPolymarketReplayRow,
 } from './arbiter-replay.js';
 import {
+  BrierReplayCalibrator,
   predictWithBrierReplayState,
   type BrierReplayCalibratorState,
 } from './brier-replay-calibrator.js';
@@ -73,6 +75,7 @@ type ForecastToolDependencies = {
   fetchMarkets?: ForecastMarketFetcher;
   fetchAnchorMarketsWithQueries?: ForecastAnchorMarketFetcher;
   readRecords?: ForecastHistoryReader;
+  readReplayBundles?: typeof readArbiterReplayBundles;
   recordReplayPolymarketCapture?: (capture: {
     rawRow: RawPolymarketReplayRow;
     polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
@@ -85,10 +88,54 @@ type HistoryFlags = {
   warnings: string[];
 };
 
+type HistoryHeuristicContext = {
+  assetClass?: string;
+  horizonDays?: number;
+};
+
+type HistoryHeuristicProfile = {
+  spikeWindowStartMs: number;
+  spikeWindowEndMs: number;
+  persistenceWindowStartMs: number;
+  persistenceWindowEndMs: number;
+  spikeWindowLabel: string;
+  persistenceWindowLabel: string;
+  baseSpikeThreshold: number;
+  transitoryMoveThreshold: number;
+  transitoryReversalRatio: number;
+  dynamicSpikeThreshold: boolean;
+};
+
+type LiveBrierReplayCalibrationDecision =
+  | {
+      mode: 'disabled' | 'static';
+      state?: BrierReplayCalibratorState;
+      warnings: string[];
+      evidenceRows: 0;
+      evidenceBundles: 0;
+    }
+  | {
+      mode: 'blocked';
+      warnings: string[];
+      evidenceRows: number;
+      evidenceBundles: number;
+    }
+  | {
+      mode: 'horizon_aware';
+      state: BrierReplayCalibratorState;
+      warnings: string[];
+      evidenceRows: number;
+      evidenceBundles: number;
+    };
+
 const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
 const TWO_HOURS_MS = 2 * 3_600_000;
+const THREE_HOURS_MS = 3 * 3_600_000;
 const FOUR_HOURS_MS = 4 * 3_600_000;
+const TWELVE_HOURS_MS = 12 * 3_600_000;
 const TWENTY_FOUR_HOURS_MS = 24 * 3_600_000;
+const THIRTY_SIX_HOURS_MS = 36 * 3_600_000;
 const FORTY_EIGHT_HOURS_MS = 48 * 3_600_000;
 const LIVE_BRIER_REPLAY_FLAG = 'POLYMARKET_BRIER_REPLAY_CALIBRATOR_ENABLED';
 const LIVE_BRIER_REPLAY_STATE: BrierReplayCalibratorState = {
@@ -97,6 +144,8 @@ const LIVE_BRIER_REPLAY_STATE: BrierReplayCalibratorState = {
 };
 const LIVE_BRIER_REPLAY_MIN_PROBABILITY = 0.4;
 const LIVE_BRIER_REPLAY_MAX_PROBABILITY = 0.6;
+const SHORT_HORIZON_REPLAY_MIN_LABELED_BUNDLES = 3;
+const SHORT_HORIZON_REPLAY_MIN_MID_CONFIDENCE_ROWS = 6;
 
 function isLiveBrierReplayCalibratorEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test(process.env[LIVE_BRIER_REPLAY_FLAG] ?? '');
@@ -104,17 +153,6 @@ function isLiveBrierReplayCalibratorEnabled(): boolean {
 
 function isUsablePolymarketProbability(probability: number): boolean {
   return Number.isFinite(probability) && probability >= 0 && probability <= 1;
-}
-
-function applyLiveBrierReplayCalibration(probability: number): number {
-  if (
-    !isUsablePolymarketProbability(probability)
-    || probability < LIVE_BRIER_REPLAY_MIN_PROBABILITY
-    || probability > LIVE_BRIER_REPLAY_MAX_PROBABILITY
-  ) {
-    return probability;
-  }
-  return predictWithBrierReplayState(probability, LIVE_BRIER_REPLAY_STATE);
 }
 
 function toRawMarket(
@@ -152,10 +190,250 @@ function isLiveCalibrationApplicable(probability: number): boolean {
     && probability <= LIVE_BRIER_REPLAY_MAX_PROBABILITY;
 }
 
+function isShortHorizonCryptoHistoryContext(context: HistoryHeuristicContext | undefined): boolean {
+  return context?.assetClass === 'crypto'
+    && context.horizonDays !== undefined
+    && context.horizonDays <= 3;
+}
+
+function historyHeuristicProfile(context: HistoryHeuristicContext | undefined): HistoryHeuristicProfile {
+  if (isShortHorizonCryptoHistoryContext(context)) {
+    return {
+      spikeWindowStartMs: THREE_HOURS_MS,
+      spikeWindowEndMs: HOUR_MS,
+      persistenceWindowStartMs: THIRTY_SIX_HOURS_MS,
+      persistenceWindowEndMs: TWELVE_HOURS_MS,
+      spikeWindowLabel: '1-3h',
+      persistenceWindowLabel: '12-36h',
+      baseSpikeThreshold: 0.05,
+      transitoryMoveThreshold: 0.08,
+      transitoryReversalRatio: 0.45,
+      dynamicSpikeThreshold: true,
+    };
+  }
+
+  return {
+    spikeWindowStartMs: FOUR_HOURS_MS,
+    spikeWindowEndMs: TWO_HOURS_MS,
+    persistenceWindowStartMs: FORTY_EIGHT_HOURS_MS,
+    persistenceWindowEndMs: TWENTY_FOUR_HOURS_MS,
+    spikeWindowLabel: '2-4h',
+    persistenceWindowLabel: '24-48h',
+    baseSpikeThreshold: 0.08,
+    transitoryMoveThreshold: 0.10,
+    transitoryReversalRatio: 0.5,
+    dynamicSpikeThreshold: false,
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1]! + sorted[middle]!) / 2
+    : sorted[middle]!;
+}
+
+function recentProbabilityMoves(
+  marketId: string,
+  records: PolymarketSnapshotRecord[],
+  nowMs: number,
+): number[] {
+  const recent = records
+    .filter((record) => record.marketId === marketId)
+    .map((record) => ({
+      ...record,
+      capturedAtMs: Date.parse(record.capturedAt),
+    }))
+    .filter((record) =>
+      Number.isFinite(record.capturedAtMs)
+      && record.capturedAtMs >= nowMs - TWELVE_HOURS_MS
+      && record.capturedAtMs <= nowMs,
+    )
+    .sort((a, b) => a.capturedAtMs - b.capturedAtMs);
+
+  const moves: number[] = [];
+  for (let index = 1; index < recent.length; index++) {
+    moves.push(Math.abs(recent[index]!.probability - recent[index - 1]!.probability));
+  }
+  return moves;
+}
+
+function shortHorizonCryptoSpikeThreshold(
+  market: Pick<PolymarketMarketResult, 'marketId' | 'probability' | 'volume24h'>,
+  spikeSnapshot: PolymarketSnapshotRecord,
+  records: PolymarketSnapshotRecord[],
+  nowMs: number,
+  baseThreshold: number,
+): number {
+  if (!market.marketId) return baseThreshold;
+  const recentVolatility = median(recentProbabilityMoves(market.marketId, records, nowMs));
+  const volatilityComponent = recentVolatility > 0 ? recentVolatility * 2.25 : 0;
+  const volumeRatio = market.volume24h / Math.max(spikeSnapshot.volume24h, 1);
+  const volumeComponent = volumeRatio > 1
+    ? Math.min(0.03, Math.log10(volumeRatio) * 0.04)
+    : 0;
+
+  return clamp(
+    Math.max(baseThreshold, volatilityComponent + 0.03) + volumeComponent,
+    baseThreshold,
+    0.12,
+  );
+}
+
+function shouldUseShortHorizonReplayCalibration(
+  ticker: string,
+  assetClass: string,
+  horizonDays: number,
+): boolean {
+  return ticker === 'BTC' && assetClass === 'crypto' && horizonDays >= 1 && horizonDays <= 3;
+}
+
+function fitShortHorizonReplayCalibrationState(
+  bundles: ArbiterReplayBundle[],
+  ticker: string,
+  horizonDays: number,
+): LiveBrierReplayCalibrationDecision {
+  const horizonBundles = bundles.filter((bundle) =>
+    bundle.ticker.toUpperCase() === ticker
+    && bundle.horizonDays === horizonDays,
+  );
+
+  if (horizonBundles.length === 0) {
+    return {
+      mode: 'blocked',
+      warnings: [`Live replay calibration blocked: no ${horizonDays}d replay bundles were found in the benchmark source.`],
+      evidenceRows: 0,
+      evidenceBundles: 0,
+    };
+  }
+
+  const labeledBundles = horizonBundles.filter((bundle) =>
+    (bundle.labels?.semantic?.length ?? 0) > 0 && (bundle.polymarket?.selectedMarkets.length ?? 0) > 0,
+  );
+  if (labeledBundles.length === 0) {
+    return {
+      mode: 'blocked',
+      warnings: [`Live replay calibration blocked: no labeled ${horizonDays}d replay bundles were found; unlabeled bundles are not accuracy proof.`],
+      evidenceRows: 0,
+      evidenceBundles: 0,
+    };
+  }
+
+  const rows = labeledBundles.flatMap((bundle) => {
+    const marketsById = new Map((bundle.polymarket?.selectedMarkets ?? []).map((market) => [market.marketId, market]));
+    return (bundle.labels?.semantic ?? []).flatMap((label) => {
+      const market = marketsById.get(label.marketId);
+      if (!market || !isLiveCalibrationApplicable(market.probability)) return [];
+      if (label.outcome !== 'yes' && label.outcome !== 'no') return [];
+      return [{
+        probability: market.probability,
+        actualBinary: label.outcome === 'yes' ? 1 : 0,
+      }];
+    });
+  });
+
+  if (labeledBundles.length < SHORT_HORIZON_REPLAY_MIN_LABELED_BUNDLES) {
+    return {
+      mode: 'blocked',
+      warnings: [
+        `Live replay calibration blocked: only ${labeledBundles.length} labeled ${horizonDays}d replay bundle${labeledBundles.length === 1 ? '' : 's'} were found; need at least ${SHORT_HORIZON_REPLAY_MIN_LABELED_BUNDLES}.`,
+      ],
+      evidenceRows: rows.length,
+      evidenceBundles: labeledBundles.length,
+    };
+  }
+
+  if (rows.length < SHORT_HORIZON_REPLAY_MIN_MID_CONFIDENCE_ROWS) {
+    return {
+      mode: 'blocked',
+      warnings: [
+        `Live replay calibration blocked: only ${rows.length} labeled mid-confidence ${horizonDays}d BTC market outcome${rows.length === 1 ? '' : 's'} were found; need at least ${SHORT_HORIZON_REPLAY_MIN_MID_CONFIDENCE_ROWS}.`,
+      ],
+      evidenceRows: rows.length,
+      evidenceBundles: labeledBundles.length,
+    };
+  }
+
+  const distinctOutcomes = new Set(rows.map((row) => row.actualBinary));
+  if (distinctOutcomes.size < 2) {
+    return {
+      mode: 'blocked',
+      warnings: [`Live replay calibration blocked: labeled ${horizonDays}d BTC mid-confidence outcomes only contain one class, so the fit would be unstable.`],
+      evidenceRows: rows.length,
+      evidenceBundles: labeledBundles.length,
+    };
+  }
+
+  const calibrator = new BrierReplayCalibrator({
+    learningRate: 0.1,
+    midConfidenceWeight: 4,
+    maxSlope: 3,
+  });
+  rows.forEach((row) => {
+    calibrator.record(row.probability, row.actualBinary);
+  });
+
+  return {
+    mode: 'horizon_aware',
+    state: calibrator.state(),
+    warnings: [],
+    evidenceRows: rows.length,
+    evidenceBundles: labeledBundles.length,
+  };
+}
+
+function resolveLiveBrierReplayCalibration(params: {
+  ticker: string;
+  assetClass: string;
+  horizonDays: number;
+  readReplayBundles: typeof readArbiterReplayBundles;
+}): LiveBrierReplayCalibrationDecision {
+  if (!isLiveBrierReplayCalibratorEnabled()) {
+    return {
+      mode: 'disabled',
+      warnings: [],
+      evidenceRows: 0,
+      evidenceBundles: 0,
+    };
+  }
+
+  if (!shouldUseShortHorizonReplayCalibration(params.ticker, params.assetClass, params.horizonDays)) {
+    return {
+      mode: 'static',
+      state: LIVE_BRIER_REPLAY_STATE,
+      warnings: [],
+      evidenceRows: 0,
+      evidenceBundles: 0,
+    };
+  }
+
+  try {
+    return fitShortHorizonReplayCalibrationState(
+      params.readReplayBundles(),
+      params.ticker,
+      params.horizonDays,
+    );
+  } catch {
+    return {
+      mode: 'blocked',
+      warnings: ['Live replay calibration blocked: replay bundles could not be read from disk.'],
+      evidenceRows: 0,
+      evidenceBundles: 0,
+    };
+  }
+}
+
 export function evaluateMarketHistory(
   market: Pick<PolymarketMarketResult, 'marketId' | 'probability' | 'volume24h'>,
   records: PolymarketSnapshotRecord[],
   nowMs: number,
+  context?: HistoryHeuristicContext,
 ): {
   priceSpikeDetected: boolean;
   transitoryMove: boolean;
@@ -169,19 +447,20 @@ export function evaluateMarketHistory(
     };
   }
   const warnings: string[] = [];
+  const profile = historyHeuristicProfile(context);
 
   const spikeSnapshot = findSnapshotInWindow(
     records,
     market.marketId,
-    nowMs - FOUR_HOURS_MS,
-    nowMs - TWO_HOURS_MS,
+    nowMs - profile.spikeWindowStartMs,
+    nowMs - profile.spikeWindowEndMs,
   );
 
   const persistenceSnapshot = findSnapshotInWindow(
     records,
     market.marketId,
-    nowMs - FORTY_EIGHT_HOURS_MS,
-    nowMs - TWENTY_FOUR_HOURS_MS,
+    nowMs - profile.persistenceWindowStartMs,
+    nowMs - profile.persistenceWindowEndMs,
   );
 
   let priceSpikeDetected = false;
@@ -189,14 +468,27 @@ export function evaluateMarketHistory(
 
   if (spikeSnapshot) {
     const absDelta = Math.abs(market.probability - spikeSnapshot.probability);
-    priceSpikeDetected = absDelta > 0.08 && market.volume24h < 100_000;
+    const spikeThreshold = profile.dynamicSpikeThreshold
+      ? shortHorizonCryptoSpikeThreshold(
+        market,
+        spikeSnapshot,
+        records,
+        nowMs,
+        profile.baseSpikeThreshold,
+      )
+      : profile.baseSpikeThreshold;
+    priceSpikeDetected = profile.dynamicSpikeThreshold
+      ? absDelta > spikeThreshold
+      : absDelta > spikeThreshold && market.volume24h < 100_000;
   } else {
-    warnings.push(`Spike detection unavailable: no prior snapshot found for market ${market.marketId}`);
+    warnings.push(
+      `Spike detection unavailable: no prior snapshot found for market ${market.marketId} in ${profile.spikeWindowLabel} window`,
+    );
   }
 
   if (!persistenceSnapshot) {
     warnings.push(
-      `Persistence test unavailable: no prior snapshot found for market ${market.marketId} in 24-48h window`,
+      `Persistence test unavailable: no prior snapshot found for market ${market.marketId} in ${profile.persistenceWindowLabel} window`,
     );
   }
 
@@ -208,9 +500,9 @@ export function evaluateMarketHistory(
       < Math.abs(spikeSnapshot.probability - persistenceSnapshot.probability);
     const reversalAmount = Math.abs(spikeSnapshot.probability - market.probability);
     transitoryMove =
-      originalMoveMagnitude > 0.10
+      originalMoveMagnitude > profile.transitoryMoveThreshold
       && movedTowardBaseline
-      && reversalAmount > originalMoveMagnitude * 0.5;
+      && reversalAmount > originalMoveMagnitude * profile.transitoryReversalRatio;
   }
 
   return {
@@ -224,8 +516,9 @@ export function evaluateHistoryFlags(
   market: PolymarketMarketResult,
   nowMs: number,
   snapshotFilePath?: string,
+  context?: HistoryHeuristicContext,
 ): HistoryFlags {
-  return evaluateHistoryFlagsWithReader(market, nowMs, snapshotFilePath, readSnapshotRecords);
+  return evaluateHistoryFlagsWithReader(market, nowMs, snapshotFilePath, readSnapshotRecords, context);
 }
 
 function evaluateHistoryFlagsWithReader(
@@ -233,6 +526,7 @@ function evaluateHistoryFlagsWithReader(
   nowMs: number,
   snapshotFilePath: string | undefined,
   readRecords: ForecastHistoryReader,
+  context?: HistoryHeuristicContext,
 ): HistoryFlags {
   if (!market.marketId) {
     return {
@@ -244,7 +538,7 @@ function evaluateHistoryFlagsWithReader(
 
   try {
     const records = readRecords(snapshotFilePath, market.marketId);
-    return evaluateMarketHistory(market, records, nowMs);
+    return evaluateMarketHistory(market, records, nowMs, context);
   } catch {
     return {
       priceSpikeDetected: false,
@@ -688,6 +982,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
   const fetchMarkets = dependencies.fetchMarkets ?? fetchPolymarketMarkets;
   const fetchAnchorMarketsWithQueries = dependencies.fetchAnchorMarketsWithQueries ?? fetchPolymarketAnchorMarketsWithQueries;
   const readRecords = dependencies.readRecords ?? readSnapshotRecords;
+  const readReplayBundles = dependencies.readReplayBundles ?? readArbiterReplayBundles;
   const recordReplayPolymarketCapture = dependencies.recordReplayPolymarketCapture
     ?? ((capture: {
       rawRow: RawPolymarketReplayRow;
@@ -714,12 +1009,18 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const horizonDays = input.horizon_days ?? 7;
         const currentPrice = input.current_price;
         const basePrice = currentPrice ?? 100;
-        const liveBrierReplayEnabled = isLiveBrierReplayCalibratorEnabled();
         const searchIdentity = resolveTickerSearchIdentity(ticker);
         const assetClass = inferAssetClass(searchIdentity.canonicalTicker);
         const historyWarnings: string[] = [];
         const nowMs = Date.now();
         const replayCapturedAt = new Date(nowMs).toISOString();
+        const liveCalibration = resolveLiveBrierReplayCalibration({
+          ticker: searchIdentity.canonicalTicker,
+          assetClass,
+          horizonDays,
+          readReplayBundles,
+        });
+        historyWarnings.push(...liveCalibration.warnings);
         const useShortHorizonCryptoAnchorRetrieval = shouldUseShortHorizonCryptoAnchorRetrieval(assetClass, horizonDays);
         const shortHorizonAnchorEndDateFilter = useShortHorizonCryptoAnchorRetrieval
           ? buildShortHorizonAnchorEndDateFilter(horizonDays, nowMs)
@@ -752,7 +1053,10 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           for (const market of markets) {
             if (seen.has(market.question)) continue;
             seen.add(market.question);
-            const history = evaluateHistoryFlagsWithReader(market, nowMs, undefined, marketReader);
+            const history = evaluateHistoryFlagsWithReader(market, nowMs, undefined, marketReader, {
+              assetClass,
+              horizonDays,
+            });
             historyWarnings.push(...history.warnings);
             const rawMarket = toRawMarket(market, market.signalCategory, history);
             if (!rawMarket) continue;
@@ -876,9 +1180,11 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         let calibratedMarketCount = 0;
         const markets: MarketInput[] = rawMarkets.map((m) => {
           const mImpact = lookupImpact(m.signalCategory, assetClass);
-          const shouldApplyLiveCalibration = liveBrierReplayEnabled && isLiveCalibrationApplicable(m.probability);
+          const shouldApplyLiveCalibration = (
+            liveCalibration.mode === 'static' || liveCalibration.mode === 'horizon_aware'
+          ) && isLiveCalibrationApplicable(m.probability);
           const probability = shouldApplyLiveCalibration
-            ? applyLiveBrierReplayCalibration(m.probability)
+            ? predictWithBrierReplayState(m.probability, liveCalibration.state!)
             : m.probability;
           const daysToExpiry = daysUntilEndDate(m.endDate);
           if (shouldApplyLiveCalibration && probability !== m.probability) calibratedMarketCount++;
@@ -899,7 +1205,9 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             requestedHorizonDays: shouldFilterResolutionMismatch(assetClass, horizonDays) ? horizonDays : undefined,
           };
         });
-        const liveCalibrationApplied = liveBrierReplayEnabled && calibratedMarketCount > 0;
+        const liveCalibrationApplied = (
+          liveCalibration.mode === 'static' || liveCalibration.mode === 'horizon_aware'
+        ) && calibratedMarketCount > 0;
 
         // Step 4: Run ensemble — also capture intermediate values for display
         const otherSignals = {
@@ -939,7 +1247,11 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         } else if (horizonDays > 14) {
           lines.push(`ℹ️  Horizon ${horizonDays}d: Polymarket markets exist at this range but signal quality is moderate. 95% CI is wider than short-term forecasts.`);
         }
-        if (liveCalibrationApplied) {
+        if (liveCalibration.mode === 'horizon_aware' && liveCalibrationApplied) {
+          lines.push(
+            `ℹ️  Horizon-aware replay calibration is active: fitted on ${liveCalibration.evidenceRows} labeled mid-confidence ${horizonDays}d BTC market ${liveCalibration.evidenceRows === 1 ? 'outcome' : 'outcomes'} across ${liveCalibration.evidenceBundles} replay ${liveCalibration.evidenceBundles === 1 ? 'bundle' : 'bundles'}; adjusted ${calibratedMarketCount} market ${calibratedMarketCount === 1 ? 'quote' : 'quotes'} before blending.`,
+          );
+        } else if (liveCalibration.mode === 'static' && liveCalibrationApplied) {
           lines.push(`ℹ️  Live Brier replay calibration is active: compressed ${calibratedMarketCount} mid-confidence market ${calibratedMarketCount === 1 ? 'quote' : 'quotes'} toward neutral before blending.`);
         }
 

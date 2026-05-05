@@ -14,8 +14,8 @@ export interface MarketInput {
   probability: number;           // raw [0,1]
   volume24hUsd: number;          // 24h USD volume
   ageDays?: number;              // days since market opened (undefined → assume 21+ = mature)
-  priceSpikeDetected?: boolean;  // true if |P_now - P_2h_ago| > 0.08 (whale proxy)
-  transitoryMove?: boolean;      // true if a 24-48h move appears to have reversed
+  priceSpikeDetected?: boolean;  // true if history heuristics flag a recent spike
+  transitoryMove?: boolean;      // true if history heuristics flag a likely reversing move
   signalTier?: 'macro' | 'geopolitical' | 'electoral'; // default 'geopolitical'
   deltaYes: number;              // estimated asset return if YES (decimal, e.g. 0.06)
   deltaNo: number;               // estimated asset return if NO (decimal, e.g. -0.04)
@@ -338,7 +338,7 @@ export function computePolymarketSignal(markets: MarketInput[]): {
     }
     if (m.transitoryMove) {
       warnings.push(
-        `Market "${m.question}" shows a transitory 24-48h move — quality discounted 30%`,
+        `Market "${m.question}" shows a transitory historical move — quality discounted 30%`,
       );
     }
   }

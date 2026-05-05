@@ -315,7 +315,7 @@ describe('computePolymarketSignal', () => {
       deltaNo: -0.03,
     };
     const { warnings } = computePolymarketSignal([m]);
-    expect(warnings.some((w) => w.includes('transitory 24-48h move'))).toBe(true);
+    expect(warnings.some((w) => w.includes('transitory historical move'))).toBe(true);
   });
 });
 
