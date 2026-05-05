@@ -589,6 +589,55 @@ describe('polymarketForecastTool', () => {
     });
   }
 
+  for (const horizonDays of [1, 2, 3] as const) {
+    it(`excludes missing endDate markets from ${horizonDays}-day crypto generic fallback`, async () => {
+      const captures: Array<{
+        rawRow: RawPolymarketReplayRow;
+        polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+      }> = [];
+      const freshTool = makeHermeticTool(
+        async () => [
+          {
+            marketId: `eth-undated-${horizonDays}d`,
+            assetId: `eth-undated-${horizonDays}d-yes`,
+            question: `Will Bitcoin be above $3,100 in ${horizonDays} day${horizonDays === 1 ? '' : 's'}?`,
+            probability: 0.63,
+            volume24h: 260_000,
+            ageDays: 2,
+            active: true,
+            closed: false,
+          },
+          {
+            marketId: `eth-dated-${horizonDays}d`,
+            assetId: `eth-dated-${horizonDays}d-yes`,
+            question: `Will Bitcoin be above $3,050 in ${horizonDays} day${horizonDays === 1 ? '' : 's'}?`,
+            probability: 0.58,
+            volume24h: 230_000,
+            ageDays: 2,
+            endDate: futureIso(horizonDays),
+            active: true,
+            closed: false,
+          },
+        ],
+        (capture) => { captures.push(capture); },
+        async () => [],
+      );
+
+      const result = parseResult(await freshTool.func(
+        { ticker: 'ETH', horizon_days: horizonDays, current_price: 3_000 },
+        undefined,
+      ));
+
+      expect(captures).toHaveLength(1);
+      expect(captures[0]?.rawRow.selectedMarketIds).toEqual([`eth-dated-${horizonDays}d`]);
+      expect(captures[0]?.polymarket.selectedMarkets.map((market) => market.marketId)).toEqual([`eth-dated-${horizonDays}d`]);
+      expect(result).toContain('Skipped 1 Polymarket market');
+      expect(captures[0]?.polymarket.selectedMarkets.map((market) => market.question)).toEqual([
+        `Will Bitcoin be above $3,050 in ${horizonDays} day${horizonDays === 1 ? '' : 's'}?`,
+      ]);
+    });
+  }
+
   it('keeps the generic Polymarket retrieval path for longer-horizon BTC forecasts', async () => {
     const anchorCalls: string[][] = [];
     const genericCalls: string[] = [];
@@ -946,6 +995,109 @@ describe('polymarketForecastTool', () => {
     ]);
     expect(result).not.toContain('Will Bitcoin reach $72,000 tomorrow?');
     expect(result).not.toContain('Will Bitcoin stay above $70,000 through tomorrow?');
+  });
+
+  it('prefers 1-day BTC terminal anchors over 3-day and 5-day variants', async () => {
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async () => [],
+      (capture) => { captures.push(capture); },
+      async () => [
+        {
+          marketId: 'btc-75k-1d',
+          assetId: 'btc-75k-1d-yes',
+          question: 'Will the price of Bitcoin be above $75,000 tomorrow?',
+          probability: 0.41,
+          volume24h: 210_000,
+          ageDays: 3,
+          endDate: futureIso(1),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-75k-3d',
+          assetId: 'btc-75k-3d-yes',
+          question: 'Will the price of Bitcoin be above $75,000 in 3 days?',
+          probability: 0.56,
+          volume24h: 235_000,
+          ageDays: 3,
+          endDate: futureIso(3),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-75k-5d',
+          assetId: 'btc-75k-5d-yes',
+          question: 'Will the price of Bitcoin be above $75,000 in 5 days?',
+          probability: 0.62,
+          volume24h: 240_000,
+          ageDays: 3,
+          endDate: futureIso(5),
+          active: true,
+          closed: false,
+        },
+      ],
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 1, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-75k-1d']);
+    expect(captures[0]?.polymarket.selectedMarkets.map((market) => market.question)).toEqual([
+      'Will the price of Bitcoin be above $75,000 tomorrow?',
+    ]);
+  });
+
+  it('prefers 3-day BTC terminal anchors over 1-day-only variants', async () => {
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async () => [],
+      (capture) => { captures.push(capture); },
+      async () => [
+        {
+          marketId: 'btc-78k-1d',
+          assetId: 'btc-78k-1d-yes',
+          question: 'Will the price of Bitcoin be above $78,000 tomorrow?',
+          probability: 0.67,
+          volume24h: 250_000,
+          ageDays: 3,
+          endDate: futureIso(1),
+          active: true,
+          closed: false,
+        },
+        {
+          marketId: 'btc-78k-3d',
+          assetId: 'btc-78k-3d-yes',
+          question: 'Will the price of Bitcoin be above $78,000 in 3 days?',
+          probability: 0.48,
+          volume24h: 220_000,
+          ageDays: 3,
+          endDate: futureIso(3),
+          active: true,
+          closed: false,
+        },
+      ],
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 3, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-78k-3d']);
+    expect(captures[0]?.polymarket.selectedMarkets.map((market) => market.question)).toEqual([
+      'Will the price of Bitcoin be above $78,000 in 3 days?',
+    ]);
   });
 
   it('falls back to off-horizon terminal BTC anchors when strict short-horizon anchors are empty', async () => {

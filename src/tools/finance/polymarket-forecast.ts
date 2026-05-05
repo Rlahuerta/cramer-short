@@ -268,6 +268,50 @@ function shouldUseShortHorizonCryptoAnchorRetrieval(assetClass: string, horizonD
   return assetClass === 'crypto' && horizonDays <= 3;
 }
 
+function requestedHorizonDistance(daysUntilResolution: number | null, horizonDays: number): number {
+  return daysUntilResolution === null
+    ? Number.POSITIVE_INFINITY
+    : Math.abs(daysUntilResolution - horizonDays);
+}
+
+function compareShortHorizonResolutionCandidates(
+  a: Pick<RawMarket, 'endDate' | 'volume24h' | 'probability'>,
+  b: Pick<RawMarket, 'endDate' | 'volume24h' | 'probability'>,
+  horizonDays: number,
+): number {
+  const aDaysToResolution = daysUntilEndDate(a.endDate);
+  const bDaysToResolution = daysUntilEndDate(b.endDate);
+  const aAligned = isResolutionAlignedToHorizon(aDaysToResolution, horizonDays);
+  const bAligned = isResolutionAlignedToHorizon(bDaysToResolution, horizonDays);
+
+  if (aAligned !== bAligned) {
+    return aAligned ? -1 : 1;
+  }
+
+  const distanceDelta = requestedHorizonDistance(aDaysToResolution, horizonDays)
+    - requestedHorizonDistance(bDaysToResolution, horizonDays);
+  if (distanceDelta !== 0) {
+    return distanceDelta;
+  }
+  if (a.volume24h !== b.volume24h) {
+    return b.volume24h - a.volume24h;
+  }
+  return b.probability - a.probability;
+}
+
+function buildShortHorizonAnchorEndDateFilter(
+  horizonDays: number,
+  referenceTimeMs: number,
+): { end_date_min: string; end_date_max: string } {
+  const toleranceDays = Math.max(1.5, horizonDays * 0.35);
+  const minDays = Math.max(0, horizonDays - toleranceDays);
+  const maxDays = horizonDays + toleranceDays;
+  return {
+    end_date_min: new Date(referenceTimeMs + minDays * DAY_MS).toISOString(),
+    end_date_max: new Date(referenceTimeMs + maxDays * DAY_MS).toISOString(),
+  };
+}
+
 function resolveAnchorSignalCategory(
   question: string,
   signals: ReturnType<typeof extractSignals>,
@@ -302,6 +346,11 @@ type ShortHorizonAnchorSelection = {
   skippedResolutionMismatches: RawMarket[];
 };
 
+type ShortHorizonAnchorCandidate = {
+  market: RawMarket;
+  candidate: AnchorCandidateMarket;
+};
+
 function toAnchorCandidateMarket(market: RawMarket, referenceTimeMs: number): AnchorCandidateMarket {
   return {
     question: market.question,
@@ -332,6 +381,36 @@ function evaluateShortHorizonAnchorTrust(
   });
 }
 
+function selectPreferredShortHorizonAnchorCandidates(
+  candidates: ShortHorizonAnchorCandidate[],
+  ticker: string,
+  horizonDays: number,
+  referenceTimeMs: number,
+): ShortHorizonAnchorCandidate[] {
+  const bestByPrice = new Map<number, ShortHorizonAnchorCandidate>();
+
+  for (const candidateEntry of candidates) {
+    const daysToResolution = daysUntilEndDate(candidateEntry.market.endDate);
+    if (daysToResolution === null) continue;
+
+    const [threshold] = extractAnchorPriceThresholds(
+      [candidateEntry.candidate],
+      { ticker, horizonDays, referenceTimeMs },
+    );
+    if (!threshold) continue;
+
+    const existing = bestByPrice.get(threshold.price);
+    if (
+      !existing
+      || compareShortHorizonResolutionCandidates(candidateEntry.market, existing.market, horizonDays) < 0
+    ) {
+      bestByPrice.set(threshold.price, candidateEntry);
+    }
+  }
+
+  return Array.from(bestByPrice.values());
+}
+
 function selectShortHorizonCryptoAnchorMarkets(
   markets: RawMarket[],
   ticker: string,
@@ -342,9 +421,15 @@ function selectShortHorizonCryptoAnchorMarkets(
     market,
     candidate: toAnchorCandidateMarket(market, referenceTimeMs),
   }));
-  const strictCandidates = candidates.filter(({ market }) => {
+  const preferredCandidates = selectPreferredShortHorizonAnchorCandidates(
+    candidates,
+    ticker,
+    horizonDays,
+    referenceTimeMs,
+  );
+  const strictCandidates = preferredCandidates.filter(({ market }) => {
     const daysToResolution = daysUntilEndDate(market.endDate);
-    return daysToResolution === null || isResolutionAlignedToHorizon(daysToResolution, horizonDays);
+    return daysToResolution !== null && isResolutionAlignedToHorizon(daysToResolution, horizonDays);
   });
   const trustedStrictCandidates = strictCandidates.filter(
     ({ market }) => evaluateShortHorizonAnchorTrust(market, horizonDays).trustScore === 'high',
@@ -355,7 +440,7 @@ function selectShortHorizonCryptoAnchorMarkets(
     { ticker, horizonDays, referenceTimeMs },
   );
   const selectedThresholds = applyCryptoTerminalAnchorFallback(
-    candidates.map(({ candidate }) => candidate),
+    preferredCandidates.map(({ candidate }) => candidate),
     strictThresholds,
     ticker,
     horizonDays,
@@ -363,7 +448,7 @@ function selectShortHorizonCryptoAnchorMarkets(
   );
 
   const marketByKey = new Map<string, RawMarket>();
-  for (const { market, candidate } of candidates) {
+  for (const { market, candidate } of preferredCandidates) {
     const [threshold] = extractAnchorPriceThresholds([candidate], { ticker, horizonDays, referenceTimeMs });
     if (!threshold) continue;
     const key = buildAnchorSelectionKey(threshold);
@@ -379,8 +464,7 @@ function selectShortHorizonCryptoAnchorMarkets(
   const skippedResolutionMismatches = candidates
     .filter(({ market }) => {
       const daysToResolution = daysUntilEndDate(market.endDate);
-      return daysToResolution !== null
-        && !isResolutionAlignedToHorizon(daysToResolution, horizonDays)
+      return (daysToResolution === null || !isResolutionAlignedToHorizon(daysToResolution, horizonDays))
         && !selectedIds.has(market.marketId ?? market.question);
     })
     .map(({ market }) => market);
@@ -631,6 +715,9 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const nowMs = Date.now();
         const replayCapturedAt = new Date(nowMs).toISOString();
         const useShortHorizonCryptoAnchorRetrieval = shouldUseShortHorizonCryptoAnchorRetrieval(assetClass, horizonDays);
+        const shortHorizonAnchorEndDateFilter = useShortHorizonCryptoAnchorRetrieval
+          ? buildShortHorizonAnchorEndDateFilter(horizonDays, nowMs)
+          : undefined;
 
         // Step 1: Extract signals for this ticker (5 generic; 7 in short-horizon crypto fallback mode)
         const signals = extractSignals(searchIdentity.canonicalTicker, {
@@ -668,7 +755,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
               && !options?.skipResolutionMismatchFilter
             ) {
               const daysToResolution = daysUntilEndDate(rawMarket.endDate);
-              if (daysToResolution !== null && !isResolutionAlignedToHorizon(daysToResolution, horizonDays)) {
+              if (daysToResolution === null || !isResolutionAlignedToHorizon(daysToResolution, horizonDays)) {
                 skippedResolutionMismatches.push(rawMarket);
                 continue;
               }
@@ -688,6 +775,9 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
                   .flatMap((r) => r.value)
                   .filter((m) => scoreMarketRelevance(m.question, sig.category) > 0)
                   .map((m) => ({ ...m, signalCategory: sig.category })),
+              ).then((markets) => shouldFilterResolutionMismatch(assetClass, horizonDays)
+                ? markets.sort((a, b) => compareShortHorizonResolutionCandidates(a, b, horizonDays))
+                : markets,
               );
             }),
           );
@@ -705,6 +795,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           let anchorMarkets = await fetchAnchorMarketsWithQueries(anchorFrontQueries, 12, {
             ticker: searchIdentity.canonicalTicker,
             horizonDays,
+            endDateFilter: shortHorizonAnchorEndDateFilter,
           });
 
           if (anchorMarkets.length === 0 && anchorRetryQueries.length > 0) {
@@ -712,6 +803,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             anchorMarkets = await fetchAnchorMarketsWithQueries(anchorRetryQueries, 12, {
               ticker: searchIdentity.canonicalTicker,
               horizonDays,
+              endDateFilter: shortHorizonAnchorEndDateFilter,
             });
           }
 
@@ -743,7 +835,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
 
         if (skippedResolutionMismatches.length > 0) {
           historyWarnings.push(
-            `Skipped ${skippedResolutionMismatches.length} Polymarket market${skippedResolutionMismatches.length === 1 ? '' : 's'} because ${skippedResolutionMismatches.length === 1 ? 'its resolution date does' : 'their resolution dates do'} not align with the requested ${horizonDays}-day horizon.`,
+            `Skipped ${skippedResolutionMismatches.length} Polymarket market${skippedResolutionMismatches.length === 1 ? '' : 's'} because ${skippedResolutionMismatches.length === 1 ? 'its resolution date was missing, invalid, or did' : 'their resolution dates were missing, invalid, or did'} not align with the requested ${horizonDays}-day horizon.`,
           );
         }
 
@@ -790,6 +882,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             signalTier: categoryToTier(m.signalCategory),
             deltaYes: mImpact.deltaYes,
             deltaNo: mImpact.deltaNo,
+            requestedHorizonDays: shouldFilterResolutionMismatch(assetClass, horizonDays) ? horizonDays : undefined,
           };
         });
         const liveCalibrationApplied = liveBrierReplayEnabled && calibratedMarketCount > 0;

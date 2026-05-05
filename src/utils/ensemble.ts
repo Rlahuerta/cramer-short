@@ -21,6 +21,8 @@ export interface MarketInput {
   deltaNo: number;               // estimated asset return if NO (decimal, e.g. -0.04)
   /** P1b — Days remaining until market resolution (≥ 0). Undefined ⇒ neutral (no boost/penalty). */
   daysToExpiry?: number;
+  /** P5 — Requested short-horizon expiry target in days. Undefined ⇒ neutral (legacy behaviour). */
+  requestedHorizonDays?: number;
   /** P1d — Bid-ask spread on YES token in [0, 1]. Undefined ⇒ no penalty. */
   bidAskSpread?: number;
   /** P1e — Per-hour drift in pp (positive = momentum, negative = fading). Undefined ⇒ no penalty. */
@@ -264,6 +266,10 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   // P1b — time-to-resolution boost (multiplicative). Backward compat: omitted ⇒ 1.0.
   if (m.daysToExpiry !== undefined) {
     w *= computeExpiryBoost(m.daysToExpiry);
+  }
+  if (m.requestedHorizonDays !== undefined && m.daysToExpiry !== undefined) {
+    const horizonGap = Math.abs(m.daysToExpiry - m.requestedHorizonDays);
+    w *= Math.max(0.5, 1 - 0.25 * horizonGap);
   }
   // P1d — bid-ask spread quality discount. Spread > 10pp → quality 0.
   if (m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)) {

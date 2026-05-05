@@ -139,6 +139,22 @@ describe('computeMarketQualityWeight', () => {
     // wAge=1, wLiq≈1, τ=0.75 → ~0.75
     expect(w).toBeCloseTo(0.75, 1);
   });
+
+  it('requested short-horizon closeness favors exact-expiry markets', () => {
+    const base: MarketInput = {
+      question: 'BTC threshold',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+      requestedHorizonDays: 3,
+    };
+    const exact = computeMarketQualityWeight({ ...base, daysToExpiry: 3 });
+    const offByTwo = computeMarketQualityWeight({ ...base, daysToExpiry: 1 });
+    expect(exact).toBeGreaterThan(offByTwo);
+  });
 });
 
 // ---------------------------------------------------------------------------
