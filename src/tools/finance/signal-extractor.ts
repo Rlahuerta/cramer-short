@@ -41,6 +41,19 @@ export interface SignalCategory {
   category: string;
 }
 
+export interface ExtractSignalOptions {
+  horizonDays?: number;
+  preferShortHorizonCryptoSignals?: boolean;
+}
+
+type SignalTemplate = {
+  name: string;
+  tpl: string;
+  variantTpls: string[];
+  weight: number;
+  category: string;
+};
+
 // ---------------------------------------------------------------------------
 // Ticker → company name (Polymarket uses full names, not exchange symbols)
 // ---------------------------------------------------------------------------
@@ -340,13 +353,7 @@ export function detectAssetType(query: string): { type: AssetType; ticker: strin
 // variantTpls: fallback templates tried in order when the primary returns 0 results
 // ---------------------------------------------------------------------------
 
-const SIGNAL_MAPS: Record<AssetType, Array<{
-  name: string;
-  tpl: string;
-  variantTpls: string[];
-  weight: number;
-  category: string;
-}>> = {
+const SIGNAL_MAPS: Record<AssetType, SignalTemplate[]> = {
   tech_semiconductor: [
     { name: 'Earnings',          tpl: '{ticker} earnings',    variantTpls: ['{ticker}', 'semiconductor earnings'], weight: 0.35, category: 'earnings' },
     { name: 'Export Controls',   tpl: 'chip export controls', variantTpls: ['semiconductor export', 'chip export'], weight: 0.20, category: 'regulatory' },
@@ -452,6 +459,137 @@ const SIGNAL_MAPS: Record<AssetType, Array<{
   ],
 };
 
+function normalizeSignalPhrases(rawPhrases: string[], ticker: string | null): string[] {
+  const phrases: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawPhrase of rawPhrases) {
+    const phrase = normalizeForPolymarket(rawPhrase, ticker);
+    if (!phrase || seen.has(phrase)) continue;
+    seen.add(phrase);
+    phrases.push(phrase);
+  }
+
+  return phrases;
+}
+
+function buildSignalsFromTemplates(
+  templates: SignalTemplate[],
+  effectiveTicker: string,
+  extraNames: string[],
+): SignalCategory[] {
+  return templates.map((t) => {
+    const rawPhrase = substituteTemplates(t.tpl, effectiveTicker);
+    const searchPhrase = normalizeForPolymarket(rawPhrase, effectiveTicker);
+    const queryVariants = normalizeSignalPhrases(
+      t.variantTpls.map((vTpl) => substituteTemplates(vTpl, effectiveTicker)),
+      effectiveTicker,
+    );
+    for (const name of extraNames) {
+      const variant = normalizeForPolymarket(substituteTemplates(t.tpl, name), name);
+      if (variant !== searchPhrase && !queryVariants.includes(variant)) {
+        queryVariants.push(variant);
+      }
+    }
+    return { name: t.name, searchPhrase, queryVariants, weight: t.weight, category: t.category };
+  });
+}
+
+function buildShortHorizonCryptoSignals(horizonDays: number): SignalCategory[] {
+  const targetDate = new Date(Date.now() + horizonDays * 86_400_000);
+  const targetMonthDay = targetDate.toLocaleString('en-US', { month: 'short', day: 'numeric' }).replace(',', '');
+  const targetWeekday = targetDate.toLocaleString('en-US', { weekday: 'long' });
+  const relativePhrase = horizonDays === 1 ? 'tomorrow' : `in ${horizonDays} days`;
+  const templates: SignalTemplate[] = [
+    {
+      name: 'BTC Terminal Threshold',
+      tpl: 'Bitcoin above',
+      variantTpls: [
+        'Bitcoin below',
+        `Bitcoin above ${targetMonthDay}`,
+        `Bitcoin below ${targetMonthDay}`,
+        'Bitcoin reach',
+        'Bitcoin exceed',
+      ],
+      weight: 0.34,
+      category: 'btc_price_target',
+    },
+    {
+      name: 'BTC Near-Expiry Price',
+      tpl: 'Bitcoin price',
+      variantTpls: [
+        `Bitcoin ${targetMonthDay}`,
+        `Bitcoin price ${targetMonthDay}`,
+        `Bitcoin ${targetWeekday}`,
+        `Bitcoin ${relativePhrase}`,
+      ],
+      weight: 0.24,
+      category: 'btc_price_target',
+    },
+    {
+      name: 'BTC Narrow Phrase',
+      tpl: `Bitcoin ${relativePhrase}`,
+      variantTpls: [
+        `Bitcoin ${targetMonthDay}`,
+        `Bitcoin ${targetWeekday}`,
+        'Bitcoin price target',
+        'BTC price level',
+      ],
+      weight: 0.16,
+      category: 'btc_price_target',
+    },
+    {
+      name: 'ETF / Product',
+      tpl: 'Bitcoin ETF',
+      variantTpls: ['crypto ETF', 'spot Bitcoin ETF'],
+      weight: 0.10,
+      category: 'etf_product',
+    },
+    {
+      name: 'SEC / Regulation',
+      tpl: 'crypto regulation',
+      variantTpls: ['SEC crypto', 'cryptocurrency regulation'],
+      weight: 0.08,
+      category: 'regulatory',
+    },
+    {
+      name: 'Fed Rate Decision',
+      tpl: 'Fed rate cut',
+      variantTpls: ['Federal Reserve rate', 'FOMC'],
+      weight: 0.05,
+      category: 'macro_rates',
+    },
+    {
+      name: 'US Recession',
+      tpl: 'US recession',
+      variantTpls: ['recession', 'economic recession'],
+      weight: 0.03,
+      category: 'macro_growth',
+    },
+  ];
+
+  return templates.map((template) => {
+    const phrases = normalizeSignalPhrases([template.tpl, ...template.variantTpls], 'BTC');
+    const [searchPhrase = 'Bitcoin price', ...queryVariants] = phrases;
+    return {
+      name: template.name,
+      searchPhrase,
+      queryVariants,
+      weight: template.weight,
+      category: template.category,
+    };
+  });
+}
+
+function shouldUseShortHorizonCryptoSignalMap(
+  signalType: AssetType,
+  options?: ExtractSignalOptions,
+): boolean {
+  return signalType === 'crypto'
+    && options?.preferShortHorizonCryptoSignals === true
+    && (options.horizonDays ?? Number.POSITIVE_INFINITY) <= 3;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -463,10 +601,13 @@ const SIGNAL_MAPS: Record<AssetType, Array<{
  * Template placeholders are substituted with the resolved ticker/display name,
  * then each phrase is normalised for Polymarket's keyword search API.
  */
-export function extractSignals(query: string): SignalCategory[] {
+export function extractSignals(query: string, options?: ExtractSignalOptions): SignalCategory[] {
   const { type, ticker } = detectAssetType(query);
   const resolved = resolveAssetIntent(query, ticker);
   const signalType = resolveSignalType(resolved.assetClass, type);
+  if (shouldUseShortHorizonCryptoSignalMap(signalType, options)) {
+    return buildShortHorizonCryptoSignals(options?.horizonDays ?? 3);
+  }
   const templates = SIGNAL_MAPS[signalType];
   // For commodity proxies, use the proxy label (GLD/SLV/USO) as the ticker in templates
   // so Polymarket search phrases resolve correctly. For equity, use original ticker.
@@ -478,21 +619,7 @@ export function extractSignals(query: string): SignalCategory[] {
     (n) => n !== effectiveTicker.toLowerCase() && n !== (ticker ?? '').toLowerCase(),
   );
 
-  return templates.map((t) => {
-    const rawPhrase = substituteTemplates(t.tpl, effectiveTicker);
-    const searchPhrase = normalizeForPolymarket(rawPhrase, effectiveTicker);
-    const queryVariants = t.variantTpls.map((vTpl) =>
-      normalizeForPolymarket(substituteTemplates(vTpl, effectiveTicker), effectiveTicker),
-    );
-    // Append canonical commodity names as extra fallback variants
-    for (const name of extraNames) {
-      const variant = normalizeForPolymarket(substituteTemplates(t.tpl, name), name);
-      if (variant !== searchPhrase && !queryVariants.includes(variant)) {
-        queryVariants.push(variant);
-      }
-    }
-    return { name: t.name, searchPhrase, queryVariants, weight: t.weight, category: t.category };
-  });
+  return buildSignalsFromTemplates(templates, effectiveTicker, extraNames);
 }
 
 function resolveSignalType(assetClass: ResolvedAssetClass | null, fallbackType: AssetType): AssetType {

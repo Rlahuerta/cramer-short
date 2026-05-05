@@ -632,8 +632,11 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const replayCapturedAt = new Date(nowMs).toISOString();
         const useShortHorizonCryptoAnchorRetrieval = shouldUseShortHorizonCryptoAnchorRetrieval(assetClass, horizonDays);
 
-        // Step 1: Extract signals for this ticker (up to 5)
-        const signals = extractSignals(searchIdentity.canonicalTicker).slice(0, 5);
+        // Step 1: Extract signals for this ticker (5 generic; 7 in short-horizon crypto fallback mode)
+        const signals = extractSignals(searchIdentity.canonicalTicker, {
+          horizonDays,
+          preferShortHorizonCryptoSignals: useShortHorizonCryptoAnchorRetrieval,
+        }).slice(0, useShortHorizonCryptoAnchorRetrieval ? 7 : 5);
         const genericReplayQuerySet = [...new Set(
           signals.flatMap((sig) => [sig.searchPhrase, ...(sig.queryVariants ?? [])]),
         )];

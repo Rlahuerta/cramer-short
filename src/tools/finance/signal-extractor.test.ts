@@ -723,6 +723,63 @@ describe('BTC crypto signal enrichment', () => {
   });
 });
 
+describe('extractSignals — short-horizon crypto signal map', () => {
+  const shortHorizonCases = [
+    { horizonDays: 1, relativePhrase: 'Bitcoin tomorrow' },
+    { horizonDays: 2, relativePhrase: 'Bitcoin in 2 days' },
+    { horizonDays: 3, relativePhrase: 'Bitcoin in 3 days' },
+  ] as const;
+
+  for (const { horizonDays, relativePhrase } of shortHorizonCases) {
+    it(`prioritizes BTC-centric phrases for ${horizonDays}d crypto requests`, () => {
+      const signals = extractSignals('ETH', {
+        horizonDays,
+        preferShortHorizonCryptoSignals: true,
+      });
+      const phrases = signals.flatMap((signal) => [signal.searchPhrase, ...(signal.queryVariants ?? [])]);
+
+      expect(signals.slice(0, 3).map((signal) => signal.category)).toEqual([
+        'btc_price_target',
+        'btc_price_target',
+        'btc_price_target',
+      ]);
+      expect(signals[0]?.searchPhrase).toBe('Bitcoin above');
+      expect(signals[1]?.searchPhrase).toBe('Bitcoin price');
+      expect(signals[2]?.searchPhrase).toBe(relativePhrase);
+      expect(phrases).toContain('Bitcoin above');
+      expect(phrases).toContain('Bitcoin below');
+      expect(phrases).toContain('Bitcoin price');
+      expect(phrases).toContain(relativePhrase);
+      expect(phrases.some((phrase) => /^Bitcoin (above|below) [A-Z][a-z]{2} \d{1,2}$/.test(phrase))).toBe(true);
+      expect(phrases.some((phrase) => /^Bitcoin [A-Z][a-z]{2} \d{1,2}$/.test(phrase))).toBe(true);
+      expect(signals.reduce((sum, signal) => sum + signal.weight, 0)).toBeCloseTo(1, 5);
+    });
+  }
+
+  it('keeps longer-horizon crypto signals unchanged', () => {
+    const signals = extractSignals('BTC', {
+      horizonDays: 7,
+      preferShortHorizonCryptoSignals: true,
+    });
+
+    expect(signals.map((signal) => signal.category)).toEqual([
+      'regulatory',
+      'etf_product',
+      'btc_price_target',
+      'macro_rates',
+      'macro_growth',
+    ]);
+    expect(signals.map((signal) => signal.weight)).toEqual([0.30, 0.25, 0.20, 0.15, 0.10]);
+  });
+
+  it('keeps non-crypto short-horizon signals unchanged', () => {
+    expect(extractSignals('NVDA', {
+      horizonDays: 2,
+      preferShortHorizonCryptoSignals: true,
+    })).toEqual(extractSignals('NVDA'));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Oil signal routing
 // ---------------------------------------------------------------------------

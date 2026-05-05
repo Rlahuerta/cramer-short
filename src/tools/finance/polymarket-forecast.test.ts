@@ -535,6 +535,60 @@ describe('polymarketForecastTool', () => {
     expect(result).not.toContain('Will the SEC approve a new crypto ETF in 2026?');
   });
 
+  const shortHorizonGenericFallbackCases = [
+    { horizonDays: 1, relativePhrase: 'Bitcoin tomorrow' },
+    { horizonDays: 2, relativePhrase: 'Bitcoin in 2 days' },
+    { horizonDays: 3, relativePhrase: 'Bitcoin in 3 days' },
+  ] as const;
+
+  for (const { horizonDays, relativePhrase } of shortHorizonGenericFallbackCases) {
+    it(`uses BTC-centric short-horizon generic signals first for ${horizonDays}-day crypto fallback`, async () => {
+      const anchorCalls: string[][] = [];
+      const genericCalls: string[] = [];
+      const freshTool = makeHermeticTool(
+        async (query) => {
+          genericCalls.push(query);
+          return query === 'Bitcoin above'
+            ? [
+                {
+                  marketId: `btc-generic-fallback-${horizonDays}d`,
+                  assetId: `btc-generic-fallback-${horizonDays}d-yes`,
+                  question: `Will Bitcoin be above $3,000 in ${horizonDays} day${horizonDays === 1 ? '' : 's'}?`,
+                  probability: 0.56,
+                  volume24h: 210_000,
+                  ageDays: 1,
+                  endDate: futureIso(horizonDays),
+                  active: true,
+                  closed: false,
+                },
+              ]
+            : [];
+        },
+        undefined,
+        async (queries) => {
+          anchorCalls.push(queries);
+          return [];
+        },
+      );
+
+      const result = parseResult(await freshTool.func(
+        { ticker: 'ETH', horizon_days: horizonDays, current_price: 3_000 },
+        undefined,
+      ));
+
+      expect(anchorCalls.length).toBeGreaterThan(0);
+      expect(genericCalls[0]).toBe('Bitcoin above');
+      expect(genericCalls[1]).toBe('Bitcoin below');
+      expect(genericCalls).toContain('Bitcoin price');
+      expect(genericCalls).toContain(relativePhrase);
+      expect(genericCalls.some((query) => /^Bitcoin (above|below) [A-Z][a-z]{2} \d{1,2}$/.test(query))).toBe(true);
+      expect(genericCalls.some((query) => /^Bitcoin [A-Z][a-z]{2} \d{1,2}$/.test(query))).toBe(true);
+      expect(genericCalls.indexOf('Bitcoin price')).toBeLessThan(genericCalls.indexOf('Bitcoin ETF'));
+      expect(genericCalls.indexOf(relativePhrase)).toBeLessThan(genericCalls.indexOf('crypto regulation'));
+      expect(result).toContain(`Will Bitcoin be above $3,000 in ${horizonDays} day${horizonDays === 1 ? '' : 's'}?`);
+    });
+  }
+
   it('keeps the generic Polymarket retrieval path for longer-horizon BTC forecasts', async () => {
     const anchorCalls: string[][] = [];
     const genericCalls: string[] = [];
@@ -570,6 +624,92 @@ describe('polymarketForecastTool', () => {
     expect(anchorCalls).toEqual([]);
     expect(genericCalls.length).toBeGreaterThan(0);
     expect(result).toContain('Will Bitcoin be above $76,000 on May 12?');
+  });
+
+  it('keeps longer-horizon crypto signals unchanged', async () => {
+    const anchorCalls: string[][] = [];
+    const genericCalls: string[] = [];
+    const freshTool = makeHermeticTool(
+      async (query) => {
+        genericCalls.push(query);
+        return query === 'crypto regulation'
+          ? [
+              {
+                marketId: 'eth-generic-7d',
+                assetId: 'eth-generic-7d-yes',
+                question: 'Will the SEC approve a new crypto ETF in 2026?',
+                probability: 0.31,
+                volume24h: 25_000,
+                ageDays: 4,
+                endDate: futureIso(30),
+                active: true,
+                closed: false,
+              },
+            ]
+          : [];
+      },
+      undefined,
+      async (queries) => {
+        anchorCalls.push(queries);
+        return [];
+      },
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'ETH', horizon_days: 7, current_price: 3_000 },
+      undefined,
+    ));
+
+    expect(anchorCalls).toEqual([]);
+    expect(genericCalls.slice(0, 3)).toEqual([
+      'crypto regulation',
+      'SEC crypto',
+      'cryptocurrency regulation',
+    ]);
+    expect(result).toContain('Will the SEC approve a new crypto ETF in 2026?');
+  });
+
+  it('keeps non-crypto short-horizon signals unchanged', async () => {
+    const anchorCalls: string[][] = [];
+    const genericCalls: string[] = [];
+    const freshTool = makeHermeticTool(
+      async (query) => {
+        genericCalls.push(query);
+        return query === 'NVIDIA earnings'
+          ? [
+              {
+                marketId: 'nvda-generic-2d',
+                assetId: 'nvda-generic-2d-yes',
+                question: 'Will NVIDIA beat earnings this quarter?',
+                probability: 0.64,
+                volume24h: 145_000,
+                ageDays: 2,
+                endDate: futureIso(14),
+                active: true,
+                closed: false,
+              },
+            ]
+          : [];
+      },
+      undefined,
+      async (queries) => {
+        anchorCalls.push(queries);
+        return [];
+      },
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'NVDA', horizon_days: 2, current_price: 900 },
+      undefined,
+    ));
+
+    expect(anchorCalls).toEqual([]);
+    expect(genericCalls.slice(0, 3)).toEqual([
+      'NVIDIA earnings',
+      'NVIDIA',
+      'semiconductor earnings',
+    ]);
+    expect(result).toContain('Will NVIDIA beat earnings this quarter?');
   });
 
   it('drops far-dated macro markets from 1-day BTC selection and emits a horizon warning', async () => {
