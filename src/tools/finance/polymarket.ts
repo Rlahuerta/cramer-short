@@ -8,6 +8,12 @@ import {
   createSnapshotRecord,
   type PolymarketSnapshotRecord,
 } from './polymarket-snapshots.js';
+import {
+  computeMaxHourlyJump,
+  computePriceVelocityPpH,
+  fetchClobPriceHistory,
+  fetchClobSpread,
+} from './polymarket-clob.js';
 
 // ---------------------------------------------------------------------------
 // Description (injected into system prompt)
@@ -164,6 +170,7 @@ interface CacheEntry<T> {
 export interface FetchPolymarketMarketsOptions {
   snapshotFilePath?: string;
   capturedAt?: string;
+  enrichMicrostructure?: boolean;
 }
 
 const searchCache = new Map<string, CacheEntry<FormattedMarket[]>>();
@@ -780,7 +787,12 @@ async function searchEventsForAnchors(
 export async function fetchPolymarketAnchorMarketsWithQueries(
   queries: string[],
   limit: number,
-  options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+  options: {
+    ticker: string;
+    horizonDays?: number;
+    endDateFilter?: { end_date_min: string; end_date_max: string };
+    enrichMicrostructure?: boolean;
+  },
 ): Promise<PolymarketMarketResult[]> {
   const dedupedQueries = Array.from(new Set(queries.filter(Boolean)));
   const seen = new Set<string>();
@@ -809,13 +821,17 @@ export async function fetchPolymarketAnchorMarketsWithQueries(
     }
   });
 
-  return scored
+  const selected = scored
     .sort((a, b) => {
       if (a.score !== b.score) return b.score - a.score;
       return b.market.volume24h - a.market.volume24h;
     })
     .slice(0, limit)
     .map(({ market }) => market);
+
+  return options.enrichMicrostructure
+    ? enrichStructuredMarketsMicrostructure(selected)
+    : selected;
 }
 
 // ---------------------------------------------------------------------------
@@ -837,6 +853,9 @@ export interface PolymarketMarketResult {
   active?: boolean;
   closed?: boolean;
   enableOrderBook?: boolean;
+  bidAskSpread?: number;
+  priceVelocityPpH?: number;
+  maxHourlyJump?: number;
 }
 
 function toStructuredMarketResult(m: FormattedMarket): PolymarketMarketResult {
@@ -852,6 +871,40 @@ function toStructuredMarketResult(m: FormattedMarket): PolymarketMarketResult {
     closed: m.closed,
     enableOrderBook: m.enableOrderBook,
   };
+}
+
+async function enrichStructuredMarketMicrostructure(
+  market: PolymarketMarketResult,
+): Promise<PolymarketMarketResult> {
+  const tokenId = typeof market.assetId === 'string' && market.assetId.trim().length > 0
+    ? market.assetId
+    : undefined;
+  if (!tokenId) return market;
+
+  const [bidAskSpread, history] = await Promise.all([
+    market.enableOrderBook === false ? Promise.resolve(null) : fetchClobSpread(tokenId),
+    fetchClobPriceHistory(tokenId, '1h'),
+  ]);
+
+  if (bidAskSpread === null && history.length < 2) return market;
+
+  return {
+    ...market,
+    ...(bidAskSpread !== null ? { bidAskSpread } : {}),
+    ...(history.length >= 2
+      ? {
+          priceVelocityPpH: computePriceVelocityPpH(history),
+          maxHourlyJump: computeMaxHourlyJump(history),
+        }
+      : {}),
+  };
+}
+
+async function enrichStructuredMarketsMicrostructure(
+  markets: PolymarketMarketResult[],
+): Promise<PolymarketMarketResult[]> {
+  const enriched = await Promise.allSettled(markets.map(enrichStructuredMarketMicrostructure));
+  return enriched.map((result, index) => result.status === 'fulfilled' ? result.value : markets[index]!);
 }
 
 function parseYesProbability(probs: Record<string, string>): number {
@@ -986,9 +1039,12 @@ export async function fetchPolymarketMarkets(
 ): Promise<PolymarketMarketResult[]> {
   const markets = await searchEvents(query, limit);
   const structured = markets.map(toStructuredMarketResult);
+  const enriched = options.enrichMicrostructure
+    ? await enrichStructuredMarketsMicrostructure(structured)
+    : structured;
 
   if (options.snapshotFilePath) {
-    const snapshotRecords = structured
+    const snapshotRecords = enriched
       .map((market) => createSnapshotRecord(market, options.capturedAt))
       .filter((record): record is PolymarketSnapshotRecord => record !== null);
 
@@ -1000,13 +1056,18 @@ export async function fetchPolymarketMarkets(
     }
   }
 
-  return structured;
+  return enriched;
 }
 
 export async function fetchPolymarketAnchorMarkets(
   query: string,
   limit: number,
-  options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+  options: {
+    ticker: string;
+    horizonDays?: number;
+    endDateFilter?: { end_date_min: string; end_date_max: string };
+    enrichMicrostructure?: boolean;
+  },
 ): Promise<PolymarketMarketResult[]> {
   return fetchPolymarketAnchorMarketsWithQueries([query], limit, options);
 }

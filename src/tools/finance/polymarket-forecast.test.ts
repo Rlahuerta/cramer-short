@@ -57,6 +57,12 @@ function parsePayload(raw: unknown): { result?: string; error?: string; forecast
   return outer.data ?? {};
 }
 
+function extractAverageQuality(output: string): number {
+  const match = output.match(/w̄ = ([0-9.]+)/);
+  expect(match).not.toBeNull();
+  return Number(match![1]);
+}
+
 beforeEach(() => {
   delete process.env[LIVE_BRIER_REPLAY_FLAG];
   polymarketBreaker.reset();
@@ -365,6 +371,59 @@ describe('polymarketForecastTool', () => {
         relevanceScore: expect.any(Number),
       },
     ]);
+  });
+
+  it('preserves microstructure fields through the short-horizon BTC forecast path and discounts average quality', async () => {
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const marketWithMicrostructure: PolymarketMarketResult = {
+      marketId: 'btc-micro-1d',
+      assetId: 'btc-micro-1d-yes',
+      question: 'Will the price of Bitcoin be above $71,000 tomorrow?',
+      probability: 0.58,
+      volume24h: 250_000,
+      ageDays: 21,
+      endDate: futureIso(1),
+      active: true,
+      closed: false,
+      bidAskSpread: 0.04,
+      priceVelocityPpH: 3.1,
+      maxHourlyJump: 0.12,
+    };
+    const baseOutput = parseResult(await makeHermeticTool(async () => [
+      {
+        ...marketWithMicrostructure,
+        bidAskSpread: undefined,
+        priceVelocityPpH: undefined,
+        maxHourlyJump: undefined,
+      },
+    ]).func(
+      { ticker: 'BTC', horizon_days: 1, current_price: 68_000 },
+      undefined,
+    ));
+    const microstructureOutput = parseResult(await makeHermeticTool(
+      async () => [marketWithMicrostructure],
+      (capture) => { captures.push(capture); },
+    ).func(
+      { ticker: 'BTC', horizon_days: 1, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(extractAverageQuality(microstructureOutput)).toBeLessThan(extractAverageQuality(baseOutput));
+    expect(captures[0]?.rawRow.candidates[0]).toMatchObject({
+      marketId: 'btc-micro-1d',
+      bidAskSpread: 0.04,
+      priceVelocityPpH: 3.1,
+      maxHourlyJump: 0.12,
+    });
+    expect(captures[0]?.polymarket.selectedMarkets[0]).toMatchObject({
+      marketId: 'btc-micro-1d',
+      bidAskSpread: 0.04,
+      priceVelocityPpH: 3.1,
+      maxHourlyJump: 0.12,
+    });
   });
 
   it('uses anchor-first retrieval for 1-day BTC and selects near-expiry threshold markets ahead of broad macro fallback', async () => {

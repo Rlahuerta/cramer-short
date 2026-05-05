@@ -94,6 +94,24 @@ function mockFetchWithTagFallback(tagSlug: string, tagData: unknown, keywordData
   };
 }
 
+function mockFetchWithClob(
+  eventData: unknown,
+  marketData: unknown,
+  clob: { spread: number | null; history: unknown[] },
+) {
+  return async (url: string | URL) => {
+    const urlStr = String(url);
+    if (urlStr.includes('clob.polymarket.com/spread/')) {
+      return { ok: true, status: 200, json: async () => ({ spread: clob.spread }) } as Response;
+    }
+    if (urlStr.includes('clob.polymarket.com/prices-history')) {
+      return { ok: true, status: 200, json: async () => ({ history: clob.history }) } as Response;
+    }
+    const body = urlStr.includes('/events') ? eventData : marketData;
+    return { ok: true, status: 200, json: async () => body } as Response;
+  };
+}
+
 describe('questionMatchesQuery', () => {
   it('returns true when question contains a query word', () => {
     expect(questionMatchesQuery('Will the Fed cut rates in 2026?', 'Fed rate cut')).toBe(true);
@@ -546,6 +564,28 @@ describe('polymarketTool', () => {
         enableOrderBook: undefined,
       },
     ]);
+  });
+
+  it('enriches structured results with CLOB spread and short-window price instability when requested', async () => {
+    globalThis.fetch = mockFetchWithClob([MOCK_EVENT], [MOCK_MARKET], {
+      spread: 0.025,
+      history: [
+        { t: 0, p: 0.50 },
+        { t: 3600, p: 0.51 },
+        { t: 7200, p: 0.54 },
+      ],
+    }) as typeof fetch;
+
+    const result = await fetchPolymarketMarkets('Fed rate cut', 1, { enrichMicrostructure: true });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      marketId: 'condition-1',
+      assetId: 'asset-yes-1',
+      bidAskSpread: 0.025,
+    });
+    expect(result[0]?.priceVelocityPpH).toBeCloseTo(2.0, 6);
+    expect(result[0]?.maxHourlyJump).toBeCloseTo(0.03, 6);
   });
 
   it('deduplicates markets appearing in both events and direct search', async () => {

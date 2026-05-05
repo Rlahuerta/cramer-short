@@ -155,6 +155,59 @@ describe('computeMarketQualityWeight', () => {
     const offByTwo = computeMarketQualityWeight({ ...base, daysToExpiry: 1 });
     expect(exact).toBeGreaterThan(offByTwo);
   });
+
+  it('wide spreads can zero out even near-expiry market quality', () => {
+    const nearExpiry: MarketInput = {
+      question: 'BTC threshold',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      daysToExpiry: 1,
+      requestedHorizonDays: 1,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+      bidAskSpread: 0.12,
+    };
+    expect(computeMarketQualityWeight(nearExpiry)).toBe(0);
+  });
+
+  it('fast quote velocity mildly discounts near-expiry quality when spread is otherwise healthy', () => {
+    const calm: MarketInput = {
+      question: 'BTC threshold',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      daysToExpiry: 1,
+      requestedHorizonDays: 1,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+      bidAskSpread: 0.02,
+    };
+    const jumpy = computeMarketQualityWeight({ ...calm, priceVelocityPpH: 3.0 });
+    const stable = computeMarketQualityWeight(calm);
+    expect(jumpy).toBeCloseTo(stable * 0.8, 5);
+  });
+
+  it('hourly jumps stack with the velocity discount for noisy near-expiry markets', () => {
+    const base: MarketInput = {
+      question: 'BTC threshold',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      daysToExpiry: 1,
+      requestedHorizonDays: 1,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+      bidAskSpread: 0.02,
+      priceVelocityPpH: 3.0,
+    };
+    const velocityOnly = computeMarketQualityWeight(base);
+    const jumpy = computeMarketQualityWeight({ ...base, maxHourlyJump: 0.12 });
+    expect(jumpy).toBeCloseTo(velocityOnly * 0.7, 5);
+  });
 });
 
 // ---------------------------------------------------------------------------

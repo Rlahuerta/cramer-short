@@ -18,6 +18,9 @@ export interface RawPolymarketReplayMarket {
   endDate?: string | null;
   bid?: number;
   ask?: number;
+  bidAskSpread?: number;
+  priceVelocityPpH?: number;
+  maxHourlyJump?: number;
   active?: boolean;
   closed?: boolean;
   enableOrderBook?: boolean;
@@ -43,6 +46,9 @@ export interface PolymarketReplaySelectionMarket {
   endDate?: string | null;
   bid?: number;
   ask?: number;
+  bidAskSpread?: number;
+  priceVelocityPpH?: number;
+  maxHourlyJump?: number;
   relevanceScore?: number;
   signalCategory?: string;
   active?: boolean;
@@ -81,6 +87,9 @@ export interface ArbiterReplayPolymarketMarket {
   relevanceScore?: number;
   bid?: number;
   ask?: number;
+  bidAskSpread?: number;
+  priceVelocityPpH?: number;
+  maxHourlyJump?: number;
 }
 
 export interface ArbiterReplayForecastLabel {
@@ -218,6 +227,9 @@ function isRawPolymarketReplayMarket(value: unknown): value is RawPolymarketRepl
     return false;
   }
   if (!isOptionalFiniteNumber(value.bid) || !isOptionalFiniteNumber(value.ask)) return false;
+  if (!isOptionalNumber(value.bidAskSpread)) return false;
+  if (!isOptionalNumber(value.priceVelocityPpH)) return false;
+  if (!isOptionalNumber(value.maxHourlyJump)) return false;
   return true;
 }
 
@@ -273,7 +285,16 @@ function isReplayPolymarketMarket(value: unknown): value is ArbiterReplayPolymar
   if (!Array.isArray(value.extractedPriceLevels) || !value.extractedPriceLevels.every((entry) => isFiniteNumber(entry))) {
     return false;
   }
-  if (!isOptionalFiniteNumber(value.relevanceScore) || !isOptionalFiniteNumber(value.bid) || !isOptionalFiniteNumber(value.ask)) {
+  if (
+    !isOptionalFiniteNumber(value.relevanceScore)
+    || !isOptionalFiniteNumber(value.bid)
+    || !isOptionalFiniteNumber(value.ask)
+  ) {
+    return false;
+  }
+  if (!isOptionalNumber(value.bidAskSpread)) return false;
+  if (!isOptionalNumber(value.priceVelocityPpH)) return false;
+  if (!isOptionalNumber(value.maxHourlyJump)) {
     return false;
   }
   return true;
@@ -673,6 +694,9 @@ export function createRawPolymarketReplayRow(params: {
       ...(market.endDate !== undefined ? { endDate: market.endDate } : {}),
       ...(market.bid !== undefined ? { bid: market.bid } : {}),
       ...(market.ask !== undefined ? { ask: market.ask } : {}),
+      ...(market.bidAskSpread !== undefined ? { bidAskSpread: market.bidAskSpread } : {}),
+      ...(market.priceVelocityPpH !== undefined ? { priceVelocityPpH: market.priceVelocityPpH } : {}),
+      ...(market.maxHourlyJump !== undefined ? { maxHourlyJump: market.maxHourlyJump } : {}),
       ...(market.active !== undefined ? { active: market.active } : {}),
       ...(market.closed !== undefined ? { closed: market.closed } : {}),
       ...(market.enableOrderBook !== undefined ? { enableOrderBook: market.enableOrderBook } : {}),
@@ -715,6 +739,9 @@ export function freezePolymarketReplayBlock(params: {
       ...(market.relevanceScore !== undefined ? { relevanceScore: market.relevanceScore } : {}),
       ...(market.bid !== undefined ? { bid: market.bid } : {}),
       ...(market.ask !== undefined ? { ask: market.ask } : {}),
+      ...(market.bidAskSpread !== undefined ? { bidAskSpread: market.bidAskSpread } : {}),
+      ...(market.priceVelocityPpH !== undefined ? { priceVelocityPpH: market.priceVelocityPpH } : {}),
+      ...(market.maxHourlyJump !== undefined ? { maxHourlyJump: market.maxHourlyJump } : {}),
     }];
   });
 

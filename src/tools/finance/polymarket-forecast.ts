@@ -60,6 +60,9 @@ type RawMarket = {
   enableOrderBook?: boolean;
   priceSpikeDetected: boolean;
   transitoryMove: boolean;
+  bidAskSpread?: number;
+  priceVelocityPpH?: number;
+  maxHourlyJump?: number;
 };
 
 type ForecastHistoryReader = typeof readSnapshotRecords;
@@ -137,6 +140,9 @@ function toRawMarket(
     enableOrderBook: market.enableOrderBook,
     priceSpikeDetected: history.priceSpikeDetected,
     transitoryMove: history.transitoryMove,
+    bidAskSpread: market.bidAskSpread,
+    priceVelocityPpH: market.priceVelocityPpH,
+    maxHourlyJump: market.maxHourlyJump,
   };
 }
 
@@ -766,11 +772,14 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const fetchGenericStructuredMarkets = async () => {
           const allResults = await Promise.allSettled(
             signals.map((sig) => {
-              const phrases = [sig.searchPhrase, ...(sig.queryVariants ?? [])];
-              return Promise.allSettled(
-                phrases.map((phrase) => fetchMarkets(phrase, 5, { snapshotFilePath: DEFAULT_POLYMARKET_SNAPSHOTS_PATH })),
-              ).then((settledVariants) =>
-                settledVariants
+                const phrases = [sig.searchPhrase, ...(sig.queryVariants ?? [])];
+                return Promise.allSettled(
+                  phrases.map((phrase) => fetchMarkets(phrase, 5, {
+                    snapshotFilePath: DEFAULT_POLYMARKET_SNAPSHOTS_PATH,
+                    enrichMicrostructure: useShortHorizonCryptoAnchorRetrieval,
+                  })),
+                ).then((settledVariants) =>
+                  settledVariants
                   .filter((r): r is PromiseFulfilledResult<PolymarketMarketResult[]> => r.status === 'fulfilled')
                   .flatMap((r) => r.value)
                   .filter((m) => scoreMarketRelevance(m.question, sig.category) > 0)
@@ -796,6 +805,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             ticker: searchIdentity.canonicalTicker,
             horizonDays,
             endDateFilter: shortHorizonAnchorEndDateFilter,
+            enrichMicrostructure: true,
           });
 
           if (anchorMarkets.length === 0 && anchorRetryQueries.length > 0) {
@@ -804,6 +814,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
               ticker: searchIdentity.canonicalTicker,
               horizonDays,
               endDateFilter: shortHorizonAnchorEndDateFilter,
+              enrichMicrostructure: true,
             });
           }
 
@@ -877,6 +888,9 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             volume24hUsd: m.volume24h,
             ageDays: m.ageDays,
             daysToExpiry: daysToExpiry === null ? undefined : daysToExpiry,
+            bidAskSpread: m.bidAskSpread,
+            priceVelocityPpH: m.priceVelocityPpH,
+            maxHourlyJump: m.maxHourlyJump,
             priceSpikeDetected: m.priceSpikeDetected,
             transitoryMove: m.transitoryMove,
             signalTier: categoryToTier(m.signalCategory),
