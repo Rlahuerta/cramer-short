@@ -25,9 +25,15 @@ function makeHermeticTool(
     rawRow: RawPolymarketReplayRow;
     polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
   }) => void) | undefined = () => {},
+  fetchAnchorMarketsWithQueries: (
+    queries: string[],
+    limit: number,
+    options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+  ) => Promise<PolymarketMarketResult[]> = async (queries, limit) => fetchMarkets(queries[0] ?? '', limit),
 ): ReturnType<typeof createPolymarketForecastTool> {
   return createPolymarketForecastTool({
     fetchMarkets,
+    fetchAnchorMarketsWithQueries,
     readRecords: () => [], // hermetic: always empty snapshot history
     recordReplayPolymarketCapture,
   });
@@ -359,6 +365,211 @@ describe('polymarketForecastTool', () => {
         relevanceScore: expect.any(Number),
       },
     ]);
+  });
+
+  it('uses anchor-first retrieval for 1-day BTC and selects near-expiry threshold markets ahead of broad macro fallback', async () => {
+    const anchorCalls: string[][] = [];
+    const genericCalls: string[] = [];
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async (query) => {
+        genericCalls.push(query);
+        return [
+          {
+            marketId: 'btc-macro-fallback-1d',
+            assetId: 'btc-macro-fallback-1d-yes',
+            question: 'US recession by end of 2026?',
+            probability: 0.22,
+            volume24h: 14_000,
+            ageDays: 9,
+            endDate: futureIso(180),
+            active: true,
+            closed: false,
+          },
+        ];
+      },
+      (capture) => { captures.push(capture); },
+      async (queries) => {
+        anchorCalls.push(queries);
+        return [
+          {
+            marketId: 'btc-anchor-1d',
+            assetId: 'btc-anchor-1d-yes',
+            question: 'Will Bitcoin be above $72,000 tomorrow?',
+            probability: 0.61,
+            volume24h: 240_000,
+            ageDays: 2,
+            endDate: futureIso(1),
+            active: true,
+            closed: false,
+          },
+        ];
+      },
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 1, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(anchorCalls).toHaveLength(1);
+    expect(anchorCalls[0]?.slice(0, 4)).toEqual(['Bitcoin price', 'Bitcoin', 'Bitcoin above', 'Bitcoin below']);
+    expect(genericCalls).toEqual([]);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-anchor-1d']);
+    expect(result).toContain('Will Bitcoin be above $72,000 tomorrow?');
+    expect(result).not.toContain('US recession by end of 2026?');
+  });
+
+  it('uses anchor-first retrieval for 2-day BTC and selects near-expiry threshold markets ahead of broad macro fallback', async () => {
+    const anchorCalls: string[][] = [];
+    const genericCalls: string[] = [];
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async (query) => {
+        genericCalls.push(query);
+        return [
+          {
+            marketId: 'btc-macro-fallback-2d',
+            assetId: 'btc-macro-fallback-2d-yes',
+            question: 'Will the Fed cut rates by August 2026?',
+            probability: 0.31,
+            volume24h: 21_000,
+            ageDays: 12,
+            endDate: futureIso(90),
+            active: true,
+            closed: false,
+          },
+        ];
+      },
+      (capture) => { captures.push(capture); },
+      async (queries) => {
+        anchorCalls.push(queries);
+        return [
+          {
+            marketId: 'btc-anchor-2d',
+            assetId: 'btc-anchor-2d-yes',
+            question: 'Will Bitcoin be above $73,000 in 2 days?',
+            probability: 0.59,
+            volume24h: 230_000,
+            ageDays: 2,
+            endDate: futureIso(2),
+            active: true,
+            closed: false,
+          },
+        ];
+      },
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 2, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(anchorCalls).toHaveLength(1);
+    expect(anchorCalls[0]?.slice(0, 4)).toEqual(['Bitcoin price', 'Bitcoin', 'Bitcoin above', 'Bitcoin below']);
+    expect(genericCalls).toEqual([]);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-anchor-2d']);
+    expect(result).toContain('Will Bitcoin be above $73,000 in 2 days?');
+    expect(result).not.toContain('Will the Fed cut rates by August 2026?');
+  });
+
+  it('uses anchor-first retrieval for 3-day BTC and selects near-expiry threshold markets ahead of broad macro fallback', async () => {
+    const anchorCalls: string[][] = [];
+    const genericCalls: string[] = [];
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async (query) => {
+        genericCalls.push(query);
+        return [
+          {
+            marketId: 'btc-macro-fallback-3d',
+            assetId: 'btc-macro-fallback-3d-yes',
+            question: 'Will the SEC approve a new crypto ETF in 2026?',
+            probability: 0.28,
+            volume24h: 19_000,
+            ageDays: 10,
+            endDate: futureIso(120),
+            active: true,
+            closed: false,
+          },
+        ];
+      },
+      (capture) => { captures.push(capture); },
+      async (queries) => {
+        anchorCalls.push(queries);
+        return [
+          {
+            marketId: 'btc-anchor-3d',
+            assetId: 'btc-anchor-3d-yes',
+            question: 'Will Bitcoin be above $74,000 in 3 days?',
+            probability: 0.57,
+            volume24h: 235_000,
+            ageDays: 2,
+            endDate: futureIso(3),
+            active: true,
+            closed: false,
+          },
+        ];
+      },
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 3, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(anchorCalls).toHaveLength(1);
+    expect(anchorCalls[0]?.slice(0, 4)).toEqual(['Bitcoin price', 'Bitcoin', 'Bitcoin above', 'Bitcoin below']);
+    expect(genericCalls).toEqual([]);
+    expect(captures[0]?.rawRow.selectedMarketIds).toEqual(['btc-anchor-3d']);
+    expect(result).toContain('Will Bitcoin be above $74,000 in 3 days?');
+    expect(result).not.toContain('Will the SEC approve a new crypto ETF in 2026?');
+  });
+
+  it('keeps the generic Polymarket retrieval path for longer-horizon BTC forecasts', async () => {
+    const anchorCalls: string[][] = [];
+    const genericCalls: string[] = [];
+    const freshTool = makeHermeticTool(
+      async (query) => {
+        genericCalls.push(query);
+        return [
+          {
+            marketId: 'btc-generic-7d',
+            assetId: 'btc-generic-7d-yes',
+            question: 'Will Bitcoin be above $76,000 on May 12?',
+            probability: 0.52,
+            volume24h: 180_000,
+            ageDays: 3,
+            endDate: futureIso(7),
+            active: true,
+            closed: false,
+          },
+        ];
+      },
+      undefined,
+      async (queries) => {
+        anchorCalls.push(queries);
+        return [];
+      },
+    );
+
+    const result = parseResult(await freshTool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(anchorCalls).toEqual([]);
+    expect(genericCalls.length).toBeGreaterThan(0);
+    expect(result).toContain('Will Bitcoin be above $76,000 on May 12?');
   });
 
   it('drops far-dated macro markets from 1-day BTC selection and emits a horizon warning', async () => {

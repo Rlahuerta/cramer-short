@@ -12,7 +12,11 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
-import { fetchPolymarketMarkets, type PolymarketMarketResult } from './polymarket.js';
+import {
+  fetchPolymarketAnchorMarketsWithQueries,
+  fetchPolymarketMarkets,
+  type PolymarketMarketResult,
+} from './polymarket.js';
 import { findSnapshotInWindow, readSnapshotRecords, DEFAULT_POLYMARKET_SNAPSHOTS_PATH } from './polymarket-snapshots.js';
 import { extractSignals, scoreMarketRelevance } from './signal-extractor.js';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
@@ -20,6 +24,7 @@ import { lookupImpact, inferAssetClass } from './impact-map.js';
 import { runEnsemble, computePolymarketSignal, computeEnsemble, computeConditionalReturn, adjustYesBias, type MarketInput } from '../../utils/ensemble.js';
 import { buildPriceDistributionChart, extractPriceThresholds } from './price-distribution-chart.js';
 import type { PolymarketSnapshotRecord } from './polymarket-snapshots.js';
+import { buildPolymarketAnchorQueryVariants } from './markov-distribution.js';
 import {
   appendReplayCachePolymarketCapture,
   createRawPolymarketReplayRow,
@@ -50,9 +55,11 @@ type RawMarket = {
 
 type ForecastHistoryReader = typeof readSnapshotRecords;
 type ForecastMarketFetcher = typeof fetchPolymarketMarkets;
+type ForecastAnchorMarketFetcher = typeof fetchPolymarketAnchorMarketsWithQueries;
 
 type ForecastToolDependencies = {
   fetchMarkets?: ForecastMarketFetcher;
+  fetchAnchorMarketsWithQueries?: ForecastAnchorMarketFetcher;
   readRecords?: ForecastHistoryReader;
   recordReplayPolymarketCapture?: (capture: {
     rawRow: RawPolymarketReplayRow;
@@ -245,6 +252,30 @@ function isResolutionAlignedToHorizon(daysUntilResolution: number | null, horizo
 
 function shouldFilterResolutionMismatch(assetClass: string, horizonDays: number): boolean {
   return assetClass === 'crypto' && horizonDays <= 3;
+}
+
+function shouldUseShortHorizonCryptoAnchorRetrieval(assetClass: string, horizonDays: number): boolean {
+  return assetClass === 'crypto' && horizonDays <= 3;
+}
+
+function resolveAnchorSignalCategory(
+  question: string,
+  signals: ReturnType<typeof extractSignals>,
+): string {
+  let bestCategory = signals[0]?.category ?? 'btc_price_target';
+  let bestScore = -1;
+
+  for (const signal of signals) {
+    const score = scoreMarketRelevance(question, signal.category);
+    if (score > bestScore) {
+      bestScore = score;
+      bestCategory = signal.category;
+    }
+  }
+
+  return bestScore > 0
+    ? bestCategory
+    : signals.find((signal) => signal.category === 'btc_price_target')?.category ?? bestCategory;
 }
 
 function isThresholdChartAlignedToHorizon(markets: RawMarket[], horizonDays: number): boolean {
@@ -451,6 +482,7 @@ function optionsLabel(skew: number): string {
 
 export function createPolymarketForecastTool(dependencies: ForecastToolDependencies = {}) {
   const fetchMarkets = dependencies.fetchMarkets ?? fetchPolymarketMarkets;
+  const fetchAnchorMarketsWithQueries = dependencies.fetchAnchorMarketsWithQueries ?? fetchPolymarketAnchorMarketsWithQueries;
   const readRecords = dependencies.readRecords ?? readSnapshotRecords;
   const recordReplayPolymarketCapture = dependencies.recordReplayPolymarketCapture
     ?? ((capture: {
@@ -484,59 +516,94 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const historyWarnings: string[] = [];
         const nowMs = Date.now();
         const replayCapturedAt = new Date(nowMs).toISOString();
+        const useShortHorizonCryptoAnchorRetrieval = shouldUseShortHorizonCryptoAnchorRetrieval(assetClass, horizonDays);
 
         // Step 1: Extract signals for this ticker (up to 5)
         const signals = extractSignals(searchIdentity.canonicalTicker).slice(0, 5);
-        const replayQuerySet = [...new Set(
+        const genericReplayQuerySet = [...new Set(
           signals.flatMap((sig) => [sig.searchPhrase, ...(sig.queryVariants ?? [])]),
         )];
-
-        // Step 2: Fetch Polymarket markets for each signal using primary phrase
-        // AND query variants to deepen retrieval, up to 5 per query
-        const allResults = await Promise.allSettled(
-          signals.map((sig) => {
-            const phrases = [sig.searchPhrase, ...(sig.queryVariants ?? [])];
-            return Promise.allSettled(
-              phrases.map((phrase) => fetchMarkets(phrase, 5, { snapshotFilePath: DEFAULT_POLYMARKET_SNAPSHOTS_PATH })),
-            ).then((settledVariants) =>
-              settledVariants
-                .filter((r): r is PromiseFulfilledResult<PolymarketMarketResult[]> => r.status === 'fulfilled')
-                .flatMap((r) => r.value)
-                .filter((m) => scoreMarketRelevance(m.question, sig.category) > 0)
-                .map((m) => ({ ...m, signalCategory: sig.category })),
-            );
-          }),
-        );
-
-        // Deduplicate by question string across all signals and variants,
-        // preserving the signal category from whichever signal first found it
-        const seen = new Set<string>();
+        const anchorReplayQuerySet = useShortHorizonCryptoAnchorRetrieval
+          ? buildPolymarketAnchorQueryVariants(searchIdentity.canonicalTicker, { horizonDays })
+          : [];
         const rawMarkets: RawMarket[] = [];
         const skippedResolutionMismatches: RawMarket[] = [];
         const allSnapshotRecords = readRecords(undefined);
+        let replayQuerySet = genericReplayQuerySet;
         // Reader reused across all markets — avoids creating a closure per iteration
         const marketReader = (_filePath: string | undefined, marketId?: string) =>
           allSnapshotRecords.filter((r) => !marketId || r.marketId === marketId);
-        for (let i = 0; i < signals.length; i++) {
-          const result = allResults[i];
-          if (result.status !== 'fulfilled') continue;
-          for (const m of result.value) {
-            if (seen.has(m.question)) continue;
-            seen.add(m.question);
-            const history = evaluateHistoryFlagsWithReader(m, nowMs, undefined, marketReader);
+        const addStructuredMarkets = (
+          markets: Array<PolymarketMarketResult & { signalCategory: string }>,
+        ) => {
+          const seen = new Set<string>();
+          for (const market of markets) {
+            if (seen.has(market.question)) continue;
+            seen.add(market.question);
+            const history = evaluateHistoryFlagsWithReader(market, nowMs, undefined, marketReader);
             historyWarnings.push(...history.warnings);
-            const rawMarket = toRawMarket(m, m.signalCategory, history);
-            if (rawMarket) {
-              if (shouldFilterResolutionMismatch(assetClass, horizonDays)) {
-                const daysToResolution = daysUntilEndDate(rawMarket.endDate);
-                if (daysToResolution !== null && !isResolutionAlignedToHorizon(daysToResolution, horizonDays)) {
-                  skippedResolutionMismatches.push(rawMarket);
-                  continue;
-                }
+            const rawMarket = toRawMarket(market, market.signalCategory, history);
+            if (!rawMarket) continue;
+            if (shouldFilterResolutionMismatch(assetClass, horizonDays)) {
+              const daysToResolution = daysUntilEndDate(rawMarket.endDate);
+              if (daysToResolution !== null && !isResolutionAlignedToHorizon(daysToResolution, horizonDays)) {
+                skippedResolutionMismatches.push(rawMarket);
+                continue;
               }
-              rawMarkets.push(rawMarket);
             }
+            rawMarkets.push(rawMarket);
           }
+        };
+        const fetchGenericStructuredMarkets = async () => {
+          const allResults = await Promise.allSettled(
+            signals.map((sig) => {
+              const phrases = [sig.searchPhrase, ...(sig.queryVariants ?? [])];
+              return Promise.allSettled(
+                phrases.map((phrase) => fetchMarkets(phrase, 5, { snapshotFilePath: DEFAULT_POLYMARKET_SNAPSHOTS_PATH })),
+              ).then((settledVariants) =>
+                settledVariants
+                  .filter((r): r is PromiseFulfilledResult<PolymarketMarketResult[]> => r.status === 'fulfilled')
+                  .flatMap((r) => r.value)
+                  .filter((m) => scoreMarketRelevance(m.question, sig.category) > 0)
+                  .map((m) => ({ ...m, signalCategory: sig.category })),
+              );
+            }),
+          );
+
+          return allResults
+            .filter((result): result is PromiseFulfilledResult<Array<PolymarketMarketResult & { signalCategory: string }>> => result.status === 'fulfilled')
+            .flatMap((result) => result.value);
+        };
+
+        if (useShortHorizonCryptoAnchorRetrieval) {
+          const anchorFrontQueries = anchorReplayQuerySet.slice(0, 6);
+          const anchorRetryQueries = anchorReplayQuerySet.slice(anchorFrontQueries.length);
+          replayQuerySet = anchorFrontQueries;
+
+          let anchorMarkets = await fetchAnchorMarketsWithQueries(anchorFrontQueries, 12, {
+            ticker: searchIdentity.canonicalTicker,
+            horizonDays,
+          });
+
+          if (anchorMarkets.length === 0 && anchorRetryQueries.length > 0) {
+            replayQuerySet = [...anchorFrontQueries, ...anchorRetryQueries];
+            anchorMarkets = await fetchAnchorMarketsWithQueries(anchorRetryQueries, 12, {
+              ticker: searchIdentity.canonicalTicker,
+              horizonDays,
+            });
+          }
+
+          addStructuredMarkets(anchorMarkets.map((market) => ({
+            ...market,
+            signalCategory: resolveAnchorSignalCategory(market.question, signals),
+          })));
+
+          if (rawMarkets.length === 0) {
+            replayQuerySet = [...new Set([...anchorReplayQuerySet, ...genericReplayQuerySet])];
+            addStructuredMarkets(await fetchGenericStructuredMarkets());
+          }
+        } else {
+          addStructuredMarkets(await fetchGenericStructuredMarkets());
         }
 
         if (skippedResolutionMismatches.length > 0) {
