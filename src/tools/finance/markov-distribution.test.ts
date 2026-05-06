@@ -59,6 +59,11 @@ import {
   interpolateSurvival,
   computeScenarioProbabilities,
   normalizeAnchorPricesForETF,
+  buildProfileFallbackMatrix,
+  computeBlendWeight,
+  applyBreakFallbackCandidate,
+  sortMarketsByHorizonCloseness,
+  filterMarketsToHorizon,
   inferPolymarketSearchPhrase,
   buildPolymarketAnchorQueryVariants,
   normalizeSentiment,
@@ -505,6 +510,36 @@ describe('extractPriceThresholds', () => {
     expect(result[0].rawProbability).toBe(0.7);
   });
 
+  it('prefers the nearest-expiry GLD anchor for the same threshold on 1d/2d/3d horizons', () => {
+    const now = new Date('2026-05-06T12:00:00Z').getTime();
+    const day = 86_400_000;
+
+    for (const horizon of [1, 2, 3]) {
+      const nearEndDate = new Date(now + horizon * day).toISOString();
+      const farEndDate = new Date(now + (horizon + 7) * day).toISOString();
+      const result = extractPriceThresholds([
+        {
+          question: 'Will gold exceed $4,600 by end of day?',
+          probability: 0.62,
+          volume: 10_000,
+          createdAt: now - 7 * day,
+          endDate: nearEndDate,
+        },
+        {
+          question: 'Will gold exceed $4,600 next week?',
+          probability: 0.71,
+          volume: 10_000,
+          createdAt: now - 7 * day,
+          endDate: farEndDate,
+        },
+      ], { ticker: 'GLD', horizonDays: horizon, referenceTimeMs: now });
+
+      expect(result).toHaveLength(1);
+      expect(result[0].rawProbability).toBeCloseTo(0.62, 10);
+      expect(result[0].endDate).toBe(nearEndDate);
+    }
+  });
+
   it('rejects barrier-style "reach" markets', () => {
     const result = extractPriceThresholds([
       { question: 'Will BTC reach $70000 this week?', probability: 0.5, volume: 1000 },
@@ -822,6 +857,57 @@ describe('applyCryptoTerminalAnchorFallback', () => {
     expect(result).toHaveLength(1);
     // Ensure probability is still > 0 (clamped)
     expect(result[0].probability).toBeGreaterThan(0);
+  });
+});
+
+describe('market horizon helpers', () => {
+  const REF_TIME = new Date('2026-05-06T12:00:00Z').getTime();
+  const DAY_MS = 86_400_000;
+
+  it('sorts markets by horizon closeness relative to the supplied reference time', () => {
+    const markets = [
+      { question: 'near-a', endDate: new Date(REF_TIME + 5 * DAY_MS).toISOString(), volume: 100 },
+      { question: 'near-b', endDate: new Date(REF_TIME + 8 * DAY_MS).toISOString(), volume: 90 },
+      { question: 'far', endDate: new Date(REF_TIME + 12 * DAY_MS).toISOString(), volume: 200 },
+    ];
+
+    expect(
+      sortMarketsByHorizonCloseness(markets, 5, REF_TIME).map((market) => market.question),
+    ).toEqual(['near-a', 'near-b', 'far']);
+    expect(
+      sortMarketsByHorizonCloseness(markets, 5, REF_TIME + 3 * DAY_MS).map((market) => market.question),
+    ).toEqual(['near-b', 'near-a', 'far']);
+  });
+
+  it('filters markets relative to the supplied reference time on the strict horizon path', () => {
+    const markets = [
+      { question: 'day-1', endDate: new Date(REF_TIME + 1 * DAY_MS).toISOString() },
+      { question: 'day-4', endDate: new Date(REF_TIME + 4 * DAY_MS).toISOString() },
+      { question: 'day-9', endDate: new Date(REF_TIME + 9 * DAY_MS).toISOString() },
+    ];
+
+    expect(filterMarketsToHorizon(markets, 1, REF_TIME).map((market) => market.question)).toEqual(['day-1']);
+    expect(
+      filterMarketsToHorizon(markets, 1, REF_TIME + 3 * DAY_MS).map((market) => market.question),
+    ).toEqual(['day-4']);
+  });
+
+  it('uses the supplied reference time when falling back to closest markets', () => {
+    const markets = [
+      { question: 'closer-at-start', endDate: new Date(REF_TIME + 6 * DAY_MS).toISOString(), volume: 10 },
+      { question: 'closer-later', endDate: new Date(REF_TIME + 9 * DAY_MS).toISOString(), volume: 20 },
+    ];
+
+    expect(filterMarketsToHorizon(markets, 1, REF_TIME).map((market) => market.question)).toEqual([
+      'closer-at-start',
+      'closer-later',
+    ]);
+    expect(
+      filterMarketsToHorizon(markets, 1, REF_TIME + 20 * DAY_MS).map((market) => market.question),
+    ).toEqual([
+      'closer-later',
+      'closer-at-start',
+    ]);
   });
 });
 
@@ -3456,6 +3542,38 @@ describe('computePredictionConfidence', () => {
     expect(brokenTrendOnly).toBeCloseTo(brokenDefault, 6);
   });
 
+  it('divergence_weighted softens medium break penalties without removing them', () => {
+    const base = {
+      pUp: 0.66,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 9,
+      momentumAgreement: 0.5,
+      regimeState: 'bear' as const,
+    };
+
+    const noBreak = computePredictionConfidence({
+      ...base,
+      structuralBreak: false,
+    });
+    const brokenDefault = computePredictionConfidence({
+      ...base,
+      structuralBreak: true,
+      breakConfidencePolicy: 'default',
+    });
+    const brokenWeighted = computePredictionConfidence({
+      ...base,
+      structuralBreak: true,
+      breakConfidencePolicy: 'divergence_weighted',
+      structuralBreakDivergence: 0.12371808404330907,
+    });
+
+    expect(brokenDefault).toBeCloseTo(noBreak * 0.6, 2);
+    expect(brokenWeighted).toBeCloseTo(noBreak * 0.7, 2);
+    expect(brokenWeighted).toBeGreaterThan(brokenDefault);
+    expect(brokenWeighted).toBeLessThan(noBreak);
+  });
+
   it('more ensemble consensus increases confidence', () => {
     const low = computePredictionConfidence({
       pUp: 0.7, ensembleConsensus: 0, hmmConverged: false, regimeRunLength: 5, structuralBreak: false,
@@ -4268,6 +4386,70 @@ describe('normalizeAnchorPricesForETF', () => {
     const converted5500 = result.find(a => Math.abs(a.price - 430) < 5);
     expect(converted5500).toBeUndefined(); // No anchor should land exactly at current price
   });
+
+  it('keeps GLD 1d/2d/3d manual anchor grids in ETF scale after normalization', async () => {
+    const historicalPrices = Array.from({ length: 160 }, (_, i) =>
+      300 * Math.exp(i * 0.0004 + Math.sin(i * 0.11) * 0.002),
+    );
+    const currentPrice = historicalPrices[historicalPrices.length - 1];
+    const now = new Date('2026-05-06T12:00:00Z').getTime();
+
+    for (const horizon of [1, 2, 3]) {
+      const result = await computeMarkovDistribution({
+        ticker: 'GLD',
+        horizon,
+        currentPrice,
+        historicalPrices,
+        polymarketMarkets: [
+          {
+            question: `Will gold exceed $4,650 in ${horizon} day${horizon === 1 ? '' : 's'}?`,
+            probability: 0.58,
+            volume: 15_000,
+            createdAt: now - 7 * 86_400_000,
+            endDate: new Date(now + horizon * 86_400_000).toISOString(),
+          },
+        ],
+      });
+
+      expect(Math.max(...result.distribution.map((point) => point.price))).toBeLessThan(1_000);
+      expect(result.distribution.some((point) => Math.abs(point.price - currentPrice) < 20)).toBe(true);
+    }
+  });
+});
+
+describe('Phase 5 fallback helpers', () => {
+  it('keeps medium-divergence fallback blending row-stochastic for GLD-style breaks', () => {
+    const estimated = [
+      [0.72, 0.18, 0.10],
+      [0.16, 0.70, 0.14],
+      [0.20, 0.18, 0.62],
+    ];
+    const candidate = {
+      id: 'gld-test',
+      mode: 'blended' as const,
+      conservativeDiagonal: 0.60,
+      profileDiagonals: { equity: 0.60, etf: 0.55, commodity: 0.65, crypto: 0.70 },
+      conservativeWeight: 0.25,
+      severityWeights: { mild: 0.25, medium: 0.50, high: 0.75 },
+    };
+
+    const profile = buildProfileFallbackMatrix('commodity', candidate.profileDiagonals);
+    expect(profile[0][0]).toBeCloseTo(0.65, 10);
+    expect(computeBlendWeight(0.12371808404330907, candidate.severityWeights)).toBeCloseTo(0.50, 10);
+
+    const blended = applyBreakFallbackCandidate(
+      estimated,
+      0.12371808404330907,
+      candidate,
+      'commodity',
+    );
+
+    for (const row of blended) {
+      expect(row.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 10);
+    }
+    expect(blended[0][0]).toBeGreaterThan(0.64);
+    expect(blended[0][0]).toBeLessThan(0.72);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4971,7 +5153,14 @@ describe('markov_distribution tool output envelope', () => {
 
   it('returns a GOLD short-horizon live policy for GLD and commodity-gold aliases at 1/2/3/7/14d', () => {
     for (const ticker of ['GLD', 'XAUUSD']) {
-      for (const horizon of [1, 2, 3, 7, 14]) {
+      for (const horizon of [1, 2, 3]) {
+        expect(getGoldShortHorizonLivePolicy(ticker, horizon)).toEqual({
+          historyDays: 252,
+          breakDivergenceThreshold: 0.12,
+          rerunOnBreak: false,
+        });
+      }
+      for (const horizon of [7, 14]) {
         expect(getGoldShortHorizonLivePolicy(ticker, horizon)).toEqual({
           historyDays: 252,
           breakDivergenceThreshold: 0.15,
@@ -6579,6 +6768,167 @@ describe('markov_distribution tool output envelope', () => {
         rerunOnBreak: false,
       });
       expect(parsed.data.report).toContain('GOLD short-horizon live policy used 252d history with structural-break threshold 0.15');
+    });
+
+    it('detects lower-vol GLD structural breaks on 1d/2d/3d horizons behind the GOLD seam', async () => {
+      function makeRng(seed: number): () => number {
+        let s = seed >>> 0;
+        return () => {
+          s = (s * 1664525 + 1013904223) >>> 0;
+          return s / 0x100000000;
+        };
+      }
+
+      function randn(rng: () => number): number {
+        const u1 = Math.max(1e-12, rng());
+        const u2 = rng();
+        return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      }
+
+      const rng = makeRng(178);
+      const returns: number[] = [];
+      let prevA = 0;
+      for (let i = 0; i < 126; i++) {
+        const next = 0.00025 + 0.45 * prevA + randn(rng) * 0.0009;
+        returns.push(next);
+        prevA = next;
+      }
+      let prevB = 0;
+      for (let i = 0; i < 126; i++) {
+        const next = -0.00015 - 0.30 * prevB + randn(rng) * 0.0010;
+        returns.push(next);
+        prevB = next;
+      }
+      const historicalPrices = [250];
+      for (const ret of returns) {
+        historicalPrices.push(historicalPrices[historicalPrices.length - 1] * Math.exp(ret));
+      }
+      const currentPrice = historicalPrices[historicalPrices.length - 1];
+
+      for (const horizon of [1, 2, 3]) {
+        const result = await computeMarkovDistribution({
+          ticker: 'GLD',
+          horizon,
+          currentPrice,
+          historicalPrices,
+          polymarketMarkets: [],
+        });
+
+        expect(result.metadata.structuralBreakDivergence).toBeGreaterThan(0.12);
+        expect(result.metadata.structuralBreakDetected).toBe(true);
+        expect(getGoldShortHorizonLivePolicy('GLD', horizon)?.breakDivergenceThreshold).toBeLessThan(0.15);
+      }
+    });
+
+    it('uses divergence-weighted confidence for trending GLD 1d/2d/3d breaks without enabling fallback matrices', async () => {
+      function makeRng(seed: number): () => number {
+        let s = seed >>> 0;
+        return () => {
+          s = (s * 1664525 + 1013904223) >>> 0;
+          return s / 0x100000000;
+        };
+      }
+
+      function randn(rng: () => number): number {
+        const u1 = Math.max(1e-12, rng());
+        const u2 = rng();
+        return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      }
+
+      const rng = makeRng(28);
+      const returns: number[] = [];
+      let prevA = 0;
+      for (let i = 0; i < 126; i++) {
+        const next = 0.0002 + 0.5 * prevA + randn(rng) * 0.0008;
+        returns.push(next);
+        prevA = next;
+      }
+      let prevB = 0;
+      for (let i = 0; i < 126; i++) {
+        const next = -0.0001 + 0.2 * prevB + randn(rng) * 0.0009;
+        returns.push(next);
+        prevB = next;
+      }
+      const historicalPrices = [250];
+      for (const ret of returns) {
+        historicalPrices.push(historicalPrices[historicalPrices.length - 1] * Math.exp(ret));
+      }
+      const currentPrice = historicalPrices[historicalPrices.length - 1];
+
+      for (const horizon of [1, 2, 3]) {
+        const result = await computeMarkovDistribution({
+          ticker: 'GLD',
+          horizon,
+          currentPrice,
+          historicalPrices,
+          polymarketMarkets: [],
+        });
+
+        expect(result.metadata.structuralBreakDetected).toBe(true);
+        expect(result.metadata.divergenceWeightedBreakConfidenceActive).toBe(true);
+        expect(result.metadata.confidence?.multipliers.structuralBreak).toBeCloseTo(0.7, 10);
+        expect(result.metadata.breakFallbackCandidateId ?? null).toBeNull();
+        expect(result.metadata.breakFallbackMode ?? null).toBeNull();
+      }
+    });
+
+    it('keeps ultra-short GOLD behavior gated to canonical GLD tickers', async () => {
+      function makeRng(seed: number): () => number {
+        let s = seed >>> 0;
+        return () => {
+          s = (s * 1664525 + 1013904223) >>> 0;
+          return s / 0x100000000;
+        };
+      }
+
+      function randn(rng: () => number): number {
+        const u1 = Math.max(1e-12, rng());
+        const u2 = rng();
+        return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      }
+
+      const rng = makeRng(912);
+      const returns: number[] = [];
+      let prevA = 0;
+      for (let i = 0; i < 126; i++) {
+        const next = 0.00025 + 0.45 * prevA + randn(rng) * 0.0009;
+        returns.push(next);
+        prevA = next;
+      }
+      let prevB = 0;
+      for (let i = 0; i < 126; i++) {
+        const next = -0.00015 - 0.30 * prevB + randn(rng) * 0.0010;
+        returns.push(next);
+        prevB = next;
+      }
+      const historicalPrices = [250];
+      for (const ret of returns) {
+        historicalPrices.push(historicalPrices[historicalPrices.length - 1] * Math.exp(ret));
+      }
+      const currentPrice = historicalPrices[historicalPrices.length - 1];
+
+      for (const ticker of ['GLD', 'XAUUSD']) {
+        const result = await computeMarkovDistribution({
+          ticker,
+          horizon: 2,
+          currentPrice,
+          historicalPrices,
+          polymarketMarkets: [],
+        });
+
+        expect(result.metadata.structuralBreakDetected).toBe(true);
+        expect(result.metadata.divergenceWeightedBreakConfidenceActive).toBe(true);
+      }
+
+      const btcResult = await computeMarkovDistribution({
+        ticker: 'BTC-USD',
+        horizon: 2,
+        currentPrice,
+        historicalPrices,
+        polymarketMarkets: [],
+      });
+
+      expect(btcResult.metadata.divergenceWeightedBreakConfidenceActive).toBeUndefined();
     });
 
     it('auto-fetches the 252d BTC live-policy history for short horizons', async () => {

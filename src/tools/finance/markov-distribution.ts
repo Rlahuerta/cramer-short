@@ -116,6 +116,7 @@ const BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS = 252;
 const BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS = 60;
 const BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.15;
 const GOLD_SHORT_HORIZON_LIVE_HISTORY_DAYS = 252;
+const GOLD_ULTRA_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.12;
 const GOLD_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.15;
 
 function isBtcTickerSymbol(ticker: string): boolean {
@@ -176,7 +177,9 @@ export function getGoldShortHorizonLivePolicy(
 
   return {
     historyDays: GOLD_SHORT_HORIZON_LIVE_HISTORY_DAYS,
-    breakDivergenceThreshold: GOLD_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
+    breakDivergenceThreshold: horizon <= 3
+      ? GOLD_ULTRA_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT
+      : GOLD_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
     rerunOnBreak: false,
   };
 }
@@ -1355,6 +1358,39 @@ function summarizeAnchorInspection(
   };
 }
 
+function getAnchorResolutionOffsetDays(
+  endDate: string | null | undefined,
+  options?: { ticker?: string; horizonDays?: number; referenceTimeMs?: number },
+): number | null {
+  if (!endDate || options?.horizonDays == null) return null;
+  const endMs = Date.parse(endDate);
+  if (Number.isNaN(endMs)) return null;
+  const now = options.referenceTimeMs ?? Date.now();
+  return Math.abs((endMs - now) / 86_400_000 - options.horizonDays);
+}
+
+function shouldReplaceExistingAnchor(
+  existing: PriceThreshold,
+  incoming: Extract<AnchorCandidateInspection, { status: 'accepted' }>,
+  options?: { ticker?: string; horizonDays?: number; referenceTimeMs?: number },
+): boolean {
+  const incomingTrust = incoming.trustScore === 'high' ? 1 : 0;
+  const existingTrust = existing.trustScore === 'high' ? 1 : 0;
+  if (incomingTrust !== existingTrust) return incomingTrust > existingTrust;
+
+  const incomingOffset = getAnchorResolutionOffsetDays(incoming.endDate, options);
+  const existingOffset = getAnchorResolutionOffsetDays(existing.endDate, options);
+  if (incomingOffset !== null || existingOffset !== null) {
+    if (incomingOffset === null) return false;
+    if (existingOffset === null) return true;
+    if (Math.abs(incomingOffset - existingOffset) > 1e-9) {
+      return incomingOffset < existingOffset;
+    }
+  }
+
+  return incoming.rawProbability > existing.rawProbability;
+}
+
 /**
  * Parse Polymarket market objects into sorted price thresholds with bias correction.
  *
@@ -1405,7 +1441,7 @@ export function extractPriceThresholds(
     });
 
     const existing = seen.get(inspection.matchedPrice);
-    if (!existing || inspection.rawProbability > existing.rawProbability) {
+    if (!existing || shouldReplaceExistingAnchor(existing, inspection, options)) {
       seen.set(inspection.matchedPrice, inspection.threshold);
     }
   }
@@ -1583,13 +1619,15 @@ function reorderCryptoSignalsForAnchorAcquisition(signals: import('./signal-extr
   return [...front, ...back];
 }
 
-function sortMarketsByHorizonCloseness<T extends { endDate?: string | null; volume?: number }>(
+export function sortMarketsByHorizonCloseness<T extends { endDate?: string | null; volume?: number }>(
   markets: T[],
   horizonDays: number,
+  referenceTimeMs?: number,
 ): T[] {
+  const now = referenceTimeMs ?? Date.now();
   return [...markets].sort((a, b) => {
-    const aDays = a.endDate ? (Date.parse(a.endDate) - Date.now()) / 86_400_000 : Number.POSITIVE_INFINITY;
-    const bDays = b.endDate ? (Date.parse(b.endDate) - Date.now()) / 86_400_000 : Number.POSITIVE_INFINITY;
+    const aDays = a.endDate ? (Date.parse(a.endDate) - now) / 86_400_000 : Number.POSITIVE_INFINITY;
+    const bDays = b.endDate ? (Date.parse(b.endDate) - now) / 86_400_000 : Number.POSITIVE_INFINITY;
     const aDist = Number.isFinite(aDays) ? Math.abs(aDays - horizonDays) : Number.POSITIVE_INFINITY;
     const bDist = Number.isFinite(bDays) ? Math.abs(bDays - horizonDays) : Number.POSITIVE_INFINITY;
     if (aDist !== bDist) return aDist - bDist;
@@ -1597,20 +1635,22 @@ function sortMarketsByHorizonCloseness<T extends { endDate?: string | null; volu
   });
 }
 
-function filterMarketsToHorizon<T extends { endDate?: string | null }>(
+export function filterMarketsToHorizon<T extends { endDate?: string | null }>(
   markets: T[],
   horizonDays: number,
+  referenceTimeMs?: number,
 ): T[] {
+  const now = referenceTimeMs ?? Date.now();
   const strict = markets.filter((market) => {
     if (!market.endDate) return true;
     const endMs = Date.parse(market.endDate);
     if (Number.isNaN(endMs)) return true;
-    const daysUntilResolution = (endMs - Date.now()) / 86_400_000;
+    const daysUntilResolution = (endMs - now) / 86_400_000;
     return Math.abs(daysUntilResolution - horizonDays) <= Math.max(2, horizonDays * 0.5);
   });
 
   if (strict.length > 0) return strict;
-  return sortMarketsByHorizonCloseness(markets, horizonDays).slice(0, 8);
+  return sortMarketsByHorizonCloseness(markets, horizonDays, referenceTimeMs).slice(0, 8);
 }
 
 async function fetchCandidatePolymarketAnchors(
@@ -4481,6 +4521,7 @@ export async function computeMarkovDistribution(params: {
     probability: number;
     volume?: number;
     createdAt?: string | number;
+    endDate?: string | null;
   }>;
   sentiment?: SentimentSignal;
   /** Optional Kalshi anchors for cross-platform validation (Tier 1c) */
@@ -4688,8 +4729,6 @@ export async function computeMarkovDistribution(params: {
   } = params;
   const effectiveTrendPenaltyOnlyBreakConfidence = trendPenaltyOnlyBreakConfidence
     ?? FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.trendPenaltyOnlyBreakConfidence;
-  const effectiveDivergenceWeightedBreakConfidence = divergenceWeightedBreakConfidence
-    ?? FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.divergenceWeightedBreakConfidence;
 
   // W3R2 ADWIN trim — opt-in. Default OFF preserves byte-identical behaviour.
   let historicalPrices = historicalPricesParam;
@@ -4732,7 +4771,14 @@ export async function computeMarkovDistribution(params: {
   // --- Asset profile (Idea N): per-asset-class parameter tuning ---
   const assetProfile = getAssetProfile(ticker);
   const isBtcTicker = isBtcTickerSymbol(ticker);
+  const isCanonicalGldTicker = resolveTickerSearchIdentity(ticker).canonicalTicker === 'GLD';
   const goldShortHorizonLivePolicy = getGoldShortHorizonLivePolicy(ticker, horizon);
+  const isGoldUltraShortHorizon =
+    isCanonicalGldTicker && goldShortHorizonLivePolicy !== null && horizon <= 3;
+  const effectiveDivergenceWeightedBreakConfidence = divergenceWeightedBreakConfidence
+    ?? (isGoldUltraShortHorizon
+      ? true
+      : FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.divergenceWeightedBreakConfidence);
   const isBtcShortHorizonThresholdDefault = isBtcTicker && assetProfile.type === 'crypto' && horizon <= 14;
   const isBtcPhase5PromotedHorizon = isBtcTicker && (horizon === 7 || horizon === 14);
   // Phase 5 promotion: BTC/BTC-USD 7d/14d defaults PR3G recency weighting on.
@@ -4784,9 +4830,8 @@ export async function computeMarkovDistribution(params: {
   const effectiveBreakDivergenceThreshold = btcBreakDivergenceThreshold !== undefined
     && isBtcTicker
     ? btcBreakDivergenceThreshold
-    : goldBreakDivergenceThreshold !== undefined
-      && goldShortHorizonLivePolicy !== null
-      ? goldBreakDivergenceThreshold
+    : goldShortHorizonLivePolicy !== null
+      ? goldBreakDivergenceThreshold ?? goldShortHorizonLivePolicy.breakDivergenceThreshold
     : 0.05;
   const breakResult = regimeSeq.length >= 20
     ? detectStructuralBreak(regimeSeq, effectiveBreakDivergenceThreshold, 0.1, effectiveTransitionDecay)
@@ -4820,7 +4865,17 @@ export async function computeMarkovDistribution(params: {
   const regimeStats = estimateRegimeStats(logReturns, regimeSeq, assetProfile.maxDailyDrift);
 
   // --- Tier 1c: Polymarket anchors with optional cross-platform validation ---
-  let polymarketAnchors = extractPriceThresholds(polymarketMarkets, { ticker, horizonDays: horizon, referenceTimeMs: params.referenceTimeMs });
+  const effectivePolymarketMarkets = isGoldUltraShortHorizon
+    ? sortMarketsByHorizonCloseness(
+      filterMarketsToHorizon(polymarketMarkets, horizon, params.referenceTimeMs),
+      horizon,
+      params.referenceTimeMs,
+    )
+    : polymarketMarkets;
+  let polymarketAnchors = extractPriceThresholds(
+    effectivePolymarketMarkets,
+    { ticker, horizonDays: horizon, referenceTimeMs: params.referenceTimeMs },
+  );
   let anchorDivergenceWarnings: AnchorDivergenceWarning[] = [];
 
   // Normalize commodity ETF anchors: convert futures/per-oz prices to ETF scale
