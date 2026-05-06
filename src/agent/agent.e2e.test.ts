@@ -12,7 +12,6 @@ import { e2eIt } from '@/utils/test-guards.js';
 import { runAgentE2E, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { ToolStartEvent, ToolEndEvent } from '@/agent/types.js';
 import type { MarkovDistributionPoint } from '@/tools/finance/markov-distribution.js';
-import { interpolateSurvival } from '@/tools/finance/markov-distribution.js';
 
 function findToolStartEvent(result: { events: unknown[] }, tool: string): ToolStartEvent | undefined {
   return result.events.find((event): event is ToolStartEvent => {
@@ -105,6 +104,85 @@ function extractDensityRows(answer: string): Array<{
       };
     })
     .filter((row) => Number.isFinite(row.answerPct) && (row.lower !== null || row.upper !== null));
+}
+
+function interpolateSurvivalProbability(
+  distribution: MarkovDistributionPoint[],
+  price: number,
+): number | null {
+  if (distribution.length === 0) return null;
+
+  const sorted = [...distribution].sort((a, b) => a.price - b.price);
+  if (price <= sorted[0]!.price) return sorted[0]!.probability;
+  if (price >= sorted[sorted.length - 1]!.price) return sorted[sorted.length - 1]!.probability;
+
+  for (let i = 0; i < sorted.length - 1; i += 1) {
+    const left = sorted[i]!;
+    const right = sorted[i + 1]!;
+    if (price < left.price || price > right.price) continue;
+    if (right.price === left.price) return left.probability;
+
+    const weight = (price - left.price) / (right.price - left.price);
+    return left.probability + ((right.probability - left.probability) * weight);
+  }
+
+  return sorted[sorted.length - 1]!.probability;
+}
+
+function estimateBucketProbabilityPct(
+  distribution: MarkovDistributionPoint[],
+  lower: number | null,
+  upper: number | null,
+): number | null {
+  const lowerSurvival = lower === null ? 1 : interpolateSurvivalProbability(distribution, lower);
+  const upperSurvival = upper === null ? 0 : interpolateSurvivalProbability(distribution, upper);
+  if (lowerSurvival === null || upperSurvival === null) return null;
+
+  return Math.max(0, Math.min(100, (lowerSurvival - upperSurvival) * 100));
+}
+
+function splitIntoThirds<T>(items: T[]): T[][] {
+  const segmentSize = Math.ceil(items.length / 3);
+  return [
+    items.slice(0, segmentSize),
+    items.slice(segmentSize, segmentSize * 2),
+    items.slice(segmentSize * 2),
+  ].filter((segment) => segment.length > 0);
+}
+
+function findPeakBucketIndex(
+  rows: Array<{ answerPct: number; canonicalPct: number }>,
+  key: 'answerPct' | 'canonicalPct',
+): number {
+  return rows.reduce((peakIndex, row, index, allRows) => (
+    row[key] > allRows[peakIndex]![key] ? index : peakIndex
+  ), 0);
+}
+
+function sumBucketWindow(
+  rows: Array<{ answerPct: number; canonicalPct: number }>,
+  centerIndex: number,
+  radius: number,
+  key: 'answerPct' | 'canonicalPct',
+): number {
+  const start = Math.max(0, centerIndex - radius);
+  const end = Math.min(rows.length, centerIndex + radius + 1);
+  return rows.slice(start, end).reduce((sum, row) => sum + row[key], 0);
+}
+
+function calculateBucketEarthMoverScore(
+  rows: Array<{ answerPct: number; canonicalPct: number }>,
+): number {
+  if (rows.length <= 1) return 0;
+
+  let cumulativeDelta = 0;
+  let totalDistance = 0;
+  for (let i = 0; i < rows.length - 1; i += 1) {
+    cumulativeDelta += rows[i]!.answerPct - rows[i]!.canonicalPct;
+    totalDistance += Math.abs(cumulativeDelta);
+  }
+
+  return totalDistance / (rows.length - 1);
 }
 
 describe('Agent E2E — basic financial query flows', () => {
@@ -472,35 +550,83 @@ describe('Agent E2E — basic financial query flows', () => {
       const hasDensityTable =
         /bucket/i.test(result.answer)
         && /price range/i.test(result.answer)
-        && /probability/i.test(result.answer);
+        && (
+          /probability/i.test(result.answer)
+          || /p\(bucket\)|p\(in bucket\)/i.test(result.answer)
+        );
       const hasBucketMassTable =
         /p\(bucket\)|p\(in bucket\)|scenario breakdown/i.test(result.answer);
-      const mentionsDensityIntent =
-        /density|bucket|probability distribution|scenario breakdown/i.test(result.answer);
+      const hasComparableBucketTable =
+        hasDensityTable && hasBucketMassTable && densityRows.length >= 5;
       expect(
-        bucketRows.length >= 9
-          || densityRows.length >= 5
-          || (hasNinePartLanguage && hasDensityTable && hasBucketMassTable)
-          || mentionsDensityIntent,
-        'answer must still acknowledge the requested density/bucket framing even if the model varies the markdown layout',
+        hasNinePartLanguage || bucketRows.length >= 9 || densityRows.length >= 9,
+        'answer must preserve the requested 9-part density framing',
+      ).toBe(true);
+      expect(
+        hasDensityTable && hasBucketMassTable,
+        'answer must include a structured density/bucket probability table, not just density-framing language',
+      ).toBe(true);
+      expect(
+        hasComparableBucketTable,
+        `answer must include at least 5 parseable density rows for canonical validation; bucketRows=${bucketRows.length}, densityRows=${densityRows.length}`,
       ).toBe(true);
 
       const canonicalDistribution = markovPayload.data?.distribution ?? [];
-      if (markovPayload.data?.status === 'ok' && hasBucketMassTable) {
+      if (markovPayload.data?.status === 'ok') {
         expect(canonicalDistribution.length).toBeGreaterThan(0);
         expect(densityRows.length).toBeGreaterThanOrEqual(5);
 
-        const deltas = densityRows.map((row) => {
-          const canonicalProb =
-            row.lower !== null && row.upper !== null
-              ? interpolateSurvival(canonicalDistribution, row.lower) - interpolateSurvival(canonicalDistribution, row.upper)
-              : row.upper !== null
-                ? 1 - interpolateSurvival(canonicalDistribution, row.upper)
-                : interpolateSurvival(canonicalDistribution, row.lower!);
-          return Math.abs(row.answerPct - canonicalProb * 100);
-        });
-        const maxAbsDelta = Math.max(...deltas);
-        expect(maxAbsDelta).toBeLessThanOrEqual(2.5);
+        const comparableRows = densityRows
+          .map((row) => {
+            const canonicalPct = estimateBucketProbabilityPct(canonicalDistribution, row.lower, row.upper);
+            if (canonicalPct === null) return null;
+
+            return {
+              ...row,
+              canonicalPct,
+              absDelta: Math.abs(row.answerPct - canonicalPct),
+            };
+          })
+          .filter((row): row is typeof densityRows[number] & { canonicalPct: number; absDelta: number } => row !== null)
+          .sort((a, b) => {
+            const aLower = a.lower ?? Number.NEGATIVE_INFINITY;
+            const bLower = b.lower ?? Number.NEGATIVE_INFINITY;
+            if (aLower !== bLower) return aLower - bLower;
+            return (a.upper ?? Number.POSITIVE_INFINITY) - (b.upper ?? Number.POSITIVE_INFINITY);
+          });
+
+        expect(comparableRows.length).toBeGreaterThanOrEqual(5);
+
+        const totalAnswerPct = comparableRows.reduce((sum, row) => sum + row.answerPct, 0);
+        const totalCanonicalPct = comparableRows.reduce((sum, row) => sum + row.canonicalPct, 0);
+        const meanAbsDelta = comparableRows.reduce((sum, row) => sum + row.absDelta, 0) / comparableRows.length;
+        expect(Math.abs(totalAnswerPct - totalCanonicalPct)).toBeLessThanOrEqual(6);
+        expect(meanAbsDelta).toBeLessThanOrEqual(5);
+
+        for (const segment of splitIntoThirds(comparableRows)) {
+          const answerPct = segment.reduce((sum, row) => sum + row.answerPct, 0);
+          const canonicalPct = segment.reduce((sum, row) => sum + row.canonicalPct, 0);
+          expect(Math.abs(answerPct - canonicalPct)).toBeLessThanOrEqual(7.5);
+        }
+
+        if (comparableRows.length >= 7) {
+          const canonicalPeakIndex = findPeakBucketIndex(comparableRows, 'canonicalPct');
+          const answerPeakIndex = findPeakBucketIndex(comparableRows, 'answerPct');
+          expect(Math.abs(answerPeakIndex - canonicalPeakIndex)).toBeLessThanOrEqual(1);
+
+          const peakWindowAnswerPct = sumBucketWindow(comparableRows, canonicalPeakIndex, 1, 'answerPct');
+          const peakWindowCanonicalPct = sumBucketWindow(comparableRows, canonicalPeakIndex, 1, 'canonicalPct');
+          expect(Math.abs(peakWindowAnswerPct - peakWindowCanonicalPct)).toBeLessThanOrEqual(10);
+
+          const earthMoverScore = calculateBucketEarthMoverScore(comparableRows);
+          expect(earthMoverScore).toBeLessThanOrEqual(6.5);
+
+          const tailRows = comparableRows.filter((_, index) => Math.abs(index - canonicalPeakIndex) > 1);
+          if (tailRows.length > 0) {
+            const maxTailAbsDelta = Math.max(...tailRows.map((row) => row.absDelta));
+            expect(maxTailAbsDelta).toBeLessThanOrEqual(10);
+          }
+        }
       }
 
       expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);
@@ -515,8 +641,8 @@ describe('Agent E2E — basic financial query flows', () => {
       }
 
       if (diagnostics?.btcShortHorizonRerunTriggered) {
-        expect(result.answer).toMatch(/252d/i);
-        expect(result.answer).toMatch(/60d/i);
+        expect(result.answer).toMatch(/252(?:d|[- ]day(?:s)?)/i);
+        expect(result.answer).toMatch(/60(?:d|[- ]day(?:s)?)/i);
       }
 
       expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);

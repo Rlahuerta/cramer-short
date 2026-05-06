@@ -1,0 +1,52 @@
+{
+  "caseId": "btc-combined-divergence-1d",
+  "prompt": "BTC 1d combined forecast: Markov mildly up, Polymarket says dip to $75,000, whales neutral. Should I enter now?",
+  "input": {
+    "ticker": "BTC-USD",
+    "horizon_days": 1,
+    "current_price": 75504.42,
+    "leverage": 10,
+    "markov": {
+      "forecast_return": 0.004062142875039587,
+      "p_up": 0.55,
+      "confidence": 0.274,
+      "structural_break": true,
+      "flat_probability": 0.828,
+      "ci_low": 72095,
+      "ci_high": 78116
+    },
+    "polymarket": {
+      "forecast_return": -0.0121,
+      "quality_score": 83,
+      "markets": [
+        {
+          "question": "Will Bitcoin dip to $75,000 in April?",
+          "probability": 1
+        }
+      ]
+    },
+    "whale": {
+      "direction": "NEUTRAL",
+      "confidence": null,
+      "summary": "No whale transactions detected."
+    }
+  },
+  "expected": {
+    "verdict": "NO_TRADE",
+    "preferredDirection": "neutral",
+    "shouldEnterNow": false,
+    "semanticSummary": {
+      "primaryPolymarketSemantics": "barrier_touch"
+    },
+    "disagreement": {
+      "markovDirection": "long",
+      "polymarketDirection": "short",
+      "isDivergent": true
+    },
+    "policy": {
+      "level": "context-only",
+      "horizonEligible": true,
+      "tradeEligible": false
+    }
+  }
+}

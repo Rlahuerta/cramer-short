@@ -180,6 +180,7 @@ const {
   buildDistributionWarningPrefix,
   buildForecastDisagreementPrefix,
   buildLowConfidenceBtcShortHorizonForecastPrefix,
+  ensureStructuredDensityTable,
 } = await import('./agent.js');
 
 // ---------------------------------------------------------------------------
@@ -783,6 +784,172 @@ describe('buildLowConfidenceBtcShortHorizonForecastPrefix', () => {
         scratchpad.getToolCallRecords(),
       ),
     ).toBeNull();
+  });
+});
+
+describe('ensureStructuredDensityTable', () => {
+  const canonicalDistribution = [
+    { price: 78000, probability: 0.99, lowerBound: 76000, upperBound: 80000, source: 'markov' as const },
+    { price: 80000, probability: 0.88, lowerBound: 78000, upperBound: 82000, source: 'markov' as const },
+    { price: 82000, probability: 0.61, lowerBound: 80000, upperBound: 84000, source: 'markov' as const },
+    { price: 84000, probability: 0.28, lowerBound: 82000, upperBound: 86000, source: 'markov' as const },
+    { price: 86000, probability: 0.08, lowerBound: 84000, upperBound: 88000, source: 'markov' as const },
+    { price: 88000, probability: 0.01, lowerBound: 86000, upperBound: 90000, source: 'markov' as const },
+  ];
+
+  function buildDensityScratchpad() {
+    const scratchpad = new Scratchpad('btc structured density test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 1 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'ok',
+          distribution: canonicalDistribution,
+          canonical: {
+            ticker: 'BTC-USD',
+            horizon: 1,
+          },
+        },
+      }),
+    );
+    return scratchpad;
+  }
+
+  function parseDensityBucketRows(answer: string): Array<{
+    bucket: number;
+    range: string;
+    probability: number;
+    lower: number | null;
+    upper: number | null;
+  }> {
+    return answer
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^\|\s*\d+\s*\|/.test(line))
+      .map((line) => {
+        const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
+        const bucket = Number(cells[0]);
+        const range = cells[1] ?? '';
+        const probability = Number((cells[2]?.match(/([\d.]+)%/) ?? [])[1]);
+        const prices = [...range.matchAll(/\$([0-9][0-9,]*(?:\.\d+)?)/g)]
+          .map((match) => Number(match[1]!.replace(/,/g, '')));
+
+        if (range.startsWith('<')) {
+          return {
+            bucket,
+            range,
+            probability,
+            lower: null,
+            upper: prices[0] ?? null,
+          };
+        }
+
+        if (range.startsWith('>')) {
+          return {
+            bucket,
+            range,
+            probability,
+            lower: prices[0] ?? null,
+            upper: null,
+          };
+        }
+
+        return {
+          bucket,
+          range,
+          probability,
+          lower: prices[0] ?? null,
+          upper: prices[1] ?? null,
+        };
+      })
+      .filter((row) => Number.isFinite(row.bucket) && Number.isFinite(row.probability));
+  }
+
+  it('replaces non-parseable density prose/table with a canonical bucket table', () => {
+    const scratchpad = buildDensityScratchpad();
+
+    const answer = ensureStructuredDensityTable(
+      [
+        '## BTC 24-Hour Forecast',
+        '',
+        '## 9-Part Density Probability Table',
+        '',
+        '| Price Range | Probability |',
+        '|-------------|-------------|',
+        '| $80K–$82K | 20.0% |',
+      ].join('\n'),
+      'Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts.',
+      scratchpad.getToolCallRecords(),
+    );
+
+    expect(answer).toContain('Canonical scenario breakdown (P(bucket) = probability mass in each price range)');
+    expect(answer).toContain('| Bucket | Price Range | P(bucket) |');
+    const rows = parseDensityBucketRows(answer);
+    expect(rows).toHaveLength(9);
+
+    const firstBucket = rows[0]!;
+    const lastBucket = rows[8]!;
+
+    expect(firstBucket.bucket).toBe(1);
+    expect(firstBucket.upper).not.toBeNull();
+    expect(firstBucket.upper).toBeGreaterThan(canonicalDistribution[0]!.price);
+    expect(firstBucket.upper).toBeLessThan(canonicalDistribution[1]!.price);
+    expect(firstBucket.probability).toBeGreaterThan(4);
+
+    expect(lastBucket.bucket).toBe(9);
+    expect(lastBucket.lower).not.toBeNull();
+    expect(lastBucket.lower).toBeGreaterThan(canonicalDistribution[4]!.price);
+    expect(lastBucket.lower).toBeLessThan(canonicalDistribution[5]!.price);
+    expect(lastBucket.probability).toBeGreaterThan(4);
+  });
+
+  it('uses a midpoint split for 2-bucket requests instead of collapsing to an edge bucket', () => {
+    const answer = ensureStructuredDensityTable(
+      '## BTC 24-Hour Forecast',
+      'Provide the Markov BTC forecast for 24 hours with density probabilities divided into 2 parts.',
+      buildDensityScratchpad().getToolCallRecords(),
+    );
+
+    const rows = parseDensityBucketRows(answer);
+    expect(rows).toHaveLength(2);
+
+    const firstBucket = rows[0]!;
+    const secondBucket = rows[1]!;
+
+    expect(firstBucket.upper).not.toBeNull();
+    expect(secondBucket.lower).not.toBeNull();
+    expect(firstBucket.upper).toBeGreaterThan(canonicalDistribution[1]!.price);
+    expect(firstBucket.upper).toBeLessThan(canonicalDistribution[4]!.price);
+    expect(secondBucket.lower).toBe(firstBucket.upper);
+    expect(firstBucket.probability).toBeGreaterThan(20);
+    expect(secondBucket.probability).toBeGreaterThan(20);
+    expect(Math.abs(firstBucket.probability - secondBucket.probability)).toBeLessThan(20);
+  });
+
+  it('leaves already-structured density tables unchanged', () => {
+    const structuredAnswer = [
+      '## 9-Part Density Probability Table',
+      '',
+      'Canonical scenario breakdown (P(bucket) = probability mass in each price range):',
+      '',
+      '| Bucket | Price Range | P(bucket) |',
+      '|--------|-------------|-----------|',
+      '| 1 | < $78K | 1.00% |',
+      '| 2 | $78K–$80K | 4.00% |',
+      '| 3 | $80K–$82K | 15.00% |',
+      '| 4 | $82K–$84K | 30.00% |',
+      '| 5 | $84K–$86K | 25.00% |',
+    ].join('\n');
+
+    expect(
+      ensureStructuredDensityTable(
+        structuredAnswer,
+        'Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts.',
+        [],
+      ),
+    ).toBe(structuredAnswer);
   });
 });
 

@@ -26,6 +26,11 @@ export { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION, build
 export { markovDistributionTool, computeMarkovDistribution, MARKOV_DISTRIBUTION_DESCRIPTION } from './markov-distribution.js';
 export { runArbiterReplay, compareReplayEvaluators } from './backtest/arbiter-replay-runner.js';
 export {
+  formatCombinedShortHorizonBenchmarkReport,
+  runCombinedShortHorizonBenchmark,
+  runCombinedShortHorizonBenchmarkFromFile,
+} from './backtest/combined-short-horizon-benchmark.js';
+export {
   formatShortHorizonReplayBenchmarkReport,
   runShortHorizonReplayBenchmark,
   runShortHorizonReplayBenchmarkFromFile,
