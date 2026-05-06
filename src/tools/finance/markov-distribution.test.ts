@@ -70,6 +70,7 @@ import {
   applyCryptoTerminalAnchorFallback,
   evaluateAnchorTrust,
   getBtcShortHorizonLivePolicy,
+  getGoldShortHorizonLivePolicy,
   normalizeHistoricalPriceTicker,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
@@ -4968,6 +4969,40 @@ describe('markov_distribution tool output envelope', () => {
     });
   });
 
+  it('returns a GOLD short-horizon live policy for GLD and commodity-gold aliases at 1/2/3/7/14d', () => {
+    for (const ticker of ['GLD', 'XAUUSD']) {
+      for (const horizon of [1, 2, 3, 7, 14]) {
+        expect(getGoldShortHorizonLivePolicy(ticker, horizon)).toEqual({
+          historyDays: 252,
+          breakDivergenceThreshold: 0.15,
+          rerunOnBreak: false,
+        });
+      }
+    }
+  });
+
+  it('returns null for unrelated assets from the GOLD short-horizon seam', () => {
+    expect(getGoldShortHorizonLivePolicy('SPY', 7)).toBeNull();
+    expect(getGoldShortHorizonLivePolicy('BTC-USD', 7)).toBeNull();
+    expect(getGoldShortHorizonLivePolicy('GOLD', 7)).toBeNull();
+    expect(getGoldShortHorizonLivePolicy('GLD', 30)).toBeNull();
+  });
+
+  it('keeps BTC on the existing BTC short-horizon helper unchanged', () => {
+    expect(getGoldShortHorizonLivePolicy('BTC-USD', 2)).toBeNull();
+    expect(getBtcShortHorizonLivePolicy('BTC-USD', 2)).toEqual({
+      historyDays: 252,
+      breakDivergenceThreshold: 0.15,
+      rerunOnBreak: false,
+    });
+    expect(getBtcShortHorizonLivePolicy('BTC-USD', 1)).toEqual({
+      historyDays: 252,
+      breakDivergenceThreshold: 0.10,
+      rerunOnBreak: true,
+      rerunWindowDays: 60,
+    });
+  });
+
   it('buildForecastHint contract: BTC-only, horizon ≤ 14, and attenuation formula', () => {
     const base = {
       canEmitCanonical: false,
@@ -6499,6 +6534,51 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.status).toBe('ok');
       expect(parsed.data.canonical.diagnostics.markovWeight).toBe(1);
       expect(parsed.data.canonical.diagnostics.anchorWeight).toBe(0);
+    });
+
+    it('auto-fetches the 252d GOLD live-policy history for GLD short horizons', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      mock.module('./api.js', () => ({
+        ...realApiModule,
+        api: {
+          ...realApiModule.api,
+          get: async (_path: string, params: Record<string, string>) => {
+            const start = new Date(params.start_date).getTime();
+            const end = new Date(params.end_date).getTime();
+            const requestedDays = Math.round((end - start) / 86_400_000);
+            const length = requestedDays >= 200 ? 252 : 120;
+            let price = 220;
+            const prices = Array.from({ length }, (_, i) => {
+              price *= 1.0006 + Math.sin(i * 0.05) * 0.0008;
+              return { close: Math.round(price * 100) / 100 };
+            });
+            return { data: { prices } };
+          },
+        },
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+
+      const result = await freshTool.func({
+        ticker: 'GLD',
+        horizon: 7,
+        polymarketMarkets: [],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.canonical.diagnostics.historicalDays).toBe(251);
+      expect(parsed.data.canonical.diagnostics.goldShortHorizonLivePolicy).toEqual({
+        historyDays: 252,
+        breakDivergenceThreshold: 0.15,
+        rerunOnBreak: false,
+      });
+      expect(parsed.data.report).toContain('GOLD short-horizon live policy used 252d history with structural-break threshold 0.15');
     });
 
     it('auto-fetches the 252d BTC live-policy history for short horizons', async () => {

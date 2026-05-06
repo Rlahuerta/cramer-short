@@ -115,6 +115,8 @@ export function normalizeHistoricalPriceTicker(ticker: string): string {
 const BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS = 252;
 const BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS = 60;
 const BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.15;
+const GOLD_SHORT_HORIZON_LIVE_HISTORY_DAYS = 252;
+const GOLD_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.15;
 
 function isBtcTickerSymbol(ticker: string): boolean {
   const upper = ticker.trim().toUpperCase();
@@ -155,6 +157,26 @@ export function getBtcShortHorizonLivePolicy(
   return {
     historyDays: BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
     breakDivergenceThreshold: BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
+    rerunOnBreak: false,
+  };
+}
+
+export interface GoldShortHorizonLivePolicy {
+  historyDays: number;
+  breakDivergenceThreshold: number;
+  rerunOnBreak: false;
+}
+
+export function getGoldShortHorizonLivePolicy(
+  ticker: string,
+  horizon: number,
+): GoldShortHorizonLivePolicy | null {
+  if (horizon < 1 || horizon > 14) return null;
+  if (resolveTickerSearchIdentity(ticker).canonicalTicker !== 'GLD') return null;
+
+  return {
+    historyDays: GOLD_SHORT_HORIZON_LIVE_HISTORY_DAYS,
+    breakDivergenceThreshold: GOLD_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
     rerunOnBreak: false,
   };
 }
@@ -746,6 +768,8 @@ export interface MarkovDistributionResult {
     ciWidened: boolean;
     /** Live BTC short-horizon policy provenance added by the tool wrapper. */
     btcShortHorizonLivePolicy?: BtcShortHorizonLivePolicy;
+    /** Live GOLD short-horizon policy provenance added by the tool wrapper. */
+    goldShortHorizonLivePolicy?: GoldShortHorizonLivePolicy;
     /** Live BTC short-horizon path reran on a shorter window after a break. */
     btcShortHorizonRerunTriggered?: boolean;
     /** Original historical window size from the first live BTC pass (return-count basis). */
@@ -4529,6 +4553,8 @@ export async function computeMarkovDistribution(params: {
   btcReturnThresholdMultiplier?: number;
   /** Phase C experimental: BTC-only override for structural break divergence threshold (backtest-only). */
   btcBreakDivergenceThreshold?: number;
+  /** GOLD-only live-policy override for structural break divergence threshold. */
+  goldBreakDivergenceThreshold?: number;
   /** W3 Round-2 experimental: trim historical prices to ADWIN-detected stationary suffix.
    *  Default false ⇒ behaviour byte-identical to pre-W3R2. */
   enableAdwinTrim?: boolean;
@@ -4636,6 +4662,7 @@ export async function computeMarkovDistribution(params: {
     regimeSpecificSigmaThreshold,
     btcReturnThresholdMultiplier,
     btcBreakDivergenceThreshold,
+    goldBreakDivergenceThreshold,
     enableAdwinTrim,
     adwinDelta,
     enableHawkesIntensity,
@@ -4705,6 +4732,7 @@ export async function computeMarkovDistribution(params: {
   // --- Asset profile (Idea N): per-asset-class parameter tuning ---
   const assetProfile = getAssetProfile(ticker);
   const isBtcTicker = isBtcTickerSymbol(ticker);
+  const goldShortHorizonLivePolicy = getGoldShortHorizonLivePolicy(ticker, horizon);
   const isBtcShortHorizonThresholdDefault = isBtcTicker && assetProfile.type === 'crypto' && horizon <= 14;
   const isBtcPhase5PromotedHorizon = isBtcTicker && (horizon === 7 || horizon === 14);
   // Phase 5 promotion: BTC/BTC-USD 7d/14d defaults PR3G recency weighting on.
@@ -4756,6 +4784,9 @@ export async function computeMarkovDistribution(params: {
   const effectiveBreakDivergenceThreshold = btcBreakDivergenceThreshold !== undefined
     && isBtcTicker
     ? btcBreakDivergenceThreshold
+    : goldBreakDivergenceThreshold !== undefined
+      && goldShortHorizonLivePolicy !== null
+      ? goldBreakDivergenceThreshold
     : 0.05;
   const breakResult = regimeSeq.length >= 20
     ? detectStructuralBreak(regimeSeq, effectiveBreakDivergenceThreshold, 0.1, effectiveTransitionDecay)
@@ -5972,13 +6003,14 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
   }),
   func: async (input) => {
     const btcShortHorizonLivePolicy = getBtcShortHorizonLivePolicy(input.ticker, input.horizon);
+    const goldShortHorizonLivePolicy = getGoldShortHorizonLivePolicy(input.ticker, input.horizon);
 
     // Auto-fetch historical prices if not provided or too few
     let historicalPrices = input.historicalPrices ?? [];
     if (historicalPrices.length < 10) {
       const fetched = await fetchHistoricalPrices(
         input.ticker,
-        btcShortHorizonLivePolicy?.historyDays ?? 120,
+        btcShortHorizonLivePolicy?.historyDays ?? goldShortHorizonLivePolicy?.historyDays ?? 120,
       );
       if (fetched.length >= 10) {
         historicalPrices = fetched;
@@ -6015,10 +6047,12 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       softRegimeHmmWeightEntropyWeight: input.softRegimeHmmWeightEntropyWeight,
       enableStudentTEmission: input.enableStudentTEmission,
       btcBreakDivergenceThreshold: btcShortHorizonLivePolicy?.breakDivergenceThreshold,
+      goldBreakDivergenceThreshold: goldShortHorizonLivePolicy?.breakDivergenceThreshold,
     } as const;
 
     let result = await computeMarkovDistribution(baseComputeParams);
     result.metadata.btcShortHorizonLivePolicy = btcShortHorizonLivePolicy ?? undefined;
+    result.metadata.goldShortHorizonLivePolicy = goldShortHorizonLivePolicy ?? undefined;
 
     if (
       btcShortHorizonLivePolicy?.rerunOnBreak
@@ -6208,7 +6242,10 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
         ? ` BTC short-horizon live policy scanned ${m.btcShortHorizonLivePolicy.historyDays}d, detected a break at divergence ${m.originalStructuralBreakDivergence?.toFixed(3) ?? 'n/a'} vs threshold ${m.btcShortHorizonLivePolicy.breakDivergenceThreshold.toFixed(2)}, then reran on the last ${m.btcShortHorizonLivePolicy.rerunWindowDays}d for a more reactive ${result.horizon}d forecast.`
         : ` BTC short-horizon live policy used ${m.btcShortHorizonLivePolicy.historyDays}d history with structural-break threshold ${m.btcShortHorizonLivePolicy.breakDivergenceThreshold.toFixed(2)}.`
       : '';
-    const methodNote = `${baseMethodNote}${btcLivePolicyNote}`;
+    const goldLivePolicyNote = m.goldShortHorizonLivePolicy
+      ? ` GOLD short-horizon live policy used ${m.goldShortHorizonLivePolicy.historyDays}d history with structural-break threshold ${m.goldShortHorizonLivePolicy.breakDivergenceThreshold.toFixed(2)}.`
+      : '';
+    const methodNote = `${baseMethodNote}${btcLivePolicyNote}${goldLivePolicyNote}`;
 
     // --- Section 4: Header and metadata ---
     const mixingLine = commodityModelOnly
@@ -6387,6 +6424,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           structuralBreakDivergence: m.structuralBreakDivergence,
           ciWidened: m.ciWidened,
           btcShortHorizonLivePolicy: m.btcShortHorizonLivePolicy ?? null,
+          goldShortHorizonLivePolicy: m.goldShortHorizonLivePolicy ?? null,
           btcShortHorizonRerunTriggered: m.btcShortHorizonRerunTriggered ?? false,
           originalHistoricalDays: m.originalHistoricalDays ?? null,
           originalStructuralBreakDetected: m.originalStructuralBreakDetected ?? null,
