@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getChannelProfile } from './channels.js';
-import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
+import { resolveForecastLabMarkovParameterDefaults } from '../tools/finance/markov-distribution.js';
 import {
   isExplicitGoldCombinedMarkovPolymarketRequest,
   isExplicitPolymarketForecastRequest,
@@ -17,6 +17,10 @@ import type { ForecastLabRoutingHint } from './forecast-lab-routing.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+function getBtcSelectiveMarkovConfidenceThreshold(): number {
+  return resolveForecastLabMarkovParameterDefaults('btc').recommendedConfidenceThreshold;
+}
 
 function isExplicitCombinedMarkovPolymarketRequest(query: string): boolean {
   const lower = query.toLowerCase();
@@ -598,7 +602,7 @@ IMPORTANT: BTC short-horizon signals are mixed. markov_distribution is bullish, 
   if (shouldInjectBtcShortHorizonLowConfidencePrompt(originalQuery, fullToolResults)) {
     prompt += `
 
-IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, but its predictionConfidence is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold. You MUST NOT present that Markov direction as part of the selective Markov accuracy slice or as a validated BTC directional edge. If you mention it at all, frame it as low-confidence fallback context and make clear that the selective gate did not clear.`;
+IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, but its predictionConfidence is below the ${getBtcSelectiveMarkovConfidenceThreshold().toFixed(2)} selective threshold. You MUST NOT present that Markov direction as part of the selective Markov accuracy slice or as a validated BTC directional edge. If you mention it at all, frame it as low-confidence fallback context and make clear that the selective gate did not clear.`;
   }
 
   const hasMarkovTrajectoryOutput =

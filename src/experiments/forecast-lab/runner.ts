@@ -55,9 +55,22 @@ import {
   rankForecastLabMutators,
 } from './mutator-ranker.js';
 import type { ForecastLabMutatorRanking } from './mutator-ranker.js';
-import { FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS } from '../../tools/finance/markov-distribution.js';
-import { FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS } from '../../tools/finance/conformal.js';
-import { FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS } from '../../tools/finance/regime-calibrator.js';
+import {
+  FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
+  getForecastLabMarkovRuntimeDefaults,
+  setForecastLabMarkovRuntimeDefaults,
+} from '../../tools/finance/markov-distribution.js';
+import {
+  FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS,
+  getForecastLabConformalRuntimeDefaults,
+  setForecastLabConformalRuntimeDefaults,
+} from '../../tools/finance/conformal.js';
+import {
+  FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS,
+  getForecastLabRegimeCalibratorRuntimeDefaults,
+  setForecastLabRegimeCalibratorRuntimeDefaults,
+} from '../../tools/finance/regime-calibrator.js';
+import type { ForecastLabRuntimeAssetScope as FinanceForecastLabRuntimeAssetScope } from '../../tools/finance/forecast-lab-runtime-defaults.js';
 
 export type ForecastLabGatePhase = 'baseline' | 'candidate';
 
@@ -227,18 +240,24 @@ const FORECAST_LAB_METRICS_PREFIX = 'FORECAST_LAB_METRICS ';
 
 type ForecastLabMutableParameterDefaults = Record<string, ForecastLabMutationScalarValue>;
 
-interface ForecastLabRuntimeDefaultsSnapshot {
+interface ForecastLabRuntimeDefaultsOverride {
   readonly filePath: string;
   readonly parameterId: string;
   readonly value: ForecastLabMutationScalarValue;
 }
 
-export type ForecastLabRuntimeAssetScope = 'btc' | 'gold';
+interface ForecastLabRuntimeDefaultsSnapshot {
+  readonly assetScope: ForecastLabRuntimeAssetScope;
+  readonly filePath: string;
+  readonly overrides?: ForecastLabMutableParameterDefaults;
+}
+
+export type ForecastLabRuntimeAssetScope = FinanceForecastLabRuntimeAssetScope;
 
 export interface ForecastLabRuntimeDefaultsActivation {
   readonly profileId: string;
   readonly assetScope: ForecastLabRuntimeAssetScope;
-  readonly overrides: readonly ForecastLabRuntimeDefaultsSnapshot[];
+  readonly overrides: readonly ForecastLabRuntimeDefaultsOverride[];
 }
 
 export interface ForecastLabResolvedRuntimeDefaults {
@@ -265,10 +284,22 @@ interface ForecastLabActivePromotionRecord extends ForecastLabActivePromotionSna
   readonly previousActive?: ForecastLabActivePromotionSnapshot;
 }
 
-const LIVE_PARAMETER_DEFAULT_TARGETS: Record<string, ForecastLabMutableParameterDefaults> = {
-  'src/tools/finance/markov-distribution.ts': FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS as ForecastLabMutableParameterDefaults,
-  'src/tools/finance/conformal.ts': FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS as ForecastLabMutableParameterDefaults,
-  'src/tools/finance/regime-calibrator.ts': FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS as ForecastLabMutableParameterDefaults,
+const LIVE_PARAMETER_DEFAULT_TARGETS: Record<string, {
+  readonly get: (assetScope: ForecastLabRuntimeAssetScope) => ForecastLabMutableParameterDefaults | undefined;
+  readonly set: (assetScope: ForecastLabRuntimeAssetScope, overrides?: ForecastLabMutableParameterDefaults) => void;
+}> = {
+  'src/tools/finance/markov-distribution.ts': {
+    get: (assetScope) => getForecastLabMarkovRuntimeDefaults(assetScope) as ForecastLabMutableParameterDefaults | undefined,
+    set: (assetScope, overrides) => setForecastLabMarkovRuntimeDefaults(assetScope, overrides),
+  },
+  'src/tools/finance/conformal.ts': {
+    get: (assetScope) => getForecastLabConformalRuntimeDefaults(assetScope) as ForecastLabMutableParameterDefaults | undefined,
+    set: (assetScope, overrides) => setForecastLabConformalRuntimeDefaults(assetScope, overrides),
+  },
+  'src/tools/finance/regime-calibrator.ts': {
+    get: (assetScope) => getForecastLabRegimeCalibratorRuntimeDefaults(assetScope) as ForecastLabMutableParameterDefaults | undefined,
+    set: (assetScope, overrides) => setForecastLabRegimeCalibratorRuntimeDefaults(assetScope, overrides),
+  },
 };
 
 const SHIPPED_PARAMETER_DEFAULT_TARGETS: Record<string, ForecastLabMutableParameterDefaults> = {
@@ -302,6 +333,16 @@ function getResolvedRuntimeDefaultsTarget(
   throw new ForecastLabRunnerError(`Forecast-lab runtime default resolution does not support ${filePath}.`);
 }
 
+function getForecastLabRuntimeDefaultsResolutionOrder(
+  assetScope: ForecastLabRuntimeAssetScope,
+): readonly ForecastLabRuntimeAssetScope[] {
+  if (assetScope === 'gold') {
+    return ['shared', 'gold'];
+  }
+
+  return [assetScope];
+}
+
 export function buildForecastLabRuntimeDefaultsActivation(params: {
   readonly profileId: string;
   readonly assetScope: ForecastLabRuntimeAssetScope;
@@ -326,18 +367,34 @@ export function resolveForecastLabRuntimeDefaultsForAssetScope(
 ): ForecastLabResolvedRuntimeDefaults {
   const resolved = cloneForecastLabResolvedRuntimeDefaults();
 
-  for (const activation of activations) {
-    if (activation.assetScope !== assetScope) {
-      continue;
-    }
+  for (const scope of getForecastLabRuntimeDefaultsResolutionOrder(assetScope)) {
+    for (const activation of activations) {
+      if (activation.assetScope !== scope) {
+        continue;
+      }
 
-    for (const override of activation.overrides) {
-      const target = getResolvedRuntimeDefaultsTarget(resolved, override.filePath);
-      target[override.parameterId] = override.value;
+      for (const override of activation.overrides) {
+        const target = getResolvedRuntimeDefaultsTarget(resolved, override.filePath);
+        target[override.parameterId] = override.value;
+      }
     }
   }
 
   return resolved;
+}
+
+function resolveForecastLabRuntimeAssetScopeForProfile(profile: ForecastLabProfile): ForecastLabRuntimeAssetScope {
+  if (profile.id === 'btc-markov-ultra-short-horizon') {
+    return 'btc';
+  }
+
+  if (profile.id === 'multi-asset-markov-short-horizon') {
+    return 'shared';
+  }
+
+  throw new ForecastLabRunnerError(
+    `Forecast-lab runtime default activation is not configured for profile "${profile.id}".`,
+  );
 }
 
 function makeRunId(profileId: string, now: Date): string {
@@ -1303,9 +1360,11 @@ function buildStructuredMutationFileUpdates(
 }
 
 function applyStructuredMutationRuntimeDefaults(
+  assetScope: ForecastLabRuntimeAssetScope,
   mutation: ForecastLabMarkovParameterMutationCandidate,
 ): readonly ForecastLabRuntimeDefaultsSnapshot[] {
   const snapshots: ForecastLabRuntimeDefaultsSnapshot[] = [];
+  const overridesByFilePath = new Map<string, ForecastLabMutableParameterDefaults>();
 
   try {
     for (const edit of mutation.edits) {
@@ -1316,19 +1375,30 @@ function applyStructuredMutationRuntimeDefaults(
         );
       }
 
-      const previousValue = target[edit.parameterId];
+      const previousOverrides = overridesByFilePath.get(edit.filePath)
+        ?? target.get(assetScope)
+        ?? {};
+      const previousValue = previousOverrides[edit.parameterId] ?? SHIPPED_PARAMETER_DEFAULT_TARGETS[edit.filePath]?.[edit.parameterId];
       if (typeof previousValue !== 'boolean' && typeof previousValue !== 'number') {
         throw new ForecastLabRunnerError(
           `Forecast-lab activation could not find runtime parameter "${edit.parameterId}" in ${edit.filePath}.`,
         );
       }
 
-      snapshots.push({
-        filePath: edit.filePath,
-        parameterId: edit.parameterId,
-        value: previousValue,
-      });
-      target[edit.parameterId] = edit.afterValue;
+      if (!overridesByFilePath.has(edit.filePath)) {
+        snapshots.push({
+          assetScope,
+          filePath: edit.filePath,
+          overrides: target.get(assetScope),
+        });
+      }
+
+      const nextOverrides = {
+        ...previousOverrides,
+        [edit.parameterId]: edit.afterValue,
+      };
+      overridesByFilePath.set(edit.filePath, nextOverrides);
+      target.set(assetScope, nextOverrides);
     }
   } catch (error) {
     restoreStructuredMutationRuntimeDefaults(snapshots);
@@ -1348,7 +1418,7 @@ function restoreStructuredMutationRuntimeDefaults(
         `Forecast-lab activation could not restore runtime defaults for ${snapshot.filePath}.`,
       );
     }
-    target[snapshot.parameterId] = snapshot.value;
+    target.set(snapshot.assetScope, snapshot.overrides);
   }
 }
 
@@ -1361,6 +1431,7 @@ function applyStructuredMutationToLiveSource(
   readonly runtimeDefaults: readonly ForecastLabRuntimeDefaultsSnapshot[];
 } {
   const rootDir = process.cwd();
+  const assetScope = resolveForecastLabRuntimeAssetScopeForProfile(profile);
   const { updatedFiles, previousContents } = buildStructuredMutationFileUpdates(rootDir, mutation);
   const mutatedFiles = applyForecastLabCandidateEdits(
     rootDir,
@@ -1375,7 +1446,7 @@ function applyStructuredMutationToLiveSource(
     return {
       mutatedFiles,
       previousContents,
-      runtimeDefaults: applyStructuredMutationRuntimeDefaults(mutation),
+      runtimeDefaults: applyStructuredMutationRuntimeDefaults(assetScope, mutation),
     };
   } catch (error) {
     applyForecastLabCandidateEdits(

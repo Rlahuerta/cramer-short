@@ -20,6 +20,12 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
+import {
+  createForecastLabAssetScopedRuntimeDefaults,
+  resolveForecastLabRuntimeAssetScopeForTicker,
+  type ForecastLabRuntimeAssetScope,
+  withForecastLabRuntimeAssetScope,
+} from './forecast-lab-runtime-defaults.js';
 import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
 import {
   attachStudentTPredictiveEmissions,
@@ -275,6 +281,29 @@ export const FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS: {
   divergenceWeightedBreakConfidence: false,
 };
 
+const forecastLabMarkovRuntimeDefaults = createForecastLabAssetScopedRuntimeDefaults(
+  FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
+);
+
+export function resolveForecastLabMarkovParameterDefaults(
+  assetScope?: ForecastLabRuntimeAssetScope,
+): typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS {
+  return forecastLabMarkovRuntimeDefaults.resolve(assetScope);
+}
+
+export function getForecastLabMarkovRuntimeDefaults(
+  assetScope: ForecastLabRuntimeAssetScope,
+): Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS> | undefined {
+  return forecastLabMarkovRuntimeDefaults.get(assetScope);
+}
+
+export function setForecastLabMarkovRuntimeDefaults(
+  assetScope: ForecastLabRuntimeAssetScope,
+  overrides?: Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS>,
+): void {
+  forecastLabMarkovRuntimeDefaults.set(assetScope, overrides);
+}
+
 /**
  * Recommended confidence threshold for selective prediction.
  * Based on coverage-milestone analysis (2026-04-04, 14 tickers × 6 horizons):
@@ -490,7 +519,10 @@ export function buildForecastHint(params: {
   if (!Number.isFinite(params.expectedReturn) || !Number.isFinite(params.mixingTimeWeight)) return null;
   if (params.predictionConfidence < FORECAST_HINT_MIN_CONFIDENCE) return null;
 
-  const forecastHintConfidenceScale = Math.min(1, params.predictionConfidence / RECOMMENDED_CONFIDENCE_THRESHOLD);
+  const forecastHintConfidenceScale = Math.min(
+    1,
+    params.predictionConfidence / resolveForecastLabMarkovParameterDefaults().recommendedConfidenceThreshold,
+  );
   return {
     usage: 'forecast_only',
     markovReturn: params.expectedReturn * params.mixingTimeWeight * FORECAST_HINT_ABSTAIN_ATTENUATION * forecastHintConfidenceScale,
@@ -2090,7 +2122,7 @@ export interface MomentumSignal {
  */
 export function computeMomentumSignal(
   prices: number[],
-  lookback = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback,
+  lookback = resolveForecastLabMarkovParameterDefaults().momentumLookback,
 ): MomentumSignal {
   const nil: MomentumSignal = { velocity: 0, acceleration: 0, trendStrength: 0, adjustment: 0 };
   if (prices.length < lookback + 1) return nil;
@@ -2126,10 +2158,11 @@ export function computeMomentumSignal(
 
   // Adjustment: daily drift tilt = velocity/252 × trendStrength × scaling factor
   // Clamped to ±0.003 per day (~±0.75 annualized) to prevent extreme adjustments
-  const rawAdj = (velocity / 252) * trendStrength * FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumAdjustmentScale;
+  const markovDefaults = resolveForecastLabMarkovParameterDefaults();
+  const rawAdj = (velocity / 252) * trendStrength * markovDefaults.momentumAdjustmentScale;
   const adjustment = Math.max(
-    -FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumAdjustmentClamp,
-    Math.min(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumAdjustmentClamp, rawAdj),
+    -markovDefaults.momentumAdjustmentClamp,
+    Math.min(markovDefaults.momentumAdjustmentClamp, rawAdj),
   );
 
   return { velocity, acceleration, trendStrength, adjustment };
@@ -2240,8 +2273,8 @@ export function computeEnsembleSignal(prices: number[]): EnsembleSignal {
 export function estimateTransitionMatrix(
   states: RegimeState[],
   alpha?: number,     // Dirichlet smoothing constant (auto-tuned if omitted)
-  minObservations = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionMinObservations,
-  decayRate = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay,   // Exponential decay: recent transitions weighted more (1.0 = no decay)
+  minObservations = resolveForecastLabMarkovParameterDefaults().transitionMinObservations,
+  decayRate = resolveForecastLabMarkovParameterDefaults().transitionDecay,   // Exponential decay: recent transitions weighted more (1.0 = no decay)
 ): TransitionMatrix {
   if (states.length < minObservations) {
     return buildDefaultMatrix();
@@ -2476,8 +2509,8 @@ export function detectStructuralBreak(
   states: RegimeState[],
   divergenceThreshold = 0.05,
   alpha = 0.1,
-  decayRate = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay,
-  minLength = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.structuralBreakMinLength,
+  decayRate = resolveForecastLabMarkovParameterDefaults().transitionDecay,
+  minLength = resolveForecastLabMarkovParameterDefaults().structuralBreakMinLength,
 ): StructuralBreakResult {
   // Each half must have enough observations for a meaningful chi-square-like
   // comparison. With NUM_STATES² = 9 transition cells and the rule of thumb of
@@ -3517,7 +3550,7 @@ function computeValidationR2OS(params: {
   transitionDecayOverride?: number;
 }): { r2os: number | null; validationMetric: 'daily_return' | 'horizon_return' } {
   const { assetType, horizon, regimeSeq, logReturns, assetProfile, transitionDecayOverride } = params;
-  const effectiveDecayRate = transitionDecayOverride ?? FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay;
+  const effectiveDecayRate = transitionDecayOverride ?? resolveForecastLabMarkovParameterDefaults().transitionDecay;
 
   const useHorizonValidator = assetType === 'crypto' && horizon >= 7 && horizon <= 14;
   if (useHorizonValidator) {
@@ -4672,6 +4705,9 @@ export async function computeMarkovDistribution(params: {
   /** Lasso L1 strength.  Default 0.005. */
   crossAssetLassoLambda?: number;
 }): Promise<MarkovDistributionResult> {
+  const assetScope = resolveForecastLabRuntimeAssetScopeForTicker(params.ticker);
+
+  return withForecastLabRuntimeAssetScope(assetScope, async () => {
   const {
     ticker,
     horizon,
@@ -4728,7 +4764,7 @@ export async function computeMarkovDistribution(params: {
     crossAssetLassoLambda,
   } = params;
   const effectiveTrendPenaltyOnlyBreakConfidence = trendPenaltyOnlyBreakConfidence
-    ?? FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.trendPenaltyOnlyBreakConfidence;
+    ?? resolveForecastLabMarkovParameterDefaults().trendPenaltyOnlyBreakConfidence;
 
   // W3R2 ADWIN trim — opt-in. Default OFF preserves byte-identical behaviour.
   let historicalPrices = historicalPricesParam;
@@ -4778,7 +4814,7 @@ export async function computeMarkovDistribution(params: {
   const effectiveDivergenceWeightedBreakConfidence = divergenceWeightedBreakConfidence
     ?? (isGoldUltraShortHorizon
       ? true
-      : FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.divergenceWeightedBreakConfidence);
+      : resolveForecastLabMarkovParameterDefaults().divergenceWeightedBreakConfidence);
   const isBtcShortHorizonThresholdDefault = isBtcTicker && assetProfile.type === 'crypto' && horizon <= 14;
   const isBtcPhase5PromotedHorizon = isBtcTicker && (horizon === 7 || horizon === 14);
   // Phase 5 promotion: BTC/BTC-USD 7d/14d defaults PR3G recency weighting on.
@@ -4826,7 +4862,7 @@ export async function computeMarkovDistribution(params: {
   const sparseStates = findSparseStates(stateObservationCounts);
 
   // --- Tier 1b: Structural break detection ---
-  const effectiveTransitionDecay = transitionDecayOverride ?? FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay;
+  const effectiveTransitionDecay = transitionDecayOverride ?? resolveForecastLabMarkovParameterDefaults().transitionDecay;
   const effectiveBreakDivergenceThreshold = btcBreakDivergenceThreshold !== undefined
     && isBtcTicker
     ? btcBreakDivergenceThreshold
@@ -5899,6 +5935,7 @@ export async function computeMarkovDistribution(params: {
       crossAssetBias: crossAssetBiasMeta,
     }
   };
+  });
 }
 
 function buildAdaptiveConformalMetadata(params: {
@@ -6334,8 +6371,11 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       warnings.push(`⚠️ Markov fit test failed (χ²=${m.goodnessOfFit.chiSquared.toFixed(1)}, p=${m.goodnessOfFit.pValue.toFixed(3)}) — transitions may not follow Markov property`);
     if (m.goodnessOfFit?.passes)
       warnings.push(`✓ Markov fit test passed (p=${m.goodnessOfFit.pValue.toFixed(3)})`);
-    if (result.predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD)
-      warnings.push(`⚠️ Low confidence (${result.predictionConfidence.toFixed(2)} < ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)}): accuracy drops to ~55% below this threshold; consider waiting for higher-confidence signal`);
+    const recommendedConfidenceThreshold = resolveForecastLabMarkovParameterDefaults(
+      resolveForecastLabRuntimeAssetScopeForTicker(result.ticker),
+    ).recommendedConfidenceThreshold;
+    if (result.predictionConfidence < recommendedConfidenceThreshold)
+      warnings.push(`⚠️ Low confidence (${result.predictionConfidence.toFixed(2)} < ${recommendedConfidenceThreshold.toFixed(2)}): accuracy drops to ~55% below this threshold; consider waiting for higher-confidence signal`);
 
     // --- Section 5: Full distribution table ---
     const table = [

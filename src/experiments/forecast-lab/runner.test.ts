@@ -31,9 +31,25 @@ import {
   snapshotForecastLabMarkovParameterMutation,
   type ForecastLabMarkovParameterMutationCandidate,
 } from './mutators/markov-parameters.js';
-import { FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS } from '../../tools/finance/markov-distribution.js';
-import { FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS } from '../../tools/finance/conformal.js';
-import { FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS } from '../../tools/finance/regime-calibrator.js';
+import {
+  FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
+  getForecastLabMarkovRuntimeDefaults,
+  resolveForecastLabMarkovParameterDefaults,
+  setForecastLabMarkovRuntimeDefaults,
+} from '../../tools/finance/markov-distribution.js';
+import {
+  FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS,
+  getForecastLabConformalRuntimeDefaults,
+  resolveForecastLabConformalParameterDefaults,
+  setForecastLabConformalRuntimeDefaults,
+} from '../../tools/finance/conformal.js';
+import {
+  FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS,
+  getForecastLabRegimeCalibratorRuntimeDefaults,
+  resolveForecastLabRegimeCalibratorDefaults,
+  setForecastLabRegimeCalibratorRuntimeDefaults,
+} from '../../tools/finance/regime-calibrator.js';
+import type { ForecastLabRuntimeAssetScope } from '../../tools/finance/forecast-lab-runtime-defaults.js';
 
 const TEST_LEDGER_DIR = join('.cramer-short', 'experiments', '__runner_test__');
 const TEST_LEDGER_PATH = join(TEST_LEDGER_DIR, 'forecast-results.tsv');
@@ -184,17 +200,48 @@ function restoreLiveMutableFiles(snapshot: Map<(typeof LIVE_MUTABLE_FILES)[numbe
 }
 
 function snapshotRuntimeDefaults() {
-  return {
+  const shipped = {
     markov: { ...FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS },
     conformal: { ...FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS },
     regime: { ...FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS },
   };
+
+  return {
+    ...shipped,
+    shipped,
+    active: {
+      shared: {
+        markov: getForecastLabMarkovRuntimeDefaults('shared'),
+        conformal: getForecastLabConformalRuntimeDefaults('shared'),
+        regime: getForecastLabRegimeCalibratorRuntimeDefaults('shared'),
+      },
+      btc: {
+        markov: getForecastLabMarkovRuntimeDefaults('btc'),
+        conformal: getForecastLabConformalRuntimeDefaults('btc'),
+        regime: getForecastLabRegimeCalibratorRuntimeDefaults('btc'),
+      },
+      gold: {
+        markov: getForecastLabMarkovRuntimeDefaults('gold'),
+        conformal: getForecastLabConformalRuntimeDefaults('gold'),
+        regime: getForecastLabRegimeCalibratorRuntimeDefaults('gold'),
+      },
+    },
+  };
 }
 
 function restoreRuntimeDefaults(snapshot: ReturnType<typeof snapshotRuntimeDefaults>): void {
-  Object.assign(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS as Record<string, unknown>, snapshot.markov);
-  Object.assign(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS as Record<string, unknown>, snapshot.conformal);
-  Object.assign(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS as Record<string, unknown>, snapshot.regime);
+  Object.assign(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS as Record<string, unknown>, snapshot.shipped.markov);
+  Object.assign(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS as Record<string, unknown>, snapshot.shipped.conformal);
+  Object.assign(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS as Record<string, unknown>, snapshot.shipped.regime);
+  setForecastLabMarkovRuntimeDefaults('shared', snapshot.active.shared.markov);
+  setForecastLabConformalRuntimeDefaults('shared', snapshot.active.shared.conformal);
+  setForecastLabRegimeCalibratorRuntimeDefaults('shared', snapshot.active.shared.regime);
+  setForecastLabMarkovRuntimeDefaults('btc', snapshot.active.btc.markov);
+  setForecastLabConformalRuntimeDefaults('btc', snapshot.active.btc.conformal);
+  setForecastLabRegimeCalibratorRuntimeDefaults('btc', snapshot.active.btc.regime);
+  setForecastLabMarkovRuntimeDefaults('gold', snapshot.active.gold.markov);
+  setForecastLabConformalRuntimeDefaults('gold', snapshot.active.gold.conformal);
+  setForecastLabRegimeCalibratorRuntimeDefaults('gold', snapshot.active.gold.regime);
 }
 
 function readHeadTrackedFile(filePath: (typeof LIVE_MUTABLE_FILES)[number]): string {
@@ -254,6 +301,14 @@ function getStructuredMutationNumericAfterValue(
     throw new Error(`Expected numeric afterValue for ${mutation.id}/${parameterId}`);
   }
   return value;
+}
+
+function resolveEffectiveRuntimeDefaults(assetScope: ForecastLabRuntimeAssetScope) {
+  return {
+    markov: resolveForecastLabMarkovParameterDefaults(assetScope),
+    conformal: resolveForecastLabConformalParameterDefaults(assetScope),
+    regime: resolveForecastLabRegimeCalibratorDefaults(assetScope),
+  };
 }
 
 function expectResolvedDefaultsToMatchShipped(
@@ -663,55 +718,76 @@ describe('forecast-lab runner', () => {
     }
   });
 
-  it('resolves shipped defaults, BTC overrides, GOLD overrides, and fallback by asset scope', () => {
+  it('resolves shipped defaults, shared multi-asset overrides, BTC overrides, and future GOLD overrides by asset scope', () => {
     const btcActivation = buildForecastLabRuntimeDefaultsActivation({
       profileId: 'btc-markov-ultra-short-horizon',
       assetScope: 'btc',
       mutation: BTC_SHORTER_REACTIVE_WINDOW,
     });
-    const goldActivation = buildForecastLabRuntimeDefaultsActivation({
-      profileId: 'gold-markov-short-horizon',
-      assetScope: 'gold',
+    const sharedActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'multi-asset-markov-short-horizon',
+      assetScope: 'shared',
       mutation: MULTI_ASSET_LONGER_STABILITY_WINDOW,
     });
+    const goldActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'future-gold-markov-short-horizon',
+      assetScope: 'gold',
+      mutation: MULTI_ASSET_SHORTER_REACTIVE_WINDOW,
+    });
 
-    const baseBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc');
+    const baseSharedDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('shared');
     const shippedFallbackGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', [btcActivation]);
-    const btcActiveDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', [btcActivation, goldActivation]);
-    const goldActiveDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', [btcActivation, goldActivation]);
+    const sharedActiveDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('shared', [btcActivation, sharedActivation]);
+    const goldInheritedSharedDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', [btcActivation, sharedActivation]);
+    const btcActiveDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', [btcActivation, sharedActivation, goldActivation]);
+    const goldActiveDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', [btcActivation, sharedActivation, goldActivation]);
 
-    expectResolvedDefaultsToMatchShipped(baseBtcDefaults);
+    expectResolvedDefaultsToMatchShipped(baseSharedDefaults);
     expectResolvedDefaultsToMatchShipped(shippedFallbackGoldDefaults);
+    expectResolvedDefaultsToMatchMutation(sharedActiveDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
+    expectResolvedDefaultsToMatchMutation(goldInheritedSharedDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
     expectResolvedDefaultsToMatchMutation(btcActiveDefaults, BTC_SHORTER_REACTIVE_WINDOW);
-    expectResolvedDefaultsToMatchMutation(goldActiveDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
+    expectResolvedDefaultsToMatchMutation(goldActiveDefaults, MULTI_ASSET_SHORTER_REACTIVE_WINDOW);
   });
 
-  it('keeps GOLD-scope activation, reset, and restore isolated from BTC effective runtime defaults', () => {
+  it('keeps shared and future GOLD activation, reset, and restore isolated from BTC effective runtime defaults', () => {
     const btcActivation = buildForecastLabRuntimeDefaultsActivation({
       profileId: 'btc-markov-ultra-short-horizon',
       assetScope: 'btc',
       mutation: BTC_SHORTER_REACTIVE_WINDOW,
     });
-    const goldActivation = buildForecastLabRuntimeDefaultsActivation({
-      profileId: 'gold-markov-short-horizon',
-      assetScope: 'gold',
+    const sharedActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'multi-asset-markov-short-horizon',
+      assetScope: 'shared',
       mutation: MULTI_ASSET_LONGER_STABILITY_WINDOW,
     });
+    const goldActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'future-gold-markov-short-horizon',
+      assetScope: 'gold',
+      mutation: MULTI_ASSET_SHORTER_REACTIVE_WINDOW,
+    });
 
-    const bothActive = [btcActivation, goldActivation] as const;
-    const afterGoldActivationBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', bothActive);
-    const afterGoldActivationGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', bothActive);
-    const afterGoldResetBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', [btcActivation]);
-    const afterGoldResetGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', [btcActivation]);
-    const afterGoldRestoreBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', bothActive);
-    const afterGoldRestoreGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', bothActive);
+    const sharedAndBtcActive = [btcActivation, sharedActivation] as const;
+    const allActive = [btcActivation, sharedActivation, goldActivation] as const;
+    const afterGoldActivationBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', allActive);
+    const afterGoldActivationSharedDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('shared', allActive);
+    const afterGoldActivationGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', allActive);
+    const afterGoldResetBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', sharedAndBtcActive);
+    const afterGoldResetSharedDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('shared', sharedAndBtcActive);
+    const afterGoldResetGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', sharedAndBtcActive);
+    const afterGoldRestoreBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', allActive);
+    const afterGoldRestoreSharedDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('shared', allActive);
+    const afterGoldRestoreGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', allActive);
 
     expectResolvedDefaultsToMatchMutation(afterGoldActivationBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
-    expectResolvedDefaultsToMatchMutation(afterGoldActivationGoldDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldActivationSharedDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldActivationGoldDefaults, MULTI_ASSET_SHORTER_REACTIVE_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldResetBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
-    expectResolvedDefaultsToMatchShipped(afterGoldResetGoldDefaults);
+    expectResolvedDefaultsToMatchMutation(afterGoldResetSharedDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldResetGoldDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldRestoreBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
-    expectResolvedDefaultsToMatchMutation(afterGoldRestoreGoldDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldRestoreSharedDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldRestoreGoldDefaults, MULTI_ASSET_SHORTER_REACTIVE_WINDOW);
   });
 
   it('fails closed for the BTC ultra-short-horizon profile when parsed harness metrics are missing', async () => {
@@ -1377,12 +1453,12 @@ describe('forecast-lab runner', () => {
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
       expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
-      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback)
-        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow)
-        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
-      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime)
-        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+      const sharedEffectiveDefaults = resolveEffectiveRuntimeDefaults('shared');
+      const goldEffectiveDefaults = resolveEffectiveRuntimeDefaults('gold');
+      const btcEffectiveDefaults = resolveEffectiveRuntimeDefaults('btc');
+      expectResolvedDefaultsToMatchMutation(sharedEffectiveDefaults, MULTI_ASSET_SHORTER_REACTIVE_WINDOW);
+      expectResolvedDefaultsToMatchMutation(goldEffectiveDefaults, MULTI_ASSET_SHORTER_REACTIVE_WINDOW);
+      expectResolvedDefaultsToMatchShipped(btcEffectiveDefaults);
       const activeState = JSON.parse(readFileSync(result.activeStatePath, 'utf8')) as Record<string, unknown>;
       expect(activeState.profileId).toBe('multi-asset-markov-short-horizon');
       expect(activeState.sourceRunId).toBe('runner-test-promote-source');
@@ -1479,7 +1555,9 @@ describe('forecast-lab runner', () => {
       expect(existsSync(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'))).toBe(
         false,
       );
-      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback).toBe(runtimeDefaults.markov.momentumLookback);
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('shared'));
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('gold'));
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('btc'));
     } finally {
       restoreLiveMutableFiles(liveFiles);
       restoreRuntimeDefaults(runtimeDefaults);
@@ -1521,9 +1599,9 @@ describe('forecast-lab runner', () => {
         .toContain(`  scoreAggregationCalibrationWindow: ${runtimeDefaults.conformal.scoreAggregationCalibrationWindow},`);
       expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
         .toContain(`  minSamplesPerRegime: ${runtimeDefaults.regime.minSamplesPerRegime},`);
-      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback).toBe(runtimeDefaults.markov.momentumLookback);
-      expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow).toBe(runtimeDefaults.conformal.scoreAggregationCalibrationWindow);
-      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime).toBe(runtimeDefaults.regime.minSamplesPerRegime);
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('shared'));
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('gold'));
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('btc'));
       expect(existsSync(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'))).toBe(false);
       const resetArtifact = JSON.parse(readFileSync(result.resetArtifactPath, 'utf8')) as Record<string, unknown>;
       expect(resetArtifact.mode).toBe('defaults');
@@ -1587,12 +1665,22 @@ describe('forecast-lab runner', () => {
         .toContain(`  adaptiveBreakLearningRateMultiplier: ${SHIPPED_RUNTIME_DEFAULTS.conformal.adaptiveBreakLearningRateMultiplier},`);
       expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
-      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback)
+      const sharedEffectiveDefaults = resolveEffectiveRuntimeDefaults('shared');
+      const goldEffectiveDefaults = resolveEffectiveRuntimeDefaults('gold');
+      const btcEffectiveDefaults = resolveEffectiveRuntimeDefaults('btc');
+      expect(sharedEffectiveDefaults.markov.momentumLookback)
         .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay).toBe(0.97);
-      expect(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier).toBe(1.5);
-      expect(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime)
+      expect(sharedEffectiveDefaults.markov.transitionDecay).toBe(0.97);
+      expect(sharedEffectiveDefaults.conformal.adaptiveBreakLearningRateMultiplier).toBe(1.5);
+      expect(sharedEffectiveDefaults.regime.minSamplesPerRegime)
         .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+      expect(goldEffectiveDefaults.markov.momentumLookback)
+        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
+      expect(goldEffectiveDefaults.markov.transitionDecay).toBe(0.97);
+      expect(goldEffectiveDefaults.conformal.adaptiveBreakLearningRateMultiplier).toBe(1.5);
+      expect(goldEffectiveDefaults.regime.minSamplesPerRegime)
+        .toBe(getStructuredMutationNumericAfterValue(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+      expectResolvedDefaultsToMatchShipped(btcEffectiveDefaults);
       const activeState = JSON.parse(readFileSync(result.activeStatePath!, 'utf8')) as Record<string, unknown>;
       expect(activeState.sourceRunId).toBe(firstPromotion.sourceRunId);
       expect(activeState.promotionRunId).toBe(firstPromotion.runId);

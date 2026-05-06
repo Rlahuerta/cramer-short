@@ -18,6 +18,10 @@ import {
   ScoreAggregatedConformal,
   type AdaptiveConformalRecordDiagnostics,
 } from '../conformal.js';
+import {
+  resolveForecastLabRuntimeAssetScopeForTicker,
+  withForecastLabRuntimeAssetScope,
+} from '../forecast-lab-runtime-defaults.js';
 import type { RegimePlattFits } from '../regime-calibrator.js';
 import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
 
@@ -178,6 +182,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     warmup = 120,
     stride = 5,
   } = config;
+
+  const runtimeAssetScope = resolveForecastLabRuntimeAssetScopeForTicker(ticker);
+
+  return withForecastLabRuntimeAssetScope(runtimeAssetScope, async () => {
 
   const steps: BacktestStep[] = [];
   const errors: Array<{ t: number; error: string }> = [];
@@ -475,6 +483,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
   }
 
   return { ticker, horizon, steps, errors };
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ import { detectAssetType, extractSignals as extractSignalsFn } from '../tools/fi
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { fetchPolymarketMarkets } from '../tools/finance/polymarket.js';
 import {
-  RECOMMENDED_CONFIDENCE_THRESHOLD,
+  resolveForecastLabMarkovParameterDefaults,
   type MarkovDistributionPoint,
 } from '../tools/finance/markov-distribution.js';
 import { resolveProvider } from '../providers.js';
@@ -109,6 +109,10 @@ function inferRequestedBucketCount(query: string): number | null {
   if (!match) return null;
   const parsed = Number.parseInt(match[1]!, 10);
   return Number.isInteger(parsed) && parsed >= 2 ? parsed : null;
+}
+
+function getBtcSelectiveMarkovConfidenceThreshold(): number {
+  return resolveForecastLabMarkovParameterDefaults('btc').recommendedConfidenceThreshold;
 }
 
 function interpolateSurvivalProbability(
@@ -1351,6 +1355,9 @@ function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[])
   const desiredTicker = inferDistributionTicker(query);
   const desiredHorizon = inferMarkovQueryHorizon(query);
   const requiresSelectiveBtcGate = isBtcShortHorizonForecastQuery(query);
+  const selectiveBtcThreshold = requiresSelectiveBtcGate
+    ? getBtcSelectiveMarkovConfidenceThreshold()
+    : null;
 
   for (let i = toolCalls.length - 1; i >= 0; i--) {
     const call = toolCalls[i];
@@ -1372,7 +1379,7 @@ function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[])
       if (
         requiresSelectiveBtcGate
         && isFiniteNumber(predictionConfidence)
-        && predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD
+        && predictionConfidence < selectiveBtcThreshold!
       ) {
         return null;
       }
@@ -1535,7 +1542,7 @@ function extractMarkovArbiterEvidence(query: string, toolCalls: ToolCallRecord[]
 function hasLowConfidenceBtcShortHorizonMarkov(query: string, toolCalls: ToolCallRecord[]): boolean {
   if (!isBtcShortHorizonForecastQuery(query)) return false;
   const predictionConfidence = extractMarkovPredictionConfidenceForQuery(query, toolCalls);
-  return predictionConfidence !== null && predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD;
+  return predictionConfidence !== null && predictionConfidence < getBtcSelectiveMarkovConfidenceThreshold();
 }
 
 export function buildForcedMarketDataArgs(query: string): { query: string } | null {
@@ -2181,6 +2188,7 @@ export function buildLowConfidenceBtcShortHorizonForecastPrefix(query: string, t
   if (!hasLowConfidenceBtcShortHorizonMarkov(query, toolCalls)) return null;
 
   const predictionConfidence = extractMarkovPredictionConfidenceForQuery(query, toolCalls);
+  const selectiveBtcThreshold = getBtcSelectiveMarkovConfidenceThreshold();
   const confidenceText = predictionConfidence !== null
     ? predictionConfidence.toFixed(2)
     : 'N/A';
@@ -2188,7 +2196,7 @@ export function buildLowConfidenceBtcShortHorizonForecastPrefix(query: string, t
   return [
     '## Warning: BTC short-horizon selective Markov gate did not clear',
     '',
-    `The Markov run completed, but prediction confidence ${confidenceText} is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold. Do not treat the Markov direction here as part of the aggregate selective-accuracy slice or as a validated BTC edge. Read any forecast below as fallback context, not a selective Markov signal.`,
+    `The Markov run completed, but prediction confidence ${confidenceText} is below the ${selectiveBtcThreshold.toFixed(2)} selective threshold. Do not treat the Markov direction here as part of the aggregate selective-accuracy slice or as a validated BTC edge. Read any forecast below as fallback context, not a selective Markov signal.`,
     '',
     '---',
     '',
@@ -2222,7 +2230,7 @@ export function shouldInjectBtcShortHorizonLowConfidencePrompt(
   if (!match) return false;
 
   const predictionConfidence = Number.parseFloat(match[1]!);
-  return Number.isFinite(predictionConfidence) && predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD;
+  return Number.isFinite(predictionConfidence) && predictionConfidence < getBtcSelectiveMarkovConfidenceThreshold();
 }
 
 // ============================================================================

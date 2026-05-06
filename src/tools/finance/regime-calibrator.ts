@@ -21,6 +21,10 @@
  */
 
 import type { RegimeState } from './markov-distribution.js';
+import {
+  createForecastLabAssetScopedRuntimeDefaults,
+  type ForecastLabRuntimeAssetScope,
+} from './forecast-lab-runtime-defaults.js';
 
 const EPS = 1e-6;
 
@@ -67,7 +71,28 @@ export const FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS: Required<FitOptions> = {
   tol: 1e-6,
 };
 
-const DEFAULTS = FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS;
+const forecastLabRegimeCalibratorRuntimeDefaults = createForecastLabAssetScopedRuntimeDefaults(
+  FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS,
+);
+
+export function resolveForecastLabRegimeCalibratorDefaults(
+  assetScope?: ForecastLabRuntimeAssetScope,
+): Required<FitOptions> {
+  return forecastLabRegimeCalibratorRuntimeDefaults.resolve(assetScope);
+}
+
+export function getForecastLabRegimeCalibratorRuntimeDefaults(
+  assetScope: ForecastLabRuntimeAssetScope,
+): Partial<Required<FitOptions>> | undefined {
+  return forecastLabRegimeCalibratorRuntimeDefaults.get(assetScope);
+}
+
+export function setForecastLabRegimeCalibratorRuntimeDefaults(
+  assetScope: ForecastLabRuntimeAssetScope,
+  overrides?: Partial<Required<FitOptions>>,
+): void {
+  forecastLabRegimeCalibratorRuntimeDefaults.set(assetScope, overrides);
+}
 
 /**
  * Fit a Platt logistic on a single regime's samples.
@@ -121,7 +146,7 @@ export function fitRegimePlatt(
   samples: RegimeCalibrationSample[],
   options: FitOptions = {},
 ): RegimePlattFits {
-  const opts: Required<FitOptions> = { ...DEFAULTS, ...options };
+  const opts: Required<FitOptions> = { ...resolveForecastLabRegimeCalibratorDefaults(), ...options };
   const buckets: Record<RegimeState, { p: number[]; y: number[] }> = {
     bull: { p: [], y: [] },
     bear: { p: [], y: [] },

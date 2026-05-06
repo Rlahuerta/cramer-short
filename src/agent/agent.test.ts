@@ -284,6 +284,10 @@ const {
 } = await import('./agent.js');
  const { getForecastLabRoutingHint } = await import('./forecast-lab-routing.js');
 const { InMemoryChatHistory } = await import('../utils/in-memory-chat-history.js');
+const {
+  getForecastLabMarkovRuntimeDefaults,
+  setForecastLabMarkovRuntimeDefaults,
+} = await import('../tools/finance/markov-distribution.js');
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -987,6 +991,56 @@ describe('Agent', () => {
           'Forecast return: -0.4%\nGrade: B',
         ].join('\n');
         expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 7 days', results)).toBe(false);
+      });
+
+      it('uses the BTC runtime confidence threshold for selective gating', () => {
+        const query = 'Provide a BTC forecast for the next 14 days';
+        const toolCalls = [
+          {
+            tool: 'markov_distribution',
+            args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+            result: JSON.stringify({
+              data: {
+                _tool: 'markov_distribution',
+                status: 'ok',
+                canonical: {
+                  ticker: 'BTC-USD',
+                  horizon: 14,
+                  actionSignal: { expectedReturn: 0.032 },
+                  diagnostics: {
+                    markovWeight: 0.6,
+                    predictionConfidence: 0.19,
+                  },
+                },
+              },
+            }),
+          },
+          {
+            tool: 'polymarket_forecast',
+            args: { ticker: 'BTC-USD', horizon_days: 14 },
+            result: JSON.stringify({
+              data: {
+                forecastReturn: -0.004,
+              },
+            }),
+          },
+        ];
+
+        const originalBtcRuntimeDefaults = getForecastLabMarkovRuntimeDefaults('btc');
+        try {
+          expect(buildLowConfidenceBtcShortHorizonForecastPrefix(query, toolCalls)).not.toBeNull();
+          expect(buildForecastDisagreementPrefix(query, toolCalls)).toBeNull();
+
+          setForecastLabMarkovRuntimeDefaults('btc', {
+            ...originalBtcRuntimeDefaults,
+            recommendedConfidenceThreshold: 0.15,
+          });
+
+          expect(buildLowConfidenceBtcShortHorizonForecastPrefix(query, toolCalls)).toBeNull();
+          expect(buildForecastDisagreementPrefix(query, toolCalls)).not.toBeNull();
+        } finally {
+          setForecastLabMarkovRuntimeDefaults('btc', originalBtcRuntimeDefaults);
+        }
       });
     });
 

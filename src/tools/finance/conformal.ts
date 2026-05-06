@@ -1,3 +1,8 @@
+import {
+  createForecastLabAssetScopedRuntimeDefaults,
+  type ForecastLabRuntimeAssetScope,
+} from './forecast-lab-runtime-defaults.js';
+
 /**
  * Online Conformal PID Wrapper.
  *
@@ -89,6 +94,29 @@ export const FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS: {
   scoreAggregationCalibrationWindow: 96,
 };
 
+const forecastLabConformalRuntimeDefaults = createForecastLabAssetScopedRuntimeDefaults(
+  FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS,
+);
+
+export function resolveForecastLabConformalParameterDefaults(
+  assetScope?: ForecastLabRuntimeAssetScope,
+): typeof FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS {
+  return forecastLabConformalRuntimeDefaults.resolve(assetScope);
+}
+
+export function getForecastLabConformalRuntimeDefaults(
+  assetScope: ForecastLabRuntimeAssetScope,
+): Partial<typeof FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS> | undefined {
+  return forecastLabConformalRuntimeDefaults.get(assetScope);
+}
+
+export function setForecastLabConformalRuntimeDefaults(
+  assetScope: ForecastLabRuntimeAssetScope,
+  overrides?: Partial<typeof FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS>,
+): void {
+  forecastLabConformalRuntimeDefaults.set(assetScope, overrides);
+}
+
 export class ConformalPID {
   readonly alpha: number;
   readonly targetCoverage: number;
@@ -105,14 +133,15 @@ export class ConformalPID {
   protected hits: number;
 
   constructor(opts: ConformalPIDOptions = {}) {
+    const defaults = resolveForecastLabConformalParameterDefaults();
     this.alpha = opts.alpha ?? 0.1;
     this.targetCoverage = 1 - this.alpha;
     this.q = Math.max(0, opts.initialRadius ?? 1.0);
-    this.lr = opts.learningRate ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.pidLearningRate;
+    this.lr = opts.learningRate ?? defaults.pidLearningRate;
     this.kp = opts.kp ?? 1.0;
     this.ki = opts.ki ?? 0.1;
     this.kd = opts.kd ?? 0.1;
-    this.gamma = opts.integralDecay ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.integralDecay;
+    this.gamma = opts.integralDecay ?? defaults.integralDecay;
     this.integral = 0;
     this.prevBias = 0;
     this.samples = 0;
@@ -192,14 +221,15 @@ export class AdaptiveConformalPID extends ConformalPID {
 
   constructor(opts: AdaptiveConformalPIDOptions = {}) {
     super(opts);
-    this.enabled = opts.enabled ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakEnabled;
+    const defaults = resolveForecastLabConformalParameterDefaults();
+    this.enabled = opts.enabled ?? defaults.adaptiveBreakEnabled;
     this.breakLearningRateMultiplier = Math.max(
       1,
-      opts.breakLearningRateMultiplier ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier,
+      opts.breakLearningRateMultiplier ?? defaults.adaptiveBreakLearningRateMultiplier,
     );
     this.cooloffWindow = Math.max(
       0,
-      Math.round(opts.cooloffWindow ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakCooloffWindow),
+      Math.round(opts.cooloffWindow ?? defaults.adaptiveBreakCooloffWindow),
     );
     this.lastAppliedRadius = this.q;
   }
@@ -312,11 +342,12 @@ export class ScoreAggregatedConformal {
   private readonly scores: number[] = [];
 
   constructor(opts: ScoreAggregatedConformalOptions = {}) {
+    const defaults = resolveForecastLabConformalParameterDefaults();
     this.alpha = opts.alpha ?? 0.1;
-    this.minSamples = Math.max(1, Math.round(opts.minSamples ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationMinSamples));
+    this.minSamples = Math.max(1, Math.round(opts.minSamples ?? defaults.scoreAggregationMinSamples));
     this.calibrationWindow = Math.max(
       this.minSamples,
-      Math.round(opts.calibrationWindow ?? FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow),
+      Math.round(opts.calibrationWindow ?? defaults.scoreAggregationCalibrationWindow),
     );
   }
 
