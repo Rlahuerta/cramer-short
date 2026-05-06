@@ -115,6 +115,54 @@ function passingRunner(calls: string[]): ForecastLabCommandRunner {
   };
 }
 
+function buildBtcUltraShortMetrics(params?: {
+  h1DirectionalAccuracy?: number;
+  h1BrierScore?: number;
+  h1RerunRate?: number;
+  h2DirectionalAccuracy?: number;
+  h3DirectionalAccuracy?: number;
+}): Record<string, Record<string, number>> {
+  return {
+    h1: {
+      directionalAccuracy: params?.h1DirectionalAccuracy ?? 0.62,
+      brierScore: params?.h1BrierScore ?? 0.252,
+      ciCoverage: 0.972,
+      rerunRate: params?.h1RerunRate ?? 0.75,
+    },
+    h2: {
+      directionalAccuracy: params?.h2DirectionalAccuracy ?? 0.52,
+      brierScore: 0.254,
+      ciCoverage: 0.989,
+      rerunRate: 0,
+    },
+    h3: {
+      directionalAccuracy: params?.h3DirectionalAccuracy ?? 0.56,
+      brierScore: 0.261,
+      ciCoverage: 0.978,
+      rerunRate: 0.30,
+    },
+  };
+}
+
+function btcMetricsRunner(calls: string[], metricsByPhase?: {
+  baseline?: Record<string, Record<string, number>>;
+  candidate?: Record<string, Record<string, number>>;
+}): ForecastLabCommandRunner {
+  return async (command, context) => {
+    calls.push(`${context.phase}:${command.id}`);
+    const metrics = metricsByPhase?.[context.phase] ?? buildBtcUltraShortMetrics();
+    return {
+      id: command.id,
+      command: command.command,
+      exitCode: 0,
+      stdout: `${context.phase} ok\nFORECAST_LAB_METRICS ${JSON.stringify(metrics)}\n`,
+      stderr: '',
+      durationMs: 1,
+      timedOut: false,
+    };
+  };
+}
+
 const LIVE_MUTABLE_FILES = [
   'src/tools/finance/markov-distribution.ts',
   'src/tools/finance/conformal.ts',
@@ -485,6 +533,89 @@ describe('forecast-lab runner', () => {
     expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).toMatchObject({
       runId: 'runner-test-failed-candidate',
       decision: 'drop',
+    });
+  });
+
+  it('uses parsed BTC harness metrics for the ultra-short-horizon keep/drop decision', async () => {
+    const calls: string[] = [];
+    const baselineMetrics = buildBtcUltraShortMetrics({
+      h1DirectionalAccuracy: 0.62,
+      h1BrierScore: 0.252,
+      h1RerunRate: 0.75,
+      h2DirectionalAccuracy: 0.52,
+      h3DirectionalAccuracy: 0.56,
+    });
+    const candidateMetrics = buildBtcUltraShortMetrics({
+      h1DirectionalAccuracy: 0.64,
+      h1BrierScore: 0.247,
+      h1RerunRate: 0.78,
+      h2DirectionalAccuracy: 0.51,
+      h3DirectionalAccuracy: 0.55,
+    });
+
+    const result = await runForecastLab({
+      profileId: 'btc-markov-ultra-short-horizon',
+      dryRun: true,
+      runId: 'runner-test-btc-metric-gate',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: btcMetricsRunner(calls, {
+        baseline: baselineMetrics,
+        candidate: candidateMetrics,
+      }),
+    });
+
+    expect(calls).toEqual([
+      'baseline:walk-forward-btc-ultra-short-horizon',
+      'candidate:walk-forward-btc-ultra-short-horizon',
+    ]);
+    expect(result.decision.decision).toBe('keep');
+    expect(result.decision.reason).toContain('candidate BTC 1d directional accuracy must improve');
+    expect(result.decision.metrics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'walkForwardBtcUltraShortHorizonTestExitCode',
+          baseline: 0,
+          candidate: 0,
+          delta: 0,
+        }),
+        expect.objectContaining({
+          name: 'btcUltraShortH1DirectionalAccuracy',
+          baseline: 0.62,
+          candidate: 0.64,
+          delta: 0.020000000000000018,
+        }),
+      ]),
+    );
+
+    const runDir = getExperimentRunDir('runner-test-btc-metric-gate');
+    const baseline = JSON.parse(readFileSync(join(runDir, 'baseline.json'), 'utf8')) as Record<string, unknown>;
+    const candidate = JSON.parse(readFileSync(join(runDir, 'candidate.json'), 'utf8')) as Record<string, unknown>;
+    expect(baseline.metrics).toEqual(baselineMetrics);
+    expect(candidate.metrics).toEqual(candidateMetrics);
+    expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).toMatchObject({
+      runId: 'runner-test-btc-metric-gate',
+      decision: 'keep',
+      baselineSummary: expect.objectContaining({
+        metrics: baselineMetrics,
+      }),
+      candidateSummary: expect.objectContaining({
+        metrics: candidateMetrics,
+      }),
+    });
+  });
+
+  it('fails closed for the BTC ultra-short-horizon profile when parsed harness metrics are missing', async () => {
+    const result = await runForecastLab({
+      profileId: 'btc-markov-ultra-short-horizon',
+      dryRun: true,
+      runId: 'runner-test-btc-metric-missing',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+
+    expect(result.decision).toMatchObject({
+      decision: 'drop',
+      reason: 'missing required metric: btcUltraShortH1DirectionalAccuracy',
     });
   });
 

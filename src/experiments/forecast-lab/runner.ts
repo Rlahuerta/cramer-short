@@ -77,6 +77,7 @@ export interface ForecastLabCommandResult {
   readonly stderr: string;
   readonly durationMs: number;
   readonly timedOut: boolean;
+  readonly metrics?: JsonValue;
 }
 
 export type ForecastLabCommandRunner = (
@@ -89,6 +90,7 @@ interface ForecastLabGateSummary {
   readonly cwd: string;
   readonly exitCode: number;
   readonly commands: readonly ForecastLabCommandResult[];
+  readonly metrics?: JsonValue;
 }
 
 interface ForecastLabMetricEvaluation {
@@ -221,6 +223,7 @@ const UNSAFE_SHELL_COMMAND_PATTERN = /[;&|`<>]|\$\(/;
 const UNSAFE_GIT_COMMAND_PATTERN = /\bgit\s+(?:add|commit|push|reset|checkout|clean)\b/;
 const SAFE_PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const FORECAST_LAB_ACTIVE_STATE_DIR = 'active-promotions';
+const FORECAST_LAB_METRICS_PREFIX = 'FORECAST_LAB_METRICS ';
 
 type ForecastLabMutableParameterDefaults = Record<string, ForecastLabMutationScalarValue>;
 
@@ -569,6 +572,33 @@ export function createForecastLabCommandRunner(spawnProcess: typeof spawn): Fore
 
 export const defaultForecastLabCommandRunner = createForecastLabCommandRunner(spawn);
 
+function parseForecastLabMetrics(output: string): JsonValue | undefined {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.startsWith(FORECAST_LAB_METRICS_PREFIX)) {
+      continue;
+    }
+
+    const payload = line.slice(FORECAST_LAB_METRICS_PREFIX.length).trim();
+    if (!payload) {
+      return undefined;
+    }
+
+    try {
+      return JSON.parse(payload) as JsonValue;
+    } catch {
+      return undefined;
+    }
+  }
+
+  return undefined;
+}
+
 async function runGate(
   phase: ForecastLabGatePhase,
   profile: ForecastLabProfile,
@@ -585,14 +615,25 @@ async function runGate(
     progress?.(`${phase}: running ${command.id} — ${command.command}`);
     const result = await commandRunner(command, { phase, profile, runId, cwd, output });
     progress?.(`${phase}: completed ${command.id} (exit ${result.exitCode}, ${result.durationMs}ms)`);
-    results.push(result);
+    const metrics = parseForecastLabMetrics(result.stdout);
+    results.push(metrics === undefined ? result : { ...result, metrics });
   }
+
+  const commandsWithMetrics = results.filter((result) => result.metrics !== undefined);
+  const summaryMetrics = commandsWithMetrics.length === 0
+    ? undefined
+    : commandsWithMetrics.length === 1
+      ? commandsWithMetrics[0].metrics
+      : Object.fromEntries(
+          commandsWithMetrics.map((result) => [result.id, result.metrics]),
+        ) as JsonValue;
 
   return {
     phase,
     cwd,
     exitCode: results.some((result) => result.exitCode !== 0) ? 1 : 0,
     commands: results,
+    ...(summaryMetrics !== undefined ? { metrics: summaryMetrics } : {}),
   };
 }
 
@@ -692,11 +733,13 @@ function dropSkippedMutation(decision: ForecastLabDecisionSummary): ForecastLabD
 function summarizeForLedger(summary: ForecastLabGateSummary): JsonValue {
   return {
     exitCode: summary.exitCode,
+    ...(summary.metrics !== undefined ? { metrics: summary.metrics } : {}),
     commands: summary.commands.map((command) => ({
       id: command.id,
       exitCode: command.exitCode,
       durationMs: command.durationMs,
       timedOut: command.timedOut,
+      ...(command.metrics !== undefined ? { metrics: command.metrics } : {}),
     })),
   };
 }

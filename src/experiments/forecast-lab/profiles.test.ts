@@ -47,7 +47,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
       {
         id: 'walk-forward-btc-ultra-short-horizon',
         command: 'bun test src/tools/finance/backtest/walk-forward-btc-ultra-short-horizon.test.ts --timeout 360000',
-        env: { RUN_INTEGRATION: '1' },
+        env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
         timeoutMs: 360_000,
       },
     ],
@@ -405,6 +405,10 @@ describe('forecast-lab profiles', () => {
 
   it('uses only command-status metric paths for profiles backed by Bun test commands', () => {
     for (const profile of listForecastLabProfiles()) {
+      if (profile.id === 'btc-markov-ultra-short-horizon') {
+        continue;
+      }
+
       const commands = [...profile.baselineCommands, ...profile.candidateCommands];
       const statusOnlyCommands = commands.every((command) => command.command.startsWith('bun test '));
 
@@ -422,8 +426,8 @@ describe('forecast-lab profiles', () => {
     }
   });
 
-  it('gates current Phase 3 profiles on command status rather than unexported harness metrics', () => {
-    for (const profileId of EXPECTED_PROFILE_IDS) {
+  it('keeps exit-code-only gates for non-BTC Bun-test profiles', () => {
+    for (const profileId of EXPECTED_PROFILE_IDS.filter((candidate) => candidate !== 'btc-markov-ultra-short-horizon')) {
       const profile = getForecastLabProfile(profileId);
       const expected = EXPECTED_COMMAND_STATUS_PROFILES[profileId];
       const metricNames = profile.minimumMetrics.map((metric) => metric.name);
@@ -451,5 +455,70 @@ describe('forecast-lab profiles', () => {
         expected.metricName,
       ]);
     }
+  });
+
+  it('uses a metric-aware BTC ultra-short-horizon gate over parsed harness metrics', () => {
+    const profile = getForecastLabProfile('btc-markov-ultra-short-horizon');
+    const metricNames = profile.minimumMetrics.map((metric) => metric.name);
+
+    expect(profile.baselineCommands).toEqual(profile.candidateCommands);
+    expect(profile.baselineCommands).toEqual(EXPECTED_COMMAND_STATUS_PROFILES['btc-markov-ultra-short-horizon'].commands);
+    expect(metricNames).toEqual([
+      'walkForwardBtcUltraShortHorizonTestExitCode',
+      'btcUltraShortH1DirectionalAccuracy',
+      'btcUltraShortH1BrierScore',
+      'btcUltraShortH1RerunRate',
+      'btcUltraShortH2DirectionalAccuracy',
+      'btcUltraShortH3DirectionalAccuracy',
+    ]);
+    expect(profile.minimumMetrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'btcUltraShortH1DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h1.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h1.directionalAccuracy',
+        direction: 'higher-is-better',
+      }),
+      expect.objectContaining({
+        name: 'btcUltraShortH1BrierScore',
+        baselinePath: 'baseline.metrics.h1.brierScore',
+        candidatePath: 'candidate.metrics.h1.brierScore',
+        direction: 'lower-is-better',
+      }),
+      expect.objectContaining({
+        name: 'btcUltraShortH1RerunRate',
+        baselinePath: 'baseline.metrics.h1.rerunRate',
+        candidatePath: 'candidate.metrics.h1.rerunRate',
+        direction: 'lower-is-better',
+      }),
+      expect.objectContaining({
+        name: 'btcUltraShortH2DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h2.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h2.directionalAccuracy',
+        direction: 'higher-is-better',
+      }),
+      expect.objectContaining({
+        name: 'btcUltraShortH3DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h3.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h3.directionalAccuracy',
+        direction: 'higher-is-better',
+      }),
+    ]));
+    expect(profile.keepDropRule.keepWhen.all.map((criterion) => criterion.metric)).toEqual([
+      'walkForwardBtcUltraShortHorizonTestExitCode',
+      'walkForwardBtcUltraShortHorizonTestExitCode',
+      'btcUltraShortH1DirectionalAccuracy',
+      'btcUltraShortH1BrierScore',
+      'btcUltraShortH1RerunRate',
+      'btcUltraShortH1RerunRate',
+      'btcUltraShortH2DirectionalAccuracy',
+      'btcUltraShortH3DirectionalAccuracy',
+    ]);
+    expect(profile.keepDropRule.dropWhen.any.map((criterion) => criterion.metric)).toEqual([
+      'walkForwardBtcUltraShortHorizonTestExitCode',
+      'btcUltraShortH1DirectionalAccuracy',
+      'btcUltraShortH2DirectionalAccuracy',
+      'btcUltraShortH3DirectionalAccuracy',
+      'btcUltraShortH1RerunRate',
+    ]);
   });
 });
