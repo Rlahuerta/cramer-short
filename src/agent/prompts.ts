@@ -5,7 +5,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getChannelProfile } from './channels.js';
 import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
-import { isExplicitPolymarketForecastRequest, shouldInjectBtcShortHorizonLowConfidencePrompt, shouldInjectBtcShortHorizonMixedEvidencePrompt } from './agent.js';
+import {
+  isExplicitGoldCombinedMarkovPolymarketRequest,
+  isExplicitPolymarketForecastRequest,
+  shouldInjectBtcShortHorizonLowConfidencePrompt,
+  shouldInjectBtcShortHorizonMixedEvidencePrompt,
+} from './agent.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { cramerShortPath } from '../utils/paths.js';
 import type { ForecastLabRoutingHint } from './forecast-lab-routing.js';
@@ -619,6 +624,14 @@ IMPORTANT: The canonical Markov payload contains a regime/action mismatch. You M
     prompt += `
 
 IMPORTANT: forecast_arbitrator returned NO_TRADE. That is the final trading decision. You may still show the raw Markov actionSignal inside the Markov evidence block, but frame it as subordinate model evidence (for example, a weak bearish tilt inside a no-trade setup), not as the action the user should take.`;
+  }
+
+  const explicitGoldCombinedForecast = isExplicitGoldCombinedMarkovPolymarketRequest(originalQuery);
+  const hasPolymarketForecastOutput = /\bpolymarket_forecast\b/.test(fullToolResults);
+  if (explicitGoldCombinedForecast && hasCanonicalMarkovOutput && hasPolymarketForecastOutput) {
+    prompt += `
+
+IMPORTANT: This is an explicit combined GOLD Markov + Polymarket workflow. Keep the Markov and Polymarket sections separate. Present a Markov block first using only the Markov payload, then a Polymarket block using only the Polymarket payload and quoted market questions/probabilities. Do NOT collapse them into one blended gold forecast. If forecast_arbitrator is present, the forecast_arbitrator verdict comes after those evidence blocks as the trade/action layer, not as a replacement for the underlying evidence.`;
   }
 
   const hasAbstainingMarkovOutput =

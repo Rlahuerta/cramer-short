@@ -360,6 +360,29 @@ describe('buildIterationPrompt', () => {
     }
   });
 
+  it('preserves separate Markov and Polymarket evidence blocks for explicit GOLD combined requests', () => {
+    const results = [
+      '### markov_distribution(ticker=GLD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.018},"diagnostics":{"predictionConfidence":0.67}}}}',
+      '### get_market_data(query=GLD current price)',
+      '{"data":{"get_stock_price_GLD":{"ticker":"GLD","price":312.45}}}',
+      '### polymarket_forecast(ticker=GLD)',
+      '{"data":{"forecastReturn":-0.012,"result":"Polymarket Forecast: GLD | Horizon: 30 days | Grade: B+ (78/100)\\nWill gold finish May above $3,250?: 39% YES"}}',
+      '### forecast_arbitrator(ticker=GLD)',
+      '{"data":{"result":{"verdict":"NO_TRADE","preferredDirection":"neutral","shouldEnterNow":false}}}',
+    ].join('\n');
+
+    const prompt = buildIterationPrompt(
+      'Provide a GOLD price forecast based on markov chain and polymarket for the next 30 days with trade direction',
+      results,
+    );
+
+    expect(prompt).toContain('combined GOLD Markov + Polymarket workflow');
+    expect(prompt).toContain('Keep the Markov and Polymarket sections separate');
+    expect(prompt).toContain('Do NOT collapse them into one blended gold forecast');
+    expect(prompt).toContain('forecast_arbitrator verdict comes after those evidence blocks');
+  });
+
   it('does not inject canonical markov guard for non-markov tool output', () => {
     const results = '### get_market_data(query=BTC)\n{"data":{"ticker":"BTC-USD"}}';
     const prompt = buildIterationPrompt('BTC query', results);

@@ -830,6 +830,88 @@ describe('Agent', () => {
       expect(done).toBeDefined();
     });
 
+    it('forces the explicit GOLD combined workflow in Markov → market data → Polymarket → arbiter order', async () => {
+      const requestToolApproval = mock(async () => 'allow' as const);
+      const agent = await Agent.create({ maxIterations: 10, requestToolApproval: requestToolApproval as any });
+      const agentAny = agent as any;
+
+      agentAny.toolMap.set('markov_distribution', {
+        name: 'markov_distribution',
+        invoke: async () => JSON.stringify({
+          data: {
+            _tool: 'markov_distribution',
+            status: 'ok',
+            canonical: {
+              ticker: 'GLD',
+              currentPrice: 312.45,
+              scenarios: {
+                expectedReturn: 0.018,
+                pUp: 0.63,
+                buckets: [{ label: 'Up >3%', probability: 0.28 }],
+              },
+              actionSignal: {
+                recommendation: 'BUY',
+                expectedReturn: 0.018,
+              },
+              diagnostics: {
+                markovWeight: 0.82,
+                predictionConfidence: 0.67,
+              },
+            },
+          },
+        }),
+      });
+      agentAny.toolMap.set('get_market_data', {
+        name: 'get_market_data',
+        invoke: async () => JSON.stringify({
+          data: {
+            get_stock_price_GLD: {
+              ticker: 'GLD',
+              price: 312.45,
+            },
+          },
+        }),
+      });
+      agentAny.toolMap.set('polymarket_forecast', {
+        name: 'polymarket_forecast',
+        invoke: async () => JSON.stringify({
+          data: {
+            forecastReturn: -0.012,
+            result: 'Polymarket Forecast: GLD | Horizon: 30 days | Grade: B+ (78/100)\nWill gold finish May above $3,250?: 39% YES',
+          },
+        }),
+      });
+      agentAny.toolMap.set('forecast_arbitrator', {
+        name: 'forecast_arbitrator',
+        invoke: async () => JSON.stringify({
+          data: {
+            result: {
+              verdict: 'NO_TRADE',
+              preferredDirection: 'neutral',
+              shouldEnterNow: false,
+            },
+          },
+        }),
+      });
+      agentAny.toolExecutor = new AgentToolExecutor(agentAny.toolMap);
+
+      const events = await collectEvents(
+        agent.run('Provide a GOLD price forecast based on markov chain and polymarket for the next 30 days with trade direction'),
+      );
+
+      const toolStarts = events
+        .filter((event) => event.type === 'tool_start')
+        .map((event) => (event as { tool: string }).tool)
+        .filter((tool) => ['markov_distribution', 'get_market_data', 'polymarket_forecast', 'forecast_arbitrator'].includes(tool));
+
+      expect(toolStarts).toEqual([
+        'markov_distribution',
+        'get_market_data',
+        'polymarket_forecast',
+        'forecast_arbitrator',
+      ]);
+    });
+
     it('done event includes toolCalls array', async () => {
       mockState.streamChunks = ['final answer'];
       const agent = await Agent.create({ maxIterations: 3 });

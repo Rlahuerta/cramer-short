@@ -362,6 +362,19 @@ export function isExplicitPolymarketForecastRequest(query: string): boolean {
     || (hasPolymarketMention && hasForecastIntent);
 }
 
+function isExplicitCombinedMarkovPolymarketRequest(query: string): boolean {
+  const lower = query.toLowerCase();
+  const hasMarkovMention = /\bmarkov(?: chain| distribution)?\b/.test(lower);
+  const hasPolymarketMention = /\bpolymarket\b/.test(lower) || lower.includes('polymarket_forecast');
+  const hasForecastIntent = /\b(?:forecast|prediction|predict|price target|price outlook|outlook)\b/.test(lower);
+  return hasMarkovMention && hasPolymarketMention && hasForecastIntent;
+}
+
+export function isExplicitGoldCombinedMarkovPolymarketRequest(query: string): boolean {
+  const resolved = resolveAssetIntent(query, extractTickersFn(query)[0] ?? null);
+  return resolved.assetClass === 'commodity_gold' && isExplicitCombinedMarkovPolymarketRequest(query);
+}
+
 export function shouldPreserveAbstainingBtcShortHorizonForecast(
   query: string,
   toolCalls: ToolCallRecord[],
@@ -1758,6 +1771,22 @@ export function shouldRerunPolymarketForecastWithMarkov(query: string, toolCalls
   return !hasCryptoPolymarketForecastCoverage(query, toolCalls);
 }
 
+export function shouldForceGoldCombinedForecastTools(query: string, toolCalls: ToolCallRecord[]): boolean {
+  if (!isExplicitGoldCombinedMarkovPolymarketRequest(query)) return false;
+  if (!hasSuccessfulMarkovDistributionForQuery(query, toolCalls)) return false;
+
+  const marketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
+  const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls);
+  const currentPrice = extractCurrentPriceForNonCryptoQuery(query, toolCalls);
+  const marketDataAttempted = marketDataArgs !== null && hasMarketDataQuery(toolCalls, marketDataArgs.query);
+
+  const needsCurrentPriceFetch = marketDataArgs !== null && currentPrice === null && !marketDataAttempted;
+  const needsForecastRun = forecastArgs !== null
+    && !hasPolymarketForecastCoverage(toolCalls, forecastArgs);
+
+  return needsCurrentPriceFetch || needsForecastRun || shouldForceGoldCombinedForecastArbitrator(query, toolCalls);
+}
+
 export function buildForcedOnchainArgs(query: string): { ticker: string; metrics: string[] } | null {
   const detected = detectAssetType(query);
   if (detected.type !== 'crypto' || !detected.ticker) return null;
@@ -2039,6 +2068,58 @@ export function buildForcedForecastArbiterArgs(query: string, toolCalls: ToolCal
 export function shouldForceForecastArbitrator(query: string, toolCalls: ToolCallRecord[]): boolean {
   if (hasForecastArbitratorForQuery(query, toolCalls)) return false;
   return buildForcedForecastArbiterArgs(query, toolCalls) !== null;
+}
+
+const GOLD_COMBINED_MATERIAL_DISAGREEMENT_THRESHOLD = 0.01;
+
+function detectGoldCombinedForecastDisagreement(query: string, toolCalls: ToolCallRecord[]): boolean {
+  if (!isExplicitGoldCombinedMarkovPolymarketRequest(query)) return false;
+
+  const markovReturn = extractMarkovReturnForQuery(query, toolCalls);
+  const polymarketReturn = extractPolymarketForecastReturnForQuery(query, toolCalls);
+  if (markovReturn === null || polymarketReturn === null) return false;
+
+  const oppositeDirections =
+    (markovReturn >= 0.001 && polymarketReturn <= -0.001)
+    || (markovReturn <= -0.001 && polymarketReturn >= 0.001);
+
+  return oppositeDirections
+    && Math.abs(markovReturn - polymarketReturn) >= GOLD_COMBINED_MATERIAL_DISAGREEMENT_THRESHOLD;
+}
+
+export function buildForcedGoldCombinedForecastArbiterArgs(
+  query: string,
+  toolCalls: ToolCallRecord[],
+): ForcedForecastArbiterArgs | null {
+  if (!detectGoldCombinedForecastDisagreement(query, toolCalls)) return null;
+
+  const ticker = inferDistributionTicker(query);
+  if (!ticker) return null;
+
+  const horizon = inferDistributionHorizon(query) ?? 7;
+  const markov = extractMarkovArbiterEvidence(query, toolCalls);
+  const polymarket = extractPolymarketArbiterEvidence(query, toolCalls);
+  if (!markov || !polymarket) return null;
+
+  const args: ForcedForecastArbiterArgs = {
+    ticker,
+    horizon_days: horizon,
+    markov,
+    polymarket,
+  };
+
+  const currentPrice = extractCurrentPriceForNonCryptoQuery(query, toolCalls);
+  if (currentPrice !== null) args.current_price = currentPrice;
+
+  const leverage = inferLeverageFromQuery(query);
+  if (leverage !== null) args.leverage = leverage;
+
+  return args;
+}
+
+export function shouldForceGoldCombinedForecastArbitrator(query: string, toolCalls: ToolCallRecord[]): boolean {
+  if (hasForecastArbitratorForQuery(query, toolCalls)) return false;
+  return buildForcedGoldCombinedForecastArbiterArgs(query, toolCalls) !== null;
 }
 
 function hasPrematureForecastArbitratorCall(response: AIMessage, query: string, toolCalls: ToolCallRecord[]): boolean {
@@ -2572,6 +2653,20 @@ export class Agent {
           }
         }
 
+        if (shouldForceGoldCombinedForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
+          const forced = yield* this.forceGoldCombinedForecastTools(ctx);
+          if (forced) {
+            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
+            currentPrompt = buildIterationPrompt(
+              query,
+              ctx.scratchpad.getToolResults(),
+              ctx.scratchpad.formatToolUsageForPrompt(),
+              forecastLabRoutingHint,
+            );
+            continue;
+          }
+        }
+
         const abstainingBtcForecastAnswer = buildAbstainingBtcShortHorizonForecastAnswer(
           query,
           ctx.scratchpad.getToolCallRecords(),
@@ -2629,6 +2724,20 @@ export class Agent {
 
       if (sequentialThinkingUsed && shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
         const forced = yield* this.forceMarkovDistribution(ctx);
+        if (forced) {
+          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
+          currentPrompt = buildIterationPrompt(
+            query,
+            ctx.scratchpad.getToolResults(),
+            ctx.scratchpad.formatToolUsageForPrompt(),
+            forecastLabRoutingHint,
+          );
+          continue;
+        }
+      }
+
+      if (sequentialThinkingUsed && shouldForceGoldCombinedForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
+        const forced = yield* this.forceGoldCombinedForecastTools(ctx);
         if (forced) {
           yield* this.manageContextThreshold(ctx, query, memoryFlushState);
           currentPrompt = buildIterationPrompt(
@@ -3156,6 +3265,48 @@ export class Agent {
             ok = false;
             break;
           }
+        }
+        forcedAny = forcedAny || ok;
+      }
+    }
+
+    return forcedAny;
+  }
+
+  /** Force the explicit GOLD combined seam after a usable Markov result exists. */
+  private async *forceGoldCombinedForecastTools(
+    ctx: RunContext,
+  ): AsyncGenerator<AgentEvent, boolean> {
+    let forcedAny = false;
+    const getToolCalls = () => ctx.scratchpad.getToolCallRecords();
+
+    const marketDataArgs = buildForcedNonCryptoMarketDataArgs(ctx.query);
+    if (marketDataArgs && !hasMarketDataQuery(getToolCalls(), marketDataArgs.query)) {
+      let ok = true;
+      for await (const event of this.toolExecutor.executeTool('get_market_data', marketDataArgs, ctx)) {
+        yield event;
+        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
+      }
+      forcedAny = forcedAny || ok;
+    }
+
+    const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(ctx.query, getToolCalls());
+    if (forecastArgs && !hasPolymarketForecastCoverage(getToolCalls(), forecastArgs)) {
+      let ok = true;
+      for await (const event of this.toolExecutor.executeTool('polymarket_forecast', forecastArgs, ctx)) {
+        yield event;
+        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
+      }
+      forcedAny = forcedAny || ok;
+    }
+
+    if (shouldForceGoldCombinedForecastArbitrator(ctx.query, getToolCalls())) {
+      const args = buildForcedGoldCombinedForecastArbiterArgs(ctx.query, getToolCalls());
+      if (args) {
+        let ok = true;
+        for await (const event of this.toolExecutor.executeTool('forecast_arbitrator', args, ctx)) {
+          yield event;
+          if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
         }
         forcedAny = forcedAny || ok;
       }
