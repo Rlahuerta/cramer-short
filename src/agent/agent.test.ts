@@ -812,6 +812,37 @@ describe('Agent', () => {
       expect(done?.answer).toContain('did not inspect experiment artifacts');
     });
 
+    it('keeps catalog-extension follow-ups working for shipped and GOLD-prefixed requested mutator ids', async () => {
+      for (const requestedMutatorId of [
+        'markov-entropy-adaptive-anchor-weighting',
+        'gold-markov-entropy-adaptive-anchor-weighting',
+      ]) {
+        forecastLabMockState.calls = [];
+        const history = new InMemoryChatHistory();
+        history.seedMessage({
+          query: 'Add a new shipped structured mutator.',
+          answer: `Requested mutator id: ${requestedMutatorId}.`,
+          summary: null,
+        });
+        const agent = await Agent.create({ maxIterations: 3 });
+        installForecastLabTool(agent as any);
+        const events = await collectEvents(
+          agent.run(`implement and run the ${requestedMutatorId}`, history),
+        );
+        const toolStarts = events.filter((event) => event.type === 'tool_start');
+        const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+        expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+        expect(forecastLabMockState.calls).toEqual([
+          {
+            action: 'catalog-extension-plan',
+            query: `implement and run the ${requestedMutatorId}`,
+          },
+        ]);
+        expect(done?.answer).toContain('bounded code-change plan');
+      }
+    });
+
     it('yields done with error message when LLM throws', async () => {
       mockState.invokeThrows = true;
 

@@ -33,7 +33,8 @@ function deepFreeze<T>(value: T): DeepReadonly<T> {
 
 export type ForecastLabMarkovMutatorProfileId =
   | 'multi-asset-markov-short-horizon'
-  | 'btc-markov-ultra-short-horizon';
+  | 'btc-markov-ultra-short-horizon'
+  | 'gold-markov-short-horizon';
 
 export type ForecastLabMutationScalarValue = boolean | number;
 
@@ -479,9 +480,248 @@ function buildCatalog(profileId: ForecastLabMarkovMutatorProfileId): readonly Fo
   ]);
 }
 
+function buildGoldCatalog(): readonly ForecastLabMarkovParameterMutationCandidate[] {
+  return deepFreeze([
+    buildCandidate({
+      id: 'gold-markov-shorter-reactive-window',
+      profileId: 'gold-markov-short-horizon',
+      summary: 'Tighten GOLD 1d/2d/3d adaptation windows for faster short-horizon recalibration.',
+      patchSummary: [
+        `markov-distribution.ts: momentumLookback ${FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback} → 12`,
+        `markov-distribution.ts: structuralBreakMinLength ${FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.structuralBreakMinLength} → 40`,
+        `conformal.ts: scoreAggregationMinSamples ${FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationMinSamples} → 14`,
+        `conformal.ts: scoreAggregationCalibrationWindow ${FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow} → 84`,
+        `regime-calibrator.ts: minSamplesPerRegime ${FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime} → 20`,
+      ],
+      edits: [
+        buildEdit({
+          filePath: MARKOV_FILE,
+          parameterId: 'momentumLookback',
+          beforeValue: FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback,
+          afterValue: 12,
+        }),
+        buildEdit({
+          filePath: MARKOV_FILE,
+          parameterId: 'structuralBreakMinLength',
+          beforeValue: FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.structuralBreakMinLength,
+          afterValue: 40,
+        }),
+        buildEdit({
+          filePath: CONFORMAL_FILE,
+          parameterId: 'scoreAggregationMinSamples',
+          beforeValue: FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationMinSamples,
+          afterValue: 14,
+        }),
+        buildEdit({
+          filePath: CONFORMAL_FILE,
+          parameterId: 'scoreAggregationCalibrationWindow',
+          beforeValue: FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow,
+          afterValue: 84,
+        }),
+        buildEdit({
+          filePath: REGIME_CALIBRATOR_FILE,
+          parameterId: 'minSamplesPerRegime',
+          beforeValue: FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime,
+          afterValue: 20,
+        }),
+      ],
+    }),
+    buildCandidate({
+      id: 'gold-markov-longer-stability-window',
+      profileId: 'gold-markov-short-horizon',
+      summary: 'Lengthen GOLD calibration windows to favor stabler 1d/2d/3d fits without relying on 7d/14d.',
+      patchSummary: [
+        `markov-distribution.ts: momentumLookback ${FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback} → 24`,
+        `markov-distribution.ts: structuralBreakMinLength ${FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.structuralBreakMinLength} → 64`,
+        `conformal.ts: scoreAggregationMinSamples ${FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationMinSamples} → 24`,
+        `conformal.ts: scoreAggregationCalibrationWindow ${FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow} → 132`,
+        `regime-calibrator.ts: minSamplesPerRegime ${FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime} → 32`,
+      ],
+      edits: [
+        buildEdit({
+          filePath: MARKOV_FILE,
+          parameterId: 'momentumLookback',
+          beforeValue: FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.momentumLookback,
+          afterValue: 24,
+        }),
+        buildEdit({
+          filePath: MARKOV_FILE,
+          parameterId: 'structuralBreakMinLength',
+          beforeValue: FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.structuralBreakMinLength,
+          afterValue: 64,
+        }),
+        buildEdit({
+          filePath: CONFORMAL_FILE,
+          parameterId: 'scoreAggregationMinSamples',
+          beforeValue: FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationMinSamples,
+          afterValue: 24,
+        }),
+        buildEdit({
+          filePath: CONFORMAL_FILE,
+          parameterId: 'scoreAggregationCalibrationWindow',
+          beforeValue: FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.scoreAggregationCalibrationWindow,
+          afterValue: 132,
+        }),
+        buildEdit({
+          filePath: REGIME_CALIBRATOR_FILE,
+          parameterId: 'minSamplesPerRegime',
+          beforeValue: FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime,
+          afterValue: 32,
+        }),
+      ],
+    }),
+    buildCandidate({
+      id: 'gold-markov-faster-decay-reaction',
+      profileId: 'gold-markov-short-horizon',
+      summary: 'Lower GOLD transition decay and modestly raise adaptive conformal sensitivity for quicker 1d resets.',
+      patchSummary: [
+        `markov-distribution.ts: transitionDecay ${FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay} → 0.95`,
+        `conformal.ts: adaptiveBreakLearningRateMultiplier ${FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier} → 1.65`,
+        `conformal.ts: adaptiveBreakCooloffWindow ${FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakCooloffWindow} → 1`,
+      ],
+      edits: [
+        buildEdit({
+          filePath: MARKOV_FILE,
+          parameterId: 'transitionDecay',
+          beforeValue: FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay,
+          afterValue: 0.95,
+        }),
+        buildEdit({
+          filePath: CONFORMAL_FILE,
+          parameterId: 'adaptiveBreakLearningRateMultiplier',
+          beforeValue: FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier,
+          afterValue: 1.65,
+        }),
+        buildEdit({
+          filePath: CONFORMAL_FILE,
+          parameterId: 'adaptiveBreakCooloffWindow',
+          beforeValue: FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakCooloffWindow,
+          afterValue: 1,
+        }),
+      ],
+    }),
+    buildCandidate({
+      id: 'gold-markov-slower-decay-persistence',
+      profileId: 'gold-markov-short-horizon',
+      summary: 'Raise GOLD transition decay and soften adaptive break sensitivity for steadier short-horizon persistence.',
+      patchSummary: [
+        `markov-distribution.ts: transitionDecay ${FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay} → 0.982`,
+        `conformal.ts: adaptiveBreakLearningRateMultiplier ${FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier} → 1.15`,
+        `conformal.ts: adaptiveBreakCooloffWindow ${FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakCooloffWindow} → 2`,
+      ],
+      edits: [
+        buildEdit({
+          filePath: MARKOV_FILE,
+          parameterId: 'transitionDecay',
+          beforeValue: FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.transitionDecay,
+          afterValue: 0.982,
+        }),
+        buildEdit({
+          filePath: CONFORMAL_FILE,
+          parameterId: 'adaptiveBreakLearningRateMultiplier',
+          beforeValue: FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakLearningRateMultiplier,
+          afterValue: 1.15,
+        }),
+        buildEdit({
+          filePath: CONFORMAL_FILE,
+          parameterId: 'adaptiveBreakCooloffWindow',
+          beforeValue: FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS.adaptiveBreakCooloffWindow,
+          afterValue: 2,
+        }),
+      ],
+    }),
+    buildCandidate({
+      id: 'gold-markov-lower-confidence-trend-penalty',
+      profileId: 'gold-markov-short-horizon',
+      summary: 'Lower the GOLD confidence gate while keeping trend-weighted break penalties conservative.',
+      patchSummary: [
+        `markov-distribution.ts: recommendedConfidenceThreshold ${FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.recommendedConfidenceThreshold} → 0.2`,
+      ],
+      edits: [
+        buildEdit({
+          filePath: MARKOV_FILE,
+          parameterId: 'recommendedConfidenceThreshold',
+          beforeValue: FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.recommendedConfidenceThreshold,
+          afterValue: 0.2,
+        }),
+      ],
+    }),
+    buildCandidate({
+      id: 'gold-markov-higher-confidence-divergence-weighted',
+      profileId: 'gold-markov-short-horizon',
+      summary: 'Raise the GOLD confidence gate and enable divergence-weighted break penalties.',
+      patchSummary: [
+        `markov-distribution.ts: recommendedConfidenceThreshold ${FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.recommendedConfidenceThreshold} → 0.28`,
+        `markov-distribution.ts: divergenceWeightedBreakConfidence ${FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.divergenceWeightedBreakConfidence} → true`,
+      ],
+      edits: [
+        buildEdit({
+          filePath: MARKOV_FILE,
+          parameterId: 'recommendedConfidenceThreshold',
+          beforeValue: FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.recommendedConfidenceThreshold,
+          afterValue: 0.28,
+        }),
+        buildEdit({
+          filePath: MARKOV_FILE,
+          parameterId: 'divergenceWeightedBreakConfidence',
+          beforeValue: FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.divergenceWeightedBreakConfidence,
+          afterValue: true,
+        }),
+      ],
+    }),
+    buildCandidate({
+      id: 'gold-markov-calibrator-higher-sample-floor',
+      profileId: 'gold-markov-short-horizon',
+      summary: 'Raise GOLD calibrator sample floors while slightly slowing the Platt update rate.',
+      patchSummary: [
+        `regime-calibrator.ts: minSamplesPerRegime ${FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime} → 34`,
+        `regime-calibrator.ts: learningRate ${FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.learningRate} → 0.04`,
+      ],
+      edits: [
+        buildEdit({
+          filePath: REGIME_CALIBRATOR_FILE,
+          parameterId: 'minSamplesPerRegime',
+          beforeValue: FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime,
+          afterValue: 34,
+        }),
+        buildEdit({
+          filePath: REGIME_CALIBRATOR_FILE,
+          parameterId: 'learningRate',
+          beforeValue: FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.learningRate,
+          afterValue: 0.04,
+        }),
+      ],
+    }),
+    buildCandidate({
+      id: 'gold-markov-calibrator-lower-sample-floor',
+      profileId: 'gold-markov-short-horizon',
+      summary: 'Lower GOLD calibrator sample floors and slightly increase the Platt update rate.',
+      patchSummary: [
+        `regime-calibrator.ts: minSamplesPerRegime ${FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime} → 18`,
+        `regime-calibrator.ts: learningRate ${FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.learningRate} → 0.065`,
+      ],
+      edits: [
+        buildEdit({
+          filePath: REGIME_CALIBRATOR_FILE,
+          parameterId: 'minSamplesPerRegime',
+          beforeValue: FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.minSamplesPerRegime,
+          afterValue: 18,
+        }),
+        buildEdit({
+          filePath: REGIME_CALIBRATOR_FILE,
+          parameterId: 'learningRate',
+          beforeValue: FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS.learningRate,
+          afterValue: 0.065,
+        }),
+      ],
+    }),
+  ]);
+}
+
 const CATALOG_BY_PROFILE = deepFreeze({
   'multi-asset-markov-short-horizon': buildCatalog('multi-asset-markov-short-horizon'),
   'btc-markov-ultra-short-horizon': buildCatalog('btc-markov-ultra-short-horizon'),
+  'gold-markov-short-horizon': buildGoldCatalog(),
 } as const satisfies Record<
   ForecastLabMarkovMutatorProfileId,
   readonly ForecastLabMarkovParameterMutationCandidate[]

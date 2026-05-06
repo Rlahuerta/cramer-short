@@ -125,12 +125,13 @@ const EXPECTED_MUTATION_CONFIGS = {
     allowMultipleCandidateAttempts: false,
   },
   'gold-markov-short-horizon': {
-    mode: 'dry-run',
+    mode: 'structured',
     mutableFiles: [
       'src/tools/finance/markov-distribution.ts',
       'src/tools/finance/conformal.ts',
       'src/tools/finance/regime-calibrator.ts',
     ],
+    allowedMutatorIds: ['search-replace'],
     allowMultipleCandidateAttempts: false,
   },
   'btc-arbiter-replay': {
@@ -554,7 +555,7 @@ describe('forecast-lab profiles', () => {
     ]);
   });
 
-  it('uses a guarded GOLD short-horizon gate over parsed harness metrics', () => {
+  it('uses a GOLD primary-horizon gate with 7d/14d safety guardrails over parsed harness metrics', () => {
     const profile = getForecastLabProfile('gold-markov-short-horizon');
     const metricNames = profile.minimumMetrics.map((metric) => metric.name);
 
@@ -606,8 +607,6 @@ describe('forecast-lab profiles', () => {
       'goldShortH1BrierScore',
       'goldShortH2BrierScore',
       'goldShortH3BrierScore',
-      'goldShortH7DirectionalAccuracy',
-      'goldShortH14DirectionalAccuracy',
     ]);
     expect(profile.keepDropRule.dropWhen.any.map((criterion) => criterion.metric)).toEqual([
       'walkForwardGoldShortHorizonTestExitCode',
@@ -620,6 +619,19 @@ describe('forecast-lab profiles', () => {
       'goldShortH7DirectionalAccuracy',
       'goldShortH14DirectionalAccuracy',
     ]);
-    expect(profile.mutation.mode).toBe('dry-run');
+    expect(profile.mutation.mode).toBe('structured');
+    if (profile.mutation.mode === 'structured') {
+      expect(profile.mutation.allowedMutatorIds).toEqual(['search-replace']);
+    }
+    expect(listForecastLabStructuredMutations('gold-markov-short-horizon').map((candidate) => candidate.id)).toEqual([
+      'gold-markov-shorter-reactive-window',
+      'gold-markov-longer-stability-window',
+      'gold-markov-faster-decay-reaction',
+      'gold-markov-slower-decay-persistence',
+      'gold-markov-lower-confidence-trend-penalty',
+      'gold-markov-higher-confidence-divergence-weighted',
+      'gold-markov-calibrator-higher-sample-floor',
+      'gold-markov-calibrator-lower-sample-floor',
+    ]);
   });
 });

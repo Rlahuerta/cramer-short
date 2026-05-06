@@ -388,6 +388,10 @@ function resolveForecastLabRuntimeAssetScopeForProfile(profile: ForecastLabProfi
     return 'btc';
   }
 
+  if (profile.id === 'gold-markov-short-horizon') {
+    return 'gold';
+  }
+
   if (profile.id === 'multi-asset-markov-short-horizon') {
     return 'shared';
   }

@@ -677,8 +677,12 @@ function isForecastLabComparisonIntent(query: string): boolean {
   return (hasBestReference && hasBaselineReference) || (hasBaselineReference && hasComparisonCue);
 }
 
+const FORECAST_LAB_NAMED_MUTATION_ID = /(?<![A-Za-z0-9_.-])((?:gold-)?markov-[A-Za-z0-9][A-Za-z0-9_.-]*)\b/i;
+const FORECAST_LAB_REQUESTED_MUTATION_ID = /\brequested\s+mutator\s+id:\s*((?:gold-)?markov-[A-Za-z0-9][A-Za-z0-9_.-]*)/gi;
+const FORECAST_LAB_REQUESTED_MUTATION_ID_CUE = /\brequested mutator id:\s*(?:gold-)?markov-/i;
+
 function extractForecastLabNamedMutationId(query: string): string | undefined {
-  const candidate = query.match(/\b(markov-[A-Za-z0-9][A-Za-z0-9_.-]*)\b/i)?.[1];
+  const candidate = query.match(FORECAST_LAB_NAMED_MUTATION_ID)?.[1];
   return candidate?.replace(/[.,!?;:]+$/, '');
 }
 
@@ -687,7 +691,7 @@ function extractForecastLabComparisonMutationId(query: string): string | undefin
 }
 
 function extractForecastLabRequestedMutationId(text: string): string | undefined {
-  const matches = [...text.matchAll(/\brequested\s+mutator\s+id:\s*(markov-[A-Za-z0-9][A-Za-z0-9_.-]*)/gi)];
+  const matches = [...text.matchAll(FORECAST_LAB_REQUESTED_MUTATION_ID)];
   const candidate = matches.at(-1)?.[1];
   return candidate?.replace(/[.,!?;:]+$/, '');
 }
@@ -778,7 +782,7 @@ function isForecastLabCatalogExtensionIntent(query: string, historyText = ''): b
     hasImplementationExecutionCue
     && (
       /\bcatalog-extension plan\b/i.test(historyText)
-      || /\brequested mutator id:\s*markov-/i.test(historyText)
+      || FORECAST_LAB_REQUESTED_MUTATION_ID_CUE.test(historyText)
       || hasForecastLabCatalogExtensionContext(contextText)
     )
   ) || (

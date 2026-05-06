@@ -91,6 +91,8 @@ const RUN_IDS = [
   'runner-test-promote-missing-payload-verify',
   'runner-test-promote-regression-source',
   'runner-test-promote-regression-verify',
+  'runner-test-gold-metric-gate',
+  'runner-test-gold-guardrail-reject',
   'runner-test-reset-source-a',
   'runner-test-reset-promote-a',
   'runner-test-reset-source-b',
@@ -169,6 +171,64 @@ function btcMetricsRunner(calls: string[], metricsByPhase?: {
   return async (command, context) => {
     calls.push(`${context.phase}:${command.id}`);
     const metrics = metricsByPhase?.[context.phase] ?? buildBtcUltraShortMetrics();
+    return {
+      id: command.id,
+      command: command.command,
+      exitCode: 0,
+      stdout: `${context.phase} ok\nFORECAST_LAB_METRICS ${JSON.stringify(metrics)}\n`,
+      stderr: '',
+      durationMs: 1,
+      timedOut: false,
+    };
+  };
+}
+
+function buildGoldShortMetrics(params?: {
+  h1DirectionalAccuracy?: number;
+  h2DirectionalAccuracy?: number;
+  h3DirectionalAccuracy?: number;
+  h1BrierScore?: number;
+  h2BrierScore?: number;
+  h3BrierScore?: number;
+  h7DirectionalAccuracy?: number;
+  h14DirectionalAccuracy?: number;
+}): Record<string, Record<string, number>> {
+  return {
+    h1: {
+      directionalAccuracy: params?.h1DirectionalAccuracy ?? 0.58,
+      brierScore: params?.h1BrierScore ?? 0.248,
+      ciCoverage: 0.964,
+    },
+    h2: {
+      directionalAccuracy: params?.h2DirectionalAccuracy ?? 0.55,
+      brierScore: params?.h2BrierScore ?? 0.251,
+      ciCoverage: 0.972,
+    },
+    h3: {
+      directionalAccuracy: params?.h3DirectionalAccuracy ?? 0.57,
+      brierScore: params?.h3BrierScore ?? 0.256,
+      ciCoverage: 0.975,
+    },
+    h7: {
+      directionalAccuracy: params?.h7DirectionalAccuracy ?? 0.64,
+      brierScore: 0.244,
+      ciCoverage: 0.983,
+    },
+    h14: {
+      directionalAccuracy: params?.h14DirectionalAccuracy ?? 0.68,
+      brierScore: 0.238,
+      ciCoverage: 0.989,
+    },
+  };
+}
+
+function goldMetricsRunner(calls: string[], metricsByPhase?: {
+  baseline?: Record<string, Record<string, number>>;
+  candidate?: Record<string, Record<string, number>>;
+}): ForecastLabCommandRunner {
+  return async (command, context) => {
+    calls.push(`${context.phase}:${command.id}`);
+    const metrics = metricsByPhase?.[context.phase] ?? buildGoldShortMetrics();
     return {
       id: command.id,
       command: command.command,
@@ -263,7 +323,7 @@ const SHIPPED_LIVE_FILES = new Map(
 const SHIPPED_RUNTIME_DEFAULTS = snapshotRuntimeDefaults();
 
 function getStructuredMutationFixture(
-  profileId: 'multi-asset-markov-short-horizon' | 'btc-markov-ultra-short-horizon',
+  profileId: 'multi-asset-markov-short-horizon' | 'btc-markov-ultra-short-horizon' | 'gold-markov-short-horizon',
   mutationId: string,
 ): ForecastLabMarkovParameterMutationCandidate {
   const mutation = listForecastLabStructuredMutations(profileId).find((candidate) => candidate.id === mutationId);
@@ -346,6 +406,10 @@ const MULTI_ASSET_LONGER_STABILITY_WINDOW = getStructuredMutationFixture(
 const BTC_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
   'btc-markov-ultra-short-horizon',
   'markov-shorter-reactive-window',
+);
+const GOLD_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
+  'gold-markov-short-horizon',
+  'gold-markov-shorter-reactive-window',
 );
 
 function appendStructuredMutationHistory(params: {
@@ -681,7 +745,111 @@ describe('forecast-lab runner', () => {
     });
   });
 
-  it('documents that mutating shared live defaults would leak a future GOLD activation into BTC', () => {
+  it('uses parsed GOLD harness metrics for the 1d-first keep/drop decision', async () => {
+    const calls: string[] = [];
+    const baselineMetrics = buildGoldShortMetrics({
+      h1DirectionalAccuracy: 0.58,
+      h2DirectionalAccuracy: 0.55,
+      h3DirectionalAccuracy: 0.57,
+      h1BrierScore: 0.248,
+      h2BrierScore: 0.251,
+      h3BrierScore: 0.256,
+      h7DirectionalAccuracy: 0.64,
+      h14DirectionalAccuracy: 0.68,
+    });
+    const candidateMetrics = buildGoldShortMetrics({
+      h1DirectionalAccuracy: 0.595,
+      h2DirectionalAccuracy: 0.545,
+      h3DirectionalAccuracy: 0.56,
+      h1BrierScore: 0.245,
+      h2BrierScore: 0.255,
+      h3BrierScore: 0.26,
+      h7DirectionalAccuracy: 0.6,
+      h14DirectionalAccuracy: 0.65,
+    });
+
+    const result = await runForecastLab({
+      profileId: 'gold-markov-short-horizon',
+      dryRun: true,
+      runId: 'runner-test-gold-metric-gate',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: goldMetricsRunner(calls, {
+        baseline: baselineMetrics,
+        candidate: candidateMetrics,
+      }),
+    });
+
+    expect(calls).toEqual([
+      'baseline:walk-forward-gold-short-horizon',
+      'candidate:walk-forward-gold-short-horizon',
+    ]);
+    expect(result.decision.decision).toBe('keep');
+    expect(result.decision.reason).toContain('candidate GOLD 1d directional accuracy must improve');
+    expect(result.decision.metrics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'goldShortH1DirectionalAccuracy',
+          baseline: 0.58,
+          candidate: 0.595,
+          delta: 0.015000000000000013,
+        }),
+        expect.objectContaining({
+          name: 'goldShortH7DirectionalAccuracy',
+          baseline: 0.64,
+          candidate: 0.6,
+          delta: -0.040000000000000036,
+        }),
+      ]),
+    );
+    expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).toMatchObject({
+      runId: 'runner-test-gold-metric-gate',
+      decision: 'keep',
+      baselineSummary: expect.objectContaining({
+        metrics: baselineMetrics,
+      }),
+      candidateSummary: expect.objectContaining({
+        metrics: candidateMetrics,
+      }),
+    });
+  });
+
+  it('does not keep GOLD candidates on 7d/14d guardrails alone when 1d regresses', async () => {
+    const result = await runForecastLab({
+      profileId: 'gold-markov-short-horizon',
+      dryRun: true,
+      runId: 'runner-test-gold-guardrail-reject',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: goldMetricsRunner([], {
+        baseline: buildGoldShortMetrics({
+          h1DirectionalAccuracy: 0.58,
+          h2DirectionalAccuracy: 0.55,
+          h3DirectionalAccuracy: 0.57,
+          h1BrierScore: 0.248,
+          h2BrierScore: 0.251,
+          h3BrierScore: 0.256,
+          h7DirectionalAccuracy: 0.64,
+          h14DirectionalAccuracy: 0.68,
+        }),
+        candidate: buildGoldShortMetrics({
+          h1DirectionalAccuracy: 0.572,
+          h2DirectionalAccuracy: 0.558,
+          h3DirectionalAccuracy: 0.575,
+          h1BrierScore: 0.246,
+          h2BrierScore: 0.25,
+          h3BrierScore: 0.255,
+          h7DirectionalAccuracy: 0.9,
+          h14DirectionalAccuracy: 0.93,
+        }),
+      }),
+    });
+
+    expect(result.decision).toMatchObject({
+      decision: 'drop',
+      reason: 'drop when GOLD 1d directional accuracy regresses by more than 0.25 percentage points',
+    });
+  });
+
+  it('documents that mutating shipped shared defaults would leak a GOLD activation into BTC', () => {
     const runtimeDefaults = snapshotRuntimeDefaults();
 
     try {
@@ -718,7 +886,7 @@ describe('forecast-lab runner', () => {
     }
   });
 
-  it('resolves shipped defaults, shared multi-asset overrides, BTC overrides, and future GOLD overrides by asset scope', () => {
+  it('resolves shipped defaults, shared multi-asset overrides, BTC overrides, and GOLD overrides by asset scope', () => {
     const btcActivation = buildForecastLabRuntimeDefaultsActivation({
       profileId: 'btc-markov-ultra-short-horizon',
       assetScope: 'btc',
@@ -730,9 +898,9 @@ describe('forecast-lab runner', () => {
       mutation: MULTI_ASSET_LONGER_STABILITY_WINDOW,
     });
     const goldActivation = buildForecastLabRuntimeDefaultsActivation({
-      profileId: 'future-gold-markov-short-horizon',
+      profileId: 'gold-markov-short-horizon',
       assetScope: 'gold',
-      mutation: MULTI_ASSET_SHORTER_REACTIVE_WINDOW,
+      mutation: GOLD_SHORTER_REACTIVE_WINDOW,
     });
 
     const baseSharedDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('shared');
@@ -747,10 +915,10 @@ describe('forecast-lab runner', () => {
     expectResolvedDefaultsToMatchMutation(sharedActiveDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
     expectResolvedDefaultsToMatchMutation(goldInheritedSharedDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
     expectResolvedDefaultsToMatchMutation(btcActiveDefaults, BTC_SHORTER_REACTIVE_WINDOW);
-    expectResolvedDefaultsToMatchMutation(goldActiveDefaults, MULTI_ASSET_SHORTER_REACTIVE_WINDOW);
+    expectResolvedDefaultsToMatchMutation(goldActiveDefaults, GOLD_SHORTER_REACTIVE_WINDOW);
   });
 
-  it('keeps shared and future GOLD activation, reset, and restore isolated from BTC effective runtime defaults', () => {
+  it('keeps shared and GOLD activation, reset, and restore isolated from BTC effective runtime defaults', () => {
     const btcActivation = buildForecastLabRuntimeDefaultsActivation({
       profileId: 'btc-markov-ultra-short-horizon',
       assetScope: 'btc',
@@ -762,9 +930,9 @@ describe('forecast-lab runner', () => {
       mutation: MULTI_ASSET_LONGER_STABILITY_WINDOW,
     });
     const goldActivation = buildForecastLabRuntimeDefaultsActivation({
-      profileId: 'future-gold-markov-short-horizon',
+      profileId: 'gold-markov-short-horizon',
       assetScope: 'gold',
-      mutation: MULTI_ASSET_SHORTER_REACTIVE_WINDOW,
+      mutation: GOLD_SHORTER_REACTIVE_WINDOW,
     });
 
     const sharedAndBtcActive = [btcActivation, sharedActivation] as const;
@@ -781,13 +949,13 @@ describe('forecast-lab runner', () => {
 
     expectResolvedDefaultsToMatchMutation(afterGoldActivationBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldActivationSharedDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
-    expectResolvedDefaultsToMatchMutation(afterGoldActivationGoldDefaults, MULTI_ASSET_SHORTER_REACTIVE_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldActivationGoldDefaults, GOLD_SHORTER_REACTIVE_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldResetBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldResetSharedDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldResetGoldDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldRestoreBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldRestoreSharedDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
-    expectResolvedDefaultsToMatchMutation(afterGoldRestoreGoldDefaults, MULTI_ASSET_SHORTER_REACTIVE_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldRestoreGoldDefaults, GOLD_SHORTER_REACTIVE_WINDOW);
   });
 
   it('fails closed for the BTC ultra-short-horizon profile when parsed harness metrics are missing', async () => {

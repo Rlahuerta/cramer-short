@@ -11,12 +11,14 @@ const REPO_ROOT = process.cwd();
 const MARKOV_PROFILE_IDS = [
   'multi-asset-markov-short-horizon',
   'btc-markov-ultra-short-horizon',
+  'gold-markov-short-horizon',
 ] as const;
 
 describe('forecast-lab markov parameter mutators', () => {
-  it('only exposes bounded deterministic mutators for the first markov profiles', () => {
+  it('only exposes bounded deterministic mutators for the shipped markov profiles', () => {
     expect(isForecastLabMarkovMutatorProfileId('multi-asset-markov-short-horizon')).toBe(true);
     expect(isForecastLabMarkovMutatorProfileId('btc-markov-ultra-short-horizon')).toBe(true);
+    expect(isForecastLabMarkovMutatorProfileId('gold-markov-short-horizon')).toBe(true);
     expect(isForecastLabMarkovMutatorProfileId('btc-arbiter-replay')).toBe(false);
 
     for (const profileId of MARKOV_PROFILE_IDS) {
@@ -27,17 +29,30 @@ describe('forecast-lab markov parameter mutators', () => {
       expect(listForecastLabStructuredMutations(profileId)).toBe(first);
       expect(first.length).toBe(8);
       expect(Object.isFrozen(first)).toBe(true);
-      expect([...first.map((candidate) => candidate.id)]).toEqual([
-        'markov-shorter-reactive-window',
-        'markov-longer-stability-window',
-        'markov-faster-decay-reaction',
-        'markov-slower-decay-persistence',
-        'markov-lower-confidence-trend-penalty',
-        'markov-higher-confidence-divergence-weighted',
-        'markov-calibrator-higher-sample-floor',
-        'markov-calibrator-lower-sample-floor',
-      ]);
-    }
+        expect([...first.map((candidate) => candidate.id)]).toEqual(
+          profileId === 'gold-markov-short-horizon'
+            ? [
+                'gold-markov-shorter-reactive-window',
+                'gold-markov-longer-stability-window',
+                'gold-markov-faster-decay-reaction',
+                'gold-markov-slower-decay-persistence',
+                'gold-markov-lower-confidence-trend-penalty',
+                'gold-markov-higher-confidence-divergence-weighted',
+                'gold-markov-calibrator-higher-sample-floor',
+                'gold-markov-calibrator-lower-sample-floor',
+              ]
+            : [
+                'markov-shorter-reactive-window',
+                'markov-longer-stability-window',
+                'markov-faster-decay-reaction',
+                'markov-slower-decay-persistence',
+                'markov-lower-confidence-trend-penalty',
+                'markov-higher-confidence-divergence-weighted',
+                'markov-calibrator-higher-sample-floor',
+                'markov-calibrator-lower-sample-floor',
+              ],
+        );
+      }
 
     const nonMarkov = listForecastLabStructuredMutations('btc-arbiter-replay');
     expect(nonMarkov).toEqual([]);

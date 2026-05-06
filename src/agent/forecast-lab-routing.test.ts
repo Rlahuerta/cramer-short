@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { getForecastLabRoutingHint } from './forecast-lab-routing.js';
+import { extractForecastLabMutatorId, getForecastLabRoutingHint } from './forecast-lab-routing.js';
 
 describe('forecast-lab routing hint', () => {
   it('builds a deterministic skill hint for forecast improvement queries', () => {
@@ -15,14 +15,14 @@ describe('forecast-lab routing hint', () => {
     expect(hint?.whyMatched).toContain('Matched improvement cues');
   });
 
-  it('builds a guarded GOLD skill hint without enabling mutation yet', () => {
+  it('builds a GOLD skill hint with structured mutation enabled once the shipped catalog exists', () => {
     const hint = getForecastLabRoutingHint(
       'Optimize the GLD 1d/2d/3d Markov forecast lane and review 7d/14d as GOLD guardrails.',
     );
 
     expect(hint).not.toBeNull();
     expect(hint?.recommendedProfileId).toBe('gold-markov-short-horizon');
-    expect(hint?.mutationAllowed).toBe(false);
+    expect(hint?.mutationAllowed).toBe(true);
     expect(hint?.shouldInvokeSkill).toBe(true);
     expect(hint?.whyMatched).toContain('gold-markov-short-horizon');
   });
@@ -76,5 +76,14 @@ describe('forecast-lab routing hint', () => {
     expect(hint).not.toBeNull();
     expect(hint?.recommendedProfileId).toBeNull();
     expect(hint?.mutationAllowed).toBe(false);
+  });
+
+  it('extracts both shipped and GOLD-prefixed mutator ids from explicit mutator requests', () => {
+    expect(extractForecastLabMutatorId('Use mutator markov-shorter-reactive-window.')).toBe(
+      'markov-shorter-reactive-window',
+    );
+    expect(extractForecastLabMutatorId('Use mutator gold-markov-shorter-reactive-window.')).toBe(
+      'gold-markov-shorter-reactive-window',
+    );
   });
 });

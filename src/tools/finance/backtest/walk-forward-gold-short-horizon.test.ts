@@ -82,7 +82,7 @@ async function runCurrentLaneForHorizon(horizon: number): Promise<HorizonMetrics
 }
 
 describe('Walk-forward GOLD short-horizon benchmark', () => {
-  it('keeps the future GOLD mutator contract centered on 1d/2d/3d while treating 7d/14d as guardrails', () => {
+  it('keeps the GOLD mutator contract centered on 1d/2d/3d while treating 7d/14d as guardrails', () => {
     const baseline = {
       h1: { directionalAccuracy: 0.64 },
       h2: { directionalAccuracy: 0.57 },
