@@ -69,6 +69,15 @@ function scoreProfile(
   normalizedQuery: string,
   profile: ForecastLabProfile,
 ): { readonly profileId: ForecastLabProfileId; readonly score: number; readonly reasons: readonly string[] } {
+  const requiredTerms = profile.routing.requiredTerms ?? [];
+  if (requiredTerms.length > 0 && !requiredTerms.some((term) => includesTerm(rawQuery, normalizedQuery, term))) {
+    return {
+      profileId: profile.id,
+      score: 0,
+      reasons: [],
+    };
+  }
+
   const matches = profile.routing.keywordGroups
     .map((group) => summarizeMatchedGroup(rawQuery, normalizedQuery, group))
     .filter((match): match is NonNullable<typeof match> => match !== null);

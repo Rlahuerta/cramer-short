@@ -13,6 +13,7 @@ import {
 export type ForecastLabProfileId =
   | 'multi-asset-markov-short-horizon'
   | 'btc-markov-ultra-short-horizon'
+  | 'gold-markov-short-horizon'
   | 'btc-arbiter-replay'
   | 'polymarket-selection-sanity';
 
@@ -73,6 +74,7 @@ export interface ForecastLabProfileRoutingKeywordGroup {
 export interface ForecastLabProfileRoutingMetadata {
   readonly summary: string;
   readonly keywordGroups: readonly ForecastLabProfileRoutingKeywordGroup[];
+  readonly requiredTerms?: readonly string[];
 }
 
 export interface ForecastLabProfile {
@@ -154,6 +156,18 @@ const WALK_FORWARD_BTC_ULTRA_SHORT_HORIZON_COMMANDS = deepFreeze([
   },
 ] as const satisfies readonly ForecastLabCommand[]);
 
+const WALK_FORWARD_GOLD_SHORT_HORIZON_COMMANDS = deepFreeze([
+  {
+    id: 'walk-forward-gold-short-horizon',
+    command: 'bun test src/tools/finance/backtest/walk-forward-gold-short-horizon.test.ts --timeout 480000',
+    env: {
+      RUN_INTEGRATION: '1',
+      FORECAST_LAB_OUTPUT_METRICS: '1',
+    },
+    timeoutMs: 480_000,
+  },
+] as const satisfies readonly ForecastLabCommand[]);
+
 const ARBITER_REPLAY_COMMANDS = deepFreeze([
   {
     id: 'arbiter-replay-runner',
@@ -209,6 +223,24 @@ const BTC_ARBITER_REPLAY_ROUTING = deepFreeze({
     {
       label: 'profile id',
       terms: ['btc-arbiter-replay'],
+      weight: 3,
+    },
+  ],
+} as const satisfies ForecastLabProfileRoutingMetadata);
+
+const GOLD_MARKOV_SHORT_HORIZON_ROUTING = deepFreeze({
+  summary: 'Improve GOLD short-horizon Markov behavior for 1d/2d/3d forecasts with 7d/14d guardrails.',
+  requiredTerms: ['markov', 'gold-markov-short-horizon'],
+  keywordGroups: [
+    { label: 'gold asset', terms: ['gold', 'gld', 'xauusd'] },
+    {
+      label: 'review horizons',
+      terms: ['1d/2d/3d', '1d', '2d', '3d', '7d', '14d'],
+    },
+    { label: 'markov context', terms: ['markov', 'short-horizon', 'short horizon'] },
+    {
+      label: 'profile id',
+      terms: ['gold-markov-short-horizon'],
       weight: 3,
     },
   ],
@@ -428,6 +460,209 @@ const PROFILES_BY_ID = deepFreeze({
       },
     },
   },
+  'gold-markov-short-horizon': {
+    id: 'gold-markov-short-horizon',
+    targetSubsystem: 'markov-distribution',
+    routing: GOLD_MARKOV_SHORT_HORIZON_ROUTING,
+    allowedGlobs: MARKOV_MUTABLE_FILES,
+    mutation: defineForecastLabProfileMutationConfig({
+      mode: 'dry-run',
+      mutableFiles: MARKOV_MUTABLE_FILES,
+    }),
+    readOnlyHarnessFiles: ['src/tools/finance/backtest/walk-forward.ts'],
+    baselineCommands: WALK_FORWARD_GOLD_SHORT_HORIZON_COMMANDS,
+    candidateCommands: WALK_FORWARD_GOLD_SHORT_HORIZON_COMMANDS,
+    minimumMetrics: [
+      {
+        name: 'walkForwardGoldShortHorizonTestExitCode',
+        baselinePath: 'baseline.exitCode',
+        candidatePath: 'candidate.exitCode',
+        direction: 'lower-is-better',
+        required: true,
+      },
+      {
+        name: 'goldShortH1DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h1.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h1.directionalAccuracy',
+        direction: 'higher-is-better',
+        required: true,
+      },
+      {
+        name: 'goldShortH2DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h2.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h2.directionalAccuracy',
+        direction: 'higher-is-better',
+        required: true,
+      },
+      {
+        name: 'goldShortH3DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h3.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h3.directionalAccuracy',
+        direction: 'higher-is-better',
+        required: true,
+      },
+      {
+        name: 'goldShortH1BrierScore',
+        baselinePath: 'baseline.metrics.h1.brierScore',
+        candidatePath: 'candidate.metrics.h1.brierScore',
+        direction: 'lower-is-better',
+        required: true,
+      },
+      {
+        name: 'goldShortH2BrierScore',
+        baselinePath: 'baseline.metrics.h2.brierScore',
+        candidatePath: 'candidate.metrics.h2.brierScore',
+        direction: 'lower-is-better',
+        required: true,
+      },
+      {
+        name: 'goldShortH3BrierScore',
+        baselinePath: 'baseline.metrics.h3.brierScore',
+        candidatePath: 'candidate.metrics.h3.brierScore',
+        direction: 'lower-is-better',
+        required: true,
+      },
+      {
+        name: 'goldShortH7DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h7.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h7.directionalAccuracy',
+        direction: 'higher-is-better',
+        required: true,
+      },
+      {
+        name: 'goldShortH14DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h14.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h14.directionalAccuracy',
+        direction: 'higher-is-better',
+        required: true,
+      },
+    ],
+    keepDropRule: {
+      defaultDecision: 'drop',
+      keepWhen: {
+        all: [
+          {
+            metric: 'walkForwardGoldShortHorizonTestExitCode',
+            operator: 'candidate-value-lte',
+            value: 0,
+            reason: 'candidate GOLD short-horizon test command must pass',
+          },
+          {
+            metric: 'walkForwardGoldShortHorizonTestExitCode',
+            operator: 'candidate-delta-lte',
+            value: 0,
+            reason: 'candidate GOLD short-horizon test command must not regress versus baseline',
+          },
+          {
+            metric: 'goldShortH1DirectionalAccuracy',
+            operator: 'candidate-delta-gte',
+            value: 0,
+            reason: 'candidate GOLD 1d directional accuracy must not regress',
+          },
+          {
+            metric: 'goldShortH2DirectionalAccuracy',
+            operator: 'candidate-delta-gte',
+            value: -0.02,
+            reason: 'candidate GOLD 2d directional accuracy must not regress by more than 2 percentage points',
+          },
+          {
+            metric: 'goldShortH3DirectionalAccuracy',
+            operator: 'candidate-delta-gte',
+            value: -0.02,
+            reason: 'candidate GOLD 3d directional accuracy must not regress by more than 2 percentage points',
+          },
+          {
+            metric: 'goldShortH1BrierScore',
+            operator: 'candidate-delta-lte',
+            value: 0.01,
+            reason: 'candidate GOLD 1d Brier score must stay within the +0.01 guardrail',
+          },
+          {
+            metric: 'goldShortH2BrierScore',
+            operator: 'candidate-delta-lte',
+            value: 0.01,
+            reason: 'candidate GOLD 2d Brier score must stay within the +0.01 guardrail',
+          },
+          {
+            metric: 'goldShortH3BrierScore',
+            operator: 'candidate-delta-lte',
+            value: 0.01,
+            reason: 'candidate GOLD 3d Brier score must stay within the +0.01 guardrail',
+          },
+          {
+            metric: 'goldShortH7DirectionalAccuracy',
+            operator: 'candidate-delta-gte',
+            value: -0.05,
+            reason: 'candidate GOLD 7d directional accuracy must remain within the guardrail band',
+          },
+          {
+            metric: 'goldShortH14DirectionalAccuracy',
+            operator: 'candidate-delta-gte',
+            value: -0.05,
+            reason: 'candidate GOLD 14d directional accuracy must remain within the guardrail band',
+          },
+        ],
+      },
+      dropWhen: {
+        any: [
+          {
+            metric: 'walkForwardGoldShortHorizonTestExitCode',
+            operator: 'candidate-value-gte',
+            value: 1,
+            reason: 'drop when the GOLD short-horizon test command fails',
+          },
+          {
+            metric: 'goldShortH1DirectionalAccuracy',
+            operator: 'candidate-delta-lte',
+            value: -0.005,
+            reason: 'drop when GOLD 1d directional accuracy regresses by more than 0.5 percentage points',
+          },
+          {
+            metric: 'goldShortH2DirectionalAccuracy',
+            operator: 'candidate-delta-lte',
+            value: -0.05,
+            reason: 'drop when GOLD 2d directional accuracy regresses by more than 5 percentage points',
+          },
+          {
+            metric: 'goldShortH3DirectionalAccuracy',
+            operator: 'candidate-delta-lte',
+            value: -0.05,
+            reason: 'drop when GOLD 3d directional accuracy regresses by more than 5 percentage points',
+          },
+          {
+            metric: 'goldShortH1BrierScore',
+            operator: 'candidate-delta-gte',
+            value: 0.015,
+            reason: 'drop when GOLD 1d Brier score regresses by more than 0.015',
+          },
+          {
+            metric: 'goldShortH2BrierScore',
+            operator: 'candidate-delta-gte',
+            value: 0.015,
+            reason: 'drop when GOLD 2d Brier score regresses by more than 0.015',
+          },
+          {
+            metric: 'goldShortH3BrierScore',
+            operator: 'candidate-delta-gte',
+            value: 0.015,
+            reason: 'drop when GOLD 3d Brier score regresses by more than 0.015',
+          },
+          {
+            metric: 'goldShortH7DirectionalAccuracy',
+            operator: 'candidate-delta-lte',
+            value: -0.10,
+            reason: 'drop when GOLD 7d directional accuracy collapses by more than 10 percentage points',
+          },
+          {
+            metric: 'goldShortH14DirectionalAccuracy',
+            operator: 'candidate-delta-lte',
+            value: -0.10,
+            reason: 'drop when GOLD 14d directional accuracy collapses by more than 10 percentage points',
+          },
+        ],
+      },
+    },
+  },
   'btc-arbiter-replay': {
     id: 'btc-arbiter-replay',
     targetSubsystem: 'forecast-arbiter',
@@ -541,6 +776,7 @@ const PROFILE_ALIASES = deepFreeze({
 export const FORECAST_LAB_PROFILES = deepFreeze([
   PROFILES_BY_ID['multi-asset-markov-short-horizon'],
   PROFILES_BY_ID['btc-markov-ultra-short-horizon'],
+  PROFILES_BY_ID['gold-markov-short-horizon'],
   PROFILES_BY_ID['btc-arbiter-replay'],
   PROFILES_BY_ID['polymarket-selection-sanity'],
 ] as const satisfies readonly ForecastLabProfile[]);

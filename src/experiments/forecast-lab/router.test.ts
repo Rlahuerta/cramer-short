@@ -20,6 +20,20 @@ describe('forecast-lab router', () => {
     expectReason(route, 'btc-markov-ultra-short-horizon');
   });
 
+  it('routes GOLD short-horizon improvement requests to the GOLD profile', () => {
+    const route = routeForecastLabQuery(
+      'Improve the GOLD / GLD / XAUUSD 1d/2d/3d Markov forecast lane while keeping 7d and 14d as guardrails.',
+    );
+
+    expect(route).toMatchObject({
+      intent: 'improvement',
+      preferredProfileId: 'gold-markov-short-horizon',
+    });
+    expect(route.reasons.length).toBeGreaterThan(1);
+    expectReason(route, 'gold-markov-short-horizon');
+    expectReason(route, 'gold');
+  });
+
   it('routes multi-asset short-horizon mechanics queries to the multi-asset Markov profile', () => {
     const route = routeForecastLabQuery(
       'Improve the multi-asset short-horizon mechanics and optimize the Markov forecast profile.',
@@ -66,5 +80,23 @@ describe('forecast-lab router', () => {
       preferredProfileId: null,
     });
     expect(route.reasons.length).toBeGreaterThan(0);
+  });
+
+  it('does not route generic gold portfolio-risk wording into the GOLD forecast lab profile', () => {
+    const route = routeForecastLabQuery('Optimize my gold 14d hedge sizing for portfolio risk.');
+
+    expect(route).toMatchObject({
+      intent: 'improvement',
+      preferredProfileId: null,
+    });
+  });
+
+  it('does not route generic gold dashboard wording into the GOLD forecast lab profile', () => {
+    const route = routeForecastLabQuery('Fix gold 3d alert wording in the dashboard.');
+
+    expect(route).toMatchObject({
+      intent: 'improvement',
+      preferredProfileId: null,
+    });
   });
 });

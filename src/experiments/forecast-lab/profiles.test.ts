@@ -21,6 +21,7 @@ import {
 const EXPECTED_PROFILE_IDS: readonly ForecastLabProfileId[] = [
   'multi-asset-markov-short-horizon',
   'btc-markov-ultra-short-horizon',
+  'gold-markov-short-horizon',
   'btc-arbiter-replay',
   'polymarket-selection-sanity',
 ];
@@ -52,6 +53,17 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
       },
     ],
     metricName: 'walkForwardBtcUltraShortHorizonTestExitCode',
+  },
+  'gold-markov-short-horizon': {
+    commands: [
+      {
+        id: 'walk-forward-gold-short-horizon',
+        command: 'bun test src/tools/finance/backtest/walk-forward-gold-short-horizon.test.ts --timeout 480000',
+        env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
+        timeoutMs: 480_000,
+      },
+    ],
+    metricName: 'walkForwardGoldShortHorizonTestExitCode',
   },
   'btc-arbiter-replay': {
     commands: [
@@ -86,6 +98,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
 const EXPECTED_READ_ONLY_HARNESSES = {
   'multi-asset-markov-short-horizon': ['src/tools/finance/backtest/walk-forward.ts'],
   'btc-markov-ultra-short-horizon': ['src/tools/finance/backtest/walk-forward.ts'],
+  'gold-markov-short-horizon': ['src/tools/finance/backtest/walk-forward.ts'],
   'btc-arbiter-replay': ['src/tools/finance/backtest/arbiter-replay-runner.ts'],
   'polymarket-selection-sanity': [],
 } as const satisfies Record<ForecastLabProfileId, readonly string[]>;
@@ -109,6 +122,15 @@ const EXPECTED_MUTATION_CONFIGS = {
       'src/tools/finance/regime-calibrator.ts',
     ],
     allowedMutatorIds: ['search-replace'],
+    allowMultipleCandidateAttempts: false,
+  },
+  'gold-markov-short-horizon': {
+    mode: 'dry-run',
+    mutableFiles: [
+      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/conformal.ts',
+      'src/tools/finance/regime-calibrator.ts',
+    ],
     allowMultipleCandidateAttempts: false,
   },
   'btc-arbiter-replay': {
@@ -180,6 +202,7 @@ describe('forecast-lab profiles', () => {
   it('gets known profiles and rejects unknown profile ids', () => {
     expect(getForecastLabProfile('multi-asset-markov-short-horizon').targetSubsystem).toBe('markov-distribution');
     expect(getForecastLabProfile('btc-markov-ultra-short-horizon').targetSubsystem).toBe('markov-distribution');
+    expect(getForecastLabProfile('gold-markov-short-horizon').targetSubsystem).toBe('markov-distribution');
     expect(isForecastLabProfileId('btc-arbiter-replay')).toBe(true);
     expect(isForecastLabProfileId('btc-markov-short-horizon')).toBe(true);
     expect(isCanonicalForecastLabProfileId('btc-markov-short-horizon')).toBe(false);
@@ -213,6 +236,9 @@ describe('forecast-lab profiles', () => {
 
     expect(getForecastLabProfileRoutingMetadata('btc-markov-ultra-short-horizon').keywordGroups.map((group) => group.label)).toEqual(
       expect.arrayContaining(['btc asset', 'ultra-short horizons']),
+    );
+    expect(getForecastLabProfileRoutingMetadata('gold-markov-short-horizon').keywordGroups.map((group) => group.label)).toEqual(
+      expect.arrayContaining(['gold asset', 'review horizons']),
     );
     expect(getForecastLabProfileRoutingMetadata('btc-arbiter-replay').keywordGroups.map((group) => group.label)).toEqual(
       expect.arrayContaining(['arbiter context', 'replay context']),
@@ -279,6 +305,10 @@ describe('forecast-lab profiles', () => {
       },
       {
         commandNeedle: 'walk-forward-btc-ultra-short-horizon.test.ts',
+        harness: 'src/tools/finance/backtest/walk-forward.ts',
+      },
+      {
+        commandNeedle: 'walk-forward-gold-short-horizon.test.ts',
         harness: 'src/tools/finance/backtest/walk-forward.ts',
       },
       {
@@ -405,7 +435,7 @@ describe('forecast-lab profiles', () => {
 
   it('uses only command-status metric paths for profiles backed by Bun test commands', () => {
     for (const profile of listForecastLabProfiles()) {
-      if (profile.id === 'btc-markov-ultra-short-horizon') {
+      if (profile.id === 'btc-markov-ultra-short-horizon' || profile.id === 'gold-markov-short-horizon') {
         continue;
       }
 
@@ -427,7 +457,9 @@ describe('forecast-lab profiles', () => {
   });
 
   it('keeps exit-code-only gates for non-BTC Bun-test profiles', () => {
-    for (const profileId of EXPECTED_PROFILE_IDS.filter((candidate) => candidate !== 'btc-markov-ultra-short-horizon')) {
+    for (const profileId of EXPECTED_PROFILE_IDS.filter(
+      (candidate) => candidate !== 'btc-markov-ultra-short-horizon' && candidate !== 'gold-markov-short-horizon',
+    )) {
       const profile = getForecastLabProfile(profileId);
       const expected = EXPECTED_COMMAND_STATUS_PROFILES[profileId];
       const metricNames = profile.minimumMetrics.map((metric) => metric.name);
@@ -520,5 +552,74 @@ describe('forecast-lab profiles', () => {
       'btcUltraShortH3DirectionalAccuracy',
       'btcUltraShortH1RerunRate',
     ]);
+  });
+
+  it('uses a guarded GOLD short-horizon gate over parsed harness metrics', () => {
+    const profile = getForecastLabProfile('gold-markov-short-horizon');
+    const metricNames = profile.minimumMetrics.map((metric) => metric.name);
+
+    expect(profile.baselineCommands).toEqual(profile.candidateCommands);
+    expect(profile.baselineCommands).toEqual(EXPECTED_COMMAND_STATUS_PROFILES['gold-markov-short-horizon'].commands);
+    expect(metricNames).toEqual([
+      'walkForwardGoldShortHorizonTestExitCode',
+      'goldShortH1DirectionalAccuracy',
+      'goldShortH2DirectionalAccuracy',
+      'goldShortH3DirectionalAccuracy',
+      'goldShortH1BrierScore',
+      'goldShortH2BrierScore',
+      'goldShortH3BrierScore',
+      'goldShortH7DirectionalAccuracy',
+      'goldShortH14DirectionalAccuracy',
+    ]);
+    expect(profile.minimumMetrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'goldShortH1DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h1.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h1.directionalAccuracy',
+        direction: 'higher-is-better',
+      }),
+      expect.objectContaining({
+        name: 'goldShortH1BrierScore',
+        baselinePath: 'baseline.metrics.h1.brierScore',
+        candidatePath: 'candidate.metrics.h1.brierScore',
+        direction: 'lower-is-better',
+      }),
+      expect.objectContaining({
+        name: 'goldShortH7DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h7.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h7.directionalAccuracy',
+        direction: 'higher-is-better',
+      }),
+      expect.objectContaining({
+        name: 'goldShortH14DirectionalAccuracy',
+        baselinePath: 'baseline.metrics.h14.directionalAccuracy',
+        candidatePath: 'candidate.metrics.h14.directionalAccuracy',
+        direction: 'higher-is-better',
+      }),
+    ]));
+    expect(profile.keepDropRule.keepWhen.all.map((criterion) => criterion.metric)).toEqual([
+      'walkForwardGoldShortHorizonTestExitCode',
+      'walkForwardGoldShortHorizonTestExitCode',
+      'goldShortH1DirectionalAccuracy',
+      'goldShortH2DirectionalAccuracy',
+      'goldShortH3DirectionalAccuracy',
+      'goldShortH1BrierScore',
+      'goldShortH2BrierScore',
+      'goldShortH3BrierScore',
+      'goldShortH7DirectionalAccuracy',
+      'goldShortH14DirectionalAccuracy',
+    ]);
+    expect(profile.keepDropRule.dropWhen.any.map((criterion) => criterion.metric)).toEqual([
+      'walkForwardGoldShortHorizonTestExitCode',
+      'goldShortH1DirectionalAccuracy',
+      'goldShortH2DirectionalAccuracy',
+      'goldShortH3DirectionalAccuracy',
+      'goldShortH1BrierScore',
+      'goldShortH2BrierScore',
+      'goldShortH3BrierScore',
+      'goldShortH7DirectionalAccuracy',
+      'goldShortH14DirectionalAccuracy',
+    ]);
+    expect(profile.mutation.mode).toBe('dry-run');
   });
 });
