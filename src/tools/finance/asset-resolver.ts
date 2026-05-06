@@ -18,7 +18,7 @@ export interface ResolvedTickerSearchIdentity {
   strictQuestionMatch: boolean;
 }
 
-const BARRICK_CONTEXT_RE = /\bbarrick\b|\bgold\s+(?:stock|equity|shares|company|earnings|revenue|miner|mining)\b|\$gold\b/i;
+const BARRICK_CONTEXT_RE = /\bbarrick(?:\s+gold)?\b|\bgold\s+(?:stock|equity|shares|earnings|revenue)\b|\$gold\b/i;
 const GOLD_COMMODITY_RE = /\bgold\b|\bxauusd\b/i;
 const SILVER_COMMODITY_RE = /\bsilver\b|\bxagusd\b/i;
 const OIL_COMMODITY_RE = /\boil\b|\bcrude\b|\bwti\b|\bwticousd\b/i;
@@ -136,7 +136,7 @@ export function resolveAssetIntent(query: string, explicitTicker?: string | null
     };
   }
 
-  if ((normalizedTicker === 'GOLD' && !BARRICK_CONTEXT_RE.test(query)) || GOLD_COMMODITY_RE.test(query)) {
+  if ((normalizedTicker === 'GOLD' && !BARRICK_CONTEXT_RE.test(query)) || (!normalizedTicker && GOLD_COMMODITY_RE.test(query))) {
     return {
       rawQuery: query,
       rawTicker: normalizedTicker,

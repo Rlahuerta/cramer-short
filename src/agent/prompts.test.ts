@@ -346,6 +346,20 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('Frame the final answer in terms of the underlying commodity');
   });
 
+  it('keeps combined GOLD fallback prompts in the combined Markov + Polymarket path across 1d/2d/3d/14d horizons', () => {
+    const results = '### markov_distribution(ticker=GLD)\n{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null}}}';
+    for (const days of [1, 2, 3, 14]) {
+      const prompt = buildIterationPrompt(
+        `Provide a GOLD price forecast based on markov chain and polymarket for the next ${days} day${days === 1 ? '' : 's'}`,
+        results,
+      );
+      expect(prompt).toContain('markov_distribution explicitly abstained');
+      expect(prompt).toContain('combined Markov + polymarket forecast');
+      expect(prompt).toContain('Do not collapse the answer into a Markov-only diagnostics note or a Polymarket-only framing');
+      expect(prompt).toContain('GLD is only the data proxy for Gold');
+    }
+  });
+
   it('does not inject canonical markov guard for non-markov tool output', () => {
     const results = '### get_market_data(query=BTC)\n{"data":{"ticker":"BTC-USD"}}';
     const prompt = buildIterationPrompt('BTC query', results);

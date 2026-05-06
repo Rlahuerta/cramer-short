@@ -21,8 +21,37 @@ describe('resolveAssetIntent', () => {
     expect(result.assetClass).toBe('commodity_gold');
   });
 
+  it('routes macro GOLD prompts to the commodity proxy path', () => {
+    const result = resolveAssetIntent('How should macro gold react if real yields keep falling next quarter?', 'GOLD');
+    expect(result.resolvedTicker).toBe('GLD');
+    expect(result.assetClass).toBe('commodity_gold');
+  });
+
+  it('routes explicit combined GOLD forecast prompts to the commodity proxy path across 1d/2d/3d/14d horizons', () => {
+    for (const days of [1, 2, 3, 14]) {
+      const result = resolveAssetIntent(
+        `Provide a GOLD price forecast based on markov chain and polymarket for the next ${days} day${days === 1 ? '' : 's'}`,
+        'GOLD',
+      );
+      expect(result.resolvedTicker).toBe('GLD');
+      expect(result.assetClass).toBe('commodity_gold');
+    }
+  });
+
+  it('keeps commodity gold mining-cost context on the GLD commodity path', () => {
+    const result = resolveAssetIntent('How do rising gold mining industry production costs affect the gold price next quarter?');
+    expect(result.resolvedTicker).toBe('GLD');
+    expect(result.assetClass).toBe('commodity_gold');
+  });
+
   it('routes explicit Barrick context to GOLD equity', () => {
     const result = resolveAssetIntent('Barrick Gold stock forecast', 'GOLD');
+    expect(result.resolvedTicker).toBe('GOLD');
+    expect(result.assetClass).toBe('gold_miner');
+  });
+
+  it('routes Barrick miner-specific prompts to GOLD equity', () => {
+    const result = resolveAssetIntent('Barrick miner forecast after the latest earnings call', 'GOLD');
     expect(result.resolvedTicker).toBe('GOLD');
     expect(result.assetClass).toBe('gold_miner');
   });

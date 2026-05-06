@@ -13,6 +13,14 @@ import type { ForecastLabRoutingHint } from './forecast-lab-routing.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function isExplicitCombinedMarkovPolymarketRequest(query: string): boolean {
+  const lower = query.toLowerCase();
+  const hasMarkovMention = /\bmarkov(?: chain| distribution)?\b/.test(lower);
+  const hasPolymarketMention = /\bpolymarket\b/.test(lower) || lower.includes('polymarket_forecast');
+  const hasForecastIntent = /\b(?:forecast|prediction|predict|price target|price outlook|outlook)\b/.test(lower);
+  return hasMarkovMention && hasPolymarketMention && hasForecastIntent;
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -618,6 +626,7 @@ IMPORTANT: forecast_arbitrator returned NO_TRADE. That is the final trading deci
     && /"status"\s*:\s*"abstain"/.test(fullToolResults);
   if (hasAbstainingMarkovOutput) {
     const assetIntent = resolveAssetIntent(originalQuery, null);
+    const explicitCombinedForecast = isExplicitCombinedMarkovPolymarketRequest(originalQuery);
     const explicitPolymarketForecast = isExplicitPolymarketForecastRequest(originalQuery);
     const btcShortHorizonForecast = /\b(?:btc|bitcoin)\b/i.test(originalQuery)
       && /\b(?:7|14)\s*(?:day|days)\b/i.test(originalQuery)
@@ -635,6 +644,8 @@ IMPORTANT: ${assetIntent.resolvedTicker} is only the data proxy for ${assetInten
 
 IMPORTANT: markov_distribution explicitly abstained. Its diagnostics are authoritative, but no calibrated scenario distribution is available.${btcShortHorizonForecast
       ? ' For BTC short-horizon forecast queries (7-day or 14-day), you MUST preserve the abstention in the final answer. You MUST NOT provide a point forecast, confidence interval, forecast grade, or bull/base/bear scenario probabilities after this abstention. Give a concise diagnostics-led no-trade / insufficient-edge answer instead.'
+      : explicitCombinedForecast
+        ? ' The user explicitly requested a combined Markov + polymarket forecast. You MUST preserve the abstain warning, and you MUST still use polymarket_forecast as the lead fallback answer path for a point forecast / confidence interval if its output is available. Do not collapse the answer into a Markov-only diagnostics note or a Polymarket-only framing; keep both the Markov abstention context and the requested combined structure.'
       : explicitPolymarketForecast
         ? ' The user explicitly requested polymarket_forecast. You MUST preserve the abstain warning, and you MUST still use polymarket_forecast as the lead fallback answer path for a point forecast / confidence interval if its output is available. Do not let the Markov abstention replace the requested polymarket_forecast-led answer framing.'
         : ' You may explain the abstain reasons and discuss market-quality limitations, and you MAY provide fallback analysis such as a point forecast or confidence interval if another tool explicitly supports it.'} However, you MUST clearly warn that no calibrated Markov terminal distribution was available, and you MUST NOT create, correct, extrapolate, interpolate, renormalize, or manually synthesize replacement scenario buckets or probability percentages from later polymarket_search results. Numeric scenario distributions are only allowed when copied directly from a non-abstaining canonical Markov payload.

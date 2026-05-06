@@ -963,6 +963,17 @@ describe('Agent', () => {
       });
     });
 
+    it('routes the exact GOLD markov + polymarket prompt through the commodity proxy path across 1d/2d/3d/14d horizons', () => {
+      for (const days of [1, 2, 3, 14]) {
+        const query = `Provide a GOLD price forecast based on markov chain and polymarket for the next ${days} day${days === 1 ? '' : 's'}`;
+        expect(inferDistributionTicker(query)).toBe('GLD');
+        expect(buildForcedMarkovArgs(query)).toEqual({
+          ticker: 'GLD',
+          horizon: days,
+        });
+      }
+    });
+
     it('routes open-ended OIL markov prompts through the oil commodity proxy path', () => {
       expect(inferDistributionTicker('Provide a OIL price forecast based on markov chain and polymarket for the next 14 days')).toBe('USO');
       expect(buildForcedMarkovArgs('Provide a OIL price forecast based on markov chain and polymarket for the next 14 days')).toEqual({
@@ -2534,6 +2545,17 @@ describe('Agent', () => {
             { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
           ],
         )).toBe(true);
+      });
+
+      it('keeps combined GOLD requests on the non-crypto fallback path after Markov abstains across 1d/2d/3d/14d horizons', () => {
+        for (const days of [1, 2, 3, 14]) {
+          expect(shouldForceNonCryptoForecastFallback(
+            `Provide a GOLD price forecast based on markov chain and polymarket for the next ${days} day${days === 1 ? '' : 's'}`,
+            [
+              { tool: 'markov_distribution', args: { ticker: 'GLD', horizon: days }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            ],
+          )).toBe(true);
+        }
       });
 
       it('returns true when forecast rerun is needed to add current_price after market data landed later', () => {
