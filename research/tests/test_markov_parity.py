@@ -246,3 +246,100 @@ def test_default_matrix_symmetry():
     for i in range(NUM_STATES):
         for j in range(NUM_STATES):
             assert m[i][j] == pytest.approx(m[j][i], abs=1e-10)
+
+
+def test_default_matrix_diagonal_matches_ts_default():
+    """Default _default_matrix() must use diag=0.7 matching TS markov-distribution."""
+    from research.models.markov import _default_matrix, NUM_STATES
+    m = _default_matrix()
+    off_diag = (1.0 - 0.7) / (NUM_STATES - 1)
+    for i in range(NUM_STATES):
+        for j in range(NUM_STATES):
+            expected = 0.7 if i == j else off_diag
+            assert m[i][j] == pytest.approx(expected, abs=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Entropy-based soft regime blending (Blake et al. 2510.03236)
+# ---------------------------------------------------------------------------
+
+
+class TestRegimeEntropy:
+    def test_uniform_mixture_entropy_is_one(self):
+        """Normalized entropy of uniform 3-state mixture = 1.0."""
+        from research.models.markov import compute_regime_entropy
+        h = compute_regime_entropy({"bull": 1/3, "bear": 1/3, "sideways": 1/3})
+        assert h == pytest.approx(1.0, abs=1e-10)
+
+    def test_pure_state_entropy_is_zero(self):
+        """Normalized entropy of pure state mixture = 0.0."""
+        from research.models.markov import compute_regime_entropy
+        h = compute_regime_entropy({"bull": 1.0, "bear": 0.0, "sideways": 0.0})
+        assert h == pytest.approx(0.0, abs=1e-10)
+
+    def test_partial_mixture_entropy_between_zero_and_one(self):
+        """Normalized entropy of 50-25-25 mixture is between 0 and 1."""
+        from research.models.markov import compute_regime_entropy
+        h = compute_regime_entropy({"bull": 0.5, "bear": 0.25, "sideways": 0.25})
+        assert 0.3 < h < 0.99
+
+
+class TestSoftRegimeConfidence:
+    def test_zero_entropy_returns_full_confidence(self):
+        """At zero entropy, confidence multiplier = 1.0."""
+        from research.models.markov import soft_regime_confidence_multiplier
+        m = soft_regime_confidence_multiplier(0.0)
+        assert m == pytest.approx(1.0)
+
+    def test_max_entropy_returns_floor(self):
+        """At max entropy, confidence multiplier = 0.65 (floor)."""
+        from research.models.markov import soft_regime_confidence_multiplier
+        m = soft_regime_confidence_multiplier(1.0)
+        assert m == pytest.approx(0.65, abs=1e-10)
+
+    def test_half_entropy_between_floor_and_one(self):
+        """At 50% entropy, confidence between 0.65 and 1.0."""
+        from research.models.markov import soft_regime_confidence_multiplier
+        m = soft_regime_confidence_multiplier(0.5)
+        assert 0.65 < m < 1.0
+
+
+class TestSoftRegimeCiScale:
+    def test_zero_entropy_returns_base_scale(self):
+        """At zero entropy, CI scale = 1.0."""
+        from research.models.markov import soft_regime_ci_scale
+        s = soft_regime_ci_scale(0.0)
+        assert s == pytest.approx(1.0)
+
+    def test_max_entropy_returns_widest_scale(self):
+        """At max entropy, CI scale = 1.35."""
+        from research.models.markov import soft_regime_ci_scale
+        s = soft_regime_ci_scale(1.0)
+        assert s == pytest.approx(1.35, abs=1e-10)
+
+    def test_half_entropy_scales_modestly(self):
+        """At 50% entropy, CI scale = 1.175."""
+        from research.models.markov import soft_regime_ci_scale
+        s = soft_regime_ci_scale(0.5)
+        assert s == pytest.approx(1.175, abs=1e-10)
+
+
+class TestAdjustHmmWeight:
+    def test_zero_entropy_preserves_weight(self):
+        """At zero entropy, HMM weight unchanged."""
+        from research.models.markov import adjust_hmm_weight
+        w = adjust_hmm_weight(0.7, 0.0)
+        assert w == pytest.approx(0.7)
+
+    def test_max_entropy_halves_weight(self):
+        """At max entropy, HMM weight = weight * max(0.5, 1 - entropy*0.4) = 0.48."""
+        from research.models.markov import adjust_hmm_weight
+        w = adjust_hmm_weight(0.8, 1.0)
+        assert w == pytest.approx(0.48, abs=1e-10)
+
+    def test_high_entropy_attenuates_weight(self):
+        """Higher entropy reduces HMM influence on forecast."""
+        from research.models.markov import adjust_hmm_weight
+        w_low = adjust_hmm_weight(0.5, 0.2)
+        w_high = adjust_hmm_weight(0.5, 0.8)
+        assert w_low > w_high

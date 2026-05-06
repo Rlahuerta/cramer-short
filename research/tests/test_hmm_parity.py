@@ -402,3 +402,173 @@ def test_fit_2state_return_hmm_vs_3state_on_crypto():
     assert min_prob_2 >= min_prob_3, (
         f"2-state min prob {min_prob_2:.3f} worse than 3-state {min_prob_3:.3f}"
     )
+
+
+def test_initialize_hmm_diagonal_matches_ts():
+    """initialize_hmm must use diag=0.7 matching TS hmm.ts."""
+    from research.models.hmm import initialize_hmm
+    rng = np.random.default_rng(99)
+    obs = rng.standard_normal(300)
+    params = initialize_hmm(obs, n_states=3)
+    n = params.n_states
+    off_diag = (1.0 - 0.7) / (n - 1)
+    for i in range(n):
+        assert params.A[i, i] == pytest.approx(0.7, abs=1e-10)
+        for j in range(n):
+            if j != i:
+                assert params.A[i, j] == pytest.approx(off_diag, abs=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Student-t emission parity tests
+# ---------------------------------------------------------------------------
+
+
+class TestStudentTLogPdf:
+    """Student-t log-PDF matching the Normal-Gamma predictive distribution."""
+
+    def test_high_df_approaches_gaussian(self):
+        """As nu → ∞, Student-t log-PDF → Gaussian log-PDF."""
+        from research.models.hmm import student_t_log_pdf
+        import math
+        # For large nu, Student-t approaches Gaussian
+        # Test at x=0, mu=0, sigma=1, nu=100
+        st_val = student_t_log_pdf(0.0, 0.0, 1.0, 100)
+        gauss_val = -0.5 * math.log(2 * math.pi)  # ≈ -0.9189
+        assert abs(st_val - gauss_val) < 0.01
+
+    def test_standard_t_at_zero(self):
+        """Standard Student-t(0, 1, nu) at x=0 matches known value."""
+        from research.models.hmm import student_t_log_pdf
+        import math
+        from scipy.special import gammaln
+        # For nu=5: exact log-PDF at 0
+        nu = 5
+        val = student_t_log_pdf(0.0, 0.0, 1.0, nu)
+        expected = gammaln((nu + 1) / 2) - gammaln(nu / 2) - 0.5 * math.log(nu * math.pi)
+        assert val == pytest.approx(expected, rel=1e-9)
+
+    def test_shifted_tail_probability_decreases(self):
+        """Density should be lower further from center."""
+        from research.models.hmm import student_t_log_pdf
+        center = student_t_log_pdf(0.0, 0.0, 1.0, 5)
+        tail = student_t_log_pdf(3.0, 0.0, 1.0, 5)
+        assert tail < center
+
+    def test_scale_parameter_halving(self):
+        """Halving sigma should double the density at mode (for fixed nu)."""
+        from research.models.hmm import student_t_log_pdf
+        val_1 = student_t_log_pdf(0.0, 0.0, 1.0, 5)
+        val_half = student_t_log_pdf(0.0, 0.0, 0.5, 5)
+        # At x=mu, PDF scales as 1/sigma
+        expected_diff = -math.log(0.5)  # log(1/0.5) = log(2)
+        assert val_half - val_1 == pytest.approx(expected_diff, rel=1e-9)
+
+    def test_log_pdf_is_negative(self):
+        """Log-PDF should be negative for all valid inputs."""
+        from research.models.hmm import student_t_log_pdf
+        assert student_t_log_pdf(0.0, 0.0, 1.0, 5) < 0
+        assert student_t_log_pdf(2.0, 0.0, 1.0, 3) < 0
+        assert student_t_log_pdf(-1.0, 0.5, 2.0, 10) < 0
+
+
+class TestStudentTVolScale:
+    """Student-t volatility scaling from Normal-Gamma conjugacy."""
+
+    def test_nu_3_gives_factor_sqrt_3(self):
+        """nu=3 → sqrt(3/1) = sqrt(3)."""
+        from research.models.hmm import student_t_volatility_scale
+        import math
+        assert student_t_volatility_scale(3) == pytest.approx(math.sqrt(3), rel=1e-9)
+
+    def test_nu_4_gives_factor_sqrt_2(self):
+        """nu=4 → sqrt(4/2) = sqrt(2)."""
+        from research.models.hmm import student_t_volatility_scale
+        import math
+        assert student_t_volatility_scale(4) == pytest.approx(math.sqrt(2), rel=1e-9)
+
+    def test_nu_5_gives_factor_sqrt_5_3(self):
+        """nu=5 → sqrt(5/3)."""
+        from research.models.hmm import student_t_volatility_scale
+        import math
+        assert student_t_volatility_scale(5) == pytest.approx(math.sqrt(5 / 3), rel=1e-9)
+
+    def test_nu_le_2_returns_1(self):
+        """ν ≤ 2 means infinite variance, return 1.0 as fallback."""
+        from research.models.hmm import student_t_volatility_scale
+        assert student_t_volatility_scale(1) == pytest.approx(1.0)
+        assert student_t_volatility_scale(2) == pytest.approx(1.0)
+
+    def test_scale_decreases_with_increasing_df(self):
+        """Higher df → less heavy tail → scale closer to 1.0."""
+        from research.models.hmm import student_t_volatility_scale
+        s3 = student_t_volatility_scale(3)
+        s5 = student_t_volatility_scale(5)
+        s10 = student_t_volatility_scale(10)
+        assert s3 > s5 > s10 > 1.0
+
+    def test_high_df_approaches_1(self):
+        """As nu → large, volatility scale → 1.0."""
+        from research.models.hmm import student_t_volatility_scale
+        s100 = student_t_volatility_scale(100)
+        assert s100 < 1.02  # sqrt(100/98) ≈ 1.0102
+
+
+class TestStudentTFiniteVariance:
+    """Helper to check if Student-t nu yields finite variance."""
+
+    def test_nu_2_is_not_finite(self):
+        from research.models.hmm import student_t_is_finite_variance
+        assert not student_t_is_finite_variance(2)
+
+    def test_nu_3_is_finite(self):
+        from research.models.hmm import student_t_is_finite_variance
+        assert student_t_is_finite_variance(3)
+
+    def test_large_nu_is_finite(self):
+        from research.models.hmm import student_t_is_finite_variance
+        assert student_t_is_finite_variance(100)
+
+
+class TestAssetProfileStudentTNu:
+    """AssetProfile.student_t_nu is wired and accessible."""
+
+    def test_profiles_have_student_t_nu(self):
+        from research.models.hmm import ASSET_PROFILES
+        for name, profile in ASSET_PROFILES.items():
+            assert isinstance(profile.student_t_nu, int)
+            assert profile.student_t_nu >= 3, f"{name} nu should be >= 3"
+
+    def test_crypto_has_lowest_nu(self):
+        """Crypto should have lowest nu (heaviest tails)."""
+        from research.models.hmm import ASSET_PROFILES
+        crypto_nu = ASSET_PROFILES["crypto"].student_t_nu
+        for name, profile in ASSET_PROFILES.items():
+            if name != "crypto":
+                assert profile.student_t_nu >= crypto_nu, f"{name} nu should be >= crypto"
+
+    def test_etf_has_highest_nu(self):
+        """ETF should have highest nu (closest to Gaussian)."""
+        from research.models.hmm import ASSET_PROFILES
+        etf_nu = ASSET_PROFILES["etf"].student_t_nu
+        for name, profile in ASSET_PROFILES.items():
+            if name != "etf":
+                assert profile.student_t_nu <= etf_nu, f"{name} nu should be <= etf"
+
+
+class TestStudentTForwardVolatility:
+    """Student-t adjusted volatility forecast via AssetProfile."""
+
+    def test_adjusted_vol_for_crypto(self):
+        from research.models.hmm import student_t_volatility_scale, ASSET_PROFILES
+        nu = ASSET_PROFILES["crypto"].student_t_nu
+        scale = student_t_volatility_scale(nu)
+        # crypto nu=3 → scale = sqrt(3) ≈ 1.732
+        assert scale > 1.5
+
+    def test_adjusted_vol_for_etf_mild(self):
+        from research.models.hmm import student_t_volatility_scale, ASSET_PROFILES
+        nu = ASSET_PROFILES["etf"].student_t_nu
+        scale = student_t_volatility_scale(nu)
+        # etf nu=5 → scale = sqrt(5/3) ≈ 1.291
+        assert 1.2 < scale < 1.35

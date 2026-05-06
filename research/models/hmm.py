@@ -108,9 +108,9 @@ def initialize_hmm(observations: np.ndarray, n_states: int) -> HMMParams:
         for i in range(n_states)
     ])[order]
 
-    # Diagonal-dominant transition matrix
-    A = np.eye(n_states) * 0.8 + np.ones((n_states, n_states)) * 0.2 / n_states
-    A = A / A.sum(axis=1, keepdims=True)
+    # Diagonal-dominant transition matrix, diag=0.7 matching TS
+    off_diag = (1.0 - 0.7) / (n_states - 1)
+    A = np.eye(n_states) * (0.7 - off_diag) + np.full((n_states, n_states), off_diag)
 
     # Uniform initial distribution
     pi = np.ones(n_states) / n_states
@@ -396,6 +396,52 @@ def fit_volatility_hmm(
 
     scale = current_vol / baseline
     return float(np.clip(scale, 0.5, 2.0))
+
+
+
+# ---------------------------------------------------------------------------
+# Student-t emissions (Normal-Gamma conjugate prior -> t predictive)
+# ---------------------------------------------------------------------------
+
+
+def student_t_log_pdf(x: float, mu: float, sigma: float, nu: int) -> float:
+    """Log probability density of location-scale Student-t distribution.
+
+    For nu → ∞, approaches Gaussian log-PDF. The scale parameter sigma
+    relates to the predictive variance via: var = sigma^2 * nu / (nu - 2)
+    for nu > 2.
+    """
+    from scipy.special import gammaln
+
+    safe_sigma = max(float(sigma), 1e-12)
+    z = (float(x) - float(mu)) / safe_sigma
+    return float(
+        gammaln((nu + 1) / 2)
+        - gammaln(nu / 2)
+        - 0.5 * math.log(nu * math.pi)
+        - math.log(safe_sigma)
+        - (nu + 1) / 2 * math.log(1 + z * z / nu)
+    )
+
+
+def student_t_volatility_scale(nu: int) -> float:
+    """Scale factor from Gaussian scale sigma to Student-t scale.
+
+    For a Student-t distribution, variance = sigma^2 * nu / (nu - 2).
+    This returns sqrt(nu / (nu - 2)), the factor to multiply Gaussian
+    volatility by to get comparable Student-t volatility.
+
+    Returns 1.0 if nu <= 2 (infinite variance), allowing callers to
+    fall back without branching.
+    """
+    if nu <= 2:
+        return 1.0
+    return math.sqrt(nu / (nu - 2))
+
+
+def student_t_is_finite_variance(nu: int) -> bool:
+    """Student-t has finite variance when nu >= 3."""
+    return nu >= 3
 
 
 # ---------------------------------------------------------------------------

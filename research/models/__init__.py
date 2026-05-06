@@ -2,13 +2,17 @@
 
 from research.models.markov import (
     BtcShortHorizonLivePolicy,
+    adjust_hmm_weight,
     classify_regime,
     classify_regime_series,
-    estimate_transition_matrix,
-    detect_structural_break,
     compute_markov_forecast,
+    compute_regime_entropy,
+    detect_structural_break,
+    estimate_transition_matrix,
     get_btc_short_horizon_live_policy,
     is_btc_ticker_symbol,
+    soft_regime_ci_scale,
+    soft_regime_confidence_multiplier,
 )
 from research.models.ensemble import (
     MarketInput,
@@ -32,10 +36,14 @@ from research.models.hmm import (
     HMMParams,
     HMMPrediction,
     baum_welch,
+    fit_2state_return_hmm,
     fit_volatility_hmm,
     initialize_hmm,
     mat_pow,
     predict,
+    student_t_is_finite_variance,
+    student_t_log_pdf,
+    student_t_volatility_scale,
     viterbi,
 )
 from research.models.soft_regime import (
@@ -63,11 +71,15 @@ from research.models.trajectory import (
 )
 
 __all__ = [
+    "adjust_hmm_weight",
     "classify_regime",
     "classify_regime_series",
-    "estimate_transition_matrix",
-    "detect_structural_break",
     "compute_markov_forecast",
+    "compute_regime_entropy",
+    "detect_structural_break",
+    "estimate_transition_matrix",
+    "soft_regime_ci_scale",
+    "soft_regime_confidence_multiplier",
     "BtcShortHorizonLivePolicy",
     "get_btc_short_horizon_live_policy",
     "is_btc_ticker_symbol",
@@ -101,10 +113,14 @@ __all__ = [
     "HMMParams",
     "HMMPrediction",
     "baum_welch",
+    "fit_2state_return_hmm",
     "fit_volatility_hmm",
     "initialize_hmm",
     "mat_pow",
     "predict",
+    "student_t_is_finite_variance",
+    "student_t_log_pdf",
+    "student_t_volatility_scale",
     "viterbi",
     "blend_regime_mixtures",
     "map_hmm_probabilities_to_regime_mixture",
