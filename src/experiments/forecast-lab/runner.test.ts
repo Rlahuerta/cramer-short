@@ -93,6 +93,14 @@ const RUN_IDS = [
   'runner-test-promote-regression-verify',
   'runner-test-gold-metric-gate',
   'runner-test-gold-guardrail-reject',
+  'runner-test-btc-promote-source',
+  'runner-test-btc-promote-verify',
+  'runner-test-gold-promote-source-a',
+  'runner-test-gold-promote-verify-a',
+  'runner-test-gold-promote-source-b',
+  'runner-test-gold-promote-verify-b',
+  'runner-test-gold-reset-defaults',
+  'runner-test-gold-reset-last-known-good',
   'runner-test-reset-source-a',
   'runner-test-reset-promote-a',
   'runner-test-reset-source-b',
@@ -239,6 +247,50 @@ function goldMetricsRunner(calls: string[], metricsByPhase?: {
       timedOut: false,
     };
   };
+}
+
+function keptBtcMetricsRunner(calls: string[] = []): ForecastLabCommandRunner {
+  return btcMetricsRunner(calls, {
+    baseline: buildBtcUltraShortMetrics({
+      h1DirectionalAccuracy: 0.62,
+      h1BrierScore: 0.252,
+      h1RerunRate: 0.75,
+      h2DirectionalAccuracy: 0.52,
+      h3DirectionalAccuracy: 0.56,
+    }),
+    candidate: buildBtcUltraShortMetrics({
+      h1DirectionalAccuracy: 0.64,
+      h1BrierScore: 0.247,
+      h1RerunRate: 0.78,
+      h2DirectionalAccuracy: 0.51,
+      h3DirectionalAccuracy: 0.55,
+    }),
+  });
+}
+
+function keptGoldMetricsRunner(calls: string[] = []): ForecastLabCommandRunner {
+  return goldMetricsRunner(calls, {
+    baseline: buildGoldShortMetrics({
+      h1DirectionalAccuracy: 0.58,
+      h2DirectionalAccuracy: 0.55,
+      h3DirectionalAccuracy: 0.57,
+      h1BrierScore: 0.248,
+      h2BrierScore: 0.251,
+      h3BrierScore: 0.256,
+      h7DirectionalAccuracy: 0.64,
+      h14DirectionalAccuracy: 0.68,
+    }),
+    candidate: buildGoldShortMetrics({
+      h1DirectionalAccuracy: 0.595,
+      h2DirectionalAccuracy: 0.545,
+      h3DirectionalAccuracy: 0.56,
+      h1BrierScore: 0.245,
+      h2BrierScore: 0.255,
+      h3BrierScore: 0.26,
+      h7DirectionalAccuracy: 0.6,
+      h14DirectionalAccuracy: 0.65,
+    }),
+  });
 }
 
 const LIVE_MUTABLE_FILES = [
@@ -410,6 +462,10 @@ const BTC_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
 const GOLD_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
   'gold-markov-short-horizon',
   'gold-markov-shorter-reactive-window',
+);
+const GOLD_FASTER_DECAY_REACTION = getStructuredMutationFixture(
+  'gold-markov-short-horizon',
+  'gold-markov-faster-decay-reaction',
 );
 
 function appendStructuredMutationHistory(params: {
@@ -1643,6 +1699,78 @@ describe('forecast-lab runner', () => {
     }
   });
 
+  it('keeps BTC live activation and active state intact when GOLD is promoted beside it', async () => {
+    const liveFiles = snapshotLiveMutableFiles();
+    const runtimeDefaults = snapshotRuntimeDefaults();
+
+    try {
+      await runForecastLab({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'markov-shorter-reactive-window',
+        runId: 'runner-test-btc-promote-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptBtcMetricsRunner(),
+      });
+      const btcPromotion = await promoteForecastLab({
+        profileId: 'btc-markov-ultra-short-horizon',
+        runId: 'runner-test-btc-promote-verify',
+        sourceRunId: 'runner-test-btc-promote-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptBtcMetricsRunner(),
+      });
+
+      await runForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'gold-markov-shorter-reactive-window',
+        runId: 'runner-test-gold-promote-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptGoldMetricsRunner(),
+      });
+      const goldPromotion = await promoteForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        runId: 'runner-test-gold-promote-verify-a',
+        sourceRunId: 'runner-test-gold-promote-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptGoldMetricsRunner(),
+      });
+
+      expect(goldPromotion.activeStatePath).not.toBe(btcPromotion.activeStatePath);
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+
+      expectResolvedDefaultsToMatchMutation(resolveEffectiveRuntimeDefaults('btc'), BTC_SHORTER_REACTIVE_WINDOW);
+      expectResolvedDefaultsToMatchMutation(resolveEffectiveRuntimeDefaults('gold'), GOLD_SHORTER_REACTIVE_WINDOW);
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('shared'));
+
+      expect(JSON.parse(readFileSync(btcPromotion.activeStatePath, 'utf8'))).toMatchObject({
+        profileId: 'btc-markov-ultra-short-horizon',
+        sourceRunId: btcPromotion.sourceRunId,
+        promotionRunId: btcPromotion.runId,
+      });
+      expect(JSON.parse(readFileSync(goldPromotion.activeStatePath, 'utf8'))).toMatchObject({
+        profileId: 'gold-markov-short-horizon',
+        sourceRunId: goldPromotion.sourceRunId,
+        promotionRunId: goldPromotion.runId,
+        mutatedFiles: [],
+      });
+    } finally {
+      restoreLiveMutableFiles(liveFiles);
+      restoreRuntimeDefaults(runtimeDefaults);
+    }
+  }, 20_000);
+
   it('repairs missing promotion metadata on a legacy kept source manifest before promotion', async () => {
     const liveFiles = snapshotLiveMutableFiles();
     const runtimeDefaults = snapshotRuntimeDefaults();
@@ -1780,6 +1908,81 @@ describe('forecast-lab runner', () => {
     }
   });
 
+  it('resets GOLD to shipped defaults without disturbing BTC live activation or active state', async () => {
+    const liveFiles = snapshotLiveMutableFiles();
+    const runtimeDefaults = snapshotRuntimeDefaults();
+
+    try {
+      await runForecastLab({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'markov-shorter-reactive-window',
+        runId: 'runner-test-btc-promote-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptBtcMetricsRunner(),
+      });
+      const btcPromotion = await promoteForecastLab({
+        profileId: 'btc-markov-ultra-short-horizon',
+        runId: 'runner-test-btc-promote-verify',
+        sourceRunId: 'runner-test-btc-promote-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptBtcMetricsRunner(),
+      });
+
+      await runForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'gold-markov-shorter-reactive-window',
+        runId: 'runner-test-gold-promote-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptGoldMetricsRunner(),
+      });
+      const goldPromotion = await promoteForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        runId: 'runner-test-gold-promote-verify-a',
+        sourceRunId: 'runner-test-gold-promote-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptGoldMetricsRunner(),
+      });
+
+      const result = await resetForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        mode: 'defaults',
+        runId: 'runner-test-gold-reset-defaults',
+      });
+
+      expect(result.mode).toBe('defaults');
+      expect(result.activeStatePath).toBeUndefined();
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+
+      expectResolvedDefaultsToMatchMutation(resolveEffectiveRuntimeDefaults('btc'), BTC_SHORTER_REACTIVE_WINDOW);
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('gold'));
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('shared'));
+      expect(JSON.parse(readFileSync(btcPromotion.activeStatePath, 'utf8'))).toMatchObject({
+        profileId: 'btc-markov-ultra-short-horizon',
+        sourceRunId: btcPromotion.sourceRunId,
+        promotionRunId: btcPromotion.runId,
+      });
+      const goldResetArtifact = JSON.parse(readFileSync(result.resetArtifactPath, 'utf8')) as Record<string, unknown>;
+      expect(goldResetArtifact.mutatedFiles).toEqual([]);
+      expect(existsSync(goldPromotion.activeStatePath)).toBe(false);
+    } finally {
+      restoreLiveMutableFiles(liveFiles);
+      restoreRuntimeDefaults(runtimeDefaults);
+    }
+  }, 20_000);
+
   it('resets the live profile back to the previously activated baseline when requested', async () => {
     const liveFiles = snapshotLiveMutableFiles();
     const runtimeDefaults = snapshotRuntimeDefaults();
@@ -1863,6 +2066,110 @@ describe('forecast-lab runner', () => {
       restoreRuntimeDefaults(runtimeDefaults);
     }
   }, 15_000);
+
+  it('resets GOLD to the previous GOLD activation without disturbing BTC live activation or active state', async () => {
+    const liveFiles = snapshotLiveMutableFiles();
+    const runtimeDefaults = snapshotRuntimeDefaults();
+
+    try {
+      await runForecastLab({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'markov-shorter-reactive-window',
+        runId: 'runner-test-btc-promote-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptBtcMetricsRunner(),
+      });
+      const btcPromotion = await promoteForecastLab({
+        profileId: 'btc-markov-ultra-short-horizon',
+        runId: 'runner-test-btc-promote-verify',
+        sourceRunId: 'runner-test-btc-promote-source',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptBtcMetricsRunner(),
+      });
+
+      await runForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'gold-markov-shorter-reactive-window',
+        runId: 'runner-test-gold-promote-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptGoldMetricsRunner(),
+      });
+      const firstGoldPromotion = await promoteForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        runId: 'runner-test-gold-promote-verify-a',
+        sourceRunId: 'runner-test-gold-promote-source-a',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptGoldMetricsRunner(),
+      });
+
+      await runForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        mutationMode: 'structured',
+        mutator: 'gold-markov-faster-decay-reaction',
+        runId: 'runner-test-gold-promote-source-b',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptGoldMetricsRunner(),
+      });
+      await promoteForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        runId: 'runner-test-gold-promote-verify-b',
+        sourceRunId: 'runner-test-gold-promote-source-b',
+        ledgerPath: TEST_LEDGER_PATH,
+        commandRunner: keptGoldMetricsRunner(),
+      });
+
+      const result = await resetForecastLab({
+        profileId: 'gold-markov-short-horizon',
+        mode: 'last-known-good',
+        runId: 'runner-test-gold-reset-last-known-good',
+      });
+
+      expect(result.mode).toBe('last-known-good');
+      expect(result.activeStatePath).toBe(firstGoldPromotion.activeStatePath);
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
+      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_FASTER_DECAY_REACTION, 'transitionDecay'));
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
+      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_FASTER_DECAY_REACTION, 'adaptiveBreakLearningRateMultiplier'));
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+        .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+        .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
+
+      const goldEffectiveDefaults = resolveEffectiveRuntimeDefaults('gold');
+      expectResolvedDefaultsToMatchMutation(goldEffectiveDefaults, GOLD_SHORTER_REACTIVE_WINDOW);
+      expect(goldEffectiveDefaults.markov.transitionDecay).toBe(SHIPPED_RUNTIME_DEFAULTS.markov.transitionDecay);
+      expect(goldEffectiveDefaults.conformal.adaptiveBreakLearningRateMultiplier)
+        .toBe(SHIPPED_RUNTIME_DEFAULTS.conformal.adaptiveBreakLearningRateMultiplier);
+      expectResolvedDefaultsToMatchMutation(resolveEffectiveRuntimeDefaults('btc'), BTC_SHORTER_REACTIVE_WINDOW);
+      expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('shared'));
+      expect(JSON.parse(readFileSync(btcPromotion.activeStatePath, 'utf8'))).toMatchObject({
+        profileId: 'btc-markov-ultra-short-horizon',
+        sourceRunId: btcPromotion.sourceRunId,
+        promotionRunId: btcPromotion.runId,
+      });
+      expect(JSON.parse(readFileSync(result.activeStatePath!, 'utf8'))).toMatchObject({
+        profileId: 'gold-markov-short-horizon',
+        sourceRunId: firstGoldPromotion.sourceRunId,
+        promotionRunId: firstGoldPromotion.runId,
+        mutatedFiles: [],
+      });
+      const goldResetArtifact = JSON.parse(readFileSync(result.resetArtifactPath, 'utf8')) as Record<string, unknown>;
+      expect(goldResetArtifact.mutatedFiles).toEqual([]);
+    } finally {
+      restoreLiveMutableFiles(liveFiles);
+      restoreRuntimeDefaults(runtimeDefaults);
+    }
+  }, 20_000);
 
   it('fails closed when another promotion attempt is already verifying the same source run', async () => {
     await runForecastLab({

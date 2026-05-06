@@ -1436,6 +1436,14 @@ function applyStructuredMutationToLiveSource(
 } {
   const rootDir = process.cwd();
   const assetScope = resolveForecastLabRuntimeAssetScopeForProfile(profile);
+  if (assetScope === 'gold') {
+    return {
+      mutatedFiles: [],
+      previousContents: new Map(),
+      runtimeDefaults: applyStructuredMutationRuntimeDefaults(assetScope, mutation),
+    };
+  }
+
   const { updatedFiles, previousContents } = buildStructuredMutationFileUpdates(rootDir, mutation);
   const mutatedFiles = applyForecastLabCandidateEdits(
     rootDir,
