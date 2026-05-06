@@ -233,6 +233,20 @@ interface ForecastLabRuntimeDefaultsSnapshot {
   readonly value: ForecastLabMutationScalarValue;
 }
 
+export type ForecastLabRuntimeAssetScope = 'btc' | 'gold';
+
+export interface ForecastLabRuntimeDefaultsActivation {
+  readonly profileId: string;
+  readonly assetScope: ForecastLabRuntimeAssetScope;
+  readonly overrides: readonly ForecastLabRuntimeDefaultsSnapshot[];
+}
+
+export interface ForecastLabResolvedRuntimeDefaults {
+  readonly markov: typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS;
+  readonly conformal: typeof FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS;
+  readonly regime: typeof FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS;
+}
+
 interface ForecastLabActivePromotionSnapshot {
   readonly profileId: string;
   readonly sourceRunId: string;
@@ -262,6 +276,69 @@ const SHIPPED_PARAMETER_DEFAULT_TARGETS: Record<string, ForecastLabMutableParame
   'src/tools/finance/conformal.ts': { ...FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS },
   'src/tools/finance/regime-calibrator.ts': { ...FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS },
 };
+
+function cloneForecastLabResolvedRuntimeDefaults(): ForecastLabResolvedRuntimeDefaults {
+  return {
+    markov: { ...SHIPPED_PARAMETER_DEFAULT_TARGETS['src/tools/finance/markov-distribution.ts'] },
+    conformal: { ...SHIPPED_PARAMETER_DEFAULT_TARGETS['src/tools/finance/conformal.ts'] },
+    regime: { ...SHIPPED_PARAMETER_DEFAULT_TARGETS['src/tools/finance/regime-calibrator.ts'] },
+  } as ForecastLabResolvedRuntimeDefaults;
+}
+
+function getResolvedRuntimeDefaultsTarget(
+  resolved: ForecastLabResolvedRuntimeDefaults,
+  filePath: string,
+): ForecastLabMutableParameterDefaults {
+  if (filePath === 'src/tools/finance/markov-distribution.ts') {
+    return resolved.markov as ForecastLabMutableParameterDefaults;
+  }
+  if (filePath === 'src/tools/finance/conformal.ts') {
+    return resolved.conformal as ForecastLabMutableParameterDefaults;
+  }
+  if (filePath === 'src/tools/finance/regime-calibrator.ts') {
+    return resolved.regime as ForecastLabMutableParameterDefaults;
+  }
+
+  throw new ForecastLabRunnerError(`Forecast-lab runtime default resolution does not support ${filePath}.`);
+}
+
+export function buildForecastLabRuntimeDefaultsActivation(params: {
+  readonly profileId: string;
+  readonly assetScope: ForecastLabRuntimeAssetScope;
+  readonly mutation:
+    | ForecastLabMarkovParameterMutationCandidate
+    | ForecastLabMarkovParameterMutationReplayPayload;
+}): ForecastLabRuntimeDefaultsActivation {
+  return {
+    profileId: params.profileId,
+    assetScope: params.assetScope,
+    overrides: params.mutation.edits.map((edit) => ({
+      filePath: edit.filePath,
+      parameterId: edit.parameterId,
+      value: edit.afterValue,
+    })),
+  };
+}
+
+export function resolveForecastLabRuntimeDefaultsForAssetScope(
+  assetScope: ForecastLabRuntimeAssetScope,
+  activations: readonly ForecastLabRuntimeDefaultsActivation[] = [],
+): ForecastLabResolvedRuntimeDefaults {
+  const resolved = cloneForecastLabResolvedRuntimeDefaults();
+
+  for (const activation of activations) {
+    if (activation.assetScope !== assetScope) {
+      continue;
+    }
+
+    for (const override of activation.overrides) {
+      const target = getResolvedRuntimeDefaultsTarget(resolved, override.filePath);
+      target[override.parameterId] = override.value;
+    }
+  }
+
+  return resolved;
+}
 
 function makeRunId(profileId: string, now: Date): string {
   return `forecast-lab-${profileId}-${now.toISOString().replace(/[:.]/g, '-')}`;

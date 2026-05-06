@@ -1,4 +1,4 @@
-import { describe, beforeAll, expect } from 'bun:test';
+import { beforeAll, describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
@@ -7,6 +7,13 @@ import { brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from '
 
 const TICKER = 'GLD';
 const HORIZONS = [1, 2, 3, 7, 14] as const;
+const PRIMARY_HORIZONS = [1, 2, 3] as const;
+const GUARDRAIL_HORIZONS = [7, 14] as const;
+const PRIMARY_DIRECTIONAL_ACCURACY_WEIGHTS = {
+  h1: 0.5,
+  h2: 0.3,
+  h3: 0.2,
+} as const;
 const STRIDE = 5;
 const WARMUP = 120;
 const TIMEOUT = 480_000;
@@ -45,6 +52,14 @@ function countAbstains(steps: readonly BacktestStep[]): number {
   return steps.filter((step) => step.recommendation === 'HOLD').length;
 }
 
+function scorePrimaryShortHorizons(metrics: Record<string, { directionalAccuracy: number }>): number {
+  return (
+    metrics.h1.directionalAccuracy * PRIMARY_DIRECTIONAL_ACCURACY_WEIGHTS.h1
+    + metrics.h2.directionalAccuracy * PRIMARY_DIRECTIONAL_ACCURACY_WEIGHTS.h2
+    + metrics.h3.directionalAccuracy * PRIMARY_DIRECTIONAL_ACCURACY_WEIGHTS.h3
+  );
+}
+
 async function runCurrentLaneForHorizon(horizon: number): Promise<HorizonMetrics> {
   const tickerData = fixture.tickers[TICKER];
   const result: WalkForwardResult = await walkForward({
@@ -67,6 +82,33 @@ async function runCurrentLaneForHorizon(horizon: number): Promise<HorizonMetrics
 }
 
 describe('Walk-forward GOLD short-horizon benchmark', () => {
+  it('keeps the future GOLD mutator contract centered on 1d/2d/3d while treating 7d/14d as guardrails', () => {
+    const baseline = {
+      h1: { directionalAccuracy: 0.64 },
+      h2: { directionalAccuracy: 0.57 },
+      h3: { directionalAccuracy: 0.61 },
+      h7: { directionalAccuracy: 0.69 },
+      h14: { directionalAccuracy: 0.77 },
+    };
+    const improvedGuardrailsOnly = {
+      ...baseline,
+      h7: { directionalAccuracy: 0.99 },
+      h14: { directionalAccuracy: 0.99 },
+    };
+    const regressedPrimaryHorizons = {
+      ...improvedGuardrailsOnly,
+      h1: { directionalAccuracy: 0.60 },
+      h2: { directionalAccuracy: 0.54 },
+      h3: { directionalAccuracy: 0.58 },
+    };
+
+    expect(PRIMARY_HORIZONS).toEqual([1, 2, 3]);
+    expect(GUARDRAIL_HORIZONS).toEqual([7, 14]);
+    expect(Object.values(PRIMARY_DIRECTIONAL_ACCURACY_WEIGHTS).reduce((total, weight) => total + weight, 0)).toBeCloseTo(1);
+    expect(scorePrimaryShortHorizons(improvedGuardrailsOnly)).toBeCloseTo(scorePrimaryShortHorizons(baseline));
+    expect(scorePrimaryShortHorizons(regressedPrimaryHorizons)).toBeLessThan(scorePrimaryShortHorizons(baseline));
+  });
+
   beforeAll(() => {
     const fixturePath = join(import.meta.dir, '..', 'fixtures', 'backtest-prices.json');
     fixture = JSON.parse(readFileSync(fixturePath, 'utf-8'));

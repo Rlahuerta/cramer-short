@@ -17,9 +17,11 @@ import { appendLedgerEntry, readLedgerEntries, readRunManifest, writeRunManifest
 import { getForecastLabProfile, listForecastLabStructuredMutations } from './profiles.js';
 import type { ForecastLabCommandRunner } from './runner.js';
 import {
+  buildForecastLabRuntimeDefaultsActivation,
   ForecastLabRunnerError,
   createForecastLabCommandRunner,
   defaultForecastLabCommandRunner,
+  resolveForecastLabRuntimeDefaultsForAssetScope,
   resolveForecastLabMutatorRankingEnabled,
   runForecastLab,
   promoteForecastLab,
@@ -252,6 +254,26 @@ function getStructuredMutationNumericAfterValue(
     throw new Error(`Expected numeric afterValue for ${mutation.id}/${parameterId}`);
   }
   return value;
+}
+
+function expectResolvedDefaultsToMatchShipped(
+  resolved: ReturnType<typeof resolveForecastLabRuntimeDefaultsForAssetScope>,
+): void {
+  expect(resolved.markov.momentumLookback).toBe(SHIPPED_RUNTIME_DEFAULTS.markov.momentumLookback);
+  expect(resolved.conformal.scoreAggregationCalibrationWindow)
+    .toBe(SHIPPED_RUNTIME_DEFAULTS.conformal.scoreAggregationCalibrationWindow);
+  expect(resolved.regime.minSamplesPerRegime).toBe(SHIPPED_RUNTIME_DEFAULTS.regime.minSamplesPerRegime);
+}
+
+function expectResolvedDefaultsToMatchMutation(
+  resolved: ReturnType<typeof resolveForecastLabRuntimeDefaultsForAssetScope>,
+  mutation: ForecastLabMarkovParameterMutationCandidate,
+): void {
+  expect(resolved.markov.momentumLookback).toBe(getStructuredMutationNumericAfterValue(mutation, 'momentumLookback'));
+  expect(resolved.conformal.scoreAggregationCalibrationWindow)
+    .toBe(getStructuredMutationNumericAfterValue(mutation, 'scoreAggregationCalibrationWindow'));
+  expect(resolved.regime.minSamplesPerRegime)
+    .toBe(getStructuredMutationNumericAfterValue(mutation, 'minSamplesPerRegime'));
 }
 
 const MULTI_ASSET_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
@@ -602,6 +624,94 @@ describe('forecast-lab runner', () => {
         metrics: candidateMetrics,
       }),
     });
+  });
+
+  it('documents that mutating shared live defaults would leak a future GOLD activation into BTC', () => {
+    const runtimeDefaults = snapshotRuntimeDefaults();
+
+    try {
+      const goldMomentumLookback = getStructuredMutationNumericAfterValue(
+        MULTI_ASSET_LONGER_STABILITY_WINDOW,
+        'momentumLookback',
+      );
+      const goldCalibrationWindow = getStructuredMutationNumericAfterValue(
+        MULTI_ASSET_LONGER_STABILITY_WINDOW,
+        'scoreAggregationCalibrationWindow',
+      );
+      const goldMinSamplesPerRegime = getStructuredMutationNumericAfterValue(
+        MULTI_ASSET_LONGER_STABILITY_WINDOW,
+        'minSamplesPerRegime',
+      );
+
+      Object.assign(FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS as Record<string, unknown>, {
+        momentumLookback: goldMomentumLookback,
+      });
+      Object.assign(FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS as Record<string, unknown>, {
+        scoreAggregationCalibrationWindow: goldCalibrationWindow,
+      });
+      Object.assign(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS as Record<string, unknown>, {
+        minSamplesPerRegime: goldMinSamplesPerRegime,
+      });
+
+      const currentBtcEffectiveDefaults = snapshotRuntimeDefaults();
+      expect(currentBtcEffectiveDefaults.markov.momentumLookback).toBe(goldMomentumLookback);
+      expect(currentBtcEffectiveDefaults.conformal.scoreAggregationCalibrationWindow).toBe(goldCalibrationWindow);
+      expect(currentBtcEffectiveDefaults.regime.minSamplesPerRegime).toBe(goldMinSamplesPerRegime);
+      expect(currentBtcEffectiveDefaults.markov.momentumLookback).not.toBe(runtimeDefaults.markov.momentumLookback);
+    } finally {
+      restoreRuntimeDefaults(runtimeDefaults);
+    }
+  });
+
+  it('resolves shipped defaults, BTC overrides, GOLD overrides, and fallback by asset scope', () => {
+    const btcActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'btc-markov-ultra-short-horizon',
+      assetScope: 'btc',
+      mutation: BTC_SHORTER_REACTIVE_WINDOW,
+    });
+    const goldActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'gold-markov-short-horizon',
+      assetScope: 'gold',
+      mutation: MULTI_ASSET_LONGER_STABILITY_WINDOW,
+    });
+
+    const baseBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc');
+    const shippedFallbackGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', [btcActivation]);
+    const btcActiveDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', [btcActivation, goldActivation]);
+    const goldActiveDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', [btcActivation, goldActivation]);
+
+    expectResolvedDefaultsToMatchShipped(baseBtcDefaults);
+    expectResolvedDefaultsToMatchShipped(shippedFallbackGoldDefaults);
+    expectResolvedDefaultsToMatchMutation(btcActiveDefaults, BTC_SHORTER_REACTIVE_WINDOW);
+    expectResolvedDefaultsToMatchMutation(goldActiveDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
+  });
+
+  it('keeps GOLD-scope activation, reset, and restore isolated from BTC effective runtime defaults', () => {
+    const btcActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'btc-markov-ultra-short-horizon',
+      assetScope: 'btc',
+      mutation: BTC_SHORTER_REACTIVE_WINDOW,
+    });
+    const goldActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'gold-markov-short-horizon',
+      assetScope: 'gold',
+      mutation: MULTI_ASSET_LONGER_STABILITY_WINDOW,
+    });
+
+    const bothActive = [btcActivation, goldActivation] as const;
+    const afterGoldActivationBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', bothActive);
+    const afterGoldActivationGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', bothActive);
+    const afterGoldResetBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', [btcActivation]);
+    const afterGoldResetGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', [btcActivation]);
+    const afterGoldRestoreBtcDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('btc', bothActive);
+    const afterGoldRestoreGoldDefaults = resolveForecastLabRuntimeDefaultsForAssetScope('gold', bothActive);
+
+    expectResolvedDefaultsToMatchMutation(afterGoldActivationBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldActivationGoldDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldResetBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
+    expectResolvedDefaultsToMatchShipped(afterGoldResetGoldDefaults);
+    expectResolvedDefaultsToMatchMutation(afterGoldRestoreBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
+    expectResolvedDefaultsToMatchMutation(afterGoldRestoreGoldDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
   });
 
   it('fails closed for the BTC ultra-short-horizon profile when parsed harness metrics are missing', async () => {
