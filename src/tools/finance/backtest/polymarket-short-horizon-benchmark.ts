@@ -22,6 +22,9 @@ export interface ShortHorizonReplayBenchmarkSlice {
   abstainRate: number;
   directionalAccuracy: number | null;
   brierScore: number | null;
+  crossPlatformEvidenceRowCount: number;
+  crossPlatformFlaggedRowCount: number;
+  crossPlatformAdjustmentAppliedRowCount: number;
   evaluatorName: string;
   ready: boolean;
   pendingReasons: string[];
@@ -73,6 +76,9 @@ function summarizeHorizon(
     abstainRate: replay.baseline.abstainRate,
     directionalAccuracy: replay.baseline.directionalAccuracy,
     brierScore: replay.baseline.brierScore,
+    crossPlatformEvidenceRowCount: replay.baseline.crossPlatformSlices.withEvidence.totalRows,
+    crossPlatformFlaggedRowCount: replay.baseline.crossPlatformSlices.flaggedDivergence.totalRows,
+    crossPlatformAdjustmentAppliedRowCount: replay.baseline.crossPlatformSlices.adjustmentApplied.totalRows,
     evaluatorName: replay.baseline.name,
     ready: pendingReasons.length === 0,
     pendingReasons,

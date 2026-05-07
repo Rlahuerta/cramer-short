@@ -74,6 +74,20 @@ const validBundle: ArbiterReplayBundle = {
     forecastReturn: 0.014,
     qualityScore: 72,
     qualityGrade: 'B',
+    crossPlatformEvidence: [
+      {
+        source: 'metaforecast',
+        kind: 'consensus',
+        flagged: true,
+        deltaFromPolymarket: 0.16,
+      },
+    ],
+    crossPlatformAdjustment: {
+      basis: 'metaforecast_divergence',
+      applied: true,
+      qualityScoreDelta: -8,
+      sigmaMultiplier: 1.08,
+    },
     semanticParserVersion: 'v1',
     warnings: ['history is thin'],
   },
@@ -355,6 +369,20 @@ describe('Phase 2 Polymarket replay helpers', () => {
       forecastReturn: 0.014,
       qualityScore: 72,
       qualityGrade: 'B',
+      crossPlatformEvidence: [
+        {
+          source: 'metaforecast',
+          kind: 'consensus',
+          flagged: true,
+          deltaFromPolymarket: 0.16,
+        },
+      ],
+      crossPlatformAdjustment: {
+        basis: 'metaforecast_divergence',
+        applied: true,
+        qualityScoreDelta: -8,
+        sigmaMultiplier: 1.08,
+      },
     });
 
     expect(block.selectedMarketIds).toEqual(['pm-1']);
@@ -373,6 +401,20 @@ describe('Phase 2 Polymarket replay helpers', () => {
     ]);
     expect(block.semanticParserVersion).toBe('forecast-arbitrator:classifyPolymarketQuestion');
     expect(block.warnings).toEqual(['thin history']);
+    expect(block.crossPlatformEvidence).toEqual([
+      {
+        source: 'metaforecast',
+        kind: 'consensus',
+        flagged: true,
+        deltaFromPolymarket: 0.16,
+      },
+    ]);
+    expect(block.crossPlatformAdjustment).toEqual({
+      basis: 'metaforecast_divergence',
+      applied: true,
+      qualityScoreDelta: -8,
+      sigmaMultiplier: 1.08,
+    });
   });
 
   it('drops markets without CLOB token ids from the frozen replay block and keeps an explicit warning', () => {

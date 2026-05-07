@@ -21,7 +21,16 @@ import { findSnapshotInWindow, readSnapshotRecords, DEFAULT_POLYMARKET_SNAPSHOTS
 import { extractSignals, scoreMarketRelevance } from './signal-extractor.js';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { lookupImpact, inferAssetClass } from './impact-map.js';
-import { runEnsemble, computePolymarketSignal, computeEnsemble, computeConditionalReturn, adjustYesBias, type MarketInput } from '../../utils/ensemble.js';
+import {
+  runEnsemble,
+  computeCI,
+  computePolymarketSignal,
+  computeEnsemble,
+  computeConditionalReturn,
+  adjustYesBias,
+  scoreToGrade,
+  type MarketInput,
+} from '../../utils/ensemble.js';
 import {
   buildPriceDistributionChart,
   extractPriceThresholds as extractChartPriceThresholds,
@@ -47,6 +56,17 @@ import {
   predictWithBrierReplayState,
   type BrierReplayCalibratorState,
 } from './brier-replay-calibrator.js';
+import {
+  computeCrossPlatformDelta,
+  fetchMetaforecastQuestions,
+  findBestMetaforecastMatch,
+  shouldFlagCrossPlatform,
+  type MetaforecastEstimate,
+} from './metaforecast.js';
+import {
+  fetchKalshiVolSignals,
+  type KalshiVolSignal,
+} from './kalshi-vol-signals.js';
 
 type RawMarket = {
   marketId?: string;
@@ -64,16 +84,22 @@ type RawMarket = {
   transitoryMove: boolean;
   bidAskSpread?: number;
   priceVelocityPpH?: number;
+  priceVelocityLogitPerHour?: number;
   maxHourlyJump?: number;
+  maxHourlyLogitJump?: number;
 };
 
 type ForecastHistoryReader = typeof readSnapshotRecords;
 type ForecastMarketFetcher = typeof fetchPolymarketMarkets;
 type ForecastAnchorMarketFetcher = typeof fetchPolymarketAnchorMarketsWithQueries;
+type ForecastMetaforecastFetcher = typeof fetchMetaforecastQuestions;
+type ForecastKalshiSignalFetcher = typeof fetchKalshiVolSignals;
 
 type ForecastToolDependencies = {
   fetchMarkets?: ForecastMarketFetcher;
   fetchAnchorMarketsWithQueries?: ForecastAnchorMarketFetcher;
+  fetchMetaforecastQuestions?: ForecastMetaforecastFetcher;
+  fetchKalshiVolSignals?: ForecastKalshiSignalFetcher;
   readRecords?: ForecastHistoryReader;
   readReplayBundles?: typeof readArbiterReplayBundles;
   recordReplayPolymarketCapture?: (capture: {
@@ -81,6 +107,28 @@ type ForecastToolDependencies = {
     polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
   }) => void;
 };
+
+export interface CrossPlatformEvidence {
+  source: 'metaforecast' | 'kalshi';
+  kind: 'consensus' | 'macro_event';
+  label: string;
+  probability: number;
+  diagnostic: string;
+  flagged: boolean;
+  observedAt?: string;
+  deltaFromPolymarket?: number;
+  intensityBoost?: number;
+  url?: string;
+}
+
+export interface CrossPlatformConfidenceAdjustment {
+  basis: 'none' | 'metaforecast_agreement' | 'metaforecast_divergence';
+  applied: boolean;
+  qualityScoreDelta: number;
+  sigmaMultiplier: number;
+  summary?: string;
+  warnings: string[];
+}
 
 type HistoryFlags = {
   priceSpikeDetected: boolean;
@@ -138,6 +186,7 @@ const TWENTY_FOUR_HOURS_MS = 24 * 3_600_000;
 const THIRTY_SIX_HOURS_MS = 36 * 3_600_000;
 const FORTY_EIGHT_HOURS_MS = 48 * 3_600_000;
 const LIVE_BRIER_REPLAY_FLAG = 'POLYMARKET_BRIER_REPLAY_CALIBRATOR_ENABLED';
+const CROSS_PLATFORM_FUSION_FLAG = 'POLYMARKET_CROSS_PLATFORM_FUSION_ENABLED';
 const LIVE_BRIER_REPLAY_STATE: BrierReplayCalibratorState = {
   bias: 0.016276026205423927,
   slope: 1 / 3,
@@ -146,9 +195,15 @@ const LIVE_BRIER_REPLAY_MIN_PROBABILITY = 0.4;
 const LIVE_BRIER_REPLAY_MAX_PROBABILITY = 0.6;
 const SHORT_HORIZON_REPLAY_MIN_LABELED_BUNDLES = 3;
 const SHORT_HORIZON_REPLAY_MIN_MID_CONFIDENCE_ROWS = 6;
+const CROSS_PLATFORM_DIVERGENCE_QUALITY_PENALTY = 8;
+const CROSS_PLATFORM_DIVERGENCE_SIGMA_MULTIPLIER = 1.08;
 
 function isLiveBrierReplayCalibratorEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test(process.env[LIVE_BRIER_REPLAY_FLAG] ?? '');
+}
+
+function isCrossPlatformFusionEnabled(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env[CROSS_PLATFORM_FUSION_FLAG] ?? '');
 }
 
 function isUsablePolymarketProbability(probability: number): boolean {
@@ -180,7 +235,9 @@ function toRawMarket(
     transitoryMove: history.transitoryMove,
     bidAskSpread: market.bidAskSpread,
     priceVelocityPpH: market.priceVelocityPpH,
+    priceVelocityLogitPerHour: market.priceVelocityLogitPerHour,
     maxHourlyJump: market.maxHourlyJump,
+    maxHourlyLogitJump: market.maxHourlyLogitJump,
   };
 }
 
@@ -292,6 +349,157 @@ function shouldUseShortHorizonReplayCalibration(
   horizonDays: number,
 ): boolean {
   return ticker === 'BTC' && assetClass === 'crypto' && horizonDays >= 1 && horizonDays <= 3;
+}
+
+export function shouldAttemptCrossPlatformEvidence(
+  assetClass: string,
+  horizonDays: number,
+): boolean {
+  return assetClass === 'crypto' && horizonDays >= 1 && horizonDays <= 30;
+}
+
+export function normalizeMetaforecastEvidence(params: {
+  marketQuestion: string;
+  marketProbability: number;
+  match: MetaforecastEstimate;
+}): CrossPlatformEvidence {
+  const delta = computeCrossPlatformDelta(params.marketProbability, params.match.probability);
+  const deltaPp = delta * 100;
+  const flagged = shouldFlagCrossPlatform(delta);
+  return {
+    source: 'metaforecast',
+    kind: 'consensus',
+    label: params.match.title,
+    probability: params.match.probability,
+    diagnostic: `${params.match.platform} consensus ${deltaPp.toFixed(1)}pp from Polymarket on "${params.marketQuestion}"${flagged ? ' (material disagreement)' : ''}`,
+    flagged,
+    deltaFromPolymarket: delta,
+    ...(params.match.url ? { url: params.match.url } : {}),
+  };
+}
+
+export function normalizeKalshiEvidence(signal: KalshiVolSignal): CrossPlatformEvidence {
+  return {
+    source: 'kalshi',
+    kind: 'macro_event',
+    label: signal.sourceTitle,
+    probability: signal.probability,
+    diagnostic: `${signal.eventType.toUpperCase()} event ${signal.eventId} implies ${(signal.probability * 100).toFixed(1)}% with vol boost ${signal.intensityBoost.toFixed(2)}`,
+    flagged: false,
+    observedAt: signal.eventAt,
+    intensityBoost: signal.intensityBoost,
+  };
+}
+
+export function deriveCrossPlatformConfidenceAdjustment(
+  evidence: CrossPlatformEvidence[],
+): CrossPlatformConfidenceAdjustment {
+  const metaforecastConsensus = evidence.filter((entry) =>
+    entry.source === 'metaforecast' && entry.kind === 'consensus',
+  );
+  const flaggedConsensus = metaforecastConsensus.filter((entry) =>
+    shouldFlagCrossPlatform(entry.deltaFromPolymarket ?? 0),
+  );
+
+  if (flaggedConsensus.length > 0) {
+    const worstDivergence = flaggedConsensus.reduce((worst, entry) =>
+      (entry.deltaFromPolymarket ?? 0) > (worst.deltaFromPolymarket ?? 0) ? entry : worst,
+    );
+    const deltaPp = ((worstDivergence.deltaFromPolymarket ?? 0) * 100).toFixed(1);
+    return {
+      basis: 'metaforecast_divergence',
+      applied: true,
+      qualityScoreDelta: -CROSS_PLATFORM_DIVERGENCE_QUALITY_PENALTY,
+      sigmaMultiplier: CROSS_PLATFORM_DIVERGENCE_SIGMA_MULTIPLIER,
+      summary: 'Cross-platform divergence detected; confidence trimmed conservatively.',
+      warnings: [
+        `Cross-platform divergence warning: MetaForecast differs from the lead Polymarket market by ${deltaPp}pp; quality score reduced by ${CROSS_PLATFORM_DIVERGENCE_QUALITY_PENALTY} points and the 95% CI was widened modestly.`,
+      ],
+    };
+  }
+
+  if (metaforecastConsensus.length > 0) {
+    return {
+      basis: 'metaforecast_agreement',
+      applied: false,
+      qualityScoreDelta: 0,
+      sigmaMultiplier: 1,
+      summary: 'Cross-platform check: MetaForecast stayed within the 10pp divergence threshold; no confidence adjustment applied.',
+      warnings: [],
+    };
+  }
+
+  return {
+    basis: 'none',
+    applied: false,
+    qualityScoreDelta: 0,
+    sigmaMultiplier: 1,
+    warnings: [],
+  };
+}
+
+function toUtcDate(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function selectPrimaryCrossPlatformMarket(rawMarkets: RawMarket[]): RawMarket | null {
+  if (rawMarkets.length === 0) return null;
+  return rawMarkets.reduce((best, market) =>
+    market.volume24h > best.volume24h ? market : best,
+  );
+}
+
+async function collectCrossPlatformEvidence(params: {
+  assetClass: string;
+  horizonDays: number;
+  nowMs: number;
+  rawMarkets: RawMarket[];
+  fetchMetaforecastQuestions: ForecastMetaforecastFetcher;
+  fetchKalshiVolSignals?: ForecastKalshiSignalFetcher;
+}): Promise<{ evidence: CrossPlatformEvidence[]; warnings: string[] }> {
+  if (!shouldAttemptCrossPlatformEvidence(params.assetClass, params.horizonDays)) {
+    return { evidence: [], warnings: [] };
+  }
+
+  const primaryMarket = selectPrimaryCrossPlatformMarket(params.rawMarkets);
+  const metaforecastPromise = primaryMarket
+    ? params.fetchMetaforecastQuestions(primaryMarket.question, { limit: 8 })
+    : Promise.resolve([]);
+  const kalshiPromise = params.fetchKalshiVolSignals
+    ? params.fetchKalshiVolSignals({
+      fromDate: toUtcDate(params.nowMs),
+      toDate: toUtcDate(params.nowMs + params.horizonDays * DAY_MS),
+    })
+    : Promise.resolve([]);
+
+  const [metaforecastResult, kalshiResult] = await Promise.allSettled([
+    metaforecastPromise,
+    kalshiPromise,
+  ]);
+
+  const evidence: CrossPlatformEvidence[] = [];
+  const warnings: string[] = [];
+
+  if (metaforecastResult.status === 'fulfilled' && primaryMarket) {
+    const match = findBestMetaforecastMatch(primaryMarket.question, metaforecastResult.value);
+    if (match) {
+      evidence.push(normalizeMetaforecastEvidence({
+        marketQuestion: primaryMarket.question,
+        marketProbability: primaryMarket.probability,
+        match,
+      }));
+    }
+  } else if (metaforecastResult.status === 'rejected') {
+    warnings.push('Cross-platform evidence unavailable: metaforecast lookup failed.');
+  }
+
+  if (kalshiResult.status === 'fulfilled') {
+    evidence.push(...kalshiResult.value.map(normalizeKalshiEvidence));
+  } else {
+    warnings.push('Cross-platform evidence unavailable: Kalshi macro lookup failed.');
+  }
+
+  return { evidence, warnings };
 }
 
 function fitShortHorizonReplayCalibrationState(
@@ -981,6 +1189,9 @@ function optionsLabel(skew: number): string {
 export function createPolymarketForecastTool(dependencies: ForecastToolDependencies = {}) {
   const fetchMarkets = dependencies.fetchMarkets ?? fetchPolymarketMarkets;
   const fetchAnchorMarketsWithQueries = dependencies.fetchAnchorMarketsWithQueries ?? fetchPolymarketAnchorMarketsWithQueries;
+  const metaforecastQuestionFetcher = dependencies.fetchMetaforecastQuestions ?? fetchMetaforecastQuestions;
+  const kalshiSignalFetcher = dependencies.fetchKalshiVolSignals
+    ?? (process.env.KALSHI_API_KEY ? fetchKalshiVolSignals : undefined);
   const readRecords = dependencies.readRecords ?? readSnapshotRecords;
   const readReplayBundles = dependencies.readReplayBundles ?? readArbiterReplayBundles;
   const recordReplayPolymarketCapture = dependencies.recordReplayPolymarketCapture
@@ -1154,28 +1365,6 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           );
         }
 
-        if (recordReplayPolymarketCapture) {
-          const rawRow = createRawPolymarketReplayRow({
-            capturedAt: replayCapturedAt,
-            ticker: searchIdentity.canonicalTicker,
-            horizonDays,
-            currentPrice: currentPrice ?? null,
-            querySet: replayQuerySet,
-            selectedMarkets: rawMarkets,
-            warnings: historyWarnings,
-          });
-          const polymarket = freezePolymarketReplayBlock({
-            querySet: replayQuerySet,
-            selectedMarkets: rawMarkets.map((market) => ({
-              ...market,
-              relevanceScore: scoreMarketRelevance(market.question, market.signalCategory),
-            })),
-            warnings: historyWarnings,
-          });
-
-          recordReplayPolymarketCapture({ rawRow, polymarket });
-        }
-
         // Step 3: Build MarketInput array
         let calibratedMarketCount = 0;
         const markets: MarketInput[] = rawMarkets.map((m) => {
@@ -1196,7 +1385,9 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             daysToExpiry: daysToExpiry === null ? undefined : daysToExpiry,
             bidAskSpread: m.bidAskSpread,
             priceVelocityPpH: m.priceVelocityPpH,
+            priceVelocityLogitPerHour: m.priceVelocityLogitPerHour,
             maxHourlyJump: m.maxHourlyJump,
+            maxHourlyLogitJump: m.maxHourlyLogitJump,
             priceSpikeDetected: m.priceSpikeDetected,
             transitoryMove: m.transitoryMove,
             signalTier: categoryToTier(m.signalCategory),
@@ -1208,6 +1399,17 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const liveCalibrationApplied = (
           liveCalibration.mode === 'static' || liveCalibration.mode === 'horizon_aware'
         ) && calibratedMarketCount > 0;
+        const { evidence: crossPlatformEvidence, warnings: crossPlatformWarnings } = await collectCrossPlatformEvidence({
+          assetClass,
+          horizonDays,
+          nowMs,
+          rawMarkets,
+          fetchMetaforecastQuestions: metaforecastQuestionFetcher,
+          fetchKalshiVolSignals: kalshiSignalFetcher,
+        });
+        const crossPlatformAdjustment = isCrossPlatformFusionEnabled()
+          ? deriveCrossPlatformConfidenceAdjustment(crossPlatformEvidence)
+          : deriveCrossPlatformConfidenceAdjustment([]);
 
         // Step 4: Run ensemble — also capture intermediate values for display
         const otherSignals = {
@@ -1222,12 +1424,62 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const { signal: pmSignal, avgQuality, warnings: pmWarnings } = computePolymarketSignal(markets);
         const { weights } = computeEnsemble(pmSignal, avgQuality, otherSignals, ensembleOptions);
         const result = runEnsemble(basePrice, markets, otherSignals, ensembleOptions);
+        const adjustedQualityScore = clamp(
+          result.qualityScore + crossPlatformAdjustment.qualityScoreDelta,
+          0,
+          100,
+        );
+        const adjustedQualityGrade = scoreToGrade(adjustedQualityScore);
+        const adjustedSigma = result.sigma * crossPlatformAdjustment.sigmaMultiplier;
+        const adjustedCi = computeCI(result.forecastPrice, adjustedSigma);
+
+        if (recordReplayPolymarketCapture) {
+          const rawRow = createRawPolymarketReplayRow({
+            capturedAt: replayCapturedAt,
+            ticker: searchIdentity.canonicalTicker,
+            horizonDays,
+            currentPrice: currentPrice ?? null,
+            querySet: replayQuerySet,
+            selectedMarkets: rawMarkets,
+            warnings: historyWarnings,
+          });
+          const polymarket = freezePolymarketReplayBlock({
+            querySet: replayQuerySet,
+            selectedMarkets: rawMarkets.map((market) => ({
+              ...market,
+              relevanceScore: scoreMarketRelevance(market.question, market.signalCategory),
+            })),
+            warnings: historyWarnings,
+            forecastReturn: result.forecastReturn,
+            qualityScore: adjustedQualityScore,
+            qualityGrade: adjustedQualityGrade,
+            crossPlatformEvidence: crossPlatformEvidence.map((entry) => ({
+              source: entry.source,
+              kind: entry.kind,
+              flagged: entry.flagged,
+              ...(entry.deltaFromPolymarket !== undefined
+                ? { deltaFromPolymarket: entry.deltaFromPolymarket }
+                : {}),
+              ...(entry.intensityBoost !== undefined
+                ? { intensityBoost: entry.intensityBoost }
+                : {}),
+            })),
+            crossPlatformAdjustment: {
+              basis: crossPlatformAdjustment.basis,
+              applied: crossPlatformAdjustment.applied,
+              qualityScoreDelta: crossPlatformAdjustment.qualityScoreDelta,
+              sigmaMultiplier: crossPlatformAdjustment.sigmaMultiplier,
+            },
+          });
+
+          recordReplayPolymarketCapture({ rawRow, polymarket });
+        }
 
         // Step 5: Format output
         const returnPct = (result.forecastReturn * 100).toFixed(2);
-        const sigmaPct = (result.sigma * 100).toFixed(2);
-        const ciLow = result.ciLow95;
-        const ciHigh = result.ciHigh95;
+        const sigmaPct = (adjustedSigma * 100).toFixed(2);
+        const ciLow = adjustedCi.low;
+        const ciHigh = adjustedCi.high;
         const pmPct = pct(result.pmSignal);
         const pmWeightPct = (result.pmNormalizedWeight * 100).toFixed(1);
         const avgQualityStr = result.avgMarketQuality.toFixed(3);
@@ -1235,7 +1487,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const displayLabel = searchIdentity.canonicalNames[0]?.toUpperCase() ?? ticker;
 
         const lines: string[] = [
-          `📊 Polymarket Forecast: ${displayLabel} (${ticker})  |  Horizon: ${horizonDays} days  |  Grade: ${result.qualityGrade} (${result.qualityScore}/100)`,
+          `📊 Polymarket Forecast: ${displayLabel} (${ticker})  |  Horizon: ${horizonDays} days  |  Grade: ${adjustedQualityGrade} (${adjustedQualityScore}/100)`,
         ];
 
         if (currentPrice === undefined) {
@@ -1254,6 +1506,9 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         } else if (liveCalibration.mode === 'static' && liveCalibrationApplied) {
           lines.push(`ℹ️  Live Brier replay calibration is active: compressed ${calibratedMarketCount} mid-confidence market ${calibratedMarketCount === 1 ? 'quote' : 'quotes'} toward neutral before blending.`);
         }
+        if (crossPlatformAdjustment.summary) {
+          lines.push(`${crossPlatformAdjustment.applied ? '⚠️' : 'ℹ️'}  ${crossPlatformAdjustment.summary}`);
+        }
 
         lines.push('');
         lines.push(`Current price:   ${currentPrice !== undefined ? '$' + basePrice : 'not provided — CI shown as %'}`);
@@ -1261,8 +1516,8 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         if (currentPrice !== undefined) {
           lines.push(`95% CI:          [$${ciLow.toFixed(2)} – $${ciHigh.toFixed(2)}]  (σ = ${sigmaPct}%)`);
         } else {
-          const ciLowPct = ((result.ciLow95 / basePrice - 1) * 100).toFixed(2);
-          const ciHighPct = ((result.ciHigh95 / basePrice - 1) * 100).toFixed(2);
+          const ciLowPct = ((ciLow / basePrice - 1) * 100).toFixed(2);
+          const ciHighPct = ((ciHigh / basePrice - 1) * 100).toFixed(2);
           const ciHighSign = parseFloat(ciHighPct) >= 0 ? '+' : '';
           lines.push(`95% CI:          [${ciLowPct}% – ${ciHighSign}${ciHighPct}%]  (σ = ${sigmaPct}%)  ← % relative to current price`);
         }
@@ -1372,6 +1627,15 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           lines.push('  Options skew:       [signal omitted — not provided]');
         }
 
+        if (crossPlatformEvidence.length > 0) {
+          lines.push('');
+          lines.push('── Cross-Platform Evidence ───────────────────────────────────────────────');
+          for (const evidence of crossPlatformEvidence) {
+            const label = evidence.source === 'metaforecast' ? 'MetaForecast' : 'Kalshi';
+            lines.push(`  ${label}: ${evidence.diagnostic}`);
+          }
+        }
+
         const thresholds = shortHorizonAnchorThresholds.length > 0
           ? shortHorizonAnchorThresholds
           : extractChartPriceThresholds(rawMarkets);
@@ -1394,6 +1658,8 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
 
         const allWarnings = [
           ...historyWarnings,
+          ...crossPlatformWarnings,
+          ...crossPlatformAdjustment.warnings,
           ...(result.warnings ?? []),
           ...pmWarnings.filter((w) => !result.warnings?.includes(w)),
           ...(thresholdChartWarning ? [thresholdChartWarning] : []),
@@ -1412,6 +1678,10 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
 
         return formatToolResult({
           result: lines.join('\n'),
+          crossPlatformEvidence,
+          crossPlatformAdjustment,
+          qualityScore: adjustedQualityScore,
+          qualityGrade: adjustedQualityGrade,
           ...(liveCalibrationApplied ? { forecastReturn: result.forecastReturn } : {}),
         });
       } catch (error) {

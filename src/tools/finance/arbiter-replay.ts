@@ -20,7 +20,9 @@ export interface RawPolymarketReplayMarket {
   ask?: number;
   bidAskSpread?: number;
   priceVelocityPpH?: number;
+  priceVelocityLogitPerHour?: number;
   maxHourlyJump?: number;
+  maxHourlyLogitJump?: number;
   active?: boolean;
   closed?: boolean;
   enableOrderBook?: boolean;
@@ -48,7 +50,9 @@ export interface PolymarketReplaySelectionMarket {
   ask?: number;
   bidAskSpread?: number;
   priceVelocityPpH?: number;
+  priceVelocityLogitPerHour?: number;
   maxHourlyJump?: number;
+  maxHourlyLogitJump?: number;
   relevanceScore?: number;
   signalCategory?: string;
   active?: boolean;
@@ -89,7 +93,9 @@ export interface ArbiterReplayPolymarketMarket {
   ask?: number;
   bidAskSpread?: number;
   priceVelocityPpH?: number;
+  priceVelocityLogitPerHour?: number;
   maxHourlyJump?: number;
+  maxHourlyLogitJump?: number;
 }
 
 export interface ArbiterReplayForecastLabel {
@@ -104,6 +110,21 @@ export interface ArbiterReplaySemanticLabel {
   semantics: ForecastMarketSemantics;
   outcome: 'yes' | 'no' | 'unsupported';
   labeledAt: string;
+}
+
+export interface ArbiterReplayCrossPlatformEvidence {
+  source: 'metaforecast' | 'kalshi';
+  kind: 'consensus' | 'macro_event';
+  flagged: boolean;
+  deltaFromPolymarket?: number;
+  intensityBoost?: number;
+}
+
+export interface ArbiterReplayCrossPlatformAdjustment {
+  basis: 'none' | 'metaforecast_agreement' | 'metaforecast_divergence';
+  applied: boolean;
+  qualityScoreDelta: number;
+  sigmaMultiplier: number;
 }
 
 export interface ArbiterReplayBundle {
@@ -122,6 +143,8 @@ export interface ArbiterReplayBundle {
     forecastReturn?: number;
     qualityScore?: number;
     qualityGrade?: string;
+    crossPlatformEvidence?: ArbiterReplayCrossPlatformEvidence[];
+    crossPlatformAdjustment?: ArbiterReplayCrossPlatformAdjustment;
     semanticParserVersion?: string;
     warnings: string[];
   } | null;
@@ -229,7 +252,9 @@ function isRawPolymarketReplayMarket(value: unknown): value is RawPolymarketRepl
   if (!isOptionalFiniteNumber(value.bid) || !isOptionalFiniteNumber(value.ask)) return false;
   if (!isOptionalNumber(value.bidAskSpread)) return false;
   if (!isOptionalNumber(value.priceVelocityPpH)) return false;
+  if (!isOptionalNumber(value.priceVelocityLogitPerHour)) return false;
   if (!isOptionalNumber(value.maxHourlyJump)) return false;
+  if (!isOptionalNumber(value.maxHourlyLogitJump)) return false;
   return true;
 }
 
@@ -294,9 +319,36 @@ function isReplayPolymarketMarket(value: unknown): value is ArbiterReplayPolymar
   }
   if (!isOptionalNumber(value.bidAskSpread)) return false;
   if (!isOptionalNumber(value.priceVelocityPpH)) return false;
+  if (!isOptionalNumber(value.priceVelocityLogitPerHour)) return false;
   if (!isOptionalNumber(value.maxHourlyJump)) {
     return false;
   }
+  if (!isOptionalNumber(value.maxHourlyLogitJump)) return false;
+  return true;
+}
+
+function isReplayCrossPlatformEvidence(value: unknown): value is ArbiterReplayCrossPlatformEvidence {
+  if (!isRecord(value)) return false;
+  if (value.source !== 'metaforecast' && value.source !== 'kalshi') return false;
+  if (value.kind !== 'consensus' && value.kind !== 'macro_event') return false;
+  if (typeof value.flagged !== 'boolean') return false;
+  if (!isOptionalNumber(value.deltaFromPolymarket)) return false;
+  if (!isOptionalNumber(value.intensityBoost)) return false;
+  return true;
+}
+
+function isReplayCrossPlatformAdjustment(value: unknown): value is ArbiterReplayCrossPlatformAdjustment {
+  if (!isRecord(value)) return false;
+  if (
+    value.basis !== 'none'
+    && value.basis !== 'metaforecast_agreement'
+    && value.basis !== 'metaforecast_divergence'
+  ) {
+    return false;
+  }
+  if (typeof value.applied !== 'boolean') return false;
+  if (!isFiniteNumber(value.qualityScoreDelta)) return false;
+  if (!isFiniteNumber(value.sigmaMultiplier) || value.sigmaMultiplier <= 0) return false;
   return true;
 }
 
@@ -474,6 +526,19 @@ export function parseArbiterReplayBundleLine(rawLine: string): ArbiterReplayBund
       }
       if (!isOptionalNumber(parsed.polymarket.qualityScore)) return null;
       if (parsed.polymarket.qualityGrade !== undefined && typeof parsed.polymarket.qualityGrade !== 'string') return null;
+      if (
+        parsed.polymarket.crossPlatformEvidence !== undefined
+        && (!Array.isArray(parsed.polymarket.crossPlatformEvidence)
+          || !parsed.polymarket.crossPlatformEvidence.every(isReplayCrossPlatformEvidence))
+      ) {
+        return null;
+      }
+      if (
+        parsed.polymarket.crossPlatformAdjustment !== undefined
+        && !isReplayCrossPlatformAdjustment(parsed.polymarket.crossPlatformAdjustment)
+      ) {
+        return null;
+      }
       if (parsed.polymarket.semanticParserVersion !== undefined && typeof parsed.polymarket.semanticParserVersion !== 'string') {
         return null;
       }
@@ -527,6 +592,19 @@ export function parseArbiterReplayBundleLine(rawLine: string): ArbiterReplayBund
             ...(parsedPolymarket.forecastReturn !== undefined ? { forecastReturn: parsedPolymarket.forecastReturn as number } : {}),
             ...(parsedPolymarket.qualityScore !== undefined ? { qualityScore: parsedPolymarket.qualityScore as number } : {}),
             ...(parsedPolymarket.qualityGrade !== undefined ? { qualityGrade: parsedPolymarket.qualityGrade as string } : {}),
+            ...(parsedPolymarket.crossPlatformEvidence !== undefined
+              ? {
+                crossPlatformEvidence: (parsedPolymarket.crossPlatformEvidence as ArbiterReplayCrossPlatformEvidence[])
+                  .map((entry) => ({ ...entry })),
+              }
+              : {}),
+            ...(parsedPolymarket.crossPlatformAdjustment !== undefined
+              ? {
+                crossPlatformAdjustment: {
+                  ...(parsedPolymarket.crossPlatformAdjustment as ArbiterReplayCrossPlatformAdjustment),
+                },
+              }
+              : {}),
             ...(parsedPolymarket.semanticParserVersion !== undefined ? { semanticParserVersion: parsedPolymarket.semanticParserVersion as string } : {}),
             warnings: [...(parsedPolymarket.warnings as string[])],
           }
@@ -696,7 +774,9 @@ export function createRawPolymarketReplayRow(params: {
       ...(market.ask !== undefined ? { ask: market.ask } : {}),
       ...(market.bidAskSpread !== undefined ? { bidAskSpread: market.bidAskSpread } : {}),
       ...(market.priceVelocityPpH !== undefined ? { priceVelocityPpH: market.priceVelocityPpH } : {}),
+      ...(market.priceVelocityLogitPerHour !== undefined ? { priceVelocityLogitPerHour: market.priceVelocityLogitPerHour } : {}),
       ...(market.maxHourlyJump !== undefined ? { maxHourlyJump: market.maxHourlyJump } : {}),
+      ...(market.maxHourlyLogitJump !== undefined ? { maxHourlyLogitJump: market.maxHourlyLogitJump } : {}),
       ...(market.active !== undefined ? { active: market.active } : {}),
       ...(market.closed !== undefined ? { closed: market.closed } : {}),
       ...(market.enableOrderBook !== undefined ? { enableOrderBook: market.enableOrderBook } : {}),
@@ -714,6 +794,8 @@ export function freezePolymarketReplayBlock(params: {
   forecastReturn?: number;
   qualityScore?: number;
   qualityGrade?: string;
+  crossPlatformEvidence?: ArbiterReplayCrossPlatformEvidence[];
+  crossPlatformAdjustment?: ArbiterReplayCrossPlatformAdjustment;
   semanticParserVersion?: string;
 }): NonNullable<ArbiterReplayBundle['polymarket']> {
   const warnings = [...(params.warnings ?? [])];
@@ -741,7 +823,9 @@ export function freezePolymarketReplayBlock(params: {
       ...(market.ask !== undefined ? { ask: market.ask } : {}),
       ...(market.bidAskSpread !== undefined ? { bidAskSpread: market.bidAskSpread } : {}),
       ...(market.priceVelocityPpH !== undefined ? { priceVelocityPpH: market.priceVelocityPpH } : {}),
+      ...(market.priceVelocityLogitPerHour !== undefined ? { priceVelocityLogitPerHour: market.priceVelocityLogitPerHour } : {}),
       ...(market.maxHourlyJump !== undefined ? { maxHourlyJump: market.maxHourlyJump } : {}),
+      ...(market.maxHourlyLogitJump !== undefined ? { maxHourlyLogitJump: market.maxHourlyLogitJump } : {}),
     }];
   });
 
@@ -754,6 +838,12 @@ export function freezePolymarketReplayBlock(params: {
     ...(params.forecastReturn !== undefined ? { forecastReturn: params.forecastReturn } : {}),
     ...(params.qualityScore !== undefined ? { qualityScore: params.qualityScore } : {}),
     ...(params.qualityGrade !== undefined ? { qualityGrade: params.qualityGrade } : {}),
+    ...(params.crossPlatformEvidence !== undefined
+      ? { crossPlatformEvidence: params.crossPlatformEvidence.map((entry) => ({ ...entry })) }
+      : {}),
+    ...(params.crossPlatformAdjustment !== undefined
+      ? { crossPlatformAdjustment: { ...params.crossPlatformAdjustment } }
+      : {}),
     semanticParserVersion: params.semanticParserVersion ?? DEFAULT_POLYMARKET_SEMANTIC_PARSER_VERSION,
     warnings,
   };

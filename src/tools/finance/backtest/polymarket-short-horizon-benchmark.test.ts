@@ -32,6 +32,10 @@ function makeBundle(params: {
   capturedAt: string;
   horizonDays: 1 | 2 | 3;
   actualBinary?: 0 | 1;
+  crossPlatform?: {
+    flagged?: boolean;
+    applied?: boolean;
+  };
 }): ArbiterReplayBundle {
   return {
     capturedAt: params.capturedAt,
@@ -53,6 +57,24 @@ function makeBundle(params: {
           extractedPriceLevels: [70_000],
         },
       ],
+      ...(params.crossPlatform
+        ? {
+          crossPlatformEvidence: [
+            {
+              source: 'metaforecast',
+              kind: 'consensus',
+              flagged: params.crossPlatform.flagged === true,
+              deltaFromPolymarket: params.crossPlatform.flagged === true ? 0.16 : 0.03,
+            },
+          ],
+          crossPlatformAdjustment: {
+            basis: params.crossPlatform.applied === true ? 'metaforecast_divergence' : 'none',
+            applied: params.crossPlatform.applied === true,
+            qualityScoreDelta: params.crossPlatform.applied === true ? -8 : 0,
+            sigmaMultiplier: params.crossPlatform.applied === true ? 1.08 : 1,
+          },
+        }
+        : {}),
       warnings: [],
     },
     warnings: [],
@@ -177,7 +199,12 @@ describe('polymarket short-horizon replay benchmark', () => {
   it('reports machine-readable 1d/2d/3d accuracy and Brier metrics by horizon', () => {
     const report = runShortHorizonReplayBenchmark({
       bundles: [
-        makeBundle({ capturedAt: '2026-05-01T00:00:00.000Z', horizonDays: 1, actualBinary: 1 }),
+        makeBundle({
+          capturedAt: '2026-05-01T00:00:00.000Z',
+          horizonDays: 1,
+          actualBinary: 1,
+          crossPlatform: { flagged: true, applied: true },
+        }),
         makeBundle({ capturedAt: '2026-05-02T00:00:00.000Z', horizonDays: 2, actualBinary: 0 }),
         makeBundle({ capturedAt: '2026-05-03T00:00:00.000Z', horizonDays: 3 }),
       ],
@@ -201,6 +228,9 @@ describe('polymarket short-horizon replay benchmark', () => {
       evaluatorName: 'stub-baseline',
       ready: true,
       directionalAccuracy: 1,
+      crossPlatformEvidenceRowCount: 1,
+      crossPlatformFlaggedRowCount: 1,
+      crossPlatformAdjustmentAppliedRowCount: 1,
     });
     expect(report.horizons['1d'].brierScore).toBeCloseTo(0.1024, 6);
     expect(report.horizons['2d']).toMatchObject({
@@ -209,6 +239,9 @@ describe('polymarket short-horizon replay benchmark', () => {
       tradedRowCount: 1,
       ready: true,
       directionalAccuracy: 1,
+      crossPlatformEvidenceRowCount: 0,
+      crossPlatformFlaggedRowCount: 0,
+      crossPlatformAdjustmentAppliedRowCount: 0,
     });
     expect(report.horizons['2d'].brierScore).toBeCloseTo(0.1024, 6);
     expect(report.horizons['3d'].ready).toBe(false);

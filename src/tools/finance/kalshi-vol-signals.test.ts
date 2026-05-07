@@ -53,6 +53,39 @@ describe('fetchKalshiVolSignals', () => {
     expect(signals.map((signal) => signal.eventType)).toEqual(['fomc', 'cpi']);
     expect(signals.every((signal) => signal.intensityBoost > 0)).toBe(true);
   });
+
+  it('falls back to KALSHI_API_KEY and trims trailing slashes from baseUrl', async () => {
+    const previousApiKey = process.env.KALSHI_API_KEY;
+    process.env.KALSHI_API_KEY = 'env-key';
+
+    try {
+      let requestInit: RequestInit | undefined;
+      const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+        requestInit = init;
+        expect(String(input)).toBe('https://example.test/trade-api/v2/markets?status=open&limit=200');
+        return new Response(JSON.stringify({ markets: [] }), { status: 200 });
+      };
+
+      const signals = await fetchKalshiVolSignals({
+        fromDate: '2026-06-01',
+        toDate: '2026-06-30',
+        baseUrl: 'https://example.test/trade-api/v2/',
+        fetchImpl,
+      });
+
+      expect(signals).toEqual([]);
+      expect(requestInit?.headers).toEqual({
+        Authorization: 'Bearer env-key',
+        Accept: 'application/json',
+      });
+    } finally {
+      if (previousApiKey === undefined) {
+        delete process.env.KALSHI_API_KEY;
+      } else {
+        process.env.KALSHI_API_KEY = previousApiKey;
+      }
+    }
+  });
 });
 
 describe('extractKalshiVolSignalsFromPayload', () => {
@@ -86,5 +119,37 @@ describe('buildKalshiVolatilityCovariate', () => {
     expect(covariate.values[2]).toBeLessThan(covariate.values[3]);
     expect(covariate.peakValue).toBe(covariate.values[3]);
     expect(covariate.values[4]).toBe(0);
+  });
+
+  it('uses linear decay, includes same-day signals, and drops past events', () => {
+    const covariate = buildKalshiVolatilityCovariate(
+      ['2026-06-10', '2026-06-11', '2026-06-12', '2026-06-13'],
+      [
+        {
+          eventAt: '2026-06-12T00:00:00Z',
+          eventId: 'CPI-2026-06',
+          probability: 0.61,
+          intensityBoost: 1.5,
+          eventType: 'cpi',
+          sourceTitle: 'Will CPI come in above 0.3% MoM?',
+        },
+        {
+          eventAt: '2026-06-13T00:00:00Z',
+          eventId: 'FOMC-2026-06',
+          probability: 0.55,
+          intensityBoost: 0.6,
+          eventType: 'fomc',
+          sourceTitle: 'Will the Fed hike rates at the June FOMC meeting?',
+        },
+      ],
+      3,
+    );
+
+    expect(covariate).toEqual({
+      dates: ['2026-06-10', '2026-06-11', '2026-06-12', '2026-06-13'],
+      values: [0.5, 1.2, 1.9, 0.6],
+      activeSignals: 2,
+      peakValue: 1.9,
+    });
   });
 });

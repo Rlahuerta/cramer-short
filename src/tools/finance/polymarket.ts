@@ -10,7 +10,9 @@ import {
 } from './polymarket-snapshots.js';
 import {
   computeMaxHourlyJump,
+  computeMaxHourlyLogitJump,
   computePriceVelocityPpH,
+  computePriceVelocityLogitPerHour,
   fetchClobPriceHistory,
   fetchClobSpread,
 } from './polymarket-clob.js';
@@ -855,7 +857,9 @@ export interface PolymarketMarketResult {
   enableOrderBook?: boolean;
   bidAskSpread?: number;
   priceVelocityPpH?: number;
+  priceVelocityLogitPerHour?: number;
   maxHourlyJump?: number;
+  maxHourlyLogitJump?: number;
 }
 
 function toStructuredMarketResult(m: FormattedMarket): PolymarketMarketResult {
@@ -894,7 +898,9 @@ async function enrichStructuredMarketMicrostructure(
     ...(history.length >= 2
       ? {
           priceVelocityPpH: computePriceVelocityPpH(history),
+          priceVelocityLogitPerHour: computePriceVelocityLogitPerHour(history),
           maxHourlyJump: computeMaxHourlyJump(history),
+          maxHourlyLogitJump: computeMaxHourlyLogitJump(history),
         }
       : {}),
   };

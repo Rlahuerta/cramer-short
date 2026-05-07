@@ -191,6 +191,54 @@ describe('arbiter replay runner', () => {
     expect(run.baseline.disagreementSlice.totalRows).toBe(1);
   });
 
+  it('surfaces cross-platform replay slices for evidence, flagged divergence, and applied adjustments', () => {
+    const divergentBundle = makeLabeledBundle({
+      capturedAt: '2026-05-01T00:00:00.000Z',
+      ticker: 'BTC',
+      actualBinary: 1,
+      semantics: 'terminal',
+      evidence: 'rich',
+    });
+    const bundles: ArbiterReplayBundle[] = [
+      {
+        ...divergentBundle,
+        polymarket: {
+          ...divergentBundle.polymarket!,
+          crossPlatformEvidence: [
+            {
+              source: 'metaforecast' as const,
+              kind: 'consensus' as const,
+              flagged: true,
+              deltaFromPolymarket: 0.16,
+            },
+          ],
+          crossPlatformAdjustment: {
+            basis: 'metaforecast_divergence' as const,
+            applied: true,
+            qualityScoreDelta: -8,
+            sigmaMultiplier: 1.08,
+          },
+        },
+      },
+      makeLabeledBundle({ capturedAt: '2026-05-02T00:00:00.000Z', ticker: 'BTC', actualBinary: 0, semantics: 'barrier_touch', evidence: 'thin' }),
+    ];
+
+    const run = runArbiterReplay({
+      bundles,
+      baselineEvaluator: {
+        name: 'baseline',
+        evaluate() {
+          return makeResult({ preferredDirection: 'long', confidence: 'medium', shouldEnterNow: true });
+        },
+      },
+    });
+
+    expect(run.baseline.crossPlatformSlices.withEvidence.totalRows).toBe(1);
+    expect(run.baseline.crossPlatformSlices.withoutEvidence.totalRows).toBe(1);
+    expect(run.baseline.crossPlatformSlices.flaggedDivergence.totalRows).toBe(1);
+    expect(run.baseline.crossPlatformSlices.adjustmentApplied.totalRows).toBe(1);
+  });
+
   it('fails the acceptance gate when a candidate buys accuracy by abstaining too often', () => {
     const gate = compareReplayEvaluators(
       {
@@ -211,6 +259,12 @@ describe('arbiter replay runner', () => {
           thin: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
           rich: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
         },
+        crossPlatformSlices: {
+          withEvidence: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
+          withoutEvidence: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
+          flaggedDivergence: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
+          adjustmentApplied: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
+        },
         rows: [],
       },
       {
@@ -230,6 +284,12 @@ describe('arbiter replay runner', () => {
           none: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
           thin: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
           rich: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
+        },
+        crossPlatformSlices: {
+          withEvidence: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
+          withoutEvidence: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
+          flaggedDivergence: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
+          adjustmentApplied: { totalRows: 0, tradedRows: 0, directionalAccuracy: null, brierScore: null, abstainRate: 0 },
         },
         rows: [],
       },

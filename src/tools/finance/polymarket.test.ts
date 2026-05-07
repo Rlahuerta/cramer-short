@@ -6,6 +6,7 @@ import { polymarketTool, questionMatchesQuery, inferTagSlugs, setRetryDelays, RE
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import type { PolymarketMarketResult } from './polymarket.js';
 import { readSnapshotRecords } from './polymarket-snapshots.js';
+import { computeMaxHourlyLogitJump, computePriceVelocityLogitPerHour } from './polymarket-clob.js';
 
 // Disable retry delays in tests to avoid timeouts
 let originalDelays: number[];
@@ -585,7 +586,23 @@ describe('polymarketTool', () => {
       bidAskSpread: 0.025,
     });
     expect(result[0]?.priceVelocityPpH).toBeCloseTo(2.0, 6);
+    expect(result[0]?.priceVelocityLogitPerHour).toBeCloseTo(
+      computePriceVelocityLogitPerHour([
+        { tSec: 0, p: 0.50 },
+        { tSec: 3600, p: 0.51 },
+        { tSec: 7200, p: 0.54 },
+      ]),
+      6,
+    );
     expect(result[0]?.maxHourlyJump).toBeCloseTo(0.03, 6);
+    expect(result[0]?.maxHourlyLogitJump).toBeCloseTo(
+      computeMaxHourlyLogitJump([
+        { tSec: 0, p: 0.50 },
+        { tSec: 3600, p: 0.51 },
+        { tSec: 7200, p: 0.54 },
+      ]),
+      6,
+    );
   });
 
   it('deduplicates markets appearing in both events and direct search', async () => {

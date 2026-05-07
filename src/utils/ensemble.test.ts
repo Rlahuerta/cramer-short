@@ -190,6 +190,46 @@ describe('computeMarketQualityWeight', () => {
     expect(jumpy).toBeCloseTo(stable * 0.8, 5);
   });
 
+  it('prefers logit velocity over legacy pp velocity when both are present', () => {
+    const base: MarketInput = {
+      question: 'BTC threshold',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      daysToExpiry: 1,
+      requestedHorizonDays: 1,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+      bidAskSpread: 0.02,
+    };
+    const stable = computeMarketQualityWeight(base);
+    const mixedSignals = computeMarketQualityWeight({
+      ...base,
+      priceVelocityPpH: 3.0,
+      priceVelocityLogitPerHour: 0.05,
+    });
+    expect(mixedSignals).toBeCloseTo(stable, 5);
+  });
+
+  it('falls back to legacy pp velocity when logit velocity is absent', () => {
+    const base: MarketInput = {
+      question: 'BTC threshold',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      daysToExpiry: 1,
+      requestedHorizonDays: 1,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+      bidAskSpread: 0.02,
+    };
+    const stable = computeMarketQualityWeight(base);
+    const ppOnly = computeMarketQualityWeight({ ...base, priceVelocityPpH: 3.0 });
+    expect(ppOnly).toBeCloseTo(stable * 0.8, 5);
+  });
+
   it('hourly jumps stack with the velocity discount for noisy near-expiry markets', () => {
     const base: MarketInput = {
       question: 'BTC threshold',
@@ -207,6 +247,48 @@ describe('computeMarketQualityWeight', () => {
     const velocityOnly = computeMarketQualityWeight(base);
     const jumpy = computeMarketQualityWeight({ ...base, maxHourlyJump: 0.12 });
     expect(jumpy).toBeCloseTo(velocityOnly * 0.7, 5);
+  });
+
+  it('prefers logit jumps over legacy pp jumps when both are present', () => {
+    const base: MarketInput = {
+      question: 'BTC threshold',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      daysToExpiry: 1,
+      requestedHorizonDays: 1,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+      bidAskSpread: 0.02,
+      priceVelocityLogitPerHour: 0.16,
+    };
+    const velocityPenaltyOnly = computeMarketQualityWeight(base);
+    const mixedSignals = computeMarketQualityWeight({
+      ...base,
+      maxHourlyJump: 0.12,
+      maxHourlyLogitJump: 0.2,
+    });
+    expect(mixedSignals).toBeCloseTo(velocityPenaltyOnly, 5);
+  });
+
+  it('falls back to legacy pp jumps when logit jumps are absent', () => {
+    const base: MarketInput = {
+      question: 'BTC threshold',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      daysToExpiry: 1,
+      requestedHorizonDays: 1,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+      bidAskSpread: 0.02,
+      priceVelocityLogitPerHour: 0.16,
+    };
+    const velocityPenaltyOnly = computeMarketQualityWeight(base);
+    const ppOnlyJump = computeMarketQualityWeight({ ...base, maxHourlyJump: 0.12 });
+    expect(ppOnlyJump).toBeCloseTo(velocityPenaltyOnly * 0.7, 5);
   });
 });
 

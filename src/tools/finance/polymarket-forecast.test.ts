@@ -1,10 +1,21 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
-import { createPolymarketForecastTool, evaluateMarketHistory } from './polymarket-forecast.js';
+import {
+  createPolymarketForecastTool,
+  deriveCrossPlatformConfidenceAdjustment,
+  evaluateHistoryFlags,
+  evaluateMarketHistory,
+  type CrossPlatformConfidenceAdjustment,
+  normalizeKalshiEvidence,
+  normalizeMetaforecastEvidence,
+  shouldAttemptCrossPlatformEvidence,
+  type CrossPlatformEvidence,
+} from './polymarket-forecast.js';
 import type { PolymarketMarketResult } from './polymarket.js';
 import type { ArbiterReplayBundle, RawPolymarketReplayRow } from './arbiter-replay.js';
 
 const LIVE_BRIER_REPLAY_FLAG = 'POLYMARKET_BRIER_REPLAY_CALIBRATOR_ENABLED';
+const CROSS_PLATFORM_FUSION_FLAG = 'POLYMARKET_CROSS_PLATFORM_FUSION_ENABLED';
 
 const mockMarkets: PolymarketMarketResult[] = [
   { marketId: 'nvda-market-1', assetId: 'nvda-yes-1', question: 'Will NVIDIA beat Q2 earnings?', probability: 0.72, volume24h: 500_000, ageDays: 0 },
@@ -31,6 +42,10 @@ function makeHermeticTool(
     options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
   ) => Promise<PolymarketMarketResult[]> = async (queries, limit) => fetchMarkets(queries[0] ?? '', limit),
   readReplayBundles: (() => ArbiterReplayBundle[]) | undefined = () => [],
+  crossPlatformDependencies: {
+    fetchMetaforecastQuestions?: (query: string, opts?: { limit?: number; signal?: AbortSignal }) => Promise<any[]>;
+    fetchKalshiVolSignals?: (opts: { fromDate: string; toDate: string }) => Promise<any[]>;
+  } = {},
 ): ReturnType<typeof createPolymarketForecastTool> {
   return createPolymarketForecastTool({
     fetchMarkets,
@@ -38,6 +53,9 @@ function makeHermeticTool(
     readRecords: () => [], // hermetic: always empty snapshot history
     readReplayBundles,
     recordReplayPolymarketCapture,
+    fetchMetaforecastQuestions: async () => [],
+    fetchKalshiVolSignals: async () => [],
+    ...crossPlatformDependencies,
   });
 }
 
@@ -52,9 +70,25 @@ function parseResult(raw: unknown): string {
   return data.result ?? data.error ?? '';
 }
 
-function parsePayload(raw: unknown): { result?: string; error?: string; forecastReturn?: number } {
+function parsePayload(raw: unknown): {
+  result?: string;
+  error?: string;
+  forecastReturn?: number;
+  crossPlatformEvidence?: CrossPlatformEvidence[];
+  crossPlatformAdjustment?: CrossPlatformConfidenceAdjustment;
+  qualityScore?: number;
+  qualityGrade?: string;
+} {
   const outer = JSON.parse(raw as string) as {
-    data?: { result?: string; error?: string; forecastReturn?: number };
+    data?: {
+      result?: string;
+      error?: string;
+      forecastReturn?: number;
+      crossPlatformEvidence?: CrossPlatformEvidence[];
+      crossPlatformAdjustment?: CrossPlatformConfidenceAdjustment;
+      qualityScore?: number;
+      qualityGrade?: string;
+    };
   };
   return outer.data ?? {};
 }
@@ -110,6 +144,7 @@ function makeReplayBundle(params: {
 
 beforeEach(() => {
   delete process.env[LIVE_BRIER_REPLAY_FLAG];
+  delete process.env[CROSS_PLATFORM_FUSION_FLAG];
   polymarketBreaker.reset();
   polymarketForecastTool = makeHermeticTool();
 });
@@ -119,6 +154,96 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('polymarketForecastTool', () => {
+  it('derives a no-op confidence adjustment when cross-platform consensus agrees', () => {
+    expect(deriveCrossPlatformConfidenceAdjustment([
+      normalizeMetaforecastEvidence({
+        marketQuestion: 'Will Bitcoin be above $70,000 on May 9?',
+        marketProbability: 0.58,
+        match: {
+          title: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.55,
+          platform: 'metaculus',
+          stars: 4,
+        },
+      }),
+    ])).toEqual({
+      basis: 'metaforecast_agreement',
+      applied: false,
+      qualityScoreDelta: 0,
+      sigmaMultiplier: 1,
+      summary: 'Cross-platform check: MetaForecast stayed within the 10pp divergence threshold; no confidence adjustment applied.',
+      warnings: [],
+    });
+  });
+
+  it('derives a bounded confidence downgrade when cross-platform consensus diverges', () => {
+    expect(deriveCrossPlatformConfidenceAdjustment([
+      normalizeMetaforecastEvidence({
+        marketQuestion: 'Will Bitcoin be above $70,000 on May 9?',
+        marketProbability: 0.58,
+        match: {
+          title: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.42,
+          platform: 'metaculus',
+          stars: 4,
+        },
+      }),
+    ])).toMatchObject({
+      basis: 'metaforecast_divergence',
+      applied: true,
+      qualityScoreDelta: -8,
+      sigmaMultiplier: 1.08,
+      summary: 'Cross-platform divergence detected; confidence trimmed conservatively.',
+    });
+  });
+
+  it('normalizes metaforecast and Kalshi evidence into a shared diagnostic shape', () => {
+    const meta = normalizeMetaforecastEvidence({
+      marketQuestion: 'Will Bitcoin be above $70,000 on May 9?',
+      marketProbability: 0.58,
+      match: {
+        title: 'Will Bitcoin be above $70,000 on May 9?',
+        probability: 0.42,
+        platform: 'metaculus',
+        stars: 4,
+        url: 'https://example.test/meta',
+      },
+    });
+    const kalshi = normalizeKalshiEvidence({
+      eventAt: '2026-06-13T12:30:00Z',
+      eventId: 'FOMC-2026-06',
+      probability: 0.61,
+      intensityBoost: 1.2,
+      eventType: 'fomc',
+      sourceTitle: 'Will the Fed hike rates at the June FOMC meeting?',
+    });
+
+    expect(meta).toMatchObject({
+      source: 'metaforecast',
+      kind: 'consensus',
+      label: 'Will Bitcoin be above $70,000 on May 9?',
+      probability: 0.42,
+      flagged: true,
+      url: 'https://example.test/meta',
+    });
+    expect(meta.deltaFromPolymarket).toBeCloseTo(0.16, 6);
+    expect(kalshi).toMatchObject({
+      source: 'kalshi',
+      kind: 'macro_event',
+      label: 'Will the Fed hike rates at the June FOMC meeting?',
+      probability: 0.61,
+      flagged: false,
+      observedAt: '2026-06-13T12:30:00Z',
+      intensityBoost: 1.2,
+    });
+  });
+
+  it('only enables standalone cross-platform evidence for supported crypto horizons', () => {
+    expect(shouldAttemptCrossPlatformEvidence('crypto', 7)).toBe(true);
+    expect(shouldAttemptCrossPlatformEvidence('equity', 7)).toBe(false);
+    expect(shouldAttemptCrossPlatformEvidence('crypto', 120)).toBe(false);
+  });
+
   it('preserves the baseline live-path payload when the calibrator is default-off or explicitly falsey', async () => {
     const baseline = parsePayload(await makeHermeticTool(async () => [
       {
@@ -287,6 +412,320 @@ describe('polymarketForecastTool', () => {
     expect(captures).toHaveLength(1);
     expect(captures[0]?.rawRow.selectedMarketIds).toEqual([]);
     expect(captures[0]?.polymarket.selectedMarkets).toEqual([]);
+  });
+
+  it('falls back cleanly when standalone cross-platform fetches fail', async () => {
+    const baseline = parsePayload(await makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+    ).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    ));
+    const raw = await makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+      undefined,
+      undefined,
+      undefined,
+      {
+        fetchMetaforecastQuestions: async () => { throw new Error('meta down'); },
+        fetchKalshiVolSignals: async () => { throw new Error('kalshi down'); },
+      },
+    ).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    );
+
+    const payload = parsePayload(raw);
+    const result = parseResult(raw);
+
+    expect(result).toContain('Polymarket Forecast');
+    expect(result).toContain('Will Bitcoin be above $70,000 on May 9?');
+    expect(result).toContain('Cross-platform evidence unavailable');
+    expect(payload.crossPlatformEvidence).toEqual([]);
+    expect(payload.crossPlatformAdjustment).toMatchObject({
+      basis: 'none',
+      applied: false,
+      qualityScoreDelta: 0,
+      sigmaMultiplier: 1,
+    });
+    expect(payload.qualityScore).toBe(baseline.qualityScore);
+    expect(payload.qualityGrade).toBe(baseline.qualityGrade);
+  });
+
+  it('does not invoke standalone cross-platform fetches for unsupported asset or horizon cases', async () => {
+    let metaforecastCalls = 0;
+    let kalshiCalls = 0;
+    const tool = makeHermeticTool(
+      async () => [
+        {
+          question: 'Will NVIDIA beat Q2 earnings?',
+          probability: 0.72,
+          volume24h: 500_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+      undefined,
+      undefined,
+      undefined,
+      {
+        fetchMetaforecastQuestions: async () => {
+          metaforecastCalls++;
+          return [];
+        },
+        fetchKalshiVolSignals: async () => {
+          kalshiCalls++;
+          return [];
+        },
+      },
+    );
+
+    const equityPayload = parsePayload(await tool.func(
+      { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
+      undefined,
+    ));
+    const longHorizonPayload = parsePayload(await tool.func(
+      { ticker: 'BTC', horizon_days: 120, current_price: 68_000 },
+      undefined,
+    ));
+
+    expect(metaforecastCalls).toBe(0);
+    expect(kalshiCalls).toBe(0);
+    expect(equityPayload.crossPlatformEvidence).toEqual([]);
+    expect(longHorizonPayload.crossPlatformEvidence).toEqual([]);
+    expect(equityPayload.crossPlatformAdjustment?.applied).toBe(false);
+    expect(longHorizonPayload.crossPlatformAdjustment?.applied).toBe(false);
+  });
+
+  it('keeps supported cross-platform evidence diagnostic-only while fusion is flag-off', async () => {
+    const baseline = parsePayload(await makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+    ).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    ));
+    const raw = await makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+      undefined,
+      undefined,
+      undefined,
+      {
+        fetchMetaforecastQuestions: async () => [
+          {
+            title: 'Will Bitcoin be above $70,000 on May 9?',
+            probability: 0.42,
+            platform: 'metaculus',
+            stars: 4,
+          },
+        ],
+      },
+    ).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    );
+
+    const payload = parsePayload(raw);
+    const result = parseResult(raw);
+
+    expect(result).toContain('Cross-Platform Evidence');
+    expect(result).not.toContain('confidence trimmed conservatively');
+    expect(payload.crossPlatformEvidence?.find((entry) => entry.source === 'metaforecast')).toMatchObject({
+      flagged: true,
+    });
+    expect(payload.crossPlatformAdjustment).toEqual({
+      basis: 'none',
+      applied: false,
+      qualityScoreDelta: 0,
+      sigmaMultiplier: 1,
+      warnings: [],
+    });
+    expect(payload.qualityScore).toBe(baseline.qualityScore);
+    expect(payload.qualityGrade).toBe(baseline.qualityGrade);
+  });
+
+  it('keeps confidence unchanged when supported cross-platform evidence agrees', async () => {
+    process.env[CROSS_PLATFORM_FUSION_FLAG] = '1';
+    const baseline = parsePayload(await makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+    ).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    ));
+    const metaforecastCalls: string[] = [];
+    const kalshiCalls: Array<{ fromDate: string; toDate: string }> = [];
+    const raw = await makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+      undefined,
+      undefined,
+      undefined,
+      {
+        fetchMetaforecastQuestions: async (query) => {
+          metaforecastCalls.push(query);
+          return [
+            {
+              title: 'Will Bitcoin be above $70,000 on May 9?',
+              probability: 0.55,
+              platform: 'metaculus',
+              stars: 4,
+            },
+          ];
+        },
+        fetchKalshiVolSignals: async (opts) => {
+          kalshiCalls.push(opts);
+          return [
+            {
+              eventAt: '2026-06-13T12:30:00Z',
+              eventId: 'FOMC-2026-06',
+              probability: 0.61,
+              intensityBoost: 1.2,
+              eventType: 'fomc',
+              sourceTitle: 'Will the Fed hike rates at the June FOMC meeting?',
+            },
+          ];
+        },
+      },
+    ).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    );
+
+    const payload = parsePayload(raw);
+    const result = parseResult(raw);
+
+    expect(result).toContain('Polymarket Forecast');
+    expect(result).toContain('Cross-Platform Evidence');
+    expect(metaforecastCalls).toEqual(['Will Bitcoin be above $70,000 on May 9?']);
+    expect(kalshiCalls).toHaveLength(1);
+    expect(payload.crossPlatformEvidence?.map((entry) => entry.source).sort()).toEqual(['kalshi', 'metaforecast']);
+    const metaforecastEvidence = payload.crossPlatformEvidence?.find((entry) => entry.source === 'metaforecast');
+    expect(metaforecastEvidence).toMatchObject({
+      label: 'Will Bitcoin be above $70,000 on May 9?',
+      flagged: false,
+    });
+    expect(metaforecastEvidence?.deltaFromPolymarket).toBeCloseTo(0.03, 6);
+    expect(result).toContain('no confidence adjustment applied');
+    expect(payload.crossPlatformAdjustment).toEqual({
+      basis: 'metaforecast_agreement',
+      applied: false,
+      qualityScoreDelta: 0,
+      sigmaMultiplier: 1,
+      summary: 'Cross-platform check: MetaForecast stayed within the 10pp divergence threshold; no confidence adjustment applied.',
+      warnings: [],
+    });
+    expect(payload.qualityScore).toBe(baseline.qualityScore);
+    expect(payload.qualityGrade).toBe(baseline.qualityGrade);
+  });
+
+  it('warns and downgrades confidence when supported cross-platform evidence diverges materially', async () => {
+    process.env[CROSS_PLATFORM_FUSION_FLAG] = '1';
+    const baseline = parsePayload(await makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+    ).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    ));
+    const raw = await makeHermeticTool(
+      async () => [
+        {
+          question: 'Will Bitcoin be above $70,000 on May 9?',
+          probability: 0.58,
+          volume24h: 240_000,
+          ageDays: 1,
+          endDate: futureIso(7),
+        },
+      ],
+      undefined,
+      undefined,
+      undefined,
+      {
+        fetchMetaforecastQuestions: async () => [
+          {
+            title: 'Will Bitcoin be above $70,000 on May 9?',
+            probability: 0.42,
+            platform: 'metaculus',
+            stars: 4,
+          },
+        ],
+      },
+    ).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    );
+
+    const payload = parsePayload(raw);
+    const result = parseResult(raw);
+
+    expect(result).toContain('Cross-platform divergence detected; confidence trimmed conservatively.');
+    expect(result).toContain('Cross-platform divergence warning');
+    expect(payload.crossPlatformAdjustment).toMatchObject({
+      basis: 'metaforecast_divergence',
+      applied: true,
+      qualityScoreDelta: -8,
+      sigmaMultiplier: 1.08,
+    });
+    expect(payload.qualityScore).toBe(baseline.qualityScore! - 8);
+    expect(payload.qualityGrade).toBe(baseline.qualityGrade);
+    const metaforecastEvidence = payload.crossPlatformEvidence?.find((entry) => entry.source === 'metaforecast');
+    expect(metaforecastEvidence).toMatchObject({
+      flagged: true,
+    });
+    expect(metaforecastEvidence?.deltaFromPolymarket).toBeCloseTo(0.16, 6);
   });
 
   it('result string contains "Polymarket Forecast"', async () => {
@@ -480,6 +919,62 @@ describe('polymarketForecastTool', () => {
         relevanceScore: expect.any(Number),
       },
     ]);
+    expect(captures[0]?.polymarket.qualityScore).toBeNumber();
+    expect(captures[0]?.polymarket.qualityGrade).toBeString();
+  });
+
+  it('captures cross-platform replay metadata after standalone evidence and fusion are computed', async () => {
+    process.env[CROSS_PLATFORM_FUSION_FLAG] = '1';
+    const captures: Array<{
+      rawRow: RawPolymarketReplayRow;
+      polymarket: NonNullable<ArbiterReplayBundle['polymarket']>;
+    }> = [];
+    const freshTool = makeHermeticTool(
+      async () => [
+        {
+          marketId: 'btc-market-1',
+          assetId: 'btc-yes-1',
+          question: 'Will Bitcoin be above $70,000 on May 7?',
+          probability: 0.58,
+          volume24h: 250_000,
+          ageDays: 1,
+          endDate: '2026-05-07T00:00:00.000Z',
+        },
+      ],
+      (capture) => { captures.push(capture); },
+      undefined,
+      undefined,
+      {
+        fetchMetaforecastQuestions: async () => [
+          {
+            title: 'Will Bitcoin be above $70,000 on May 7?',
+            probability: 0.42,
+            platform: 'metaculus',
+            stars: 4,
+          },
+        ],
+      },
+    );
+
+    await freshTool.func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000 },
+      undefined,
+    );
+
+    expect(captures).toHaveLength(1);
+    expect(captures[0]?.polymarket.crossPlatformEvidence).toHaveLength(1);
+    expect(captures[0]?.polymarket.crossPlatformEvidence?.[0]).toMatchObject({
+      source: 'metaforecast',
+      kind: 'consensus',
+      flagged: true,
+    });
+    expect(captures[0]?.polymarket.crossPlatformEvidence?.[0]?.deltaFromPolymarket).toBeCloseTo(0.16, 6);
+    expect(captures[0]?.polymarket.crossPlatformAdjustment).toEqual({
+      basis: 'metaforecast_divergence',
+      applied: true,
+      qualityScoreDelta: -8,
+      sigmaMultiplier: 1.08,
+    });
   });
 
   it('preserves microstructure fields through the short-horizon BTC forecast path and discounts average quality', async () => {
@@ -499,14 +994,18 @@ describe('polymarketForecastTool', () => {
       closed: false,
       bidAskSpread: 0.04,
       priceVelocityPpH: 3.1,
+      priceVelocityLogitPerHour: 0.16,
       maxHourlyJump: 0.12,
+      maxHourlyLogitJump: 0.42,
     };
     const baseOutput = parseResult(await makeHermeticTool(async () => [
       {
         ...marketWithMicrostructure,
         bidAskSpread: undefined,
         priceVelocityPpH: undefined,
+        priceVelocityLogitPerHour: undefined,
         maxHourlyJump: undefined,
+        maxHourlyLogitJump: undefined,
       },
     ]).func(
       { ticker: 'BTC', horizon_days: 1, current_price: 68_000 },
@@ -525,13 +1024,17 @@ describe('polymarketForecastTool', () => {
       marketId: 'btc-micro-1d',
       bidAskSpread: 0.04,
       priceVelocityPpH: 3.1,
+      priceVelocityLogitPerHour: 0.16,
       maxHourlyJump: 0.12,
+      maxHourlyLogitJump: 0.42,
     });
     expect(captures[0]?.polymarket.selectedMarkets[0]).toMatchObject({
       marketId: 'btc-micro-1d',
       bidAskSpread: 0.04,
       priceVelocityPpH: 3.1,
+      priceVelocityLogitPerHour: 0.16,
       maxHourlyJump: 0.12,
+      maxHourlyLogitJump: 0.42,
     });
   });
 
@@ -1631,6 +2134,50 @@ describe('evaluateMarketHistory', () => {
 
     expect(evaluation.transitoryMove).toBe(false);
     expect(evaluation.warnings.some((warning) => warning.includes('Persistence test unavailable'))).toBe(true);
+  });
+});
+
+describe('evaluateHistoryFlags', () => {
+  const nowMs = new Date('2026-04-20T12:00:00.000Z').getTime();
+  const market: PolymarketMarketResult = {
+    marketId: 'm1',
+    assetId: 'asset-1',
+    question: 'Will BTC be above $70,000 tomorrow?',
+    probability: 0.42,
+    volume24h: 80_000,
+    ageDays: 2,
+    endDate: '2026-12-31T23:59:59Z',
+    active: true,
+    closed: false,
+  };
+
+  it('returns neutral flags when marketId is missing', () => {
+    expect(evaluateHistoryFlags(
+      {
+        ...market,
+        marketId: '',
+      },
+      nowMs,
+      'reports/does-not-exist.jsonl',
+    )).toEqual({
+      priceSpikeDetected: false,
+      transitoryMove: false,
+      warnings: [],
+    });
+  });
+
+  it('returns a stable warning when the snapshot store cannot be read', () => {
+    const evaluation = evaluateHistoryFlags(
+      market,
+      nowMs,
+      'src/tools/finance',
+    );
+
+    expect(evaluation).toEqual({
+      priceSpikeDetected: false,
+      transitoryMove: false,
+      warnings: ['Snapshot history unavailable due to filesystem error'],
+    });
   });
 });
 

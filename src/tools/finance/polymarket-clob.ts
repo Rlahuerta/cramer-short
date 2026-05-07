@@ -4,13 +4,15 @@
  * Implements the velocity / spike / spread fetches outlined in
  * docs/polymarket-prediction-improvements-research-2026-07.md §3.3 and §3.4.
  *
- * Pure-math helpers (`computePriceVelocityPpH`, `computeMaxHourlyJump`,
- * `parseClobPriceHistory`) are exported so they can be unit-tested without
- * live HTTP. The fetcher (`fetchClobSpread`, `fetchClobPriceHistory`) is
- * intentionally tiny — it is exercised in integration tests only.
+ * Pure-math helpers (`computePriceVelocityPpH`, `computePriceVelocityLogitPerHour`,
+ * `computeMaxHourlyJump`, `computeMaxHourlyLogitJump`, `parseClobPriceHistory`)
+ * are exported so they can be unit-tested without live HTTP. The fetcher
+ * (`fetchClobSpread`, `fetchClobPriceHistory`) is intentionally tiny — it is
+ * exercised in integration tests only.
  */
 
 const CLOB_BASE = 'https://clob.polymarket.com';
+const POLYMARKET_LOGIT_EPSILON = 1e-6;
 
 export interface ClobPricePoint {
   tSec: number;
@@ -44,6 +46,80 @@ export function parseClobPriceHistory(raw: unknown): ClobPricePoint[] {
   return out;
 }
 
+function getRecentHistoryWindow(
+  history: readonly ClobPricePoint[],
+  lookbackHours: number,
+): ClobPricePoint[] {
+  if (history.length < 2) return [];
+  const newestSec = history[history.length - 1]!.tSec;
+  const cutoff = newestSec - lookbackHours * 3600;
+  return history.filter((pt) => pt.tSec >= cutoff);
+}
+
+function computeProjectedVelocityPerHour(
+  history: readonly ClobPricePoint[],
+  lookbackHours: number,
+  project: (point: ClobPricePoint) => number | null,
+): number {
+  const window = getRecentHistoryWindow(history, lookbackHours);
+  if (window.length < 2) return 0;
+  let n = 0;
+  let sumX = 0;
+  let sumY = 0;
+  let sumXY = 0;
+  let sumXX = 0;
+  for (const pt of window) {
+    const x = pt.tSec / 3600;
+    const y = project(pt);
+    if (y === null || !Number.isFinite(y)) continue;
+    n += 1;
+    sumX += x;
+    sumY += y;
+    sumXY += x * y;
+    sumXX += x * x;
+  }
+  if (n < 2) return 0;
+  const denom = n * sumXX - sumX * sumX;
+  if (denom === 0) return 0;
+  return (n * sumXY - sumX * sumY) / denom;
+}
+
+function computeProjectedMaxJump(
+  history: readonly ClobPricePoint[],
+  windowHours: number,
+  project: (point: ClobPricePoint) => number | null,
+): number {
+  if (history.length < 2) return 0;
+  const newestSec = history[history.length - 1]!.tSec;
+  const cutoff = newestSec - windowHours * 3600;
+  let maxAbs = 0;
+  for (let i = 1; i < history.length; i += 1) {
+    const cur = history[i]!;
+    if (cur.tSec < cutoff) continue;
+    const prev = history[i - 1]!;
+    const curProjected = project(cur);
+    const prevProjected = project(prev);
+    if (
+      curProjected === null ||
+      prevProjected === null ||
+      !Number.isFinite(curProjected) ||
+      !Number.isFinite(prevProjected)
+    ) {
+      continue;
+    }
+    const d = Math.abs(curProjected - prevProjected);
+    if (d > maxAbs) maxAbs = d;
+  }
+  return maxAbs;
+}
+
+export function probabilityToBoundedLogit(probability: number): number | null {
+  if (!Number.isFinite(probability) || probability < 0 || probability > 1) return null;
+  if (probability === 0) probability = POLYMARKET_LOGIT_EPSILON;
+  if (probability === 1) probability = 1 - POLYMARKET_LOGIT_EPSILON;
+  return Math.log(probability / (1 - probability));
+}
+
 /**
  * Linear-regression slope over the last `lookbackHours` of price history,
  * expressed in **percentage points per hour** (so a 0.01 → 0.04 ramp over
@@ -53,28 +129,19 @@ export function computePriceVelocityPpH(
   history: readonly ClobPricePoint[],
   lookbackHours = 6,
 ): number {
-  if (history.length < 2) return 0;
-  const newestSec = history[history.length - 1]!.tSec;
-  const cutoff = newestSec - lookbackHours * 3600;
-  const window = history.filter((pt) => pt.tSec >= cutoff);
-  if (window.length < 2) return 0;
-  // OLS slope of p (in pp = p * 100) vs. t (in hours).
-  const n = window.length;
-  let sumX = 0;
-  let sumY = 0;
-  let sumXY = 0;
-  let sumXX = 0;
-  for (const pt of window) {
-    const x = pt.tSec / 3600;
-    const y = pt.p * 100;
-    sumX += x;
-    sumY += y;
-    sumXY += x * y;
-    sumXX += x * x;
-  }
-  const denom = n * sumXX - sumX * sumX;
-  if (denom === 0) return 0;
-  return (n * sumXY - sumX * sumY) / denom;
+  return computeProjectedVelocityPerHour(history, lookbackHours, (pt) => pt.p * 100);
+}
+
+/**
+ * Linear-regression slope over the last `lookbackHours` of price history,
+ * expressed in **log-odds per hour** using a bounded logit transform so
+ * 0 / 1 endpoint prints remain finite.
+ */
+export function computePriceVelocityLogitPerHour(
+  history: readonly ClobPricePoint[],
+  lookbackHours = 6,
+): number {
+  return computeProjectedVelocityPerHour(history, lookbackHours, (pt) => probabilityToBoundedLogit(pt.p));
 }
 
 /**
@@ -87,18 +154,20 @@ export function computeMaxHourlyJump(
   history: readonly ClobPricePoint[],
   windowHours = 24,
 ): number {
-  if (history.length < 2) return 0;
-  const newestSec = history[history.length - 1]!.tSec;
-  const cutoff = newestSec - windowHours * 3600;
-  let maxAbs = 0;
-  for (let i = 1; i < history.length; i += 1) {
-    const cur = history[i]!;
-    const prev = history[i - 1]!;
-    if (cur.tSec < cutoff) continue;
-    const d = Math.abs(cur.p - prev.p);
-    if (d > maxAbs) maxAbs = d;
-  }
-  return maxAbs;
+  return computeProjectedMaxJump(history, windowHours, (pt) => pt.p);
+}
+
+/**
+ * Maximum absolute adjacent logit jump within the last `windowHours`.
+ *
+ * Returned in bounded log-odds units so endpoint prints remain finite while
+ * preserving the existing raw-probability primitive for current callers.
+ */
+export function computeMaxHourlyLogitJump(
+  history: readonly ClobPricePoint[],
+  windowHours = 24,
+): number {
+  return computeProjectedMaxJump(history, windowHours, (pt) => probabilityToBoundedLogit(pt.p));
 }
 
 // ---------------------------------------------------------------------------

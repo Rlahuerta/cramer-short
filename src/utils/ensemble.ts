@@ -27,8 +27,12 @@ export interface MarketInput {
   bidAskSpread?: number;
   /** P1e — Per-hour drift in pp (positive = momentum, negative = fading). Undefined ⇒ no penalty. */
   priceVelocityPpH?: number;
+  /** P3 — Preferred per-hour drift signal in log-odds units. Undefined ⇒ fall back to pp-space drift. */
+  priceVelocityLogitPerHour?: number;
   /** P1e — Largest single-hour |Δp| over the prior 24h window. Undefined ⇒ no penalty. */
   maxHourlyJump?: number;
+  /** P3 — Preferred single-hour jump signal in log-odds units. Undefined ⇒ fall back to raw-probability jumps. */
+  maxHourlyLogitJump?: number;
 }
 
 export interface OtherSignals {
@@ -61,6 +65,11 @@ export interface EnsembleResult {
   avgMarketQuality: number;    // w̄ mean quality weight
   warnings: string[];
 }
+
+const LEGACY_PRICE_VELOCITY_PPH_PENALTY_THRESHOLD = 2;
+const LEGACY_MAX_HOURLY_JUMP_PENALTY_THRESHOLD = 0.08;
+const LOGIT_PRICE_VELOCITY_PENALTY_THRESHOLD = 0.1;
+const LOGIT_MAX_HOURLY_JUMP_PENALTY_THRESHOLD = 0.35;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -275,11 +284,24 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   if (m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)) {
     w *= Math.max(0, 1 - m.bidAskSpread / 0.10);
   }
-  // P1e — velocity / spike discounts. Both apply mildly even without snapshot history.
-  if (m.priceVelocityPpH !== undefined && Math.abs(m.priceVelocityPpH) > 2) {
+  // P3 — prefer logit-space microstructure when present. Around p≈0.5, the old
+  // 2pp/h and 8pp cutoffs map to ~0.08 and ~0.32 logit units; we round slightly
+  // higher (0.10 / 0.35) to avoid over-penalizing ordinary center-book churn.
+  const hasLogitVelocity = m.priceVelocityLogitPerHour !== undefined
+    && Number.isFinite(m.priceVelocityLogitPerHour);
+  const hasLogitJump = m.maxHourlyLogitJump !== undefined
+    && Number.isFinite(m.maxHourlyLogitJump);
+
+  if (hasLogitVelocity
+    ? Math.abs(m.priceVelocityLogitPerHour!) > LOGIT_PRICE_VELOCITY_PENALTY_THRESHOLD
+    : m.priceVelocityPpH !== undefined
+      && Math.abs(m.priceVelocityPpH) > LEGACY_PRICE_VELOCITY_PPH_PENALTY_THRESHOLD) {
     w *= 0.80;
   }
-  if (m.maxHourlyJump !== undefined && m.maxHourlyJump > 0.08) {
+  if (hasLogitJump
+    ? m.maxHourlyLogitJump! > LOGIT_MAX_HOURLY_JUMP_PENALTY_THRESHOLD
+    : m.maxHourlyJump !== undefined
+      && m.maxHourlyJump > LEGACY_MAX_HOURLY_JUMP_PENALTY_THRESHOLD) {
     w *= 0.70;
   }
   return Math.max(0, Math.min(1, w));

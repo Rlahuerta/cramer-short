@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import {
   computePriceVelocityPpH,
+  computePriceVelocityLogitPerHour,
   computeMaxHourlyJump,
+  computeMaxHourlyLogitJump,
   parseClobPriceHistory,
+  probabilityToBoundedLogit,
   type ClobPricePoint,
 } from './polymarket-clob.js';
 
@@ -99,5 +102,163 @@ describe('computeMaxHourlyJump', () => {
       { tSec: 101 * 3600, p: 0.55 },   // +0.05 in the window
     ];
     expect(computeMaxHourlyJump(pts, 24)).toBeCloseTo(0.05, 6);
+  });
+});
+
+describe('probabilityToBoundedLogit', () => {
+  test('clips endpoint probabilities to finite logit values', () => {
+    const zeroLogit = probabilityToBoundedLogit(0);
+    const oneLogit = probabilityToBoundedLogit(1);
+    const midLogit = probabilityToBoundedLogit(0.75);
+    expect(zeroLogit).not.toBeNull();
+    expect(oneLogit).not.toBeNull();
+    expect(midLogit).not.toBeNull();
+    expect(Number.isFinite(zeroLogit!)).toBe(true);
+    expect(Number.isFinite(oneLogit!)).toBe(true);
+    expect(zeroLogit!).toBeLessThan(0);
+    expect(oneLogit!).toBeGreaterThan(0);
+    expect(midLogit!).toBeCloseTo(Math.log(3), 12);
+  });
+
+  test('rejects out-of-range probabilities instead of clipping them', () => {
+    expect(probabilityToBoundedLogit(-0.01)).toBeNull();
+    expect(probabilityToBoundedLogit(1.01)).toBeNull();
+  });
+});
+
+describe('computePriceVelocityLogitPerHour', () => {
+  test('returns 0 for empty / single-point series', () => {
+    expect(computePriceVelocityLogitPerHour([])).toBe(0);
+    expect(computePriceVelocityLogitPerHour([{ tSec: 0, p: 0.5 }])).toBe(0);
+  });
+
+  test('returns 0 for flat histories', () => {
+    const pts: ClobPricePoint[] = [];
+    for (let h = 0; h < 6; h += 1) {
+      pts.push({ tSec: h * 3600, p: 0.40 });
+    }
+    expect(computePriceVelocityLogitPerHour(pts)).toBeCloseTo(0, 12);
+  });
+
+  test('stays finite near 0/1 probabilities', () => {
+    const pts: ClobPricePoint[] = [
+      { tSec: 0, p: 0 },
+      { tSec: 3600, p: 1 },
+    ];
+    const velocity = computePriceVelocityLogitPerHour(pts);
+    expect(Number.isFinite(velocity)).toBe(true);
+    expect(velocity).toBeGreaterThan(20);
+  });
+
+  test('returns the logit-space slope for a monotone ramp', () => {
+    const pts: ClobPricePoint[] = [
+      { tSec: 0, p: 0.25 },
+      { tSec: 3600, p: 0.5 },
+      { tSec: 7200, p: 0.75 },
+    ];
+    expect(computePriceVelocityLogitPerHour(pts)).toBeCloseTo(Math.log(3), 6);
+  });
+
+  test('returns 0 when the lookback window is too short', () => {
+    const pts: ClobPricePoint[] = [
+      { tSec: 0, p: 0.25 },
+      { tSec: 10 * 3600, p: 0.35 },
+    ];
+    expect(computePriceVelocityLogitPerHour(pts, 1)).toBe(0);
+  });
+
+  test('distinguishes center vs edge moves that are identical in pp-space', () => {
+    const center: ClobPricePoint[] = [
+      { tSec: 0, p: 0.50 },
+      { tSec: 3600, p: 0.51 },
+    ];
+    const edge: ClobPricePoint[] = [
+      { tSec: 0, p: 0.98 },
+      { tSec: 3600, p: 0.99 },
+    ];
+
+    expect(computePriceVelocityPpH(center)).toBeCloseTo(1, 6);
+    expect(computePriceVelocityPpH(edge)).toBeCloseTo(1, 6);
+    expect(computePriceVelocityLogitPerHour(edge)).toBeGreaterThan(
+      computePriceVelocityLogitPerHour(center),
+    );
+  });
+
+  test('skips out-of-range probabilities instead of clipping them', () => {
+    const pts: ClobPricePoint[] = [
+      { tSec: 0, p: 0.25 },
+      { tSec: 3600, p: 1.5 },
+      { tSec: 7200, p: 0.75 },
+    ];
+    expect(computePriceVelocityLogitPerHour(pts)).toBeCloseTo(Math.log(3), 6);
+  });
+});
+
+describe('computeMaxHourlyLogitJump', () => {
+  test('returns 0 for short series', () => {
+    expect(computeMaxHourlyLogitJump([])).toBe(0);
+    expect(computeMaxHourlyLogitJump([{ tSec: 0, p: 0.5 }])).toBe(0);
+  });
+
+  test('returns 0 for flat histories', () => {
+    const pts: ClobPricePoint[] = [];
+    for (let h = 0; h < 6; h += 1) {
+      pts.push({ tSec: h * 3600, p: 0.4 });
+    }
+    expect(computeMaxHourlyLogitJump(pts)).toBeCloseTo(0, 12);
+  });
+
+  test('stays finite near 0/1 probabilities', () => {
+    const pts: ClobPricePoint[] = [
+      { tSec: 0, p: 0 },
+      { tSec: 3600, p: 1 },
+    ];
+    const jump = computeMaxHourlyLogitJump(pts);
+    expect(Number.isFinite(jump)).toBe(true);
+    expect(jump).toBeGreaterThan(20);
+  });
+
+  test('returns the max absolute adjacent logit jump on a monotone ramp', () => {
+    const pts: ClobPricePoint[] = [
+      { tSec: 0, p: 0.25 },
+      { tSec: 3600, p: 0.5 },
+      { tSec: 7200, p: 0.75 },
+    ];
+    expect(computeMaxHourlyLogitJump(pts)).toBeCloseTo(Math.log(3), 6);
+  });
+
+  test('keeps current sparse-window semantics', () => {
+    const pts: ClobPricePoint[] = [
+      { tSec: 0, p: 0.25 },
+      { tSec: 10 * 3600, p: 0.35 },
+    ];
+    expect(computeMaxHourlyLogitJump(pts, 1)).toBeCloseTo(
+      Math.abs(probabilityToBoundedLogit(0.35)! - probabilityToBoundedLogit(0.25)!),
+      6,
+    );
+  });
+
+  test('distinguishes center vs edge jumps that are identical in pp-space', () => {
+    const center: ClobPricePoint[] = [
+      { tSec: 0, p: 0.50 },
+      { tSec: 3600, p: 0.51 },
+    ];
+    const edge: ClobPricePoint[] = [
+      { tSec: 0, p: 0.98 },
+      { tSec: 3600, p: 0.99 },
+    ];
+
+    expect(computeMaxHourlyJump(center)).toBeCloseTo(0.01, 6);
+    expect(computeMaxHourlyJump(edge)).toBeCloseTo(0.01, 6);
+    expect(computeMaxHourlyLogitJump(edge)).toBeGreaterThan(computeMaxHourlyLogitJump(center));
+  });
+
+  test('skips jumps that touch out-of-range probabilities', () => {
+    const pts: ClobPricePoint[] = [
+      { tSec: 0, p: 0.25 },
+      { tSec: 3600, p: 1.5 },
+      { tSec: 7200, p: 0.75 },
+    ];
+    expect(computeMaxHourlyLogitJump(pts)).toBe(0);
   });
 });

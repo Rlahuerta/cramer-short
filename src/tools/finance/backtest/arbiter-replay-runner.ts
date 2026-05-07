@@ -35,6 +35,9 @@ export interface ArbiterReplayEvaluationRow {
   whaleSupport: boolean;
   polymarketEvidence: 'none' | 'thin' | 'rich';
   divergent: boolean;
+  hasCrossPlatformEvidence: boolean;
+  hasFlaggedCrossPlatformEvidence: boolean;
+  crossPlatformAdjustmentApplied: boolean;
 }
 
 export interface ArbiterReplayEvaluatorReport {
@@ -51,6 +54,12 @@ export interface ArbiterReplayEvaluatorReport {
     withoutSupport: ArbiterReplaySliceMetrics;
   };
   polymarketEvidenceSlices: Record<'none' | 'thin' | 'rich', ArbiterReplaySliceMetrics>;
+  crossPlatformSlices: {
+    withEvidence: ArbiterReplaySliceMetrics;
+    withoutEvidence: ArbiterReplaySliceMetrics;
+    flaggedDivergence: ArbiterReplaySliceMetrics;
+    adjustmentApplied: ArbiterReplaySliceMetrics;
+  };
   rows: ArbiterReplayEvaluationRow[];
 }
 
@@ -180,6 +189,9 @@ function evaluateRows(
       whaleSupport: bundle.whale !== undefined && bundle.whale !== null,
       polymarketEvidence: polymarketEvidenceRichness(bundle),
       divergent: result.disagreement.isDivergent,
+      hasCrossPlatformEvidence: (bundle.polymarket?.crossPlatformEvidence?.length ?? 0) > 0,
+      hasFlaggedCrossPlatformEvidence: (bundle.polymarket?.crossPlatformEvidence ?? []).some((entry) => entry.flagged),
+      crossPlatformAdjustmentApplied: bundle.polymarket?.crossPlatformAdjustment?.applied === true,
     };
   });
 
@@ -196,6 +208,12 @@ function evaluateRows(
       none: sliceMetrics(rows.filter((row) => row.polymarketEvidence === 'none')),
       thin: sliceMetrics(rows.filter((row) => row.polymarketEvidence === 'thin')),
       rich: sliceMetrics(rows.filter((row) => row.polymarketEvidence === 'rich')),
+    },
+    crossPlatformSlices: {
+      withEvidence: sliceMetrics(rows.filter((row) => row.hasCrossPlatformEvidence)),
+      withoutEvidence: sliceMetrics(rows.filter((row) => !row.hasCrossPlatformEvidence)),
+      flaggedDivergence: sliceMetrics(rows.filter((row) => row.hasFlaggedCrossPlatformEvidence)),
+      adjustmentApplied: sliceMetrics(rows.filter((row) => row.crossPlatformAdjustmentApplied)),
     },
     rows,
   };

@@ -107,6 +107,10 @@ describe('computeCrossPlatformDelta', () => {
     expect(computeCrossPlatformDelta(0.20, 0.50)).toBeCloseTo(0.30, 6);
     expect(computeCrossPlatformDelta(0.50, 0.50)).toBe(0);
   });
+
+  it('keeps disagreements in raw probability space', () => {
+    expect(computeCrossPlatformDelta(0.91, 0.09)).toBeCloseTo(0.82, 6);
+  });
 });
 
 describe('shouldFlagCrossPlatform', () => {
@@ -119,5 +123,9 @@ describe('shouldFlagCrossPlatform', () => {
     expect(shouldFlagCrossPlatform(0.10)).toBe(false);
     expect(shouldFlagCrossPlatform(0.05)).toBe(false);
     expect(shouldFlagCrossPlatform(0)).toBe(false);
+  });
+
+  it('does not take absolute value internally', () => {
+    expect(shouldFlagCrossPlatform(-0.20)).toBe(false);
   });
 });
