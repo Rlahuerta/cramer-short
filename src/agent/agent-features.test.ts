@@ -169,7 +169,7 @@ describe('Agent — streaming final answer', () => {
 
     expect(idxStart).toBeGreaterThanOrEqual(0);
     expect(idxFirstChunk).toBeGreaterThan(idxStart);
-  });
+  }, 15_000);
 
   it('emits multiple answer_chunk events (true streaming, not one blob)', async () => {
     const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3 });

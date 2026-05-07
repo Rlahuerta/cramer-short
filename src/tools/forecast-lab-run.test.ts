@@ -274,21 +274,29 @@ describe('forecast_lab_run tool', () => {
       _tool: 'forecast_lab_run',
       action: 'list-mutators',
       status: 'ok',
-      profiles: [
-        {
-          profileId: 'multi-asset-markov-short-horizon',
-          mutationMode: 'structured',
-        },
-        {
-          profileId: 'btc-markov-ultra-short-horizon',
-          mutationMode: 'structured',
-        },
-      ],
       dryRunProfiles: ['btc-arbiter-replay', 'polymarket-selection-sanity'],
     });
+    if (!payload || payload.action !== 'list-mutators' || payload.status !== 'ok') {
+      throw new Error('Expected an ok list-mutators payload');
+    }
+    expect(payload.profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        profileId: 'multi-asset-markov-short-horizon',
+        mutationMode: 'structured',
+      }),
+      expect.objectContaining({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mutationMode: 'structured',
+      }),
+      expect.objectContaining({
+        profileId: 'gold-markov-short-horizon',
+        mutationMode: 'structured',
+      }),
+    ]));
     expect(payload?.answer).toContain('Forecast-lab shipped mutator catalog summary.');
     expect(payload?.answer).toContain('| Profile id | Target subsystem | Mutation mode | Shipped ids | Allowed operators |');
     expect(payload?.answer).toContain('Shipped candidate catalog ids for btc-markov-ultra-short-horizon:');
+    expect(payload?.answer).toContain('Shipped candidate catalog ids for gold-markov-short-horizon:');
     expect(payload?.answer).toContain('btc-markov-ultra-short-horizon');
   });
 

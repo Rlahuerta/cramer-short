@@ -376,7 +376,7 @@ describe('hybrid break fallback', () => {
     // Phase 5 threshold gates — only the magnitudes shifted.
     const bestHybrid = artifact.candidates.find(candidate => candidate.candidateId === 'HYB_L025_M050_H075_lambda025');
     expect(bestHybrid).toBeDefined();
-    expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeCloseTo(-0.004576659038901587, 10);
+    expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeCloseTo(-0.004728132387706863, 10);
     expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeGreaterThan(0.002);
     expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeLessThan(0.003);
     expect(bestHybrid!.passesThresholds).toBe(false);

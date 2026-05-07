@@ -115,14 +115,15 @@ function cleanup(): void {
   rmSync(join('.cramer-short', 'experiments', 'active-promotions'), { recursive: true, force: true });
   for (const runId of RUN_IDS) {
     const worktreePath = getForecastLabCandidateWorktreePath(runId);
-    if (existsSync(worktreePath)) {
-      spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { stdio: 'ignore' });
-    }
-    spawnSync('git', ['branch', '-D', makeForecastLabCandidateBranch(runId)], { stdio: 'ignore' });
     const promotionWorktreePath = getForecastLabPromotionWorktreePath(runId);
-    if (existsSync(promotionWorktreePath)) {
-      spawnSync('git', ['worktree', 'remove', '--force', promotionWorktreePath], { stdio: 'ignore' });
-    }
+    spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { stdio: 'ignore' });
+    spawnSync('git', ['worktree', 'remove', '--force', promotionWorktreePath], { stdio: 'ignore' });
+    rmSync(worktreePath, { recursive: true, force: true });
+    rmSync(promotionWorktreePath, { recursive: true, force: true });
+  }
+  spawnSync('git', ['worktree', 'prune'], { stdio: 'ignore' });
+  for (const runId of RUN_IDS) {
+    spawnSync('git', ['branch', '-D', makeForecastLabCandidateBranch(runId)], { stdio: 'ignore' });
     spawnSync('git', ['branch', '-D', makeForecastLabPromotionBranch(runId)], { stdio: 'ignore' });
     rmSync(getExperimentRunDir(runId), { recursive: true, force: true });
   }
