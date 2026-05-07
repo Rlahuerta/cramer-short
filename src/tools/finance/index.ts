@@ -31,6 +31,19 @@ export {
   runCombinedShortHorizonBenchmarkFromFile,
 } from './backtest/combined-short-horizon-benchmark.js';
 export {
+  DEFAULT_ARBITER_REPLAY_LABELED_REPORT_PATH,
+  runReplayLabelBatch,
+  runReplayLabelBatchFromFile,
+  toReplayLabelBatchReportPath,
+} from './backtest/replay-label-batch-runner.js';
+export {
+  DEFAULT_ARBITER_REPLAY_LABELED_BENCHMARK_REPORT_PATH,
+  runReplayBenchmarkHandoffFromLabeledFile,
+  runReplayLabelBenchmarkPipelineFromFile,
+  toReplayLabelBenchmarkHorizonCounts,
+  toReplayLabelBenchmarkReportPath,
+} from './backtest/replay-label-benchmark-pipeline.js';
+export {
   formatShortHorizonReplayBenchmarkReport,
   runShortHorizonReplayBenchmark,
   runShortHorizonReplayBenchmarkFromFile,
