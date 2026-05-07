@@ -266,14 +266,15 @@ const {
     buildForcedForecastArbiterArgs,
     shouldForceForecastArbitrator,
   buildForcedOnchainArgs,
-  buildForcedFixedIncomeArgs,
- buildForcedCryptoForecastMarkovArgs,
-  shouldForceCryptoForecastTools,
-  shouldPreserveAbstainingBtcShortHorizonForecast,
-  isForecastLabImprovementQuery,
-  isAcceptedFirstPlanningToolCall,
-  detectExplicitSkillRequest,
-  isForecastLabPlanOnlyQuery,
+    buildForcedFixedIncomeArgs,
+  buildForcedCryptoForecastMarkovArgs,
+   shouldForceCryptoForecastTools,
+   shouldPreserveAbstainingBtcShortHorizonForecast,
+   buildForcedGoldCombinedForecastArbiterArgs,
+   isForecastLabImprovementQuery,
+   isAcceptedFirstPlanningToolCall,
+   detectExplicitSkillRequest,
+   isForecastLabPlanOnlyQuery,
   detectForecastLabPromotionApproval,
   detectForecastLabResetRequest,
   detectForecastLabComparisonRequest,
@@ -281,8 +282,9 @@ const {
   detectForecastLabMutatorListRequest,
   detectForecastLabKeepCurrentBestRequest,
   detectForecastLabCatalogExtensionRequest,
-} = await import('./agent.js');
- const { getForecastLabRoutingHint } = await import('./forecast-lab-routing.js');
+ } = await import('./agent.js');
+  const { getForecastLabRoutingHint } = await import('./forecast-lab-routing.js');
+const { createForecastArbitratorTool } = await import('../tools/finance/forecast-arbitrator.js');
 const { InMemoryChatHistory } = await import('../utils/in-memory-chat-history.js');
 const {
   getForecastLabMarkovRuntimeDefaults,
@@ -947,6 +949,161 @@ describe('Agent', () => {
       ]);
     });
 
+    it('rewrites explicit GOLD combined tool calls to GLD and drops crypto-only calls before execution', async () => {
+      mockState.invokeToolCalls = [
+        ST_TOOL_CALL,
+        {
+          id: 'market1',
+          name: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for ETH' },
+          type: 'tool_call' as const,
+        },
+        {
+          id: 'sent1',
+          name: 'social_sentiment',
+          args: { ticker: 'ETH', include_fear_greed: true, limit: 25 },
+          type: 'tool_call' as const,
+        },
+        {
+          id: 'markov1',
+          name: 'markov_distribution',
+          args: { ticker: 'GOLD', horizon: 1, trajectory: true, trajectoryDays: 1 },
+          type: 'tool_call' as const,
+        },
+        {
+          id: 'poly1',
+          name: 'polymarket_forecast',
+          args: { ticker: 'GOLD', horizon_days: 1 },
+          type: 'tool_call' as const,
+        },
+        {
+          id: 'chain1',
+          name: 'get_onchain_crypto',
+          args: { ticker: 'ETH', metrics: 'market,sentiment' },
+          type: 'tool_call' as const,
+        },
+      ];
+
+      const agent = await Agent.create({ maxIterations: 1 });
+      const agentAny = agent as any;
+
+      agentAny.toolMap.set('get_market_data', {
+        name: 'get_market_data',
+        invoke: async () => JSON.stringify({ data: { ok: true } }),
+      });
+      agentAny.toolMap.set('markov_distribution', {
+        name: 'markov_distribution',
+        invoke: async () => JSON.stringify({ data: { ok: true } }),
+      });
+      agentAny.toolMap.set('polymarket_forecast', {
+        name: 'polymarket_forecast',
+        invoke: async () => JSON.stringify({ data: { ok: true } }),
+      });
+      agentAny.toolMap.set('social_sentiment', {
+        name: 'social_sentiment',
+        invoke: async () => JSON.stringify({ data: { ok: true } }),
+      });
+      agentAny.toolMap.set('get_onchain_crypto', {
+        name: 'get_onchain_crypto',
+        invoke: async () => JSON.stringify({ data: { ok: true } }),
+      });
+      agentAny.toolExecutor = new AgentToolExecutor(agentAny.toolMap);
+
+      const query = 'Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.';
+      const events = await collectEvents(agent.run(query));
+
+      const relevantStarts = events
+        .filter((event) => event.type === 'tool_start')
+        .filter((event) => ['get_market_data', 'social_sentiment', 'markov_distribution', 'polymarket_forecast', 'get_onchain_crypto'].includes((event as { tool: string }).tool)) as Array<{ type: 'tool_start'; tool: string; args: Record<string, unknown> }>;
+
+      expect(relevantStarts.map((event) => event.tool)).toEqual([
+        'get_market_data',
+        'markov_distribution',
+        'polymarket_forecast',
+      ]);
+      expect(relevantStarts[0]?.args).toEqual({ query: 'GLD current price' });
+      expect(relevantStarts[1]?.args).toEqual({ ticker: 'GLD', horizon: 1 });
+      expect(relevantStarts[2]?.args).toEqual({ ticker: 'GLD', horizon_days: 1 });
+    });
+
+    it('builds schema-safe GOLD arbitrator args from 48h structural-break abstain evidence', async () => {
+      const query = 'Provide the Polymarket and Markov GOLD forecast for 48 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.';
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'GLD current price' },
+          result: JSON.stringify({
+            data: {
+              get_stock_price_GLD: {
+                ticker: 'GLD',
+                price: 430.6973,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'GLD', horizon: 2, currentPrice: 430.7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              abstainReasons: [
+                'Prediction-market anchor coverage is low, so calibrated scenario buckets would be overly model-driven.',
+              ],
+              canonical: {
+                ticker: 'GLD',
+                currentPrice: 430.6973,
+                horizon: 2,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 3,
+                  anchorQuality: 'low',
+                  predictionConfidence: 0.34,
+                  structuralBreakDetected: true,
+                  structuralBreakDivergence: 0.287,
+                  ciWidened: true,
+                },
+              },
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'GLD', horizon_days: 2, current_price: 430.6973 },
+          result: JSON.stringify({
+            data: {
+              result: 'Polymarket Forecast: Gold (GLD) | Horizon: 2 days | Grade: B+ (78/100)\nWill gold finish Friday above $432?: 41% YES',
+            },
+          }),
+        },
+      ];
+
+      const args = buildForcedGoldCombinedForecastArbiterArgs(query, toolCalls as any);
+
+      expect(args).toEqual({
+        ticker: 'GLD',
+        horizon_days: 2,
+        current_price: 430.6973,
+        markov: {
+          confidence: 0.34,
+          structural_break: true,
+          trusted_anchors: 0,
+          total_anchors: 3,
+          anchor_quality: 'low',
+          summary: 'Markov abstained: Prediction-market anchor coverage is low, so calibrated scenario buckets would be overly model-driven. Structural break detected, divergence 0.287, CI widening applied',
+        },
+        polymarket: {
+          quality_score: 78,
+          markets: [{ question: 'Will gold finish Friday above $432?', probability: 0.41 }],
+          summary: 'Polymarket Forecast: Gold (GLD) | Horizon: 2 days | Grade: B+ (78/100)\nWill gold finish Friday above $432?: 41% YES',
+        },
+      });
+
+      const tool = createForecastArbitratorTool({ recordReplayBundleCapture: () => {} });
+      await expect(tool.invoke(args!)).resolves.toContain('"result"');
+    });
+
     it('done event includes toolCalls array', async () => {
       mockState.streamChunks = ['final answer'];
       const agent = await Agent.create({ maxIterations: 3 });
@@ -1139,6 +1296,15 @@ describe('Agent', () => {
           horizon: days,
         });
       }
+    });
+
+    it('routes the exact GOLD 24h structural-break prompt through the commodity proxy path', () => {
+      const query = 'Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.';
+      expect(inferDistributionTicker(query)).toBe('GLD');
+      expect(buildForcedMarkovArgs(query)).toEqual({
+        ticker: 'GLD',
+        horizon: 1,
+      });
     });
 
     it('routes open-ended OIL markov prompts through the oil commodity proxy path', () => {

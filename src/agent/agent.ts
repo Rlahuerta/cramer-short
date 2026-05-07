@@ -561,6 +561,70 @@ export function buildForcedMarkovArgs(query: string): { ticker: string; horizon:
   return args;
 }
 
+function normalizeExplicitGoldCombinedToolCalls(
+  response: AIMessage,
+  query: string,
+  toolCalls: ToolCallRecord[],
+): void {
+  if (!isExplicitGoldCombinedMarkovPolymarketRequest(query) || !response.tool_calls?.length) return;
+
+  const forcedMarkovArgs = buildForcedMarkovArgs(query);
+  const forcedMarketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
+  const forcedForecastArgs = buildForcedNonCryptoPolymarketForecastArgs(query, []);
+  const forcedArbitratorArgs = buildForcedGoldCombinedForecastArbiterArgs(query, toolCalls);
+  const forcedTicker = forcedMarkovArgs?.ticker ?? forcedForecastArgs?.ticker ?? inferDistributionTicker(query);
+  const forcedHorizon = forcedMarkovArgs?.horizon ?? forcedForecastArgs?.horizon_days ?? inferDistributionHorizon(query) ?? 7;
+
+  response.tool_calls = response.tool_calls.flatMap((toolCall) => {
+    if (toolCall.name === 'social_sentiment' || toolCall.name === 'get_onchain_crypto') {
+      return [];
+    }
+
+    if (toolCall.name === 'get_market_data' && forcedMarketDataArgs) {
+      return [{ ...toolCall, args: forcedMarketDataArgs }];
+    }
+
+    if (toolCall.name === 'markov_distribution' && forcedMarkovArgs) {
+      const args: Record<string, unknown> = {
+        ...(toolCall.args as Record<string, unknown>),
+        ...forcedMarkovArgs,
+      };
+      if (!('trajectory' in forcedMarkovArgs)) {
+        delete args['trajectory'];
+        delete args['trajectoryDays'];
+      }
+      return [{ ...toolCall, args }];
+    }
+
+    if (toolCall.name === 'polymarket_forecast' && forcedForecastArgs) {
+      return [{
+        ...toolCall,
+        args: {
+          ...(toolCall.args as Record<string, unknown>),
+          ...forcedForecastArgs,
+        },
+      }];
+    }
+
+    if (toolCall.name === 'forecast_arbitrator') {
+      if (forcedArbitratorArgs) {
+        return [{ ...toolCall, args: forcedArbitratorArgs }];
+      }
+      if (!forcedTicker) return [];
+      return [{
+        ...toolCall,
+        args: {
+          ...(toolCall.args as Record<string, unknown>),
+          ticker: forcedTicker,
+          horizon_days: forcedHorizon,
+        },
+      }];
+    }
+
+    return [toolCall];
+  });
+}
+
 export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCallRecord[]): boolean {
   if (isForecastLabImprovementQuery(query)) return false;
   return (isExplicitTerminalDistributionQuery(query) || inferTrajectoryRequest(query))
@@ -1459,13 +1523,29 @@ function extractMarkovArbiterEvidence(query: string, toolCalls: ToolCallRecord[]
         ? canonical['diagnostics'] as Record<string, unknown>
         : null;
       if (diagnostics) {
+        if (typeof diagnostics['structuralBreakDetected'] === 'boolean') evidence.structural_break = diagnostics['structuralBreakDetected'];
         if (isFiniteNumber(diagnostics['trustedAnchors'])) evidence.trusted_anchors = diagnostics['trustedAnchors'];
         if (isFiniteNumber(diagnostics['totalAnchors'])) evidence.total_anchors = diagnostics['totalAnchors'];
         if (typeof diagnostics['anchorQuality'] === 'string') evidence.anchor_quality = diagnostics['anchorQuality'];
+        if (evidence.confidence === undefined && isFiniteNumber(diagnostics['predictionConfidence'])) {
+          evidence.confidence = diagnostics['predictionConfidence'];
+        }
       }
-      evidence.summary = reasons.length > 0
-        ? `Markov abstained: ${reasons.join('; ')}`
-        : 'Markov abstained; treat Markov evidence as diagnostics only.';
+      const structuralBreakSummary = diagnostics?.['structuralBreakDetected'] === true
+        ? [
+            'Structural break detected',
+            isFiniteNumber(diagnostics['structuralBreakDivergence'])
+              ? `divergence ${diagnostics['structuralBreakDivergence'].toFixed(3)}`
+              : null,
+            diagnostics['ciWidened'] === true ? 'CI widening applied' : null,
+          ].filter((part): part is string => part !== null).join(', ')
+        : null;
+      evidence.summary = [
+        reasons.length > 0
+          ? `Markov abstained: ${reasons.join('; ')}`
+          : 'Markov abstained; treat Markov evidence as diagnostics only.',
+        structuralBreakSummary,
+      ].filter((part): part is string => Boolean(part)).join(' ');
       return evidence;
     }
 
@@ -1784,7 +1864,7 @@ export function shouldRerunPolymarketForecastWithMarkov(query: string, toolCalls
 
 export function shouldForceGoldCombinedForecastTools(query: string, toolCalls: ToolCallRecord[]): boolean {
   if (!isExplicitGoldCombinedMarkovPolymarketRequest(query)) return false;
-  if (!hasSuccessfulMarkovDistributionForQuery(query, toolCalls)) return false;
+  if (!hasCompletedMarkovDistributionForQuery(query, toolCalls)) return false;
 
   const marketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
   const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls);
@@ -2102,8 +2182,6 @@ export function buildForcedGoldCombinedForecastArbiterArgs(
   query: string,
   toolCalls: ToolCallRecord[],
 ): ForcedForecastArbiterArgs | null {
-  if (!detectGoldCombinedForecastDisagreement(query, toolCalls)) return null;
-
   const ticker = inferDistributionTicker(query);
   if (!ticker) return null;
 
@@ -2111,6 +2189,9 @@ export function buildForcedGoldCombinedForecastArbiterArgs(
   const markov = extractMarkovArbiterEvidence(query, toolCalls);
   const polymarket = extractPolymarketArbiterEvidence(query, toolCalls);
   if (!markov || !polymarket) return null;
+  const hasDirectionalDisagreement = detectGoldCombinedForecastDisagreement(query, toolCalls);
+  const hasStructuralBreakDiagnostics = markov.structural_break === true;
+  if (!hasDirectionalDisagreement && !hasStructuralBreakDiagnostics) return null;
 
   const args: ForcedForecastArbiterArgs = {
     ticker,
@@ -2789,6 +2870,12 @@ export class Agent {
           continue;
         }
       }
+
+      normalizeExplicitGoldCombinedToolCalls(
+        response as AIMessage,
+        query,
+        ctx.scratchpad.getToolCallRecords(),
+      );
 
       // Count sequential_thinking calls before executing tools (needed for nudge below).
       const toolCalls = (response as AIMessage).tool_calls ?? [];

@@ -79,6 +79,12 @@ describe('extractTickers — stop-word filtering', () => {
     expect(result).not.toContain('SEC');
   });
 
+  it('filters CI when it appears as confidence-interval shorthand', () => {
+    const result = extractTickers('Explain whether CI widening was applied to the GOLD forecast.');
+    expect(result).not.toContain('CI');
+    expect(result).toContain('GOLD');
+  });
+
   it('filters currency codes', () => {
     const result = extractTickers('Revenue grew 12% in USD and EUR terms');
     expect(result).not.toContain('USD');
@@ -160,6 +166,7 @@ Consider a BRK.B position as a defensive play.
 describe('TICKER_STOP_WORDS', () => {
   it('contains common financial abbreviations', () => {
     expect(TICKER_STOP_WORDS.has('CEO')).toBe(true);
+    expect(TICKER_STOP_WORDS.has('CI')).toBe(true);
     expect(TICKER_STOP_WORDS.has('EPS')).toBe(true);
     expect(TICKER_STOP_WORDS.has('ETF')).toBe(true);
     expect(TICKER_STOP_WORDS.has('IPO')).toBe(true);

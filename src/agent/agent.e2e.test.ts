@@ -277,6 +277,114 @@ describe('Agent E2E — basic financial query flows', () => {
   );
 
   e2eIt(
+    'handles the exact GOLD 24h Polymarket + Markov structural-break prompt through the commodity proxy path',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+      expect(result.toolsCalled).not.toContain('get_onchain_crypto');
+
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('GLD');
+      expect(markovStart?.args.horizon).toBe(1);
+
+      const forecastStart = findToolStartEvent(result, 'polymarket_forecast');
+      expect(forecastStart).toBeDefined();
+      expect(forecastStart?.args.ticker).toBe('GLD');
+      expect(forecastStart?.args.horizon_days).toBe(1);
+
+      const arbiterStart = findToolStartEvent(result, 'forecast_arbitrator');
+      if (arbiterStart) {
+        expect(arbiterStart.args.ticker).toBe('GLD');
+        expect(arbiterStart.args.horizon_days).toBe(1);
+      }
+
+      const toolArgText = JSON.stringify(
+        result.events
+          .filter((event) => event && typeof event === 'object' && (event as { type?: string }).type === 'tool_start'),
+      ).toUpperCase();
+      expect(toolArgText).not.toContain('CI-USD');
+      expect(toolArgText).not.toContain('"TICKER":"ETH"');
+      expect(toolArgText).not.toContain('"TICKER":"ETH-USD"');
+
+      const forecastEnd = findToolEndEvent(result, 'polymarket_forecast');
+      expect(forecastEnd).toBeDefined();
+      const forecastText = extractToolResultText(forecastEnd!.result).toLowerCase();
+      expect(forecastText).toContain('polymarket forecast: gold (gld)');
+      expect(forecastText).not.toMatch(/\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|cryptocurrency)\b/i);
+
+      expect(result.answer.toLowerCase()).toMatch(/gold|gld/);
+      expect(result.answer.toLowerCase()).not.toMatch(/\b(bitcoin|btc|ethereum|eth|solana|sol)\b/i);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
+    'handles the exact GOLD 48h Polymarket + Markov structural-break prompt without arbitrator schema errors',
+    async () => {
+      const result = await runAgentE2EWithTimeoutRetry(
+        '--deep Provide the Polymarket and Markov GOLD forecast for 48 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.',
+        { model: 'ollama:minimax-m2.7:cloud' },
+      );
+
+      expect(result.toolsCalled).toContain('markov_distribution');
+      expect(result.toolsCalled).toContain('polymarket_forecast');
+      expect(result.toolsCalled).toContain('forecast_arbitrator');
+
+      const markovStart = findToolStartEvent(result, 'markov_distribution');
+      expect(markovStart).toBeDefined();
+      expect(markovStart?.args.ticker).toBe('GLD');
+      expect(markovStart?.args.horizon).toBe(2);
+
+      const forecastStart = findToolStartEvent(result, 'polymarket_forecast');
+      expect(forecastStart).toBeDefined();
+      expect(forecastStart?.args.ticker).toBe('GLD');
+      expect(forecastStart?.args.horizon_days).toBe(2);
+
+      const arbiterStart = findToolStartEvent(result, 'forecast_arbitrator');
+      expect(arbiterStart).toBeDefined();
+      expect(arbiterStart?.args.ticker).toBe('GLD');
+      expect(arbiterStart?.args.horizon_days).toBe(2);
+      expect(arbiterStart?.args).not.toHaveProperty('leverage');
+      expect(arbiterStart?.args.markov).toMatchObject({
+        structural_break: true,
+      });
+
+      const arbiterErrors = result.events.filter(
+        (event) => event && typeof event === 'object'
+          && (event as { type?: string; tool?: string }).type === 'tool_error'
+          && (event as { type?: string; tool?: string }).tool === 'forecast_arbitrator',
+      );
+      expect(arbiterErrors).toHaveLength(0);
+
+      const toolArgText = JSON.stringify(
+        result.events
+          .filter((event) => event && typeof event === 'object' && (event as { type?: string }).type === 'tool_start'),
+      ).toUpperCase();
+      expect(toolArgText).not.toContain('CI-USD');
+      expect(toolArgText).not.toContain('"TICKER":"ETH"');
+      expect(toolArgText).not.toContain('"TICKER":"ETH-USD"');
+
+      const forecastEnd = findToolEndEvent(result, 'polymarket_forecast');
+      expect(forecastEnd).toBeDefined();
+      const forecastText = extractToolResultText(forecastEnd!.result).toLowerCase();
+      expect(forecastText).toContain('polymarket forecast: gold (gld)');
+      expect(forecastText).not.toMatch(/\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|cryptocurrency)\b/i);
+
+      expect(result.answer.toLowerCase()).toMatch(/gold|gld/);
+      expect(result.answer.toLowerCase()).not.toMatch(/\b(bitcoin|btc|ethereum|eth|solana|sol)\b/i);
+      expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
+    },
+    E2E_TIMEOUT_MS,
+  );
+
+  e2eIt(
     'routes the open-ended SILVER markov prompt through the silver proxy path',
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(

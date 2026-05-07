@@ -202,10 +202,10 @@ const SECTOR_MAP: Record<string, AssetType> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const CRYPTO_KEYWORDS = [
-  'btc', 'bitcoin', 'eth', 'ethereum', 'sol', 'solana', 'crypto',
-  'defi', 'nft', 'bnb', 'xrp', 'ada', 'avax', 'doge',
-];
+const CRYPTO_KEYWORD_RE = /\b(?:btc|bitcoin|eth|ethereum|sol|solana|crypto|defi|nft|bnb|xrp|ada|avax|doge)\b/i;
+const BTC_KEYWORD_RE = /\b(?:btc|bitcoin)\b/i;
+const ETH_KEYWORD_RE = /\b(?:eth|ethereum)\b/i;
+const SOL_KEYWORD_RE = /\b(?:sol|solana)\b/i;
 
 const MACRO_KEYWORDS = [
   'fed', 'fomc', 'rate cut', 'rate hike', 'cpi', 'ppi', 'gdp',
@@ -309,10 +309,10 @@ export function detectAssetType(query: string): { type: AssetType; ticker: strin
   }
 
   // 1. Crypto keywords (check before ticker scan to avoid false positives)
-  if (CRYPTO_KEYWORDS.some((kw) => lower.includes(kw))) {
-    if (lower.includes('btc') || lower.includes('bitcoin')) return { type: 'crypto', ticker: 'BTC' };
-    if (lower.includes('eth') || lower.includes('ethereum')) return { type: 'crypto', ticker: 'ETH' };
-    if (lower.includes('sol') || lower.includes('solana')) return { type: 'crypto', ticker: 'SOL' };
+  if (CRYPTO_KEYWORD_RE.test(query)) {
+    if (BTC_KEYWORD_RE.test(query)) return { type: 'crypto', ticker: 'BTC' };
+    if (ETH_KEYWORD_RE.test(query)) return { type: 'crypto', ticker: 'ETH' };
+    if (SOL_KEYWORD_RE.test(query)) return { type: 'crypto', ticker: 'SOL' };
     return { type: 'crypto', ticker: null };
   }
 

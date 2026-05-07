@@ -80,6 +80,14 @@ describe('detectAssetType', () => {
     expect(detectAssetType('ETH 2.0 upgrade').type).toBe('crypto');
   });
 
+  it('does not mis-detect ETH from the word "whether" in GOLD structural-break prompts', () => {
+    const result = detectAssetType(
+      'Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include whether CI widening was applied.',
+    );
+    expect(result.type).not.toBe('crypto');
+    expect(result.ticker).toBe('GOLD');
+  });
+
   it('detects solana as crypto with ticker SOL', () => {
     const r = detectAssetType('solana ecosystem');
     expect(r.type).toBe('crypto');
