@@ -583,7 +583,9 @@ IMPORTANT: One or more data tools returned an error or empty result. Per your Fi
   if (hasCanonicalMarkovOutput) {
     prompt += `
 
-IMPORTANT: markov_distribution results are present. Treat the canonical Markov payload as authoritative. Use the reported scenario bucket probabilities and diagnostics verbatim. Do NOT recompute, sum, or infer scenario probabilities from raw Polymarket titles, threshold questions, or price_distribution_chart output — those are inputs/visual aids, not the canonical distribution.`;
+IMPORTANT: markov_distribution results are present. Treat the canonical Markov payload as authoritative. Use the reported scenario bucket probabilities and diagnostics verbatim. Do NOT recompute, sum, or infer scenario probabilities from raw Polymarket titles, threshold questions, or price_distribution_chart output — those are inputs/visual aids, not the canonical distribution.
+
+IMPORTANT: Do NOT substitute another asset, proxy ticker, or proxy-history narrative unless the canonical Markov payload explicitly says that proxy was used. For example, do NOT describe a BTC/BTC-USD run as using GLD, gold, or any commodity-equivalent history unless the diagnostics explicitly name that proxy. Likewise, if diagnostics.anchorBypassApplied is false or diagnostics.calibrationMode is "anchored", do NOT call the run "model-only", "commodity bypass", or say trusted anchors were "unused". If trusted anchors are present, do NOT imply they were absent or ignored just because a displayed mixing split rounds to 100% Markov / 0% Anchors.`;
   }
 
   const requestedBucketMatch = originalQuery.match(/\b(\d+)\s*(?:parts|buckets|bins|segments)\b/i);

@@ -628,6 +628,13 @@ describe('Agent E2E — basic financial query flows', () => {
             diagnostics?: {
               structuralBreakDetected?: boolean;
               ciWidened?: boolean;
+              goldShortHorizonLivePolicy?: {
+                historyDays?: number;
+                breakDivergenceThreshold?: number;
+                rerunOnBreak?: boolean;
+              } | null;
+              anchorBypassApplied?: boolean;
+              calibrationMode?: string;
               btcShortHorizonRerunTriggered?: boolean;
               btcShortHorizonLivePolicy?: {
                 historyDays?: number;
@@ -646,11 +653,19 @@ describe('Agent E2E — basic financial query flows', () => {
       expect(diagnostics?.btcShortHorizonLivePolicy?.breakDivergenceThreshold).toBe(0.10);
       expect(diagnostics?.btcShortHorizonLivePolicy?.rerunOnBreak).toBe(true);
       expect(diagnostics?.btcShortHorizonLivePolicy?.rerunWindowDays).toBe(60);
+      expect(diagnostics?.goldShortHorizonLivePolicy ?? null).toBeNull();
 
       const arbiterStart = findToolStartEvent(result, 'forecast_arbitrator');
       expect(arbiterStart).toBeDefined();
       expect(arbiterStart?.args.ticker).toMatch(/^BTC(?:-USD)?$/);
       expect(arbiterStart?.args.horizon_days).toBe(1);
+
+      const toolArgText = JSON.stringify(
+        result.events
+          .filter((event) => event && typeof event === 'object' && (event as { type?: string }).type === 'tool_start'),
+      );
+      expect(toolArgText).not.toContain('"ticker":"GLD"');
+      expect(toolArgText).not.toContain('"ticker":"GOLD"');
 
       const bucketRows = [...result.answer.matchAll(/^\|\s*(?:\*\*)?\d+(?:\*\*)?\s*\|/gm)];
       const densityRows = extractDensityRows(result.answer);
@@ -741,6 +756,13 @@ describe('Agent E2E — basic financial query flows', () => {
       expect(result.answer.toLowerCase()).toMatch(/entry/);
       expect(result.answer.toLowerCase()).toMatch(/stop/);
       expect(result.answer.toLowerCase()).toMatch(/leverage/);
+      expect(result.answer).not.toMatch(/\bGLD(?:-equivalent)?\b/i);
+      expect(result.answer).not.toMatch(/\bGOLD short-horizon live policy\b/i);
+      if (diagnostics?.anchorBypassApplied === false || diagnostics?.calibrationMode === 'anchored') {
+        expect(result.answer).not.toMatch(/\bcommodity bypass\b/i);
+        expect(result.answer).not.toMatch(/\bmodel-only\b/i);
+        expect(result.answer).not.toMatch(/\bunused\b/i);
+      }
 
       if (diagnostics?.structuralBreakDetected) {
         expect(result.answer.toLowerCase()).toMatch(/structural break diagnostic/);

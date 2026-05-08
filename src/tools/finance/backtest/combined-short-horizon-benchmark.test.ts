@@ -32,14 +32,16 @@ const BTC_14D_ABSTAIN_REASON =
   'Evaluator abstained on every labeled 14d replay bundle, so directional accuracy is undefined.';
 
 // Deterministic lock for the current BTC replay + price fixtures, not a claim of broad live accuracy.
+// Refreshed after the zero-anchor cryptoModelOnly break fix enabled the more
+// conservative PR3F blend during structural breaks, which raises HOLD counts.
 const BTC_FIXTURE_BASELINE = {
   '1d': {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 18,
-      directionalAccuracy: 0.625,
-      brierScore: 0.2545182790694479,
+      abstainCount: 20,
+      directionalAccuracy: 0.59375,
+      brierScore: 0.2550127431393302,
       structuralBreakCount: 72,
       ready: true,
       pendingReasons: [],
@@ -69,9 +71,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 16,
-      directionalAccuracy: 0.5208333333333334,
-      brierScore: 0.2537698174957301,
+      abstainCount: 18,
+      directionalAccuracy: 0.4895833333333333,
+      brierScore: 0.2536990360321187,
       structuralBreakCount: 50,
       ready: true,
       pendingReasons: [],
@@ -101,9 +103,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 16,
-      directionalAccuracy: 0.5625,
-      brierScore: 0.26142371626987376,
+      abstainCount: 18,
+      directionalAccuracy: 0.5416666666666666,
+      brierScore: 0.26222299097692103,
       structuralBreakCount: 29,
       ready: true,
       pendingReasons: [],
@@ -133,9 +135,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 95,
       tradedCount: null,
-      abstainCount: 12,
-      directionalAccuracy: 0.5263157894736842,
-      brierScore: 0.2580606015578037,
+      abstainCount: 13,
+      directionalAccuracy: 0.5157894736842106,
+      brierScore: 0.256354982659173,
       structuralBreakCount: 49,
       ready: true,
       pendingReasons: [],
@@ -165,9 +167,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 93,
       tradedCount: null,
-      abstainCount: 9,
-      directionalAccuracy: 0.5268817204301075,
-      brierScore: 0.26866663545084085,
+      abstainCount: 12,
+      directionalAccuracy: 0.5161290322580645,
+      brierScore: 0.2695575622668006,
       structuralBreakCount: 49,
       ready: true,
       pendingReasons: [],
@@ -528,7 +530,7 @@ describe('combined short-horizon benchmark', () => {
     ).length;
 
     expect(naiveOneDay.steps.length).toBe(122);
-    expect(naiveHoldCount).toBe(27);
+    expect(naiveHoldCount).toBe(28);
     expect(naiveBreakCount).toBe(120);
     expect(report.horizons['1d'].markovOnly.observationCount).toBeLessThan(naiveOneDay.steps.length);
     expect(report.horizons['1d'].markovOnly.abstainCount).toBeLessThan(naiveHoldCount);

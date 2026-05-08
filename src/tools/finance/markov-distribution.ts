@@ -4418,6 +4418,30 @@ export function buildBtcShortHorizonThinAnchorWarning(options: {
   return '';
 }
 
+export function formatMarkovMixingLine(options: {
+  commodityModelOnly: boolean;
+  markovWeight: number;
+  anchorWeight: number;
+  trustedAnchors: number;
+}): string {
+  if (options.commodityModelOnly) {
+    return 'Calibration: model-only (commodity bypass, no anchors)';
+  }
+
+  const pct = (n: number) => (n * 100).toFixed(1);
+  const roundsToZero = (n: number) => n > 0 && n < 0.0005;
+
+  if (options.trustedAnchors > 0 && roundsToZero(options.anchorWeight)) {
+    return 'Mixing: >99.9% Markov / <0.1% Anchors (anchors present; final blend is nearly pure Markov)';
+  }
+
+  if (options.trustedAnchors > 0 && roundsToZero(options.markovWeight)) {
+    return 'Mixing: <0.1% Markov / >99.9% Anchors (anchors present; final blend is nearly pure Anchors)';
+  }
+
+  return `Mixing: ${pct(options.markovWeight)}% Markov / ${pct(options.anchorWeight)}% Anchors`;
+}
+
 export function shouldApplyBtc14dBearishBreakSellGate(options: {
   ticker: string;
   horizon: number;
@@ -6351,9 +6375,12 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     const methodNote = `${baseMethodNote}${btcLivePolicyNote}${goldLivePolicyNote}`;
 
     // --- Section 4: Header and metadata ---
-    const mixingLine = commodityModelOnly
-      ? 'Calibration: model-only (commodity bypass, no anchors)'
-      : `Mixing: ${pct(m.mixingTimeWeight)}% Markov / ${pct(1 - m.mixingTimeWeight)}% Anchors`;
+    const mixingLine = formatMarkovMixingLine({
+      commodityModelOnly,
+      markovWeight: m.mixingTimeWeight,
+      anchorWeight: 1 - m.mixingTimeWeight,
+      trustedAnchors: m.polymarketAnchors,
+    });
     const header = [
       '',
       `📊 Markov Distribution: ${result.ticker} | Horizon: ${result.horizon}d`,

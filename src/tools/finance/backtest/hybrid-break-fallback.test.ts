@@ -370,15 +370,15 @@ describe('hybrid break fallback', () => {
 
     // Fixture refreshed after commit 0332b33 fixed `computeRegimeUpRates` to sum log
     // returns instead of simple returns. The corrected up-rate makes the hybrid
-    // produce a slight break+trending regression (vs the earlier flat result)
-    // and a smaller overall
-    // Brier delta (~+0.0024 vs prior +0.006). The candidate still fails the
-    // Phase 5 threshold gates — only the magnitudes shifted.
+    // produce a slight break+trending regression (vs the earlier flat result).
+    // After the zero-anchor cryptoModelOnly break fix, the deterministic fixture
+    // moved again to a slightly smaller regression and a ~+0.0019 Brier delta.
+    // The candidate still fails the Phase 5 threshold gates — only the
+    // magnitudes shifted.
     const bestHybrid = artifact.candidates.find(candidate => candidate.candidateId === 'HYB_L025_M050_H075_lambda025');
     expect(bestHybrid).toBeDefined();
-    expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeCloseTo(-0.004728132387706863, 10);
-    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeGreaterThan(0.002);
-    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeLessThan(0.003);
+    expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeCloseTo(-0.0035460992907800915, 10);
+    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeCloseTo(0.001921100610633053, 10);
     expect(bestHybrid!.passesThresholds).toBe(false);
     expect(bestHybrid!.failureReasons.some(reason => reason.includes('break+trending gain'))).toBe(true);
 

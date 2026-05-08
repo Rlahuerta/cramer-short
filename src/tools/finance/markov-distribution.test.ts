@@ -72,6 +72,7 @@ import {
   buildRecommendationProvenanceNote,
   buildBtcShortHorizonThinAnchorWarning,
   capBtcShortHorizonConfidence,
+  formatMarkovMixingLine,
   applyCryptoTerminalAnchorFallback,
   evaluateAnchorTrust,
   getBtcShortHorizonLivePolicy,
@@ -5562,6 +5563,35 @@ describe('markov_distribution tool output envelope', () => {
     });
   });
 
+  describe('markov mixing line formatter', () => {
+    it('preserves anchor presence when anchored mixing rounds to near-pure Markov', () => {
+      expect(formatMarkovMixingLine({
+        commodityModelOnly: false,
+        markovWeight: 0.9998,
+        anchorWeight: 0.0002,
+        trustedAnchors: 5,
+      })).toBe('Mixing: >99.9% Markov / <0.1% Anchors (anchors present; final blend is nearly pure Markov)');
+    });
+
+    it('preserves markov presence when anchored mixing rounds to near-pure anchors', () => {
+      expect(formatMarkovMixingLine({
+        commodityModelOnly: false,
+        markovWeight: 0.0002,
+        anchorWeight: 0.9998,
+        trustedAnchors: 5,
+      })).toBe('Mixing: <0.1% Markov / >99.9% Anchors (anchors present; final blend is nearly pure Anchors)');
+    });
+
+    it('keeps model-only wording reserved for bypass runs', () => {
+      expect(formatMarkovMixingLine({
+        commodityModelOnly: true,
+        markovWeight: 1,
+        anchorWeight: 0,
+        trustedAnchors: 0,
+      })).toBe('Calibration: model-only (commodity bypass, no anchors)');
+    });
+  });
+
   describe('Phase 1: BTC zero-anchor crypto model-only path', () => {
     // Helper: synthetic BTC prices with a clean structural break mid-series
     function btcBreakPrices(length = 70): number[] {
@@ -7218,6 +7248,62 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.canonical.diagnostics.originalStructuralBreakDetected).toBe(true);
       expect(parsed.data.canonical.diagnostics.originalStructuralBreakDivergence).toBeGreaterThan(0.10);
       expect(parsed.data.report).toContain('reran on the last 60d');
+    });
+
+    it('keeps anchored BTC abstain reports free of GOLD proxy metadata and commodity bypass wording', async () => {
+      const now = Date.parse('2026-05-08T12:00:00Z');
+      const prices: number[] = [];
+      let p = 65000;
+      for (let i = 0; i < 95; i++) {
+        const shock = Math.sin(i * 0.15) * 0.004;
+        p *= 1 + shock;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const currentPrice = prices[prices.length - 1];
+      const result = await markovDistributionTool.func({
+        ticker: 'BTC-USD',
+        horizon: 1,
+        currentPrice,
+        historicalPrices: prices,
+        polymarketMarkets: [
+          {
+            question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.99)} on May 9?`,
+            probability: 0.61,
+            volume: 120_000,
+            createdAt: now - 7 * 86_400_000,
+            endDate: new Date(now + 86_400_000).toISOString(),
+          },
+          {
+            question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.01)} on May 9?`,
+            probability: 0.42,
+            volume: 110_000,
+            createdAt: now - 7 * 86_400_000,
+            endDate: new Date(now + 86_400_000).toISOString(),
+          },
+          {
+            question: `Will the price of Bitcoin fall below $${Math.round(currentPrice * 0.98)} on May 9?`,
+            probability: 0.28,
+            volume: 90_000,
+            createdAt: now - 7 * 86_400_000,
+            endDate: new Date(now + 86_400_000).toISOString(),
+          },
+        ],
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('abstain');
+      expect(parsed.data.canonical.diagnostics.trustedAnchors).toBe(3);
+      expect(parsed.data.canonical.diagnostics.anchorBypassApplied).toBe(false);
+      expect(parsed.data.canonical.diagnostics.calibrationMode).toBe('anchored');
+      expect(parsed.data.canonical.diagnostics.goldShortHorizonLivePolicy).toBeNull();
+      expect(parsed.data.report).toContain('BTC short-horizon live policy used 252d history');
+      expect(parsed.data.report).not.toContain('GOLD short-horizon live policy');
+      expect(parsed.data.report).not.toContain('commodity bypass');
+      expect(parsed.data.report).not.toContain('model-only commodity emission');
+      expect(parsed.data.report).not.toContain('GLD');
+      expect(parsed.data.report).not.toContain('gold');
     });
   });
 });

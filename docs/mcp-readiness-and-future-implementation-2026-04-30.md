@@ -138,6 +138,27 @@ The replay substrate is now in place:
 - `src/tools/finance/backtest/arbiter-replay-runner.ts`
   - baseline vs candidate replay
   - abstain-aware acceptance gate
+- `src/tools/finance/backtest/replay-price-history-adapter.ts`
+  - local replay price-store normalization
+  - fixture-backed price history provider
+- `src/tools/finance/backtest/replay-label-runner.ts`
+  - staged labeled JSONL writing
+- `src/tools/finance/backtest/replay-label-batch-runner.ts`
+  - per-ticker history-window batching
+  - label batch report generation
+- `src/tools/finance/backtest/replay-label-benchmark-pipeline.ts`
+  - labeling + replay benchmark handoff
+  - benchmark artifact generation
+- `src/tools/finance/backtest/replay-label-promotion.ts`
+  - explicit staged-artifact promotion into the labeled cache
+- `src/tools/finance/backtest/replay-label-readiness.ts`
+  - read-only readiness evaluation over the benchmark artifact
+- `src/cli-replay-label.ts`
+  - headless `replay-label run`
+  - headless `replay-label promote`
+  - headless `replay-label readiness`
+- `src/cli-schedule.ts`
+  - scheduled `kind: "replay_label"` jobs
 
 Automatic local capture is now wired at the decision boundaries and writes under:
 
@@ -151,12 +172,32 @@ The current capture hooks are:
 - `src/tools/finance/onchain-crypto.ts`
 - `src/tools/finance/forecast-arbitrator.ts`
 
+Operational replay-label artifacts are now also standardized:
+
+- staged labeled output:
+  - `.cramer-short/arbiter-replay-bundles-labeled.jsonl`
+- staged label report:
+  - `.cramer-short/arbiter-replay-bundles-labeled.report.json`
+- staged benchmark artifact/report:
+  - `.cramer-short/arbiter-replay-bundles-labeled.benchmark.report.json`
+- promoted labeled cache:
+  - `.cramer-short/cache/arbiter-replay/labeled/bundles.jsonl`
+
 ### What is still missing before an honest MCP experiment
 
 1. **A sufficiently large labeled replay corpus**
-2. **A price-history labeling job or adapter** that feeds real history into the labeler on matured bundles
+2. **A real automatic price-history feed for replay-label**
+   - the current replay-label CLI and schedule flow are operational, but the history loader is still limited to:
+     - `fixture`
+     - `local:<path>`
+   - that means the repo can already automate labeling from a local JSON price store, but it does **not** yet have a first-class `loader: live` path that fetches or refreshes real history on its own
 3. **An MCP candidate evaluator** running in replay/shadow mode only
-4. **A chronological holdout evaluation**, not just ad hoc spot checks
+4. **A chronological train/holdout evaluation workflow**, not just ad hoc spot checks
+5. **An MCP-specific experiment runner/reporting layer**
+   - fixed prompt version
+   - fixed `alpha`
+   - reproducible corpus snapshot
+   - holdout-only keep/drop reporting
 
 ---
 
@@ -257,6 +298,189 @@ Do **not** curate away awkward cases:
 - rows where the arbiter abstains
 
 Those are exactly the rows needed for an honest abstain-aware gate.
+
+---
+
+## How to make labeled-data generation automatic in practice
+
+The repo is now close to automatic labeled-data generation, but not fully there yet.
+
+### What is already automatable today
+
+Right now the following loop can already run headlessly:
+
+1. **raw replay capture** into:
+   - `.cramer-short/cache/arbiter-replay/bundles.jsonl`
+   - `.cramer-short/cache/arbiter-replay/polymarket-raw.jsonl`
+   - `.cramer-short/cache/arbiter-replay/whale-raw.jsonl`
+2. **scheduled replay-label execution** via `kind: "replay_label"`
+3. **benchmark artifact generation**
+4. **readiness evaluation**
+
+The operational gap is not the labeler itself. The gap is the **source of real historical price data** that the labeler needs for matured bundles.
+
+### Current limitation
+
+The current `replay-label` loader seam only supports:
+
+- `fixture`
+- `local:<path>`
+
+That means:
+
+- **yes**, labeling can already be automated from a local JSON price store
+- **no**, it cannot yet autonomously fetch real history through a first-class built-in `loader: live` mode
+
+### Two ways to close the gap
+
+There are two valid implementation paths:
+
+#### Option A — near-term, lowest-risk path
+
+Add a scheduled **history refresh job** that writes a local replay price store file, then keep using:
+
+```text
+loader: local:/path/to/prices.json
+```
+
+This is the safest and fastest path because it reuses the existing replay-label CLI and schedule runner unchanged.
+
+#### Option B — longer-term, cleaner operator UX
+
+Add a first-class:
+
+```text
+--loader live
+```
+
+mode to `src/cli-replay-label.ts`, backed by the repo's real historical price fetchers plus local caching.
+
+This gives a simpler user experience, but it increases implementation and determinism risk. The first MCP rollout should prefer **Option A**.
+
+### Recommended automatic pipeline
+
+The clean automatic labeled-data pipeline for MCP should be:
+
+```text
+scheduled BTC 7d capture
+  -> local price-history refresh
+  -> scheduled replay-label run
+  -> scheduled readiness check
+  -> explicit/manual promotion
+  -> MCP replay experiment once corpus is large enough
+```
+
+### Step 1 — automate replay capture
+
+Run BTC 7d combined forecast generation on a schedule so replay bundles accumulate without manual prompting.
+
+Target operating cadence:
+
+- **BTC only**
+- **7d first**
+- **3-5 qualifying bundles/day**
+
+The purpose of this phase is not broad coverage. It is to reach the first honest MCP checkpoint quickly.
+
+### Step 2 — automate real price-history refresh
+
+Add a small scheduled job that writes a normalized local replay price store, for example:
+
+```text
+~/.cramer-short/replay/prices.json
+```
+
+That job should:
+
+1. inspect replay bundles to discover relevant tickers
+2. fetch or refresh enough recent history for those tickers
+3. normalize the data into the replay fixture shape used by `replay-price-history-adapter.ts`
+4. write one durable JSON file under `.cramer-short`
+
+The output shape should stay compatible with the current local loader:
+
+- `generatedAt`
+- `startDate`
+- `endDate`
+- `tickers`
+  - `type`
+  - `closes`
+  - `dates`
+  - `count`
+
+This is the most important missing operational piece. Once this file exists reliably, replay-label can run automatically against real history without any human intervention.
+
+### Step 3 — automate replay-label and benchmark generation
+
+Once the local price store is refreshed, run the existing replay-label pipeline on a schedule.
+
+Recommended job shape:
+
+```json
+{
+  "id": "nightly-replay-label",
+  "kind": "replay_label",
+  "description": "Nightly replay labeling for MCP corpus growth",
+  "inputPath": "~/.cramer-short/cache/arbiter-replay/bundles.jsonl",
+  "outputPath": "~/.cramer-short/replay/{date}-labeled.jsonl",
+  "loader": "local:~/.cramer-short/replay/prices.json",
+  "outputFile": "~/.cramer-short/reports/{date}-replay-label.md"
+}
+```
+
+This produces:
+
+- staged labeled JSONL
+- label batch report
+- benchmark artifact/report
+- optional human-readable job summary
+
+### Step 4 — automate readiness, keep promotion explicit at first
+
+The next job in the chain should run:
+
+```text
+bun start replay-label readiness
+```
+
+against the staged benchmark artifact/report.
+
+This should remain **advisory only**:
+
+- emit `eligible` or `hold`
+- record the reasons
+- do **not** automatically enable MCP
+- do **not** automatically replace the raw replay capture file
+
+For the first production-safe rollout, **promotion should remain manual** even if readiness passes. That keeps the audit trail clear and avoids accidental contamination of the labeled cache.
+
+### Step 5 — promote reviewed staged artifacts into the labeled cache
+
+Keep this step explicit until the pipeline has been trusted for a while:
+
+```text
+bun start replay-label promote
+```
+
+The promoted labeled cache should then act as the stable source for:
+
+- corpus snapshots
+- holdout evaluation
+- future MCP candidate experiments
+
+### What “fully functional” means
+
+For automatic MCP label generation, the system should be considered fully functional only when all of the following are true:
+
+1. replay capture is happening automatically on schedule
+2. a real local price-history store is refreshed automatically
+3. replay-label runs without manual path wiring
+4. benchmark artifacts are generated every run
+5. readiness reports are generated every run
+6. staged artifacts can be promoted into the labeled cache without touching raw capture
+7. the labeled cache is large enough to support chronological train/holdout replay
+
+Until those conditions are met, the repo is **MCP-ready in architecture**, but not yet **MCP-operational end-to-end**.
 
 ---
 
@@ -462,11 +686,14 @@ Only include bundles that are truly ready for labeling and replay.
 
 ### Step 2 — attach labels
 
-For each matured bundle:
+The repo now has an operational replay-label path for this step, but it still needs real-history automation to be fully hands-off.
+
+For each matured bundle or staged corpus snapshot:
 
 1. fetch or load the relevant historical price path,
-2. run `labelReplayBundle(...)`,
-3. persist the labeled bundle snapshot used for evaluation.
+2. run the replay-label pipeline (or equivalently `labelReplayBundle(...)` via the batch runner),
+3. persist the staged labeled bundle snapshot used for evaluation,
+4. keep the raw replay capture bundle file untouched.
 
 Important detail from the current code:
 
@@ -474,6 +701,11 @@ Important detail from the current code:
 - semantic labels require every captured market to reach its own end time
 
 If a bundle is not ready, keep it out of the gate.
+
+Recommended source of truth for evaluation:
+
+- use the **promoted labeled cache** or a frozen staged labeled snapshot
+- do **not** evaluate directly from the mutable raw capture bundle stream
 
 ### Step 3 — split train vs holdout chronologically
 
@@ -645,9 +877,11 @@ If prompt/alpha choices are tuned on the same rows used for the final verdict, t
 The most efficient next milestone is:
 
 1. run the automatic capture path for **BTC 7d** on a schedule,
-2. accumulate toward **75 labeled bundles**,
-3. keep the corpus chronological and unfiltered,
-4. then implement the smallest possible MCP candidate and replay it offline.
+2. add an automatic **local price-history refresh** job,
+3. run scheduled `replay_label` jobs against that local price store,
+4. accumulate toward **75 labeled bundles**,
+5. keep the corpus chronological and unfiltered,
+6. then implement the smallest possible MCP candidate and replay it offline.
 
 If the capture rate stays around **3-5 good bundles/day**, that first honest BTC MCP decision should be reachable in roughly **3-5 weeks**.
 

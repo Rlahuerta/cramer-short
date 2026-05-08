@@ -207,6 +207,24 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('MUST clearly warn');
   });
 
+  it('injects proxy and anchor-label guards for canonical markov output', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null,"diagnostics":{"trustedAnchors":6,"anchorBypassApplied":false,"calibrationMode":"anchored"}}}}',
+      '### polymarket_forecast(ticker=BTC)',
+      'Forecast return: +0.9%\nGrade: B',
+    ].join('\n');
+    const prompt = buildIterationPrompt(
+      'Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts.',
+      results,
+    );
+    expect(prompt).toContain('Do NOT substitute another asset, proxy ticker, or proxy-history narrative');
+    expect(prompt).toContain('do NOT describe a BTC/BTC-USD run as using GLD, gold, or any commodity-equivalent history');
+    expect(prompt).toContain('if diagnostics.anchorBypassApplied is false or diagnostics.calibrationMode is "anchored"');
+    expect(prompt).toContain('do NOT call the run "model-only", "commodity bypass", or say trusted anchors were "unused"');
+    expect(prompt).toContain('If trusted anchors are present, do NOT imply they were absent or ignored just because a displayed mixing split rounds to 100% Markov / 0% Anchors');
+  });
+
   it('injects mixed-evidence guard when BTC short-horizon Markov and Polymarket disagree', () => {
     const results = [
       '### markov_distribution(ticker=BTC-USD)',
