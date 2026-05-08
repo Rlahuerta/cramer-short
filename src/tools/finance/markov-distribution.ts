@@ -5744,8 +5744,7 @@ export async function computeMarkovDistribution(params: {
     assetProfile.type === 'crypto' &&
     horizon <= 14 &&
     anchorCoverage.trustedAnchors === 0 &&
-    validationAcceptable &&
-    !breakResult.detected;
+    validationAcceptable;
 
   // Commodity model-only diagnostics: allow when commodity model-only conditions are met.
   const commodityModelOnlyDiag = commodityModelOnlyAllowed;
@@ -6211,6 +6210,17 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       m.outOfSampleR2 >= COMMODITY_WRAPPER_MIN_R2 &&
       result.predictionConfidence >= COMMODITY_WRAPPER_MIN_CONFIDENCE;
 
+    const CRYPTO_MODEL_ONLY_MIN_R2 = -0.03;
+    const CRYPTO_MODEL_ONLY_MIN_CONFIDENCE = 0.18;
+    const cryptoModelOnly =
+      assetProfile.type === 'crypto' &&
+      result.horizon <= 14 &&
+      m.anchorCoverage.trustedAnchors === 0 &&
+      typeof m.outOfSampleR2 === 'number' &&
+      Number.isFinite(m.outOfSampleR2) &&
+      m.outOfSampleR2 >= CRYPTO_MODEL_ONLY_MIN_R2 &&
+      result.predictionConfidence >= CRYPTO_MODEL_ONLY_MIN_CONFIDENCE;
+
     const abstainReasons: string[] = [];
     const lowTrustReasonParts = [
       m.anchorInspection.lowTrustReasonCounts.youngMarket > 0
@@ -6224,7 +6234,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
         : null,
     ].filter((part): part is string => part !== null);
 
-    if (m.anchorCoverage.trustedAnchors === 0 && !commodityModelOnly) {
+    if (m.anchorCoverage.trustedAnchors === 0 && !commodityModelOnly && !cryptoModelOnly) {
       if (m.anchorInspection.terminalThresholdMatches > 0) {
         abstainReasons.push(
           `Found ${m.anchorInspection.terminalThresholdMatches} terminal threshold market${m.anchorInspection.terminalThresholdMatches === 1 ? '' : 's'}, but 0 passed the trust gate${lowTrustReasonParts.length > 0 ? ` (${lowTrustReasonParts.join(', ')})` : ''}.`,
@@ -6238,7 +6248,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       abstainReasons.push(`Prediction-market anchor coverage is ${m.anchorCoverage.quality}, so calibrated scenario buckets would be overly model-driven.`);
     }
 
-    if (!validationAcceptable && !commodityModelOnly) {
+    if (!validationAcceptable && !commodityModelOnly && !cryptoModelOnly) {
       if (m.outOfSampleR2 === null || !Number.isFinite(m.outOfSampleR2)) {
         abstainReasons.push('Out-of-sample Markov validation is unavailable for this run.');
       } else {
@@ -6246,15 +6256,17 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       }
     }
 
+
     const canEmitCanonical =
       (m.anchorCoverage.trustedAnchors > 0
         && m.anchorCoverage.quality === 'good'
         && validationAcceptable)
       || sparseCryptoAnchorAllowed
-      || commodityModelOnly;
+      || commodityModelOnly
+      || cryptoModelOnly;
 
-    const calibrationMode: 'anchored' | 'model_only' = commodityModelOnly ? 'model_only' : 'anchored';
-    const anchorBypassApplied = commodityModelOnly;
+    const calibrationMode: 'anchored' | 'model_only' = commodityModelOnly || cryptoModelOnly ? 'model_only' : 'anchored';
+    const anchorBypassApplied = commodityModelOnly || cryptoModelOnly;
 
     // --- Section 1: Decision Card (FIRST — most important) ---
     const decisionCard = [

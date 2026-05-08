@@ -4977,12 +4977,12 @@ describe('markov_distribution tool output envelope', () => {
       `Bitcoin ${targetMonth}`,
       `Bitcoin above ${targetMonth}`,
     ]);
-    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.status).toBe('ok');
     expect(diagnostics?.trustedAnchors).toBe(0);
-    expect(diagnostics?.canEmitCanonical).toBe(false);
+    expect(diagnostics?.canEmitCanonical).toBe(true);
   });
 
-  integrationIt('auto-fetches BTC 14-day Polymarket anchors and cleanly abstains when dated threshold inventory is unavailable', async () => {
+  integrationIt('auto-fetches BTC 14-day Polymarket anchors and emits via model-only path when dated threshold inventory is unavailable', async () => {
     mock.module('./polymarket.js', () => ({
       ...realPolymarketModule,
       fetchPolymarketMarkets: async () => [],
@@ -5008,10 +5008,10 @@ describe('markov_distribution tool output envelope', () => {
     const result = await freshTool.func(parsedInput);
     const parsed = JSON.parse(result);
     expect(parsed.data._tool).toBe('markov_distribution');
-    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.status).toBe('ok');
     expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBe(0);
     expect(parsed.data.canonical?.diagnostics?.anchorQuality).toBe('none');
-    expect(parsed.data.canonical?.diagnostics?.canEmitCanonical).toBe(false);
+    expect(parsed.data.canonical?.diagnostics?.canEmitCanonical).toBe(true);
   });
 
   it('returns abstain payload when anchors or validation are insufficient', async () => {
@@ -5091,7 +5091,7 @@ describe('markov_distribution tool output envelope', () => {
     const diagnostics = parsed.data.canonical?.diagnostics;
     const inspection = diagnostics?.anchorInspection;
 
-    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.status).toBe('ok');
     expect(inspection).toBeDefined();
     expect(inspection.candidateMarkets).toBe(3);
     expect(inspection.terminalThresholdMatches).toBe(2);
@@ -5102,22 +5102,20 @@ describe('markov_distribution tool output envelope', () => {
     expect(inspection.excludedNonTerminalMarkets).toBe(1);
     expect(inspection.closestResolutionDate).toBe(offHorizonIso);
     expect(inspection.closestResolutionOffsetDays).toBeLessThan(0);
-    expect(parsed.data.abstainReasons[0]).toContain('0 passed the trust gate');
-    expect(parsed.data.report).toContain('Anchor search diagnostics:');
-    expect(parsed.data.report).toContain('Closest terminal resolution:');
-    expect(parsed.data.report).toContain('Low-trust reasons:');
-    expect(parsed.data.report).toContain('Example low-trust markets:');
-    expect(parsed.data.report).toContain('Example excluded markets:');
+    expect(parsed.data.canonical.diagnostics.anchorBypassApplied).toBe(true);
+    expect(parsed.data.report).toContain('Anchors: 0 trusted');
+    expect(parsed.data.report).toContain('2 low-trust');
+    expect(parsed.data.report).toContain('No trusted Polymarket anchors');
   });
 
-  it('returns forecastHint for BTC short-horizon abstain without exposing canonical action signal', async () => {
+  it('emits full canonical signal for BTC short-horizon with zero anchors via model-only path', async () => {
     mock.module('./polymarket.js', () => ({
       ...realPolymarketModule,
       fetchPolymarketMarkets: async () => [],
       fetchPolymarketAnchorMarkets: async () => [],
     }));
 
-    const { markovDistributionTool: abstainTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: emitTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
 
     const prices: number[] = [];
     let p = 65000;
@@ -5126,7 +5124,7 @@ describe('markov_distribution tool output envelope', () => {
       prices.push(Math.round(p * 100) / 100);
     }
 
-    const result = await abstainTool.func({
+    const result = await emitTool.func({
       ticker: 'BTC-USD',
       horizon: 7,
       currentPrice: prices[prices.length - 1],
@@ -5136,24 +5134,23 @@ describe('markov_distribution tool output envelope', () => {
     });
 
     const parsed = JSON.parse(result);
-    expect(parsed.data.status).toBe('abstain');
-    expect(parsed.data.canonical.actionSignal).toBeNull();
-    expect(parsed.data.forecastHint).toBeDefined();
-    expect(parsed.data.forecastHint.usage).toBe('forecast_only');
-    expect(parsed.data.forecastHint.calibratedDistribution).toBe(false);
-    expect(typeof parsed.data.forecastHint.markovReturn).toBe('number');
-    expect(Number.isFinite(parsed.data.forecastHint.markovReturn)).toBe(true);
-    expect(parsed.data.forecastHint.markovReturn).not.toBe(0);
+    expect(parsed.data.status).toBe('ok');
+    expect(parsed.data.canonical.actionSignal).not.toBeNull();
+    expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+    expect(parsed.data.canonical.diagnostics.anchorBypassApplied).toBe(true);
+    expect(typeof parsed.data.canonical.actionSignal.expectedReturn).toBe('number');
+    expect(Number.isFinite(parsed.data.canonical.actionSignal.expectedReturn)).toBe(true);
+    expect(parsed.data.canonical.actionSignal.expectedReturn).not.toBe(0);
   });
 
-  it('still emits forecastHint for BTC short-horizon abstain when a structural break is detected', async () => {
+  it('emits full canonical signal for BTC short-horizon with structural break via model-only path', async () => {
     mock.module('./polymarket.js', () => ({
       ...realPolymarketModule,
       fetchPolymarketMarkets: async () => [],
       fetchPolymarketAnchorMarkets: async () => [],
     }));
 
-    const { markovDistributionTool: abstainTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: emitTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 100; i++) {
@@ -5162,7 +5159,7 @@ describe('markov_distribution tool output envelope', () => {
       prices.push(Math.round(p * 100) / 100);
     }
 
-    const result = await abstainTool.func({
+    const result = await emitTool.func({
       ticker: 'BTC-USD',
       horizon: 7,
       currentPrice: prices[prices.length - 1],
@@ -5172,10 +5169,11 @@ describe('markov_distribution tool output envelope', () => {
     });
 
     const parsed = JSON.parse(result);
-    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.status).toBe('ok');
     expect(parsed.data.canonical.diagnostics.structuralBreakDetected).toBe(true);
-    expect(parsed.data.forecastHint).toBeDefined();
-    expect(parsed.data.forecastHint.usage).toBe('forecast_only');
+    expect(parsed.data.canonical.actionSignal).not.toBeNull();
+    expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+    expect(parsed.data.canonical.diagnostics.anchorBypassApplied).toBe(true);
   });
 
   it('BTC break-threshold override can suppress a detected structural break', async () => {
@@ -5563,6 +5561,113 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.report).toContain('thin anchor coverage');
     });
   });
+
+  describe('Phase 1: BTC zero-anchor crypto model-only path', () => {
+    // Helper: synthetic BTC prices with a clean structural break mid-series
+    function btcBreakPrices(length = 70): number[] {
+      const prices: number[] = [];
+      let p = 65000;
+      // First half: mild uptrend
+      for (let i = 0; i < Math.floor(length / 2); i++) {
+        p *= 1 + 0.001 + Math.sin(i * 0.3) * 0.002;
+        prices.push(Math.round(p * 100) / 100);
+      }
+      // Second half: sharp volatility regime change
+      p = 55000;
+      for (let i = Math.floor(length / 2); i < length; i++) {
+        p *= 1 + (i % 5 === 0 ? -0.015 : 0.008) + Math.sin(i * 0.7) * 0.005;
+        prices.push(Math.round(p * 100) / 100);
+      }
+      return prices;
+    }
+
+    it('emits via crypto model-only path when BTC 3d has zero anchors, acceptable R^2, and structural break', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const prices = btcBreakPrices(80);
+
+      const result = await freshTool.func({
+        ticker: 'BTC-USD',
+        horizon: 3,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.manualSynthesisForbidden).toBe(false);
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+      expect(parsed.data.distribution).not.toBeNull();
+    });
+
+    it('abstains via crypto model-only path when R^2 is below -0.03', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      // Mean-reverting prices with no persistent trend confuse the discrete-state Markov model
+      // and produce outOfSampleR^2 well below -0.03
+      const prices: number[] = [];
+      const meanPrice = 65000;
+      for (let i = 0; i < 80; i++) {
+        const meanReversion = (meanPrice - (prices[prices.length - 1] ?? meanPrice)) * 0.3;
+        const noise = (Math.random() - 0.5) * 800;
+        const nextPrice = (prices[prices.length - 1] ?? meanPrice) + meanReversion + noise;
+        prices.push(Math.round(nextPrice * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'BTC-USD',
+        horizon: 7,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      // Should abstain because R^2 is poor with noisy prices
+      expect(parsed.data.status === 'abstain' || parsed.data.canonical.diagnostics.canEmitCanonical === false).toBe(true);
+    });
+
+    it('abstains via crypto model-only path when confidence is below 0.18', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      // Very short price history (low confidence from sparse data)
+      const prices: number[] = [];
+      let p = 65000;
+      for (let i = 0; i < 30; i++) {
+        p *= 1 + Math.sin(i * 0.5) * 0.003;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'BTC-USD',
+        horizon: 3,
+        currentPrice: prices[prices.length - 1],
+        historicalPrices: prices,
+        trajectory: false,
+      });
+
+      const parsed = JSON.parse(result);
+      // Short history should yield low confidence
+      expect(parsed.data.status === 'abstain' || parsed.data.canonical.diagnostics.canEmitCanonical === false).toBe(true);
+    });
+  });
+
 
   it('emits undefined provenance flags when break-confidence flags are off', async () => {
     const simplePrices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
@@ -6561,7 +6666,7 @@ describe('markov_distribution tool output envelope', () => {
       `Bitcoin ${targetMonth}`,
       `Bitcoin above ${targetMonth}`,
     ]);
-    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.status).toBe('ok');
     expect(diagnostics?.totalAnchors).toBe(1);
     expect(diagnostics?.trustedAnchors).toBe(0);
   });
