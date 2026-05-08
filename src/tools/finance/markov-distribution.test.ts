@@ -414,12 +414,12 @@ describe('extractPriceThresholds', () => {
     expect(result[0].price).toBe(1_000_000);
   });
 
-  it('Fix 8: market under 48h → trustScore low', () => {
+  it('Fix 8: non-crypto market under 48h with volume → trustScore high (youth does not block non-crypto)', () => {
     const recentTime = Date.now() - 10 * 60 * 60 * 1000; // 10h ago
     const result = extractPriceThresholds([
       { question: 'Will AAPL exceed $200?', probability: 0.7, createdAt: recentTime, volume: 1000 },
     ]);
-    expect(result[0].trustScore).toBe('low');
+    expect(result[0].trustScore).toBe('high');
   });
 
   it('Fix 8: market >48h with volume → trustScore high', () => {
@@ -494,6 +494,46 @@ describe('extractPriceThresholds', () => {
     });
   });
 
+
+  // Phase 1: Non-crypto anchor trust — youth should not block trust for commodities
+  it('Phase 1: non-crypto commodity anchor with volume → trustScore high regardless of age', () => {
+    expect(evaluateAnchorTrust({
+      hasVolume: true,
+      isYoung: true,           // <48h old — should NOT matter for non-crypto
+      isShortHorizonCrypto: false,
+      isLongHorizonCrypto: false,
+      isNearTargetResolution: false,
+    })).toEqual({
+      trustScore: 'high',
+      lowTrustReasons: ['young_market'],  // still reported, does not block trust
+    });
+  });
+
+  it('Phase 1: non-crypto commodity anchor with zero volume → trustScore low', () => {
+    expect(evaluateAnchorTrust({
+      hasVolume: false,
+      isYoung: false,
+      isShortHorizonCrypto: false,
+      isLongHorizonCrypto: false,
+      isNearTargetResolution: false,
+    })).toEqual({
+      trustScore: 'low',
+      lowTrustReasons: ['missing_volume'],
+    });
+  });
+
+  it('Phase 1: long-horizon crypto young + no resolution match → still low trust', () => {
+    expect(evaluateAnchorTrust({
+      hasVolume: true,
+      isYoung: true,
+      isShortHorizonCrypto: false,
+      isLongHorizonCrypto: true,
+      isNearTargetResolution: false,
+    })).toEqual({
+      trustScore: 'low',
+      lowTrustReasons: ['young_market', 'resolution_mismatch'],
+    });
+  });
   it('skips markets with no price in question', () => {
     const result = extractPriceThresholds([
       { question: 'Will NVDA split its stock?', probability: 0.4 },
@@ -1361,7 +1401,7 @@ describe('computeMarkovDistribution (integration)', () => {
         { question: 'Will TEST exceed $130?', probability: 0.4, createdAt: recentTime, volume: 1000 },
       ],
     });
-    expect(result.metadata.polymarketAnchors).toBe(1); // only the old/high-trust one
+    expect(result.metadata.polymarketAnchors).toBe(2); // both anchors are non-crypto with volume — trusted
   });
 
   it('distribution is monotonically non-increasing in price', async () => {

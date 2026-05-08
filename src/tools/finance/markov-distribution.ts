@@ -1174,10 +1174,12 @@ type AnchorLowTrustReason = 'young_market' | 'resolution_mismatch' | 'missing_vo
  */
 export function evaluateAnchorTrust(input: AnchorTrustEvaluationInput): AnchorTrustEvaluation {
   const needsResolutionMatch = input.isLongHorizonCrypto || (input.isShortHorizonCrypto && input.isYoung);
+  const isNonCrypto = !input.isShortHorizonCrypto && !input.isLongHorizonCrypto;
   const trustScore: 'high' | 'low' =
     input.hasVolume && (
       (input.isLongHorizonCrypto && !input.isYoung && input.isNearTargetResolution)
-      || (!input.isLongHorizonCrypto && (!input.isYoung || (input.isShortHorizonCrypto && input.isNearTargetResolution)))
+      || (input.isShortHorizonCrypto && (!input.isYoung || input.isNearTargetResolution))
+      || isNonCrypto
     ) ? 'high' : 'low';
 
   const lowTrustReasons: AnchorLowTrustReason[] = [];
