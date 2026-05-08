@@ -422,7 +422,7 @@ export async function* streamCallLlm(
 ): AsyncGenerator<string> {
   const { model = DEFAULT_MODEL, systemPrompt, signal, thinkOverride } = options;
   const finalSystemPrompt = systemPrompt ?? getDefaultSystemPrompt();
-  const llm = getChatModel(model, false, thinkOverride);
+  const llm = getChatModel(model, true, thinkOverride);
   const provider = resolveProvider(model);
 
   const messages =

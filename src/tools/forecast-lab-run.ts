@@ -320,7 +320,11 @@ function buildPlanAnswer(
   ].join('\n');
 }
 
-function buildGuidedImproveAnswer(profile: ForecastLabProfile, result: ForecastLabRunResult): string {
+function buildGuidedImproveAnswer(
+  profile: ForecastLabProfile,
+  result: ForecastLabRunResult,
+  requestedMutator?: string,
+): string {
   const promotion = result.ledgerEntry.promotion;
   const promotionReady = promotion?.status === 'approval-required';
   const approvalLine = promotionReady
@@ -332,6 +336,7 @@ function buildGuidedImproveAnswer(profile: ForecastLabProfile, result: ForecastL
   return [
     `Forecast-lab guided improvement finished for ${profile.id}.`,
     '',
+    ...(requestedMutator ? [`Requested mutator: ${requestedMutator}.`] : []),
     `Decision: ${result.decision.decision.toUpperCase()} — ${result.decision.reason}`,
     `Artifacts: ${result.manifest.artifactsPath}`,
     approvalLine,
@@ -600,12 +605,18 @@ function getLatestKeptStructuredEntry(
   profileId: string,
   ledgerPath: string,
   findLatestKeptLedgerEntryFn: NonNullable<CreateForecastLabRunToolDeps['findLatestKeptLedgerEntryFn']>,
-): ForecastLabLedgerEntry {
-  const latest = findLatestKeptLedgerEntryFn(ledgerPath, profileId, { mutationMode: 'structured' });
-  if (!latest) {
-    throw new Error(`Forecast-lab comparison requires a kept structured run for "${profileId}".`);
-  }
-  return latest;
+): ForecastLabLedgerEntry | undefined {
+  return findLatestKeptLedgerEntryFn(ledgerPath, profileId, { mutationMode: 'structured' });
+}
+
+function buildNoCurrentBestCompareAnswer(profile: ForecastLabProfile): string {
+  return [
+    `Forecast-lab comparison for ${profile.id}.`,
+    '',
+    'Current best: no kept structured run exists yet, so there is nothing to compare against the shipped baseline.',
+    'Shipped baseline: still the active reference because no kept candidate has been recorded.',
+    'Regular forecasts: not live yet. Run a guided improvement first, then explicitly approve a kept run before ordinary forecast queries can use it.',
+  ].join('\n');
 }
 
 function buildCompareAnswer(
@@ -1423,7 +1434,7 @@ export function createForecastLabRunTool({
             promotionReady: promotionStatus === 'approval-required',
             ...(promotionStatus ? { promotionStatus } : {}),
             ...(promotionStatus === 'approval-required' ? { sourceRunId: result.runId } : {}),
-            answer: buildGuidedImproveAnswer(profile, result),
+            answer: buildGuidedImproveAnswer(profile, result, input.mutator?.trim() || undefined),
           } satisfies ForecastLabGuidedImprovePayload);
         }
 
@@ -1493,6 +1504,15 @@ export function createForecastLabRunTool({
           }
 
           const latestKeptEntry = getLatestKeptStructuredEntry(profile.id, ledgerPath, findLatestKeptLedgerEntryFn);
+          if (!latestKeptEntry) {
+            return formatToolResult({
+              _tool: 'forecast_lab_run',
+              action: 'compare-best-vs-shipped',
+              status: 'error',
+              error: `No kept structured run is recorded yet for profile "${profile.id}".`,
+              answer: buildNoCurrentBestCompareAnswer(profile),
+            } satisfies ForecastLabErrorPayload);
+          }
           const manifestPath = latestKeptEntry.promotion?.source.manifestPath ?? getExperimentRunManifestPath(latestKeptEntry.runId);
           const manifest = readRunManifestFn(manifestPath);
           const artifactsPath = latestKeptEntry.artifactsPath;

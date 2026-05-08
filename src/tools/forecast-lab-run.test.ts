@@ -392,6 +392,28 @@ describe('forecast_lab_run tool', () => {
     expect(payload?.answer).toContain('Reply "Approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1."');
   });
 
+  it('returns an operator-friendly compare answer when no kept structured run exists yet', async () => {
+    const tool = createForecastLabRunTool({
+      findLatestKeptLedgerEntryFn: () => undefined,
+    });
+
+    const result = await tool.invoke({
+      action: 'compare-best-vs-shipped',
+      profileId: 'btc-markov-ultra-short-horizon',
+    });
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(payload).toMatchObject({
+      _tool: 'forecast_lab_run',
+      action: 'compare-best-vs-shipped',
+      status: 'error',
+      error: 'No kept structured run is recorded yet for profile "btc-markov-ultra-short-horizon".',
+    });
+    expect(payload?.answer).toContain('Current best: no kept structured run exists yet');
+    expect(payload?.answer).toContain('shipped baseline');
+    expect(payload?.answer).toContain('not live yet');
+  });
+
   it('resolves comparison profile from routed result queries when profileId is omitted', async () => {
     const tool = createForecastLabRunTool({
       findLatestKeptLedgerEntryFn: () => ({
@@ -732,6 +754,27 @@ describe('forecast_lab_run tool', () => {
     expect(payload?.answer).toContain('Remaining shipped mutators checked and found inapplicable:');
     expect(payload?.answer).toContain('1. Keep the current best candidate');
     expect(payload?.answer).toContain('2. Add a new shipped structured mutator');
+  });
+
+  it('includes the requested mutator id in successful guided-improve answers', async () => {
+    const runForecastLabFn = mock(async () => makeRunResult());
+    const tool = createForecastLabRunTool({ runForecastLabFn: runForecastLabFn as any });
+
+    const result = await tool.invoke({
+      action: 'guided-improve',
+      profileId: 'btc-markov-ultra-short-horizon',
+      mutator: 'markov-faster-decay-reaction',
+      query: 'Improve the BTC 1d/2d/3d Markov forecast workflow using mutator markov-faster-decay-reaction',
+    });
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(payload).toMatchObject({
+      _tool: 'forecast_lab_run',
+      action: 'guided-improve',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+    });
+    expect(payload?.answer).toContain('Requested mutator: markov-faster-decay-reaction.');
   });
 
   it('returns mutator scorecard with explicit profile', async () => {

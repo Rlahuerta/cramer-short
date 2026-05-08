@@ -36,11 +36,19 @@ mock.module('@/utils/config.js', () => ({
   getSetting: mockGetSetting,
 }));
 
-const { isThinkingModel, getChatModel, getLlmCallTimeoutMs, DEFAULT_LLM_CALL_TIMEOUT_MS } = await import('./llm.js');
+const {
+  isThinkingModel,
+  getChatModel,
+  getLlmCallTimeoutMs,
+  DEFAULT_LLM_CALL_TIMEOUT_MS,
+  streamCallLlm,
+  _setModelFactory,
+} = await import('./llm.js');
 
 beforeEach(() => {
   mockChatOllamaInstances.length = 0;
   mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
+  _setModelFactory(null);
 });
 
 // ===========================================================================
@@ -313,5 +321,28 @@ describe('streamCallLlm — word-boundary buffering', () => {
   test('mixed whitespace: last boundary wins', async () => {
     const result = await collectBuffered(['a b\tc ']);
     expect(result.join('')).toBe('a b\tc ');
+  });
+});
+
+describe('streamCallLlm', () => {
+  test('creates the chat model with streaming enabled', async () => {
+    const factory = mock((_name: string, opts: { streaming: boolean }) => ({
+      stream: async function* () {
+        yield { content: 'STREAM_OK' };
+      },
+    }));
+    _setModelFactory(factory as any);
+
+    const chunks: string[] = [];
+    for await (const chunk of streamCallLlm('Reply with exactly: STREAM_OK', {
+      model: 'ollama:llama3.1:8b',
+      thinkOverride: false,
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(factory.mock.calls[0]?.[1]).toMatchObject({ streaming: true });
+    expect(chunks.join('')).toBe('STREAM_OK');
   });
 });
