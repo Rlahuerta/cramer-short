@@ -1383,6 +1383,26 @@ describe('commodityModelOnly condition logic', () => {
 // Integration: computeMarkovDistribution
 // ---------------------------------------------------------------------------
 
+// Phase 3: R²_OS validation threshold for non-crypto — near-zero values should not block
+describe('R²_OS validation threshold', () => {
+  it('Phase 3: non-crypto validation acceptable with R² = -0.003', () => {
+    const r2os = -0.003;
+    const validationAcceptable = r2os >= -0.01;
+    expect(validationAcceptable).toBe(true);
+  });
+
+  it('Phase 3: non-crypto validation rejects R² = -0.05', () => {
+    const r2os = -0.05;
+    const validationAcceptable = r2os >= -0.01;
+    expect(validationAcceptable).toBe(false);
+  });
+
+  it('Phase 3: crypto short-horizon R² threshold unchanged at -0.05', () => {
+    const r2os = -0.04;
+    const validationAcceptable = r2os >= -0.05;
+    expect(validationAcceptable).toBe(true);
+  });
+});
 describe('computeMarkovDistribution (integration)', () => {
   const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
 

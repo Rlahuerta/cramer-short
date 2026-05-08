@@ -5722,7 +5722,7 @@ export async function computeMarkovDistribution(params: {
 
   const validationAcceptable = assetProfile.type === 'crypto' && horizon <= 14 && (r2os ?? 0) >= -0.05
     ? true
-    : (r2os ?? 0) >= 0;
+    : (r2os ?? 0) >= -0.01;
 
   // Commodity model-only path: allow emission when no anchors exist but model meets minimum quality bar.
   const commodityModelOnlyAllowed =
@@ -6197,7 +6197,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       && typeof m.outOfSampleR2 === 'number'
       && Number.isFinite(m.outOfSampleR2)
       && m.outOfSampleR2 >= -0.05;
-    const hasPositiveR2 = typeof m.outOfSampleR2 === 'number' && Number.isFinite(m.outOfSampleR2) && m.outOfSampleR2 > 0;
+    const hasPositiveR2 = typeof m.outOfSampleR2 === 'number' && Number.isFinite(m.outOfSampleR2) && m.outOfSampleR2 >= -0.01;
     const validationAcceptable = hasPositiveR2 || r2NeutralForCrypto || sparseCryptoAnchorAllowed;
 
     const COMMODITY_WRAPPER_MIN_R2 = -0.02;
