@@ -112,6 +112,26 @@ Add to crontab (`crontab -e`) to run every weekday at 7 AM:
 
 ---
 
+## 🏷 Replay Label Pipeline
+
+The repo now has a dedicated replay-label operations flow for forecast-arbitrator replay data:
+
+- `bun start replay-label run` stages labeled replay bundles plus machine-readable reports
+- `bun start replay-label promote` explicitly promotes reviewed staged artifacts into the labeled cache
+- `bun start replay-label readiness` produces a read-only `eligible`/`hold` decision from the benchmark artifact
+- `kind: "replay_label"` schedule jobs let you run the same flow headlessly from `~/.cramer-short/schedules.json`
+
+This workflow is intentionally conservative:
+
+- raw replay capture is not rewritten in place,
+- promotion is explicit,
+- readiness does not auto-enable fusion,
+- and schedule-managed paths stay under `~/.cramer-short` or `<cwd>/.cramer-short`.
+
+See **`docs/replay-label-guide.md`** for the full implementation map, artifact flow, examples, and operator workflow.
+
+---
+
 ## 🔗 Full-Analysis Meta-Skill
 
 A flagship meta-skill that chains four skills into one comprehensive report:

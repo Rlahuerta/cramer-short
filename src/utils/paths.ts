@@ -19,6 +19,10 @@ export function cramerShortPath(...segments: string[]): string {
   return join(getCramerShortDir(), ...segments);
 }
 
+export function arbiterReplayCachePath(...segments: string[]): string {
+  return cramerShortPath('cache', 'arbiter-replay', ...segments);
+}
+
 function maybeCreateDir(path: string, options?: PathOptions): string {
   if (options?.create) {
     mkdirSync(path, { recursive: true });

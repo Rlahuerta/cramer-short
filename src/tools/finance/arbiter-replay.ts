@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { cramerShortPath } from '../../utils/paths.js';
+import { arbiterReplayCachePath, cramerShortPath } from '../../utils/paths.js';
 import {
   classifyPolymarketQuestion,
   extractPriceLevels,
@@ -175,10 +175,14 @@ export interface ArbiterReplayBundle {
 export const DEFAULT_ARBITER_REPLAY_BUNDLES_PATH = cramerShortPath('arbiter-replay-bundles.jsonl');
 export const DEFAULT_ARBITER_REPLAY_POLYMARKET_RAW_PATH = cramerShortPath('arbiter-replay-polymarket-raw.jsonl');
 export const DEFAULT_ARBITER_REPLAY_WHALE_RAW_PATH = cramerShortPath('arbiter-replay-whale-raw.jsonl');
-export const DEFAULT_ARBITER_REPLAY_CACHE_DIR = cramerShortPath('cache', 'arbiter-replay');
-export const DEFAULT_ARBITER_REPLAY_CACHE_BUNDLES_PATH = cramerShortPath('cache', 'arbiter-replay', 'bundles.jsonl');
-export const DEFAULT_ARBITER_REPLAY_CACHE_POLYMARKET_RAW_PATH = cramerShortPath('cache', 'arbiter-replay', 'polymarket-raw.jsonl');
-export const DEFAULT_ARBITER_REPLAY_CACHE_WHALE_RAW_PATH = cramerShortPath('cache', 'arbiter-replay', 'whale-raw.jsonl');
+export const DEFAULT_ARBITER_REPLAY_CACHE_DIR = arbiterReplayCachePath();
+export const DEFAULT_ARBITER_REPLAY_CACHE_BUNDLES_PATH = arbiterReplayCachePath('bundles.jsonl');
+export const DEFAULT_ARBITER_REPLAY_CACHE_POLYMARKET_RAW_PATH = arbiterReplayCachePath('polymarket-raw.jsonl');
+export const DEFAULT_ARBITER_REPLAY_CACHE_WHALE_RAW_PATH = arbiterReplayCachePath('whale-raw.jsonl');
+export const DEFAULT_ARBITER_REPLAY_LABELED_CACHE_BUNDLES_PATH = arbiterReplayCachePath(
+  'labeled',
+  'bundles.jsonl',
+);
 export const DEFAULT_POLYMARKET_SEMANTIC_PARSER_VERSION = 'forecast-arbitrator:classifyPolymarketQuestion';
 
 const KNOWN_EXCHANGE_MARKERS = [

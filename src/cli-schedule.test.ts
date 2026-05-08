@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { runScheduleCommand } from './cli-schedule.js';
 import type { ScheduleCommandOptions, ScheduleJob } from './cli-schedule.js';
 import type { AgentEvent } from './agent/types.js';
 import type { ForecastLabRunOptions, ForecastLabRunResult } from './experiments/forecast-lab/runner.js';
+import type { ReplayLabelBenchmarkPipelineResult } from './tools/finance/backtest/replay-label-benchmark-pipeline.js';
+import { toReplayLabelBenchmarkReportPath } from './tools/finance/backtest/replay-label-benchmark-pipeline.js';
+import type { ReplayTickerHistoryLoader } from './tools/finance/backtest/replay-label-batch-runner.js';
+import { toReplayLabelBatchReportPath } from './tools/finance/backtest/replay-label-batch-runner.js';
+import { DEFAULT_ARBITER_REPLAY_CACHE_BUNDLES_PATH } from './tools/finance/arbiter-replay.js';
 
 const TEST_ROOT = join('.cramer-short', 'cli-schedule-test');
 const TEST_HOME = join(TEST_ROOT, 'home');
@@ -47,6 +52,54 @@ function makeOptions(overrides: ScheduleCommandOptions = {}): {
       write: (message) => writes.push(message),
       exit: (code) => exitCodes.push(code),
       ...overrides,
+    },
+  };
+}
+
+function fakeReplayLabelResult(outputPath: string): ReplayLabelBenchmarkPipelineResult {
+  return {
+    labeling: {
+      summary: {
+        total: 5,
+        alreadyLabeled: 1,
+        newlyLabeled: 3,
+        skippedByMissingHistory: 1,
+        pending: 0,
+        pendingReasons: {},
+        perTickerCounts: {},
+      },
+      labeledAt: NOW.toISOString(),
+      bundles: [],
+    },
+    benchmarkArtifact: {
+      formatVersion: 'replay-label-benchmark-report.v1',
+      generatedAt: NOW.toISOString(),
+      labeledOutputPath: outputPath,
+      benchmarkReportPath: toReplayLabelBenchmarkReportPath(outputPath),
+      horizonCounts: {
+        '1d': {
+          bundleCount: 5,
+          labeledRowCount: 4,
+          crossPlatformEvidenceRowCount: 0,
+          crossPlatformFlaggedRowCount: 0,
+          crossPlatformAdjustmentAppliedRowCount: 0,
+        },
+        '2d': {
+          bundleCount: 0,
+          labeledRowCount: 0,
+          crossPlatformEvidenceRowCount: 0,
+          crossPlatformFlaggedRowCount: 0,
+          crossPlatformAdjustmentAppliedRowCount: 0,
+        },
+        '3d': {
+          bundleCount: 0,
+          labeledRowCount: 0,
+          crossPlatformEvidenceRowCount: 0,
+          crossPlatformFlaggedRowCount: 0,
+          crossPlatformAdjustmentAppliedRowCount: 0,
+        },
+      },
+      benchmark: {} as ReplayLabelBenchmarkPipelineResult['benchmarkArtifact']['benchmark'],
     },
   };
 }
@@ -368,6 +421,189 @@ describe('schedule command', () => {
     expect(text).toContain('- Profile: multi-asset-markov-short-horizon');
     expect(text).toContain('- Decision: keep');
     expect(text).toContain('| walkForwardShortHorizonTestExitCode | 0 | 0 | 0 |');
+  });
+
+  it('lists replay_label jobs with their replay pipeline settings', async () => {
+    writeSchedules([
+      {
+        id: 'nightly-replay-label',
+        kind: 'replay_label',
+        description: 'Nightly replay labeling',
+        outputPath: `${TEST_ROOT}/replay/{date}-labeled.jsonl`,
+        loader: 'fixture',
+        outputFile: `${TEST_ROOT}/reports/{date}-replay-label.txt`,
+      } as ScheduleJob,
+    ]);
+    const { options, output } = makeOptions();
+
+    await runScheduleCommand(['list'], options);
+
+    const text = output.join('\n');
+    expect(text).toContain('nightly-replay-label');
+    expect(text).toContain('Nightly replay labeling');
+    expect(text).toContain('kind: replay_label');
+    expect(text).toContain(`output: ${TEST_ROOT}/reports/{date}-replay-label.txt`);
+    expect(text).toContain(`artifacts: ${TEST_ROOT}/replay/{date}-labeled.jsonl`);
+    expect(text).toContain('loader: fixture');
+  });
+
+  it('runs replay_label jobs with derived report paths and optional summary output', async () => {
+    writeSchedules([
+      {
+        id: 'nightly-replay-label',
+        kind: 'replay_label',
+        description: 'Nightly replay labeling',
+        outputPath: `${TEST_ROOT}/replay/{date}-labeled.jsonl`,
+        outputFile: `${TEST_ROOT}/reports/{date}-replay-label.txt`,
+      } as ScheduleJob,
+    ]);
+    const calls: Array<{
+      inputPath?: string;
+      outputPath?: string;
+      labelReportPath?: string;
+      benchmarkReportPath?: string;
+      loadHistory: ReplayTickerHistoryLoader;
+    }> = [];
+    const { options, errors } = makeOptions({
+      runReplayLabelPipeline: async (runOptions) => {
+        calls.push(runOptions);
+        return fakeReplayLabelResult(runOptions.outputPath ?? '');
+      },
+    } as ScheduleCommandOptions & {
+      runReplayLabelPipeline: (params: {
+        inputPath?: string;
+        outputPath?: string;
+        labelReportPath?: string;
+        benchmarkReportPath?: string;
+        loadHistory: ReplayTickerHistoryLoader;
+      }) => Promise<ReplayLabelBenchmarkPipelineResult>;
+    });
+
+    await runScheduleCommand(['run', 'nightly-replay-label'], options);
+
+    const outputPath = resolve(process.cwd(), TEST_ROOT, 'replay', '2026-05-02-labeled.jsonl');
+    expect(errors).toEqual([]);
+    expect(calls).toEqual([
+      expect.objectContaining({
+        inputPath: DEFAULT_ARBITER_REPLAY_CACHE_BUNDLES_PATH,
+        outputPath,
+        labelReportPath: toReplayLabelBatchReportPath(outputPath),
+        benchmarkReportPath: toReplayLabelBenchmarkReportPath(outputPath),
+        loadHistory: expect.any(Function),
+      }),
+    ]);
+
+    const text = readFileSync(join(TEST_ROOT, 'reports', '2026-05-02-replay-label.txt'), 'utf8');
+    expect(text).toContain('# Nightly replay labeling');
+    expect(text).toContain(`- Input: ${DEFAULT_ARBITER_REPLAY_CACHE_BUNDLES_PATH}`);
+    expect(text).toContain(`- Output: ${outputPath}`);
+    expect(text).toContain(`- Label report: ${toReplayLabelBatchReportPath(outputPath)}`);
+    expect(text).toContain(`- Benchmark report: ${toReplayLabelBenchmarkReportPath(outputPath)}`);
+    expect(text).toContain('- Newly labeled: 3');
+    expect(text).toContain('- Missing history: 1');
+  });
+
+  it('fails replay_label jobs when local loader mode omits its fixture path', async () => {
+    writeSchedules([
+      {
+        id: 'broken-replay-label',
+        kind: 'replay_label',
+        outputPath: `${TEST_ROOT}/replay/{date}-labeled.jsonl`,
+        loader: 'local:',
+      } as ScheduleJob,
+    ]);
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      runReplayLabelPipeline: async () => {
+        dispatchCount += 1;
+        return fakeReplayLabelResult('unused.jsonl');
+      },
+    } as ScheduleCommandOptions & {
+      runReplayLabelPipeline: () => Promise<ReplayLabelBenchmarkPipelineResult>;
+    });
+
+    await runScheduleCommand(['run', 'broken-replay-label'], options);
+
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('local: requires a path');
+  });
+
+  it('rejects replay_label inputPath values outside allow-listed roots before dispatch', async () => {
+    writeSchedules([
+      {
+        id: 'unsafe-replay-input',
+        kind: 'replay_label',
+        inputPath: '../outside-root/replay-bundles.jsonl',
+        outputPath: `${TEST_ROOT}/replay/{date}-labeled.jsonl`,
+      } as ScheduleJob,
+    ]);
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      runReplayLabelPipeline: async () => {
+        dispatchCount += 1;
+        return fakeReplayLabelResult('unused.jsonl');
+      },
+    } as ScheduleCommandOptions & {
+      runReplayLabelPipeline: () => Promise<ReplayLabelBenchmarkPipelineResult>;
+    });
+
+    await runScheduleCommand(['run', 'unsafe-replay-input'], options);
+
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('outside allowed roots');
+  });
+
+  it('rejects replay_label outputPath values outside allow-listed roots before dispatch', async () => {
+    writeSchedules([
+      {
+        id: 'unsafe-replay-label',
+        kind: 'replay_label',
+        outputPath: '../outside-root/replay-labeled.jsonl',
+      } as ScheduleJob,
+    ]);
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      runReplayLabelPipeline: async () => {
+        dispatchCount += 1;
+        return fakeReplayLabelResult('unused.jsonl');
+      },
+    } as ScheduleCommandOptions & {
+      runReplayLabelPipeline: () => Promise<ReplayLabelBenchmarkPipelineResult>;
+    });
+
+    await runScheduleCommand(['run', 'unsafe-replay-label'], options);
+
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('outside allowed roots');
+  });
+
+  it('rejects replay_label summary output files outside allow-listed roots before dispatch', async () => {
+    writeSchedules([
+      {
+        id: 'unsafe-replay-summary',
+        kind: 'replay_label',
+        outputPath: `${TEST_ROOT}/replay/{date}-labeled.jsonl`,
+        outputFile: '../outside-root/replay-label-summary.txt',
+      } as ScheduleJob,
+    ]);
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      runReplayLabelPipeline: async () => {
+        dispatchCount += 1;
+        return fakeReplayLabelResult('unused.jsonl');
+      },
+    } as ScheduleCommandOptions & {
+      runReplayLabelPipeline: () => Promise<ReplayLabelBenchmarkPipelineResult>;
+    });
+
+    await runScheduleCommand(['run', 'unsafe-replay-summary'], options);
+
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('outside allowed roots');
   });
 
   it('includes structured mutation metadata in schedule summaries', async () => {
