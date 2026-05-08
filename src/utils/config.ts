@@ -27,7 +27,7 @@ export const ConfigSchema = z.object({
     embeddingProvider: z.enum(['openai', 'gemini', 'ollama', 'auto']).optional(),
     embeddingModel: z.string().optional(),
     maxSessionContextTokens: z.number().optional(),
-  }).optional(),
+  }).passthrough().optional(),
   maxIterations: z.number().min(5).max(100).optional(),
   contextThreshold: z.number().min(10000).max(500000).optional(),
   keepToolUses: z.number().min(2).max(20).optional(),
@@ -51,7 +51,7 @@ export const ConfigSchema = z.object({
     enableForecastLabSkillHint: z.boolean().optional(),
     /** Rank structured forecast-lab mutators from ledger evidence. Default: false. */
     enableForecastLabMutatorRanking: z.boolean().optional(),
-  }).optional(),
+  }).passthrough().optional(),
 }).passthrough(); // allow unknown keys without throwing
 
 export type Config = z.infer<typeof ConfigSchema> & Record<string, unknown>;

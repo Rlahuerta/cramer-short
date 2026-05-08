@@ -90,8 +90,8 @@ export const FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS: {
   adaptiveBreakEnabled: false,
   adaptiveBreakLearningRateMultiplier: 1.5,
   adaptiveBreakCooloffWindow: 0,
-  scoreAggregationMinSamples: 16,
-  scoreAggregationCalibrationWindow: 96,
+  scoreAggregationMinSamples: 12,
+  scoreAggregationCalibrationWindow: 72,
 };
 
 const forecastLabConformalRuntimeDefaults = createForecastLabAssetScopedRuntimeDefaults(

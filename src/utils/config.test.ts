@@ -193,6 +193,22 @@ describe('Config schema validation (Zod)', () => {
     expect((result.memory as Record<string, unknown> | undefined)?.embeddingProvider).toBeUndefined();
     expect((result.memory as Record<string, unknown> | undefined)?.embeddingModel).toBe('text-embedding-3-small');
   });
+
+  it('preserves unknown nested memory keys when the rest of the block is valid', () => {
+    const config = {
+      memory: {
+        enabled: true,
+        embeddingModel: 'text-embedding-3-small',
+        legacyMemoryFlag: 'keep-me',
+      },
+    };
+    const result = validateAndSanitizeConfig(config);
+    const memory = result.memory as Record<string, unknown> | undefined;
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(memory?.enabled).toBe(true);
+    expect(memory?.embeddingModel).toBe('text-embedding-3-small');
+    expect(memory?.legacyMemoryFlag).toBe('keep-me');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -263,5 +279,20 @@ describe('ConfigSchema — forecasting block', () => {
     const raw = { maxIterations: 30, forecasting: { enableJumpDiffusion: true } };
     const result = validateAndSanitizeConfig(raw);
     expect(result.maxIterations).toBe(30);
+  });
+
+  it('preserves unknown nested forecasting keys when the rest of the block is valid', () => {
+    const raw = {
+      forecasting: {
+        enableJumpDiffusion: true,
+        enableForecastLabAutoRoute: false,
+        legacyForecastingFlag: 'keep-me',
+      },
+    };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBe(true);
+    expect(f.enableForecastLabAutoRoute).toBe(false);
+    expect(f.legacyForecastingFlag).toBe('keep-me');
   });
 });
