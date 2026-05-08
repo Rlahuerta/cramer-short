@@ -5747,10 +5747,8 @@ export async function computeMarkovDistribution(params: {
     validationAcceptable &&
     !breakResult.detected;
 
-  // Commodity model-only diagnostics: allow when commodity model-only conditions are met and no structural break.
-  const commodityModelOnlyDiag =
-    commodityModelOnlyAllowed &&
-    !breakResult.detected;
+  // Commodity model-only diagnostics: allow when commodity model-only conditions are met.
+  const commodityModelOnlyDiag = commodityModelOnlyAllowed;
 
   const diagnosticsPass = anchorBasedDiag || priceOnlyCryptoDiag || commodityModelOnlyDiag;
 
@@ -6211,8 +6209,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       typeof m.outOfSampleR2 === 'number' &&
       Number.isFinite(m.outOfSampleR2) &&
       m.outOfSampleR2 >= COMMODITY_WRAPPER_MIN_R2 &&
-      result.predictionConfidence >= COMMODITY_WRAPPER_MIN_CONFIDENCE &&
-      !m.structuralBreakDetected;
+      result.predictionConfidence >= COMMODITY_WRAPPER_MIN_CONFIDENCE;
 
     const abstainReasons: string[] = [];
     const lowTrustReasonParts = [

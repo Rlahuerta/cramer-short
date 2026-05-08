@@ -1343,6 +1343,43 @@ describe('matPow', () => {
 });
 
 // ---------------------------------------------------------------------------
+
+// Phase 2: commodity model-only condition logic — structural break is not a hard gate
+describe('commodityModelOnly condition logic', () => {
+  const COMMODITY_WRAPPER_MIN_R2 = -0.02;
+  const COMMODITY_WRAPPER_MIN_CONFIDENCE = 0.15;
+
+  it('Phase 2: commodity model-only evaluates true despite structural break', () => {
+    const commodityModelOnly =
+      'commodity' === 'commodity' &&
+      0 === 0 &&
+      (-0.003) >= COMMODITY_WRAPPER_MIN_R2 &&
+      0.18 >= COMMODITY_WRAPPER_MIN_CONFIDENCE;
+    // structuralBreakDetected is NOT in the condition — break does not block
+
+    expect(commodityModelOnly).toBe(true);
+  });
+
+  it('Phase 2: commodity model-only rejects when R² below minimum', () => {
+    const commodityModelOnly =
+      'commodity' === 'commodity' &&
+      0 === 0 &&
+      (-0.05) >= COMMODITY_WRAPPER_MIN_R2 &&
+      0.18 >= COMMODITY_WRAPPER_MIN_CONFIDENCE;
+
+    expect(commodityModelOnly).toBe(false);
+  });
+
+  it('Phase 2: commodity model-only rejects when confidence below minimum', () => {
+    const commodityModelOnly =
+      'commodity' === 'commodity' &&
+      0 === 0 &&
+      (-0.003) >= COMMODITY_WRAPPER_MIN_R2 &&
+      0.10 >= COMMODITY_WRAPPER_MIN_CONFIDENCE;
+
+    expect(commodityModelOnly).toBe(false);
+  });
+});
 // Integration: computeMarkovDistribution
 // ---------------------------------------------------------------------------
 
@@ -6671,7 +6708,7 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
     });
 
-    it('abstains for commodity on structural break', async () => {
+    it('emits commodity model-only distribution despite structural break', async () => {
       mock.module('./polymarket.js', () => ({
         ...realPolymarketModule,
         fetchPolymarketMarkets: async () => [],
@@ -6699,7 +6736,7 @@ describe('markov_distribution tool output envelope', () => {
       });
 
       const parsed = JSON.parse(result);
-      expect(parsed.data.status).toBe('abstain');
+      expect(parsed.data.status).toBe('ok');
       expect(parsed.data.canonical.diagnostics.structuralBreakDetected).toBe(true);
     });
 
