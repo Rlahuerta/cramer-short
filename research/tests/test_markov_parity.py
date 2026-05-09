@@ -167,6 +167,42 @@ def test_get_btc_short_horizon_live_policy_matches_ts_horizons():
 
 
 # ---------------------------------------------------------------------------
+# GOLD short-horizon live policy
+# ---------------------------------------------------------------------------
+
+def test_get_gold_short_horizon_live_policy_ultra_short():
+    from research.models.markov import get_gold_short_horizon_live_policy
+    for h in (1, 2, 3):
+        p = get_gold_short_horizon_live_policy("GLD", h)
+        assert p.break_divergence_threshold == 0.12
+        assert p.rerun_on_break is False
+        assert p.history_days == 252
+
+
+def test_get_gold_short_horizon_live_policy_standard():
+    from research.models.markov import get_gold_short_horizon_live_policy
+    for h in (4, 7, 14):
+        p = get_gold_short_horizon_live_policy("GLD", h)
+        assert p.break_divergence_threshold == 0.15
+        assert p.rerun_on_break is False
+
+
+def test_get_gold_short_horizon_live_policy_rejects_non_gold():
+    from research.models.markov import get_gold_short_horizon_live_policy
+    assert get_gold_short_horizon_live_policy("SPY", 7) is None
+    assert get_gold_short_horizon_live_policy("BTC-USD", 7) is None
+    assert get_gold_short_horizon_live_policy("GLD", 30) is None
+    assert get_gold_short_horizon_live_policy("GLD", 0) is None
+
+
+def test_get_gold_short_horizon_live_policy_accepts_both_tickers():
+    from research.models.markov import get_gold_short_horizon_live_policy
+    assert get_gold_short_horizon_live_policy("GLD", 7) is not None
+    assert get_gold_short_horizon_live_policy("GOLD", 7) is not None
+    assert get_gold_short_horizon_live_policy("gld", 2) is not None
+
+
+# ---------------------------------------------------------------------------
 # compute_markov_forecast
 # ---------------------------------------------------------------------------
 
@@ -343,3 +379,207 @@ class TestAdjustHmmWeight:
         w_low = adjust_hmm_weight(0.5, 0.2)
         w_high = adjust_hmm_weight(0.5, 0.8)
         assert w_low > w_high
+
+
+# ---------------------------------------------------------------------------
+# R² out-of-sample validation
+# ---------------------------------------------------------------------------
+
+class TestComputeR2OS:
+    def test_perfect_predictions_returns_one(self):
+        from research.models.markov import compute_r2_os
+        import numpy as np
+        actuals = np.array([1.0, 2.0, 3.0])
+        predicted = np.array([1.0, 2.0, 3.0])
+        assert compute_r2_os(actuals, predicted) == pytest.approx(1.0)
+
+    def test_mean_predictions_returns_zero(self):
+        from research.models.markov import compute_r2_os
+        import numpy as np
+        actuals = np.array([1.0, 2.0, 3.0])
+        predicted = np.array([2.0, 2.0, 2.0])
+        assert compute_r2_os(actuals, predicted) == pytest.approx(0.0, abs=1e-10)
+
+    def test_worse_than_mean_returns_negative(self):
+        from research.models.markov import compute_r2_os
+        import numpy as np
+        actuals = np.array([1.0, 2.0, 3.0])
+        predicted = np.array([10.0, 10.0, 10.0])
+        assert compute_r2_os(actuals, predicted) < 0.0
+
+    def test_too_short_arrays_return_zero(self):
+        from research.models.markov import compute_r2_os
+        import numpy as np
+        assert compute_r2_os(np.array([1.0]), np.array([1.0])) == 0.0
+
+    def test_constant_actuals_return_zero(self):
+        from research.models.markov import compute_r2_os
+        import numpy as np
+        actuals = np.array([5.0, 5.0, 5.0])
+        predicted = np.array([1.0, 2.0, 3.0])
+        assert compute_r2_os(actuals, predicted) == 0.0
+
+
+class TestComputeValidationR2OS:
+    def test_daily_return_path_returns_excess_r2(self):
+        from research.models.markov import (
+            compute_validation_r2_os, classify_regime_series,
+        )
+        import numpy as np
+        rng = np.random.RandomState(42)
+        returns = rng.randn(80) * 0.02
+        states = classify_regime_series(returns)
+        result = compute_validation_r2_os("equity", 7, states, returns)
+        assert result["validation_metric"] == "daily_return"
+        assert result["r2os"] is not None
+        assert isinstance(result["r2os"], float)
+
+    def test_insufficient_data_returns_null(self):
+        from research.models.markov import (
+            compute_validation_r2_os, classify_regime_series,
+        )
+        import numpy as np
+        rng = np.random.RandomState(42)
+        short_returns = rng.randn(20) * 0.02
+        states = classify_regime_series(short_returns)
+        result = compute_validation_r2_os("equity", 7, states, short_returns)
+        assert result["r2os"] is None
+
+    def test_horizon_return_path_for_crypto(self):
+        from research.models.markov import (
+            compute_validation_r2_os, classify_regime_series,
+        )
+        import numpy as np
+        rng = np.random.RandomState(42)
+        returns = rng.randn(150) * 0.03
+        states = classify_regime_series(returns)
+        result = compute_validation_r2_os("crypto", 7, states, returns)
+        assert result["validation_metric"] in ("daily_return", "horizon_return")
+        # With enough data, should produce a result
+        assert result["r2os"] is not None
+
+
+# ---------------------------------------------------------------------------
+# evaluate_validation_acceptability
+# ---------------------------------------------------------------------------
+
+class TestEvaluateValidationAcceptability:
+    def test_positive_r2_always_acceptable(self):
+        from research.models.markov import evaluate_validation_acceptability
+        assert evaluate_validation_acceptability(0.05, "equity", 7, "daily_return", "good", 3) is True
+
+    def test_negative_r2_below_threshold_rejected(self):
+        from research.models.markov import evaluate_validation_acceptability
+        assert evaluate_validation_acceptability(-0.02, "equity", 7, "daily_return", "good", 3) is False
+
+    def test_crypto_good_anchors_r2_neutral(self):
+        from research.models.markov import evaluate_validation_acceptability
+        assert evaluate_validation_acceptability(-0.03, "crypto", 7, "horizon_return", "good", 2) is True
+
+    def test_crypto_good_anchors_below_r2_threshold(self):
+        from research.models.markov import evaluate_validation_acceptability
+        assert evaluate_validation_acceptability(-0.05, "crypto", 7, "horizon_return", "good", 2) is False
+
+    def test_crypto_sparse_anchors_r2_tolerance(self):
+        from research.models.markov import evaluate_validation_acceptability
+        assert evaluate_validation_acceptability(-0.04, "crypto", 7, "horizon_return", "sparse", 1) is True
+
+    def test_crypto_sparse_anchors_below_r2_threshold(self):
+        from research.models.markov import evaluate_validation_acceptability
+        assert evaluate_validation_acceptability(-0.06, "crypto", 7, "horizon_return", "sparse", 1) is False
+
+    def test_null_r2_rejected(self):
+        from research.models.markov import evaluate_validation_acceptability
+        assert evaluate_validation_acceptability(None, "equity", 7, "daily_return", "good", 3) is False
+
+    def test_r2_exactly_at_threshold_accepted(self):
+        from research.models.markov import evaluate_validation_acceptability
+        assert evaluate_validation_acceptability(-0.01, "equity", 7, "daily_return", "good", 3) is True
+
+
+# ---------------------------------------------------------------------------
+# evaluate_model_only_bypass
+# ---------------------------------------------------------------------------
+
+class TestEvaluateModelOnlyBypass:
+    def test_zero_anchor_commodity_bypass(self):
+        from research.models.markov import evaluate_model_only_bypass
+        result = evaluate_model_only_bypass("commodity", 7, 0, -0.01, 0.20)
+        assert result["commodity_model_only"] is True
+        assert result["crypto_model_only"] is False
+
+    def test_zero_anchor_crypto_bypass(self):
+        from research.models.markov import evaluate_model_only_bypass
+        result = evaluate_model_only_bypass("crypto", 7, 0, -0.02, 0.20)
+        assert result["commodity_model_only"] is False
+        assert result["crypto_model_only"] is True
+
+    def test_commodity_below_r2_rejected(self):
+        from research.models.markov import evaluate_model_only_bypass
+        result = evaluate_model_only_bypass("commodity", 7, 0, -0.03, 0.20)
+        assert result["commodity_model_only"] is False
+
+    def test_commodity_below_confidence_rejected(self):
+        from research.models.markov import evaluate_model_only_bypass
+        result = evaluate_model_only_bypass("commodity", 7, 0, -0.01, 0.10)
+        assert result["commodity_model_only"] is False
+
+    def test_crypto_below_confidence_rejected(self):
+        from research.models.markov import evaluate_model_only_bypass
+        result = evaluate_model_only_bypass("crypto", 7, 0, -0.02, 0.15)
+        assert result["crypto_model_only"] is False
+
+    def test_has_anchors_disables_bypass(self):
+        from research.models.markov import evaluate_model_only_bypass
+        result = evaluate_model_only_bypass("commodity", 7, 1, 0.05, 0.30)
+        assert result["commodity_model_only"] is False
+        assert result["crypto_model_only"] is False
+
+    def test_non_commodity_non_crypto_no_bypass(self):
+        from research.models.markov import evaluate_model_only_bypass
+        result = evaluate_model_only_bypass("equity", 7, 0, 0.05, 0.30)
+        assert result["commodity_model_only"] is False
+        assert result["crypto_model_only"] is False
+
+    def test_null_r2_no_bypass(self):
+        from research.models.markov import evaluate_model_only_bypass
+        result = evaluate_model_only_bypass("commodity", 7, 0, None, 0.30)
+        assert result["commodity_model_only"] is False
+
+
+# ---------------------------------------------------------------------------
+# evaluate_can_emit_canonical
+# ---------------------------------------------------------------------------
+
+class TestEvaluateCanEmitCanonical:
+    def test_all_conditions_met(self):
+        from research.models.markov import evaluate_can_emit_canonical
+        assert evaluate_can_emit_canonical(3, "good", True, False, False) is True
+
+    def test_anchor_based_pass(self):
+        from research.models.markov import evaluate_can_emit_canonical
+        assert evaluate_can_emit_canonical(1, "good", True, False, False) is True
+
+    def test_model_only_commodity_pass(self):
+        from research.models.markov import evaluate_can_emit_canonical
+        assert evaluate_can_emit_canonical(0, "sparse", False, True, False) is True
+
+    def test_model_only_crypto_pass(self):
+        from research.models.markov import evaluate_can_emit_canonical
+        assert evaluate_can_emit_canonical(0, "sparse", False, False, True) is True
+
+    def test_sparse_crypto_pass(self):
+        from research.models.markov import evaluate_can_emit_canonical
+        assert evaluate_can_emit_canonical(1, "sparse", False, False, False, True) is True
+
+    def test_no_anchors_no_bypass_fails(self):
+        from research.models.markov import evaluate_can_emit_canonical
+        assert evaluate_can_emit_canonical(0, "sparse", False, False, False) is False
+
+    def test_bad_quality_anchors_fails(self):
+        from research.models.markov import evaluate_can_emit_canonical
+        assert evaluate_can_emit_canonical(0, "sparse", False, False, False) is False
+
+    def test_validation_fails_no_bypass_fails(self):
+        from research.models.markov import evaluate_can_emit_canonical
+        assert evaluate_can_emit_canonical(3, "good", False, False, False) is False
