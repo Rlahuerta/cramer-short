@@ -1,10 +1,16 @@
-import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, afterAll, describe, expect, it, mock } from 'bun:test';
+
+const realApi = await import('./api.js');
 
 const mockGet = mock(() => Promise.reject(new Error('FD unavailable')));
 
 mock.module('./api.js', () => ({
   api: { get: mockGet },
 }));
+
+afterAll(() => {
+  mock.module('./api.js', () => realApi);
+});
 
 const t = Date.now();
 const { getCryptoPriceSnapshot, getCryptoPrices } = await import(`./crypto.js?t=${t}`) as typeof import('./crypto.js');

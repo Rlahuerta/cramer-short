@@ -1,4 +1,7 @@
-import { mock, describe, it, expect, beforeEach, spyOn } from 'bun:test';
+import { mock, describe, it, expect, beforeEach, spyOn, afterAll } from 'bun:test';
+
+// Capture real module before mocking so afterAll can restore
+const realApi = await import('./api.js');
 
 // Mock api module BEFORE importing any tool that depends on it
 const mockGet = mock(() => Promise.resolve({ data: {} as Record<string, unknown>, url: 'https://api.example.com/test' }));
@@ -9,6 +12,10 @@ mock.module('./api.js', () => ({
   stripFieldsDeep: (val: unknown, _fields: readonly string[]) => val,
   callApi: mockGet,
 }));
+
+afterAll(() => {
+  mock.module('./api.js', () => realApi);
+});
 
 // Dynamic imports after mocking.
 // Cache-busting ?t= forces Bun to re-evaluate each module in a fresh context so it

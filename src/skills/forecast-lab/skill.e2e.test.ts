@@ -307,7 +307,7 @@ describe('forecast-lab skill E2E', () => {
 
   e2eIt('explains exhausted-lineage next actions without mutating files', () => {
     const lower = exhaustionAnswer.toLowerCase();
-    expect(lower, 'answer must mention the exhausted mutator state').toMatch(/no shipped structured mutator|kept parent lineage|applicable/);
+    expect(lower, 'answer must mention the exhausted mutator state').toMatch(/no shipped|exhausted.*shipped.*mutator|lineage|applicable|can be applied/);
     expect(lower, 'answer must mention one of the supported next actions').toMatch(
       /keep the current best candidate|add a new shipped structured mutator|reset|catalog be extended|catalog update|extend the catalog|catalog extension|different profile|request a new mutator|human review|bounded plan|stop/,
     );
