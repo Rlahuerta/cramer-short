@@ -35,6 +35,7 @@ import {
   computeMixingWeight,
   computeR2OS,
   calibrateProbabilities,
+  computePredictionConfidenceBreakdown,
   computePredictionConfidence,
   getAssetProfile,
   computeRegimeUpRates,
@@ -79,6 +80,7 @@ import {
   getBtcShortHorizonLivePolicy,
   getGoldShortHorizonLivePolicy,
   normalizeHistoricalPriceTicker,
+  shouldEmitContextOnlyCanonical,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 
@@ -1503,6 +1505,77 @@ describe('R²_OS validation threshold', () => {
     })).toBe(false);
   });
 });
+
+describe('Phase 4: degraded confidence policy', () => {
+  it('softens short-horizon crypto break penalties when anchors are supportive and validation is only missing', () => {
+    const breakdown = computePredictionConfidenceBreakdown({
+      pUp: 0.58,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 8,
+      structuralBreak: true,
+      assetType: 'crypto',
+      recentVol: 0.03,
+      momentumAgreement: 0.67,
+      calibratedPUp: 0.57,
+      baseRate: 0.53,
+      trustedAnchors: 2,
+      horizonDays: 3,
+      outOfSampleR2: null,
+      confidenceMode: 'rebalanced',
+    });
+
+    expect(breakdown.multipliers.structuralBreak).toBeCloseTo(0.85);
+    expect(breakdown.multipliers.assetType).toBeCloseTo(0.95);
+  });
+
+  it('keeps the harsher crypto penalties when validation is clearly bad', () => {
+    const breakdown = computePredictionConfidenceBreakdown({
+      pUp: 0.58,
+      ensembleConsensus: 2,
+      hmmConverged: true,
+      regimeRunLength: 8,
+      structuralBreak: true,
+      assetType: 'crypto',
+      recentVol: 0.03,
+      momentumAgreement: 0.67,
+      calibratedPUp: 0.57,
+      baseRate: 0.53,
+      trustedAnchors: 2,
+      horizonDays: 3,
+      outOfSampleR2: -0.08,
+      confidenceMode: 'rebalanced',
+    });
+
+    expect(breakdown.multipliers.structuralBreak).toBeCloseTo(0.6);
+    expect(breakdown.multipliers.assetType).toBeCloseTo(0.82);
+  });
+
+  it('permits a context-only lane for short-horizon crypto with good anchors but unavailable validation', () => {
+    expect(shouldEmitContextOnlyCanonical({
+      ticker: 'BTC-USD',
+      assetType: 'crypto',
+      horizon: 3,
+      predictionConfidence: 0.24,
+      outOfSampleR2: null,
+      anchorCoverage: { quality: 'good', trustedAnchors: 3 },
+      goodnessOfFit: { passes: true },
+    })).toBe(true);
+  });
+
+  it('still rejects the context-only lane when the fit support is weak', () => {
+    expect(shouldEmitContextOnlyCanonical({
+      ticker: 'BTC-USD',
+      assetType: 'crypto',
+      horizon: 3,
+      predictionConfidence: 0.24,
+      outOfSampleR2: null,
+      anchorCoverage: { quality: 'good', trustedAnchors: 3 },
+      goodnessOfFit: { passes: false },
+    })).toBe(false);
+  });
+});
+
 describe('computeMarkovDistribution (integration)', () => {
   const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
 
@@ -6833,6 +6906,49 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.diagnostics).toHaveProperty('recommendationProvenance');
     expect(parsed.data.report).toContain('Latent regime:');
     expect(Array.isArray(parsed.data.distribution)).toBe(true);
+  });
+
+  it('emits context-only output when short-horizon BTC has good anchors but validation is unavailable', async () => {
+    const now = Date.parse('2026-05-08T12:00:00Z');
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 30; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+    const currentPrice = prices[prices.length - 1];
+
+    const result = await markovDistributionTool.func({
+      ticker: 'BTC-USD',
+      horizon: 3,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [
+        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.99)} on May 11?`, probability: 0.62, volume: 100_000, createdAt: now - 7 * 86_400_000, endDate: new Date(now + 3 * 86_400_000).toISOString() },
+        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice)} on May 11?`, probability: 0.50, volume: 100_000, createdAt: now - 7 * 86_400_000, endDate: new Date(now + 3 * 86_400_000).toISOString() },
+        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.01)} on May 11?`, probability: 0.39, volume: 100_000, createdAt: now - 7 * 86_400_000, endDate: new Date(now + 3 * 86_400_000).toISOString() },
+      ],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data.status).toBe('ok');
+    expect(parsed.data.manualSynthesisForbidden).toBe(false);
+    expect(parsed.data.abstainReasons).toEqual([]);
+    expect(parsed.data.contextOnlyReasons).toEqual([
+      'Out-of-sample Markov validation is unavailable, so this anchored crypto forecast is emitted as context only.',
+    ]);
+    expect(parsed.data.forecastHint).toBeNull();
+    expect(parsed.data.canonical.scenarios).toBeNull();
+    expect(parsed.data.canonical.actionSignal).toBeNull();
+    expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+    expect(parsed.data.canonical.diagnostics.status).toBe('context_only');
+    expect(parsed.data.canonical.diagnostics.calibrationMode).toBe('context_only');
+    expect(parsed.data.canonical.diagnostics.contextOnlyReasons).toEqual(parsed.data.contextOnlyReasons);
+    expect(Array.isArray(parsed.data.distribution)).toBe(true);
+    expect(parsed.data.report).toContain('🟡 Context-only Markov output');
+    expect(parsed.data.report).toContain('validation is unavailable');
+    expect(parsed.data.report).not.toContain('┌─ Your Options');
   });
 
   it('uses horizon-return validation when short-horizon crypto has enough history', async () => {

@@ -3743,6 +3743,32 @@ export function isCompositeValidationAcceptable(options: {
   return compositeCryptoValidation;
 }
 
+export function shouldEmitContextOnlyCanonical(options: {
+  ticker: string;
+  assetType: AssetProfile['type'];
+  horizon: number;
+  predictionConfidence: number;
+  outOfSampleR2: number | null;
+  anchorCoverage: Pick<AnchorCoverageDiagnostic, 'quality' | 'trustedAnchors'>;
+  goodnessOfFit: Pick<GoodnessOfFitResult, 'passes'> | null;
+}): boolean {
+  const cryptoShortHorizon = options.assetType === 'crypto' && options.horizon <= 14;
+  const validationUnavailable =
+    options.outOfSampleR2 === null || !Number.isFinite(options.outOfSampleR2);
+  const supportiveAnchors =
+    options.anchorCoverage.quality === 'good' && options.anchorCoverage.trustedAnchors >= 2;
+  const fitSupportive = options.goodnessOfFit?.passes ?? true;
+  const recommendedConfidenceThreshold = resolveForecastLabMarkovParameterDefaults(
+    resolveForecastLabRuntimeAssetScopeForTicker(options.ticker),
+  ).recommendedConfidenceThreshold;
+
+  return cryptoShortHorizon
+    && validationUnavailable
+    && supportiveAnchors
+    && fitSupportive
+    && options.predictionConfidence >= recommendedConfidenceThreshold;
+}
+
 // ---------------------------------------------------------------------------
 // 7b. Bayesian probability calibration (Idea I)
 // ---------------------------------------------------------------------------
@@ -3971,6 +3997,7 @@ export function computePredictionConfidenceBreakdown(options: {
     && options.horizonDays <= 14;
   const anchorsHelpful = (options.trustedAnchors ?? 0) >= 2;
   const r2 = options.outOfSampleR2;
+  const r2Unavailable = r2 === null || !Number.isFinite(r2);
   const r2ClearlyBad = typeof r2 === 'number' && Number.isFinite(r2) && r2 < -0.05;
   const r2NearZero = typeof r2 === 'number' && Number.isFinite(r2) && r2 >= -0.02 && r2 <= 0.02;
 
@@ -4036,7 +4063,9 @@ export function computePredictionConfidenceBreakdown(options: {
         const schedule = options.divergencePenaltySchedule ?? DEFAULT_DIVERGENCE_PENALTY_SCHEDULE;
         breakPenalty = computeDivergencePenalty(divergence, schedule);
       } else {
-        breakPenalty = cryptoShortHorizon && anchorsHelpful && !r2ClearlyBad ? 0.8 : 0.6;
+        breakPenalty = cryptoShortHorizon && anchorsHelpful
+          ? (r2Unavailable ? 0.85 : !r2ClearlyBad ? 0.8 : 0.6)
+          : 0.6;
       }
       structuralBreakMultiplier = breakPenalty;
       confidence *= structuralBreakMultiplier;
@@ -4048,7 +4077,7 @@ export function computePredictionConfidenceBreakdown(options: {
   if (assetType === 'crypto') {
     if (mode === 'rebalanced') {
       assetTypeMultiplier = cryptoShortHorizon
-        ? (anchorsHelpful && !r2ClearlyBad ? 0.92 : 0.82)
+        ? (anchorsHelpful && r2Unavailable ? 0.95 : anchorsHelpful && !r2ClearlyBad ? 0.92 : 0.82)
         : 0.74;
     } else {
       assetTypeMultiplier = cryptoShortHorizon && anchorsHelpful ? 0.85 : 0.7;
@@ -6373,6 +6402,22 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       m.outOfSampleR2 >= CRYPTO_MODEL_ONLY_MIN_R2 &&
       result.predictionConfidence >= CRYPTO_MODEL_ONLY_MIN_CONFIDENCE;
 
+    const contextOnlyCanonical = shouldEmitContextOnlyCanonical({
+      ticker: result.ticker,
+      assetType: assetProfile.type,
+      horizon: result.horizon,
+      predictionConfidence: result.predictionConfidence,
+      outOfSampleR2: m.outOfSampleR2,
+      anchorCoverage: m.anchorCoverage,
+      goodnessOfFit: m.goodnessOfFit,
+    });
+
+    const contextOnlyReasons = contextOnlyCanonical
+      ? [
+          'Out-of-sample Markov validation is unavailable, so this anchored crypto forecast is emitted as context only.',
+        ]
+      : [];
+
     const abstainReasons: string[] = [];
     const lowTrustReasonParts = [
       m.anchorInspection.lowTrustReasonCounts.youngMarket > 0
@@ -6400,7 +6445,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       abstainReasons.push(`Prediction-market anchor coverage is ${m.anchorCoverage.quality}, so calibrated scenario buckets would be overly model-driven.`);
     }
 
-    if (!validationAcceptable && !commodityModelOnly && !cryptoModelOnly) {
+    if (!validationAcceptable && !commodityModelOnly && !cryptoModelOnly && !contextOnlyCanonical) {
       if (m.outOfSampleR2 === null || !Number.isFinite(m.outOfSampleR2)) {
         abstainReasons.push('Out-of-sample Markov validation is unavailable for this run.');
       } else {
@@ -6415,9 +6460,13 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
         && validationAcceptable)
       || sparseCryptoAnchorAllowed
       || commodityModelOnly
-      || cryptoModelOnly;
+      || cryptoModelOnly
+      || contextOnlyCanonical;
 
-    const calibrationMode: 'anchored' | 'model_only' = commodityModelOnly || cryptoModelOnly ? 'model_only' : 'anchored';
+    const fullCanonical = canEmitCanonical && !contextOnlyCanonical;
+    const calibrationMode: 'anchored' | 'model_only' | 'context_only' = contextOnlyCanonical
+      ? 'context_only'
+      : commodityModelOnly || cryptoModelOnly ? 'model_only' : 'anchored';
     const anchorBypassApplied = commodityModelOnly || cryptoModelOnly;
 
     // --- Section 1: Decision Card (FIRST — most important) ---
@@ -6584,14 +6633,16 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       trajectorySection.push('    The CI range is the honest measure of uncertainty.');
     }
 
-    const forecastHint = buildForecastHint({
-      canEmitCanonical,
-      ticker: result.ticker,
-      horizon: result.horizon,
-      expectedReturn: result.actionSignal.expectedReturn,
-      mixingTimeWeight: m.mixingTimeWeight,
-      predictionConfidence: result.predictionConfidence,
-    });
+    const forecastHint = fullCanonical
+      ? buildForecastHint({
+          canEmitCanonical,
+          ticker: result.ticker,
+          horizon: result.horizon,
+          expectedReturn: result.actionSignal.expectedReturn,
+          mixingTimeWeight: m.mixingTimeWeight,
+          predictionConfidence: result.predictionConfidence,
+        })
+      : null;
     const closestResolutionLine =
       m.anchorInspection.closestResolutionDate != null
       && m.anchorInspection.closestResolutionOffsetDays != null
@@ -6628,7 +6679,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
             : []),
         ];
 
-    const report = canEmitCanonical
+    const report = fullCanonical
       ? [
         ...decisionCard,
         ...actionPlan,
@@ -6641,6 +6692,21 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
         ...table,
         ...trajectorySection,
       ].filter(l => l !== undefined).join('\n')
+      : contextOnlyCanonical
+        ? [
+            '🟡 Context-only Markov output',
+            '',
+            `Anchored short-horizon crypto distribution was generated for ${result.ticker}, but validation is unavailable so no actionable scenario or trade signal is emitted.`,
+            '',
+            'Why this is context only:',
+            ...contextOnlyReasons.map((reason) => `- ${reason}`),
+            '',
+            methodNote,
+            '',
+            ...header,
+            ...(warnings.length > 0 ? ['', ...warnings] : []),
+            ...table,
+          ].filter(l => l !== undefined).join('\n')
       : [
           '🚫 Diagnostics-only Markov output',
           '',
@@ -6661,14 +6727,15 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       status: canEmitCanonical ? 'ok' : 'abstain',
       manualSynthesisForbidden: !canEmitCanonical,
       abstainReasons,
+      contextOnlyReasons,
       report,
       forecastHint,
       canonical: {
         ticker: result.ticker,
         currentPrice: result.currentPrice,
         horizon: result.horizon,
-        scenarios: canEmitCanonical ? result.scenarios : null,
-        actionSignal: canEmitCanonical ? result.actionSignal : null,
+        scenarios: fullCanonical ? result.scenarios : null,
+        actionSignal: fullCanonical ? result.actionSignal : null,
         diagnostics: {
           totalAnchors: m.anchorCoverage.totalAnchors,
           trustedAnchors: m.anchorCoverage.trustedAnchors,
@@ -6691,18 +6758,19 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           originalStructuralBreakDetected: m.originalStructuralBreakDetected ?? null,
           originalStructuralBreakDivergence: m.originalStructuralBreakDivergence ?? null,
           predictionConfidence: result.predictionConfidence,
-          recommendationProvenance: canEmitCanonical ? recommendationProvenanceNote ?? null : null,
+          recommendationProvenance: fullCanonical ? recommendationProvenanceNote ?? null : null,
           calibrationMode,
           anchorBypassApplied,
-          status: canEmitCanonical ? 'ok' : 'abstain',
+          status: contextOnlyCanonical ? 'context_only' : canEmitCanonical ? 'ok' : 'abstain',
           canEmitCanonical,
           manualSynthesisForbidden: !canEmitCanonical,
           abstainReasons,
+          contextOnlyReasons,
           warnings,
         },
       },
       distribution: canEmitCanonical ? result.distribution : null,
-      trajectory: canEmitCanonical ? (result.trajectory ?? null) : null,
+      trajectory: fullCanonical ? (result.trajectory ?? null) : null,
     });
   },
 });
