@@ -2,6 +2,7 @@ import { describe, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
+import { MARKOV_PHASE0_BASELINES } from './markov-phase-baselines.js';
 import { walkForward } from './walk-forward.js';
 import { brierScore, ciCoverage, directionalAccuracy } from './metrics.js';
 
@@ -30,6 +31,7 @@ interface VariantMetrics {
   directionalAccuracy: number;
   brierScore: number;
   ciCoverage: number;
+  abstainCount: number;
   rerunRate: number;
 }
 
@@ -50,6 +52,7 @@ async function runVariant(
   });
 
   const rerunCount = result.steps.filter((step) => step.structuralBreakRerunTriggered).length;
+  const abstainCount = result.steps.filter((step) => step.recommendation === 'HOLD').length;
   return {
     label: config.label,
     horizon,
@@ -58,6 +61,7 @@ async function runVariant(
     directionalAccuracy: directionalAccuracy(result.steps),
     brierScore: brierScore(result.steps),
     ciCoverage: ciCoverage(result.steps),
+    abstainCount,
     rerunRate: result.steps.length > 0 ? rerunCount / result.steps.length : 0,
   };
 }
@@ -82,7 +86,7 @@ describe('BTC live short-horizon policy walk-forward', () => {
 
     const tunedByHorizon = new Map<number, VariantConfig>([
       [1, { label: 'btc-live-1d', warmup: 252, btcBreakDivergenceThreshold: 0.10, postBreakShortWindow: true, postBreakWindowSize: 60 }],
-      [2, { label: 'btc-live-2d', warmup: 252, btcBreakDivergenceThreshold: 0.15 }],
+      [2, { label: 'btc-live-2d', warmup: 252, btcBreakDivergenceThreshold: 0.15, postBreakShortWindow: true, postBreakWindowSize: 120 }],
       [3, { label: 'btc-live-3d', warmup: 252, btcBreakDivergenceThreshold: 0.20, postBreakShortWindow: true, postBreakWindowSize: 60 }],
       [14, { label: 'btc-live-14d', warmup: 252, btcBreakDivergenceThreshold: 0.15 }],
     ]);
@@ -95,10 +99,10 @@ describe('BTC live short-horizon policy walk-forward', () => {
       const tunedMetrics = await runVariant(prices, horizon, tunedByHorizon.get(horizon)!);
 
       lines.push(
-        `${horizon}d | ${baselineMetrics.label}: dir=${formatPct(baselineMetrics.directionalAccuracy)} brier=${baselineMetrics.brierScore.toFixed(4)} ci=${formatPct(baselineMetrics.ciCoverage)} rerun=${formatPct(baselineMetrics.rerunRate)}`,
+        `${horizon}d | ${baselineMetrics.label}: dir=${formatPct(baselineMetrics.directionalAccuracy)} brier=${baselineMetrics.brierScore.toFixed(4)} ci=${formatPct(baselineMetrics.ciCoverage)} abstain=${baselineMetrics.abstainCount} rerun=${formatPct(baselineMetrics.rerunRate)}`,
       );
       lines.push(
-        `${horizon}d | ${tunedMetrics.label}: dir=${formatPct(tunedMetrics.directionalAccuracy)} brier=${tunedMetrics.brierScore.toFixed(4)} ci=${formatPct(tunedMetrics.ciCoverage)} rerun=${formatPct(tunedMetrics.rerunRate)}`,
+        `${horizon}d | ${tunedMetrics.label}: dir=${formatPct(tunedMetrics.directionalAccuracy)} brier=${tunedMetrics.brierScore.toFixed(4)} ci=${formatPct(tunedMetrics.ciCoverage)} abstain=${tunedMetrics.abstainCount} rerun=${formatPct(tunedMetrics.rerunRate)}`,
       );
 
       expect(baselineMetrics.errors).toBe(0);
@@ -113,8 +117,10 @@ describe('BTC live short-horizon policy walk-forward', () => {
       }
 
       if (horizon === 2) {
-        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(0.48);
-        expect(tunedMetrics.rerunRate).toBe(0);
+        expect(tunedMetrics.directionalAccuracy).toBeGreaterThan(MARKOV_PHASE0_BASELINES.btc.h2.directionalAccuracy);
+        expect(tunedMetrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h2.abstainCount);
+        expect(tunedMetrics.rerunRate).toBeGreaterThan(0.45);
+        expect(tunedMetrics.rerunRate).toBeLessThan(0.60);
       }
 
       if (horizon === 3) {

@@ -152,6 +152,15 @@ export function getBtcShortHorizonLivePolicy(
     };
   }
 
+  if (horizon === 2) {
+    return {
+      historyDays: BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
+      breakDivergenceThreshold: BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
+      rerunOnBreak: true,
+      rerunWindowDays: 120,
+    };
+  }
+
   if (horizon === 3) {
     return {
       historyDays: BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,

@@ -5238,7 +5238,8 @@ describe('markov_distribution tool output envelope', () => {
     expect(getBtcShortHorizonLivePolicy('BTC-USD', 2)).toEqual({
       historyDays: 252,
       breakDivergenceThreshold: 0.15,
-      rerunOnBreak: false,
+      rerunOnBreak: true,
+      rerunWindowDays: 120,
     });
     expect(getBtcShortHorizonLivePolicy('BTC-USD', 14)).toEqual({
       historyDays: 252,
@@ -5278,7 +5279,8 @@ describe('markov_distribution tool output envelope', () => {
     expect(getBtcShortHorizonLivePolicy('BTC-USD', 2)).toEqual({
       historyDays: 252,
       breakDivergenceThreshold: 0.15,
-      rerunOnBreak: false,
+      rerunOnBreak: true,
+      rerunWindowDays: 120,
     });
     expect(getBtcShortHorizonLivePolicy('BTC-USD', 1)).toEqual({
       historyDays: 252,
@@ -7203,7 +7205,8 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.canonical.diagnostics.btcShortHorizonLivePolicy).toEqual({
         historyDays: 252,
         breakDivergenceThreshold: 0.15,
-        rerunOnBreak: false,
+        rerunOnBreak: true,
+        rerunWindowDays: 120,
       });
       expect(parsed.data.report).toContain('BTC short-horizon live policy used 252d history with structural-break threshold 0.15');
     });
