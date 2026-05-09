@@ -7,7 +7,12 @@
  * fallback query variants, and a weight for the log-odds probability combiner.
  */
 
-import { resolveAssetIntent, resolveTickerSearchIdentity, type ResolvedAssetClass } from './asset-resolver.js';
+import {
+  extractExclusiveAssetOverride,
+  resolveAssetIntent,
+  resolveTickerSearchIdentity,
+  type ResolvedAssetClass,
+} from './asset-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -302,6 +307,22 @@ const BARRICK_MINER_RE = /\bbarrick\b|\bgold\s+(?:stock|equity|shares|company|ea
 
 export function detectAssetType(query: string): { type: AssetType; ticker: string | null } {
   const lower = query.toLowerCase();
+  const exclusiveTicker = extractExclusiveAssetOverride(query);
+  if (exclusiveTicker) {
+    const exclusiveIntent = resolveAssetIntent(query, exclusiveTicker);
+    if (exclusiveIntent.assetClass === 'commodity_gold') return { type: 'commodity', ticker: 'GOLD' };
+    if (exclusiveIntent.assetClass === 'commodity_silver') return { type: 'commodity', ticker: 'SILVER' };
+    if (exclusiveIntent.assetClass === 'commodity_oil') return { type: 'commodity', ticker: 'OIL' };
+    if (exclusiveIntent.assetClass === 'gold_miner') return { type: 'materials', ticker: 'GOLD' };
+
+    const normalizedExclusiveTicker = exclusiveTicker.replace(/-USD$/, '');
+    if (normalizedExclusiveTicker === 'BTC' || normalizedExclusiveTicker === 'ETH' || normalizedExclusiveTicker === 'SOL') {
+      return { type: 'crypto', ticker: normalizedExclusiveTicker };
+    }
+
+    const type: AssetType = SECTOR_MAP[normalizedExclusiveTicker] ?? 'tech_general';
+    return { type, ticker: normalizedExclusiveTicker };
+  }
 
   // 0. Barrick Gold / gold-miner disambiguation (must precede commodity gold match)
   if (BARRICK_MINER_RE.test(query)) {

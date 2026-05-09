@@ -21,6 +21,15 @@ describe('resolveAssetIntent', () => {
     expect(result.assetClass).toBe('commodity_gold');
   });
 
+  it('lets an explicit GOLD-only directive override earlier BTC ticker mentions', () => {
+    const result = resolveAssetIntent(
+      'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
+      'BTC-USD',
+    );
+    expect(result.resolvedTicker).toBe('GLD');
+    expect(result.assetClass).toBe('commodity_gold');
+  });
+
   it('routes macro GOLD prompts to the commodity proxy path', () => {
     const result = resolveAssetIntent('How should macro gold react if real yields keep falling next quarter?', 'GOLD');
     expect(result.resolvedTicker).toBe('GLD');

@@ -88,6 +88,14 @@ describe('detectAssetType', () => {
     expect(result.ticker).toBe('GOLD');
   });
 
+  it('lets an explicit GOLD-only directive override earlier BTC cues', () => {
+    const result = detectAssetType(
+      'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
+    );
+    expect(result.type).toBe('commodity');
+    expect(result.ticker).toBe('GOLD');
+  });
+
   it('detects solana as crypto with ticker SOL', () => {
     const r = detectAssetType('solana ecosystem');
     expect(r.type).toBe('crypto');

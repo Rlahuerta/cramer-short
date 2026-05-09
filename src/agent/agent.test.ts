@@ -1398,6 +1398,11 @@ describe('Agent', () => {
       expect(isCryptoForecastQuery('What is the market cap of BTC?')).toBe(false);
       expect(isCryptoForecastQuery('What is the probability distribution for BTC-USD in 7 days?')).toBe(false);
       expect(isCryptoForecastQuery('Provide an AAPL forecast for the next 7 days')).toBe(false);
+      expect(
+        isCryptoForecastQuery(
+          'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
+        ),
+      ).toBe(false);
     });
 
     it('classifies routed forecast-lab workflow asks as improvement queries', () => {
@@ -1639,6 +1644,11 @@ describe('Agent', () => {
 
       expect(buildForcedCryptoForecastMarkovArgs('Provide a BTC forecast for the next 30 days')).toBeNull();
       expect(buildForcedOnchainArgs('Provide a crypto forecast for the next 7 days')).toBeNull();
+      expect(
+        buildForcedMarketDataArgs(
+          'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
+        ),
+      ).toBeNull();
     });
 
     it('buildForcedCryptoForecastMarkovArgs uses BTC-only next week fallback of 5 trading days', () => {
@@ -2787,6 +2797,11 @@ describe('Agent', () => {
         expect(isNonCryptoForecastQuery('Gold forecast for the next 30 days')).toBe(true);
         expect(isNonCryptoForecastQuery('Will silver hit $30 by end of Q2?')).toBe(true);
         expect(isNonCryptoForecastQuery('Where will oil prices be in 2 weeks')).toBe(true);
+        expect(
+          isNonCryptoForecastQuery(
+            'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
+          ),
+        ).toBe(true);
       });
 
       it('matches ETF forecast queries', () => {
