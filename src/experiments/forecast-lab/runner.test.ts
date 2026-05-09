@@ -301,8 +301,9 @@ const LIVE_MUTABLE_FILES = [
 ] as const;
 
 function snapshotLiveMutableFiles(): Map<(typeof LIVE_MUTABLE_FILES)[number], string> {
+  const repoRoot = join(import.meta.dir, '../../..');
   return new Map(
-    LIVE_MUTABLE_FILES.map((filePath) => [filePath, readFileSync(filePath, 'utf8')]),
+    LIVE_MUTABLE_FILES.map((filePath) => [filePath, readFileSync(join(repoRoot, filePath), 'utf8')]),
   );
 }
 
@@ -359,6 +360,7 @@ function restoreRuntimeDefaults(snapshot: ReturnType<typeof snapshotRuntimeDefau
 
 function readHeadTrackedFile(filePath: (typeof LIVE_MUTABLE_FILES)[number]): string {
   const result = spawnSync('git', ['show', `HEAD:${filePath}`], {
+    cwd: join(import.meta.dir, '../../..'),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });

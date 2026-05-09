@@ -5,10 +5,14 @@
  * 2. Graceful degradation at max iterations — synthesis instead of bare error
  * 3. Parallel tool execution event ordering — all tool_starts before tool_ends
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import type { BaseMessage } from '@langchain/core/messages';
+import { AIMessage, AIMessageChunk } from '@langchain/core/messages';
+import { _setModelFactory } from '../model/llm.js';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -26,7 +30,6 @@ beforeEach(() => {
   process.chdir(tmpDir);
 
   // Provide a stub API key so getChatModel()'s getApiKey() doesn't throw.
-  // The actual key value is irrelevant because @langchain/openai is mocked.
   prevOpenAiKey = process.env.OPENAI_API_KEY;
   if (!prevOpenAiKey) process.env.OPENAI_API_KEY = 'sk-test-stub';
 });
@@ -63,80 +66,33 @@ const ST_TOOL_CALL = {
   type: 'tool_call' as const,
 };
 
-// Mock all LLM providers so Agent can be instantiated without real API keys.
-// Both invoke() (used during tool-call loop) and stream() (used for final
-// answer streaming) are mocked here.
-mock.module('@langchain/openai', () => ({
-  ChatOpenAI: class {
-    constructor() {}
-    async invoke() {
-      if (mockState.alwaysReturnToolCalls) {
-        return { content: '', tool_calls: [ST_TOOL_CALL] };
-      }
-      return { content: 'The answer is 42', tool_calls: [] };
+// ---------------------------------------------------------------------------
+// Scoped model factory DI — avoids permanent mock.module contamination that
+// breaks E2E/integration tests when llm.js has already been cached.
+// ---------------------------------------------------------------------------
+
+class SpyChatModel extends BaseChatModel {
+  constructor(private state: typeof mockState) { super({}); }
+  _llmType(): string { return 'spy-features'; }
+
+  async _generate(_messages: BaseMessage[], _options: any, _runManager?: any) {
+    if (this.state.alwaysReturnToolCalls) {
+      return { generations: [{ message: new AIMessage({ content: '', tool_calls: [ST_TOOL_CALL], additional_kwargs: {} }), text: '' }] };
     }
-    async *stream(_messages: unknown) {
-      for (const chunk of mockState.streamChunks) {
-        yield { content: chunk };
-      }
+    return { generations: [{ message: new AIMessage({ content: 'The answer is 42', additional_kwargs: {} }), text: 'The answer is 42' }] };
+  }
+
+  async *_streamIterator(_input: any, _options?: any) {
+    for (const chunk of this.state.streamChunks) {
+      yield new AIMessageChunk({ content: chunk });
     }
-    bindTools() { return this; }
-  },
-  OpenAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/anthropic', () => ({
-  ChatAnthropic: class {
-    constructor() {}
-    async invoke() {
-      if (mockState.alwaysReturnToolCalls) {
-        return { content: '', tool_calls: [ST_TOOL_CALL] };
-      }
-      return { content: 'The answer is 42', tool_calls: [] };
-    }
-    async *stream(_messages: unknown) {
-      for (const chunk of mockState.streamChunks) {
-        yield { content: chunk };
-      }
-    }
-    bindTools() { return this; }
-  },
-}));
-mock.module('@langchain/google-genai', () => ({
-  ChatGoogleGenerativeAI: class {
-    constructor() {}
-    async invoke() {
-      if (mockState.alwaysReturnToolCalls) {
-        return { content: '', tool_calls: [ST_TOOL_CALL] };
-      }
-      return { content: 'The answer is 42', tool_calls: [] };
-    }
-    async *stream(_messages: unknown) {
-      for (const chunk of mockState.streamChunks) {
-        yield { content: chunk };
-      }
-    }
-    bindTools() { return this; }
-  },
-  GoogleGenerativeAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/ollama', () => ({
-  ChatOllama: class {
-    constructor() {}
-    async invoke() {
-      if (mockState.alwaysReturnToolCalls) {
-        return { content: '', tool_calls: [ST_TOOL_CALL] };
-      }
-      return { content: 'The answer is 42', tool_calls: [] };
-    }
-    async *stream(_messages: unknown) {
-      for (const chunk of mockState.streamChunks) {
-        yield { content: chunk };
-      }
-    }
-    bindTools() { return this; }
-  },
-  OllamaEmbeddings: class { constructor() {} },
-}));
+  }
+
+  bindTools() { return this as any; }
+}
+
+beforeAll(() => { _setModelFactory(() => new SpyChatModel(mockState)); });
+afterAll(() => { _setModelFactory(null); });
 
 const { Agent } = await import('./agent.js');
 
@@ -176,8 +132,6 @@ describe('Agent — streaming final answer', () => {
     const events = await collectEvents(agent.run('test query'));
 
     const chunks = events.filter((e) => e.type === 'answer_chunk') as AnswerChunkEvent[];
-    // stream() yields 3 chunks; word-buffering may merge or split them but
-    // at minimum we get ≥ 1 chunk event.  The key assertion is > 0 events.
     expect(chunks.length).toBeGreaterThan(0);
   });
 
@@ -317,14 +271,9 @@ describe('Agent — parallel tool execution event ordering', () => {
   });
 
   it('all tool_start events precede any tool_end in a two-tool batch', async () => {
-    // Drive the test at the AgentToolExecutor level directly
-    // (avoids agent-loop complexity while verifying the real parallel path).
     const { AgentToolExecutor } = await import('./tool-executor.js');
     const { createRunContext } = await import('./run-context.js');
     const { AIMessage } = await import('@langchain/core/messages');
-    const { mkdirSync } = await import('node:fs');
-    const { join } = await import('node:path');
-    const { tmpdir } = await import('node:os');
     const subDir = join(tmpdir(), `parallel-order-${Date.now()}`);
     mkdirSync(subDir, { recursive: true });
     const savedCwd = process.cwd();
@@ -336,7 +285,6 @@ describe('Agent — parallel tool execution event ordering', () => {
         name: 'web_search',
         invoke: async () => {
           toolCallCount++;
-          // Introduce a micro-delay so both tools are truly in-flight concurrently
           await new Promise<void>((r) => setTimeout(r, 5));
           return '{"result":"data"}';
         },
@@ -362,8 +310,8 @@ describe('Agent — parallel tool execution event ordering', () => {
       const msg = new AIMessage({
         content: '',
         tool_calls: [
-          { id: 'c1', name: 'web_search', args: { query: 'AAPL' }, type: 'tool_call' as const },
-          { id: 'c2', name: 'get_market_data', args: { ticker: 'AAPL' }, type: 'tool_call' as const },
+          { id: 'c1', name: 'web_search', args: { query: 'AAPL' }, type: 'tool_call' },
+          { id: 'c2', name: 'get_market_data', args: { ticker: 'AAPL' }, type: 'tool_call' },
         ],
       });
 
@@ -405,7 +353,7 @@ describe('Agent — parallel tool execution event ordering', () => {
     const msg = new AIMessage({
       content: '',
       tool_calls: [
-        { id: 'c1', name: 'web_search', args: { query: 'test' }, type: 'tool_call' as const },
+        { id: 'c1', name: 'web_search', args: { query: 'test' }, type: 'tool_call' },
       ],
     });
 

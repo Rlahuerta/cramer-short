@@ -19,7 +19,7 @@ export const DEFAULT_PROVIDER = 'openai';
 export const DEFAULT_MODEL = 'gpt-5.4';
 
 /** Ollama model name patterns that support extended thinking via `think: true`. */
-const THINKING_MODEL_PATTERNS = [/qwen3/, /deepseek-r1/, /qwq/, /nemotron/];
+const THINKING_MODEL_PATTERNS = [/qwen3/, /deepseek-r1/, /qwq/, /nemotron/, /gemma4/];
 
 /**
  * Returns true when the given model name is an Ollama thinking-capable model

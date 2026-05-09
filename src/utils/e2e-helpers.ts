@@ -7,13 +7,13 @@
  *   OLLAMA_BASE_URL — Ollama endpoint (default: 'http://127.0.0.1:11434')
  *   E2E_TIMEOUT_MS  — Hard timeout in ms (default: 360 000)
  */
-import { Agent } from '../agent/agent.js';
 import type { AgentEvent, DoneEvent } from '../agent/types.js';
 import { InMemoryChatHistory } from './in-memory-chat-history.js';
 import { isTimeoutError } from './errors.js';
 import { withRetry } from './retry.js';
+import type { Agent } from '../agent/agent.js';
 
-export const E2E_MODEL = process.env.E2E_MODEL ?? 'ollama:minimax-m2.7:cloud';
+export const E2E_MODEL = process.env.E2E_MODEL ?? 'ollama:gemma4:31b-cloud';
 export const E2E_TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS ?? '360000', 10);
 
 export interface E2EResult {
@@ -69,7 +69,12 @@ export async function runAgentE2E(
   const model = opts.model ?? E2E_MODEL;
   const maxIterations = opts.maxIterations ?? defaultMaxIter;
 
-  const agent = await Agent.create({
+  // Dynamic import to avoid mock.module contamination from unit test files
+  // that load earlier in the same Bun worker. At this point afterAll hooks
+  // from unit tests have already restored the real module exports.
+  const { Agent: AgentCtor } = await import('../agent/agent.js');
+
+  const agent = await AgentCtor.create({
     model,
     maxIterations,
     memoryEnabled: false, // keep E2E tests hermetic — no cross-test memory bleed

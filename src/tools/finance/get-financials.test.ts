@@ -1,5 +1,8 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
 import { AIMessage } from '@langchain/core/messages';
+
+// Capture real module before mocking so afterAll can restore
+const realLlm = await import('../../model/llm.js');
 
 // ---------------------------------------------------------------------------
 // Mock callLlm BEFORE importing the module under test
@@ -11,10 +14,13 @@ const mockCallLlm = mock(async (_prompt: string, _opts: unknown) => ({
 }));
 
 mock.module('../../model/llm.js', () => ({
+  ...realLlm,
   callLlm: mockCallLlm,
-  DEFAULT_MODEL: 'gpt-5.4',
-  getChatModel: mock(() => ({})),
 }));
+
+afterAll(() => {
+  mock.module('../../model/llm.js', () => realLlm);
+});
 
 // ---------------------------------------------------------------------------
 // Import after mocking

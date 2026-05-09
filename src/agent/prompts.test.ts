@@ -1,15 +1,21 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, afterAll } from 'bun:test';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
 const testDir = join(tmpdir(), `dexter-prompts-test-${Date.now()}`);
 const actualPaths = await import('../utils/paths.js');
+const realToolsRegistry = await import('../tools/registry.js');
 
 mock.module('../tools/registry.js', () => ({
+  ...realToolsRegistry,
   buildToolDescriptions: mock(() => 'mock tool descriptions'),
   getTools: mock(() => []),
   getToolRegistry: mock(() => []),
 }));
+
+afterAll(() => {
+  mock.module('../tools/registry.js', () => realToolsRegistry);
+});
 
 // skills/index.js intentionally NOT mocked here — it re-exports from registry.js
 // and loader.js via ESM live bindings. Any mock.module() call for index.js

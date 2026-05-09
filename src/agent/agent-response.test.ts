@@ -17,13 +17,16 @@
  * 4. Thinking text is truncated to 500 chars so verbose models (e.g. Qwen)
  *    that embed raw JSON in their reasoning text don't flood the terminal.
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
 import { Scratchpad } from './scratchpad.js';
 import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
+import { _setModelFactory } from '../model/llm.js';
+import { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { AIMessage, AIMessageChunk, type BaseMessage } from '@langchain/core/messages';
 
 // ---------------------------------------------------------------------------
 // Mutable mock state — reset before each test.
@@ -71,59 +74,65 @@ const ST_TOOL_CALL = {
 };
 
 // ---------------------------------------------------------------------------
-// Mock callLlm + streamCallLlm at the module boundary.
-// Mocking at this level (rather than @langchain/openai) avoids the providerMap
-// cache-poisoning issue and gives precise control over call tracking.
+// Scoped model factory DI — avoids permanent mock.module contamination that
+// poisons E2E/integration tests sharing the same Bun worker.
 // ---------------------------------------------------------------------------
-mock.module('../model/llm.js', () => ({
-  DEFAULT_MODEL: 'gpt-5.4',
-  getLlmCallTimeoutMs: () => 120000,
-  callLlm: async () => {
-    // Drain the per-call response queue first (used by multi-iteration tests).
-    if (mockState.callLlmQueue.length > 0) {
-      const next = mockState.callLlmQueue.shift()!;
+class SpyChatModel extends BaseChatModel {
+  constructor(private state: typeof mockState) { super({}); }
+
+  _llmType(): string { return 'spy'; }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async _generate(messages: BaseMessage[], options: any, _runManager?: any) {
+    if (this.state.callLlmQueue.length > 0) {
+      const next = this.state.callLlmQueue.shift()!;
       return {
-        response: { content: next.content, tool_calls: next.toolCalls, additional_kwargs: {} },
-        usage: undefined,
+        generations: [{
+          message: new AIMessage({ content: next.content, tool_calls: next.toolCalls, additional_kwargs: {} }),
+          text: next.content,
+        }],
       };
     }
-    if (mockState.invokeReturnsToolCalls) {
+    if (this.state.invokeReturnsToolCalls) {
       return {
-        response: {
-          content: mockState.invokeThinkingText,
-          tool_calls: [ST_TOOL_CALL],
-          additional_kwargs: {},
-        },
-        usage: undefined,
+        generations: [{
+          message: new AIMessage({ content: this.state.invokeThinkingText, tool_calls: [ST_TOOL_CALL], additional_kwargs: {} }),
+          text: '',
+        }],
       };
     }
     return {
-      response: {
-        content: mockState.invokeContent,
-        tool_calls: [],
-        additional_kwargs: {},
-      },
-      usage: undefined,
+      generations: [{
+        message: new AIMessage({ content: this.state.invokeContent, additional_kwargs: {} }),
+        text: this.state.invokeContent,
+      }],
     };
-  },
-  streamCallLlm: async function* (_prompt: string, opts: { signal?: AbortSignal } = {}) {
-    mockState.streamCallCount++;
-    if (mockState.streamShouldThrow) {
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async *_streamIterator(input: any, options?: any) {
+    this.state.streamCallCount++;
+    if (this.state.streamShouldThrow) {
       throw new Error('LLM stream timed out');
     }
-    for (const chunk of mockState.streamChunks) {
-      if (opts.signal?.aborted) {
-        throw new DOMException('The operation was aborted.', 'AbortError');
-      }
-      yield chunk;
+    for (const chunk of this.state.streamChunks) {
+      yield new AIMessageChunk({ content: chunk });
     }
-  },
-  resolveProvider: (model: string) => ({ id: 'openai', displayName: model }),
-  formatUserFacingError: (msg: string) => msg,
-  isContextOverflowError: () => false,
-}));
+  }
+
+  bindTools(_tools: any[]): any { return this; }
+  withStructuredOutput(_schema: any, _opts?: any): any { return this; }
+}
+
+beforeAll(() => { _setModelFactory((_name, _opts, _thinkOverride) => new SpyChatModel(mockState)); });
+afterAll(() => {
+  _setModelFactory(null);
+  mock.module('../memory/index.js', () => realMemory);
+  mock.module('../tools/registry.js', () => realToolsRegistry);
+});
 
 // Mock memory to avoid SQLite initialization.
+const realMemory = await import('../memory/index.js');
 mock.module('../memory/index.js', () => ({
   MemoryManager: {
     get: async () => ({
@@ -134,6 +143,7 @@ mock.module('../memory/index.js', () => ({
   },
 }));
 
+const realToolsRegistry = await import('../tools/registry.js');
 mock.module('../tools/registry.js', () => {
   const sequentialThinkingTool = {
     name: 'sequential_thinking',

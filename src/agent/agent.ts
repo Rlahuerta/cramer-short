@@ -2106,7 +2106,7 @@ function inferLeverageFromQuery(query: string): number | null {
 }
 
 function isTradeDecisionQuery(query: string): boolean {
-  return /\b(direction|entry|enter|stop|stop-loss|target|take profit|leverage|leveraged|\d{1,3}(?:\.\d+)?\s*x|long|short|trade setup|position)\b/i.test(query);
+  return /\b(direction|entry|enter|stop|stop-loss|target|take profit|leverage|leveraged|\d{1,3}(?:\.\d+)?\s*x|long|short|trade setup|trade plan|position|arbitrator|verdict)\b/i.test(query);
 }
 
 function hasForecastArbitratorForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {

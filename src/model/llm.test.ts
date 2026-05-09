@@ -1,4 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
+
+// Capture real modules before mocking so afterAll can restore them
+const realOllama = await import('@langchain/ollama');
+const realOpenAI = await import('@langchain/openai');
+const realAnthropic = await import('@langchain/anthropic');
+const realGoogleGenAI = await import('@langchain/google-genai');
 
 // ---------------------------------------------------------------------------
 // Mock @langchain/ollama so we can inspect constructor args without Ollama running
@@ -35,6 +41,13 @@ mock.module('@/utils/config.js', () => ({
   ...actualConfig,
   getSetting: mockGetSetting,
 }));
+
+afterAll(() => {
+  mock.module('@langchain/ollama', () => realOllama);
+  mock.module('@langchain/openai', () => realOpenAI);
+  mock.module('@langchain/anthropic', () => realAnthropic);
+  mock.module('@langchain/google-genai', () => realGoogleGenAI);
+});
 
 const {
   isThinkingModel,

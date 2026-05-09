@@ -4,11 +4,14 @@
  * Uses the same @langchain/* mock pattern as agent-features.test.ts to avoid
  * Bun module-registry contamination (never mocks llm.js directly).
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentEvent, DoneEvent } from './types.js';
+import { _setModelFactory } from '../model/llm.js';
+import { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { AIMessage, AIMessageChunk, type BaseMessage } from '@langchain/core/messages';
 
 // ---------------------------------------------------------------------------
 // Filesystem isolation
@@ -188,39 +191,57 @@ const ST_TOOL_CALL = {
 };
 
 // ---------------------------------------------------------------------------
-// Mock llm.js at the module boundary (same pattern as agent-response.test.ts).
-//
-// Mocking @langchain/* packages is insufficient because agent.ts calls callLlm()
-// from model/llm.js, not the LangChain classes directly. agent-response.test.ts
-// (which runs first in the same Bun worker) already sets mock.module('../model/llm.js')
-// with its own mockState closure, so we must override it here to use THIS file's
-// mockState. The @langchain/* mocks below are kept for completeness but are unused.
+// Scoped model factory DI — avoids permanent mock.module contamination that
+// poisons E2E/integration tests sharing the same Bun worker.
 // ---------------------------------------------------------------------------
-mock.module('../model/llm.js', () => ({
-  DEFAULT_MODEL: 'gpt-5.4',
-  getLlmCallTimeoutMs: () => 120000,
-  callLlm: async () => {
-    mockState.callCount++;
-    if (mockState.invokeThrows) throw new Error(mockState.invokeThrowMessage);
-    if (mockState.invokeToolCalls.length > 0) {
+class SpyChatModel extends BaseChatModel {
+  constructor(private state: typeof mockState) { super({}); }
+
+  _llmType(): string { return 'spy'; }
+
+  async _generate(_messages: BaseMessage[], _options: any, _runManager?: any) {
+    this.state.callCount++;
+    if (this.state.invokeThrows) throw new Error(this.state.invokeThrowMessage);
+    if (this.state.invokeToolCalls.length > 0) {
       return {
-        response: { content: '', tool_calls: mockState.invokeToolCalls, additional_kwargs: {} },
-        usage: undefined,
+        generations: [{
+          message: new AIMessage({ content: '', tool_calls: this.state.invokeToolCalls, additional_kwargs: {} }),
+          text: '',
+        }],
       };
     }
     return {
-      response: { content: mockState.invokeContent, tool_calls: [], additional_kwargs: {} },
-      usage: undefined,
+      generations: [{
+        message: new AIMessage({ content: this.state.invokeContent, additional_kwargs: {} }),
+        text: this.state.invokeContent,
+      }],
     };
-  },
-  streamCallLlm: async function* (_prompt: string) {
-    if (mockState.streamThrows) throw new Error('stream timeout');
-    for (const chunk of mockState.streamChunks) yield chunk;
-  },
-  resolveProvider: (model: string) => ({ id: 'openai', displayName: model }),
-  formatUserFacingError: (msg: string) => msg,
-  isContextOverflowError: () => false,
-}));
+  }
+
+  async *_streamIterator(_input: any, _options?: any) {
+    if (this.state.streamThrows) throw new Error('stream timeout');
+    for (const chunk of this.state.streamChunks) {
+      yield new AIMessageChunk({ content: chunk });
+    }
+  }
+
+  bindTools(_tools: any[]): any { return this; }
+  withStructuredOutput(_schema: any, _opts?: any): any { return this; }
+}
+
+const realOpenAI = await import('@langchain/openai');
+const realAnthropic = await import('@langchain/anthropic');
+const realGoogleGenAI = await import('@langchain/google-genai');
+const realOllama = await import('@langchain/ollama');
+
+beforeAll(() => { _setModelFactory((_name, _opts, _thinkOverride) => new SpyChatModel(mockState)); });
+afterAll(() => {
+  _setModelFactory(null);
+  mock.module('@langchain/openai', () => realOpenAI);
+  mock.module('@langchain/anthropic', () => realAnthropic);
+  mock.module('@langchain/google-genai', () => realGoogleGenAI);
+  mock.module('@langchain/ollama', () => realOllama);
+});
 mock.module('@langchain/openai', () => ({
   ChatOpenAI: class { constructor() {} bindTools() { return this; } },
   OpenAIEmbeddings: class { constructor() {} },

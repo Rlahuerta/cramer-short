@@ -1,5 +1,10 @@
-import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach, afterAll } from 'bun:test';
 import { AIMessage } from '@langchain/core/messages';
+
+// Capture real modules before mocking so afterAll can restore
+const realLlm = await import('../../model/llm.js');
+const realPrompts = await import('../../agent/prompts.js');
+const realFilings = await import('./filings.js');
 
 const mockCallLlm = mock(async () => ({
   response: { ticker: 'AAPL', filing_types: ['10-K'], limit: 10 } as any,
@@ -25,9 +30,8 @@ const mockGetFilingItemTypes = mock(async () => ({
 }));
 
 mock.module('../../model/llm.js', () => ({
+  ...realLlm,
   callLlm: mockCallLlm,
-  DEFAULT_MODEL: 'gpt-5.4',
-  getChatModel: mock(() => ({})),
 }));
 
 mock.module('../../agent/prompts.js', () => ({
@@ -43,6 +47,12 @@ mock.module('./filings.js', () => ({
   get8KFilingItems: { invoke: mock(async () => JSON.stringify({ data: [], sourceUrls: [] })) },
   getFilingItemTypes: mockGetFilingItemTypes,
 }));
+
+afterAll(() => {
+  mock.module('../../model/llm.js', () => realLlm);
+  mock.module('../../agent/prompts.js', () => realPrompts);
+  mock.module('./filings.js', () => realFilings);
+});
 
 const { createReadFilings } = await import('./read-filings.js');
 

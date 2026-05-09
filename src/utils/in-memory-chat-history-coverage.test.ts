@@ -3,7 +3,10 @@
  * Mocks callLlm so saveAnswer/selectRelevantMessages run without a real API.
  */
 
-import { mock, describe, it, expect, beforeEach } from 'bun:test';
+import { mock, describe, it, expect, beforeEach, afterAll } from 'bun:test';
+
+// Capture real module before mocking so afterAll can restore
+const realLlm = await import('../model/llm.js');
 
 // Mock callLlm before importing the class
 const mockCallLlm = mock(async (_prompt: string, _opts?: unknown) => ({
@@ -12,9 +15,13 @@ const mockCallLlm = mock(async (_prompt: string, _opts?: unknown) => ({
 }));
 
 mock.module('../model/llm.js', () => ({
+  ...realLlm,
   callLlm: mockCallLlm,
-  DEFAULT_MODEL: 'mock-model',
 }));
+
+afterAll(() => {
+  mock.module('../model/llm.js', () => realLlm);
+});
 
 import { InMemoryChatHistory } from './in-memory-chat-history.js';
 import { DEFAULT_HISTORY_LIMIT } from './history-context.js';
