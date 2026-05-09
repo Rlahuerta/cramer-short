@@ -75,6 +75,7 @@ import {
   formatMarkovMixingLine,
   applyCryptoTerminalAnchorFallback,
   evaluateAnchorTrust,
+  isCompositeValidationAcceptable,
   getBtcShortHorizonLivePolicy,
   getGoldShortHorizonLivePolicy,
   normalizeHistoricalPriceTicker,
@@ -1464,6 +1465,42 @@ describe('R²_OS validation threshold', () => {
     const r2os = -0.04;
     const validationAcceptable = r2os >= -0.05;
     expect(validationAcceptable).toBe(true);
+  });
+
+  it('Phase 3: composite crypto validation accepts mildly negative R² when sparse anchors, confidence, and fit support it', () => {
+    expect(isCompositeValidationAcceptable({
+      assetType: 'crypto',
+      horizon: 14,
+      outOfSampleR2: -0.055,
+      validationMetric: 'horizon_return',
+      anchorCoverage: { quality: 'sparse', trustedAnchors: 1 },
+      predictionConfidence: 0.18,
+      goodnessOfFit: { passes: true },
+    })).toBe(true);
+  });
+
+  it('Phase 3: composite crypto validation still rejects mildly negative R² when confidence is too low', () => {
+    expect(isCompositeValidationAcceptable({
+      assetType: 'crypto',
+      horizon: 14,
+      outOfSampleR2: -0.055,
+      validationMetric: 'horizon_return',
+      anchorCoverage: { quality: 'sparse', trustedAnchors: 1 },
+      predictionConfidence: 0.14,
+      goodnessOfFit: { passes: true },
+    })).toBe(false);
+  });
+
+  it('Phase 3: composite crypto validation still rejects mildly negative R² when fit support fails', () => {
+    expect(isCompositeValidationAcceptable({
+      assetType: 'crypto',
+      horizon: 14,
+      outOfSampleR2: -0.055,
+      validationMetric: 'horizon_return',
+      anchorCoverage: { quality: 'good', trustedAnchors: 2 },
+      predictionConfidence: 0.18,
+      goodnessOfFit: { passes: false },
+    })).toBe(false);
   });
 });
 describe('computeMarkovDistribution (integration)', () => {

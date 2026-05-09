@@ -3696,6 +3696,53 @@ function computeValidationR2OS(params: {
   return { r2os: null, validationMetric: 'daily_return' };
 }
 
+export function isCompositeValidationAcceptable(options: {
+  assetType: AssetProfile['type'];
+  horizon: number;
+  outOfSampleR2: number | null;
+  validationMetric: 'daily_return' | 'horizon_return';
+  anchorCoverage: Pick<AnchorCoverageDiagnostic, 'quality' | 'trustedAnchors'>;
+  predictionConfidence: number;
+  goodnessOfFit: Pick<GoodnessOfFitResult, 'passes'> | null;
+}): boolean {
+  const hasPositiveR2 =
+    typeof options.outOfSampleR2 === 'number'
+    && Number.isFinite(options.outOfSampleR2)
+    && options.outOfSampleR2 >= -0.01;
+  if (hasPositiveR2) return true;
+
+  const cryptoShortHorizon = options.assetType === 'crypto' && options.horizon <= 14;
+  const r2NeutralForCrypto = cryptoShortHorizon
+    && options.validationMetric === 'horizon_return'
+    && options.anchorCoverage.quality === 'good'
+    && options.anchorCoverage.trustedAnchors >= 2
+    && typeof options.outOfSampleR2 === 'number'
+    && Number.isFinite(options.outOfSampleR2)
+    && options.outOfSampleR2 >= -0.04;
+  if (r2NeutralForCrypto) return true;
+
+  const sparseCryptoAnchorAllowed = cryptoShortHorizon
+    && options.validationMetric === 'horizon_return'
+    && options.anchorCoverage.quality === 'sparse'
+    && options.anchorCoverage.trustedAnchors >= 1
+    && typeof options.outOfSampleR2 === 'number'
+    && Number.isFinite(options.outOfSampleR2)
+    && options.outOfSampleR2 >= -0.05;
+  if (sparseCryptoAnchorAllowed) return true;
+
+  const compositeCryptoValidation = cryptoShortHorizon
+    && options.validationMetric === 'horizon_return'
+    && (options.anchorCoverage.quality === 'good' || options.anchorCoverage.quality === 'sparse')
+    && options.anchorCoverage.trustedAnchors >= 1
+    && typeof options.outOfSampleR2 === 'number'
+    && Number.isFinite(options.outOfSampleR2)
+    && options.outOfSampleR2 >= -0.06
+    && options.predictionConfidence >= 0.16
+    && (options.goodnessOfFit?.passes ?? true);
+
+  return compositeCryptoValidation;
+}
+
 // ---------------------------------------------------------------------------
 // 7b. Bayesian probability calibration (Idea I)
 // ---------------------------------------------------------------------------
@@ -6293,8 +6340,15 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       && typeof m.outOfSampleR2 === 'number'
       && Number.isFinite(m.outOfSampleR2)
       && m.outOfSampleR2 >= -0.05;
-    const hasPositiveR2 = typeof m.outOfSampleR2 === 'number' && Number.isFinite(m.outOfSampleR2) && m.outOfSampleR2 >= -0.01;
-    const validationAcceptable = hasPositiveR2 || r2NeutralForCrypto || sparseCryptoAnchorAllowed;
+    const validationAcceptable = isCompositeValidationAcceptable({
+      assetType: getAssetProfile(result.ticker).type,
+      horizon: result.horizon,
+      outOfSampleR2: m.outOfSampleR2,
+      validationMetric: m.validationMetric,
+      anchorCoverage: m.anchorCoverage,
+      predictionConfidence: result.predictionConfidence,
+      goodnessOfFit: m.goodnessOfFit,
+    });
 
     const COMMODITY_WRAPPER_MIN_R2 = -0.02;
     const COMMODITY_WRAPPER_MIN_CONFIDENCE = 0.15;
