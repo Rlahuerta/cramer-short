@@ -8,7 +8,7 @@ import { walkForward, type WalkForwardResult } from './walk-forward.js';
 import { brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
 
 const TICKER = 'BTC-USD';
-const HORIZONS = [1, 2, 3] as const;
+const HORIZONS = [1, 2, 3, 14] as const;
 const STRIDE = 5;
 const TIMEOUT = 360_000;
 
@@ -89,7 +89,7 @@ describe('Walk-forward BTC ultra-short-horizon live policy', () => {
     fixture = JSON.parse(readFileSync(fixturePath, 'utf-8'));
   });
 
-  integrationIt('emits machine-readable current BTC live-policy metrics across 1d/2d/3d horizons', async () => {
+  integrationIt('emits machine-readable current BTC live-policy metrics across 1d/2d/3d/14d horizons', async () => {
     const metricsByHorizon: Record<string, Omit<HorizonMetrics, 'steps' | 'errors'>> = {};
     const lines: string[] = ['', '═══ BTC ULTRA-SHORT-HORIZON LIVE POLICY ═══'];
 
@@ -118,6 +118,21 @@ describe('Walk-forward BTC ultra-short-horizon live policy', () => {
         expect(metrics.rerunWindowDays).toBe(120);
         expect(metrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h2.abstainCount);
         expect(metrics.directionalAccuracy).toBeGreaterThan(MARKOV_PHASE0_BASELINES.btc.h2.directionalAccuracy);
+      }
+
+      if (horizon === 3) {
+        expect(metrics.rerunOnBreak).toBe(true);
+        expect(metrics.rerunWindowDays).toBe(45);
+        expect(metrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h3.abstainCount);
+        expect(metrics.directionalAccuracy).toBeGreaterThanOrEqual(MARKOV_PHASE0_BASELINES.btc.h3.directionalAccuracy);
+      }
+
+      if (horizon === 14) {
+        expect(metrics.rerunOnBreak).toBe(false);
+        expect(metrics.rerunWindowDays).toBeNull();
+        expect(metrics.breakDivergenceThreshold).toBeCloseTo(0.08);
+        expect(metrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h14.abstainCount);
+        expect(metrics.directionalAccuracy).toBeGreaterThanOrEqual(MARKOV_PHASE0_BASELINES.btc.h14.directionalAccuracy);
       }
 
     }

@@ -164,15 +164,15 @@ export function getBtcShortHorizonLivePolicy(
   if (horizon === 3) {
     return {
       historyDays: BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
-      breakDivergenceThreshold: 0.20,
+      breakDivergenceThreshold: BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
       rerunOnBreak: true,
-      rerunWindowDays: BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS,
+      rerunWindowDays: 45,
     };
   }
 
   return {
     historyDays: BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
-    breakDivergenceThreshold: BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
+    breakDivergenceThreshold: horizon === 14 ? 0.08 : BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
     rerunOnBreak: false,
   };
 }
@@ -6292,6 +6292,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     if (
       btcShortHorizonLivePolicy?.rerunOnBreak
       && btcShortHorizonLivePolicy.rerunWindowDays
+      && historicalPrices.length >= btcShortHorizonLivePolicy.historyDays
       && result.metadata.structuralBreakDetected
       && historicalPrices.length > btcShortHorizonLivePolicy.rerunWindowDays
     ) {

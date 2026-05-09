@@ -5330,9 +5330,9 @@ describe('markov_distribution tool output envelope', () => {
     });
     expect(getBtcShortHorizonLivePolicy('BTC', 3)).toEqual({
       historyDays: 252,
-      breakDivergenceThreshold: 0.20,
+      breakDivergenceThreshold: 0.15,
       rerunOnBreak: true,
-      rerunWindowDays: 60,
+      rerunWindowDays: 45,
     });
     expect(getBtcShortHorizonLivePolicy('BTC-USD', 2)).toEqual({
       historyDays: 252,
@@ -5342,7 +5342,7 @@ describe('markov_distribution tool output envelope', () => {
     });
     expect(getBtcShortHorizonLivePolicy('BTC-USD', 14)).toEqual({
       historyDays: 252,
-      breakDivergenceThreshold: 0.15,
+      breakDivergenceThreshold: 0.08,
       rerunOnBreak: false,
     });
   });

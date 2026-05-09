@@ -87,8 +87,8 @@ describe('BTC live short-horizon policy walk-forward', () => {
     const tunedByHorizon = new Map<number, VariantConfig>([
       [1, { label: 'btc-live-1d', warmup: 252, btcBreakDivergenceThreshold: 0.10, postBreakShortWindow: true, postBreakWindowSize: 60 }],
       [2, { label: 'btc-live-2d', warmup: 252, btcBreakDivergenceThreshold: 0.15, postBreakShortWindow: true, postBreakWindowSize: 120 }],
-      [3, { label: 'btc-live-3d', warmup: 252, btcBreakDivergenceThreshold: 0.20, postBreakShortWindow: true, postBreakWindowSize: 60 }],
-      [14, { label: 'btc-live-14d', warmup: 252, btcBreakDivergenceThreshold: 0.15 }],
+      [3, { label: 'btc-live-3d', warmup: 252, btcBreakDivergenceThreshold: 0.15, postBreakShortWindow: true, postBreakWindowSize: 45 }],
+      [14, { label: 'btc-live-14d', warmup: 252, btcBreakDivergenceThreshold: 0.08 }],
     ]);
 
     const horizons = [1, 2, 3, 14] as const;
@@ -124,13 +124,16 @@ describe('BTC live short-horizon policy walk-forward', () => {
       }
 
       if (horizon === 3) {
-        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(0.54);
-        expect(tunedMetrics.rerunRate).toBeGreaterThan(0.20);
-        expect(tunedMetrics.rerunRate).toBeLessThan(0.50);
+        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(MARKOV_PHASE0_BASELINES.btc.h3.directionalAccuracy);
+        expect(tunedMetrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h3.abstainCount);
+        expect(tunedMetrics.rerunRate).toBeGreaterThan(0.45);
+        expect(tunedMetrics.rerunRate).toBeLessThan(0.60);
       }
 
       if (horizon === 14) {
-        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(0.50);
+        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(MARKOV_PHASE0_BASELINES.btc.h14.directionalAccuracy);
+        expect(tunedMetrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h14.abstainCount);
+        expect(tunedMetrics.brierScore).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h14.brierScore);
         expect(tunedMetrics.rerunRate).toBe(0);
       }
     }
