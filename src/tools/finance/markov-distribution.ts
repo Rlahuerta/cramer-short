@@ -377,6 +377,7 @@ export interface AnchorTrustEvaluationInput {
 
 export interface AnchorTrustEvaluation {
   trustScore: 'high' | 'low';
+  trustWeight: number;
   lowTrustReasons: AnchorLowTrustReason[];
 }
 
@@ -390,6 +391,9 @@ export interface PriceThreshold {
   probability: number;
   /** Whether this anchor is trusted based on liquidity/age heuristics */
   trustScore: 'high' | 'low';
+  /** Internal graded trust weight used to prefer better crypto anchors without
+   *  changing the outward high/low diagnostics vocabulary. */
+  trustWeight?: number;
   /** Optional domain tag (politics/sports/crypto/macro). When provided, the raw
    *  price is recalibrated via {@link recalibratePolymarketPrice} *before* the
    *  Girsanov Q→P shift. Absent ⇒ identity (treated as 'unknown'). */
@@ -1171,6 +1175,19 @@ function parsePrice(raw: string): number {
 
 type AnchorLowTrustReason = 'young_market' | 'resolution_mismatch' | 'missing_volume';
 
+const HIGH_TRUST_ANCHOR_WEIGHT_THRESHOLD = 0.6;
+
+function labelAnchorTrustWeight(trustWeight: number): 'high' | 'low' {
+  return trustWeight >= HIGH_TRUST_ANCHOR_WEIGHT_THRESHOLD ? 'high' : 'low';
+}
+
+function getAnchorTrustWeight(anchor: Pick<PriceThreshold, 'trustScore'> & { trustWeight?: number }): number {
+  if (typeof anchor.trustWeight === 'number' && Number.isFinite(anchor.trustWeight)) {
+    return anchor.trustWeight;
+  }
+  return anchor.trustScore === 'high' ? 1 : 0.35;
+}
+
 /**
  * Evaluate whether a parsed terminal anchor should be trusted for calibration.
  *
@@ -1184,19 +1201,40 @@ type AnchorLowTrustReason = 'young_market' | 'resolution_mismatch' | 'missing_vo
 export function evaluateAnchorTrust(input: AnchorTrustEvaluationInput): AnchorTrustEvaluation {
   const needsResolutionMatch = input.isLongHorizonCrypto || (input.isShortHorizonCrypto && input.isYoung);
   const isNonCrypto = !input.isShortHorizonCrypto && !input.isLongHorizonCrypto;
-  const trustScore: 'high' | 'low' =
-    input.hasVolume && (
-      (input.isLongHorizonCrypto && !input.isYoung && input.isNearTargetResolution)
-      || (input.isShortHorizonCrypto && (!input.isYoung || input.isNearTargetResolution))
-      || isNonCrypto
-    ) ? 'high' : 'low';
+  let trustWeight = 0;
+  if (input.hasVolume) {
+    if (isNonCrypto) {
+      trustWeight = input.isYoung ? 0.75 : 1;
+    } else if (input.isLongHorizonCrypto) {
+      if (!input.isYoung && input.isNearTargetResolution) {
+        trustWeight = 0.9;
+      } else if (!input.isYoung && !input.isNearTargetResolution) {
+        trustWeight = 0.35;
+      } else if (input.isYoung && input.isNearTargetResolution) {
+        trustWeight = 0.45;
+      } else {
+        trustWeight = 0.2;
+      }
+    } else if (input.isShortHorizonCrypto) {
+      if (!input.isYoung && input.isNearTargetResolution) {
+        trustWeight = 0.9;
+      } else if (!input.isYoung && !input.isNearTargetResolution) {
+        trustWeight = 0.7;
+      } else if (input.isYoung && input.isNearTargetResolution) {
+        trustWeight = 0.7;
+      } else {
+        trustWeight = 0.35;
+      }
+    }
+  }
+  const trustScore = labelAnchorTrustWeight(trustWeight);
 
   const lowTrustReasons: AnchorLowTrustReason[] = [];
   if (!input.hasVolume) lowTrustReasons.push('missing_volume');
   if (input.isYoung) lowTrustReasons.push('young_market');
   if (needsResolutionMatch && !input.isNearTargetResolution) lowTrustReasons.push('resolution_mismatch');
 
-  return { trustScore, lowTrustReasons };
+  return { trustScore, trustWeight, lowTrustReasons };
 }
 
 type AnchorCandidateInspection =
@@ -1219,6 +1257,7 @@ type AnchorCandidateInspection =
       isYoung: boolean;
       isNearTargetResolution: boolean;
       trustScore: 'high' | 'low';
+      trustWeight: number;
       lowTrustReasons: AnchorLowTrustReason[];
       rawProbability: number;
       correctedProbability: number;
@@ -1312,7 +1351,7 @@ function inspectAnchorCandidate(
   const isNearTargetResolution = options?.horizonDays != null && endDate
     ? Math.abs((Date.parse(endDate) - now) / 86_400_000 - options.horizonDays) <= 2
     : false;
-  const { trustScore, lowTrustReasons } = evaluateAnchorTrust({
+  const { trustScore, trustWeight, lowTrustReasons } = evaluateAnchorTrust({
     hasVolume,
     isYoung,
     isShortHorizonCrypto,
@@ -1336,6 +1375,7 @@ function inspectAnchorCandidate(
     isYoung,
     isNearTargetResolution,
     trustScore,
+    trustWeight,
     lowTrustReasons,
     rawProbability,
     correctedProbability,
@@ -1344,6 +1384,7 @@ function inspectAnchorCandidate(
       rawProbability,
       probability: correctedProbability,
       trustScore,
+      trustWeight,
       source: 'polymarket',
       endDate,
     },
@@ -1414,12 +1455,12 @@ function getAnchorResolutionOffsetDays(
 
 function shouldReplaceExistingAnchor(
   existing: PriceThreshold,
-  incoming: Extract<AnchorCandidateInspection, { status: 'accepted' }>,
+  incoming: PriceThreshold,
   options?: { ticker?: string; horizonDays?: number; referenceTimeMs?: number },
 ): boolean {
-  const incomingTrust = incoming.trustScore === 'high' ? 1 : 0;
-  const existingTrust = existing.trustScore === 'high' ? 1 : 0;
-  if (incomingTrust !== existingTrust) return incomingTrust > existingTrust;
+  const incomingTrust = getAnchorTrustWeight(incoming);
+  const existingTrust = getAnchorTrustWeight(existing);
+  if (Math.abs(incomingTrust - existingTrust) > 1e-9) return incomingTrust > existingTrust;
 
   const incomingOffset = getAnchorResolutionOffsetDays(incoming.endDate, options);
   const existingOffset = getAnchorResolutionOffsetDays(existing.endDate, options);
@@ -1484,7 +1525,7 @@ export function extractPriceThresholds(
     });
 
     const existing = seen.get(inspection.matchedPrice);
-    if (!existing || shouldReplaceExistingAnchor(existing, inspection, options)) {
+    if (!existing || shouldReplaceExistingAnchor(existing, inspection.threshold, options)) {
       seen.set(inspection.matchedPrice, inspection.threshold);
     }
   }
@@ -1519,7 +1560,7 @@ interface FallbackMarket {
  * clamped to [0.5, 1.0].
  *
  * Gate: only activates for crypto assets (`getAssetProfile(ticker).type === 'crypto'`)
- *       and only when `strictAnchors` is empty.
+ *       and only when `strictAnchors` lacks a usable high-trust anchor.
  *
  * Preserves the distinction between terminal anchors and barrier/path questions —
  * barrier matches from BARRIER_PATTERNS are never included by `extractPriceThresholds`.
@@ -1532,7 +1573,8 @@ export function applyCryptoTerminalAnchorFallback(
   referenceTimeMs?: number,
 ): PriceThreshold[] {
   if (getAssetProfile(ticker).type !== 'crypto') return strictAnchors;
-  if (strictAnchors.length > 0) return strictAnchors;
+  const hasUsableStrictAnchor = strictAnchors.some((anchor) => anchor.trustScore === 'high');
+  if (hasUsableStrictAnchor) return strictAnchors;
   if (allMarkets.length === 0) return strictAnchors;
 
   const fallbackRaw = extractPriceThresholds(allMarkets, { ticker, horizonDays: horizon, referenceTimeMs });
@@ -1545,12 +1587,20 @@ export function applyCryptoTerminalAnchorFallback(
 
   const discounted: PriceThreshold[] = fallbackRaw.map((anchor) => {
     if (anchor.endDate == null) {
-      return { ...anchor, trustScore: 'low' } satisfies PriceThreshold;
+      return {
+        ...anchor,
+        trustScore: 'low',
+        trustWeight: Math.min(getAnchorTrustWeight(anchor), 0.35),
+      } satisfies PriceThreshold;
     }
 
     const endMs = Date.parse(anchor.endDate);
     if (Number.isNaN(endMs)) {
-      return { ...anchor, trustScore: 'low' } satisfies PriceThreshold;
+      return {
+        ...anchor,
+        trustScore: 'low',
+        trustWeight: Math.min(getAnchorTrustWeight(anchor), 0.35),
+      } satisfies PriceThreshold;
     }
 
     const daysUntilResolution = (endMs - now) / 86_400_000;
@@ -1565,15 +1615,29 @@ export function applyCryptoTerminalAnchorFallback(
       1 - DISCOUNT_PER_DAY * (daysOffset - HORIZON_TOLERANCE_DAYS),
     );
     const adjustedProbability = Math.max(0, Math.min(1, anchor.probability * discount));
+    const discountedTrustWeight = getAnchorTrustWeight(anchor) * discount;
+    const retainsHighTrust =
+      anchor.trustScore === 'high'
+      && daysOffset <= HORIZON_TOLERANCE_DAYS + 1
+      && discountedTrustWeight >= HIGH_TRUST_ANCHOR_WEIGHT_THRESHOLD;
 
     return {
       ...anchor,
       probability: adjustedProbability,
-      trustScore: 'low' as const,
+      trustScore: retainsHighTrust ? 'high' : 'low',
+      trustWeight: retainsHighTrust ? discountedTrustWeight : Math.min(discountedTrustWeight, 0.49),
     } satisfies PriceThreshold;
   });
 
-  return discounted.sort((a, b) => a.price - b.price);
+  const merged = new Map<number, PriceThreshold>();
+  for (const anchor of [...strictAnchors, ...discounted]) {
+    const existing = merged.get(anchor.price);
+    if (!existing || shouldReplaceExistingAnchor(existing, anchor, { ticker, horizonDays: horizon, referenceTimeMs })) {
+      merged.set(anchor.price, anchor);
+    }
+  }
+
+  return Array.from(merged.values()).sort((a, b) => a.price - b.price);
 }
 
 function normalizeSearchIdentityPhrase(ticker: string, phrase: string): string {

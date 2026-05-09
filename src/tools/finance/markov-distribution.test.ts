@@ -447,6 +447,7 @@ describe('extractPriceThresholds', () => {
       isNearTargetResolution: false,
     })).toEqual({
       trustScore: 'high',
+      trustWeight: 1,
       lowTrustReasons: [],
     });
 
@@ -458,6 +459,7 @@ describe('extractPriceThresholds', () => {
       isNearTargetResolution: true,
     })).toEqual({
       trustScore: 'high',
+      trustWeight: 0.7,
       lowTrustReasons: ['young_market'],
     });
 
@@ -469,6 +471,7 @@ describe('extractPriceThresholds', () => {
       isNearTargetResolution: false,
     })).toEqual({
       trustScore: 'low',
+      trustWeight: 0.35,
       lowTrustReasons: ['young_market', 'resolution_mismatch'],
     });
 
@@ -480,6 +483,7 @@ describe('extractPriceThresholds', () => {
       isNearTargetResolution: true,
     })).toEqual({
       trustScore: 'high',
+      trustWeight: 0.9,
       lowTrustReasons: [],
     });
 
@@ -491,6 +495,7 @@ describe('extractPriceThresholds', () => {
       isNearTargetResolution: false,
     })).toEqual({
       trustScore: 'low',
+      trustWeight: 0.35,
       lowTrustReasons: ['resolution_mismatch'],
     });
   });
@@ -506,6 +511,7 @@ describe('extractPriceThresholds', () => {
       isNearTargetResolution: false,
     })).toEqual({
       trustScore: 'high',
+      trustWeight: 0.75,
       lowTrustReasons: ['young_market'],  // still reported, does not block trust
     });
   });
@@ -519,6 +525,7 @@ describe('extractPriceThresholds', () => {
       isNearTargetResolution: false,
     })).toEqual({
       trustScore: 'low',
+      trustWeight: 0,
       lowTrustReasons: ['missing_volume'],
     });
   });
@@ -532,6 +539,7 @@ describe('extractPriceThresholds', () => {
       isNearTargetResolution: false,
     })).toEqual({
       trustScore: 'low',
+      trustWeight: 0.2,
       lowTrustReasons: ['young_market', 'resolution_mismatch'],
     });
   });
@@ -758,14 +766,47 @@ describe('applyCryptoTerminalAnchorFallback', () => {
     expect(result).toBe(strictAnchors);
   });
 
-  it('returns strict anchors unchanged when already non-empty for crypto', () => {
+  it('returns strict anchors unchanged when crypto already has a usable high-trust anchor', () => {
     const strictAnchors: PriceThreshold[] = [
-      { price: 85000, rawProbability: 0.5, probability: 0.475, trustScore: 'high', source: 'polymarket', endDate: `2025-04-29` },
+      { price: 85000, rawProbability: 0.5, probability: 0.475, trustScore: 'high', trustWeight: 0.9, source: 'polymarket', endDate: `2025-04-29` },
     ];
     const result = applyCryptoTerminalAnchorFallback(
       [], strictAnchors, 'BTC-USD', 14, REF_TIME,
     );
     expect(result).toBe(strictAnchors);
+  });
+
+  it('merges fallback anchors when strict crypto anchors exist but all remain low trust', () => {
+    const strictAnchors: PriceThreshold[] = [
+      {
+        price: 84000,
+        rawProbability: 0.45,
+        probability: 0.4275,
+        trustScore: 'low',
+        trustWeight: 0.35,
+        source: 'polymarket',
+        endDate: '2025-04-19',
+      },
+    ];
+    const markets = [
+      {
+        question: 'Will the price of Bitcoin be above $85000 on April 29?',
+        probability: 0.48,
+        volume: 30000,
+        createdAt: REF_TIME - 5 * DAY_MS,
+        endDate: '2025-04-29',
+      },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, strictAnchors, 'BTC-USD', 14, REF_TIME,
+    );
+
+    expect(result).toHaveLength(2);
+    expect(result.find((anchor) => anchor.price === 84000)?.trustScore).toBe('low');
+    const recovered = result.find((anchor) => anchor.price === 85000);
+    expect(recovered?.trustScore).toBe('high');
+    expect(recovered?.trustWeight).toBe(0.9);
   });
 
   it('returns empty anchors unchanged when allMarkets is empty', () => {
@@ -815,6 +856,27 @@ describe('applyCryptoTerminalAnchorFallback', () => {
     expect(result[0].probability).toBeLessThan(0.5);
     expect(result[0].probability).toBeGreaterThan(0);
     expect(result[0].trustScore).toBe('low');
+  });
+
+  it('keeps a mature short-horizon crypto fallback trusted when it is only one day beyond tolerance', () => {
+    const markets = [
+      {
+        question: 'Will the price of Bitcoin be above $84000 on April 20?',
+        probability: 0.50,
+        volume: 30000,
+        createdAt: REF_TIME - 5 * DAY_MS,
+        endDate: '2025-04-20',
+      },
+    ];
+
+    const result = applyCryptoTerminalAnchorFallback(
+      markets, [], 'BTC-USD', 2, REF_TIME,
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].probability).toBeLessThan(0.50);
+    expect(result[0].trustScore).toBe('high');
+    expect(result[0].trustWeight).toBeGreaterThanOrEqual(0.6);
   });
 
   it('does not discount anchors within horizon tolerance', () => {
