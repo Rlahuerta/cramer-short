@@ -4,7 +4,13 @@ export { getKeyRatios, getHistoricalKeyRatios } from './key-ratios.js';
 export { getAnalystEstimates } from './estimates.js';
 export { getSegmentedRevenues } from './segments.js';
 export { fetchBinanceDailyCloses, fetchBinanceTicker24h, toBinanceSymbol } from './binance.js';
-export { fetchBitmexDailyCloses, resolveBitmexHistoricalSymbol, toBitmexSymbolCandidates } from './bitmex.js';
+export {
+  BITMEX_MARKET_DESCRIPTION,
+  bitmexMarketTool,
+  fetchBitmexDailyCloses,
+  resolveBitmexHistoricalSymbol,
+  toBitmexSymbolCandidates,
+} from './bitmex.js';
 export { getStockPrice, getStockPrices, getStockTickers, STOCK_PRICE_DESCRIPTION } from './stock-price.js';
 export { getCryptoPriceSnapshot, getCryptoPrices, getCryptoTickers } from './crypto.js';
 export { getInsiderTrades } from './insider_trades.js';

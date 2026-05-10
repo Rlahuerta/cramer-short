@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
 import {
+  bitmexMarketTool,
   fetchBitmexDailyCloses,
   resolveBitmexHistoricalSymbol,
   toBitmexSymbolCandidates,
 } from './bitmex.js';
+import { getToolRegistry } from '../registry.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -80,5 +82,54 @@ describe('fetchBitmexDailyCloses', () => {
     expect(result).toEqual([91.7, 92.8, 93.4]);
     expect(urls[1]).toContain('symbol=SOLUSD');
     expect(urls[1]).toContain('binSize=1d');
+  });
+});
+
+describe('bitmexMarketTool', () => {
+  it('returns active instrument metadata and historical closes for agent use', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (mock(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes('/instrument/active')) {
+        return Response.json([
+          {
+            symbol: 'HYPEUSDT',
+            rootSymbol: 'HYPE',
+            underlying: 'HYPE',
+            state: 'Open',
+            markPrice: 42.5,
+            bidPrice: 42.49,
+            askPrice: 42.51,
+            volume24h: 1000,
+            foreignNotional24h: 42500,
+            initMargin: 0.02,
+            fundingRate: 0.0001,
+          },
+        ]);
+      }
+      return Response.json([
+        { close: 42.1 },
+        { close: 42.2 },
+      ]);
+    }) as unknown) as typeof fetch;
+
+    const raw = await bitmexMarketTool.invoke({ tickers: ['HYPEUSDT'], days: 2 });
+    const parsed = JSON.parse(raw);
+    const [result] = parsed.data.results;
+
+    expect(result.matched).toBe(true);
+    expect(result.instrument.symbol).toBe('HYPEUSDT');
+    expect(result.instrument.spreadPct).toBeCloseTo(0.0470588235);
+    expect(result.instrument.maxLeverage).toBe(50);
+    expect(result.historicalCloses).toEqual([42.2, 42.1]);
+    expect(urls.some((url) => url.includes('/instrument/active'))).toBe(true);
+    expect(urls.some((url) => url.includes('/trade/bucketed'))).toBe(true);
+  });
+
+  it('is registered for agent use', () => {
+    const toolNames = getToolRegistry('ollama:deepseek-v4-pro:cloud').map((tool) => tool.name);
+
+    expect(toolNames).toContain('bitmex_market');
   });
 });

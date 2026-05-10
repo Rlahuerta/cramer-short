@@ -1,3 +1,7 @@
+import { DynamicStructuredTool } from '@langchain/core/tools';
+import { z } from 'zod';
+import { formatToolResult } from '../types.js';
+
 const BITMEX_BASE = 'https://www.bitmex.com';
 
 type BitmexInstrument = {
@@ -7,10 +11,15 @@ type BitmexInstrument = {
   state?: string;
   markPrice?: number;
   lastPrice?: number;
+  bidPrice?: number;
+  askPrice?: number;
   volume24h?: number;
   foreignNotional24h?: number;
   homeNotional24h?: number;
   turnover24h?: number;
+  initMargin?: number;
+  fundingRate?: number;
+  indicativeFundingRate?: number;
 };
 
 type BitmexBucketRow = {
@@ -38,6 +47,35 @@ function bitmexLiquidity(instrument: BitmexInstrument): number {
   return Number.isFinite(volume * price) ? volume * price : 0;
 }
 
+function toBitmexInstrumentSummary(instrument: BitmexInstrument) {
+  const markPrice = Number(instrument.markPrice ?? instrument.lastPrice ?? 0);
+  const bidPrice = Number(instrument.bidPrice);
+  const askPrice = Number(instrument.askPrice);
+  const spreadPct = Number.isFinite(bidPrice) && Number.isFinite(askPrice) && markPrice > 0
+    ? ((askPrice - bidPrice) / markPrice) * 100
+    : null;
+  const maxLeverage = Number(instrument.initMargin) > 0
+    ? 1 / Number(instrument.initMargin)
+    : null;
+
+  return {
+    symbol: instrument.symbol,
+    rootSymbol: instrument.rootSymbol ?? null,
+    underlying: instrument.underlying ?? null,
+    state: instrument.state ?? null,
+    markPrice: Number.isFinite(markPrice) && markPrice > 0 ? markPrice : null,
+    lastPrice: instrument.lastPrice ?? null,
+    bidPrice: Number.isFinite(bidPrice) ? bidPrice : null,
+    askPrice: Number.isFinite(askPrice) ? askPrice : null,
+    spreadPct,
+    volume24h: instrument.volume24h ?? null,
+    liquidity24h: bitmexLiquidity(instrument),
+    maxLeverage,
+    fundingRate: instrument.fundingRate ?? null,
+    indicativeFundingRate: instrument.indicativeFundingRate ?? null,
+  };
+}
+
 export function toBitmexSymbolCandidates(ticker: string): string[] {
   const root = toBitmexRoot(ticker);
   const candidates = [
@@ -51,40 +89,47 @@ export function toBitmexSymbolCandidates(ticker: string): string[] {
   return [...new Set(candidates)];
 }
 
-export async function resolveBitmexHistoricalSymbol(ticker: string): Promise<string | null> {
-  const root = toBitmexRoot(ticker);
-  const candidates = new Set(toBitmexSymbolCandidates(ticker));
-
+export async function fetchBitmexActiveInstruments(): Promise<BitmexInstrument[]> {
   try {
     const res = await fetch(`${BITMEX_BASE}/api/v1/instrument/active`, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) return null;
-    const instruments = await res.json() as BitmexInstrument[];
-    const matching = instruments
-      .filter((instrument) => instrument.state === undefined || instrument.state === 'Open')
-      .filter((instrument) =>
-        candidates.has(instrument.symbol)
-        || instrument.rootSymbol?.toUpperCase() === root
-        || instrument.underlying?.toUpperCase() === root
-      )
-      .filter((instrument) => Number.isFinite(Number(instrument.markPrice ?? instrument.lastPrice)));
-
-    const [best] = matching.sort((a, b) => bitmexLiquidity(b) - bitmexLiquidity(a));
-    return best?.symbol ?? null;
+    if (!res.ok) return [];
+    return await res.json() as BitmexInstrument[];
   } catch {
-    return null;
+    return [];
   }
 }
 
-export async function fetchBitmexDailyCloses(
+export function selectBitmexInstrument(
+  instruments: BitmexInstrument[],
   ticker: string,
-  days = 120,
-): Promise<number[]> {
-  const symbol = await resolveBitmexHistoricalSymbol(ticker);
-  if (!symbol) return [];
+): BitmexInstrument | null {
+  const root = toBitmexRoot(ticker);
+  const candidates = new Set(toBitmexSymbolCandidates(ticker));
+  const matching = instruments
+    .filter((instrument) => instrument.state === undefined || instrument.state === 'Open')
+    .filter((instrument) =>
+      candidates.has(instrument.symbol)
+      || instrument.rootSymbol?.toUpperCase() === root
+      || instrument.underlying?.toUpperCase() === root
+    )
+    .filter((instrument) => Number.isFinite(Number(instrument.markPrice ?? instrument.lastPrice)));
 
+  const [best] = matching.sort((a, b) => bitmexLiquidity(b) - bitmexLiquidity(a));
+  return best ?? null;
+}
+
+export async function resolveBitmexHistoricalSymbol(ticker: string): Promise<string | null> {
+  const instruments = await fetchBitmexActiveInstruments();
+  return selectBitmexInstrument(instruments, ticker)?.symbol ?? null;
+}
+
+async function fetchBitmexDailyClosesBySymbol(
+  symbol: string,
+  days: number,
+): Promise<number[]> {
   const params = new URLSearchParams({
     binSize: '1d',
     partial: 'false',
@@ -109,3 +154,62 @@ export async function fetchBitmexDailyCloses(
     return [];
   }
 }
+
+export async function fetchBitmexDailyCloses(
+  ticker: string,
+  days = 120,
+): Promise<number[]> {
+  const symbol = await resolveBitmexHistoricalSymbol(ticker);
+  if (!symbol) return [];
+  return fetchBitmexDailyClosesBySymbol(symbol, days);
+}
+
+export const BITMEX_MARKET_DESCRIPTION = `
+Fetch active BitMEX instrument data and optional 1d bucketed historical closes.
+
+Use this for BitMEX-specific trading setup work when you need:
+- Active contract selection by ticker/root, e.g. SOLUSD, SOLUSDT, HYPEUSDT, BTC-USD/XBTUSD
+- Current mark, bid, ask, spread, funding, max leverage, and 24h liquidity
+- BitMEX bucketed daily closes for markov_distribution historicalPrices
+
+For forecasting, pass the returned historicalCloses into markov_distribution and then use forecast_arbitrator.
+`.trim();
+
+export const bitmexMarketTool = new DynamicStructuredTool({
+  name: 'bitmex_market',
+  description: BITMEX_MARKET_DESCRIPTION,
+  schema: z.object({
+    tickers: z.array(z.string()).min(1).describe('BitMEX symbols or asset tickers, e.g. ["SOLUSD", "HYPEUSDT", "BTC-USD"].'),
+    days: z.number().int().min(1).max(750).optional().default(120).describe('Number of 1d bucketed closes to fetch for each resolved BitMEX instrument.'),
+  }),
+  func: async (input) => {
+    const instruments = await fetchBitmexActiveInstruments();
+    const results = await Promise.all(input.tickers.map(async (ticker) => {
+      const instrument = selectBitmexInstrument(instruments, ticker);
+      if (!instrument) {
+        return {
+          ticker,
+          matched: false,
+          error: `No active BitMEX instrument matched ${ticker}`,
+        };
+      }
+
+      const historicalCloses = await fetchBitmexDailyClosesBySymbol(instrument.symbol, input.days);
+      return {
+        ticker,
+        matched: true,
+        instrument: toBitmexInstrumentSummary(instrument),
+        historicalCloses,
+        historicalDays: historicalCloses.length,
+      };
+    }));
+
+    return formatToolResult({
+      exchange: 'bitmex',
+      results,
+    }, [
+      `${BITMEX_BASE}/api/v1/instrument/active`,
+      `${BITMEX_BASE}/api/v1/trade/bucketed`,
+    ]);
+  },
+});

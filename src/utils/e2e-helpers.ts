@@ -3,7 +3,7 @@
  * model and returns a structured result for assertion.
  *
  * Environment variables:
- *   E2E_MODEL      — Ollama model to use (default: 'ollama:minimax-m2.7:cloud')
+ *   E2E_MODEL      — Ollama model to use (default: 'ollama:deepseek-v4-flash:cloud')
  *   OLLAMA_BASE_URL — Ollama endpoint (default: 'http://127.0.0.1:11434')
  *   E2E_TIMEOUT_MS  — Hard timeout in ms (default: 360 000)
  */

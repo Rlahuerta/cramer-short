@@ -1,13 +1,13 @@
 /**
  * E2E tests — validate documented Polymarket history guide examples
- * against ollama:glm-5:cloud.
+ * against ollama:deepseek-v4-flash:cloud.
  *
  * These tests assert on stable structural behaviour (tool calls triggered,
  * heading formats, horizon labels, warning phrases), not on volatile market
  * numbers that drift between runs.
  *
  * Run with:  bun run test:e2e
- * Model:     ollama:glm-5:cloud (hardcoded per test, not via E2E_MODEL)
+ * Model:     ollama:deepseek-v4-flash:cloud (hardcoded per test, not via E2E_MODEL)
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
