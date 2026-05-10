@@ -378,7 +378,12 @@ const SHIPPED_LIVE_FILES = new Map(
 const SHIPPED_RUNTIME_DEFAULTS = snapshotRuntimeDefaults();
 
 function getStructuredMutationFixture(
-  profileId: 'multi-asset-markov-short-horizon' | 'btc-markov-ultra-short-horizon' | 'gold-markov-short-horizon',
+  profileId:
+    | 'multi-asset-markov-short-horizon'
+    | 'btc-markov-ultra-short-horizon'
+    | 'gold-markov-short-horizon'
+    | 'sol-markov-short-horizon'
+    | 'hype-markov-short-horizon',
   mutationId: string,
 ): ForecastLabMarkovParameterMutationCandidate {
   const mutation = listForecastLabStructuredMutations(profileId).find((candidate) => candidate.id === mutationId);
@@ -465,6 +470,14 @@ const BTC_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
 const GOLD_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
   'gold-markov-short-horizon',
   'gold-markov-shorter-reactive-window',
+);
+const SOL_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
+  'sol-markov-short-horizon',
+  'markov-shorter-reactive-window',
+);
+const HYPE_SHORTER_REACTIVE_WINDOW = getStructuredMutationFixture(
+  'hype-markov-short-horizon',
+  'markov-shorter-reactive-window',
 );
 const GOLD_FASTER_DECAY_REACTION = getStructuredMutationFixture(
   'gold-markov-short-horizon',
@@ -1015,6 +1028,48 @@ describe('forecast-lab runner', () => {
     expectResolvedDefaultsToMatchMutation(afterGoldRestoreBtcDefaults, BTC_SHORTER_REACTIVE_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldRestoreSharedDefaults, MULTI_ASSET_LONGER_STABILITY_WINDOW);
     expectResolvedDefaultsToMatchMutation(afterGoldRestoreGoldDefaults, GOLD_SHORTER_REACTIVE_WINDOW);
+  });
+
+  it('keeps SOL and HYPE activations isolated from BTC and GOLD effective runtime defaults', () => {
+    const btcActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'btc-markov-ultra-short-horizon',
+      assetScope: 'btc',
+      mutation: BTC_SHORTER_REACTIVE_WINDOW,
+    });
+    const goldActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'gold-markov-short-horizon',
+      assetScope: 'gold',
+      mutation: GOLD_SHORTER_REACTIVE_WINDOW,
+    });
+    const solActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'sol-markov-short-horizon',
+      assetScope: 'sol',
+      mutation: SOL_SHORTER_REACTIVE_WINDOW,
+    });
+    const hypeActivation = buildForecastLabRuntimeDefaultsActivation({
+      profileId: 'hype-markov-short-horizon',
+      assetScope: 'hype',
+      mutation: HYPE_SHORTER_REACTIVE_WINDOW,
+    });
+
+    const allActive = [btcActivation, goldActivation, solActivation, hypeActivation] as const;
+
+    expectResolvedDefaultsToMatchMutation(
+      resolveForecastLabRuntimeDefaultsForAssetScope('btc', allActive),
+      BTC_SHORTER_REACTIVE_WINDOW,
+    );
+    expectResolvedDefaultsToMatchMutation(
+      resolveForecastLabRuntimeDefaultsForAssetScope('gold', allActive),
+      GOLD_SHORTER_REACTIVE_WINDOW,
+    );
+    expectResolvedDefaultsToMatchMutation(
+      resolveForecastLabRuntimeDefaultsForAssetScope('sol', allActive),
+      SOL_SHORTER_REACTIVE_WINDOW,
+    );
+    expectResolvedDefaultsToMatchMutation(
+      resolveForecastLabRuntimeDefaultsForAssetScope('hype', allActive),
+      HYPE_SHORTER_REACTIVE_WINDOW,
+    );
   });
 
   it('fails closed for the BTC ultra-short-horizon profile when parsed harness metrics are missing', async () => {

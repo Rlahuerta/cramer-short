@@ -34,6 +34,34 @@ describe('forecast-lab router', () => {
     expectReason(route, 'gold');
   });
 
+  it('routes SOL short-horizon improvement requests to the SOL profile', () => {
+    const route = routeForecastLabQuery(
+      'Optimize the SOL / SOLUSD 1d/2d/3d Markov forecast lane while keeping 7d and 14d as guardrails.',
+    );
+
+    expect(route).toMatchObject({
+      intent: 'improvement',
+      preferredProfileId: 'sol-markov-short-horizon',
+    });
+    expect(route.reasons.length).toBeGreaterThan(1);
+    expectReason(route, 'sol-markov-short-horizon');
+    expectReason(route, 'sol');
+  });
+
+  it('routes HYPE short-horizon improvement requests to the HYPE profile', () => {
+    const route = routeForecastLabQuery(
+      'Tune the HYPE / HYPEUSD / HYPEUSDT 1d/2d/3d Markov forecast lane while keeping 7d and 14d as guardrails.',
+    );
+
+    expect(route).toMatchObject({
+      intent: 'improvement',
+      preferredProfileId: 'hype-markov-short-horizon',
+    });
+    expect(route.reasons.length).toBeGreaterThan(1);
+    expectReason(route, 'hype-markov-short-horizon');
+    expectReason(route, 'hype');
+  });
+
   it('routes multi-asset short-horizon mechanics queries to the multi-asset Markov profile', () => {
     const route = routeForecastLabQuery(
       'Improve the multi-asset short-horizon mechanics and optimize the Markov forecast profile.',
@@ -93,6 +121,24 @@ describe('forecast-lab router', () => {
 
   it('does not route generic gold dashboard wording into the GOLD forecast lab profile', () => {
     const route = routeForecastLabQuery('Fix gold 3d alert wording in the dashboard.');
+
+    expect(route).toMatchObject({
+      intent: 'improvement',
+      preferredProfileId: null,
+    });
+  });
+
+  it('does not route generic SOL dashboard wording into the SOL forecast lab profile', () => {
+    const route = routeForecastLabQuery('Fix SOL 3d alert wording in the dashboard.');
+
+    expect(route).toMatchObject({
+      intent: 'improvement',
+      preferredProfileId: null,
+    });
+  });
+
+  it('does not route generic HYPE risk wording into the HYPE forecast lab profile', () => {
+    const route = routeForecastLabQuery('Optimize my HYPE 14d position sizing for portfolio risk.');
 
     expect(route).toMatchObject({
       intent: 'improvement',

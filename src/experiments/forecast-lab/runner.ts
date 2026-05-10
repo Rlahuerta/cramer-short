@@ -392,6 +392,14 @@ function resolveForecastLabRuntimeAssetScopeForProfile(profile: ForecastLabProfi
     return 'gold';
   }
 
+  if (profile.id === 'sol-markov-short-horizon') {
+    return 'sol';
+  }
+
+  if (profile.id === 'hype-markov-short-horizon') {
+    return 'hype';
+  }
+
   if (profile.id === 'multi-asset-markov-short-horizon') {
     return 'shared';
   }
@@ -1433,10 +1441,10 @@ function applyStructuredMutationToLiveSource(
   readonly mutatedFiles: readonly string[];
   readonly previousContents: Map<string, string>;
   readonly runtimeDefaults: readonly ForecastLabRuntimeDefaultsSnapshot[];
-} {
+  } {
   const rootDir = process.cwd();
   const assetScope = resolveForecastLabRuntimeAssetScopeForProfile(profile);
-  if (assetScope === 'gold') {
+  if (assetScope === 'gold' || assetScope === 'sol' || assetScope === 'hype') {
     return {
       mutatedFiles: [],
       previousContents: new Map(),

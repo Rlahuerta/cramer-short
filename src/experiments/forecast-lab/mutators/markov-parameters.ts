@@ -34,6 +34,8 @@ function deepFreeze<T>(value: T): DeepReadonly<T> {
 export type ForecastLabMarkovMutatorProfileId =
   | 'multi-asset-markov-short-horizon'
   | 'btc-markov-ultra-short-horizon'
+  | 'sol-markov-short-horizon'
+  | 'hype-markov-short-horizon'
   | 'gold-markov-short-horizon';
 
 export type ForecastLabMutationScalarValue = boolean | number;
@@ -721,6 +723,8 @@ function buildGoldCatalog(): readonly ForecastLabMarkovParameterMutationCandidat
 const CATALOG_BY_PROFILE = deepFreeze({
   'multi-asset-markov-short-horizon': buildCatalog('multi-asset-markov-short-horizon'),
   'btc-markov-ultra-short-horizon': buildCatalog('btc-markov-ultra-short-horizon'),
+  'sol-markov-short-horizon': buildCatalog('sol-markov-short-horizon'),
+  'hype-markov-short-horizon': buildCatalog('hype-markov-short-horizon'),
   'gold-markov-short-horizon': buildGoldCatalog(),
 } as const satisfies Record<
   ForecastLabMarkovMutatorProfileId,

@@ -27,9 +27,48 @@ describe('forecast-lab routing hint', () => {
     expect(hint?.whyMatched).toContain('gold-markov-short-horizon');
   });
 
+  it('builds a SOL skill hint with structured mutation enabled once the shipped catalog exists', () => {
+    const hint = getForecastLabRoutingHint(
+      'Optimize the SOL 1d/2d/3d Markov forecast lane and review 7d/14d as SOL guardrails.',
+    );
+
+    expect(hint).not.toBeNull();
+    expect(hint?.recommendedProfileId).toBe('sol-markov-short-horizon');
+    expect(hint?.mutationAllowed).toBe(true);
+    expect(hint?.shouldInvokeSkill).toBe(true);
+    expect(hint?.whyMatched).toContain('sol-markov-short-horizon');
+  });
+
+  it('builds a HYPE skill hint with structured mutation enabled once the shipped catalog exists', () => {
+    const hint = getForecastLabRoutingHint(
+      'Tune the HYPE 1d/2d/3d Markov forecast lane and review 7d/14d as HYPE guardrails.',
+    );
+
+    expect(hint).not.toBeNull();
+    expect(hint?.recommendedProfileId).toBe('hype-markov-short-horizon');
+    expect(hint?.mutationAllowed).toBe(true);
+    expect(hint?.shouldInvokeSkill).toBe(true);
+    expect(hint?.whyMatched).toContain('hype-markov-short-horizon');
+  });
+
   it('does not build a skill hint for ordinary BTC forecast requests', () => {
     expect(
       getForecastLabRoutingHint('Give me a BTC forecast for the next 7 days and explain the drivers.'),
+    ).toBeNull();
+  });
+
+  it('does not build a skill hint for live BitMEX trade-brief prompts that avoid improvement wording', () => {
+    expect(
+      getForecastLabRoutingHint(
+        [
+          'Live BitMEX trade brief for SOLUSD and HYPEUSDT.',
+          'This is a live market-analysis request, not an experiment request.',
+          'Do not use any skill and do not use forecast_lab_run.',
+          'Start with bitmex_market, then use markov_distribution for 1d, 2d, and 3d,',
+          'then use forecast_arbitrator if one market still has a usable edge.',
+          'Return one final decision: LONG SOLUSD, SHORT SOLUSD, LONG HYPEUSDT, SHORT HYPEUSDT, or NO TRADE.',
+        ].join(' '),
+      ),
     ).toBeNull();
   });
 
@@ -72,6 +111,22 @@ describe('forecast-lab routing hint', () => {
 
   it('does not build a GOLD skill hint for dashboard wording without Markov intent', () => {
     const hint = getForecastLabRoutingHint('Fix gold 3d alert wording in the dashboard.');
+
+    expect(hint).not.toBeNull();
+    expect(hint?.recommendedProfileId).toBeNull();
+    expect(hint?.mutationAllowed).toBe(false);
+  });
+
+  it('does not build a SOL skill hint for dashboard wording without Markov intent', () => {
+    const hint = getForecastLabRoutingHint('Fix SOL 3d alert wording in the dashboard.');
+
+    expect(hint).not.toBeNull();
+    expect(hint?.recommendedProfileId).toBeNull();
+    expect(hint?.mutationAllowed).toBe(false);
+  });
+
+  it('does not build a HYPE skill hint for portfolio-risk wording without Markov intent', () => {
+    const hint = getForecastLabRoutingHint('Optimize my HYPE 14d position sizing for portfolio risk.');
 
     expect(hint).not.toBeNull();
     expect(hint?.recommendedProfileId).toBeNull();

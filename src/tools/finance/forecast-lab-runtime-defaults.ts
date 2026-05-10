@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 
-export type ForecastLabRuntimeAssetScope = 'shared' | 'btc' | 'gold';
+export type ForecastLabRuntimeAssetScope = 'shared' | 'btc' | 'gold' | 'sol' | 'hype';
 
 export type ForecastLabRuntimeScalarValue = boolean | number;
 
@@ -15,6 +15,24 @@ export function resolveForecastLabRuntimeAssetScopeForTicker(
   const normalizedTicker = ticker.trim().toUpperCase();
   if (normalizedTicker === 'BTC' || normalizedTicker === 'BTC-USD') {
     return 'btc';
+  }
+
+   if (
+    normalizedTicker === 'SOL'
+    || normalizedTicker === 'SOL-USD'
+    || normalizedTicker === 'SOLUSD'
+    || normalizedTicker === 'SOLUSDT'
+  ) {
+    return 'sol';
+  }
+
+  if (
+    normalizedTicker === 'HYPE'
+    || normalizedTicker === 'HYPE-USD'
+    || normalizedTicker === 'HYPEUSD'
+    || normalizedTicker === 'HYPEUSDT'
+  ) {
+    return 'hype';
   }
 
   return resolveTickerSearchIdentity(ticker).canonicalTicker === 'GLD' ? 'gold' : 'shared';
