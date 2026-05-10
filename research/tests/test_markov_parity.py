@@ -148,19 +148,19 @@ def test_get_btc_short_horizon_live_policy_matches_ts_horizons():
     )
     assert get_btc_short_horizon_live_policy("BTC", 3) == BtcShortHorizonLivePolicy(
         history_days=252,
-        break_divergence_threshold=0.20,
+        break_divergence_threshold=0.15,
         rerun_on_break=True,
-        rerun_window_days=60,
+        rerun_window_days=45,
     )
     assert get_btc_short_horizon_live_policy("BTC-USD", 2) == BtcShortHorizonLivePolicy(
         history_days=252,
         break_divergence_threshold=0.15,
-        rerun_on_break=False,
-        rerun_window_days=None,
+        rerun_on_break=True,
+        rerun_window_days=120,
     )
     assert get_btc_short_horizon_live_policy("BTC-USD", 14) == BtcShortHorizonLivePolicy(
         history_days=252,
-        break_divergence_threshold=0.15,
+        break_divergence_threshold=0.08,
         rerun_on_break=False,
         rerun_window_days=None,
     )
@@ -285,13 +285,13 @@ def test_default_matrix_symmetry():
 
 
 def test_default_matrix_diagonal_matches_ts_default():
-    """Default _default_matrix() must use diag=0.7 matching TS markov-distribution."""
+    """Default _default_matrix() must use diag=0.6 matching TS buildDefaultMatrix."""
     from research.models.markov import _default_matrix, NUM_STATES
     m = _default_matrix()
-    off_diag = (1.0 - 0.7) / (NUM_STATES - 1)
+    off_diag = (1.0 - 0.6) / (NUM_STATES - 1)
     for i in range(NUM_STATES):
         for j in range(NUM_STATES):
-            expected = 0.7 if i == j else off_diag
+            expected = 0.6 if i == j else off_diag
             assert m[i][j] == pytest.approx(expected, abs=1e-10)
 
 

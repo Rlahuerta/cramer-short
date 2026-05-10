@@ -35,6 +35,7 @@ import {
 } from './hmm.js';
 import { api } from './api.js';
 import { fetchBinanceDailyCloses } from './binance.js';
+import { fetchBitmexDailyCloses } from './bitmex.js';
 import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
 import { extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
@@ -201,7 +202,7 @@ export function getGoldShortHorizonLivePolicy(
 
 /**
  * Fetch daily close prices. Tries Financial Datasets API first (fast, high quality),
- * then falls back to Yahoo Finance chart API (free, works for ETFs/commodities).
+ * then falls back to exchange APIs and Yahoo Finance.
  * Returns oldest-first array of close prices, or empty array on total failure.
  */
 export async function fetchHistoricalPrices(
@@ -234,6 +235,9 @@ export async function fetchHistoricalPrices(
 
   const binanceCloses = await fetchBinanceDailyCloses(normalizedTicker, days);
   if (binanceCloses.length >= 10) return binanceCloses;
+
+  const bitmexCloses = await fetchBitmexDailyCloses(normalizedTicker, days);
+  if (bitmexCloses.length >= 10) return bitmexCloses;
 
   // Fallback: Yahoo Finance chart API (works for ETFs, commodities, most tickers)
   return fetchYahooChartPrices(normalizedTicker, days);

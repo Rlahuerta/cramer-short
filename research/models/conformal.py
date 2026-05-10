@@ -271,3 +271,89 @@ class AdaptiveConformalPID(ConformalPID):
         if isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
             return float(value)
         return None
+
+
+class ScoreAggregatedConformal:
+    """Score-aggregation conformal wrapper matching TS ``ScoreAggregatedConformal``.
+
+    Maintains a rolling window of nonconformity scores computed as the max
+    of (residual / radius) across source radii, then calibrates a score-based
+    quantile multiplier. Used in walk-forward backtesting when
+    ``enableConformalScoreAggregation`` is true.
+    """
+
+    def __init__(
+        self,
+        alpha: float = 0.1,
+        min_samples: int = 12,
+        calibration_window: int = 72,
+    ) -> None:
+        self._alpha = float(alpha)
+        self._min_samples = max(1, int(round(min_samples)))
+        self._calibration_window = max(self._min_samples, int(round(calibration_window)))
+        self._scores: list[float] = []
+
+    def wrap(
+        self,
+        forecast_center: float,
+        source_radii: list[float],
+    ) -> ConformalInterval:
+        radii = _normalize_source_radii(source_radii)
+        base_radius = min(radii) if radii else 0.0
+        multiplier = self._score_multiplier()
+        radius = base_radius * (multiplier if multiplier is not None else 1.0)
+        return ConformalInterval(
+            low=forecast_center - radius,
+            high=forecast_center + radius,
+        )
+
+    def record(
+        self,
+        forecast_center: float,
+        actual: float,
+        source_radii: list[float],
+    ) -> None:
+        if not (math.isfinite(forecast_center) and math.isfinite(actual)):
+            return
+        radii = _normalize_source_radii(source_radii)
+        if not radii:
+            return
+
+        residual = abs(actual - forecast_center)
+        aggregated_score = max(
+            (residual / radius for radius in radii),
+            default=0.0,
+        )
+        if not math.isfinite(aggregated_score):
+            return
+
+        self._scores.append(aggregated_score)
+        if len(self._scores) > self._calibration_window:
+            self._scores = self._scores[-self._calibration_window:]
+
+    def sample_count(self) -> int:
+        return len(self._scores)
+
+    def reset(self) -> None:
+        self._scores.clear()
+
+    def _score_multiplier(self) -> Optional[float]:
+        if len(self._scores) < self._min_samples:
+            return None
+        return max(1.0, _upper_quantile(self._scores, 1.0 - self._alpha))
+
+
+def _normalize_source_radii(source_radii: list[float]) -> list[float]:
+    return [r for r in source_radii if math.isfinite(r) and r > 0]
+
+
+def _upper_quantile(values: list[float], quantile: float) -> float:
+    if not values:
+        return 0.0
+    sorted_vals = sorted(values)
+    clamped = min(1.0, max(0.0, quantile))
+    index = min(
+        len(sorted_vals) - 1,
+        max(0, int(math.ceil(len(sorted_vals) * clamped)) - 1),
+    )
+    return sorted_vals[index]

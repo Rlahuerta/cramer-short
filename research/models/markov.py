@@ -67,17 +67,25 @@ def get_btc_short_horizon_live_policy(
             rerun_window_days=BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS,
         )
 
+    if horizon == 2:
+        return BtcShortHorizonLivePolicy(
+            history_days=BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
+            break_divergence_threshold=BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
+            rerun_on_break=True,
+            rerun_window_days=120,
+        )
+
     if horizon == 3:
         return BtcShortHorizonLivePolicy(
             history_days=BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
-            break_divergence_threshold=0.20,
+            break_divergence_threshold=BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
             rerun_on_break=True,
-            rerun_window_days=BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS,
+            rerun_window_days=45,
         )
 
     return BtcShortHorizonLivePolicy(
         history_days=BTC_SHORT_HORIZON_LIVE_HISTORY_DAYS,
-        break_divergence_threshold=BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
+        break_divergence_threshold=0.08 if horizon == 14 else BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT,
         rerun_on_break=False,
     )
 
@@ -369,7 +377,7 @@ def compute_validation_r2_os(
     return {"r2os": None, "validation_metric": "daily_return"}
 
 
-def _default_matrix(diagonal: float = 0.7) -> np.ndarray:
+def _default_matrix(diagonal: float = 0.6) -> np.ndarray:
     """Identity-like default matrix with correct row sums."""
     off_diag = (1.0 - diagonal) / (NUM_STATES - 1)
     return np.eye(NUM_STATES) * (diagonal - off_diag) + np.full((NUM_STATES, NUM_STATES), off_diag)
@@ -380,15 +388,14 @@ def detect_structural_break(
     divergence_threshold: float = 0.05,
     alpha: float = 0.1,
     decay_rate: float = 0.97,
-    min_length: int = 60,
+    min_length: int = 36,
 ) -> dict:
     """Detect structural break by comparing first/second half transition matrices.
 
     Each half must have enough observations for a stable transition estimate.
     With ``NUM_STATES**2 = 9`` cells and the ≥5-expected-counts rule of thumb,
-    each half needs ≥45 transitions; rounded up to 60 so the divergence
-    statistic isn't dominated by Dirichlet smoothing (the TS counterpart applies
-    the same guard).
+    each half needs ≥45 transitions; the TS default of 36 provides a practical
+    floor that balances sensitivity against false alarms.
 
     Returns
     -------
@@ -613,6 +620,63 @@ def evaluate_model_only_bypass(
     )
 
     return {"commodity_model_only": commodity_model_only, "crypto_model_only": crypto_model_only}
+
+
+def is_composite_validation_acceptable(
+    out_of_sample_r2: float | None,
+    asset_type: str,
+    horizon: int,
+    validation_metric: str,
+    anchor_quality: str,
+    trusted_anchors: int,
+    prediction_confidence: float,
+    goodness_of_fit_passes: bool | None = None,
+) -> bool:
+    """Full composite validation gate matching TS ``isCompositeValidationAcceptable``.
+
+    Includes the ``compositeCryptoValidation`` path (R² ≥ -0.06,
+    confidence ≥ 0.16, goodness-of-fit passing) that the simpler
+    ``evaluate_validation_acceptability`` omits.
+    """
+    has_r2 = out_of_sample_r2 is not None and math.isfinite(out_of_sample_r2)
+    has_positive_r2 = has_r2 and out_of_sample_r2 >= -0.01  # type: ignore[operator]
+    if has_positive_r2:
+        return True
+
+    crypto_short = asset_type == "crypto" and 1 <= horizon <= 14
+    r2_neutral_crypto = (
+        crypto_short
+        and validation_metric == "horizon_return"
+        and anchor_quality == "good"
+        and trusted_anchors >= 2
+        and has_r2
+        and out_of_sample_r2 >= -0.04  # type: ignore[operator]
+    )
+    if r2_neutral_crypto:
+        return True
+
+    sparse_crypto_allowed = (
+        crypto_short
+        and validation_metric == "horizon_return"
+        and anchor_quality == "sparse"
+        and trusted_anchors >= 1
+        and has_r2
+        and out_of_sample_r2 >= -0.05  # type: ignore[operator]
+    )
+    if sparse_crypto_allowed:
+        return True
+
+    composite_crypto_validation = (
+        crypto_short
+        and validation_metric == "horizon_return"
+        and anchor_quality in ("good", "sparse")
+        and trusted_anchors >= 1
+        and has_r2
+        and out_of_sample_r2 >= -0.06  # type: ignore[operator]
+        and prediction_confidence >= 0.16
+        and (goodness_of_fit_passes if goodness_of_fit_passes is not None else True)
+    )
+    return composite_crypto_validation
 
 
 def evaluate_can_emit_canonical(

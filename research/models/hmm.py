@@ -226,9 +226,15 @@ def predict(
     A_n = mat_pow(params.A, forecast_horizon)
     forecast_probs = A_n[current_state]
 
-    # Expected return and volatility as weighted averages
+    # Expected return and volatility (proper mixture variance matching TS)
     expected_return = float(np.dot(forecast_probs, params.means))
-    expected_volatility = float(np.dot(forecast_probs, params.stds))
+    expected_volatility = float(np.sqrt(
+        sum(
+            forecast_probs[i] * (params.stds[i] ** 2 + params.means[i] ** 2)
+            for i in range(params.n_states)
+        )
+        - expected_return ** 2
+    ))
 
     return HMMPrediction(
         current_state=current_state,
