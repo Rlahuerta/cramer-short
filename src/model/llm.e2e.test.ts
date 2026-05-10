@@ -19,7 +19,7 @@ import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
 import { callLlm } from '@/model/llm.js';
 
-const NEMOTRON_MODEL = 'ollama:gemma4:31b-cloud';
+const NEMOTRON_MODEL = 'ollama:deepseek-v4-flash:cloud';
 const GENERAL_CLOUD_MODEL_PREFERENCES = [
   'glm-5.1:cloud',
   'minimax-m2.7:cloud',

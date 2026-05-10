@@ -13,7 +13,7 @@ import { isTimeoutError } from './errors.js';
 import { withRetry } from './retry.js';
 import type { Agent } from '../agent/agent.js';
 
-export const E2E_MODEL = process.env.E2E_MODEL ?? 'ollama:gemma4:31b-cloud';
+export const E2E_MODEL = process.env.E2E_MODEL ?? 'ollama:deepseek-v4-flash:cloud';
 export const E2E_TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS ?? '360000', 10);
 
 export interface E2EResult {

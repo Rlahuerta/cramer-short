@@ -16,7 +16,7 @@ import { e2eIt } from '@/utils/test-guards.js';
 import { runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { ToolStartEvent, ToolEndEvent } from '@/agent/types.js';
 
-const DOC_MODEL = 'ollama:gemma4:31b-cloud';
+const DOC_MODEL = 'ollama:deepseek-v4-flash:cloud';
 const SNAPSHOT_FILE = '.cramer-short/polymarket-snapshots.jsonl';
 
 async function withFreshSnapshotFile<T>(fn: () => Promise<T>): Promise<T> {
@@ -62,7 +62,7 @@ function extractToolResultText(result: string): string {
   }
 }
 
-describe('Polymarket history docs — guide examples vs ollama:gemma4:31b-cloud', () => {
+describe('Polymarket history docs — guide examples vs ollama:deepseek-v4-flash:cloud', () => {
   e2eIt(
     '(a) BTC price-market search calls polymarket_search and returns the Polymarket heading',
     async () => {

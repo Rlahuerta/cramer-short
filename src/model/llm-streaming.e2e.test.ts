@@ -19,8 +19,8 @@ import { describe, expect } from 'bun:test';
 import { e2eIt } from '@/utils/test-guards.js';
 import { streamCallLlm } from '@/model/llm.js';
 
-const THINKING_MODEL = 'ollama:gemma4:31b-cloud';
-const PLAIN_MODEL = 'ollama:gemma4:31b-cloud';
+const THINKING_MODEL = 'ollama:deepseek-v4-flash:cloud';
+const PLAIN_MODEL = 'ollama:deepseek-v4-flash:cloud';
 
 // ---------------------------------------------------------------------------
 // Basic streaming
