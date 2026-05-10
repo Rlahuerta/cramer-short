@@ -339,6 +339,16 @@ function snapshotRuntimeDefaults() {
         conformal: getForecastLabConformalRuntimeDefaults('gold'),
         regime: getForecastLabRegimeCalibratorRuntimeDefaults('gold'),
       },
+      sol: {
+        markov: getForecastLabMarkovRuntimeDefaults('sol'),
+        conformal: getForecastLabConformalRuntimeDefaults('sol'),
+        regime: getForecastLabRegimeCalibratorRuntimeDefaults('sol'),
+      },
+      hype: {
+        markov: getForecastLabMarkovRuntimeDefaults('hype'),
+        conformal: getForecastLabConformalRuntimeDefaults('hype'),
+        regime: getForecastLabRegimeCalibratorRuntimeDefaults('hype'),
+      },
     },
   };
 }
@@ -356,6 +366,12 @@ function restoreRuntimeDefaults(snapshot: ReturnType<typeof snapshotRuntimeDefau
   setForecastLabMarkovRuntimeDefaults('gold', snapshot.active.gold.markov);
   setForecastLabConformalRuntimeDefaults('gold', snapshot.active.gold.conformal);
   setForecastLabRegimeCalibratorRuntimeDefaults('gold', snapshot.active.gold.regime);
+  setForecastLabMarkovRuntimeDefaults('sol', snapshot.active.sol.markov);
+  setForecastLabConformalRuntimeDefaults('sol', snapshot.active.sol.conformal);
+  setForecastLabRegimeCalibratorRuntimeDefaults('sol', snapshot.active.sol.regime);
+  setForecastLabMarkovRuntimeDefaults('hype', snapshot.active.hype.markov);
+  setForecastLabConformalRuntimeDefaults('hype', snapshot.active.hype.conformal);
+  setForecastLabRegimeCalibratorRuntimeDefaults('hype', snapshot.active.hype.regime);
 }
 
 function readHeadTrackedFile(filePath: (typeof LIVE_MUTABLE_FILES)[number]): string {

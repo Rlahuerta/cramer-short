@@ -98,6 +98,11 @@ const forecastLabConformalRuntimeDefaults = createForecastLabAssetScopedRuntimeD
   FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS,
 );
 
+const PROMOTED_SOL_CONFORMAL_RUNTIME_DEFAULTS: Partial<typeof FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS> = {
+  scoreAggregationMinSamples: 10,
+  scoreAggregationCalibrationWindow: 60,
+};
+
 export function resolveForecastLabConformalParameterDefaults(
   assetScope?: ForecastLabRuntimeAssetScope,
 ): typeof FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS {
@@ -116,6 +121,8 @@ export function setForecastLabConformalRuntimeDefaults(
 ): void {
   forecastLabConformalRuntimeDefaults.set(assetScope, overrides);
 }
+
+setForecastLabConformalRuntimeDefaults('sol', PROMOTED_SOL_CONFORMAL_RUNTIME_DEFAULTS);
 
 export class ConformalPID {
   readonly alpha: number;

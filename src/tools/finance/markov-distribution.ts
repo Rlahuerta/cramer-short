@@ -298,6 +298,20 @@ const forecastLabMarkovRuntimeDefaults = createForecastLabAssetScopedRuntimeDefa
   FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
 );
 
+const PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS: Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS> = {
+  transitionMinObservations: 31,
+  structuralBreakMinLength: 28,
+  momentumLookback: 9,
+  momentumAdjustmentScale: 0.252,
+  momentumAdjustmentClamp: 0.00305,
+};
+
+const PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULTS: Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS> = {
+  recommendedConfidenceThreshold: 0.15,
+  momentumAdjustmentScale: 0.48,
+  momentumAdjustmentClamp: 0.0058,
+};
+
 export function resolveForecastLabMarkovParameterDefaults(
   assetScope?: ForecastLabRuntimeAssetScope,
 ): typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS {
@@ -316,6 +330,9 @@ export function setForecastLabMarkovRuntimeDefaults(
 ): void {
   forecastLabMarkovRuntimeDefaults.set(assetScope, overrides);
 }
+
+setForecastLabMarkovRuntimeDefaults('sol', PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS);
+setForecastLabMarkovRuntimeDefaults('hype', PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULTS);
 
 /**
  * Recommended confidence threshold for selective prediction.

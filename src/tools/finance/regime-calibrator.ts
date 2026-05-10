@@ -75,6 +75,10 @@ const forecastLabRegimeCalibratorRuntimeDefaults = createForecastLabAssetScopedR
   FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS,
 );
 
+const PROMOTED_SOL_REGIME_CALIBRATOR_RUNTIME_DEFAULTS: Partial<Required<FitOptions>> = {
+  minSamplesPerRegime: 14,
+};
+
 export function resolveForecastLabRegimeCalibratorDefaults(
   assetScope?: ForecastLabRuntimeAssetScope,
 ): Required<FitOptions> {
@@ -93,6 +97,8 @@ export function setForecastLabRegimeCalibratorRuntimeDefaults(
 ): void {
   forecastLabRegimeCalibratorRuntimeDefaults.set(assetScope, overrides);
 }
+
+setForecastLabRegimeCalibratorRuntimeDefaults('sol', PROMOTED_SOL_REGIME_CALIBRATOR_RUNTIME_DEFAULTS);
 
 /**
  * Fit a Platt logistic on a single regime's samples.
