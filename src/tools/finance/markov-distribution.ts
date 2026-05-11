@@ -298,7 +298,7 @@ const forecastLabMarkovRuntimeDefaults = createForecastLabAssetScopedRuntimeDefa
   FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
 );
 
-const PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS: Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS> = {
+export const PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS: Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS> = {
   transitionMinObservations: 31,
   structuralBreakMinLength: 28,
   momentumLookback: 9,

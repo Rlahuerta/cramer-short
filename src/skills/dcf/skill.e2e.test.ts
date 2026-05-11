@@ -7,8 +7,8 @@
  * The agent is invoked ONCE via beforeAll; all tests share the same result
  * to avoid paying the LLM cost multiple times.
  *
- * Model: ollama:deepseek-v4-flash:cloud (override via E2E_MODEL env var)
- * Timeout: E2E_TIMEOUT_MS (default 300 s)
+ * Model: ollama:kimi-k2.6:cloud (override via E2E_MODEL env var)
+ * Timeout: E2E_TIMEOUT_MS (default 600 s)
  */
 import { describe, expect, beforeAll } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
@@ -35,7 +35,7 @@ let answer: string;
 describe('DCF skill E2E', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return; // guard — tests will be skipped via e2eIt
-    result = await runAgentE2EWithTimeoutRetry('Use the DCF skill to value Apple (AAPL)');
+    result = await runAgentE2EWithTimeoutRetry('--deep Use the DCF skill to value Apple (AAPL)');
     tools = result.toolsCalled;
     answer = result.answer;
   }, E2E_TIMEOUT_MS);

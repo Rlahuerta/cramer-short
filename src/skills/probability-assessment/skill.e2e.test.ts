@@ -17,7 +17,7 @@
  *   7. Live BTC price    — dollar figure appears in answer (via get_market_data, markov auto-fetch, or pre-injected context)
  *
  * Model: minimax-m2.7:cloud by default (override via E2E_MODEL env var)
- * Timeout: E2E_TIMEOUT_MS (default 300 s) for the single beforeAll call
+ * Timeout: E2E_TIMEOUT_MS (default 600 s) for the single beforeAll call
  */
 import { describe, expect, beforeAll } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';

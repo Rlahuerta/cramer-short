@@ -1,13 +1,13 @@
 /**
  * E2E tests — validate documented Polymarket history guide examples
- * against ollama:deepseek-v4-flash:cloud.
+ * against ollama:kimi-k2.6:cloud.
  *
  * These tests assert on stable structural behaviour (tool calls triggered,
  * heading formats, horizon labels, warning phrases), not on volatile market
  * numbers that drift between runs.
  *
  * Run with:  bun run test:e2e
- * Model:     ollama:deepseek-v4-flash:cloud (hardcoded per test, not via E2E_MODEL)
+ * Model:     ollama:kimi-k2.6:cloud (hardcoded per test, not via E2E_MODEL)
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -16,7 +16,7 @@ import { e2eIt } from '@/utils/test-guards.js';
 import { runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { ToolStartEvent, ToolEndEvent } from '@/agent/types.js';
 
-const DOC_MODEL = 'ollama:deepseek-v4-flash:cloud';
+const DOC_MODEL = 'ollama:kimi-k2.6:cloud';
 const SNAPSHOT_FILE = '.cramer-short/polymarket-snapshots.jsonl';
 
 async function withFreshSnapshotFile<T>(fn: () => Promise<T>): Promise<T> {
@@ -62,7 +62,7 @@ function extractToolResultText(result: string): string {
   }
 }
 
-describe('Polymarket history docs — guide examples vs ollama:deepseek-v4-flash:cloud', () => {
+describe('Polymarket history docs — guide examples vs ollama:kimi-k2.6:cloud', () => {
   e2eIt(
     '(a) BTC price-market search calls polymarket_search and returns the Polymarket heading',
     async () => {

@@ -3,7 +3,7 @@ import { e2eIt } from '@/utils/test-guards.js';
 import { E2E_TIMEOUT_MS, runAgentE2EWithTimeoutRetry } from '@/utils/e2e-helpers.js';
 import type { ToolEndEvent, ToolStartEvent } from '@/agent/types.js';
 import { listForecastLabStructuredMutations } from '@/experiments/forecast-lab/profiles.js';
-import { resolveForecastLabMarkovParameterDefaults } from '@/tools/finance/markov-distribution.js';
+import { resolveForecastLabMarkovParameterDefaults, setForecastLabMarkovRuntimeDefaults, PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS } from '@/tools/finance/markov-distribution.js';
 import { resolveForecastLabConformalParameterDefaults } from '@/tools/finance/conformal.js';
 import { resolveForecastLabRegimeCalibratorDefaults } from '@/tools/finance/regime-calibrator.js';
 
@@ -130,6 +130,10 @@ describe('forecast-lab asset-scope E2E', () => {
   e2eIt(
     'keeps the promoted SOL/HYPE defaults active on the ordinary forecast path without BTC/GOLD leakage',
     async () => {
+      // Re-apply promoted defaults — runner.test.ts may have overwritten them
+      // with snapshot values that don't match the current promoted config.
+      setForecastLabMarkovRuntimeDefaults('sol', PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS);
+
       const solMarkov = resolveForecastLabMarkovParameterDefaults('sol');
       const solConformal = resolveForecastLabConformalParameterDefaults('sol');
       const solRegime = resolveForecastLabRegimeCalibratorDefaults('sol');

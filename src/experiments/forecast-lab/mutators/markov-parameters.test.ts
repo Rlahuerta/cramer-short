@@ -11,13 +11,26 @@ const REPO_ROOT = process.cwd();
 const MARKOV_PROFILE_IDS = [
   'multi-asset-markov-short-horizon',
   'btc-markov-ultra-short-horizon',
+  'sol-markov-short-horizon',
+  'hype-markov-short-horizon',
   'gold-markov-short-horizon',
 ] as const;
+
+function toAfterValueMap(profileId: (typeof MARKOV_PROFILE_IDS)[number]) {
+  return Object.fromEntries(
+    listMarkovParameterMutations(profileId).map((candidate) => [
+      candidate.id,
+      Object.fromEntries(candidate.edits.map((edit) => [edit.parameterId, edit.afterValue])),
+    ]),
+  );
+}
 
 describe('forecast-lab markov parameter mutators', () => {
   it('only exposes bounded deterministic mutators for the shipped markov profiles', () => {
     expect(isForecastLabMarkovMutatorProfileId('multi-asset-markov-short-horizon')).toBe(true);
     expect(isForecastLabMarkovMutatorProfileId('btc-markov-ultra-short-horizon')).toBe(true);
+    expect(isForecastLabMarkovMutatorProfileId('sol-markov-short-horizon')).toBe(true);
+    expect(isForecastLabMarkovMutatorProfileId('hype-markov-short-horizon')).toBe(true);
     expect(isForecastLabMarkovMutatorProfileId('gold-markov-short-horizon')).toBe(true);
     expect(isForecastLabMarkovMutatorProfileId('btc-arbiter-replay')).toBe(false);
 
@@ -72,6 +85,154 @@ describe('forecast-lab markov parameter mutators', () => {
         listMarkovParameterMutations(profileId).map((candidate) => candidate.mutatorId),
       )];
       expect(profile.mutation.allowedMutatorIds).toEqual(catalogMutatorIds);
+    }
+  });
+
+  it('ships SOL and HYPE-specific catalogs instead of reusing the shared or GOLD parameter values', () => {
+    const shared = toAfterValueMap('multi-asset-markov-short-horizon');
+    const gold = toAfterValueMap('gold-markov-short-horizon');
+
+    expect(toAfterValueMap('sol-markov-short-horizon')).toEqual({
+      'markov-shorter-reactive-window': {
+        momentumLookback: 9,
+        structuralBreakMinLength: 28,
+        scoreAggregationMinSamples: 10,
+        scoreAggregationCalibrationWindow: 60,
+        minSamplesPerRegime: 14,
+        transitionMinObservations: 31,
+        momentumAdjustmentScale: 0.252,
+        momentumAdjustmentClamp: 0.00305,
+      },
+      'markov-longer-stability-window': {
+        momentumLookback: 28,
+        structuralBreakMinLength: 72,
+        scoreAggregationMinSamples: 24,
+        scoreAggregationCalibrationWindow: 144,
+        minSamplesPerRegime: 36,
+        transitionMinObservations: 36,
+        momentumAdjustmentScale: 0.18,
+        momentumAdjustmentClamp: 0.0024,
+      },
+      'markov-faster-decay-reaction': {
+        transitionDecay: 0.945,
+        adaptiveBreakLearningRateMultiplier: 1.85,
+        adaptiveBreakCooloffWindow: 2,
+      },
+      'markov-slower-decay-persistence': {
+        transitionDecay: 0.99,
+        adaptiveBreakLearningRateMultiplier: 1.15,
+        adaptiveBreakCooloffWindow: 3,
+      },
+      'markov-lower-confidence-trend-penalty': {
+        recommendedConfidenceThreshold: 0.17,
+        momentumAdjustmentScale: 0.34,
+        momentumAdjustmentClamp: 0.004,
+      },
+      'markov-higher-confidence-divergence-weighted': {
+        recommendedConfidenceThreshold: 0.3,
+        momentumAdjustmentScale: 0.16,
+        momentumAdjustmentClamp: 0.0021,
+        trendPenaltyOnlyBreakConfidence: false,
+        divergenceWeightedBreakConfidence: true,
+      },
+      'markov-calibrator-higher-sample-floor': {
+        minSamplesPerRegime: 40,
+        learningRate: 0.03,
+        pidLearningRate: 0.042,
+        integralDecay: 0.98,
+      },
+      'markov-calibrator-lower-sample-floor': {
+        minSamplesPerRegime: 14,
+        learningRate: 0.085,
+        pidLearningRate: 0.06,
+        integralDecay: 0.93,
+      },
+    });
+
+    expect(toAfterValueMap('hype-markov-short-horizon')).toEqual({
+      'markov-shorter-reactive-window': {
+        momentumLookback: 8,
+        structuralBreakMinLength: 24,
+        scoreAggregationMinSamples: 8,
+        scoreAggregationCalibrationWindow: 48,
+        minSamplesPerRegime: 12,
+        transitionMinObservations: 22,
+        momentumAdjustmentScale: 0.5,
+        momentumAdjustmentClamp: 0.006,
+      },
+      'markov-longer-stability-window': {
+        momentumLookback: 24,
+        structuralBreakMinLength: 60,
+        scoreAggregationMinSamples: 22,
+        scoreAggregationCalibrationWindow: 120,
+        minSamplesPerRegime: 28,
+        transitionMinObservations: 34,
+        momentumAdjustmentScale: 0.22,
+        momentumAdjustmentClamp: 0.0032,
+      },
+      'markov-faster-decay-reaction': {
+        transitionDecay: 0.925,
+        adaptiveBreakLearningRateMultiplier: 2.1,
+        adaptiveBreakCooloffWindow: 2,
+      },
+      'markov-slower-decay-persistence': {
+        transitionDecay: 0.983,
+        adaptiveBreakLearningRateMultiplier: 1.2,
+        adaptiveBreakCooloffWindow: 3,
+      },
+      'markov-lower-confidence-trend-penalty': {
+        recommendedConfidenceThreshold: 0.15,
+        momentumAdjustmentScale: 0.48,
+        momentumAdjustmentClamp: 0.0058,
+      },
+      'markov-higher-confidence-divergence-weighted': {
+        recommendedConfidenceThreshold: 0.28,
+        momentumAdjustmentScale: 0.18,
+        momentumAdjustmentClamp: 0.0026,
+        trendPenaltyOnlyBreakConfidence: false,
+        divergenceWeightedBreakConfidence: true,
+      },
+      'markov-calibrator-higher-sample-floor': {
+        minSamplesPerRegime: 28,
+        learningRate: 0.038,
+        pidLearningRate: 0.042,
+        integralDecay: 0.97,
+      },
+      'markov-calibrator-lower-sample-floor': {
+        minSamplesPerRegime: 10,
+        learningRate: 0.095,
+        pidLearningRate: 0.065,
+        integralDecay: 0.92,
+      },
+    });
+
+    expect(toAfterValueMap('sol-markov-short-horizon')).not.toEqual(shared);
+    expect(toAfterValueMap('hype-markov-short-horizon')).not.toEqual(shared);
+    expect(toAfterValueMap('sol-markov-short-horizon')).not.toEqual(gold);
+    expect(toAfterValueMap('hype-markov-short-horizon')).not.toEqual(gold);
+  });
+
+  it('retunes SOL and HYPE candidates with forecast-driving Markov and conformal parameters', () => {
+    for (const profileId of ['sol-markov-short-horizon', 'hype-markov-short-horizon'] as const) {
+      const byId = Object.fromEntries(
+        listMarkovParameterMutations(profileId).map((candidate) => [candidate.id, candidate]),
+      );
+
+      expect(byId['markov-shorter-reactive-window'].edits.map((edit) => edit.parameterId)).toEqual(
+        expect.arrayContaining(['transitionMinObservations', 'momentumAdjustmentScale', 'momentumAdjustmentClamp']),
+      );
+      expect(byId['markov-longer-stability-window'].edits.map((edit) => edit.parameterId)).toEqual(
+        expect.arrayContaining(['transitionMinObservations', 'momentumAdjustmentScale', 'momentumAdjustmentClamp']),
+      );
+      expect(byId['markov-higher-confidence-divergence-weighted'].edits.map((edit) => edit.parameterId)).toEqual(
+        expect.arrayContaining(['trendPenaltyOnlyBreakConfidence', 'divergenceWeightedBreakConfidence']),
+      );
+      expect(byId['markov-calibrator-higher-sample-floor'].edits.map((edit) => edit.parameterId)).toEqual(
+        expect.arrayContaining(['pidLearningRate', 'integralDecay']),
+      );
+      expect(byId['markov-calibrator-lower-sample-floor'].edits.map((edit) => edit.parameterId)).toEqual(
+        expect.arrayContaining(['pidLearningRate', 'integralDecay']),
+      );
     }
   });
 

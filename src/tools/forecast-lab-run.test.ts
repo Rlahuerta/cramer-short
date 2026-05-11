@@ -1002,6 +1002,87 @@ describe('forecast_lab_run tool', () => {
     });
   });
 
+  it('runs iterative-improve-mutators and returns the best trial summary', async () => {
+    const runForecastLabImprovementLoopFn = mock(async () => ({
+      profileId: 'sol-markov-short-horizon',
+      baselineMetrics: {
+        h1: { directionalAccuracy: 0.51, brierScore: 0.239, ciCoverage: 0.90, structuralBreakCount: 49, abstainCount: 16 },
+        h2: { directionalAccuracy: 0.37, brierScore: 0.275, ciCoverage: 0.98, structuralBreakCount: 49, abstainCount: 12 },
+        h3: { directionalAccuracy: 0.35, brierScore: 0.273, ciCoverage: 0.96, structuralBreakCount: 49, abstainCount: 7 },
+        h7: { directionalAccuracy: 0.35, brierScore: 0.270, ciCoverage: 0.94, structuralBreakCount: 48, abstainCount: 8 },
+        h14: { directionalAccuracy: 0.28, brierScore: 0.289, ciCoverage: 0.96, structuralBreakCount: 47, abstainCount: 11 },
+      },
+      seedResults: [],
+      history: [{
+        iteration: 1,
+        mutation: { id: 'markov-shorter-reactive-window--iter1-softer' },
+        objectiveScore: 64.2,
+        primaryScore: 0.463,
+        keepSatisfied: 6,
+        keepTotal: 8,
+        decision: 'drop',
+        summary: 'trial',
+        metrics: {
+          h1: { directionalAccuracy: 0.51, brierScore: 0.239, ciCoverage: 0.90, structuralBreakCount: 49, abstainCount: 16 },
+          h2: { directionalAccuracy: 0.45, brierScore: 0.276, ciCoverage: 0.98, structuralBreakCount: 49, abstainCount: 12 },
+          h3: { directionalAccuracy: 0.39, brierScore: 0.273, ciCoverage: 0.94, structuralBreakCount: 49, abstainCount: 8 },
+          h7: { directionalAccuracy: 0.33, brierScore: 0.271, ciCoverage: 0.94, structuralBreakCount: 48, abstainCount: 8 },
+          h14: { directionalAccuracy: 0.32, brierScore: 0.290, ciCoverage: 0.96, structuralBreakCount: 47, abstainCount: 11 },
+        },
+      }],
+      bestResult: {
+        iteration: 1,
+        mutation: { id: 'markov-shorter-reactive-window--iter1-softer' },
+        objectiveScore: 64.2,
+        primaryScore: 0.463,
+        keepSatisfied: 6,
+        keepTotal: 8,
+        decision: 'drop',
+        summary: 'trial',
+        metrics: {
+          h1: { directionalAccuracy: 0.51, brierScore: 0.239, ciCoverage: 0.90, structuralBreakCount: 49, abstainCount: 16 },
+          h2: { directionalAccuracy: 0.45, brierScore: 0.276, ciCoverage: 0.98, structuralBreakCount: 49, abstainCount: 12 },
+          h3: { directionalAccuracy: 0.39, brierScore: 0.273, ciCoverage: 0.94, structuralBreakCount: 49, abstainCount: 8 },
+          h7: { directionalAccuracy: 0.33, brierScore: 0.271, ciCoverage: 0.94, structuralBreakCount: 48, abstainCount: 8 },
+          h14: { directionalAccuracy: 0.32, brierScore: 0.290, ciCoverage: 0.96, structuralBreakCount: 47, abstainCount: 11 },
+        },
+      },
+      iterationsRun: 1,
+    }));
+
+    const tool = createForecastLabRunTool({
+      runForecastLabImprovementLoopFn: runForecastLabImprovementLoopFn as any,
+    });
+
+    const result = await tool.invoke({
+      action: 'iterative-improve-mutators',
+      profileId: 'sol-markov-short-horizon',
+      mutator: 'markov-shorter-reactive-window',
+      iterations: 2,
+    } as any);
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(runForecastLabImprovementLoopFn).toHaveBeenCalledWith({
+      profileId: 'sol-markov-short-horizon',
+      seedMutatorId: 'markov-shorter-reactive-window',
+      maxIterations: 2,
+      progress: undefined,
+    });
+    expect(payload).toMatchObject({
+      _tool: 'forecast_lab_run',
+      action: 'iterative-improve-mutators',
+      status: 'ok',
+      profileId: 'sol-markov-short-horizon',
+      iterationsRun: 1,
+      bestMutationId: 'markov-shorter-reactive-window--iter1-softer',
+      bestDecision: 'drop',
+      keepSatisfied: 6,
+      keepTotal: 8,
+    });
+    expect(payload?.answer).toContain('iterative improvement loop');
+    expect(payload?.answer).toContain('markov-shorter-reactive-window--iter1-softer');
+  });
+
   it('rejects batch-replay-mutators with invalid limit values', async () => {
     const runForecastLabFn = mock(async () => makeRunResult());
     const tool = createForecastLabRunTool({ runForecastLabFn: runForecastLabFn as any });

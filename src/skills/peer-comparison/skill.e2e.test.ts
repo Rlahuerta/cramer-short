@@ -16,7 +16,7 @@ import { runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers
 import type { E2EResult } from '@/utils/e2e-helpers.js';
 
 const PEER_COMPARISON_QUERY =
-  'Use the peer-comparison skill to compare NVDA against AMD, INTC, and QCOM on valuation, growth, and quality metrics';
+  '--deep Use the peer-comparison skill to compare NVDA against AMD, INTC, and QCOM on valuation, growth, and quality metrics';
 const PEER_COMPARISON_TIMEOUT_MS = Math.max(E2E_TIMEOUT_MS, 600_000);
 
 let result: E2EResult;

@@ -19,12 +19,12 @@ import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
 import { callLlm } from '@/model/llm.js';
 
-const NEMOTRON_MODEL = 'ollama:deepseek-v4-flash:cloud';
+const NEMOTRON_MODEL = 'ollama:kimi-k2.6:cloud';
 const GENERAL_CLOUD_MODEL_PREFERENCES = [
   'glm-5.1:cloud',
   'minimax-m2.7:cloud',
   'glm-5:cloud',
-  'deepseek-v4-pro:cloud',
+  'kimi-k2.6:cloud',
   'qwen3.5:cloud',
   'qwen3-next:80b-cloud',
 ] as const;

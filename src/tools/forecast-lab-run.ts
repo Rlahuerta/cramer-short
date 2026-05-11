@@ -26,6 +26,11 @@ import {
   type ForecastLabRunOptions,
   type ForecastLabRunResult,
 } from '../experiments/forecast-lab/runner.js';
+import { runForecastLabProfileImprovementLoop } from '../experiments/forecast-lab/improvement-loop.js';
+import type {
+  ForecastLabImprovementMetrics,
+  ForecastLabProfileImprovementLoopResult,
+} from '../experiments/forecast-lab/improvement-loop.js';
 import { listForecastLabMutatorIds } from '../experiments/forecast-lab/mutation.js';
 import { routeForecastLabQuery } from '../experiments/forecast-lab/router.js';
 import type {
@@ -56,6 +61,7 @@ Run the bounded forecast-lab workflow for repo-native forecast experiments.
 - \`catalog-extension-plan\`: explain the bounded code-change path for adding a new shipped mutator outside the current catalog, without reading experiment artifacts or running lineage commands
 - \`mutator-scorecard\`: summarize shipped mutators for a profile in a readable table for operator decision support, showing per-mutator status, attempts, kept, regressed, health, and score
 - \`batch-replay-mutators\`: replay shipped mutators from a common baseline (shipped defaults) and return a readable comparative matrix for operator decision support
+- \`iterative-improve-mutators\`: run a bounded trial loop around the current best shipped mutator for one supported short-horizon profile and return the best trial found so far
 - \`promote-approved\`: run the bounded promotion verification path only after the user explicitly approves promotion, then activate the verified parameters for normal forecasts
 - \`reset-live\`: roll the live forecast-lab baseline back to shipped defaults or the last known-good activated baseline
 
@@ -68,7 +74,7 @@ Run the bounded forecast-lab workflow for repo-native forecast experiments.
 `.trim();
 
 const forecastLabRunSchema = z.object({
-  action: z.enum(['guided-improve', 'compare-best-vs-shipped', 'list-mutators', 'catalog-extension-plan', 'mutator-scorecard', 'batch-replay-mutators', 'promote-approved', 'reset-live']),
+  action: z.enum(['guided-improve', 'compare-best-vs-shipped', 'list-mutators', 'catalog-extension-plan', 'mutator-scorecard', 'batch-replay-mutators', 'iterative-improve-mutators', 'promote-approved', 'reset-live']),
   query: z.string().optional().describe('Original user request. Required when profileId is omitted for guided-improve.'),
   profileId: z.string().optional().describe('Forecast-lab profile id. Optional when the tool can resolve a unique profile automatically.'),
   sourceRunId: z.string().optional().describe('Kept run id to promote. Optional when there is a unique pending promotion source.'),
@@ -79,6 +85,7 @@ const forecastLabRunSchema = z.object({
   rankMutators: z.boolean().optional().describe('Enable ledger-based mutator ranking for guided-improve execution.'),
   routingSource: z.enum(['auto-routed', 'manual-request']).optional().describe('How the improvement request reached forecast-lab. Defaults to manual-request.'),
   limit: z.number().int().min(1).max(50).optional().describe('For batch-replay-mutators: maximum number of mutators to replay. Defaults to 5. Must be between 1 and 50.'),
+  iterations: z.number().int().min(1).max(5).optional().describe('For iterative-improve-mutators: maximum trial-loop iterations. Defaults to 2. Must be between 1 and 5.'),
 });
 
 type ForecastLabRunToolInput = z.infer<typeof forecastLabRunSchema>;
@@ -261,6 +268,23 @@ interface ForecastLabBatchReplayPayload {
   readonly answer: string;
 }
 
+interface ForecastLabIterativeImprovePayload {
+  readonly _tool: 'forecast_lab_run';
+  readonly action: 'iterative-improve-mutators';
+  readonly status: 'ok';
+  readonly profileId: string;
+  readonly iterationsRun: number;
+  readonly bestMutationId: string;
+  readonly bestDecision: 'keep' | 'drop';
+  readonly keepSatisfied: number;
+  readonly keepTotal: number;
+  readonly bestObjectiveScore: number;
+  readonly bestPrimaryScore: number;
+  readonly baselineMetrics: ForecastLabImprovementMetrics;
+  readonly bestMetrics: ForecastLabImprovementMetrics;
+  readonly answer: string;
+}
+
 export type ForecastLabRunToolPayload =
   | ForecastLabPlanPayload
   | ForecastLabGuidedImprovePayload
@@ -269,12 +293,19 @@ export type ForecastLabRunToolPayload =
   | ForecastLabCatalogExtensionPayload
   | ForecastLabMutatorScorecardPayload
   | ForecastLabBatchReplayPayload
+  | ForecastLabIterativeImprovePayload
   | ForecastLabPromotePayload
   | ForecastLabResetPayload
   | ForecastLabErrorPayload;
 
 type CreateForecastLabRunToolDeps = {
   readonly runForecastLabFn?: (options: ForecastLabRunOptions) => Promise<ForecastLabRunResult>;
+  readonly runForecastLabImprovementLoopFn?: (options: {
+    readonly profileId: string;
+    readonly seedMutatorId?: string;
+    readonly maxIterations?: number;
+    readonly progress?: (message: string) => void;
+  }) => Promise<ForecastLabProfileImprovementLoopResult>;
   readonly promoteForecastLabFn?: (options: ForecastLabPromotionOptions) => Promise<ForecastLabPromotionResult>;
   readonly resetForecastLabFn?: (options: ForecastLabResetOptions) => Promise<ForecastLabResetResult>;
   readonly readLedgerEntriesFn?: (path: string) => ForecastLabLedgerEntry[];
@@ -900,6 +931,46 @@ function buildBatchReplayAnswer(
   ].join('\n');
 }
 
+function buildIterativeImproveAnswer(
+  profile: ForecastLabProfile,
+  result: ForecastLabProfileImprovementLoopResult,
+): string {
+  const best = result.bestResult;
+  const historyLine = result.history.length > 0
+    ? result.history.map((entry) => `${entry.mutation.id} (${entry.keepSatisfied}/${entry.keepTotal} keep checks, objective ${entry.objectiveScore.toFixed(3)})`).join(' -> ')
+    : 'no trial improved on the best shipped seed';
+
+  return [
+    `Forecast-lab iterative improvement loop for ${profile.id}.`,
+    '',
+    `Baseline: shipped defaults on ${profile.id}.`,
+    `Best trial: ${best.mutation.id}`,
+    `Decision if promoted today: ${best.decision.toUpperCase()}`,
+    `Gate progress: ${best.keepSatisfied}/${best.keepTotal} keep checks satisfied`,
+    `Objective score: ${best.objectiveScore.toFixed(3)}`,
+    `Primary score: ${best.primaryScore.toFixed(3)}`,
+    `Iterations run: ${result.iterationsRun}`,
+    `Loop history: ${historyLine}.`,
+    '',
+    buildMarkdownTable(
+      ['Horizon', 'Baseline DirAcc', 'Best DirAcc', 'Baseline Brier', 'Best Brier'],
+      ['h1', 'h2', 'h3', 'h7', 'h14'].map((horizon) => {
+        const baseline = result.baselineMetrics[horizon as keyof ForecastLabImprovementMetrics];
+        const candidate = best.metrics[horizon as keyof ForecastLabImprovementMetrics];
+        return [
+          horizon,
+          `${(baseline.directionalAccuracy * 100).toFixed(1)}%`,
+          `${(candidate.directionalAccuracy * 100).toFixed(1)}%`,
+          baseline.brierScore.toFixed(4),
+          candidate.brierScore.toFixed(4),
+        ];
+      }),
+    ),
+    '',
+    'This loop is bounded and diagnostic-only: it searches around the current shipped mutator space but does not auto-promote or rewrite the catalog.',
+  ].join('\n');
+}
+
 function resolveMutatorListProfiles(
   input: ForecastLabRunToolInput,
 ): { profiles: readonly ForecastLabProfile[]; routingReason: string } | { error: string } {
@@ -1359,6 +1430,7 @@ export function extractForecastLabRunToolAnswer(result: string): string | null {
 
 export function createForecastLabRunTool({
   runForecastLabFn = runForecastLab,
+  runForecastLabImprovementLoopFn = runForecastLabProfileImprovementLoop,
   promoteForecastLabFn = promoteForecastLab,
   resetForecastLabFn = resetForecastLab,
   readLedgerEntriesFn = readLedgerEntries,
@@ -1725,6 +1797,37 @@ export function createForecastLabRunTool({
             results,
             answer: buildBatchReplayAnswer(profile, results),
           } satisfies ForecastLabBatchReplayPayload);
+        }
+
+        if (input.action === 'iterative-improve-mutators') {
+          if (!input.profileId?.trim()) {
+            return buildErrorPayload(input.action, 'iterative-improve-mutators requires profileId.');
+          }
+
+          const profile = getForecastLabProfile(input.profileId);
+          const result = await runForecastLabImprovementLoopFn({
+            profileId: profile.id,
+            seedMutatorId: input.mutator?.trim() || undefined,
+            maxIterations: input.iterations,
+            progress: onProgress,
+          });
+
+          return formatToolResult({
+            _tool: 'forecast_lab_run',
+            action: 'iterative-improve-mutators',
+            status: 'ok',
+            profileId: profile.id,
+            iterationsRun: result.iterationsRun,
+            bestMutationId: result.bestResult.mutation.id,
+            bestDecision: result.bestResult.decision,
+            keepSatisfied: result.bestResult.keepSatisfied,
+            keepTotal: result.bestResult.keepTotal,
+            bestObjectiveScore: result.bestResult.objectiveScore,
+            bestPrimaryScore: result.bestResult.primaryScore,
+            baselineMetrics: result.baselineMetrics,
+            bestMetrics: result.bestResult.metrics,
+            answer: buildIterativeImproveAnswer(profile, result),
+          } satisfies ForecastLabIterativeImprovePayload);
         }
 
         if (input.action === 'promote-approved') {
