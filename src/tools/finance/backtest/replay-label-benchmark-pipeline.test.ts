@@ -134,7 +134,7 @@ function makeResult(
     shouldEnterNow: preferredDirection !== 'neutral',
     semanticSummary: {
       primaryPolymarketSemantics: 'terminal',
-      counts: { terminal: 1, barrier_touch: 0, range: 0, path_dependent: 0, unknown: 0 },
+      counts: { terminal: 1, barrier_touch: 0, range: 0, path_dependent: 0, ambiguous: 0, unknown: 0 },
       barrierPrices: [],
       reconciliation: 'test',
     },

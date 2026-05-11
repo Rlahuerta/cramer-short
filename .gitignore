@@ -56,7 +56,7 @@ yarn-error.log*
 .dexter/*
 .cramer-short/*
 .sisyphus/*
-references/*
+references/*.pdf
 
 logs/
 coverage.json

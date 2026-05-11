@@ -10,6 +10,8 @@ import {
   runEnsemble,
   computeCI,
   computeVariance,
+  isCleanThresholdLadder,
+  computeThresholdImpliedRawForecast,
 } from './ensemble.js';
 import type { MarketInput, OtherSignals } from './ensemble.js';
 
@@ -398,6 +400,52 @@ describe('computePolymarketSignal', () => {
     };
     const { warnings } = computePolymarketSignal([m]);
     expect(warnings.some((w) => w.includes('transitory historical move'))).toBe(true);
+  });
+
+  it('ambiguous semantics market → quality discounted 40%', () => {
+    const m: MarketInput = {
+      question: 'Will BTC close above $80k or hit $90k by May?',
+      probability: 0.55,
+      volume24hUsd: 500_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.08,
+      deltaNo: -0.04,
+    };
+    const clean = computeMarketQualityWeight(m);
+    const ambiguous = computeMarketQualityWeight({ ...m, marketSemantics: 'ambiguous' });
+    expect(ambiguous).toBeCloseTo(clean * 0.6, 5);
+  });
+
+  it('ambiguous semantics market → warning added, signal not zeroed', () => {
+    const m: MarketInput = {
+      question: 'Will BTC close above $80k or hit $90k by May?',
+      probability: 0.55,
+      volume24hUsd: 500_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.08,
+      deltaNo: -0.04,
+      marketSemantics: 'ambiguous',
+    };
+    const { signal, warnings } = computePolymarketSignal([m]);
+    expect(signal).not.toBe(0);
+    expect(warnings.some((w) => w.includes('ambiguous'))).toBe(true);
+  });
+
+  it('non-ambiguous semantics does not apply the 40% discount', () => {
+    const base: MarketInput = {
+      question: 'Will BTC be above $80k on May 1?',
+      probability: 0.55,
+      volume24hUsd: 500_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.08,
+      deltaNo: -0.04,
+    };
+    const noSemantics = computeMarketQualityWeight(base);
+    const terminal = computeMarketQualityWeight({ ...base, marketSemantics: 'terminal' });
+    expect(terminal).toBeCloseTo(noSemantics, 5);
   });
 });
 
@@ -1001,5 +1049,184 @@ describe('computeEnsemble — degenerate pmAvgQuality = 0', () => {
     const { weights } = computeEnsemble(0.05, 0.5, { sentimentScore: 0.3 });
     const wSum = Object.values(weights).reduce((a, b) => a + b, 0);
     expect(wSum).toBeCloseTo(1, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isCleanThresholdLadder
+// ---------------------------------------------------------------------------
+
+describe('isCleanThresholdLadder', () => {
+  it('fewer than 2 points → clean=false with diagnostic warning', () => {
+    const { clean, warnings } = isCleanThresholdLadder([{ price: 100, probability: 0.6 }]);
+    expect(clean).toBe(false);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('empty array → clean=false', () => {
+    const { clean } = isCleanThresholdLadder([]);
+    expect(clean).toBe(false);
+  });
+
+  it('2 well-formed monotone points → clean=true, no warnings', () => {
+    const { clean, warnings } = isCleanThresholdLadder([
+      { price: 70000, probability: 0.65 },
+      { price: 75000, probability: 0.38 },
+    ]);
+    expect(clean).toBe(true);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('3 strictly monotone points → clean=true', () => {
+    const { clean } = isCleanThresholdLadder([
+      { price: 150, probability: 0.70 },
+      { price: 160, probability: 0.50 },
+      { price: 170, probability: 0.25 },
+    ]);
+    expect(clean).toBe(true);
+  });
+
+  it('duplicate prices → clean=false', () => {
+    const { clean } = isCleanThresholdLadder([
+      { price: 100, probability: 0.6 },
+      { price: 100, probability: 0.4 },
+    ]);
+    expect(clean).toBe(false);
+  });
+
+  it('inversion > 5pp → clean=false with description', () => {
+    const { clean, warnings } = isCleanThresholdLadder([
+      { price: 70000, probability: 0.40 },
+      { price: 75000, probability: 0.55 }, // +15pp — clear mixed semantics
+    ]);
+    expect(clean).toBe(false);
+    expect(warnings[0]).toMatch(/inversion/i);
+  });
+
+  it('minor inversion ≤ 5pp → clean=true with noise warning', () => {
+    const { clean, warnings } = isCleanThresholdLadder([
+      { price: 70000, probability: 0.60 },
+      { price: 75000, probability: 0.63 }, // +3pp — within noise tolerance
+    ]);
+    expect(clean).toBe(true);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toMatch(/inversion|noise/i);
+  });
+
+  it('unsorted input is sorted before validation', () => {
+    // Feeding in descending order should still pass
+    const { clean } = isCleanThresholdLadder([
+      { price: 75000, probability: 0.38 },
+      { price: 70000, probability: 0.65 },
+    ]);
+    expect(clean).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeThresholdImpliedRawForecast
+// ---------------------------------------------------------------------------
+
+describe('computeThresholdImpliedRawForecast', () => {
+  it('two symmetric thresholds bracket currentPrice → expected price near middle', () => {
+    // P(>90) = 0.60, P(>110) = 0.40  → E[X] should be near 100
+    const result = computeThresholdImpliedRawForecast(
+      [
+        { price: 90, probability: 0.60 },
+        { price: 110, probability: 0.40 },
+      ],
+      100,
+      7,
+    );
+    // Buckets: below-90 prob=0.40, mid=(90-10)=80; interior prob=0.20, mid=100; above-110 prob=0.40, mid=120
+    // E[X] = 80*0.40 + 100*0.20 + 120*0.40 = 32 + 20 + 48 = 100
+    expect(result.forecastPrice).toBeCloseTo(100, 4);
+    expect(result.forecastReturn).toBeCloseTo(0, 4);
+  });
+
+  it('all weight above → expected price higher than currentPrice → positive forecastReturn', () => {
+    // P(>70k) = 0.90, P(>75k) = 0.80 → heavy upside probability
+    const result = computeThresholdImpliedRawForecast(
+      [
+        { price: 70000, probability: 0.90 },
+        { price: 75000, probability: 0.80 },
+      ],
+      72000,
+      2,
+    );
+    expect(result.forecastPrice).toBeGreaterThan(72000);
+    expect(result.forecastReturn).toBeGreaterThan(0);
+  });
+
+  it('returns shape compatible with EnsembleResult', () => {
+    const result = computeThresholdImpliedRawForecast(
+      [
+        { price: 150, probability: 0.60 },
+        { price: 170, probability: 0.35 },
+        { price: 190, probability: 0.15 },
+      ],
+      160,
+      7,
+    );
+    expect(typeof result.forecastReturn).toBe('number');
+    expect(typeof result.forecastPrice).toBe('number');
+    expect(typeof result.sigma).toBe('number');
+    expect(typeof result.qualityScore).toBe('number');
+    expect(['A', 'B', 'C', 'D']).toContain(result.qualityGrade);
+    expect(result.ciLow95).toBeLessThan(result.forecastPrice);
+    expect(result.ciHigh95).toBeGreaterThan(result.forecastPrice);
+    expect(Array.isArray(result.warnings)).toBe(true);
+  });
+
+  it('sigma floor is applied — non-zero sigma even with deterministic ladder', () => {
+    // Both thresholds with identical price → only 1 bucket effectively
+    // But even with near-zero variance, sigmaFloor must kick in
+    const result = computeThresholdImpliedRawForecast(
+      [
+        { price: 99, probability: 0.51 },
+        { price: 101, probability: 0.49 },
+      ],
+      100,
+      7,
+    );
+    const floor7d = 0.10 * Math.sqrt(7 / 252);
+    expect(result.sigma).toBeGreaterThanOrEqual(floor7d - 1e-9);
+  });
+
+  it('3-point ladder E[X] math is exact', () => {
+    // pts: {price:150, p:0.60}, {price:160, p:0.45}, {price:170, p:0.20}
+    // avgStride = (170-150)/2 = 10
+    // Buckets:
+    //   below-150: mid=145, prob=1-0.60=0.40
+    //   150-160:   mid=155, prob=0.60-0.45=0.15
+    //   160-170:   mid=165, prob=0.45-0.20=0.25
+    //   above-170: mid=175, prob=0.20
+    // total=1.00 → no renorm needed
+    // E[X] = 145*0.40 + 155*0.15 + 165*0.25 + 175*0.20
+    //       = 58 + 23.25 + 41.25 + 35 = 157.5
+    const result = computeThresholdImpliedRawForecast(
+      [
+        { price: 150, probability: 0.60 },
+        { price: 160, probability: 0.45 },
+        { price: 170, probability: 0.20 },
+      ],
+      160,
+      7,
+    );
+    expect(result.forecastPrice).toBeCloseTo(157.5, 4);
+    expect(result.forecastReturn).toBeCloseTo((157.5 - 160) / 160, 6);
+  });
+
+  it('pmEffectiveWeight and pmNormalizedWeight are both 1.0', () => {
+    const result = computeThresholdImpliedRawForecast(
+      [
+        { price: 100, probability: 0.55 },
+        { price: 110, probability: 0.30 },
+      ],
+      105,
+      14,
+    );
+    expect(result.pmEffectiveWeight).toBeCloseTo(1.0, 5);
+    expect(result.pmNormalizedWeight).toBeCloseTo(1.0, 5);
   });
 });

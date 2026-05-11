@@ -19,6 +19,7 @@ import {
 } from './polymarket.js';
 import { findSnapshotInWindow, readSnapshotRecords, DEFAULT_POLYMARKET_SNAPSHOTS_PATH } from './polymarket-snapshots.js';
 import { extractSignals, scoreMarketRelevance } from './signal-extractor.js';
+import { classifyPolymarketQuestion } from './forecast-arbitrator.js';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import { lookupImpact, inferAssetClass } from './impact-map.js';
 import {
@@ -29,7 +30,11 @@ import {
   computeConditionalReturn,
   adjustYesBias,
   scoreToGrade,
+  isCleanThresholdLadder,
+  computeThresholdImpliedRawForecast,
+  YES_BIAS_MULTIPLIER,
   type MarketInput,
+  type ThresholdLadderPoint,
 } from '../../utils/ensemble.js';
 import {
   buildPriceDistributionChart,
@@ -837,7 +842,7 @@ function resolveAnchorSignalCategory(
 
   return bestScore > 0
     ? bestCategory
-    : signals.find((signal) => signal.category === 'btc_price_target')?.category ?? bestCategory;
+    : signals[0]?.category ?? 'btc_price_target';
 }
 
 type AnchorCandidateMarket = {
@@ -1394,6 +1399,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             deltaYes: mImpact.deltaYes,
             deltaNo: mImpact.deltaNo,
             requestedHorizonDays: shouldFilterResolutionMismatch(assetClass, horizonDays) ? horizonDays : undefined,
+            marketSemantics: classifyPolymarketQuestion(m.question),
           };
         });
         const liveCalibrationApplied = (
@@ -1421,7 +1427,61 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         };
         const ensembleOptions = { adaptiveWeighting: true } as const;
 
+        // Compute thresholds once — used for both the threshold-implied raw
+        // forecast (below) and the distribution chart display (further down).
+        const thresholdChartAligned = shortHorizonAnchorThresholds.length > 0
+          ? true
+          : isThresholdChartAlignedToHorizon(rawMarkets, horizonDays);
+
+        // In the generic path, restrict to threshold markets whose resolution
+        // date aligns with the requested horizon so that misaligned contracts
+        // at the same strike cannot contaminate the ladder via probability
+        // averaging inside extractChartPriceThresholds.
+        const genericThresholdMarkets = (shortHorizonAnchorThresholds.length === 0 && thresholdChartAligned)
+          ? rawMarkets.filter((m) => {
+              if (!m.endDate) return false;
+              if (extractChartPriceThresholds([{ question: m.question, probability: m.probability }]).length === 0) return false;
+              return isResolutionAlignedToHorizon(daysUntilEndDate(m.endDate), horizonDays);
+            })
+          : rawMarkets;
+
+        const thresholds = shortHorizonAnchorThresholds.length > 0
+          ? shortHorizonAnchorThresholds
+          : extractChartPriceThresholds(genericThresholdMarkets);
+
+        // Build a bias-corrected forecast ladder.
+        // shortHorizonAnchorThresholds already stores bias-corrected probabilities;
+        // extractChartPriceThresholds returns raw Polymarket quotes, so apply YES_BIAS_MULTIPLIER.
+        const forecastLadder: ThresholdLadderPoint[] = shortHorizonAnchorThresholds.length > 0
+          ? shortHorizonAnchorThresholds.map((t) => ({ price: t.price, probability: t.probability }))
+          : extractChartPriceThresholds(genericThresholdMarkets).map((t) => ({
+              price: t.price,
+              probability: t.probability * YES_BIAS_MULTIPLIER,
+            }));
+
         const { signal: pmSignal, avgQuality, warnings: pmWarnings } = computePolymarketSignal(markets);
+        let rawPolymarketResult = runEnsemble(
+          basePrice,
+          markets,
+          { horizonDays },
+          ensembleOptions,
+        );
+        let thresholdPathActive = false;
+        const thresholdPathWarnings: string[] = [];
+
+        if (thresholdChartAligned && forecastLadder.length >= 2) {
+          const ladderCheck = isCleanThresholdLadder(forecastLadder);
+          thresholdPathWarnings.push(...ladderCheck.warnings);
+          if (ladderCheck.clean) {
+            rawPolymarketResult = computeThresholdImpliedRawForecast(
+              forecastLadder,
+              basePrice,
+              horizonDays,
+            );
+            thresholdPathActive = true;
+          }
+        }
+
         const { weights } = computeEnsemble(pmSignal, avgQuality, otherSignals, ensembleOptions);
         const result = runEnsemble(basePrice, markets, otherSignals, ensembleOptions);
         const adjustedQualityScore = clamp(
@@ -1432,6 +1492,13 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const adjustedQualityGrade = scoreToGrade(adjustedQualityScore);
         const adjustedSigma = result.sigma * crossPlatformAdjustment.sigmaMultiplier;
         const adjustedCi = computeCI(result.forecastPrice, adjustedSigma);
+        const rawCi = computeCI(rawPolymarketResult.forecastPrice, rawPolymarketResult.sigma);
+        const hasAuxiliarySignals = (
+          input.sentiment_score !== undefined
+          || input.markov_return !== undefined
+          || input.fundamental_return !== undefined
+          || input.options_skew !== undefined
+        );
 
         if (recordReplayPolymarketCapture) {
           const rawRow = createRawPolymarketReplayRow({
@@ -1450,7 +1517,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
               relevanceScore: scoreMarketRelevance(market.question, market.signalCategory),
             })),
             warnings: historyWarnings,
-            forecastReturn: result.forecastReturn,
+            forecastReturn: rawPolymarketResult.forecastReturn,
             qualityScore: adjustedQualityScore,
             qualityGrade: adjustedQualityGrade,
             crossPlatformEvidence: crossPlatformEvidence.map((entry) => ({
@@ -1476,8 +1543,12 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         }
 
         // Step 5: Format output
+        const rawReturnPct = (rawPolymarketResult.forecastReturn * 100).toFixed(2);
         const returnPct = (result.forecastReturn * 100).toFixed(2);
+        const rawSigmaPct = (rawPolymarketResult.sigma * 100).toFixed(2);
         const sigmaPct = (adjustedSigma * 100).toFixed(2);
+        const rawCiLow = rawCi.low;
+        const rawCiHigh = rawCi.high;
         const ciLow = adjustedCi.low;
         const ciHigh = adjustedCi.high;
         const pmPct = pct(result.pmSignal);
@@ -1487,7 +1558,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const displayLabel = searchIdentity.canonicalNames[0]?.toUpperCase() ?? ticker;
 
         const lines: string[] = [
-          `📊 Polymarket Forecast: ${displayLabel} (${ticker})  |  Horizon: ${horizonDays} days  |  Grade: ${adjustedQualityGrade} (${adjustedQualityScore}/100)`,
+          `📊 Polymarket Forecast: ${displayLabel} (${ticker})  |  Horizon: ${horizonDays} days`,
         ];
 
         if (currentPrice === undefined) {
@@ -1512,15 +1583,17 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
 
         lines.push('');
         lines.push(`Current price:   ${currentPrice !== undefined ? '$' + basePrice : 'not provided — CI shown as %'}`);
-        lines.push(`Forecast price:  ${currentPrice !== undefined ? '$' + result.forecastPrice.toFixed(2) : '(base 100) ' + result.forecastPrice.toFixed(2)}  (${sign(result.forecastReturn)}${returnPct}%)`);
+        lines.push('── Raw Polymarket Forecast ───────────────────────────────────────────────');
+        lines.push(`Raw Polymarket forecast: ${currentPrice !== undefined ? '$' + rawPolymarketResult.forecastPrice.toFixed(2) : '(base 100) ' + rawPolymarketResult.forecastPrice.toFixed(2)}  (${sign(rawPolymarketResult.forecastReturn)}${rawReturnPct}%)${thresholdPathActive ? '  [threshold-implied distribution]' : ''}`);
         if (currentPrice !== undefined) {
-          lines.push(`95% CI:          [$${ciLow.toFixed(2)} – $${ciHigh.toFixed(2)}]  (σ = ${sigmaPct}%)`);
+          lines.push(`Raw Polymarket 95% CI: [$${rawCiLow.toFixed(2)} – $${rawCiHigh.toFixed(2)}]  (σ = ${rawSigmaPct}%)`);
         } else {
-          const ciLowPct = ((ciLow / basePrice - 1) * 100).toFixed(2);
-          const ciHighPct = ((ciHigh / basePrice - 1) * 100).toFixed(2);
-          const ciHighSign = parseFloat(ciHighPct) >= 0 ? '+' : '';
-          lines.push(`95% CI:          [${ciLowPct}% – ${ciHighSign}${ciHighPct}%]  (σ = ${sigmaPct}%)  ← % relative to current price`);
+          const rawCiLowPct = ((rawCiLow / basePrice - 1) * 100).toFixed(2);
+          const rawCiHighPct = ((rawCiHigh / basePrice - 1) * 100).toFixed(2);
+          const rawCiHighSign = parseFloat(rawCiHighPct) >= 0 ? '+' : '';
+          lines.push(`Raw Polymarket 95% CI: [${rawCiLowPct}% – ${rawCiHighSign}${rawCiHighPct}%]  (σ = ${rawSigmaPct}%)  ← % relative to current price`);
         }
+        lines.push(`Raw Polymarket grade: ${rawPolymarketResult.qualityGrade} (${rawPolymarketResult.qualityScore}/100)`);
         lines.push('');
 
         // ── Polymarket Signal Summary (grouped by theme) ───────────────────────────
@@ -1588,7 +1661,6 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
 
           const netLean = result.pmSignal > 0.005 ? ' (bullish lean)' : result.pmSignal < -0.005 ? ' (bearish lean)' : '';
           lines.push(`  Consensus: ${bullish} bullish · ${bearish} bearish · ${neutral} neutral    Net signal: ${pmPct}%${netLean}`);
-          lines.push(`  Polymarket drives ${pmWeightPct}% of this forecast  (remainder from sentiment / fundamentals / options)`);
         }
 
         lines.push('');
@@ -1636,12 +1708,25 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           }
         }
 
-        const thresholds = shortHorizonAnchorThresholds.length > 0
-          ? shortHorizonAnchorThresholds
-          : extractChartPriceThresholds(rawMarkets);
-        const thresholdChartAligned = shortHorizonAnchorThresholds.length > 0
-          ? true
-          : isThresholdChartAlignedToHorizon(rawMarkets, horizonDays);
+        lines.push('');
+        lines.push('── Signal Mixing ─────────────────────────────────────────────────────────');
+        lines.push(`Blended forecast: ${currentPrice !== undefined ? '$' + result.forecastPrice.toFixed(2) : '(base 100) ' + result.forecastPrice.toFixed(2)}  (${sign(result.forecastReturn)}${returnPct}%)`);
+        if (currentPrice !== undefined) {
+          lines.push(`Blended 95% CI: [$${ciLow.toFixed(2)} – $${ciHigh.toFixed(2)}]  (σ = ${sigmaPct}%)`);
+        } else {
+          const ciLowPct = ((ciLow / basePrice - 1) * 100).toFixed(2);
+          const ciHighPct = ((ciHigh / basePrice - 1) * 100).toFixed(2);
+          const ciHighSign = parseFloat(ciHighPct) >= 0 ? '+' : '';
+          lines.push(`Blended 95% CI: [${ciLowPct}% – ${ciHighSign}${ciHighPct}%]  (σ = ${sigmaPct}%)  ← % relative to current price`);
+        }
+        lines.push(`Blended grade: ${adjustedQualityGrade} (${adjustedQualityScore}/100)`);
+        if (hasAuxiliarySignals) {
+          lines.push(`Polymarket weight after mixing: ${pmWeightPct}%  (remainder from sentiment / fundamentals / options / Markov)`);
+        } else {
+          lines.push('Polymarket weight after mixing: 100.0%  (no auxiliary signals were provided)');
+        }
+
+        // thresholds and thresholdChartAligned are already computed above (before runEnsemble).
         if (thresholds.length >= 2 && thresholdChartAligned) {
           const chart = buildPriceDistributionChart(thresholds, currentPrice, ticker);
           if (chart) {
@@ -1663,6 +1748,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           ...(result.warnings ?? []),
           ...pmWarnings.filter((w) => !result.warnings?.includes(w)),
           ...(thresholdChartWarning ? [thresholdChartWarning] : []),
+          ...thresholdPathWarnings,
         ];
         const uniqueWarnings = [...new Set(allWarnings)];
         if (uniqueWarnings.length === 0) {
@@ -1678,6 +1764,10 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
 
         return formatToolResult({
           result: lines.join('\n'),
+          rawForecastReturn: rawPolymarketResult.forecastReturn,
+          blendedForecastReturn: result.forecastReturn,
+          rawForecastPrice: rawPolymarketResult.forecastPrice,
+          blendedForecastPrice: result.forecastPrice,
           crossPlatformEvidence,
           crossPlatformAdjustment,
           qualityScore: adjustedQualityScore,

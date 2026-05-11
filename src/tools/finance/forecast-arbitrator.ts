@@ -12,6 +12,7 @@ export type ForecastMarketSemantics =
   | 'barrier_touch'
   | 'range'
   | 'path_dependent'
+  | 'ambiguous'
   | 'unknown';
 
 export type ForecastArbiterVerdict =
@@ -150,6 +151,7 @@ const SEMANTICS_VALUES: ForecastMarketSemantics[] = [
   'barrier_touch',
   'range',
   'path_dependent',
+  'ambiguous',
   'unknown',
 ];
 
@@ -293,14 +295,24 @@ function directionFromReturn(value: number | undefined, threshold = 0.001): Dire
 export function classifyPolymarketQuestion(question: string): ForecastMarketSemantics {
   const q = question.toLowerCase();
 
+  // Rule-heavy conditional language makes resolution criteria ambiguous.
+  if (/\b(according to|subject to|provided that|contingent on|as long as|unless)\b/.test(q)) {
+    return 'ambiguous';
+  }
+
+  // Mixed terminal + barrier signals in the same question indicate unclear semantics.
+  const hasBarrierSignal = /\b(hit|touch|reach|dip|tap)\b|\bdrop below\b|\bfall below\b|\btrade (above|below|at)\b/.test(q);
+  const terminalScanQuestion = q
+    .replace(/\bdrop below\b/g, '')
+    .replace(/\bfall below\b/g, '')
+    .replace(/\btrade (above|below|at)\b/g, '');
+  const hasTerminalSignal = /\b(above|below|over|under|exceed|greater than|less than|settle|close|finish)\b/.test(terminalScanQuestion);
+  if (hasTerminalSignal && hasBarrierSignal) return 'ambiguous';
+
   if (/\bbetween\b|\brange\b|\bwithin\b/.test(q)) return 'range';
   if (/\bstay\b|\bthrough\b|\bany time\b|\bintraday\b/.test(q)) return 'path_dependent';
-  if (/\b(hit|touch|reach|dip|tap)\b|\bdrop below\b|\bfall below\b|\btrade (above|below|at)\b/.test(q)) {
-    return 'barrier_touch';
-  }
-  if (/\b(above|below|over|under|exceed|greater than|less than|settle|close|finish)\b/.test(q)) {
-    return 'terminal';
-  }
+  if (hasBarrierSignal) return 'barrier_touch';
+  if (hasTerminalSignal) return 'terminal';
 
   return 'unknown';
 }
@@ -330,6 +342,7 @@ function inferMarketSemantics(markets: ForecastMarketEvidence[] | undefined): {
     barrier_touch: 0,
     range: 0,
     path_dependent: 0,
+    ambiguous: 0,
     unknown: 0,
   };
   const barrierPrices: number[] = [];
@@ -384,7 +397,9 @@ function computeTradeScore(params: {
     ? 1
     : params.polymarketSemantics === 'barrier_touch' || params.polymarketSemantics === 'path_dependent'
       ? 0.4
-      : 0.7;
+      : params.polymarketSemantics === 'ambiguous'
+        ? 0.5
+        : 0.7;
   const whaleBoost = params.whaleDirection === params.direction
     ? params.whaleConfidence * 0.0025
     : params.whaleDirection === 'neutral'
@@ -496,6 +511,8 @@ function computeForecastTrustPolicy(params: {
   }
   if (params.semantic.primary === 'barrier_touch' || params.semantic.primary === 'path_dependent') {
     reasons.push('Prediction-market support is barrier/path dependent rather than a clean terminal anchor.');
+  } else if (params.semantic.primary === 'ambiguous') {
+    reasons.push('Prediction-market questions have mixed or ambiguous resolution semantics, reducing directional weight.');
   }
   if (params.structuralBreak) {
     reasons.push('A structural-break flag is active, so regime trust is reduced.');
@@ -531,6 +548,7 @@ function computeForecastTrustPolicy(params: {
     || weakConformal
     || params.semantic.primary === 'barrier_touch'
     || params.semantic.primary === 'path_dependent'
+    || params.semantic.primary === 'ambiguous'
   ) {
     level = 'context-only';
   }
@@ -650,7 +668,13 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
 
   const rationale: string[] = [];
   if (isDivergent) rationale.push('Markov and Polymarket point in opposite directions, so the arbiter rejects a one-model trade call.');
-  if (semantic.primary !== 'terminal') rationale.push('The leading Polymarket evidence appears path-dependent/barrier-like, which can be true even if terminal Markov drift is flat or positive.');
+  if (semantic.primary === 'barrier_touch' || semantic.primary === 'path_dependent') {
+    rationale.push('The leading Polymarket evidence appears path-dependent/barrier-like, which can be true even if terminal Markov drift is flat or positive.');
+  } else if (semantic.primary === 'ambiguous') {
+    rationale.push('Polymarket questions have mixed or rule-heavy resolution criteria; treating the signal as soft directional context only.');
+  } else if (semantic.primary !== 'terminal') {
+    rationale.push('The leading Polymarket evidence has unclear semantics, so the directional signal is treated as soft context.');
+  }
   if (flatProbability >= 0.7) rationale.push('Markov assigns high probability to a flat/range outcome, which weakens both immediate LONG and SHORT setups.');
   if (leverage >= 8) rationale.push(`${leverage}x leverage makes a normal intraday move large enough to dominate the expected edge.`);
   if (!hasWhaleInput) {
@@ -662,7 +686,9 @@ export function arbitrateForecast(input: ForecastArbiterInput): ForecastArbiterR
 
   const reconciliation = semantic.primary === 'barrier_touch' || semantic.primary === 'path_dependent'
     ? 'Barrier/touch markets describe whether a level is hit at any point; Markov usually describes terminal distribution at the horizon. Both can be true, so use conditional triggers rather than forcing a side.'
-    : 'Signals are comparable as terminal directional forecasts.';
+    : semantic.primary === 'ambiguous'
+      ? 'Markets have mixed or rule-heavy resolution criteria; interpret as soft directional context rather than a clean terminal probability.'
+      : 'Signals are comparable as terminal directional forecasts.';
 
   return {
     ticker,

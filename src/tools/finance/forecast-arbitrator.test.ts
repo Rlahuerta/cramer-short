@@ -506,4 +506,58 @@ describe('forecast arbitrator', () => {
     expect(captures[0]?.ticker).toBe('BTC');
     expect(captures[0]?.polymarketQuestion).toContain('Will BTC be above $77,000');
   });
+
+  // ---------------------------------------------------------------------------
+  // Phase 2 — ambiguous semantic category
+  // ---------------------------------------------------------------------------
+
+  it('classifies mixed terminal+barrier questions as ambiguous', () => {
+    expect(classifyPolymarketQuestion('Will BTC close above $80,000 or hit $90,000 by May?')).toBe('ambiguous');
+    expect(classifyPolymarketQuestion('Will ETH settle above $3,000 and reach $4,000 first?')).toBe('ambiguous');
+  });
+
+  it('classifies rule-heavy conditional questions as ambiguous', () => {
+    expect(classifyPolymarketQuestion('Will BTC exceed $90,000 provided that Ethereum also rises?')).toBe('ambiguous');
+    expect(classifyPolymarketQuestion('Will BTC settle above $80k unless a regulatory ban occurs?')).toBe('ambiguous');
+    expect(classifyPolymarketQuestion('Will BTC be above $100k as long as dominance holds?')).toBe('ambiguous');
+  });
+
+  it('does not reclassify clean barrier_touch questions as ambiguous (regression)', () => {
+    expect(classifyPolymarketQuestion('Will Bitcoin dip to $75,000 in April?')).toBe('barrier_touch');
+    expect(classifyPolymarketQuestion('Will BTC fall below $70,000 this week?')).toBe('barrier_touch');
+    expect(classifyPolymarketQuestion('Will ETH drop below $2,000 by Friday?')).toBe('barrier_touch');
+    expect(classifyPolymarketQuestion('Will BTC trade above $90,000 today?')).toBe('barrier_touch');
+    expect(classifyPolymarketQuestion('Will BTC trade below $88,000 today?')).toBe('barrier_touch');
+  });
+
+  it('does not reclassify clean terminal questions as ambiguous (regression)', () => {
+    expect(classifyPolymarketQuestion('Will BTC be above $80,000 on May 1?')).toBe('terminal');
+  });
+
+  it('promotes context-only policy when all markets are ambiguous', () => {
+    const result = arbitrateForecast({
+      ticker: 'BTC',
+      horizon_days: 1,
+      current_price: 80_000,
+      leverage: 2,
+      markov: {
+        forecast_return: 0.01,
+        p_up: 0.6,
+        confidence: 0.65,
+        flat_probability: 0.3,
+      },
+      polymarket: {
+        forecast_return: 0.01,
+        quality_score: 75,
+        markets: [
+          { question: 'Will BTC close above $82k or hit $85k by May?', probability: 0.55 },
+          { question: 'Will BTC settle above $80k unless a regulatory ban occurs?', probability: 0.58 },
+        ],
+      },
+    });
+
+    expect(result.policy.level).toBe('context-only');
+    expect(result.semanticSummary.primaryPolymarketSemantics).toBe('ambiguous');
+    expect(result.semanticSummary.reconciliation).toContain('mixed or rule-heavy');
+  });
 });

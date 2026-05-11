@@ -74,21 +74,29 @@ function parsePayload(raw: unknown): {
   result?: string;
   error?: string;
   forecastReturn?: number;
+  rawForecastReturn?: number;
+  blendedForecastReturn?: number;
+  rawForecastPrice?: number;
+  blendedForecastPrice?: number;
   crossPlatformEvidence?: CrossPlatformEvidence[];
   crossPlatformAdjustment?: CrossPlatformConfidenceAdjustment;
   qualityScore?: number;
   qualityGrade?: string;
 } {
   const outer = JSON.parse(raw as string) as {
-    data?: {
-      result?: string;
-      error?: string;
-      forecastReturn?: number;
-      crossPlatformEvidence?: CrossPlatformEvidence[];
-      crossPlatformAdjustment?: CrossPlatformConfidenceAdjustment;
-      qualityScore?: number;
-      qualityGrade?: string;
-    };
+      data?: {
+        result?: string;
+        error?: string;
+        forecastReturn?: number;
+        rawForecastReturn?: number;
+        blendedForecastReturn?: number;
+        rawForecastPrice?: number;
+        blendedForecastPrice?: number;
+        crossPlatformEvidence?: CrossPlatformEvidence[];
+        crossPlatformAdjustment?: CrossPlatformConfidenceAdjustment;
+        qualityScore?: number;
+        qualityGrade?: string;
+      };
   };
   return outer.data ?? {};
 }
@@ -758,10 +766,56 @@ describe('polymarketForecastTool', () => {
       undefined,
     );
     const output = parseResult(raw);
-    const match = output.match(/Forecast price:\s+\$([0-9.]+)/);
+    const match = output.match(/Raw Polymarket forecast:\s+\$([0-9.]+)/);
     expect(match).not.toBeNull();
     const price = parseFloat(match![1]!);
     expect(price).toBeGreaterThan(0);
+  });
+
+  it('shows the raw polymarket forecast before the blended signal mix when auxiliary signals are present', async () => {
+    const raw = await makeHermeticTool(async () => [
+      {
+        question: 'Will Bitcoin be above $70,000 on May 9?',
+        probability: 0.58,
+        volume24h: 240_000,
+        ageDays: 1,
+        endDate: futureIso(7),
+      },
+    ]).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000, sentiment_score: -1 },
+      undefined,
+    );
+    const output = parseResult(raw);
+    const rawMatch = output.match(/Raw Polymarket forecast:\s+\$([0-9.]+)/);
+    const blendedMatch = output.match(/Blended forecast:\s+\$([0-9.]+)/);
+
+    expect(output.indexOf('Raw Polymarket forecast:')).toBeLessThan(output.indexOf('Blended forecast:'));
+    expect(rawMatch).not.toBeNull();
+    expect(blendedMatch).not.toBeNull();
+    expect(parseFloat(rawMatch![1]!)).not.toBeCloseTo(parseFloat(blendedMatch![1]!), 6);
+  });
+
+  it('returns separate raw and blended forecast values in the structured payload', async () => {
+    const raw = await makeHermeticTool(async () => [
+      {
+        question: 'Will Bitcoin be above $70,000 on May 9?',
+        probability: 0.58,
+        volume24h: 240_000,
+        ageDays: 1,
+        endDate: futureIso(7),
+      },
+    ]).func(
+      { ticker: 'BTC', horizon_days: 7, current_price: 68_000, sentiment_score: -1 },
+      undefined,
+    );
+    const payload = parsePayload(raw);
+
+    expect(payload.rawForecastReturn).toBeDefined();
+    expect(payload.blendedForecastReturn).toBeDefined();
+    expect(payload.rawForecastPrice).toBeDefined();
+    expect(payload.blendedForecastPrice).toBeDefined();
+    expect(payload.rawForecastReturn).not.toBeCloseTo(payload.blendedForecastReturn!, 6);
+    expect(payload.rawForecastPrice).not.toBeCloseTo(payload.blendedForecastPrice!, 6);
   });
 
   it('shows warning when no current_price provided', async () => {
@@ -822,7 +876,7 @@ describe('polymarketForecastTool', () => {
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
       undefined,
     );
-    expect(parseResult(raw)).toMatch(/Grade:\s+[ABCD]/);
+    expect(parseResult(raw)).toMatch(/Raw Polymarket grade:\s+[ABCD]/);
   });
 
   it('omits not-provided signals with placeholder text', async () => {
@@ -866,7 +920,7 @@ describe('polymarketForecastTool', () => {
       { ticker: 'NVDA', horizon_days: 7, current_price: 135.50 },
       undefined,
     );
-    expect(parseResult(raw)).toContain('Grade: D');
+    expect(parseResult(raw)).toContain('Raw Polymarket grade: D');
   });
 
   it('captures a replay-ready Polymarket decision block with frozen semantics and CLOB token ids', async () => {
@@ -1906,6 +1960,131 @@ describe('polymarketForecastTool', () => {
     expect(result).not.toContain('Threshold-style markets were omitted from the distribution chart');
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Threshold-implied raw Polymarket forecast path
+// ---------------------------------------------------------------------------
+
+describe('threshold-implied raw Polymarket forecast path', () => {
+  beforeEach(() => { polymarketBreaker.reset(); });
+
+  it('activates when ≥2 aligned "above $X" threshold markets exist → rawForecastPrice matches E[X]', async () => {
+    // BTC ladder: 3 horizon-aligned upper-tail markets with "Bitcoin" in the question so they
+    // pass scoreMarketRelevance for the btc_price_target signal category.
+    const horizonDays = 7;
+    const endDate = futureIso(horizonDays);
+    const btcThresholdMarkets: PolymarketMarketResult[] = [
+      { marketId: 'btc-above-90k', assetId: 'btc-yes-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.72, volume24h: 250_000, ageDays: 3, endDate },
+      { marketId: 'btc-above-100k', assetId: 'btc-yes-100k', question: 'Will Bitcoin be above $100K in 7 days?', probability: 0.50, volume24h: 200_000, ageDays: 3, endDate },
+      { marketId: 'btc-above-110k', assetId: 'btc-yes-110k', question: 'Will Bitcoin be above $110K in 7 days?', probability: 0.28, volume24h: 150_000, ageDays: 3, endDate },
+    ];
+
+    const tool = makeHermeticTool(async () => btcThresholdMarkets);
+    const raw = await tool.invoke({ ticker: 'BTC', current_price: 95000, horizon_days: horizonDays });
+    const payload = parsePayload(raw);
+
+    expect(payload.rawForecastPrice).toBeDefined();
+
+    // Manually compute expected E[X]:
+    // YES_BIAS_MULTIPLIER = 0.95 applied to raw probs
+    // pts: {90K, 0.684}, {100K, 0.475}, {110K, 0.266}
+    // avgStride = (110K-90K)/2 = 10K
+    // Buckets:
+    //   below-90K:  mid=80K,  prob=1-0.684=0.316
+    //   90K-100K:   mid=95K,  prob=0.684-0.475=0.209
+    //   100K-110K:  mid=105K, prob=0.475-0.266=0.209
+    //   above-110K: mid=120K, prob=0.266
+    //   total=1.000
+    // E[X] = 80K×0.316 + 95K×0.209 + 105K×0.209 + 120K×0.266 ≈ 99K
+    expect(payload.rawForecastPrice!).toBeGreaterThan(80000);
+    expect(payload.rawForecastPrice!).toBeLessThan(130000);
+
+    // The result string should include the threshold-implied label
+    const result = parseResult(raw);
+    expect(result).toContain('[threshold-implied distribution]');
+  });
+
+  it('falls back to event-impact path when only 1 threshold market exists', async () => {
+    const endDate = futureIso(7);
+    const singleThresholdMarket: PolymarketMarketResult[] = [
+      { marketId: 'sol-above-150', assetId: 'sol-yes-150', question: 'Will the price of SOL be above $150 in 7 days?', probability: 0.55, volume24h: 200_000, ageDays: 2, endDate },
+    ];
+
+    const tool = makeHermeticTool(async () => singleThresholdMarket);
+    const raw = await tool.invoke({ ticker: 'SOL', current_price: 145, horizon_days: 7 });
+    const result = parseResult(raw);
+
+    // Should NOT display threshold-implied label
+    expect(result).not.toContain('[threshold-implied distribution]');
+  });
+
+  it('falls back when threshold ladder has a large probability inversion (> 5pp)', async () => {
+    // Inverted probabilities: P(>160) > P(>140) — non-monotone / mixed semantics
+    const endDate = futureIso(7);
+    const invertedLadder: PolymarketMarketResult[] = [
+      { marketId: 'sol-above-140', assetId: 'sol-yes-140', question: 'Will the price of SOL be above $140 in 7 days?', probability: 0.40, volume24h: 200_000, ageDays: 2, endDate },
+      { marketId: 'sol-above-160', assetId: 'sol-yes-160', question: 'Will the price of SOL be above $160 in 7 days?', probability: 0.60, volume24h: 200_000, ageDays: 2, endDate },
+    ];
+
+    const tool = makeHermeticTool(async () => invertedLadder);
+    const raw = await tool.invoke({ ticker: 'SOL', current_price: 150, horizon_days: 7 });
+    const result = parseResult(raw);
+
+    expect(result).not.toContain('[threshold-implied distribution]');
+  });
+
+  it('activates for a 14-day horizon when aligned ladder is present', async () => {
+    const endDate = futureIso(14);
+    const btcMarkets14d: PolymarketMarketResult[] = [
+      { marketId: 'btc-14d-90k', assetId: 'btc-yes-90k-14d', question: 'Will Bitcoin be above $90K in 14 days?', probability: 0.75, volume24h: 180_000, ageDays: 5, endDate },
+      { marketId: 'btc-14d-110k', assetId: 'btc-yes-110k-14d', question: 'Will Bitcoin be above $110K in 14 days?', probability: 0.35, volume24h: 120_000, ageDays: 5, endDate },
+    ];
+
+    const tool = makeHermeticTool(async () => btcMarkets14d);
+    const raw = await tool.invoke({ ticker: 'BTC', current_price: 100000, horizon_days: 14 });
+    const result = parseResult(raw);
+
+    expect(result).toContain('[threshold-implied distribution]');
+  });
+
+  it('uses only horizon-aligned contracts when a misaligned contract shares the same strike', async () => {
+    // Aligned market at $100K: probability 0.40 (correct, horizon-aligned).
+    // Misaligned market at $100K: probability 0.90 (far-dated, should be excluded).
+    // If averaged, the ladder would get 0.65 at $100K — a contaminated value.
+    // Regression: raw ladder must use 0.40, not the averaged 0.65.
+    const horizonDays = 7;
+    const alignedEnd = futureIso(horizonDays);
+    const misalignedEnd = futureIso(180); // far-future, not within horizon tolerance
+
+    const mixedMarkets: PolymarketMarketResult[] = [
+      // aligned pair — provides a valid 2-point ladder
+      { marketId: 'btc-aligned-90k', assetId: 'btc-a-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.70, volume24h: 200_000, ageDays: 2, endDate: alignedEnd },
+      { marketId: 'btc-aligned-100k', assetId: 'btc-a-100k', question: 'Will Bitcoin be above $100K in 7 days?', probability: 0.40, volume24h: 180_000, ageDays: 2, endDate: alignedEnd },
+      // misaligned contract at the same $100K strike — must not contaminate the ladder
+      { marketId: 'btc-misaligned-100k', assetId: 'btc-m-100k', question: 'Will Bitcoin be above $100K by end of year?', probability: 0.90, volume24h: 50_000, ageDays: 10, endDate: misalignedEnd },
+    ];
+
+    const tool = makeHermeticTool(async () => mixedMarkets);
+    const raw = await tool.invoke({ ticker: 'BTC', current_price: 95000, horizon_days: horizonDays });
+    const payload = parsePayload(raw);
+    const result = parseResult(raw);
+
+    // Threshold path must have activated (aligned pair exists).
+    expect(result).toContain('[threshold-implied distribution]');
+    expect(payload.rawForecastPrice).toBeDefined();
+
+    // The aligned $100K probability is 0.40; misaligned is 0.90; average would be 0.65.
+    // With bias multiplier (0.95): aligned → 0.38, averaged → 0.6175.
+    //
+    // computeThresholdImpliedRawForecast buckets (stride = $10 K, midpoints $85K/$95K/$105K):
+    //   Clean        (0.665 @ $90K, 0.38   @ $100K): E[X] ≈ $95,450
+    //   Contaminated (0.665 @ $90K, 0.6175 @ $100K): E[X] ≈ $97,825
+    //
+    // The bounds below pass for $95,450 (clean) but fail for $97,825 (contaminated).
+    expect(payload.rawForecastPrice!).toBeGreaterThan(93_000);
+    expect(payload.rawForecastPrice!).toBeLessThan(97_000);
+  });
 });
 
 describe('evaluateMarketHistory', () => {

@@ -69,6 +69,7 @@ function summarizeSemantics(markets: NonNullable<ForecastArbiterInput['polymarke
     barrier_touch: 0,
     range: 0,
     path_dependent: 0,
+    ambiguous: 0,
     unknown: 0,
   };
 

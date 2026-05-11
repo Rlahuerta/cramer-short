@@ -33,6 +33,8 @@ export interface MarketInput {
   maxHourlyJump?: number;
   /** P3 — Preferred single-hour jump signal in log-odds units. Undefined ⇒ fall back to raw-probability jumps. */
   maxHourlyLogitJump?: number;
+  /** P2 — Semantic classification of the market question. 'ambiguous' applies a 40% quality discount. */
+  marketSemantics?: string;
 }
 
 export interface OtherSignals {
@@ -304,6 +306,10 @@ export function computeMarketQualityWeight(m: MarketInput): number {
       && m.maxHourlyJump > LEGACY_MAX_HOURLY_JUMP_PENALTY_THRESHOLD) {
     w *= 0.70;
   }
+  // P2 — soft penalty for ambiguous or rule-heavy market semantics (not hard rejection).
+  if (m.marketSemantics === 'ambiguous') {
+    w *= 0.6;
+  }
   return Math.max(0, Math.min(1, w));
 }
 
@@ -361,6 +367,11 @@ export function computePolymarketSignal(markets: MarketInput[]): {
     if (m.transitoryMove) {
       warnings.push(
         `Market "${m.question}" shows a transitory historical move — quality discounted 30%`,
+      );
+    }
+    if (m.marketSemantics === 'ambiguous') {
+      warnings.push(
+        `Market "${m.question}" has ambiguous resolution semantics — quality discounted 40%`,
       );
     }
   }
@@ -541,6 +552,155 @@ export function scoreToGrade(score: number): 'A' | 'B' | 'C' | 'D' {
   if (score >= 60) return 'B';
   if (score >= 40) return 'C';
   return 'D';
+}
+
+// ---------------------------------------------------------------------------
+// Threshold-implied distribution forecast
+// ---------------------------------------------------------------------------
+
+/** A single point on a threshold ladder: upper-tail probability at a price level. */
+export interface ThresholdLadderPoint {
+  price: number;
+  /** P(asset > price) at expiry, 0–1. Should be bias-corrected before use. */
+  probability: number;
+}
+
+/**
+ * Validates a threshold ladder for use as an authoritative price distribution.
+ *
+ * Requirements:
+ *  - ≥ 2 distinct price levels
+ *  - Prices strictly increasing
+ *  - Probabilities non-increasing (allows ≤ 5pp upward reversal per step as
+ *    noise; larger inversions suggest mixed-semantic markets → fall back)
+ *
+ * Returns `{ clean: true, warnings }` when safe to use; `{ clean: false, warnings }`
+ * with a diagnostic message when the ladder should not be used.
+ */
+export function isCleanThresholdLadder(thresholds: ThresholdLadderPoint[]): {
+  clean: boolean;
+  warnings: string[];
+} {
+  if (thresholds.length < 2) {
+    return {
+      clean: false,
+      warnings: ['Threshold ladder has fewer than 2 price levels; threshold-implied path not activated.'],
+    };
+  }
+
+  const pts = [...thresholds].sort((a, b) => a.price - b.price);
+
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i]!.price <= pts[i - 1]!.price) {
+      return {
+        clean: false,
+        warnings: ['Threshold ladder contains duplicate or non-increasing prices; threshold-implied path not activated.'],
+      };
+    }
+  }
+
+  const MONOTONE_TOLERANCE = 0.05;
+  const warnings: string[] = [];
+
+  for (let i = 1; i < pts.length; i++) {
+    const delta = pts[i]!.probability - pts[i - 1]!.probability;
+    if (delta > MONOTONE_TOLERANCE) {
+      return {
+        clean: false,
+        warnings: [
+          `Threshold ladder probability inversion at $${pts[i]!.price}: ` +
+          `P(>${pts[i - 1]!.price}) = ${pts[i - 1]!.probability.toFixed(3)} < ` +
+          `P(>${pts[i]!.price}) = ${pts[i]!.probability.toFixed(3)} — mixed semantics suspected; ` +
+          `threshold-implied path not activated.`,
+        ],
+      };
+    }
+    if (delta > 0) {
+      warnings.push(
+        `Minor probability inversion at $${pts[i]!.price} (≤ 5pp noise); distribution smoothed.`,
+      );
+    }
+  }
+
+  return { clean: true, warnings };
+}
+
+/**
+ * Derives an `EnsembleResult` directly from a threshold-implied price distribution.
+ *
+ * Decomposes the upper-tail CDF ladder into probability-weighted buckets:
+ *   - Below t₀:      mid = t₀ − stride/2,     prob = 1 − p₀
+ *   - Interior [i]:  mid = (tᵢ + tᵢ₊₁) / 2,  prob = pᵢ − pᵢ₊₁
+ *   - Above tₙ₋₁:   mid = tₙ₋₁ + stride/2,   prob = pₙ₋₁
+ *
+ * The result can replace `rawPolymarketResult` in `polymarket-forecast.ts`
+ * when a clean aligned ladder is present.
+ */
+export function computeThresholdImpliedRawForecast(
+  thresholds: ThresholdLadderPoint[],
+  currentPrice: number,
+  horizonDays: number,
+): EnsembleResult {
+  const pts = [...thresholds].sort((a, b) => a.price - b.price);
+  const n = pts.length;
+
+  const avgStride =
+    n >= 2 ? (pts[n - 1]!.price - pts[0]!.price) / (n - 1) : pts[0]!.price * 0.05;
+
+  const buckets: Array<{ mid: number; prob: number }> = [];
+
+  buckets.push({
+    mid: Math.max(0, pts[0]!.price - avgStride / 2),
+    prob: Math.max(0, 1 - pts[0]!.probability),
+  });
+
+  for (let i = 0; i < n - 1; i++) {
+    buckets.push({
+      mid: (pts[i]!.price + pts[i + 1]!.price) / 2,
+      prob: Math.max(0, pts[i]!.probability - pts[i + 1]!.probability),
+    });
+  }
+
+  buckets.push({
+    mid: pts[n - 1]!.price + avgStride / 2,
+    prob: Math.max(0, pts[n - 1]!.probability),
+  });
+
+  const totalProb = buckets.reduce((s, b) => s + b.prob, 0);
+  const norm = totalProb > 0 ? buckets.map((b) => ({ ...b, prob: b.prob / totalProb })) : buckets;
+
+  const expPrice = norm.reduce((s, b) => s + b.mid * b.prob, 0);
+  const expPriceSq = norm.reduce((s, b) => s + b.mid * b.mid * b.prob, 0);
+  const varPrice = Math.max(0, expPriceSq - expPrice * expPrice);
+
+  const forecastReturn = currentPrice > 0 ? (expPrice - currentPrice) / currentPrice : 0;
+  const forecastPrice = expPrice;
+
+  const rawSigma = currentPrice > 0 ? Math.sqrt(varPrice) / currentPrice : 0.05;
+  const sigmaFloor = 0.10 * Math.sqrt(Math.max(1, horizonDays) / 252);
+  const sigma = Math.max(sigmaFloor, rawSigma);
+
+  const { low: ciLow95, high: ciHigh95 } = computeCI(forecastPrice, sigma);
+
+  const qualityScore = Math.round(
+    Math.min(100, Math.max(0, 30 * Math.min(n, 5) / 5 + 20 * Math.max(0, 1 - sigma / 0.20))),
+  );
+  const qualityGrade = scoreToGrade(qualityScore);
+
+  return {
+    forecastReturn,
+    forecastPrice,
+    ciLow95,
+    ciHigh95,
+    sigma,
+    qualityScore,
+    qualityGrade,
+    pmSignal: forecastReturn,
+    pmEffectiveWeight: 1.0,
+    pmNormalizedWeight: 1.0,
+    avgMarketQuality: Math.min(1, n / 5),
+    warnings: [],
+  };
 }
 
 /**
