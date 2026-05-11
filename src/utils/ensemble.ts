@@ -35,6 +35,8 @@ export interface MarketInput {
   maxHourlyLogitJump?: number;
   /** P2 — Semantic classification of the market question. 'ambiguous' applies a 40% quality discount. */
   marketSemantics?: string;
+  /** P4 — Stable multi-snapshot path; rewards persistent markets with a modest quality boost. */
+  stablePath?: boolean;
 }
 
 export interface OtherSignals {
@@ -89,6 +91,19 @@ const LONGSHOT_MICRO_PENALTY_WARN_THRESHOLD = 0.05;
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
+}
+
+function baseLiquidityQuality(volume24hUsd: number): number {
+  return Math.min(1, Math.log10(volume24hUsd + 1) / 6);
+}
+
+function longshotMicrostructureScore(m: Pick<MarketInput, 'ageDays' | 'volume24hUsd' | 'bidAskSpread'>): number {
+  const wAge = Math.min(1, (m.ageDays ?? 21) / 21);
+  const liquidityQuality = baseLiquidityQuality(m.volume24hUsd);
+  const spreadQuality = m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)
+    ? Math.max(0, 1 - m.bidAskSpread / 0.10)
+    : 1.0;
+  return Math.min(1, wAge * liquidityQuality) * spreadQuality;
 }
 
 type SignalKey = 'pm' | 'sentiment' | 'fundamental' | 'options' | 'markov';
@@ -272,7 +287,7 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   const wAge = Math.min(1, (m.ageDays ?? 21) / 21);
   // W3 Idea 1a — Dubach 2026 depth-decay haircut applied to the liquidity
   // component only. volume24hUsd is a stale proxy near resolution.
-  const wLiq = Math.min(1, Math.log10(m.volume24hUsd + 1) / 6) * depthDecayHaircut(m.daysToExpiry);
+  const wLiq = baseLiquidityQuality(m.volume24hUsd) * depthDecayHaircut(m.daysToExpiry);
   const tau =
     m.signalTier === 'macro'
       ? 0.90
@@ -284,6 +299,9 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   // Whale flag applies a 50% discount (not full elimination).
   // Transitory moves apply a 30% discount unless the stronger whale discount already dominates.
   let w = wAge * wLiq * tau * (1 - deltaWhale * 0.5) * (1 - deltaTransitory * 0.3);
+  if (m.stablePath && !m.priceSpikeDetected && !m.transitoryMove) {
+    w *= 1.1;
+  }
   // P1b — time-to-resolution boost (multiplicative). Backward compat: omitted ⇒ 1.0.
   if (m.daysToExpiry !== undefined) {
     w *= computeExpiryBoost(m.daysToExpiry);
@@ -332,11 +350,7 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   // trust drops further. Markets with good microstructure are not penalised.
   const p = m.probability;
   if (p < LONGSHOT_PROBABILITY_THRESHOLD || p > 1 - LONGSHOT_PROBABILITY_THRESHOLD) {
-    const spreadQuality = m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)
-      ? Math.max(0, 1 - m.bidAskSpread / 0.10)
-      : 1.0;
-    // Combined microstructure score: age × liquidity × spread tightness.
-    const microScore = Math.min(1, wAge * wLiq) * spreadQuality;
+    const microScore = longshotMicrostructureScore(m);
     w *= 1 - MAX_LONGSHOT_MICRO_PENALTY * (1 - microScore);
   }
   return Math.max(0, Math.min(1, w));
@@ -407,12 +421,7 @@ export function computePolymarketSignal(markets: MarketInput[]): {
     // reduce quality beyond the standard adjustYesBias probability correction.
     const mp = m.probability;
     if (mp < LONGSHOT_PROBABILITY_THRESHOLD || mp > 1 - LONGSHOT_PROBABILITY_THRESHOLD) {
-      const wAge = Math.min(1, (m.ageDays ?? 21) / 21);
-      const wLiq = Math.min(1, Math.log10(m.volume24hUsd + 1) / 6) * depthDecayHaircut(m.daysToExpiry);
-      const spreadQuality = m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)
-        ? Math.max(0, 1 - m.bidAskSpread / 0.10)
-        : 1.0;
-      const microScore = Math.min(1, wAge * wLiq) * spreadQuality;
+      const microScore = longshotMicrostructureScore(m);
       const penalty = MAX_LONGSHOT_MICRO_PENALTY * (1 - microScore);
       if (penalty > LONGSHOT_MICRO_PENALTY_WARN_THRESHOLD) {
         const range = mp < LONGSHOT_PROBABILITY_THRESHOLD ? 'longshot' : 'near-certain favourite';

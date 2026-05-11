@@ -65,6 +65,8 @@ export interface ForecastArbiterInput {
   };
   polymarket?: {
     forecast_return?: number;
+    raw_forecast_return?: number;
+    blended_forecast_return?: number;
     confidence?: number;
     quality_score?: number;
     quality_grade?: string;
@@ -245,6 +247,8 @@ const schema = z.object({
   }).optional(),
   polymarket: z.object({
     forecast_return: optionalNumber().describe('Polymarket forecast return as a decimal, e.g. -0.012 for -1.2%.'),
+    raw_forecast_return: optionalNumber().describe('Raw Polymarket-only forecast return as a decimal.'),
+    blended_forecast_return: optionalNumber().describe('Blended Polymarket-plus-auxiliary forecast return as a decimal.'),
     confidence: optionalNumber({ min: 0, max: 1 }),
     quality_score: optionalNumber({ min: 0, max: 100 }),
     quality_grade: optionalString(),

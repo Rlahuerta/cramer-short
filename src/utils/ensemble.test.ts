@@ -364,6 +364,24 @@ describe('computeMarketQualityWeight', () => {
     expect(wLongshot / wNormal).toBeGreaterThan(0.95);
   });
 
+  it('near-expiry longshot with excellent live microstructure does not inherit a stale-volume penalty', () => {
+    const goodMicro: MarketInput = {
+      question: 'Near-expiry longshot good micro',
+      probability: 0.04,
+      volume24hUsd: 5_000_000,
+      ageDays: 30,
+      daysToExpiry: 2,
+      signalTier: 'macro',
+      deltaYes: 0.30,
+      deltaNo: -0.05,
+      bidAskSpread: 0.005,
+    };
+    const midRange = { ...goodMicro, probability: 0.50 };
+    const wLongshot = computeMarketQualityWeight(goodMicro);
+    const wNormal = computeMarketQualityWeight(midRange);
+    expect(wLongshot / wNormal).toBeGreaterThan(0.95);
+  });
+
   it('longshot with poor microstructure receives a meaningful additional quality discount', () => {
     const base: MarketInput = {
       question: 'Longshot poor micro',
@@ -422,6 +440,52 @@ describe('computeMarketQualityWeight', () => {
     };
     const neutral: MarketInput = { ...poor, probability: 0.50 };
     expect(computeMarketQualityWeight(poor)).toBeLessThan(computeMarketQualityWeight(neutral));
+  });
+
+  it('stablePath receives a modest quality boost relative to an otherwise identical market', () => {
+    const unstable: MarketInput = {
+      question: 'Persistent market',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.03,
+    };
+    const stable = { ...unstable, stablePath: true };
+    expect(computeMarketQualityWeight(stable)).toBeGreaterThan(computeMarketQualityWeight(unstable));
+  });
+
+  it('stablePath boost does not soften a transitory-move penalty', () => {
+    const transient: MarketInput = {
+      question: 'Transient market',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.03,
+      transitoryMove: true,
+    };
+    expect(
+      computeMarketQualityWeight({ ...transient, stablePath: true }),
+    ).toBeCloseTo(computeMarketQualityWeight(transient), 10);
+  });
+
+  it('stablePath boost does not soften a price-spike penalty', () => {
+    const spiky: MarketInput = {
+      question: 'Spiky market',
+      probability: 0.58,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.03,
+      priceSpikeDetected: true,
+    };
+    expect(
+      computeMarketQualityWeight({ ...spiky, stablePath: true }),
+    ).toBeCloseTo(computeMarketQualityWeight(spiky), 10);
   });
 });
 
@@ -608,6 +672,22 @@ describe('computePolymarketSignal', () => {
       deltaYes: 0.45,
       deltaNo: -0.02,
       bidAskSpread: 0.01,
+    };
+    const { warnings } = computePolymarketSignal([m]);
+    expect(warnings.some((w) => w.includes('poor microstructure'))).toBe(false);
+  });
+
+  it('near-expiry longshot with excellent live microstructure does not emit a stale-volume warning', () => {
+    const m: MarketInput = {
+      question: 'Will BTC reach $200k by Friday?',
+      probability: 0.04,
+      volume24hUsd: 5_000_000,
+      ageDays: 30,
+      daysToExpiry: 2,
+      signalTier: 'macro',
+      deltaYes: 0.40,
+      deltaNo: -0.04,
+      bidAskSpread: 0.005,
     };
     const { warnings } = computePolymarketSignal([m]);
     expect(warnings.some((w) => w.includes('poor microstructure'))).toBe(false);

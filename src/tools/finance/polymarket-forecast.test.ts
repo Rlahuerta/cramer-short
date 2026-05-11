@@ -2085,6 +2085,95 @@ describe('threshold-implied raw Polymarket forecast path', () => {
     expect(payload.rawForecastPrice!).toBeGreaterThan(93_000);
     expect(payload.rawForecastPrice!).toBeLessThan(97_000);
   });
+
+  it('suppresses threshold path and warns when a contributing market has transitoryMove', async () => {
+    const horizonDays = 7;
+    const endDate = futureIso(horizonDays);
+    const nowMs = Date.now();
+
+    // btc-above-90k: current 0.55, spike 3h ago at 0.72, baseline 36h ago at 0.45
+    // originalMoveMagnitude = |0.72 - 0.45| = 0.27 > 0.10
+    // movedTowardBaseline: |0.55-0.45|=0.10 < |0.72-0.45|=0.27 ✓
+    // reversalAmount = |0.72-0.55|=0.17 > 0.27×0.5=0.135 ✓ → transitoryMove = true
+    const btcThresholdMarkets: PolymarketMarketResult[] = [
+      { marketId: 'btc-above-90k', assetId: 'btc-yes-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.55, volume24h: 80_000, ageDays: 3, endDate },
+      { marketId: 'btc-above-100k', assetId: 'btc-yes-100k', question: 'Will Bitcoin be above $100K in 7 days?', probability: 0.35, volume24h: 200_000, ageDays: 3, endDate },
+    ];
+
+    const snapshotRecords = [
+      // Spike snapshot for btc-above-90k (3h ago)
+      { marketId: 'btc-above-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.72, capturedAt: new Date(nowMs - 3 * 3_600_000).toISOString(), volume24h: 80_000, endDate },
+      // Persistence snapshot for btc-above-90k (36h ago)
+      { marketId: 'btc-above-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.45, capturedAt: new Date(nowMs - 36 * 3_600_000).toISOString(), volume24h: 80_000, endDate },
+    ];
+
+    const tool = createPolymarketForecastTool({
+      fetchMarkets: async () => btcThresholdMarkets,
+      fetchAnchorMarketsWithQueries: async () => btcThresholdMarkets,
+      readRecords: () => snapshotRecords,
+      readReplayBundles: () => [],
+      fetchMetaforecastQuestions: async () => [],
+      fetchKalshiVolSignals: async () => [],
+    });
+
+    const raw = await tool.invoke({ ticker: 'BTC', current_price: 95000, horizon_days: horizonDays });
+    const result = parseResult(raw);
+
+    expect(result).not.toContain('[threshold-implied distribution]');
+    expect(result).toContain('Threshold-implied forecast suppressed');
+    expect(result).toContain('partially-reversed probability move');
+  });
+
+  it('activates threshold path but warns when no contributing market has stablePath', async () => {
+    // All hermetic (no snapshot records) → no stablePath on any market
+    const horizonDays = 7;
+    const endDate = futureIso(horizonDays);
+    const btcThresholdMarkets: PolymarketMarketResult[] = [
+      { marketId: 'btc-above-90k', assetId: 'btc-yes-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.72, volume24h: 250_000, ageDays: 3, endDate },
+      { marketId: 'btc-above-100k', assetId: 'btc-yes-100k', question: 'Will Bitcoin be above $100K in 7 days?', probability: 0.50, volume24h: 200_000, ageDays: 3, endDate },
+    ];
+
+    // makeHermeticTool uses readRecords: () => [] → stablePath = false on all markets
+    const tool = makeHermeticTool(async () => btcThresholdMarkets);
+    const raw = await tool.invoke({ ticker: 'BTC', current_price: 95000, horizon_days: horizonDays });
+    const result = parseResult(raw);
+
+    expect(result).toContain('[threshold-implied distribution]');
+    expect(result).toContain('Threshold ladder persistence unconfirmed');
+  });
+
+  it('activates threshold path without persistence warning when a contributing market has stablePath', async () => {
+    const horizonDays = 7;
+    const endDate = futureIso(horizonDays);
+    const nowMs = Date.now();
+
+    const btcThresholdMarkets: PolymarketMarketResult[] = [
+      { marketId: 'btc-above-90k', assetId: 'btc-yes-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.72, volume24h: 250_000, ageDays: 3, endDate },
+      { marketId: 'btc-above-100k', assetId: 'btc-yes-100k', question: 'Will Bitcoin be above $100K in 7 days?', probability: 0.50, volume24h: 200_000, ageDays: 3, endDate },
+    ];
+
+    // Two stable snapshots for btc-above-90k within 12h → stablePath = true
+    // Range: 0.72, 0.71, 0.73 → max-min = 0.02 ≤ 0.06 ✓
+    const snapshotRecords = [
+      { marketId: 'btc-above-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.71, capturedAt: new Date(nowMs - 2 * 3_600_000).toISOString(), volume24h: 250_000, endDate },
+      { marketId: 'btc-above-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.73, capturedAt: new Date(nowMs - 5 * 3_600_000).toISOString(), volume24h: 250_000, endDate },
+    ];
+
+    const tool = createPolymarketForecastTool({
+      fetchMarkets: async () => btcThresholdMarkets,
+      fetchAnchorMarketsWithQueries: async () => btcThresholdMarkets,
+      readRecords: () => snapshotRecords,
+      readReplayBundles: () => [],
+      fetchMetaforecastQuestions: async () => [],
+      fetchKalshiVolSignals: async () => [],
+    });
+
+    const raw = await tool.invoke({ ticker: 'BTC', current_price: 95000, horizon_days: horizonDays });
+    const result = parseResult(raw);
+
+    expect(result).toContain('[threshold-implied distribution]');
+    expect(result).not.toContain('Threshold ladder persistence unconfirmed');
+  });
 });
 
 describe('evaluateMarketHistory', () => {
@@ -2314,6 +2403,100 @@ describe('evaluateMarketHistory', () => {
     expect(evaluation.transitoryMove).toBe(false);
     expect(evaluation.warnings.some((warning) => warning.includes('Persistence test unavailable'))).toBe(true);
   });
+
+  it('stablePath is true when ≥2 snapshots in window hold probability within 0.06', () => {
+    // Snapshots at T-2h (0.43) and T-8h (0.44) + current 0.42 → range = 0.44-0.42 = 0.02 ≤ 0.06
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.42, volume24h: 80_000 },
+      [
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.43,
+          capturedAt: new Date(nowMs - 2 * 3_600_000).toISOString(),
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+        },
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.44,
+          capturedAt: new Date(nowMs - 8 * 3_600_000).toISOString(),
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+        },
+        // Outside stability window (13h ago) – should not affect range
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.28,
+          capturedAt: new Date(nowMs - 13 * 3_600_000).toISOString(),
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+        },
+      ],
+      nowMs,
+    );
+
+    expect(evaluation.stablePath).toBe(true);
+  });
+
+  it('stablePath is false when only one snapshot is in the stability window', () => {
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.42, volume24h: 80_000 },
+      [
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.43,
+          capturedAt: new Date(nowMs - 3 * 3_600_000).toISOString(),
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+        },
+      ],
+      nowMs,
+    );
+
+    expect(evaluation.stablePath).toBe(false);
+  });
+
+  it('stablePath is false when snapshots oscillate beyond the stability threshold', () => {
+    // Snapshots at T-2h (0.30) and T-8h (0.50) + current 0.40 → range = 0.50-0.30 = 0.20 > 0.06
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.40, volume24h: 80_000 },
+      [
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.30,
+          capturedAt: new Date(nowMs - 2 * 3_600_000).toISOString(),
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+        },
+        {
+          marketId: 'm1',
+          question: 'Q',
+          probability: 0.50,
+          capturedAt: new Date(nowMs - 8 * 3_600_000).toISOString(),
+          volume24h: 80_000,
+          endDate: '2026-12-31T23:59:59Z',
+        },
+      ],
+      nowMs,
+    );
+
+    expect(evaluation.stablePath).toBe(false);
+  });
+
+  it('stablePath is false when there are no snapshots at all', () => {
+    const evaluation = evaluateMarketHistory(
+      { marketId: 'm1', probability: 0.42, volume24h: 80_000 },
+      [],
+      nowMs,
+    );
+
+    expect(evaluation.stablePath).toBe(false);
+  });
 });
 
 describe('evaluateHistoryFlags', () => {
@@ -2341,6 +2524,7 @@ describe('evaluateHistoryFlags', () => {
     )).toEqual({
       priceSpikeDetected: false,
       transitoryMove: false,
+      stablePath: false,
       warnings: [],
     });
   });
@@ -2355,6 +2539,7 @@ describe('evaluateHistoryFlags', () => {
     expect(evaluation).toEqual({
       priceSpikeDetected: false,
       transitoryMove: false,
+      stablePath: false,
       warnings: ['Snapshot history unavailable due to filesystem error'],
     });
   });

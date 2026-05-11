@@ -72,6 +72,8 @@ const validBundle: ArbiterReplayBundle = {
     summary: 'Selected terminal BTC threshold market.',
     confidence: 0.63,
     forecastReturn: 0.014,
+    rawForecastReturn: 0.014,
+    blendedForecastReturn: 0.009,
     qualityScore: 72,
     qualityGrade: 'B',
     crossPlatformEvidence: [
@@ -367,6 +369,8 @@ describe('Phase 2 Polymarket replay helpers', () => {
       summary: 'Selected terminal BTC threshold market.',
       confidence: 0.63,
       forecastReturn: 0.014,
+      rawForecastReturn: 0.014,
+      blendedForecastReturn: 0.009,
       qualityScore: 72,
       qualityGrade: 'B',
       crossPlatformEvidence: [
@@ -386,6 +390,9 @@ describe('Phase 2 Polymarket replay helpers', () => {
     });
 
     expect(block.selectedMarketIds).toEqual(['pm-1']);
+    expect(block.forecastReturn).toBe(0.014);
+    expect(block.rawForecastReturn).toBe(0.014);
+    expect(block.blendedForecastReturn).toBe(0.009);
     expect(block.selectedMarkets).toEqual([
       {
         marketId: 'pm-1',
@@ -564,6 +571,8 @@ describe('arbiter input capture helpers', () => {
         markov: validBundle.markov,
         polymarket: {
           forecast_return: 0.014,
+          raw_forecast_return: 0.014,
+          blended_forecast_return: 0.009,
           confidence: 0.63,
           quality_score: 72,
           quality_grade: 'B',
@@ -598,6 +607,9 @@ describe('arbiter input capture helpers', () => {
 
     expect(bundle.ticker).toBe('BTC');
     expect(bundle.polymarket?.selectedMarketIds).toEqual(['pm-1']);
+    expect(bundle.polymarket?.forecastReturn).toBe(0.014);
+    expect(bundle.polymarket?.rawForecastReturn).toBe(0.014);
+    expect(bundle.polymarket?.blendedForecastReturn).toBe(0.009);
     expect(bundle.whale).toMatchObject({
       source: 'whale-alert',
       direction: 'long',
@@ -620,6 +632,8 @@ describe('toForecastArbiterInput', () => {
       markov: validBundle.markov,
       polymarket: {
         forecast_return: 0.014,
+        raw_forecast_return: 0.014,
+        blended_forecast_return: 0.009,
         confidence: 0.63,
         quality_score: 72,
         quality_grade: 'B',

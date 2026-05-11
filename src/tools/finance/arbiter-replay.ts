@@ -141,6 +141,8 @@ export interface ArbiterReplayBundle {
     summary?: string;
     confidence?: number;
     forecastReturn?: number;
+    rawForecastReturn?: number;
+    blendedForecastReturn?: number;
     qualityScore?: number;
     qualityGrade?: string;
     crossPlatformEvidence?: ArbiterReplayCrossPlatformEvidence[];
@@ -525,7 +527,12 @@ export function parseArbiterReplayBundleLine(rawLine: string): ArbiterReplayBund
         return null;
       }
       if (parsed.polymarket.summary !== undefined && typeof parsed.polymarket.summary !== 'string') return null;
-      if (!isOptionalNumber(parsed.polymarket.confidence) || !isOptionalNumber(parsed.polymarket.forecastReturn)) {
+      if (
+        !isOptionalNumber(parsed.polymarket.confidence)
+        || !isOptionalNumber(parsed.polymarket.forecastReturn)
+        || !isOptionalNumber(parsed.polymarket.rawForecastReturn)
+        || !isOptionalNumber(parsed.polymarket.blendedForecastReturn)
+      ) {
         return null;
       }
       if (!isOptionalNumber(parsed.polymarket.qualityScore)) return null;
@@ -594,6 +601,8 @@ export function parseArbiterReplayBundleLine(rawLine: string): ArbiterReplayBund
             ...(parsedPolymarket.summary !== undefined ? { summary: parsedPolymarket.summary as string } : {}),
             ...(parsedPolymarket.confidence !== undefined ? { confidence: parsedPolymarket.confidence as number } : {}),
             ...(parsedPolymarket.forecastReturn !== undefined ? { forecastReturn: parsedPolymarket.forecastReturn as number } : {}),
+            ...(parsedPolymarket.rawForecastReturn !== undefined ? { rawForecastReturn: parsedPolymarket.rawForecastReturn as number } : {}),
+            ...(parsedPolymarket.blendedForecastReturn !== undefined ? { blendedForecastReturn: parsedPolymarket.blendedForecastReturn as number } : {}),
             ...(parsedPolymarket.qualityScore !== undefined ? { qualityScore: parsedPolymarket.qualityScore as number } : {}),
             ...(parsedPolymarket.qualityGrade !== undefined ? { qualityGrade: parsedPolymarket.qualityGrade as string } : {}),
             ...(parsedPolymarket.crossPlatformEvidence !== undefined
@@ -796,6 +805,8 @@ export function freezePolymarketReplayBlock(params: {
   summary?: string;
   confidence?: number;
   forecastReturn?: number;
+  rawForecastReturn?: number;
+  blendedForecastReturn?: number;
   qualityScore?: number;
   qualityGrade?: string;
   crossPlatformEvidence?: ArbiterReplayCrossPlatformEvidence[];
@@ -840,6 +851,8 @@ export function freezePolymarketReplayBlock(params: {
     ...(params.summary !== undefined ? { summary: params.summary } : {}),
     ...(params.confidence !== undefined ? { confidence: params.confidence } : {}),
     ...(params.forecastReturn !== undefined ? { forecastReturn: params.forecastReturn } : {}),
+    ...(params.rawForecastReturn !== undefined ? { rawForecastReturn: params.rawForecastReturn } : {}),
+    ...(params.blendedForecastReturn !== undefined ? { blendedForecastReturn: params.blendedForecastReturn } : {}),
     ...(params.qualityScore !== undefined ? { qualityScore: params.qualityScore } : {}),
     ...(params.qualityGrade !== undefined ? { qualityGrade: params.qualityGrade } : {}),
     ...(params.crossPlatformEvidence !== undefined
@@ -872,13 +885,15 @@ export function createArbiterReplayBundleFromArbitratorInput(params: {
     ask: market.ask,
   }));
   const polymarket = input.polymarket
-    ? freezePolymarketReplayBlock({
+      ? freezePolymarketReplayBlock({
         querySet: input.polymarket.querySet ?? [],
         selectedMarkets: polymarketMarkets,
         warnings,
         summary: input.polymarket.summary,
         confidence: input.polymarket.confidence,
         forecastReturn: input.polymarket.forecast_return,
+        rawForecastReturn: input.polymarket.raw_forecast_return ?? input.polymarket.forecast_return,
+        blendedForecastReturn: input.polymarket.blended_forecast_return,
         qualityScore: input.polymarket.quality_score,
         qualityGrade: input.polymarket.quality_grade,
       })
@@ -1045,7 +1060,11 @@ export function toForecastArbiterInput(bundle: ArbiterReplayBundle): ForecastArb
     leverage: bundle.leverage,
     markov: bundle.markov ? { ...bundle.markov } : undefined,
     polymarket: bundle.polymarket ? {
-      forecast_return: bundle.polymarket.forecastReturn,
+      forecast_return: bundle.polymarket.rawForecastReturn
+        ?? bundle.polymarket.forecastReturn
+        ?? bundle.polymarket.blendedForecastReturn,
+      raw_forecast_return: bundle.polymarket.rawForecastReturn ?? bundle.polymarket.forecastReturn,
+      blended_forecast_return: bundle.polymarket.blendedForecastReturn,
       confidence: bundle.polymarket.confidence,
       quality_score: bundle.polymarket.qualityScore,
       quality_grade: bundle.polymarket.qualityGrade,

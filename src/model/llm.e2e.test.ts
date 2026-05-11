@@ -1,8 +1,9 @@
 /**
  * E2E tests — Ollama cloud model live prompt execution.
  *
- * Runs real callLlm calls against Ollama. Must execute in an isolated process
- * to avoid agent.test.ts's permanent mock.module('@langchain/ollama') override.
+ * Runs real callLlm calls against Ollama. Nullifies _setModelFactory so tests
+ * are immune to agent.test.ts's beforeAll SpyChatModel override when running
+ * in the same Bun worker.
  *
  * Prerequisites:
  *   - Ollama running at OLLAMA_BASE_URL (default http://127.0.0.1:11434)
@@ -14,10 +15,21 @@
  *   RUN_E2E=1 bun test src/model/llm.e2e.test.ts --timeout 120000
  */
 
-import { describe, expect, beforeAll } from 'bun:test';
+import { mock, describe, expect, beforeAll, beforeEach } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
-import { callLlm } from '@/model/llm.js';
+
+// Restore the real @langchain/ollama for this file — agent.test.ts's
+// permanent mock.module at file scope replaces ChatOllama with an empty stub.
+const realOllama = await import('@langchain/ollama');
+mock.module('@langchain/ollama', () => realOllama);
+
+import { callLlm, _setModelFactory } from '@/model/llm.js';
+
+// Nullify _overrideFactory before each test — agent.test.ts's beforeAll
+// injects SpyChatModel via _setModelFactory in the shared Bun worker.
+// Declared at file scope to register before the describe block's tests.
+beforeEach(() => { _setModelFactory(null); });
 
 const NEMOTRON_MODEL = 'ollama:kimi-k2.6:cloud';
 const GENERAL_CLOUD_MODEL_PREFERENCES = [
@@ -76,6 +88,11 @@ function extractText(response: Awaited<ReturnType<typeof callLlm>>['response']):
 // ---------------------------------------------------------------------------
 
 describe('Ollama cloud model — live callLlm', () => {
+  // Pin inside describe in addition to file-level beforeEach so we are
+  // guaranteed to nullify agent.test.ts's SpyChatModel before each test
+  // even under Bun parallel scheduling.
+  beforeEach(() => { _setModelFactory(null); });
+
   e2eIt(
     'callLlm returns a non-empty response for a simple ping prompt',
     async () => {
@@ -83,6 +100,11 @@ describe('Ollama cloud model — live callLlm', () => {
         console.log('No Ollama cloud model available — skipping');
         return;
       }
+
+      // Nullify _overrideFactory synchronously inside the test body — beforeAll
+      // from agent.test.ts may fire between file-level beforeEach and this
+      // line, re-injecting SpyChatModel into the global.
+      _setModelFactory(null);
 
       const { response } = await callLlm(
         'Reply with exactly the word PONG and nothing else.',
@@ -133,6 +155,7 @@ describe('Ollama cloud model — live callLlm', () => {
         return;
       }
 
+      _setModelFactory(null);
       const { response, usage } = await callLlm('Say hello in one word.', {
         model: resolvedModel,
         thinkOverride: false,

@@ -87,6 +87,7 @@ type RawMarket = {
   enableOrderBook?: boolean;
   priceSpikeDetected: boolean;
   transitoryMove: boolean;
+  stablePath: boolean;
   bidAskSpread?: number;
   priceVelocityPpH?: number;
   priceVelocityLogitPerHour?: number;
@@ -138,6 +139,7 @@ export interface CrossPlatformConfidenceAdjustment {
 type HistoryFlags = {
   priceSpikeDetected: boolean;
   transitoryMove: boolean;
+  stablePath: boolean;
   warnings: string[];
 };
 
@@ -151,12 +153,15 @@ type HistoryHeuristicProfile = {
   spikeWindowEndMs: number;
   persistenceWindowStartMs: number;
   persistenceWindowEndMs: number;
+  stabilityWindowMs: number;
   spikeWindowLabel: string;
   persistenceWindowLabel: string;
   baseSpikeThreshold: number;
   transitoryMoveThreshold: number;
   transitoryReversalRatio: number;
   dynamicSpikeThreshold: boolean;
+  stabilityMinSnapshots: number;
+  stabilityThreshold: number;
 };
 
 type LiveBrierReplayCalibrationDecision =
@@ -186,6 +191,7 @@ const HOUR_MS = 3_600_000;
 const TWO_HOURS_MS = 2 * 3_600_000;
 const THREE_HOURS_MS = 3 * 3_600_000;
 const FOUR_HOURS_MS = 4 * 3_600_000;
+const SIX_HOURS_MS = 6 * 3_600_000;
 const TWELVE_HOURS_MS = 12 * 3_600_000;
 const TWENTY_FOUR_HOURS_MS = 24 * 3_600_000;
 const THIRTY_SIX_HOURS_MS = 36 * 3_600_000;
@@ -238,6 +244,7 @@ function toRawMarket(
     enableOrderBook: market.enableOrderBook,
     priceSpikeDetected: history.priceSpikeDetected,
     transitoryMove: history.transitoryMove,
+    stablePath: history.stablePath,
     bidAskSpread: market.bidAskSpread,
     priceVelocityPpH: market.priceVelocityPpH,
     priceVelocityLogitPerHour: market.priceVelocityLogitPerHour,
@@ -265,12 +272,15 @@ function historyHeuristicProfile(context: HistoryHeuristicContext | undefined): 
       spikeWindowEndMs: HOUR_MS,
       persistenceWindowStartMs: THIRTY_SIX_HOURS_MS,
       persistenceWindowEndMs: TWELVE_HOURS_MS,
+      stabilityWindowMs: SIX_HOURS_MS,
       spikeWindowLabel: '1-3h',
       persistenceWindowLabel: '12-36h',
       baseSpikeThreshold: 0.05,
       transitoryMoveThreshold: 0.08,
       transitoryReversalRatio: 0.45,
       dynamicSpikeThreshold: true,
+      stabilityMinSnapshots: 2,
+      stabilityThreshold: 0.08,
     };
   }
 
@@ -279,12 +289,15 @@ function historyHeuristicProfile(context: HistoryHeuristicContext | undefined): 
     spikeWindowEndMs: TWO_HOURS_MS,
     persistenceWindowStartMs: FORTY_EIGHT_HOURS_MS,
     persistenceWindowEndMs: TWENTY_FOUR_HOURS_MS,
+    stabilityWindowMs: TWELVE_HOURS_MS,
     spikeWindowLabel: '2-4h',
     persistenceWindowLabel: '24-48h',
     baseSpikeThreshold: 0.08,
     transitoryMoveThreshold: 0.10,
     transitoryReversalRatio: 0.5,
     dynamicSpikeThreshold: false,
+    stabilityMinSnapshots: 2,
+    stabilityThreshold: 0.06,
   };
 }
 
@@ -346,6 +359,36 @@ function shortHorizonCryptoSpikeThreshold(
     baseThreshold,
     0.12,
   );
+}
+
+/**
+ * Returns true when ≥ stabilityMinSnapshots exist in the stability window and the
+ * full probability range (snapshots + current) is within stabilityThreshold.
+ * A stable path means the market has been holding roughly the same probability
+ * across recent observations — evidence that the current quote is not a one-off spike.
+ */
+function computeStablePath(
+  marketId: string,
+  currentProbability: number,
+  records: PolymarketSnapshotRecord[],
+  nowMs: number,
+  profile: HistoryHeuristicProfile,
+): boolean {
+  const windowStart = nowMs - profile.stabilityWindowMs;
+  const snapshotsInWindow = records
+    .filter((r) => r.marketId === marketId)
+    .map((r) => ({ ...r, capturedAtMs: Date.parse(r.capturedAt) }))
+    .filter((r) =>
+      Number.isFinite(r.capturedAtMs) && r.capturedAtMs >= windowStart && r.capturedAtMs <= nowMs,
+    );
+
+  if (snapshotsInWindow.length < profile.stabilityMinSnapshots) {
+    return false;
+  }
+
+  const allProbs = [...snapshotsInWindow.map((r) => r.probability), currentProbability];
+  const range = Math.max(...allProbs) - Math.min(...allProbs);
+  return range <= profile.stabilityThreshold;
 }
 
 function shouldUseShortHorizonReplayCalibration(
@@ -650,12 +693,14 @@ export function evaluateMarketHistory(
 ): {
   priceSpikeDetected: boolean;
   transitoryMove: boolean;
+  stablePath: boolean;
   warnings: string[];
 } {
   if (!market.marketId) {
     return {
       priceSpikeDetected: false,
       transitoryMove: false,
+      stablePath: false,
       warnings: [],
     };
   }
@@ -718,9 +763,18 @@ export function evaluateMarketHistory(
       && reversalAmount > originalMoveMagnitude * profile.transitoryReversalRatio;
   }
 
+  const stablePath = computeStablePath(
+    market.marketId,
+    market.probability,
+    records,
+    nowMs,
+    profile,
+  );
+
   return {
     priceSpikeDetected,
     transitoryMove,
+    stablePath,
     warnings,
   };
 }
@@ -745,6 +799,7 @@ function evaluateHistoryFlagsWithReader(
     return {
       priceSpikeDetected: false,
       transitoryMove: false,
+      stablePath: false,
       warnings: [],
     };
   }
@@ -756,6 +811,7 @@ function evaluateHistoryFlagsWithReader(
     return {
       priceSpikeDetected: false,
       transitoryMove: false,
+      stablePath: false,
       warnings: ['Snapshot history unavailable due to filesystem error'],
     };
   }
@@ -1395,6 +1451,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             maxHourlyLogitJump: m.maxHourlyLogitJump,
             priceSpikeDetected: m.priceSpikeDetected,
             transitoryMove: m.transitoryMove,
+            stablePath: m.stablePath,
             signalTier: categoryToTier(m.signalCategory),
             deltaYes: mImpact.deltaYes,
             deltaNo: mImpact.deltaNo,
@@ -1473,12 +1530,31 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           const ladderCheck = isCleanThresholdLadder(forecastLadder);
           thresholdPathWarnings.push(...ladderCheck.warnings);
           if (ladderCheck.clean) {
-            rawPolymarketResult = computeThresholdImpliedRawForecast(
-              forecastLadder,
-              basePrice,
-              horizonDays,
-            );
-            thresholdPathActive = true;
+            const thresholdContributors = shortHorizonAnchorThresholds.length > 0
+              ? rawMarkets
+              : genericThresholdMarkets;
+
+            const hasTransitoryMove = thresholdContributors.some((m) => m.transitoryMove);
+            const hasStablePath = thresholdContributors.some((m) => m.stablePath);
+
+            if (hasTransitoryMove) {
+              thresholdPathWarnings.push(
+                'Threshold-implied forecast suppressed: at least one threshold market shows an abrupt, partially-reversed probability move. The current ladder state may not persist.',
+              );
+            } else {
+              rawPolymarketResult = computeThresholdImpliedRawForecast(
+                forecastLadder,
+                basePrice,
+                horizonDays,
+              );
+              thresholdPathActive = true;
+
+              if (!hasStablePath) {
+                thresholdPathWarnings.push(
+                  'Threshold ladder persistence unconfirmed: no contributing market has held a stable probability path across recent snapshots. Treat the threshold-implied distribution with caution.',
+                );
+              }
+            }
           }
         }
 
@@ -1518,6 +1594,8 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             })),
             warnings: historyWarnings,
             forecastReturn: rawPolymarketResult.forecastReturn,
+            rawForecastReturn: rawPolymarketResult.forecastReturn,
+            blendedForecastReturn: result.forecastReturn,
             qualityScore: adjustedQualityScore,
             qualityGrade: adjustedQualityGrade,
             crossPlatformEvidence: crossPlatformEvidence.map((entry) => ({
