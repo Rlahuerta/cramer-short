@@ -526,6 +526,7 @@ describe('forecast arbitrator', () => {
     expect(classifyPolymarketQuestion('Will Bitcoin dip to $75,000 in April?')).toBe('barrier_touch');
     expect(classifyPolymarketQuestion('Will BTC fall below $70,000 this week?')).toBe('barrier_touch');
     expect(classifyPolymarketQuestion('Will ETH drop below $2,000 by Friday?')).toBe('barrier_touch');
+    expect(classifyPolymarketQuestion('Will BTC dip below $70,000 this week?')).toBe('barrier_touch');
     expect(classifyPolymarketQuestion('Will BTC trade above $90,000 today?')).toBe('barrier_touch');
     expect(classifyPolymarketQuestion('Will BTC trade below $88,000 today?')).toBe('barrier_touch');
   });

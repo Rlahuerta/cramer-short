@@ -303,8 +303,8 @@ export function classifyPolymarketQuestion(question: string): ForecastMarketSema
   // Mixed terminal + barrier signals in the same question indicate unclear semantics.
   const hasBarrierSignal = /\b(hit|touch|reach|dip|tap)\b|\bdrop below\b|\bfall below\b|\btrade (above|below|at)\b/.test(q);
   const terminalScanQuestion = q
-    .replace(/\bdrop below\b/g, '')
-    .replace(/\bfall below\b/g, '')
+    .replace(/\b(drop|fall)\s+below\b/g, '')
+    .replace(/\b(hit|touch|reach|dip|tap)\s+(above|below|over|under|at)\b/g, '')
     .replace(/\btrade (above|below|at)\b/g, '');
   const hasTerminalSignal = /\b(above|below|over|under|exceed|greater than|less than|settle|close|finish)\b/.test(terminalScanQuestion);
   if (hasTerminalSignal && hasBarrierSignal) return 'ambiguous';

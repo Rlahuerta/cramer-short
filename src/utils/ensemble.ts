@@ -73,6 +73,16 @@ const LEGACY_MAX_HOURLY_JUMP_PENALTY_THRESHOLD = 0.08;
 const LOGIT_PRICE_VELOCITY_PENALTY_THRESHOLD = 0.1;
 const LOGIT_MAX_HOURLY_JUMP_PENALTY_THRESHOLD = 0.35;
 
+// P3 — Microstructure-aware weighting constants.
+/** Spread penalty is amplified by up to this fraction for young + illiquid markets. */
+const SPREAD_THINNESS_AMPLIFICATION = 0.40;
+/** Probability below which a market is considered a longshot (or above 1-this = near-certain favourite). */
+const LONGSHOT_PROBABILITY_THRESHOLD = 0.07;
+/** Maximum additional quality discount applied to a longshot/favourite with terrible microstructure. */
+const MAX_LONGSHOT_MICRO_PENALTY = 0.30;
+/** Minimum longshot micro-penalty that triggers an explicit warning. */
+const LONGSHOT_MICRO_PENALTY_WARN_THRESHOLD = 0.05;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -282,9 +292,15 @@ export function computeMarketQualityWeight(m: MarketInput): number {
     const horizonGap = Math.abs(m.daysToExpiry - m.requestedHorizonDays);
     w *= Math.max(0.5, 1 - 0.25 * horizonGap);
   }
-  // P1d — bid-ask spread quality discount. Spread > 10pp → quality 0.
+  // P1d (strengthened) — bid-ask spread × thinness compound quality discount.
+  // When a market is also young or illiquid, the spread penalty is amplified because
+  // thin-market quotes carry less reliable microstructure information.
   if (m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)) {
-    w *= Math.max(0, 1 - m.bidAskSpread / 0.10);
+    const rawSpreadFrac = m.bidAskSpread / 0.10;
+    // thinness: 0 = mature & liquid, 1 = completely young & dry.
+    const thinness = 1 - Math.min(1, wAge * Math.sqrt(wLiq));
+    const amplification = 1 + SPREAD_THINNESS_AMPLIFICATION * thinness;
+    w *= Math.max(0, 1 - rawSpreadFrac * amplification);
   }
   // P3 — prefer logit-space microstructure when present. Around p≈0.5, the old
   // 2pp/h and 8pp cutoffs map to ~0.08 and ~0.32 logit units; we round slightly
@@ -309,6 +325,19 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   // P2 — soft penalty for ambiguous or rule-heavy market semantics (not hard rejection).
   if (m.marketSemantics === 'ambiguous') {
     w *= 0.6;
+  }
+  // P3b — Longshot microstructure penalty.
+  // Extreme-probability markets (longshots / near-certain favourites) are inherently
+  // harder to price in thin venues. When spread, age, and liquidity are also poor,
+  // trust drops further. Markets with good microstructure are not penalised.
+  const p = m.probability;
+  if (p < LONGSHOT_PROBABILITY_THRESHOLD || p > 1 - LONGSHOT_PROBABILITY_THRESHOLD) {
+    const spreadQuality = m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)
+      ? Math.max(0, 1 - m.bidAskSpread / 0.10)
+      : 1.0;
+    // Combined microstructure score: age × liquidity × spread tightness.
+    const microScore = Math.min(1, wAge * wLiq) * spreadQuality;
+    w *= 1 - MAX_LONGSHOT_MICRO_PENALTY * (1 - microScore);
   }
   return Math.max(0, Math.min(1, w));
 }
@@ -373,6 +402,25 @@ export function computePolymarketSignal(markets: MarketInput[]): {
       warnings.push(
         `Market "${m.question}" has ambiguous resolution semantics — quality discounted 40%`,
       );
+    }
+    // P3b — Warn when a longshot/favourite has poor enough microstructure to meaningfully
+    // reduce quality beyond the standard adjustYesBias probability correction.
+    const mp = m.probability;
+    if (mp < LONGSHOT_PROBABILITY_THRESHOLD || mp > 1 - LONGSHOT_PROBABILITY_THRESHOLD) {
+      const wAge = Math.min(1, (m.ageDays ?? 21) / 21);
+      const wLiq = Math.min(1, Math.log10(m.volume24hUsd + 1) / 6) * depthDecayHaircut(m.daysToExpiry);
+      const spreadQuality = m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)
+        ? Math.max(0, 1 - m.bidAskSpread / 0.10)
+        : 1.0;
+      const microScore = Math.min(1, wAge * wLiq) * spreadQuality;
+      const penalty = MAX_LONGSHOT_MICRO_PENALTY * (1 - microScore);
+      if (penalty > LONGSHOT_MICRO_PENALTY_WARN_THRESHOLD) {
+        const range = mp < LONGSHOT_PROBABILITY_THRESHOLD ? 'longshot' : 'near-certain favourite';
+        warnings.push(
+          `Market "${m.question}" is a ${range} (p=${mp.toFixed(3)}) with poor microstructure — ` +
+          `quality further discounted ${Math.round(penalty * 100)}%`,
+        );
+      }
     }
   }
 

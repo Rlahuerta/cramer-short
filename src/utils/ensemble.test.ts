@@ -292,7 +292,140 @@ describe('computeMarketQualityWeight', () => {
     const ppOnlyJump = computeMarketQualityWeight({ ...base, maxHourlyJump: 0.12 });
     expect(ppOnlyJump).toBeCloseTo(velocityPenaltyOnly * 0.7, 5);
   });
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 — Spread + thinness compound penalty
+  // ---------------------------------------------------------------------------
+
+  it('same spread penalises young+thin markets more than mature liquid ones', () => {
+    const spread = 0.05;
+    const mature: MarketInput = {
+      question: 'Mature',
+      probability: 0.5,
+      volume24hUsd: 1_000_000,
+      ageDays: 21,
+      signalTier: 'geopolitical',
+      deltaYes: 0.05,
+      deltaNo: -0.03,
+      bidAskSpread: spread,
+    };
+    const thin: MarketInput = { ...mature, question: 'Thin', volume24hUsd: 500, ageDays: 3 };
+
+    // Compute base quality (no spread) to isolate the interaction effect.
+    const matureBase = computeMarketQualityWeight({ ...mature, bidAskSpread: undefined });
+    const thinBase   = computeMarketQualityWeight({ ...thin,   bidAskSpread: undefined });
+    const baseRatio  = thinBase / matureBase;
+
+    const matureSpread = computeMarketQualityWeight(mature);
+    const thinSpread   = computeMarketQualityWeight(thin);
+    const spreadRatio  = thinSpread / matureSpread;
+
+    // The spread should reduce thin-market quality proportionally more.
+    expect(spreadRatio).toBeLessThan(baseRatio);
+  });
+
+  it('spread penalty is not amplified for fully mature liquid markets (no thinness effect)', () => {
+    // Mature + liquid: thinness ≈ 0 → amplification ≈ 1 → same as legacy formula.
+    const m: MarketInput = {
+      question: 'Mature liquid',
+      probability: 0.5,
+      volume24hUsd: 1_000_000,
+      ageDays: 21,
+      signalTier: 'geopolitical',
+      deltaYes: 0.05,
+      deltaNo: -0.03,
+    };
+    const wNoSpread = computeMarketQualityWeight(m);
+    const wSpread   = computeMarketQualityWeight({ ...m, bidAskSpread: 0.04 });
+    // Legacy formula: 1 - 0.04/0.10 = 0.60; with zero thinness amplification: same.
+    expect(wSpread).toBeCloseTo(wNoSpread * 0.60, 2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 — Longshot microstructure penalty
+  // ---------------------------------------------------------------------------
+
+  it('longshot with excellent microstructure receives at most a small quality penalty', () => {
+    // p = 4% but mature, liquid, tight spread → microScore near 1 → penalty near 0.
+    const goodMicro: MarketInput = {
+      question: 'Longshot good micro',
+      probability: 0.04,
+      volume24hUsd: 1_000_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.50,
+      deltaNo: -0.05,
+      bidAskSpread: 0.01,
+    };
+    const midRange = { ...goodMicro, probability: 0.50 };
+    const wLongshot = computeMarketQualityWeight(goodMicro);
+    const wNormal   = computeMarketQualityWeight(midRange);
+    // Penalty should be < 5% relative.
+    expect(wLongshot / wNormal).toBeGreaterThan(0.95);
+  });
+
+  it('longshot with poor microstructure receives a meaningful additional quality discount', () => {
+    const base: MarketInput = {
+      question: 'Longshot poor micro',
+      probability: 0.04,
+      volume24hUsd: 500,
+      ageDays: 5,
+      signalTier: 'macro',
+      deltaYes: 0.50,
+      deltaNo: -0.05,
+    };
+    // Same base market at mid-range probability (no longshot penalty fires).
+    const midBase: MarketInput = { ...base, probability: 0.50 };
+    const midSpread: MarketInput = { ...midBase, bidAskSpread: 0.07 };
+
+    const wLongshotSpread = computeMarketQualityWeight({ ...base, bidAskSpread: 0.07 });
+    const wLongshotNoSpread = computeMarketQualityWeight(base);
+
+    // Wide spread should compound with longshot penalty.
+    expect(wLongshotSpread).toBeLessThan(wLongshotNoSpread);
+
+    // The relative quality drop from adding a wide spread is larger for a longshot
+    // than for the same market at mid-range probability.
+    const longshotDrop = wLongshotNoSpread / wLongshotSpread;
+    const midDrop      = computeMarketQualityWeight(midBase) / computeMarketQualityWeight(midSpread);
+    expect(longshotDrop).toBeGreaterThan(midDrop);
+  });
+
+  it('mid-range probability receives no longshot microstructure penalty', () => {
+    // Same poor microstructure but three probability levels.
+    const poorMicro = {
+      question: 'Q',
+      volume24hUsd: 100,
+      ageDays: 2,
+      signalTier: 'geopolitical' as const,
+      deltaYes: 0.05,
+      deltaNo: -0.03,
+      bidAskSpread: 0.05,
+    };
+    const farLeft  = computeMarketQualityWeight({ ...poorMicro, probability: 0.05 }); // longshot
+    const farRight = computeMarketQualityWeight({ ...poorMicro, probability: 0.95 }); // near-certain
+    const midRange = computeMarketQualityWeight({ ...poorMicro, probability: 0.50 }); // normal
+
+    expect(midRange).toBeGreaterThan(farLeft);
+    expect(midRange).toBeGreaterThan(farRight);
+  });
+
+  it('near-certain favourite with poor microstructure also attracts the additional penalty', () => {
+    const poor: MarketInput = {
+      question: 'Near-certain poor',
+      probability: 0.96,
+      volume24hUsd: 200,
+      ageDays: 2,
+      signalTier: 'geopolitical',
+      deltaYes: 0.02,
+      deltaNo: -0.50,
+    };
+    const neutral: MarketInput = { ...poor, probability: 0.50 };
+    expect(computeMarketQualityWeight(poor)).toBeLessThan(computeMarketQualityWeight(neutral));
+  });
 });
+
+
 
 // ---------------------------------------------------------------------------
 // computeConditionalReturn
@@ -446,6 +579,68 @@ describe('computePolymarketSignal', () => {
     const noSemantics = computeMarketQualityWeight(base);
     const terminal = computeMarketQualityWeight({ ...base, marketSemantics: 'terminal' });
     expect(terminal).toBeCloseTo(noSemantics, 5);
+  });
+
+  // Phase 3 — Longshot microstructure warnings
+  it('longshot with poor microstructure emits a warning', () => {
+    const m: MarketInput = {
+      question: 'Will candidate X win?',
+      probability: 0.03,
+      volume24hUsd: 300,
+      ageDays: 4,
+      signalTier: 'electoral',
+      deltaYes: 0.60,
+      deltaNo: -0.05,
+      bidAskSpread: 0.08,
+    };
+    const { warnings } = computePolymarketSignal([m]);
+    expect(warnings.some((w) => w.includes('longshot'))).toBe(true);
+    expect(warnings.some((w) => w.includes('poor microstructure'))).toBe(true);
+  });
+
+  it('longshot with excellent microstructure does not emit a microstructure warning', () => {
+    const m: MarketInput = {
+      question: 'Will BTC reach $200k?',
+      probability: 0.04,
+      volume24hUsd: 1_500_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.45,
+      deltaNo: -0.02,
+      bidAskSpread: 0.01,
+    };
+    const { warnings } = computePolymarketSignal([m]);
+    expect(warnings.some((w) => w.includes('poor microstructure'))).toBe(false);
+  });
+
+  it('near-certain favourite with poor microstructure emits a near-certain warning', () => {
+    const m: MarketInput = {
+      question: 'Will Fed hold rates?',
+      probability: 0.97,
+      volume24hUsd: 400,
+      ageDays: 3,
+      signalTier: 'macro',
+      deltaYes: 0.01,
+      deltaNo: -0.80,
+      bidAskSpread: 0.07,
+    };
+    const { warnings } = computePolymarketSignal([m]);
+    expect(warnings.some((w) => w.includes('near-certain'))).toBe(true);
+  });
+
+  it('mid-range probability does not emit a microstructure warning even with poor quality', () => {
+    const m: MarketInput = {
+      question: 'Will inflation drop?',
+      probability: 0.55,
+      volume24hUsd: 300,
+      ageDays: 4,
+      signalTier: 'macro',
+      deltaYes: 0.08,
+      deltaNo: -0.05,
+      bidAskSpread: 0.08,
+    };
+    const { warnings } = computePolymarketSignal([m]);
+    expect(warnings.some((w) => w.includes('poor microstructure'))).toBe(false);
   });
 });
 
