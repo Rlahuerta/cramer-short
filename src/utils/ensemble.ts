@@ -78,12 +78,50 @@ const LOGIT_MAX_HOURLY_JUMP_PENALTY_THRESHOLD = 0.35;
 // P3 — Microstructure-aware weighting constants.
 /** Spread penalty is amplified by up to this fraction for young + illiquid markets. */
 const SPREAD_THINNESS_AMPLIFICATION = 0.40;
+
+/**
+ * Dubach (2026) Phase 3 — Category-aware spread benchmarks.
+ *
+ * Different signal families carry structurally different expected bid-ask spreads:
+ *   - electoral:    Polymarket election markets are the most actively traded; tight spreads
+ *                   are the norm, so a 7 % spread is strongly adverse-selection-significant.
+ *   - macro:        Policy/rate markets are well-arbitraged; 10 % spread is the neutral cutoff
+ *                   (same as the legacy global default — no change for this family).
+ *   - geopolitical: Conflict/diplomatic markets trade less frequently; a wider spread is
+ *                   structurally expected and should not carry the same penalty weight.
+ *
+ * A market whose observed spread equals the benchmark receives a full (100 %) spread penalty.
+ * Below the benchmark the penalty scales proportionally.
+ */
+export const TIER_SPREAD_BENCHMARKS: Record<'macro' | 'geopolitical' | 'electoral', number> = {
+  electoral:    0.07,
+  macro:        0.10,
+  geopolitical: 0.14,
+};
+
+/**
+ * Phase 3 — Returns the spread benchmark for a signal tier.
+ * Exported for unit-testability. Unknown / undefined tier falls back to 'geopolitical'.
+ */
+export function tierSpreadBenchmark(tier?: MarketInput['signalTier']): number {
+  return TIER_SPREAD_BENCHMARKS[tier ?? 'geopolitical'];
+}
 /** Probability below which a market is considered a longshot (or above 1-this = near-certain favourite). */
 const LONGSHOT_PROBABILITY_THRESHOLD = 0.07;
-/** Maximum additional quality discount applied to a longshot/favourite with terrible microstructure. */
-const MAX_LONGSHOT_MICRO_PENALTY = 0.30;
-/** Minimum longshot micro-penalty that triggers an explicit warning. */
-const LONGSHOT_MICRO_PENALTY_WARN_THRESHOLD = 0.05;
+/**
+ * Maximum additional quality discount applied to a longshot/favourite with terrible microstructure.
+ *
+ * Dubach (2026) Phase 1 — longshot spread premium: low-probability contracts carry
+ * materially wider spreads due to elevated adverse-selection risk. When observed spread
+ * confirms this, trust should be discounted more aggressively than a generic extreme-probability
+ * penalty would justify. Raised from 0.30 to 0.45 to match empirical severity.
+ */
+const MAX_LONGSHOT_MICRO_PENALTY = 0.45;
+/**
+ * Minimum longshot micro-penalty that triggers an explicit warning.
+ * Scaled with MAX_LONGSHOT_MICRO_PENALTY to keep warning frequency proportional.
+ */
+const LONGSHOT_MICRO_PENALTY_WARN_THRESHOLD = 0.08;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -97,13 +135,40 @@ function baseLiquidityQuality(volume24hUsd: number): number {
   return Math.min(1, Math.log10(volume24hUsd + 1) / 6);
 }
 
-function longshotMicrostructureScore(m: Pick<MarketInput, 'ageDays' | 'volume24hUsd' | 'bidAskSpread'>): number {
+/**
+ * Dubach (2026) Phase 1 — microstructure quality score for a longshot/near-certain contract.
+ *
+ * Longshot spread premium finding: low-probability contracts carry systematically wider
+ * bid-ask spreads as compensation for elevated adverse-selection risk. When spread data
+ * is available, it is the most informative live signal and should drive the score.
+ * Age and volume are supporting signals only — volume in particular must NOT be the
+ * sole basis of trust when spread and age are present.
+ *
+ * Weighting when spread is available:
+ *   spread  0.60   (primary — live microstructure evidence)
+ *   age     0.25   (secondary — structural consistency over time)
+ *   volume  0.15   (tertiary — can be inflated; lower evidentiary weight)
+ *
+ * Fallback when spread is absent (age + volume only):
+ *   age     0.60   (primary — more reliable structural signal)
+ *   volume  0.40   (secondary)
+ *
+ * Returns a score in [0, 1]; higher = better microstructure.
+ */
+function longshotMicrostructureScore(m: Pick<MarketInput, 'ageDays' | 'volume24hUsd' | 'bidAskSpread' | 'signalTier'>): number {
   const wAge = Math.min(1, (m.ageDays ?? 21) / 21);
-  const liquidityQuality = baseLiquidityQuality(m.volume24hUsd);
-  const spreadQuality = m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)
-    ? Math.max(0, 1 - m.bidAskSpread / 0.10)
-    : 1.0;
-  return Math.min(1, wAge * liquidityQuality) * spreadQuality;
+  const volQuality = baseLiquidityQuality(m.volume24hUsd);
+  if (m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)) {
+    // Phase 3: use the tier-specific benchmark so longshot quality is also category-aware.
+    const spreadQuality = Math.max(0, 1 - m.bidAskSpread / tierSpreadBenchmark(m.signalTier));
+    const rawScore = 0.60 * spreadQuality + 0.25 * wAge + 0.15 * volQuality;
+    // Spread quality is a hard ceiling: a catastrophic spread (spreadQuality = 0) cannot be
+    // rescued by mature age or high volume alone. Age/volume may lift score only up to the
+    // spread quality itself, preserving spread as the primary adverse-selection signal.
+    return Math.min(rawScore, spreadQuality);
+  }
+  // No spread data: age dominates volume (age is a structural signal; volume can be inflated).
+  return 0.60 * wAge + 0.40 * volQuality;
 }
 
 type SignalKey = 'pm' | 'sentiment' | 'fundamental' | 'options' | 'markov';
@@ -287,7 +352,10 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   const wAge = Math.min(1, (m.ageDays ?? 21) / 21);
   // W3 Idea 1a — Dubach 2026 depth-decay haircut applied to the liquidity
   // component only. volume24hUsd is a stale proxy near resolution.
-  const wLiq = baseLiquidityQuality(m.volume24hUsd) * depthDecayHaircut(m.daysToExpiry);
+  // wLiqRaw is kept separate so the spread-thinness amplifier (P1d) uses the
+  // structural liquidity signal and is not distorted by near-expiry decay.
+  const wLiqRaw = baseLiquidityQuality(m.volume24hUsd);
+  const wLiq = wLiqRaw * depthDecayHaircut(m.daysToExpiry);
   const tau =
     m.signalTier === 'macro'
       ? 0.90
@@ -313,10 +381,14 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   // P1d (strengthened) — bid-ask spread × thinness compound quality discount.
   // When a market is also young or illiquid, the spread penalty is amplified because
   // thin-market quotes carry less reliable microstructure information.
+  // Phase 3: spread fraction is normalised against the tier-specific benchmark so that
+  // the same absolute spread carries different weight across contract families.
   if (m.bidAskSpread !== undefined && Number.isFinite(m.bidAskSpread)) {
-    const rawSpreadFrac = m.bidAskSpread / 0.10;
+    const rawSpreadFrac = m.bidAskSpread / tierSpreadBenchmark(m.signalTier);
     // thinness: 0 = mature & liquid, 1 = completely young & dry.
-    const thinness = 1 - Math.min(1, wAge * Math.sqrt(wLiq));
+    // Uses raw (un-decayed) liquidity so near-expiry decay does not
+    // artificially inflate thinness and compound the spread penalty.
+    const thinness = 1 - Math.min(1, wAge * Math.sqrt(wLiqRaw));
     const amplification = 1 + SPREAD_THINNESS_AMPLIFICATION * thinness;
     w *= Math.max(0, 1 - rawSpreadFrac * amplification);
   }
@@ -344,10 +416,11 @@ export function computeMarketQualityWeight(m: MarketInput): number {
   if (m.marketSemantics === 'ambiguous') {
     w *= 0.6;
   }
-  // P3b — Longshot microstructure penalty.
-  // Extreme-probability markets (longshots / near-certain favourites) are inherently
-  // harder to price in thin venues. When spread, age, and liquidity are also poor,
-  // trust drops further. Markets with good microstructure are not penalised.
+  // Dubach (2026) Phase 1 — longshot spread-premium penalty.
+  // Extreme-probability markets (longshots / near-certain favourites) face elevated
+  // adverse-selection risk. When their microstructure is also poor (wide spread, young,
+  // thin volume), trust drops further. Markets with good microstructure are not penalised.
+  // See longshotMicrostructureScore() for the spread-primary weighting rationale.
   const p = m.probability;
   if (p < LONGSHOT_PROBABILITY_THRESHOLD || p > 1 - LONGSHOT_PROBABILITY_THRESHOLD) {
     const microScore = longshotMicrostructureScore(m);

@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach } from 'bun:test';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import {
   createPolymarketForecastTool,
+  categoryToTier,
+  resolveSignalTier,
+  resolveSpreadFamily,
   deriveCrossPlatformConfidenceAdjustment,
   evaluateHistoryFlags,
   evaluateMarketHistory,
@@ -3056,5 +3059,142 @@ describe('queryVariant expansion in polymarket_forecast', () => {
 
     // Should still produce a valid forecast (variant results fill in)
     expect(result).toContain('Polymarket Forecast');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// categoryToTier — Phase 3: category-to-tier mapping
+// ---------------------------------------------------------------------------
+
+describe('categoryToTier (Phase 3 – explicit tier assignment)', () => {
+  it('macro-ish keywords → macro', () => {
+    expect(categoryToTier('macro')).toBe('macro');
+    expect(categoryToTier('fed_rate')).toBe('macro');
+    expect(categoryToTier('GDP growth')).toBe('macro');
+    expect(categoryToTier('CPI inflation')).toBe('macro');
+  });
+
+  it('electoral keywords → electoral', () => {
+    expect(categoryToTier('election')).toBe('electoral');
+    expect(categoryToTier('vote')).toBe('electoral');
+    expect(categoryToTier('president')).toBe('electoral');
+  });
+
+  it('unrecognised / geopolitical categories → geopolitical', () => {
+    expect(categoryToTier('geopolitical')).toBe('geopolitical');
+    expect(categoryToTier('conflict')).toBe('geopolitical');
+    expect(categoryToTier('diplomacy')).toBe('geopolitical');
+    expect(categoryToTier('')).toBe('geopolitical');
+  });
+
+  it('all three tiers can be produced, covering the full signalTier domain', () => {
+    const tiers = new Set([
+      categoryToTier('macro'),
+      categoryToTier('election'),
+      categoryToTier('geopolitical'),
+    ]);
+    expect(tiers).toContain('macro');
+    expect(tiers).toContain('electoral');
+    expect(tiers).toContain('geopolitical');
+  });
+
+  it('matching is case-insensitive', () => {
+    expect(categoryToTier('ELECTION')).toBe('electoral');
+    expect(categoryToTier('FED RATE DECISION')).toBe('macro');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveSignalTier — Phase 3: canonical tier from impact-map (delta calibration)
+// ---------------------------------------------------------------------------
+
+describe('resolveSignalTier (Phase 3 – canonical impact-map tier lookup)', () => {
+  it('btc_price_target on crypto resolves to electoral via impact-map', () => {
+    // categoryToTier('btc_price_target') returns 'geopolitical' (no keyword match).
+    // resolveSignalTier returns the impact-map tier, which is 'electoral' for
+    // btc_price_target/crypto. This is the correct tier for delta calibration.
+    // For spread-benchmark family (Phase 3 microstructure) use resolveSpreadFamily instead.
+    expect(categoryToTier('btc_price_target')).toBe('geopolitical'); // keyword heuristic
+    expect(resolveSignalTier('btc_price_target', 'crypto')).toBe('electoral'); // impact-map tier
+  });
+
+  it('btc_price_target on non-crypto asset class falls back to electoral via default entry', () => {
+    expect(resolveSignalTier('btc_price_target', 'equity')).toBe('electoral');
+    expect(resolveSignalTier('btc_price_target', 'default')).toBe('electoral');
+  });
+
+  it('fed_rate_cut on crypto resolves to macro via impact-map', () => {
+    expect(resolveSignalTier('fed_rate_cut', 'crypto')).toBe('macro');
+  });
+
+  it('unknown category falls back to impact-map default entry (macro)', () => {
+    // lookupImpact falls through to IMPACT_MAP['default']['default'] for unknowns
+    const tier = resolveSignalTier('completely_unknown_category_xyz', 'crypto');
+    expect(['macro', 'geopolitical', 'electoral']).toContain(tier);
+  });
+
+  it('produces different tier than categoryToTier for btc_price_target — confirms wiring gap', () => {
+    const heuristicTier = categoryToTier('btc_price_target');
+    const canonicalTier = resolveSignalTier('btc_price_target', 'crypto');
+    expect(heuristicTier).not.toBe(canonicalTier);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveSpreadFamily — Phase 3: spread-benchmark family for microstructure
+// ---------------------------------------------------------------------------
+
+describe('resolveSpreadFamily (Phase 3 – spread-benchmark family resolution)', () => {
+  it('btc_price_target on crypto → geopolitical spread family (not electoral)', () => {
+    // btc_price_target has tier: 'electoral' in the impact-map, but it is NOT an
+    // election market. Its microstructure resembles geopolitical markets (wider spreads
+    // are structurally expected). Routing to the 0.07 electoral benchmark would zero
+    // out these markets at spreads that are normal for the current tool.
+    expect(resolveSpreadFamily('btc_price_target', 'crypto')).toBe('geopolitical');
+  });
+
+  it('btc_price_target on non-crypto asset class → geopolitical (category override)', () => {
+    // The native-crypto override applies to the category regardless of asset class.
+    expect(resolveSpreadFamily('btc_price_target', 'equity')).toBe('geopolitical');
+    expect(resolveSpreadFamily('btc_price_target', 'default')).toBe('geopolitical');
+  });
+
+  it('etf_product/crypto → geopolitical spread family', () => {
+    expect(resolveSpreadFamily('etf_product', 'crypto')).toBe('geopolitical');
+  });
+
+  it('crypto_regulation_positive/crypto → geopolitical spread family', () => {
+    expect(resolveSpreadFamily('crypto_regulation_positive', 'crypto')).toBe('geopolitical');
+  });
+
+  it('crypto_regulation_negative/crypto → geopolitical spread family', () => {
+    expect(resolveSpreadFamily('crypto_regulation_negative', 'crypto')).toBe('geopolitical');
+  });
+
+  it('regulatory/crypto → geopolitical spread family (crypto-adjacent regulatory)', () => {
+    expect(resolveSpreadFamily('regulatory', 'crypto')).toBe('geopolitical');
+  });
+
+  it('regulatory/tech → macro (non-crypto regulatory uses impact-map tier)', () => {
+    expect(resolveSpreadFamily('regulatory', 'tech')).toBe('macro');
+  });
+
+  it('fed_rate_cut/crypto → macro (normal macro path unaffected)', () => {
+    expect(resolveSpreadFamily('fed_rate_cut', 'crypto')).toBe('macro');
+  });
+
+  it('election_market_friendly/equity → electoral (genuinely electoral stays electoral)', () => {
+    expect(resolveSpreadFamily('election_market_friendly', 'equity')).toBe('electoral');
+  });
+
+  it('geopolitical_conflict/defense → geopolitical (normal geopolitical path unaffected)', () => {
+    expect(resolveSpreadFamily('geopolitical_conflict', 'defense')).toBe('geopolitical');
+  });
+
+  it('resolveSpreadFamily and resolveSignalTier diverge for btc_price_target/crypto', () => {
+    // This is the core Phase 3 regression lock: the spread-family resolver must
+    // return 'geopolitical' while the impact-map tier stays 'electoral'.
+    expect(resolveSpreadFamily('btc_price_target', 'crypto')).toBe('geopolitical');
+    expect(resolveSignalTier('btc_price_target', 'crypto')).toBe('electoral');
   });
 });

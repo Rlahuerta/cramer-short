@@ -12,6 +12,9 @@ import {
   computeVariance,
   isCleanThresholdLadder,
   computeThresholdImpliedRawForecast,
+  depthDecayHaircut,
+  tierSpreadBenchmark,
+  TIER_SPREAD_BENCHMARKS,
 } from './ensemble.js';
 import type { MarketInput, OtherSignals } from './ensemble.js';
 
@@ -325,7 +328,8 @@ describe('computeMarketQualityWeight', () => {
   });
 
   it('spread penalty is not amplified for fully mature liquid markets (no thinness effect)', () => {
-    // Mature + liquid: thinness ≈ 0 → amplification ≈ 1 → same as legacy formula.
+    // Mature + liquid: thinness ≈ 0 → amplification ≈ 1 → pure tier benchmark applies.
+    // Phase 3: geopolitical benchmark = 0.14, so 0.04/0.14 ≈ 0.286 → factor ≈ 0.714.
     const m: MarketInput = {
       question: 'Mature liquid',
       probability: 0.5,
@@ -337,8 +341,8 @@ describe('computeMarketQualityWeight', () => {
     };
     const wNoSpread = computeMarketQualityWeight(m);
     const wSpread   = computeMarketQualityWeight({ ...m, bidAskSpread: 0.04 });
-    // Legacy formula: 1 - 0.04/0.10 = 0.60; with zero thinness amplification: same.
-    expect(wSpread).toBeCloseTo(wNoSpread * 0.60, 2);
+    // geopolitical benchmark = 0.14 → factor = 1 - 0.04/0.14 ≈ 0.714 (thinness ≈ 0, amplification ≈ 1).
+    expect(wSpread).toBeCloseTo(wNoSpread * (1 - 0.04 / 0.14), 2);
   });
 
   // ---------------------------------------------------------------------------
@@ -442,6 +446,99 @@ describe('computeMarketQualityWeight', () => {
     expect(computeMarketQualityWeight(poor)).toBeLessThan(computeMarketQualityWeight(neutral));
   });
 
+  // ---------------------------------------------------------------------------
+  // Dubach (2026) Phase 1 — longshot spread-premium weighting
+  // ---------------------------------------------------------------------------
+
+  it('Dubach P1: tail contract with poor spread incurs a stronger incremental penalty than the old 30% cap', () => {
+    // vol=500, age=5, spread=0.07 → realistic poor-microstructure longshot.
+    // The longshot incremental penalty (relative to an identical mid-range market) should now exceed 30%.
+    const poorLongshot: MarketInput = {
+      question: 'Longshot poor spread',
+      probability: 0.04,
+      volume24hUsd: 500,
+      ageDays: 5,
+      signalTier: 'macro',
+      deltaYes: 0.50,
+      deltaNo: -0.05,
+      bidAskSpread: 0.07,
+    };
+    const midRange: MarketInput = { ...poorLongshot, probability: 0.50 };
+    const wLongshot = computeMarketQualityWeight(poorLongshot);
+    const wMid = computeMarketQualityWeight(midRange);
+    const relativeDiscount = 1 - wLongshot / wMid;
+    expect(relativeDiscount).toBeGreaterThan(0.30);
+  });
+
+  it('Dubach P1: tight spread closes the quality gap between a longshot and mid-range market', () => {
+    // When tight spread data is available it acts as a primary trust signal.
+    // Observing a tight spread on a thin-volume longshot should raise relative trust
+    // compared to the no-spread-data baseline.
+    const base = {
+      question: 'Thin-volume longshot',
+      volume24hUsd: 100,   // thin
+      ageDays: 21,          // mature
+      signalTier: 'macro' as const,
+      deltaYes: 0.50,
+      deltaNo: -0.05,
+    };
+    const longshotNoSpread = computeMarketQualityWeight({ ...base, probability: 0.04 });
+    const midNoSpread       = computeMarketQualityWeight({ ...base, probability: 0.50 });
+    const longshotSpread    = computeMarketQualityWeight({ ...base, probability: 0.04, bidAskSpread: 0.01 });
+    const midSpread         = computeMarketQualityWeight({ ...base, probability: 0.50, bidAskSpread: 0.01 });
+
+    // Tight spread should narrow the quality gap between longshot and mid-range.
+    expect(longshotSpread / midSpread).toBeGreaterThan(longshotNoSpread / midNoSpread);
+  });
+
+  it('Dubach P1: when spread is absent, a mature thin-volume longshot outscores a young high-volume longshot', () => {
+    // Age is a structural signal (hard to fake); volume can be inflated.
+    // Without spread data, age is the primary trust signal for longshots.
+    const matureThin: MarketInput = {
+      question: 'Mature thin longshot',
+      probability: 0.04,
+      volume24hUsd: 100,         // thin
+      ageDays: 21,               // mature
+      signalTier: 'macro',
+      deltaYes: 0.50,
+      deltaNo: -0.05,
+    };
+    const youngHighVol: MarketInput = {
+      ...matureThin,
+      question: 'Young high-vol longshot',
+      volume24hUsd: 5_000_000,   // high volume
+      ageDays: 3,                // but young
+    };
+    expect(computeMarketQualityWeight(matureThin)).toBeGreaterThan(
+      computeMarketQualityWeight(youngHighVol),
+    );
+  });
+
+  it('Dubach P1: mature/liquid longshot with catastrophic spread is not under-penalised vs legacy 30% cap', () => {
+    // Regression: verify the ceiling fix correctly constrains microScore.
+    // The ceiling formula min(rawScore, spreadQuality) = 0.10 pins the microScore,
+    // allowing MAX_LONGSHOT_MICRO_PENALTY to fire fully (~40% incremental penalty),
+    // ensuring we meet or exceed the legacy 30% cap even when age+volume would otherwise rescue the score.
+    // Note: spread=0.10 zeroes the P1d base weight for mature+liquid markets (NaN in ratio);
+    // spread=0.09 (spreadQuality=0.10) is the closest non-NaN proxy for the same invariant.
+    const catastrophicSpread: MarketInput = {
+      question: 'Mature liquid longshot catastrophic spread',
+      probability: 0.04,
+      volume24hUsd: 5_000_000,  // very high — would rescue additive microScore without the fix
+      ageDays: 21,              // mature
+      signalTier: 'macro',
+      deltaYes: 0.50,
+      deltaNo: -0.05,
+      bidAskSpread: 0.09,       // near-catastrophic: spreadQuality = 0.10
+    };
+    const midRange: MarketInput = { ...catastrophicSpread, probability: 0.50 };
+    const wLongshot = computeMarketQualityWeight(catastrophicSpread);
+    const wMid      = computeMarketQualityWeight(midRange);
+    const relativeDiscount = 1 - wLongshot / wMid;
+    // Phase 1 penalty must be at least as strong as the legacy 30% cap for the same inputs.
+    expect(relativeDiscount).toBeGreaterThanOrEqual(0.30);
+  });
+
   it('stablePath receives a modest quality boost relative to an otherwise identical market', () => {
     const unstable: MarketInput = {
       question: 'Persistent market',
@@ -489,7 +586,263 @@ describe('computeMarketQualityWeight', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Phase 3 — Category-aware spread interpretation (Dubach 2026)
+// ---------------------------------------------------------------------------
 
+describe('tierSpreadBenchmark (Phase 3 – category-aware spread interpretation)', () => {
+  it('returns distinct benchmarks for all three tiers', () => {
+    expect(tierSpreadBenchmark('macro')).toBe(TIER_SPREAD_BENCHMARKS.macro);
+    expect(tierSpreadBenchmark('geopolitical')).toBe(TIER_SPREAD_BENCHMARKS.geopolitical);
+    expect(tierSpreadBenchmark('electoral')).toBe(TIER_SPREAD_BENCHMARKS.electoral);
+  });
+
+  it('electoral benchmark is stricter (smaller) than macro', () => {
+    expect(tierSpreadBenchmark('electoral')).toBeLessThan(tierSpreadBenchmark('macro'));
+  });
+
+  it('geopolitical benchmark is more lenient (larger) than macro', () => {
+    expect(tierSpreadBenchmark('geopolitical')).toBeGreaterThan(tierSpreadBenchmark('macro'));
+  });
+
+  it('undefined tier falls back to geopolitical', () => {
+    expect(tierSpreadBenchmark(undefined)).toBe(tierSpreadBenchmark('geopolitical'));
+  });
+
+  it('at least two families are distinct (core Phase 3 invariant)', () => {
+    const values = new Set([
+      tierSpreadBenchmark('macro'),
+      tierSpreadBenchmark('geopolitical'),
+      tierSpreadBenchmark('electoral'),
+    ]);
+    expect(values.size).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('computeMarketQualityWeight – Phase 3 category-aware spread', () => {
+  // Mature + liquid base so thinness ≈ 0 and amplification ≈ 1;
+  // this isolates the tier-benchmark effect from the thinness-amplification path.
+  const base = {
+    question: 'Q',
+    probability: 0.5,
+    volume24hUsd: 1_000_000,
+    ageDays: 21,
+    deltaYes: 0.05,
+    deltaNo: -0.03,
+  } satisfies Omit<MarketInput, 'signalTier'>;
+
+  it('same spread penalises electoral more than macro (electoral benchmark is tighter)', () => {
+    const spread = 0.06; // above electoral (0.07 benchmark: just below) — actually use 0.05 for clear split
+    const sharedSpread = 0.05;
+    const wElectoral = computeMarketQualityWeight({ ...base, signalTier: 'electoral', bidAskSpread: sharedSpread });
+    const wMacro     = computeMarketQualityWeight({ ...base, signalTier: 'macro',     bidAskSpread: sharedSpread });
+    // electoral benchmark 0.07 < macro 0.10 → same spread fraction is higher → stronger penalty
+    expect(wElectoral).toBeLessThan(wMacro);
+  });
+
+  it('same spread penalises macro more than geopolitical (geopolitical benchmark is wider)', () => {
+    const sharedSpread = 0.05;
+    const wMacro       = computeMarketQualityWeight({ ...base, signalTier: 'macro',       bidAskSpread: sharedSpread });
+    const wGeopolitical = computeMarketQualityWeight({ ...base, signalTier: 'geopolitical', bidAskSpread: sharedSpread });
+    // macro benchmark 0.10 < geopolitical 0.14 → macro spread fraction is higher → stronger penalty
+    expect(wMacro).toBeLessThan(wGeopolitical);
+  });
+
+  it('total ordering of quality weight for same spread: electoral < macro < geopolitical', () => {
+    const sharedSpread = 0.05;
+    const wElectoral    = computeMarketQualityWeight({ ...base, signalTier: 'electoral',    bidAskSpread: sharedSpread });
+    const wMacro        = computeMarketQualityWeight({ ...base, signalTier: 'macro',        bidAskSpread: sharedSpread });
+    const wGeopolitical = computeMarketQualityWeight({ ...base, signalTier: 'geopolitical', bidAskSpread: sharedSpread });
+    expect(wElectoral).toBeLessThan(wMacro);
+    expect(wMacro).toBeLessThan(wGeopolitical);
+  });
+
+  it('without a spread, tier discount (tau) still drives ordering: macro > geopolitical > electoral', () => {
+    // No spread supplied — spread path is not exercised. tau values alone govern quality.
+    const wMacro        = computeMarketQualityWeight({ ...base, signalTier: 'macro' });
+    const wGeopolitical = computeMarketQualityWeight({ ...base, signalTier: 'geopolitical' });
+    const wElectoral    = computeMarketQualityWeight({ ...base, signalTier: 'electoral' });
+    expect(wMacro).toBeGreaterThan(wGeopolitical);
+    expect(wGeopolitical).toBeGreaterThan(wElectoral);
+  });
+
+  it('category spread penalty does not silence the whale-spike rule (other rules still dominate when active)', () => {
+    // A whale spike on any tier must still cut quality by ~50 % relative to the same market without it.
+    for (const tier of ['macro', 'geopolitical', 'electoral'] as const) {
+      const spread = 0.03;
+      const noWhale = computeMarketQualityWeight({ ...base, signalTier: tier, bidAskSpread: spread });
+      const whale   = computeMarketQualityWeight({ ...base, signalTier: tier, bidAskSpread: spread, priceSpikeDetected: true });
+      expect(whale).toBeCloseTo(noWhale * 0.5, 5);
+    }
+  });
+
+  it('spread penalty is bounded: quality stays non-negative for any tier even at double the benchmark', () => {
+    for (const tier of ['macro', 'geopolitical', 'electoral'] as const) {
+      const benchmark = tierSpreadBenchmark(tier);
+      const w = computeMarketQualityWeight({ ...base, signalTier: tier, bidAskSpread: benchmark * 2 });
+      expect(w).toBeGreaterThanOrEqual(0);
+    }
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// depthDecayHaircut — Phase 2: continuous near-expiry depth decay
+// ---------------------------------------------------------------------------
+
+describe('depthDecayHaircut (Phase 2 – continuous near-expiry depth decay)', () => {
+  // --- backward-compatibility: missing or non-finite input stays neutral ---
+
+  it('undefined → 1.0 (backward compat, no penalty)', () => {
+    expect(depthDecayHaircut(undefined)).toBe(1.0);
+  });
+
+  it('NaN → 1.0 (backward compat, non-finite guard)', () => {
+    expect(depthDecayHaircut(NaN)).toBe(1.0);
+  });
+
+  it('Infinity → 1.0 (non-finite guard)', () => {
+    expect(depthDecayHaircut(Infinity)).toBe(1.0);
+  });
+
+  // --- mature markets: >= 30 days are always neutral ---
+
+  it('exactly 30 days → 1.0 (threshold boundary, no haircut)', () => {
+    expect(depthDecayHaircut(30)).toBe(1.0);
+  });
+
+  it('31 days → 1.0 (just beyond threshold)', () => {
+    expect(depthDecayHaircut(31)).toBe(1.0);
+  });
+
+  it('90 days → 1.0 (well beyond threshold)', () => {
+    expect(depthDecayHaircut(90)).toBe(1.0);
+  });
+
+  // --- near-expiry markets receive a meaningful decay ---
+
+  it('15 days → (0.5)^0.55 ≈ 0.683, between floor and 1', () => {
+    expect(depthDecayHaircut(15)).toBeCloseTo(0.683, 2);
+  });
+
+  it('15 days result is strictly between floor (0.5) and neutral (1.0)', () => {
+    const h = depthDecayHaircut(15);
+    expect(h).toBeGreaterThan(0.5);
+    expect(h).toBeLessThan(1.0);
+  });
+
+  // --- floor: very short-dated markets never collapse to zero ---
+
+  it('7 days → floor of 0.5 (raw ≈ 0.449 < floor)', () => {
+    expect(depthDecayHaircut(7)).toBe(0.5);
+  });
+
+  it('1 day → floor of 0.5', () => {
+    expect(depthDecayHaircut(1)).toBe(0.5);
+  });
+
+  it('0 days → floor of 0.5 (expiry-day markets still contribute)', () => {
+    expect(depthDecayHaircut(0)).toBe(0.5);
+  });
+
+  // --- smooth & continuous: decay is monotone, no cliff at any point ---
+
+  it('decay is monotone: shorter horizon → equal-or-stronger haircut', () => {
+    expect(depthDecayHaircut(10)).toBeLessThanOrEqual(depthDecayHaircut(20));
+    expect(depthDecayHaircut(20)).toBeLessThanOrEqual(depthDecayHaircut(25));
+    expect(depthDecayHaircut(25)).toBeLessThanOrEqual(depthDecayHaircut(29));
+  });
+
+  it('no cliff at the 30-day boundary: 29 days is very close to 1.0', () => {
+    // (29/30)^0.55 ≈ 0.9815 — a gradual ramp-on, not a sudden step.
+    expect(depthDecayHaircut(29)).toBeGreaterThan(0.97);
+    expect(depthDecayHaircut(29)).toBeLessThan(1.0);
+  });
+
+  it('25 days decays less than 15 days (smooth ramp-up toward 30)', () => {
+    expect(depthDecayHaircut(25)).toBeGreaterThan(depthDecayHaircut(15));
+  });
+
+  // --- bounded: all values in [0.5, 1.0] ---
+
+  it('all outputs are bounded in [0.5, 1.0] across the full range', () => {
+    for (let d = 0; d <= 60; d++) {
+      const h = depthDecayHaircut(d);
+      expect(h).toBeGreaterThanOrEqual(0.5);
+      expect(h).toBeLessThanOrEqual(1.0);
+    }
+  });
+
+  // --- integration: depth decay reduces the liquidity component in computeMarketQualityWeight ---
+
+  it('quality weight for illiquid 7-day market is penalised vs identical 30-day market (decay lowers liquidity contribution)', () => {
+    // Remove expiryBoost effect by using a market far from any step change.
+    // At 30d expiryBoost=1.0; at 7d expiryBoost=1.2 — so the net effect is
+    // ambiguous. We verify the depth-decay specifically: hold expiry boost
+    // constant by comparing the same market at daysToExpiry just above/below
+    // the 30d threshold where the liquidity haircut kicks in.
+    //
+    // Two markets: identical except daysToExpiry 29 vs 30.
+    //   daysToExpiry=30: haircut=1.0, expiryBoost=1.0
+    //   daysToExpiry=29: haircut≈0.9815, expiryBoost=1.0 (still in ≤30 bucket)
+    // The only difference is the haircut → 29d must have lower quality weight.
+    const base: MarketInput = {
+      question: 'Liquidity decay integration test',
+      probability: 0.55,
+      volume24hUsd: 50_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.05,
+      deltaNo: -0.05,
+    };
+    const w30 = computeMarketQualityWeight({ ...base, daysToExpiry: 30 });
+    const w29 = computeMarketQualityWeight({ ...base, daysToExpiry: 29 });
+    expect(w29).toBeLessThan(w30);
+  });
+
+  it('depth decay on liquidity does not zero out a near-expiry market with healthy volume', () => {
+    const m: MarketInput = {
+      question: 'Near-expiry healthy volume',
+      probability: 0.55,
+      volume24hUsd: 200_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.05,
+      deltaNo: -0.05,
+      daysToExpiry: 3,
+    };
+    expect(computeMarketQualityWeight(m)).toBeGreaterThan(0);
+  });
+
+  // Regression: Phase 2 depthDecayHaircut must not bleed into the spread-thinness
+  // amplification path and silently zero quality for borderline-wide spreads.
+  //
+  // Setup: daysToExpiry=5 → haircut=0.5 (floor) → decayed wLiq ≈ 0.45.
+  // With the bug: thinness uses decayed wLiq → thinness≈0.33 → amplification≈1.13
+  //   → 0.09/0.10 × 1.13 > 1 → quality zeroed.
+  // With the fix: thinness uses raw wLiq ≈ 0.90 → thinness≈0.05 → amplification≈1.02
+  //   → 0.09/0.10 × 1.02 ≈ 0.92 < 1 → quality is reduced but nonzero.
+  it('Phase 2 depth-decay does not zero quality via thinness-amplification bleed-through (borderline-wide spread, near-expiry, healthy volume)', () => {
+    const m: MarketInput = {
+      question: 'Near-expiry borderline spread bleed-through regression',
+      probability: 0.55,
+      volume24hUsd: 250_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.05,
+      deltaNo: -0.05,
+      daysToExpiry: 5,
+      bidAskSpread: 0.09, // borderline-wide but below the 0.10 raw cutoff
+    };
+    const w = computeMarketQualityWeight(m);
+    // Must be nonzero: a sub-cutoff spread on a healthy-volume market should only
+    // reduce quality, not eliminate it, regardless of proximity to expiry.
+    expect(w).toBeGreaterThan(0);
+    // Sanity: quality is meaningfully reduced vs the same market without a spread.
+    const wNoSpread = computeMarketQualityWeight({ ...m, bidAskSpread: undefined });
+    expect(w).toBeLessThan(wNoSpread);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // computeConditionalReturn

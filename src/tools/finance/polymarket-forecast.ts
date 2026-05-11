@@ -1211,12 +1211,61 @@ function truncCol(s: string, maxLen: number): string {
 }
 
 
-function categoryToTier(category: string): 'macro' | 'geopolitical' | 'electoral' {
+export function categoryToTier(category: string): 'macro' | 'geopolitical' | 'electoral' {
   const lower = category.toLowerCase();
   if (lower.includes('macro') || lower.includes('fed') || lower.includes('rate') ||
       lower.includes('gdp') || lower.includes('cpi')) return 'macro';
   if (lower.includes('election') || lower.includes('vote') || lower.includes('president')) return 'electoral';
   return 'geopolitical';
+}
+
+/**
+ * Canonical tier lookup used by the forecast tool when building MarketInput.signalTier.
+ * Reads tier from the impact-map (asset-class-aware) rather than the keyword heuristic.
+ *
+ * NOTE: This returns the impact-map tier which is correct for delta calibration
+ * (deltaYes/deltaNo magnitude). For Phase 3 spread-benchmark family use
+ * resolveSpreadFamily instead, which distinguishes crypto-native categories from
+ * genuinely electoral ones.
+ */
+export function resolveSignalTier(category: string, assetClass: string): 'macro' | 'geopolitical' | 'electoral' {
+  return lookupImpact(category, assetClass).tier;
+}
+
+/**
+ * Categories that are crypto-native (price targets, product launches, crypto regulatory)
+ * and should use the 'geopolitical' spread benchmark regardless of their impact-map tier.
+ *
+ * These carry tier: 'electoral' in the impact-map due to political significance, but they
+ * are NOT election markets. Routing them to the 0.07 electoral benchmark would zero out
+ * crypto threshold markets at spreads that are structurally normal for the current tool.
+ */
+const NATIVE_CRYPTO_SPREAD_CATEGORIES = new Set([
+  'btc_price_target',
+  'etf_product',
+  'crypto_regulation_positive',
+  'crypto_regulation_negative',
+]);
+
+/**
+ * Phase 3 — Returns the spread benchmark family for a forecast market.
+ *
+ * Distinct from resolveSignalTier (which reads the impact-map tier for delta
+ * calibration). This governs which TIER_SPREAD_BENCHMARKS entry drives the
+ * bid-ask spread penalty in computeMarketQualityWeight.
+ *
+ * Key distinction: btc_price_target / etf_product / crypto_regulation_* carry
+ * tier: 'electoral' in the impact-map, but those are NOT election markets.
+ * Their microstructure resembles geopolitical markets (wider spreads expected).
+ * Exported for unit-testability.
+ */
+export function resolveSpreadFamily(
+  category: string,
+  assetClass: string,
+): 'macro' | 'geopolitical' | 'electoral' {
+  if (NATIVE_CRYPTO_SPREAD_CATEGORIES.has(category)) return 'geopolitical';
+  if (category === 'regulatory' && assetClass === 'crypto') return 'geopolitical';
+  return lookupImpact(category, assetClass).tier;
 }
 
 function sign(n: number): string {
@@ -1452,7 +1501,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
             priceSpikeDetected: m.priceSpikeDetected,
             transitoryMove: m.transitoryMove,
             stablePath: m.stablePath,
-            signalTier: categoryToTier(m.signalCategory),
+            signalTier: resolveSpreadFamily(m.signalCategory, assetClass),
             deltaYes: mImpact.deltaYes,
             deltaNo: mImpact.deltaNo,
             requestedHorizonDays: shouldFilterResolutionMismatch(assetClass, horizonDays) ? horizonDays : undefined,
