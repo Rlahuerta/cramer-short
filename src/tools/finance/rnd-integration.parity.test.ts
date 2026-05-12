@@ -6,30 +6,8 @@
  */
 
 import { describe, test, expect } from 'bun:test';
+import { runPython } from '../../utils/python-parity.js';
 import { transformQToP, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix } from './rnd-integration.js';
-
-function runPython(script: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = Bun.spawn({
-      cmd: ['python3', '-c', script],
-      cwd: '/home/hephaestus/NAS/Repositories/dexter',
-      env: { ...process.env, PYTHONPATH: '/home/hephaestus/NAS/Repositories/dexter' },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    proc.stdout.pipeTo(new WritableStream({ write(chunk) { stdout.push(new TextDecoder().decode(chunk)); } }));
-    proc.stderr.pipeTo(new WritableStream({ write(chunk) { stderr.push(new TextDecoder().decode(chunk)); } }));
-    proc.exited.then((code) => {
-      if (code !== 0) {
-        reject(new Error(`Python exited ${code}: ${stderr.join('')}`));
-      } else {
-        resolve(stdout.join('').trim());
-      }
-    });
-  });
-}
 
 describe('TS/Python parity — transform_q_to_p', () => {
   test('identity case', async () => {

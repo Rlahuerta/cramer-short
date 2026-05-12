@@ -404,8 +404,9 @@ export function buildSystemPrompt(
   groupContext?: GroupContext,
   memoryFiles?: string[],
   memoryContext?: string | null,
+  toolDescriptionsOverride?: string,
 ): string {
-  const toolDescriptions = buildToolDescriptions(model);
+  const toolDescriptions = toolDescriptionsOverride ?? buildToolDescriptions(model);
   const profile = getChannelProfile(channel);
 
   const behaviorBullets = profile.behavior.map(b => `- ${b}`).join('\n');

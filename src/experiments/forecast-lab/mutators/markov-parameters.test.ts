@@ -273,9 +273,13 @@ describe('forecast-lab markov parameter mutators', () => {
         for (const edit of candidate.edits) {
           const fileContents = readFileSync(join(REPO_ROOT, edit.filePath), 'utf8');
           const matchCount = fileContents.split(edit.search).length - 1;
+          const replaceCount = fileContents.split(edit.replace).length - 1;
+          const patchedContents = fileContents.replace(edit.search, edit.replace);
 
           expect(matchCount).toBe(edit.expectedReplacements);
-          expect(fileContents.includes(edit.replace)).toBe(false);
+          expect(patchedContents).not.toBe(fileContents);
+          expect(patchedContents.split(edit.search).length - 1).toBe(0);
+          expect(patchedContents.split(edit.replace).length - 1).toBe(replaceCount + 1);
         }
       }
     }

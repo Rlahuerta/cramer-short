@@ -26,6 +26,7 @@ import type { E2EResult } from '@/utils/e2e-helpers.js';
 
 const PROBABILITY_QUERY =
   '--deep Use the probability_assessment skill for BTC price movement in the next 30 days';
+const PROBABILITY_E2E_MAX_ITERATIONS = 10;
 
 // ── shared agent result ──────────────────────────────────────────────────────
 // All tests in this suite share a single agent run to avoid paying the LLM
@@ -38,7 +39,9 @@ let answer: string;
 describe('probability_assessment skill E2E', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return; // guard — tests will be skipped via e2eIt when RUN_E2E is false
-    result = await runAgentE2EWithTimeoutRetry(PROBABILITY_QUERY);
+    result = await runAgentE2EWithTimeoutRetry(PROBABILITY_QUERY, {
+      maxIterations: PROBABILITY_E2E_MAX_ITERATIONS,
+    });
     tools = result.toolsCalled;
     answer = result.answer;
   }, E2E_TIMEOUT_MS);

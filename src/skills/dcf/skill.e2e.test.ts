@@ -28,6 +28,9 @@ const FINANCIAL_TOOL_NAMES = [
   'get_options_chain',
 ];
 
+const DCF_E2E_MAX_ITERATIONS = 6;
+const DCF_E2E_MODEL = 'ollama:glm-5:cloud';
+
 let result: E2EResult;
 let tools: string[];
 let answer: string;
@@ -35,7 +38,10 @@ let answer: string;
 describe('DCF skill E2E', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return; // guard — tests will be skipped via e2eIt
-    result = await runAgentE2EWithTimeoutRetry('--deep Use the DCF skill to value Apple (AAPL)');
+    result = await runAgentE2EWithTimeoutRetry('--deep Use the DCF skill to value Apple (AAPL)', {
+      maxIterations: DCF_E2E_MAX_ITERATIONS,
+      model: DCF_E2E_MODEL,
+    });
     tools = result.toolsCalled;
     answer = result.answer;
   }, E2E_TIMEOUT_MS);

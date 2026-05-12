@@ -1,7 +1,7 @@
 /**
  * Coverage tests for AgentRunnerController.runQuery() and related private helpers.
  *
- * Uses mock.module to replace Agent.create() with a controllable fake, enabling
+ * Uses injected createAgent/autoStore callbacks instead of module mocking, enabling
  * deterministic testing of:
  *   - makeCancellable (private — covered indirectly via runQuery)
  *   - runQuery() success path (returns { answer })
@@ -11,10 +11,10 @@
  *   - cancelExecution() while runQuery() is awaiting
  *   - requestToolApproval (lines 234-239)
  *
- * IMPORTANT: mock.module() calls must appear BEFORE any imports of the modules
- * under test. The AgentRunnerController is imported dynamically below after mocks.
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { AgentRunnerController } from './agent-runner.js';
+import type { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
 
 // ─── Fake agent state — reset per test ───────────────────────────────────────
 
@@ -31,8 +31,11 @@ const fakeState = {
   events: [] as EventSpec[],
   /** If set, stream.next() will stall until this promise resolves. */
   stallPromise: null as Promise<void> | null,
-  /** Error thrown by Agent.create() if set. */
-  createError: null as Error | null,
+  /** Error thrown by createAgent if set. */
+  createError: null as unknown,
+  createOverride: null as null | (() => Promise<{
+    run: (_query: string, _history: unknown) => AsyncGenerator<EventSpec>;
+  }>),
 };
 
 async function* makeStream(events: EventSpec[], stallPromise: Promise<void> | null) {
@@ -44,30 +47,20 @@ async function* makeStream(events: EventSpec[], stallPromise: Promise<void> | nu
   }
 }
 
-// Mock auto-store so fire-and-forget doesn't touch FS/network.
-mock.module('../memory/auto-store.js', () => ({
-  autoStoreFromRun: mock(async () => {}),
-  seedWatchlistEntries: mock(async () => {}),
-}));
+const fakeCreateAgent = mock(async () => {
+  if (fakeState.createOverride) {
+    return await fakeState.createOverride();
+  }
+  if (fakeState.createError !== null) {
+    throw fakeState.createError;
+  }
+  return {
+    run: (_query: string, _history: unknown) =>
+      makeStream(fakeState.events, fakeState.stallPromise),
+  };
+});
 
-// Mock Agent — create() returns a fake agent whose run() yields fakeState.events.
-mock.module('../agent/agent.js', () => ({
-  Agent: {
-    create: mock(async () => {
-      if (fakeState.createError) {
-        throw fakeState.createError;
-      }
-      return {
-        run: (_query: string, _history: unknown) =>
-          makeStream(fakeState.events, fakeState.stallPromise),
-      };
-    }),
-  },
-}));
-
-// ─── Dynamic imports AFTER mocks ─────────────────────────────────────────────
-const { AgentRunnerController } = await import('./agent-runner.js');
-const { InMemoryChatHistory } = await import('../utils/in-memory-chat-history.js');
+const fakeAutoStoreFromRun = mock(async () => {});
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -77,7 +70,7 @@ function makeFakeChatHistory() {
     saveAnswer: mock(async (_a: string) => {}),
     seedFromLlmMessages: mock(() => {}),
     getMessages: mock(() => []),
-  } as unknown as InstanceType<typeof InMemoryChatHistory>;
+  } as unknown as InMemoryChatHistory;
 }
 
 function makeController() {
@@ -86,6 +79,10 @@ function makeController() {
     { model: undefined },
     makeFakeChatHistory(),
     () => changes.push(Date.now()),
+    {
+      createAgent: fakeCreateAgent as never,
+      autoStoreFromRun: fakeAutoStoreFromRun as never,
+    },
   );
   return { ctrl, changes };
 }
@@ -112,6 +109,9 @@ beforeEach(() => {
   fakeState.events = [];
   fakeState.stallPromise = null;
   fakeState.createError = null;
+  fakeState.createOverride = null;
+  fakeCreateAgent.mockClear();
+  fakeAutoStoreFromRun.mockClear();
 });
 
 // ─── runQuery — success path ──────────────────────────────────────────────────
@@ -231,11 +231,7 @@ describe('runQuery — non-abort error', () => {
   });
 
   it('handles non-Error thrown values', async () => {
-    // Throw a string instead of an Error
-    const { Agent } = await import('../agent/agent.js');
-    (Agent.create as ReturnType<typeof mock>).mockImplementationOnce(async () => {
-      throw 'just a string error'; // eslint-disable-line no-throw-literal
-    });
+    fakeState.createError = 'just a string error'; // eslint-disable-line no-throw-literal
     const { ctrl } = makeController();
     const result = await ctrl.runQuery('test');
     expect(result).toBeUndefined();
@@ -302,13 +298,12 @@ describe('makeCancellable — cancellation race', () => {
     let unblock!: () => void;
     const stallPromise = new Promise<void>((res) => (unblock = res));
 
-    const { Agent } = await import('../agent/agent.js');
-    (Agent.create as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    fakeState.createOverride = async () => {
       await stallPromise;
       return {
         run: () => makeStream([], null),
       };
-    });
+    };
 
     const { ctrl } = makeController();
     // Pre-cancel: set queryWasCancelled=true before runQuery

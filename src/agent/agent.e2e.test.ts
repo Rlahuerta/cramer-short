@@ -4,7 +4,7 @@
  * Run with:  bun run test:e2e
  * Skipped in normal `bun test` / CI runs.
  *
- * Model: ollama:kimi-k2.6:cloud (override via E2E_MODEL env var)
+ * Model: auto-resolved Ollama cloud model (override via E2E_MODEL env var)
  * Timeout: 600 s per test
  */
 import { describe, expect } from 'bun:test';
@@ -12,6 +12,10 @@ import { e2eIt } from '@/utils/test-guards.js';
 import { runAgentE2E, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { ToolStartEvent, ToolEndEvent } from '@/agent/types.js';
 import type { MarkovDistributionPoint } from '@/tools/finance/markov-distribution.js';
+
+const HAS_WEB_SEARCH_PROVIDER = Boolean(
+  process.env.EXASEARCH_API_KEY || process.env.PERPLEXITY_API_KEY || process.env.TAVILY_API_KEY,
+);
 
 function findToolStartEvent(result: { events: unknown[] }, tool: string): ToolStartEvent | undefined {
   return result.events.find((event): event is ToolStartEvent => {
@@ -220,6 +224,11 @@ describe('Agent E2E — basic financial query flows', () => {
   e2eIt(
     'searches for Federal Reserve news and returns a non-trivial answer',
     async () => {
+      if (!HAS_WEB_SEARCH_PROVIDER) {
+        console.log('No web_search provider configured — skipping Federal Reserve news E2E');
+        return;
+      }
+
       const result = await runAgentE2E('Find recent news about Federal Reserve interest rate decisions');
 
       // Answer must be substantive (not just an error or placeholder)
@@ -259,7 +268,6 @@ describe('Agent E2E — basic financial query flows', () => {
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
         '--deep Provide a GOLD forecast based on markov chain for the next 30 days',
-        { model: 'ollama:kimi-k2.6:cloud' },
       );
 
       expect(result.toolsCalled).toContain('markov_distribution');
@@ -289,7 +297,6 @@ describe('Agent E2E — basic financial query flows', () => {
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
         '--deep Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.',
-        { model: 'ollama:kimi-k2.6:cloud' },
       );
 
       expect(result.toolsCalled).toContain('markov_distribution');
@@ -338,7 +345,6 @@ describe('Agent E2E — basic financial query flows', () => {
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
         '--deep Provide the Polymarket and Markov GOLD forecast for 48 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.',
-        { model: 'ollama:kimi-k2.6:cloud' },
       );
 
       expect(result.toolsCalled).toContain('markov_distribution');
@@ -397,7 +403,6 @@ describe('Agent E2E — basic financial query flows', () => {
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
         '--deep Provide a SILVER forecast based on markov chain for the next 30 days',
-        { model: 'ollama:kimi-k2.6:cloud' },
       );
 
       expect(result.toolsCalled).toContain('markov_distribution');
@@ -427,7 +432,6 @@ describe('Agent E2E — basic financial query flows', () => {
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
         '--deep Provide a OIL price forecast based on markov chain and polymarket for the next 14 days',
-        { model: 'ollama:kimi-k2.6:cloud' },
       );
 
       expect(result.toolsCalled).toContain('markov_distribution');
@@ -463,7 +467,6 @@ describe('Agent E2E — basic financial query flows', () => {
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
         '--deep Provide an NVDA forecast based on markov chain for the next 7 days',
-        { model: 'ollama:kimi-k2.6:cloud' },
       );
 
       expect(result.toolsCalled).toContain('markov_distribution');
@@ -503,7 +506,6 @@ describe('Agent E2E — basic financial query flows', () => {
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
         '--deep Provide a BTC forecast for the next 7 days',
-        { model: 'ollama:kimi-k2.6:cloud' },
       );
 
       const required = ['get_market_data', 'social_sentiment', 'polymarket_forecast', 'get_onchain_crypto', 'get_fixed_income', 'markov_distribution'];
@@ -568,7 +570,6 @@ describe('Agent E2E — basic financial query flows', () => {
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
         '--deep Give me a Polymarket and markov price forecast for BTC over the next 24 hours and also check for a possible whales movements. Provide the enter price, and stop market price for 10x leveraged and the position direction',
-        { model: 'ollama:kimi-k2.6:cloud' },
       );
 
       expect(result.toolsCalled).toContain('markov_distribution');
@@ -611,7 +612,6 @@ describe('Agent E2E — basic financial query flows', () => {
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
         '--deep Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.',
-        { model: 'ollama:kimi-k2.6:cloud' },
       );
 
       const required = [

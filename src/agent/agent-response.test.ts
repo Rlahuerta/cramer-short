@@ -21,6 +21,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll 
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
 import { Scratchpad } from './scratchpad.js';
 import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
@@ -127,61 +128,10 @@ class SpyChatModel extends BaseChatModel {
 beforeAll(() => { _setModelFactory((_name, _opts, _thinkOverride) => new SpyChatModel(mockState)); });
 afterAll(() => {
   _setModelFactory(null);
-  mock.module('../memory/index.js', () => realMemory);
-  mock.module('../tools/registry.js', () => realToolsRegistry);
-});
-
-// Mock memory to avoid SQLite initialization.
-const realMemory = await import('../memory/index.js');
-mock.module('../memory/index.js', () => ({
-  MemoryManager: {
-    get: async () => ({
-      listFiles: async () => [],
-      loadSessionContext: async () => ({ text: '' }),
-      saveAnswer: async () => {},
-    }),
-  },
-}));
-
-const realToolsRegistry = await import('../tools/registry.js');
-mock.module('../tools/registry.js', () => {
-  const sequentialThinkingTool = {
-    name: 'sequential_thinking',
-    invoke: async () => JSON.stringify({ ok: true }),
-  };
-
-  const markovDistributionTool = {
-    name: 'markov_distribution',
-    invoke: async () => JSON.stringify({
-      data: {
-        _tool: 'markov_distribution',
-        status: 'abstain',
-        abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
-        canonical: {
-          ticker: 'BTC-USD',
-          horizon: 14,
-          diagnostics: {
-            trustedAnchors: 0,
-            totalAnchors: 5,
-            anchorQuality: 'none',
-          },
-        },
-        forecastHint: {
-          usage: 'forecast_only',
-          markovReturn: 0.0103,
-        },
-      },
-    }),
-  };
-
-  return {
-    getTools: () => [sequentialThinkingTool, markovDistributionTool],
-    buildToolDescriptions: () => 'mock tool descriptions',
-  };
 });
 
 // ---------------------------------------------------------------------------
-// Dynamic import AFTER mocks are registered.
+// Dynamic import after model-factory DI is registered.
 // ---------------------------------------------------------------------------
 const {
   Agent,
@@ -192,6 +142,49 @@ const {
   buildLowConfidenceBtcShortHorizonForecastPrefix,
   ensureStructuredDensityTable,
 } = await import('./agent.js');
+
+const sequentialThinkingTool = {
+  name: 'sequential_thinking',
+  invoke: async () => JSON.stringify({ ok: true }),
+} satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+const markovDistributionTool = {
+  name: 'markov_distribution',
+  invoke: async () => JSON.stringify({
+    data: {
+      _tool: 'markov_distribution',
+      status: 'abstain',
+      abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
+      canonical: {
+        ticker: 'BTC-USD',
+        horizon: 14,
+        diagnostics: {
+          trustedAnchors: 0,
+          totalAnchors: 5,
+          anchorQuality: 'none',
+        },
+      },
+      forecastHint: {
+        usage: 'forecast_only',
+        markovReturn: 0.0103,
+      },
+    },
+  }),
+} satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+const RESPONSE_TEST_TOOLS = [
+  sequentialThinkingTool,
+  markovDistributionTool,
+] as unknown as StructuredToolInterface[];
+
+function createResponseTestAgent(maxIterations: number) {
+  return Agent.create({
+    model: 'gpt-5.4',
+    maxIterations,
+    memoryEnabled: false,
+    tools: RESPONSE_TEST_TOOLS,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Test environment helpers
@@ -241,7 +234,7 @@ describe('Agent — no redundant stream call for direct answers', () => {
   });
 
   it('streamCallLlm is never invoked when the model returns a text answer', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3, memoryEnabled: false });
+    const agent = await createResponseTestAgent(3);
     await collectEvents(agent.run('test query'));
     expect(mockState.streamCallCount).toBe(0);
   });
@@ -250,7 +243,7 @@ describe('Agent — no redundant stream call for direct answers', () => {
     mockState.invokeContent = 'Unique answer from invoke';
     mockState.streamChunks = ['Should not appear in answer'];
 
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3, memoryEnabled: false });
+    const agent = await createResponseTestAgent(3);
     const events = await collectEvents(agent.run('test query'));
     const done = events.find((e) => e.type === 'done') as DoneEvent | undefined;
 
@@ -261,7 +254,7 @@ describe('Agent — no redundant stream call for direct answers', () => {
   it('answer_chunk events concatenate to the callLlm response text', async () => {
     mockState.invokeContent = 'Short answer';
 
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3, memoryEnabled: false });
+    const agent = await createResponseTestAgent(3);
     const events = await collectEvents(agent.run('test query'));
 
     const chunks = events.filter((e) => e.type === 'answer_chunk') as AnswerChunkEvent[];
@@ -275,7 +268,7 @@ describe('Agent — no redundant stream call for direct answers', () => {
   it('done event is emitted without waiting for a second LLM call', async () => {
     // If streamCallLlm were called (the old bug), it would be a second async op.
     // With the fix we get immediate fake-streaming — done arrives right away.
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3, memoryEnabled: false });
+    const agent = await createResponseTestAgent(3);
     const start = Date.now();
     await collectEvents(agent.run('test query'));
     const elapsed = Date.now() - start;
@@ -297,14 +290,14 @@ describe('Agent — streamCallLlm used for max-iterations synthesis', () => {
   });
 
   it('streamCallLlm is called when max iterations is hit (synthesis path)', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     await collectEvents(agent.run('test query'));
     expect(mockState.streamCallCount).toBeGreaterThanOrEqual(1);
   });
 
   it('done.answer contains synthesis output when max iterations is hit', async () => {
     mockState.streamChunks = ['synthesis output for max iterations'];
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     const events = await collectEvents(agent.run('test query'));
     const done = events.find((e) => e.type === 'done') as DoneEvent | undefined;
     expect(done?.answer).toContain('synthesis output for max iterations');
@@ -328,7 +321,7 @@ describe('Agent — streamCallLlm used for max-iterations synthesis', () => {
     mockState.streamChunks = ['this synthesis output should be bypassed'];
     mockState.streamShouldThrow = true;
 
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 1, memoryEnabled: false });
+    const agent = await createResponseTestAgent(1);
     const events = await collectEvents(agent.run('Provide a BTC forecast for the next 14 days'));
     const done = events.find((e) => e.type === 'done') as DoneEvent | undefined;
 
@@ -405,20 +398,20 @@ describe('Agent — synthesis timeout graceful fallback', () => {
   });
 
   it('done event is always emitted even when streamCallLlm throws', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     const events = await collectEvents(agent.run('test query'));
     const doneEvents = events.filter((e) => e.type === 'done');
     expect(doneEvents.length).toBe(1);
   });
 
   it('done event is the last event emitted after synthesis failure', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     const events = await collectEvents(agent.run('test query'));
     expect(events.at(-1)?.type).toBe('done');
   });
 
   it('answer_start is emitted before done even when synthesis fails', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     const events = await collectEvents(agent.run('test query'));
 
     const startIdx = events.findIndex((e) => e.type === 'answer_start');
@@ -984,7 +977,7 @@ describe('Agent — thinking text truncation', () => {
   });
 
   it('thinking event message is at most 501 chars (500 + ellipsis)', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 5, memoryEnabled: false });
+    const agent = await createResponseTestAgent(5);
     const events = await collectEvents(agent.run('test query'));
 
     const thinkingEvents = events.filter((e) => e.type === 'thinking');
@@ -997,7 +990,7 @@ describe('Agent — thinking text truncation', () => {
   });
 
   it('truncated thinking ends with ellipsis when source text exceeds 500 chars', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 5, memoryEnabled: false });
+    const agent = await createResponseTestAgent(5);
     const events = await collectEvents(agent.run('test query'));
 
     const thinkEvt = events.find((e) => e.type === 'thinking') as

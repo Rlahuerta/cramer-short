@@ -1,3 +1,4 @@
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import type { GroupContext } from './prompts.js';
 
 // ============================================================================
@@ -55,6 +56,10 @@ export interface AgentConfig {
   sessionApprovedTools?: Set<string>;
   /** Enable/disable persistent memory integration for this run */
   memoryEnabled?: boolean;
+  /** Optional explicit tool set for tests or isolated harnesses. */
+  tools?: StructuredToolInterface[];
+  /** Optional tool-description override for prompt-construction tests. */
+  toolDescriptionsOverride?: string;
   /**
    * Override Ollama extended thinking (`think` flag).
    * - `true`  → force thinking on (only applies to Ollama models)

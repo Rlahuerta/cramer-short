@@ -3,7 +3,7 @@
  * model and returns a structured result for assertion.
  *
  * Environment variables:
- *   E2E_MODEL      — Ollama model to use (default: 'ollama:kimi-k2.6:cloud')
+ *   E2E_MODEL      — Ollama model to use (default: auto-resolved live cloud model)
  *   OLLAMA_BASE_URL — Ollama endpoint (default: 'http://127.0.0.1:11434')
  *   E2E_TIMEOUT_MS  — Hard timeout in ms (default: 600 000)
  */
@@ -12,9 +12,47 @@ import { InMemoryChatHistory } from './in-memory-chat-history.js';
 import { isTimeoutError } from './errors.js';
 import { withRetry } from './retry.js';
 
-export const E2E_MODEL = process.env.E2E_MODEL ?? 'ollama:kimi-k2.6:cloud';
 export const E2E_TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS ?? '600000', 10);
 export const CHILD_RESULT_MARKER = '__CRAMER_E2E_RESULT__';
+
+const E2E_MODEL_FALLBACK = 'ollama:glm-5:cloud';
+const E2E_MODEL_PREFERENCES = [
+  'glm-5.1:cloud',
+  'minimax-m2.7:cloud',
+  'glm-5:cloud',
+  'kimi-k2.6:cloud',
+  'qwen3.5:397b-cloud',
+  'qwen3-next:80b-cloud',
+] as const;
+
+let resolvedDefaultE2EModelPromise: Promise<string> | null = null;
+
+async function resolveDefaultE2EModel(): Promise<string> {
+  const override = process.env.E2E_MODEL?.trim();
+  if (override) {
+    return override;
+  }
+
+  if (!resolvedDefaultE2EModelPromise) {
+    resolvedDefaultE2EModelPromise = (async () => {
+      const { getOllamaModels } = await import('./ollama.js');
+      const models = await getOllamaModels();
+
+      for (const candidate of E2E_MODEL_PREFERENCES) {
+        if (models.includes(candidate)) {
+          return `ollama:${candidate}`;
+        }
+      }
+
+      const firstCloudModel = models
+        .filter((model) => model.includes(':cloud'))
+        .sort((a, b) => a.localeCompare(b))[0];
+      return firstCloudModel ? `ollama:${firstCloudModel}` : E2E_MODEL_FALLBACK;
+    })();
+  }
+
+  return resolvedDefaultE2EModelPromise;
+}
 
 export interface E2EResult {
   /** Full final answer text from the done event */
@@ -106,7 +144,7 @@ export async function runAgentE2EInProcess(
     defaultMaxIter = 40;
   }
 
-  const model = opts.model ?? E2E_MODEL;
+  const model = opts.model ?? await resolveDefaultE2EModel();
   const maxIterations = opts.maxIterations ?? defaultMaxIter;
 
   // Dynamic import to avoid mock.module contamination from unit test files

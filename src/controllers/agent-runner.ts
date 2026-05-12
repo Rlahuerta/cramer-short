@@ -17,6 +17,8 @@ import type { HistoryItem, HistoryItemStatus, WorkingState } from '../types.js';
 import { autoStoreFromRun } from '../memory/auto-store.js';
 
 type ChangeListener = () => void;
+type CreateAgentFn = typeof Agent.create;
+type AutoStoreFromRunFn = typeof autoStoreFromRun;
 
 export interface RunQueryResult {
   answer: string;
@@ -30,6 +32,8 @@ export class AgentRunnerController {
   private agentConfig: AgentConfig;
   private readonly inMemoryChatHistory: InMemoryChatHistory;
   private readonly onChange?: ChangeListener;
+  private readonly createAgent: CreateAgentFn;
+  private readonly autoStoreFromRun: AutoStoreFromRunFn;
   private abortController: AbortController | null = null;
   private approvalResolve: ((decision: ApprovalDecision) => void) | null = null;
   private sessionApprovedTools = new Set<string>();
@@ -70,10 +74,16 @@ export class AgentRunnerController {
     agentConfig: AgentConfig,
     inMemoryChatHistory: InMemoryChatHistory,
     onChange?: ChangeListener,
+    options: {
+      createAgent?: CreateAgentFn;
+      autoStoreFromRun?: AutoStoreFromRunFn;
+    } = {},
   ) {
     this.agentConfig = agentConfig;
     this.inMemoryChatHistory = inMemoryChatHistory;
     this.onChange = onChange;
+    this.createAgent = options.createAgent ?? Agent.create;
+    this.autoStoreFromRun = options.autoStoreFromRun ?? autoStoreFromRun;
   }
 
   /**
@@ -189,7 +199,7 @@ export class AgentRunnerController {
       // that pressing Escape during the (potentially slow) memory-indexer sync
       // inside Agent.create() still returns immediately.
       const agent = await this.makeCancellable(
-        Agent.create({
+        this.createAgent({
           ...this.agentConfig,
           signal: this.abortController?.signal,
           requestToolApproval: this.requestToolApproval,
@@ -215,7 +225,7 @@ export class AgentRunnerController {
       // Auto-persist financial context when the LLM didn't call
       // store_financial_insight itself. Fire-and-forget — never block the UI.
       if (doneEvent) {
-        void autoStoreFromRun(query, doneEvent.answer, doneEvent.toolCalls);
+        void this.autoStoreFromRun(query, doneEvent.answer, doneEvent.toolCalls);
       }
 
       if (finalAnswer) {

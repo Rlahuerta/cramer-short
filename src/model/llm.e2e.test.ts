@@ -15,14 +15,9 @@
  *   RUN_E2E=1 bun test src/model/llm.e2e.test.ts --timeout 120000
  */
 
-import { mock, describe, expect, beforeAll, beforeEach } from 'bun:test';
+import { describe, expect, beforeAll, beforeEach } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
-
-// Restore the real @langchain/ollama for this file — agent.test.ts's
-// permanent mock.module at file scope replaces ChatOllama with an empty stub.
-const realOllama = await import('@langchain/ollama');
-mock.module('@langchain/ollama', () => realOllama);
 
 import { callLlm, _setModelFactory } from '@/model/llm.js';
 

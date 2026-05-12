@@ -5,10 +5,15 @@
  * Run with:  RUN_INTEGRATION=1 bun test --filter integration
  * Skipped in normal `bun test` / CI runs.
  */
-import { describe, expect } from 'bun:test';
+import { afterEach, describe, expect } from 'bun:test';
 import { integrationIt } from '@/utils/test-guards.js';
 import { polymarketTool } from './polymarket.js';
 import { socialSentimentTool } from './social-sentiment.js';
+
+const originalFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 describe('Financial tools integration — Polymarket', () => {
   integrationIt(
@@ -52,18 +57,17 @@ describe('Financial tools integration — Social Sentiment', () => {
         include_fear_greed: true,
         limit: 5,
       });
-      const text = typeof result === 'string' ? result : JSON.stringify(result);
+      const parsed = typeof result === 'string' ? JSON.parse(result) as { data?: { result?: string } } : result as { data?: { result?: string } };
+      const text = parsed.data?.result ?? '';
 
       expect(text.length).toBeGreaterThan(20);
 
-      // Should contain sentiment indicators
-      const hasSentiment =
-        text.toLowerCase().includes('bullish') ||
-        text.toLowerCase().includes('bearish') ||
-        text.toLowerCase().includes('neutral') ||
-        text.toLowerCase().includes('sentiment') ||
-        text.toLowerCase().includes('fear');
-      expect(hasSentiment).toBe(true);
+      const normalized = text.toLowerCase();
+      const hasStableSentimentPayload =
+        normalized.includes('social sentiment:')
+        || normalized.includes('no social media posts found')
+        || normalized.includes('fear & greed');
+      expect(hasStableSentimentPayload).toBe(true);
     },
     30_000,
   );

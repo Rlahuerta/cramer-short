@@ -11,7 +11,7 @@ All functions return oldest-first price arrays or DataFrames.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -54,7 +54,7 @@ def _fetch_financial_datasets(
     if not api_key:
         return []
 
-    end = datetime.utcnow().date()
+    end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=days)
 
     url = f"{FINANCIAL_DATASETS_BASE}/prices/"
@@ -104,7 +104,7 @@ def _fetch_binance(
 ) -> list[float]:
     """Fetch daily closes from Binance klines."""
     symbol = _to_binance_symbol(ticker)
-    end_time = int(datetime.utcnow().timestamp() * 1000)
+    end_time = int(datetime.now(timezone.utc).timestamp() * 1000)
     start_time = end_time - days * 86_400_000
 
     url = f"{BINANCE_BASE}/api/v3/klines"
@@ -234,7 +234,7 @@ def fetch_historical_prices(
         )
 
     # Build date index (oldest first)
-    end = datetime.utcnow().date()
+    end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=len(closes) - 1)
     dates = pd.date_range(start=start, periods=len(closes), freq="D")
 

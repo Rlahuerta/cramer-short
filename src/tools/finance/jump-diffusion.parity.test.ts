@@ -5,32 +5,13 @@
  * outputs across the two implementations.
  */
 import { describe, test, expect } from 'bun:test';
+import { runPython } from '../../utils/python-parity.js';
 import {
   JUMP_DEFAULTS,
   buildJumpEventSpec,
   jumpDriftCompensator,
   polymarketProbToHazard,
 } from './jump-diffusion.js';
-
-function runPython(script: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = Bun.spawn({
-      cmd: ['python3', '-c', script],
-      cwd: '/home/hephaestus/NAS/Repositories/dexter',
-      env: { ...process.env, PYTHONPATH: '/home/hephaestus/NAS/Repositories/dexter' },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    proc.stdout.pipeTo(new WritableStream({ write(c) { stdout.push(new TextDecoder().decode(c)); } }));
-    proc.stderr.pipeTo(new WritableStream({ write(c) { stderr.push(new TextDecoder().decode(c)); } }));
-    proc.exited.then((code) => {
-      if (code !== 0) reject(new Error(`Python exited ${code}: ${stderr.join('')}`));
-      else resolve(stdout.join('').trim());
-    });
-  });
-}
 
 describe('TS/Python parity — polymarket_prob_to_hazard', () => {
   test('p=0.3, days=30', async () => {

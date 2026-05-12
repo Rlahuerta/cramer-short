@@ -1,34 +1,4 @@
-import { describe, it, expect, mock, afterAll } from 'bun:test';
-import { join } from 'path';
-import { tmpdir } from 'os';
-
-const testDir = join(tmpdir(), `dexter-prompts-test-${Date.now()}`);
-const actualPaths = await import('../utils/paths.js');
-const realToolsRegistry = await import('../tools/registry.js');
-
-mock.module('../tools/registry.js', () => ({
-  ...realToolsRegistry,
-  buildToolDescriptions: mock(() => 'mock tool descriptions'),
-  getTools: mock(() => []),
-  getToolRegistry: mock(() => []),
-}));
-
-afterAll(() => {
-  mock.module('../tools/registry.js', () => realToolsRegistry);
-});
-
-// skills/index.js intentionally NOT mocked here — it re-exports from registry.js
-// and loader.js via ESM live bindings. Any mock.module() call for index.js
-// propagates back through those bindings into registry.js/loader.js, breaking
-// skill.test.ts files that import directly from those sub-modules in the same
-// Bun worker. The real discoverSkills/buildSkillMetadataSection are safe to use
-// in tests because no assertion here checks for skill presence or absence.
-
-mock.module('../utils/paths.js', () => ({
-  ...actualPaths,
-  cramerShortPath: mock((...segments: string[]) => join(testDir, ...segments)),
-  getCramerShortDir: mock(() => testDir),
-}));
+import { describe, it, expect } from 'bun:test';
 
 const {
   getForecastLabMarkovRuntimeDefaults,
@@ -42,6 +12,8 @@ const {
   injectForecastLabRoutingHint,
   loadSoulDocument,
 } = await import('./prompts.js');
+
+const MOCK_TOOL_DESCRIPTIONS = 'mock tool descriptions';
 
 describe('getCurrentDate', () => {
   it('returns a non-empty string', () => {
@@ -80,44 +52,44 @@ describe('loadSoulDocument', () => {
 
 describe('buildSystemPrompt', () => {
   it('contains tool descriptions', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
+    const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).toContain('mock tool descriptions');
   });
 
   it('contains the current date', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
+    const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     const currentYear = new Date().getFullYear().toString();
     expect(prompt).toContain(currentYear);
   });
 
   it('includes soul content when provided', () => {
     const soulContent = 'I am a focused financial analyst.';
-    const prompt = buildSystemPrompt('gpt-5.4', soulContent);
+    const prompt = buildSystemPrompt('gpt-5.4', soulContent, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).toContain(soulContent);
   });
 
   it('does not include Identity section when soul is null', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null);
+    const prompt = buildSystemPrompt('gpt-5.4', null, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).not.toContain('## Identity');
   });
 
   it('uses WhatsApp profile preamble when channel=whatsapp', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp');
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp', undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt.toLowerCase()).toContain('whatsapp');
   });
 
   it('uses CLI profile when channel=cli', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli', undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).toContain('CLI');
   });
 
   it('omits tables section for whatsapp channel', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp');
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp', undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).not.toContain('## Tables');
   });
 
   it('includes tables section for CLI channel', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli', undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).toContain('Tables');
   });
 
