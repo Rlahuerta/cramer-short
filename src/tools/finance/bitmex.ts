@@ -159,9 +159,19 @@ export async function fetchBitmexDailyCloses(
   ticker: string,
   days = 120,
 ): Promise<number[]> {
-  const symbol = await resolveBitmexHistoricalSymbol(ticker);
-  if (!symbol) return [];
-  return fetchBitmexDailyClosesBySymbol(symbol, days);
+  const resolvedSymbol = await resolveBitmexHistoricalSymbol(ticker);
+  const candidateSymbols = resolvedSymbol
+    ? [resolvedSymbol, ...toBitmexSymbolCandidates(ticker).filter((symbol) => symbol !== resolvedSymbol)]
+    : toBitmexSymbolCandidates(ticker);
+
+  for (const symbol of candidateSymbols) {
+    const closes = await fetchBitmexDailyClosesBySymbol(symbol, days);
+    if (closes.length > 0) {
+      return closes;
+    }
+  }
+
+  return [];
 }
 
 export const BITMEX_MARKET_DESCRIPTION = `

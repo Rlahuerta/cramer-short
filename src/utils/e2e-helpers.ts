@@ -11,10 +11,10 @@ import type { AgentEvent, DoneEvent } from '../agent/types.js';
 import { InMemoryChatHistory } from './in-memory-chat-history.js';
 import { isTimeoutError } from './errors.js';
 import { withRetry } from './retry.js';
-import type { Agent } from '../agent/agent.js';
 
 export const E2E_MODEL = process.env.E2E_MODEL ?? 'ollama:kimi-k2.6:cloud';
 export const E2E_TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS ?? '600000', 10);
+export const CHILD_RESULT_MARKER = '__CRAMER_E2E_RESULT__';
 
 export interface E2EResult {
   /** Full final answer text from the done event */
@@ -45,6 +45,46 @@ interface E2ERetryOptions extends E2EOptions {
   retryAttempts?: number;
 }
 
+interface E2EChildPayload {
+  query: string;
+  opts: E2EOptions;
+}
+
+function encodeChildPayload(payload: E2EChildPayload): string {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+}
+
+function decodeChildPayload(payload: string): E2EChildPayload {
+  return JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) as E2EChildPayload;
+}
+
+function buildChildErrorMessage(prefix: string, stdout: string, stderr: string): string {
+  const trimmedStdout = stdout.trim();
+  const trimmedStderr = stderr.trim();
+  const sections = [prefix];
+
+  if (trimmedStdout) {
+    sections.push(`stdout:\n${trimmedStdout.slice(-4000)}`);
+  }
+  if (trimmedStderr) {
+    sections.push(`stderr:\n${trimmedStderr.slice(-4000)}`);
+  }
+
+  return sections.join('\n\n');
+}
+
+function parseChildResult(stdout: string, stderr: string): E2EResult {
+  const markerLine = stdout
+    .split(/\r?\n/)
+    .find((line) => line.startsWith(`${CHILD_RESULT_MARKER}:`));
+  if (!markerLine) {
+    throw new Error(buildChildErrorMessage('E2E child exited without a result payload.', stdout, stderr));
+  }
+
+  const encoded = markerLine.slice(CHILD_RESULT_MARKER.length + 1);
+  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as E2EResult;
+}
+
 /**
  * Run the Cramer-Short agent end-to-end with the E2E model.
  *
@@ -54,7 +94,7 @@ interface E2ERetryOptions extends E2EOptions {
  *
  * Throws if no `done` event is received within E2E_TIMEOUT_MS.
  */
-export async function runAgentE2E(
+export async function runAgentE2EInProcess(
   query: string,
   opts: E2EOptions = {},
 ): Promise<E2EResult> {
@@ -125,6 +165,62 @@ export async function runAgentE2E(
 }
 
 /**
+ * Run the Cramer-Short agent end-to-end in a fresh Bun subprocess so Bun's
+ * file-scoped mock.module() pollution from unit tests cannot leak into E2E runs.
+ */
+export async function runAgentE2E(
+  query: string,
+  opts: E2EOptions = {},
+): Promise<E2EResult> {
+  if (process.env.CRAMER_E2E_CHILD === '1') {
+    return runAgentE2EInProcess(query, opts);
+  }
+
+  const childScriptPath = new URL('./e2e-agent-child.ts', import.meta.url).pathname;
+  const payload = encodeChildPayload({ query, opts });
+  const proc = Bun.spawn({
+    cmd: [process.execPath, 'run', childScriptPath, payload],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CRAMER_E2E_CHILD: '1',
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+  const stdoutPromise = new Response(proc.stdout).text();
+  const stderrPromise = new Response(proc.stderr).text();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill();
+  }, E2E_TIMEOUT_MS);
+
+  const exitCode = await proc.exited;
+  clearTimeout(timer);
+  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+
+  if (timedOut) {
+    throw new Error(buildChildErrorMessage(
+      `E2E child timed out after ${E2E_TIMEOUT_MS}ms.`,
+      stdout,
+      stderr,
+    ));
+  }
+
+  if (exitCode !== 0) {
+    throw new Error(buildChildErrorMessage(
+      `E2E child exited with code ${exitCode}.`,
+      stdout,
+      stderr,
+    ));
+  }
+
+  return parseChildResult(stdout, stderr);
+}
+
+/**
  * Retry whole-agent E2E runs when the final answer is just a timeout error.
  * This stabilizes E2E suites that intermittently hit provider/model latency
  * spikes under full-suite load.
@@ -148,4 +244,12 @@ export async function runAgentE2EWithTimeoutRetry(
     jitter: 0,
     shouldRetry: (error) => error instanceof Error && isTimeoutError(error.message),
   });
+}
+
+export function readE2EChildPayloadFromArgv(): E2EChildPayload {
+  const payload = process.argv[2];
+  if (!payload) {
+    throw new Error('Missing E2E child payload argument.');
+  }
+  return decodeChildPayload(payload);
 }

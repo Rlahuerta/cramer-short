@@ -82,6 +82,30 @@ describe('fetchBitmexDailyCloses', () => {
     expect(urls[1]).toContain('symbol=SOLUSD');
     expect(urls[1]).toContain('binSize=1d');
   });
+
+  it('falls back to direct symbol candidates when active instrument resolution fails', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (mock(async (input: URL | RequestInfo) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes('/instrument/active')) {
+        return new Response(null, { status: 503 });
+      }
+      if (url.includes('symbol=HYPEUSDT')) {
+        return Response.json([
+          { close: 42.1 },
+          { close: 42.2 },
+        ]);
+      }
+      return Response.json([]);
+    }) as unknown) as typeof fetch;
+
+    const result = await fetchBitmexDailyCloses('HYPE-USD', 2);
+
+    expect(result).toEqual([42.2, 42.1]);
+    expect(urls.some((url) => url.includes('/instrument/active'))).toBe(true);
+    expect(urls.some((url) => url.includes('symbol=HYPEUSDT'))).toBe(true);
+  });
 });
 
 describe('bitmexMarketTool', () => {
