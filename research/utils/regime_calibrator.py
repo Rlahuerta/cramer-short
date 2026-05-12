@@ -23,6 +23,11 @@ import math
 from dataclasses import dataclass
 from typing import Literal
 
+from research.utils.forecast_lab_runtime_defaults import (
+    create_forecast_lab_asset_scoped_runtime_defaults,
+    ForecastLabRuntimeAssetScope,
+)
+
 RegimeState = Literal["bull", "bear", "sideways"]
 
 EPS = 1e-6
@@ -63,10 +68,50 @@ class PlattFit:
 
 RegimePlattFits = dict[RegimeState, PlattFit]
 
-_DEFAULT_MIN_SAMPLES = 30
-_DEFAULT_LR = 0.05
-_DEFAULT_MAX_ITER = 500
-_DEFAULT_TOL = 1e-6
+FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS: dict[str, float | int | bool] = {
+    "minSamplesPerRegime": 18,
+    "learningRate": 0.05,
+    "maxIter": 500,
+    "tol": 1e-6,
+}
+
+PROMOTED_SOL_REGIME_CALIBRATOR_RUNTIME_DEFAULTS: dict[str, float | int | bool] = {
+    "minSamplesPerRegime": 14,
+}
+
+_forecast_lab_regime_calibrator_runtime_defaults = (
+    create_forecast_lab_asset_scoped_runtime_defaults(
+        FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS
+    )
+)
+_forecast_lab_regime_calibrator_runtime_defaults.set(
+    "sol", PROMOTED_SOL_REGIME_CALIBRATOR_RUNTIME_DEFAULTS
+)
+
+
+def resolve_forecast_lab_regime_calibrator_defaults(
+    asset_scope: ForecastLabRuntimeAssetScope | None = None,
+) -> dict[str, float | int | bool]:
+    return _forecast_lab_regime_calibrator_runtime_defaults.resolve(asset_scope)
+
+
+def get_forecast_lab_regime_calibrator_runtime_defaults(
+    asset_scope: ForecastLabRuntimeAssetScope,
+) -> dict[str, float | int | bool] | None:
+    return _forecast_lab_regime_calibrator_runtime_defaults.get(asset_scope)
+
+
+def set_forecast_lab_regime_calibrator_runtime_defaults(
+    asset_scope: ForecastLabRuntimeAssetScope,
+    overrides: dict[str, float | int | bool] | None = None,
+) -> None:
+    _forecast_lab_regime_calibrator_runtime_defaults.set(asset_scope, overrides)
+
+
+_DEFAULT_MIN_SAMPLES = int(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS["minSamplesPerRegime"])
+_DEFAULT_LR = float(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS["learningRate"])
+_DEFAULT_MAX_ITER = int(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS["maxIter"])
+_DEFAULT_TOL = float(FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS["tol"])
 
 
 def _fit_one_regime(
@@ -109,16 +154,30 @@ def _fit_one_regime(
 
 def fit_regime_platt(
     samples: list[RegimeCalibrationSample],
-    min_samples_per_regime: int = _DEFAULT_MIN_SAMPLES,
-    learning_rate: float = _DEFAULT_LR,
-    max_iter: int = _DEFAULT_MAX_ITER,
-    tol: float = _DEFAULT_TOL,
+    min_samples_per_regime: int | None = None,
+    learning_rate: float | None = None,
+    max_iter: int | None = None,
+    tol: float | None = None,
 ) -> RegimePlattFits:
     """Fit one Platt logistic per regime present in `samples`.
 
     Regimes with fewer than `min_samples_per_regime` are skipped.
     Deterministic: identical input -> identical fits.
     """
+    defaults = resolve_forecast_lab_regime_calibrator_defaults()
+    effective_min_samples = int(
+        min_samples_per_regime
+        if min_samples_per_regime is not None
+        else defaults["minSamplesPerRegime"]
+    )
+    effective_learning_rate = float(
+        learning_rate if learning_rate is not None else defaults["learningRate"]
+    )
+    effective_max_iter = int(
+        max_iter if max_iter is not None else defaults["maxIter"]
+    )
+    effective_tol = float(tol if tol is not None else defaults["tol"])
+
     buckets: dict[RegimeState, tuple[list[float], list[float]]] = {
         r: ([], []) for r in _REGIMES
     }
@@ -129,9 +188,15 @@ def fit_regime_platt(
     out: RegimePlattFits = {}
     for regime in _REGIMES:
         p_raws, ys = buckets[regime]
-        if len(p_raws) < min_samples_per_regime:
+        if len(p_raws) < effective_min_samples:
             continue
-        fit = _fit_one_regime(p_raws, ys, learning_rate, max_iter, tol)
+        fit = _fit_one_regime(
+            p_raws,
+            ys,
+            effective_learning_rate,
+            effective_max_iter,
+            effective_tol,
+        )
         if fit is not None:
             out[regime] = fit
     return out

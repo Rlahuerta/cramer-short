@@ -27,6 +27,50 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
+from research.utils.forecast_lab_runtime_defaults import (
+    create_forecast_lab_asset_scoped_runtime_defaults,
+    ForecastLabRuntimeAssetScope,
+)
+
+FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS: dict[str, float | int | bool] = {
+    "pidLearningRate": 0.05,
+    "integralDecay": 1.0,
+    "adaptiveBreakEnabled": False,
+    "adaptiveBreakLearningRateMultiplier": 1.5,
+    "adaptiveBreakCooloffWindow": 0,
+    "scoreAggregationMinSamples": 12,
+    "scoreAggregationCalibrationWindow": 72,
+}
+
+PROMOTED_SOL_CONFORMAL_RUNTIME_DEFAULTS: dict[str, float | int | bool] = {
+    "scoreAggregationMinSamples": 10,
+    "scoreAggregationCalibrationWindow": 60,
+}
+
+_forecast_lab_conformal_runtime_defaults = create_forecast_lab_asset_scoped_runtime_defaults(
+    FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS
+)
+_forecast_lab_conformal_runtime_defaults.set("sol", PROMOTED_SOL_CONFORMAL_RUNTIME_DEFAULTS)
+
+
+def resolve_forecast_lab_conformal_parameter_defaults(
+    asset_scope: ForecastLabRuntimeAssetScope | None = None,
+) -> dict[str, float | int | bool]:
+    return _forecast_lab_conformal_runtime_defaults.resolve(asset_scope)
+
+
+def get_forecast_lab_conformal_runtime_defaults(
+    asset_scope: ForecastLabRuntimeAssetScope,
+) -> dict[str, float | int | bool] | None:
+    return _forecast_lab_conformal_runtime_defaults.get(asset_scope)
+
+
+def set_forecast_lab_conformal_runtime_defaults(
+    asset_scope: ForecastLabRuntimeAssetScope,
+    overrides: dict[str, float | int | bool] | None = None,
+) -> None:
+    _forecast_lab_conformal_runtime_defaults.set(asset_scope, overrides)
+
 
 @dataclass
 class ConformalInterval:
@@ -41,19 +85,28 @@ class ConformalPID:
         self,
         alpha: float = 0.1,
         initial_radius: float = 1.0,
-        learning_rate: float = 0.05,
+        learning_rate: float | None = None,
         kp: float = 1.0,
         ki: float = 0.1,
         kd: float = 0.1,
-        integral_decay: float = 1.0,
+        integral_decay: float | None = None,
     ) -> None:
+        defaults = resolve_forecast_lab_conformal_parameter_defaults()
         self.alpha = float(alpha)
         self.target_coverage = 1.0 - self.alpha
-        self.lr = float(learning_rate)
+        self.lr = float(
+            learning_rate
+            if learning_rate is not None
+            else defaults["pidLearningRate"]
+        )
         self.kp = float(kp)
         self.ki = float(ki)
         self.kd = float(kd)
-        self.gamma = float(integral_decay)
+        self.gamma = float(
+            integral_decay
+            if integral_decay is not None
+            else defaults["integralDecay"]
+        )
         self._initial_radius = max(0.0, float(initial_radius))
         self._q = self._initial_radius
         self._integral = 0.0
@@ -120,15 +173,16 @@ class AdaptiveConformalPID(ConformalPID):
         self,
         alpha: float = 0.1,
         initial_radius: float = 1.0,
-        learning_rate: float = 0.05,
+        learning_rate: float | None = None,
         kp: float = 1.0,
         ki: float = 0.1,
         kd: float = 0.1,
-        integral_decay: float = 1.0,
-        enabled: bool = False,
-        break_learning_rate_multiplier: float = 1.5,
-        cooloff_window: int = 0,
+        integral_decay: float | None = None,
+        enabled: bool | None = None,
+        break_learning_rate_multiplier: float | None = None,
+        cooloff_window: int | None = None,
     ) -> None:
+        defaults = resolve_forecast_lab_conformal_parameter_defaults()
         super().__init__(
             alpha=alpha,
             initial_radius=initial_radius,
@@ -138,11 +192,27 @@ class AdaptiveConformalPID(ConformalPID):
             kd=kd,
             integral_decay=integral_decay,
         )
-        self._enabled = bool(enabled)
-        self._break_learning_rate_multiplier = max(
-            1.0, float(break_learning_rate_multiplier)
+        self._enabled = bool(
+            defaults["adaptiveBreakEnabled"] if enabled is None else enabled
         )
-        self._cooloff_window = max(0, int(round(cooloff_window)))
+        self._break_learning_rate_multiplier = max(
+            1.0,
+            float(
+                defaults["adaptiveBreakLearningRateMultiplier"]
+                if break_learning_rate_multiplier is None
+                else break_learning_rate_multiplier
+            ),
+        )
+        self._cooloff_window = max(
+            0,
+            int(
+                round(
+                    defaults["adaptiveBreakCooloffWindow"]
+                    if cooloff_window is None
+                    else cooloff_window
+                )
+            ),
+        )
         self._cooloff_remaining = 0
         self._residual_ema: Optional[float] = None
         self._volatility_ema: Optional[float] = None
@@ -285,12 +355,31 @@ class ScoreAggregatedConformal:
     def __init__(
         self,
         alpha: float = 0.1,
-        min_samples: int = 12,
-        calibration_window: int = 72,
+        min_samples: int | None = None,
+        calibration_window: int | None = None,
     ) -> None:
+        defaults = resolve_forecast_lab_conformal_parameter_defaults()
         self._alpha = float(alpha)
-        self._min_samples = max(1, int(round(min_samples)))
-        self._calibration_window = max(self._min_samples, int(round(calibration_window)))
+        self._min_samples = max(
+            1,
+            int(
+                round(
+                    defaults["scoreAggregationMinSamples"]
+                    if min_samples is None
+                    else min_samples
+                )
+            ),
+        )
+        self._calibration_window = max(
+            self._min_samples,
+            int(
+                round(
+                    defaults["scoreAggregationCalibrationWindow"]
+                    if calibration_window is None
+                    else calibration_window
+                )
+            ),
+        )
         self._scores: list[float] = []
 
     def wrap(

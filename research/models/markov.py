@@ -17,6 +17,10 @@ import numpy as np
 import pandas as pd
 
 from research.models.soft_regime import blend_regime_mixtures
+from research.utils.forecast_lab_runtime_defaults import (
+    create_forecast_lab_asset_scoped_runtime_defaults,
+    ForecastLabRuntimeAssetScope,
+)
 
 RegimeState = Literal["bull", "bear", "sideways"]
 REGIME_STATES: list[RegimeState] = ["bull", "bear", "sideways"]
@@ -30,6 +34,57 @@ BTC_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.15
 GOLD_SHORT_HORIZON_LIVE_HISTORY_DAYS = 252
 GOLD_ULTRA_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.12
 GOLD_SHORT_HORIZON_LIVE_BREAK_THRESHOLD_DEFAULT = 0.15
+
+FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS: dict[str, float | int | bool] = {
+    "recommendedConfidenceThreshold": 0.22,
+    "transitionMinObservations": 30,
+    "transitionDecay": 0.97,
+    "structuralBreakMinLength": 36,
+    "momentumLookback": 10,
+    "momentumAdjustmentScale": 0.25,
+    "momentumAdjustmentClamp": 0.003,
+    "trendPenaltyOnlyBreakConfidence": True,
+    "divergenceWeightedBreakConfidence": False,
+}
+
+PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS: dict[str, float | int | bool] = {
+    "transitionMinObservations": 31,
+    "structuralBreakMinLength": 28,
+    "momentumLookback": 9,
+    "momentumAdjustmentScale": 0.252,
+    "momentumAdjustmentClamp": 0.00305,
+}
+
+PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULTS: dict[str, float | int | bool] = {
+    "recommendedConfidenceThreshold": 0.15,
+    "momentumAdjustmentScale": 0.48,
+    "momentumAdjustmentClamp": 0.0058,
+}
+
+_forecast_lab_markov_runtime_defaults = create_forecast_lab_asset_scoped_runtime_defaults(
+    FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS
+)
+_forecast_lab_markov_runtime_defaults.set("sol", PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS)
+_forecast_lab_markov_runtime_defaults.set("hype", PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULTS)
+
+
+def resolve_forecast_lab_markov_parameter_defaults(
+    asset_scope: ForecastLabRuntimeAssetScope | None = None,
+) -> dict[str, float | int | bool]:
+    return _forecast_lab_markov_runtime_defaults.resolve(asset_scope)
+
+
+def get_forecast_lab_markov_runtime_defaults(
+    asset_scope: ForecastLabRuntimeAssetScope,
+) -> dict[str, float | int | bool] | None:
+    return _forecast_lab_markov_runtime_defaults.get(asset_scope)
+
+
+def set_forecast_lab_markov_runtime_defaults(
+    asset_scope: ForecastLabRuntimeAssetScope,
+    overrides: dict[str, float | int | bool] | None = None,
+) -> None:
+    _forecast_lab_markov_runtime_defaults.set(asset_scope, overrides)
 
 
 @dataclass(frozen=True)
@@ -147,8 +202,8 @@ def classify_regime_series(
 def estimate_transition_matrix(
     states: list[RegimeState],
     alpha: float | None = None,
-    min_observations: int = 30,
-    decay_rate: float = 0.97,
+    min_observations: int | None = None,
+    decay_rate: float | None = None,
 ) -> np.ndarray:
     """Estimate transition matrix with Dirichlet smoothing and exponential decay.
 
@@ -168,7 +223,17 @@ def estimate_transition_matrix(
     np.ndarray
         3x3 transition matrix (rows sum to 1).
     """
-    if len(states) < min_observations:
+    defaults = resolve_forecast_lab_markov_parameter_defaults()
+    effective_min_observations = int(
+        min_observations
+        if min_observations is not None
+        else defaults["transitionMinObservations"]
+    )
+    effective_decay_rate = float(
+        decay_rate if decay_rate is not None else defaults["transitionDecay"]
+    )
+
+    if len(states) < effective_min_observations:
         return _default_matrix()
 
     effective_alpha = alpha if alpha is not None else max(0.01, 5.0 / len(states))
@@ -180,7 +245,7 @@ def estimate_transition_matrix(
         from_idx = STATE_INDEX[states[i]]
         to_idx = STATE_INDEX[states[i + 1]]
         age = n - 1 - i  # 0 = most recent
-        weight = math.pow(decay_rate, age)
+        weight = math.pow(effective_decay_rate, age)
         counts[from_idx][to_idx] += weight
 
     # Normalize rows
@@ -387,8 +452,8 @@ def detect_structural_break(
     states: list[RegimeState],
     divergence_threshold: float = 0.05,
     alpha: float = 0.1,
-    decay_rate: float = 0.97,
-    min_length: int = 36,
+    decay_rate: float | None = None,
+    min_length: int | None = None,
 ) -> dict:
     """Detect structural break by comparing first/second half transition matrices.
 
@@ -402,7 +467,15 @@ def detect_structural_break(
     dict
         detected (bool), divergence (float), first_half_matrix, second_half_matrix.
     """
-    if len(states) < min_length:
+    defaults = resolve_forecast_lab_markov_parameter_defaults()
+    effective_decay_rate = float(
+        decay_rate if decay_rate is not None else defaults["transitionDecay"]
+    )
+    effective_min_length = int(
+        min_length if min_length is not None else defaults["structuralBreakMinLength"]
+    )
+
+    if len(states) < effective_min_length:
         fallback = _default_matrix()
         return {
             "detected": False,
@@ -415,8 +488,8 @@ def detect_structural_break(
     first_half = states[:mid]
     second_half = states[mid:]
 
-    first_matrix = estimate_transition_matrix(first_half, alpha, 10, decay_rate)
-    second_matrix = estimate_transition_matrix(second_half, alpha, 10, decay_rate)
+    first_matrix = estimate_transition_matrix(first_half, alpha, 10, effective_decay_rate)
+    second_matrix = estimate_transition_matrix(second_half, alpha, 10, effective_decay_rate)
 
     divergence = float(np.sum((first_matrix - second_matrix) ** 2))
 
