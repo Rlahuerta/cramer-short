@@ -133,10 +133,10 @@ function makeEntry(overrides: Partial<ForecastLabLedgerEntry> = {}): ForecastLab
     profileId: 'multi-asset-markov-short-horizon',
     targetSubsystem: 'markov-distribution',
     candidateBranch: 'topic/forecast-lab-run-1',
-    allowedGlobs: ['src/tools/finance/markov-distribution.ts', 'src/tools/finance/polymarket-forecast.ts'],
+    allowedGlobs: ['src/tools/finance/markov-distribution/core.ts', 'src/tools/finance/polymarket-forecast.ts'],
     effectiveMutationContract: {
       mode: 'structured',
-      mutableFiles: ['src/tools/finance/markov-distribution.ts', 'src/tools/finance/polymarket-forecast.ts'],
+      mutableFiles: ['src/tools/finance/markov-distribution/core.ts', 'src/tools/finance/polymarket-forecast.ts'],
       allowedMutatorIds: ['replace-range', 'search-replace'],
       allowMultipleCandidateAttempts: false,
     },
@@ -233,7 +233,7 @@ describe('forecast-lab ledger serialization', () => {
 
   it('serializes rows as deterministic reversible JSON fields', () => {
     expect(serializeLedgerRow(makeEntry())).toBe(
-      '"run-1"\t"2026-05-02T00:00:00.000Z"\t"multi-asset-markov-short-horizon"\t"markov-distribution"\t"topic/forecast-lab-run-1"\t["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]\tnull\t{"allowedMutatorIds":["replace-range","search-replace"],"allowMultipleCandidateAttempts":false,"mode":"structured","mutableFiles":["src/tools/finance/markov-distribution.ts","src/tools/finance/polymarket-forecast.ts"]}\tnull\tnull\tnull\tnull\tnull\tnull\tnull\tnull\t{"rankIC":0.12,"z":2}\t{"lift":0.01,"rankIC":0.13}\t"keep"\t"measurable lift"\t".cramer-short/experiments/runs/run-1"',
+      '"run-1"\t"2026-05-02T00:00:00.000Z"\t"multi-asset-markov-short-horizon"\t"markov-distribution"\t"topic/forecast-lab-run-1"\t["src/tools/finance/markov-distribution/core.ts","src/tools/finance/polymarket-forecast.ts"]\tnull\t{"allowedMutatorIds":["replace-range","search-replace"],"allowMultipleCandidateAttempts":false,"mode":"structured","mutableFiles":["src/tools/finance/markov-distribution/core.ts","src/tools/finance/polymarket-forecast.ts"]}\tnull\tnull\tnull\tnull\tnull\tnull\tnull\tnull\t{"rankIC":0.12,"z":2}\t{"lift":0.01,"rankIC":0.13}\t"keep"\t"measurable lift"\t".cramer-short/experiments/runs/run-1"',
     );
   });
 
@@ -335,7 +335,7 @@ describe('forecast-lab ledger validation', () => {
         ...makeEntry(),
         effectiveMutationContract: {
           mode: 'llm',
-          mutableFiles: ['src/tools/finance/markov-distribution.ts'],
+          mutableFiles: ['src/tools/finance/markov-distribution/core.ts'],
           allowedMutatorIds: ['replace-range'],
           allowMultipleCandidateAttempts: false,
         } as never,
@@ -347,7 +347,7 @@ describe('forecast-lab ledger validation', () => {
         ...makeMutationMetadata(),
         mutationSpecSummary: {
           mutatorId: 'unknown-mutator',
-          targetFiles: ['src/tools/finance/markov-distribution.ts'],
+          targetFiles: ['src/tools/finance/markov-distribution/core.ts'],
           summary: 'Bad mutator id',
         },
       })).toThrow(/Unknown forecast-lab mutator id/);
@@ -419,7 +419,7 @@ describe('forecast-lab ledger validation', () => {
         profileId: 'multi-asset-markov-short-horizon',
         targetSubsystem: 'markov-distribution',
         candidateBranch: 'topic/forecast-lab-run-1',
-        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
         mutationMode: 'structured',
         parentRunId: makeMutationMetadata().parentRunId,
         mutationId: makeMutationMetadata().mutationId,
@@ -437,7 +437,7 @@ describe('forecast-lab ledger validation', () => {
         targetSubsystem: 'markov-distribution',
         baselineCommit: 'not-a-sha',
         candidateBranch: 'topic/forecast-lab-run-1',
-        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
         artifactsPath: '.cramer-short/experiments/runs/run-1',
       })).toThrow(/baselineCommit must be a full git commit sha/);
 
@@ -448,10 +448,10 @@ describe('forecast-lab ledger validation', () => {
         profileId: 'multi-asset-markov-short-horizon',
         targetSubsystem: 'markov-distribution',
         candidateBranch: 'topic/forecast-lab-run-1',
-        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
         effectiveMutationContract: {
           mode: 'structured',
-          mutableFiles: ['src/tools/finance/markov-distribution.ts'],
+          mutableFiles: ['src/tools/finance/markov-distribution/core.ts'],
           allowedMutatorIds: ['replace-range'],
           allowMultipleCandidateAttempts: 'nope',
         } as never,
@@ -465,7 +465,7 @@ describe('forecast-lab ledger validation', () => {
         profileId: 'multi-asset-markov-short-horizon',
         targetSubsystem: 'markov-distribution',
         candidateBranch: 'topic/forecast-lab-run-1',
-        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
         candidateWorkspace: {
           kind: 'detached-worktree',
           rootDir: '/repo',
@@ -838,7 +838,7 @@ describe('forecast-lab manifest helpers', () => {
       targetSubsystem: 'markov-distribution',
       baselineCommit: '0123456789abcdef0123456789abcdef01234567',
       candidateBranch: 'topic/forecast-lab-run-1',
-      allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+      allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
       candidateWorkspace: {
         kind: 'candidate-worktree',
         rootDir: '/repo/.cramer-short/experiments/worktrees/run-1',
@@ -846,7 +846,7 @@ describe('forecast-lab manifest helpers', () => {
       },
       effectiveMutationContract: {
         mode: 'structured',
-        mutableFiles: ['src/tools/finance/markov-distribution.ts'],
+        mutableFiles: ['src/tools/finance/markov-distribution/core.ts'],
         allowedMutatorIds: ['replace-range'],
         allowMultipleCandidateAttempts: false,
       },
@@ -858,7 +858,7 @@ describe('forecast-lab manifest helpers', () => {
     expect(readFileSync(manifestPath, 'utf8')).toBe(serializeManifest(manifest));
     expect(readRunManifest(manifestPath)).toEqual(manifest);
     expect(serializeManifest(manifest)).toBe(
-      '{\n  "allowedGlobs": [\n    "src/tools/finance/markov-distribution.ts"\n  ],\n  "artifactsPath": ".cramer-short/experiments/runs/run-1",\n  "baselineCommit": "0123456789abcdef0123456789abcdef01234567",\n  "candidateBranch": "topic/forecast-lab-run-1",\n  "candidateWorkspace": {\n    "branch": "topic/forecast-lab-run-1",\n    "kind": "candidate-worktree",\n    "rootDir": "/repo/.cramer-short/experiments/worktrees/run-1"\n  },\n  "effectiveMutationContract": {\n    "allowedMutatorIds": [\n      "replace-range"\n    ],\n    "allowMultipleCandidateAttempts": false,\n    "mode": "structured",\n    "mutableFiles": [\n      "src/tools/finance/markov-distribution.ts"\n    ]\n  },\n  "profileId": "multi-asset-markov-short-horizon",\n  "runId": "run-1",\n  "startedAt": "2026-05-02T00:00:00.000Z",\n  "targetSubsystem": "markov-distribution"\n}\n',
+      '{\n  "allowedGlobs": [\n    "src/tools/finance/markov-distribution/core.ts"\n  ],\n  "artifactsPath": ".cramer-short/experiments/runs/run-1",\n  "baselineCommit": "0123456789abcdef0123456789abcdef01234567",\n  "candidateBranch": "topic/forecast-lab-run-1",\n  "candidateWorkspace": {\n    "branch": "topic/forecast-lab-run-1",\n    "kind": "candidate-worktree",\n    "rootDir": "/repo/.cramer-short/experiments/worktrees/run-1"\n  },\n  "effectiveMutationContract": {\n    "allowedMutatorIds": [\n      "replace-range"\n    ],\n    "allowMultipleCandidateAttempts": false,\n    "mode": "structured",\n    "mutableFiles": [\n      "src/tools/finance/markov-distribution/core.ts"\n    ]\n  },\n  "profileId": "multi-asset-markov-short-horizon",\n  "runId": "run-1",\n  "startedAt": "2026-05-02T00:00:00.000Z",\n  "targetSubsystem": "markov-distribution"\n}\n',
     );
   });
 
@@ -876,7 +876,7 @@ describe('forecast-lab manifest helpers', () => {
         profileId: 123,
         targetSubsystem: 'markov-distribution',
         candidateBranch: 'topic/bad-run',
-        allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+        allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
         artifactsPath: '.cramer-short/experiments/runs/bad-run',
       }),
       'utf8',

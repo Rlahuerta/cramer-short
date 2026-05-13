@@ -65,7 +65,7 @@ export interface ForecastLabMarkovParameterMutationReplayPayload
   readonly kind: 'markov-parameter-candidate';
 }
 
-const MARKOV_FILE = 'src/tools/finance/markov-distribution.ts';
+const MARKOV_FILE = 'src/tools/finance/markov-distribution/core.ts';
 const CONFORMAL_FILE = 'src/tools/finance/conformal.ts';
 const REGIME_CALIBRATOR_FILE = 'src/tools/finance/regime-calibrator.ts';
 

@@ -376,7 +376,7 @@ async function withMutationOverrides<T>(
 ): Promise<T> {
   const previous = snapshotScopeOverrides(assetScope);
   const nextMarkov = mutation?.edits
-    .filter((edit) => edit.filePath === 'src/tools/finance/markov-distribution.ts')
+    .filter((edit) => edit.filePath === 'src/tools/finance/markov-distribution/core.ts')
     .reduce<Record<string, ForecastLabMutationScalarValue>>((acc, edit) => {
       acc[edit.parameterId] = edit.afterValue;
       return acc;

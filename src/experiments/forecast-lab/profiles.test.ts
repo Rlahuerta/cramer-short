@@ -133,7 +133,7 @@ const EXPECTED_MUTATION_CONFIGS = {
   'multi-asset-markov-short-horizon': {
     mode: 'structured',
     mutableFiles: [
-      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/markov-distribution/core.ts',
       'src/tools/finance/conformal.ts',
       'src/tools/finance/regime-calibrator.ts',
     ],
@@ -143,7 +143,7 @@ const EXPECTED_MUTATION_CONFIGS = {
   'btc-markov-ultra-short-horizon': {
     mode: 'structured',
     mutableFiles: [
-      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/markov-distribution/core.ts',
       'src/tools/finance/conformal.ts',
       'src/tools/finance/regime-calibrator.ts',
     ],
@@ -153,7 +153,7 @@ const EXPECTED_MUTATION_CONFIGS = {
   'gold-markov-short-horizon': {
     mode: 'structured',
     mutableFiles: [
-      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/markov-distribution/core.ts',
       'src/tools/finance/conformal.ts',
       'src/tools/finance/regime-calibrator.ts',
     ],
@@ -163,7 +163,7 @@ const EXPECTED_MUTATION_CONFIGS = {
   'sol-markov-short-horizon': {
     mode: 'structured',
     mutableFiles: [
-      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/markov-distribution/core.ts',
       'src/tools/finance/conformal.ts',
       'src/tools/finance/regime-calibrator.ts',
     ],
@@ -173,7 +173,7 @@ const EXPECTED_MUTATION_CONFIGS = {
   'hype-markov-short-horizon': {
     mode: 'structured',
     mutableFiles: [
-      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/markov-distribution/core.ts',
       'src/tools/finance/conformal.ts',
       'src/tools/finance/regime-calibrator.ts',
     ],

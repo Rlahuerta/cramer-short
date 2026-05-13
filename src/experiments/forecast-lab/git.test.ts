@@ -248,7 +248,9 @@ describe('forecast-lab git helpers', () => {
     const profile = getForecastLabProfile('multi-asset-markov-short-horizon');
 
     await withForecastLabCandidateWorkspace(runId, (workspace) => {
-      const allowedPath = profile.mutation.mutableFiles[0]!;
+      const allowedPath = profile.mutation.mutableFiles.find((filePath) => (
+        existsSync(join(workspace.metadata.rootDir, filePath))
+      ))!;
       const allowedFile = join(workspace.metadata.rootDir, allowedPath);
       const original = readFileSync(allowedFile, 'utf8');
       const updated = `${original}\n// forecast-lab git policy test\n`;

@@ -288,7 +288,7 @@ const LIVE_PARAMETER_DEFAULT_TARGETS: Record<string, {
   readonly get: (assetScope: ForecastLabRuntimeAssetScope) => ForecastLabMutableParameterDefaults | undefined;
   readonly set: (assetScope: ForecastLabRuntimeAssetScope, overrides?: ForecastLabMutableParameterDefaults) => void;
 }> = {
-  'src/tools/finance/markov-distribution.ts': {
+  'src/tools/finance/markov-distribution/core.ts': {
     get: (assetScope) => getForecastLabMarkovRuntimeDefaults(assetScope) as ForecastLabMutableParameterDefaults | undefined,
     set: (assetScope, overrides) => setForecastLabMarkovRuntimeDefaults(assetScope, overrides),
   },
@@ -303,14 +303,34 @@ const LIVE_PARAMETER_DEFAULT_TARGETS: Record<string, {
 };
 
 const SHIPPED_PARAMETER_DEFAULT_TARGETS: Record<string, ForecastLabMutableParameterDefaults> = {
-  'src/tools/finance/markov-distribution.ts': { ...FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS },
+  'src/tools/finance/markov-distribution/core.ts': { ...FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS },
   'src/tools/finance/conformal.ts': { ...FORECAST_LAB_CONFORMAL_PARAMETER_DEFAULTS },
   'src/tools/finance/regime-calibrator.ts': { ...FORECAST_LAB_REGIME_CALIBRATOR_DEFAULTS },
 };
 
+const STRUCTURED_MUTATION_SOURCE_FILE_SNAPSHOTS = new Map(
+  ['src/tools/finance/markov-distribution/core.ts']
+    .filter((filePath) => existsSync(resolve(process.cwd(), filePath)))
+    .map((filePath) => [filePath, readFileSync(resolve(process.cwd(), filePath), 'utf8')] as const),
+);
+
+function readStructuredMutationFileContents(rootDir: string, filePath: string): string {
+  const targetPath = resolve(rootDir, filePath);
+  if (existsSync(targetPath)) {
+    return readFileSync(targetPath, 'utf8');
+  }
+
+  const sourceSnapshot = STRUCTURED_MUTATION_SOURCE_FILE_SNAPSHOTS.get(filePath);
+  if (sourceSnapshot !== undefined) {
+    return sourceSnapshot;
+  }
+
+  return readFileSync(targetPath, 'utf8');
+}
+
 function cloneForecastLabResolvedRuntimeDefaults(): ForecastLabResolvedRuntimeDefaults {
   return {
-    markov: { ...SHIPPED_PARAMETER_DEFAULT_TARGETS['src/tools/finance/markov-distribution.ts'] },
+    markov: { ...SHIPPED_PARAMETER_DEFAULT_TARGETS['src/tools/finance/markov-distribution/core.ts'] },
     conformal: { ...SHIPPED_PARAMETER_DEFAULT_TARGETS['src/tools/finance/conformal.ts'] },
     regime: { ...SHIPPED_PARAMETER_DEFAULT_TARGETS['src/tools/finance/regime-calibrator.ts'] },
   } as ForecastLabResolvedRuntimeDefaults;
@@ -320,7 +340,7 @@ function getResolvedRuntimeDefaultsTarget(
   resolved: ForecastLabResolvedRuntimeDefaults,
   filePath: string,
 ): ForecastLabMutableParameterDefaults {
-  if (filePath === 'src/tools/finance/markov-distribution.ts') {
+  if (filePath === 'src/tools/finance/markov-distribution/core.ts') {
     return resolved.markov as ForecastLabMutableParameterDefaults;
   }
   if (filePath === 'src/tools/finance/conformal.ts') {
@@ -1190,7 +1210,7 @@ function applyStructuredMutationEdits(
 ): void {
   for (const edit of selectedMutation.edits) {
     const existingContents = updatedFiles.get(edit.filePath)
-      ?? readFileSync(resolve(rootDir, edit.filePath), 'utf8');
+      ?? readStructuredMutationFileContents(rootDir, edit.filePath);
     const replacementCount = countOccurrences(existingContents, edit.search);
 
     if (replacementCount !== edit.expectedReplacements) {

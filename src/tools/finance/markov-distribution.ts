@@ -21,9 +21,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
 import {
-  createForecastLabAssetScopedRuntimeDefaults,
   resolveForecastLabRuntimeAssetScopeForTicker,
-  type ForecastLabRuntimeAssetScope,
   withForecastLabRuntimeAssetScope,
 } from './forecast-lab-runtime-defaults.js';
 import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
@@ -77,6 +75,87 @@ import type {
   GoldShortHorizonLivePolicy,
 } from './markov-distribution/live-policies.js';
 
+import {
+  FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
+  NUM_STATES,
+  PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS,
+  RECOMMENDED_CONFIDENCE_THRESHOLD,
+  REGIME_STATES,
+  STATE_INDEX,
+  getForecastLabMarkovRuntimeDefaults,
+  normalizeSentiment,
+  resolveForecastLabMarkovParameterDefaults,
+  setForecastLabMarkovRuntimeDefaults,
+} from './markov-distribution/core.js';
+import type {
+  MarkovDistributionPoint,
+  PriceThreshold,
+  RegimeState,
+  SentimentSignal,
+  TrajectoryPoint,
+  TransitionMatrix,
+} from './markov-distribution/core.js';
+import { getAssetProfile } from './markov-distribution/asset-profile.js';
+import type { AssetProfile } from './markov-distribution/asset-profile.js';
+import {
+  DEFAULT_DIVERGENCE_PENALTY_SCHEDULE,
+  applyBreakFallbackCandidate,
+  blendMatrices,
+  buildConservativeFallbackMatrix,
+  buildProfileFallbackMatrix,
+  computeBlendWeight,
+  computeDivergencePenalty,
+} from './markov-distribution/blending.js';
+import type {
+  BreakConfidencePolicy,
+  BreakFallbackCandidate,
+  DivergencePenaltySchedule,
+} from './markov-distribution/blending.js';
+import {
+  classifyRegimeState,
+  computeAdaptiveThresholds,
+  computeEnsembleSignal,
+  computeMomentumSignal,
+  computeRegimeUpRates,
+} from './markov-distribution/regime.js';
+import type { EnsembleSignal, MomentumSignal } from './markov-distribution/regime.js';
+import {
+  adjustTransitionMatrix,
+  buildDefaultMatrix,
+  estimateTransitionMatrix,
+  matMul,
+  matPow,
+  normalizeRows,
+  secondLargestEigenvalue,
+} from './markov-distribution/transition.js';
+import {
+  computeHorizonDriftVol,
+  computeMixingWeight,
+  computeStartStateMixture,
+  computeTerminalStateWeights,
+  computeTrajectory,
+  estimateRegimeStats,
+  interpolateDistribution,
+  inverseStudentTCDF,
+  logNormalSurvival,
+  normalCDF,
+  normalizeStateWeightVector,
+  studentTCDF,
+  studentTSurvival,
+  winsorize,
+} from './markov-distribution/confidence-intervals.js';
+import {
+  computeR2OS,
+  countStateObservations,
+  detectStructuralBreak,
+  findSparseStates,
+  transitionGoodnessOfFit,
+} from './markov-distribution/diagnostics.js';
+import type {
+  GoodnessOfFitResult,
+  StructuralBreakResult,
+} from './markov-distribution/diagnostics.js';
+
 export {
   getBtcShortHorizonLivePolicy,
   getGoldShortHorizonLivePolicy,
@@ -86,6 +165,86 @@ export type {
   BtcShortHorizonLivePolicy,
   GoldShortHorizonLivePolicy,
 } from './markov-distribution/live-policies.js';
+
+export {
+  FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
+  NUM_STATES,
+  PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS,
+  RECOMMENDED_CONFIDENCE_THRESHOLD,
+  REGIME_STATES,
+  STATE_INDEX,
+  getForecastLabMarkovRuntimeDefaults,
+  normalizeSentiment,
+  resolveForecastLabMarkovParameterDefaults,
+  setForecastLabMarkovRuntimeDefaults,
+} from './markov-distribution/core.js';
+export type {
+  MarkovDistributionPoint,
+  PriceThreshold,
+  RegimeState,
+  SentimentSignal,
+  TrajectoryPoint,
+  TransitionMatrix,
+} from './markov-distribution/core.js';
+export { getAssetProfile } from './markov-distribution/asset-profile.js';
+export type { AssetProfile } from './markov-distribution/asset-profile.js';
+export {
+  DEFAULT_DIVERGENCE_PENALTY_SCHEDULE,
+  applyBreakFallbackCandidate,
+  blendMatrices,
+  buildConservativeFallbackMatrix,
+  buildProfileFallbackMatrix,
+  computeBlendWeight,
+  computeDivergencePenalty,
+} from './markov-distribution/blending.js';
+export type {
+  BreakConfidencePolicy,
+  BreakFallbackCandidate,
+  DivergencePenaltySchedule,
+} from './markov-distribution/blending.js';
+export {
+  classifyRegimeState,
+  computeAdaptiveThresholds,
+  computeEnsembleSignal,
+  computeMomentumSignal,
+  computeRegimeUpRates,
+} from './markov-distribution/regime.js';
+export type { EnsembleSignal, MomentumSignal } from './markov-distribution/regime.js';
+export {
+  adjustTransitionMatrix,
+  buildDefaultMatrix,
+  estimateTransitionMatrix,
+  matMul,
+  matPow,
+  normalizeRows,
+  secondLargestEigenvalue,
+} from './markov-distribution/transition.js';
+export {
+  computeHorizonDriftVol,
+  computeMixingWeight,
+  computeStartStateMixture,
+  computeTrajectory,
+  estimateRegimeStats,
+  interpolateDistribution,
+  inverseStudentTCDF,
+  logNormalSurvival,
+  normalCDF,
+  studentTCDF,
+  studentTSurvival,
+  winsorize,
+} from './markov-distribution/confidence-intervals.js';
+export type { RegimeStats } from './markov-distribution/confidence-intervals.js';
+export {
+  computeR2OS,
+  countStateObservations,
+  detectStructuralBreak,
+  findSparseStates,
+  transitionGoodnessOfFit,
+} from './markov-distribution/diagnostics.js';
+export type {
+  GoodnessOfFitResult,
+  StructuralBreakResult,
+} from './markov-distribution/diagnostics.js';
 
 // ---------------------------------------------------------------------------
 // Auto-fetch historical prices (used when LLM omits historicalPrices)
@@ -173,104 +332,6 @@ export async function fetchHistoricalPrices(
 // Types
 // ---------------------------------------------------------------------------
 
-/**
- * Regime state: 3 states (bull / bear / sideways).
- *
- * Collapsed from the original 5-state model (which included high_vol_bull and
- * high_vol_bear). With a 120-day walk-forward window, the high_vol states had
- * only 2-4 observations each, making their transition rows dominated by the
- * Dirichlet prior (uniform ≈ 0.2/state) with zero directional information.
- * Merging to 3 states concentrates ~40 obs/state → 5-10× more reliable
- * transition estimates. (Nguyen 2018 also uses 3-4 states for S&P 500.)
- */
-export type RegimeState = 'bull' | 'bear' | 'sideways';
-
-export const REGIME_STATES: RegimeState[] = [
-  'bull', 'bear', 'sideways',
-];
-
-export const NUM_STATES = REGIME_STATES.length; // 3
-
-/** Maps state name → matrix row/column index */
-export const STATE_INDEX: Record<RegimeState, number> = {
-  bull:     0,
-  bear:     1,
-  sideways: 2,
-};
-
-export const FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS: {
-  readonly recommendedConfidenceThreshold: number;
-  readonly transitionMinObservations: number;
-  readonly transitionDecay: number;
-  readonly structuralBreakMinLength: number;
-  readonly momentumLookback: number;
-  readonly momentumAdjustmentScale: number;
-  readonly momentumAdjustmentClamp: number;
-  readonly trendPenaltyOnlyBreakConfidence: boolean;
-  readonly divergenceWeightedBreakConfidence: boolean;
-} = {
-  recommendedConfidenceThreshold: 0.22,
-  transitionMinObservations: 30,
-  transitionDecay: 0.97,
-  structuralBreakMinLength: 36,
-  momentumLookback: 10,
-  momentumAdjustmentScale: 0.25,
-  momentumAdjustmentClamp: 0.003,
-  trendPenaltyOnlyBreakConfidence: true,
-  divergenceWeightedBreakConfidence: false,
-};
-
-const forecastLabMarkovRuntimeDefaults = createForecastLabAssetScopedRuntimeDefaults(
-  FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
-);
-
-export const PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS: Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS> = {
-  transitionMinObservations: 31,
-  structuralBreakMinLength: 28,
-  momentumLookback: 9,
-  momentumAdjustmentScale: 0.252,
-  momentumAdjustmentClamp: 0.00305,
-};
-
-const PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULTS: Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS> = {
-  recommendedConfidenceThreshold: 0.15,
-  momentumAdjustmentScale: 0.48,
-  momentumAdjustmentClamp: 0.0058,
-};
-
-export function resolveForecastLabMarkovParameterDefaults(
-  assetScope?: ForecastLabRuntimeAssetScope,
-): typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS {
-  return forecastLabMarkovRuntimeDefaults.resolve(assetScope);
-}
-
-export function getForecastLabMarkovRuntimeDefaults(
-  assetScope: ForecastLabRuntimeAssetScope,
-): Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS> | undefined {
-  return forecastLabMarkovRuntimeDefaults.get(assetScope);
-}
-
-export function setForecastLabMarkovRuntimeDefaults(
-  assetScope: ForecastLabRuntimeAssetScope,
-  overrides?: Partial<typeof FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS>,
-): void {
-  forecastLabMarkovRuntimeDefaults.set(assetScope, overrides);
-}
-
-setForecastLabMarkovRuntimeDefaults('sol', PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS);
-setForecastLabMarkovRuntimeDefaults('hype', PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULTS);
-
-/**
- * Recommended confidence threshold for selective prediction.
- * Based on coverage-milestone analysis (2026-04-04, 14 tickers × 6 horizons):
- * - conf ≥ 0.25: ~66% accuracy at ~44% coverage (aggregate)
- * - conf ≥ 0.30: ~71% accuracy at ~30% coverage
- * - conf ≥ 0.40: ~75% accuracy at ~15% coverage
- *
- * Use this threshold to filter low-confidence predictions when accuracy matters more than coverage.
- * For full coverage (no filtering), ignore this threshold.
- */
-export const RECOMMENDED_CONFIDENCE_THRESHOLD = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.recommendedConfidenceThreshold;
 
 export type PredictionConfidenceMode = 'legacy' | 'rebalanced';
 
@@ -328,108 +389,9 @@ export interface AnchorTrustEvaluation {
   lowTrustReasons: AnchorLowTrustReason[];
 }
 
-export interface PriceThreshold {
-  price: number;
-  /** Raw YES probability from Polymarket (0–1) */
-  rawProbability: number;
-  /** Bias-corrected probability (rawProbability × YES_BIAS_MULTIPLIER). Reichenbach & Walther (2025)
-   *  found systematic YES-overtrading across 124M trades. Uses multiplicative form
-   *  (vs. additive in ensemble.ts) because survival interpolation is log-spaced. */
-  probability: number;
-  /** Whether this anchor is trusted based on liquidity/age heuristics */
-  trustScore: 'high' | 'low';
-  /** Internal graded trust weight used to prefer better crypto anchors without
-   *  changing the outward high/low diagnostics vocabulary. */
-  trustWeight?: number;
-  /** Optional domain tag (politics/sports/crypto/macro). When provided, the raw
-   *  price is recalibrated via {@link recalibratePolymarketPrice} *before* the
-   *  Girsanov Q→P shift. Absent ⇒ identity (treated as 'unknown'). */
-  domain?: Domain;
-  source: 'polymarket' | 'kalshi' | 'averaged';
-  endDate?: string | null;
-}
 
-export interface SentimentSignal {
-  bullish: number;  // 0–1
-  bearish: number;  // 0–1
-}
 
-/**
- * Normalize a sentiment signal that may arrive as human-readable percentages
- * (e.g. {bullish: 71, bearish: 29} from social_sentiment) into the 0–1
- * decimal format required by the Markov distribution internals.
- *
- * Heuristic: if either bullish or bearish is > 1, assume the caller passed
- * percentages (0–100 scale) and divide by 100. Values already in [0, 1] are
- * passed through unchanged.
- *
- * Strict failure modes (returns undefined → caller should not use sentiment):
- *  - Negative values
- *  - Values > 100
- *  - Non-number types
- *  - Mixed decimal/percent scales (except exact zero on one side, e.g. 100/0)
- */
-export function normalizeSentiment(raw: unknown): SentimentSignal | undefined {
-  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const obj = raw as Record<string, unknown>;
-  const bullish = obj.bullish;
-  const bearish = obj.bearish;
-  if (typeof bullish !== 'number' || typeof bearish !== 'number') return undefined;
-  if (!Number.isFinite(bullish) || !Number.isFinite(bearish)) return undefined;
-  if (bullish < 0 || bearish < 0) return undefined;
-  if (bullish > 100 || bearish > 100) return undefined;
 
-  // Percent-scale: if either side exceeds 1, treat the pair as percentages.
-  // Reject mixed-scale inputs like 71/0.3, but allow exact zero on one side.
-  const isPercentScale = bullish > 1 || bearish > 1;
-  if (isPercentScale) {
-    const hasMixedScale = (bullish > 0 && bullish <= 1) || (bearish > 0 && bearish <= 1);
-    if (hasMixedScale) return undefined;
-
-    return {
-      bullish: bullish / 100,
-      bearish: bearish / 100,
-    };
-  }
-
-  return {
-    bullish,
-    bearish,
-  };
-}
-
-/** 3×3 stochastic matrix (rows sum to 1) */
-export type TransitionMatrix = number[][];
-
-export interface MarkovDistributionPoint {
-  price: number;
-  /** P(asset_price > this level) at the given horizon */
-  probability: number;
-  /** 90% CI lower bound (Monte Carlo 5th percentile) */
-  lowerBound: number;
-  /** 90% CI upper bound (Monte Carlo 95th percentile) */
-  upperBound: number;
-  /** How this distribution point was estimated */
-  source: 'polymarket' | 'markov' | 'blend';
-}
-
-/** A single day in a price trajectory forecast. */
-export interface TrajectoryPoint {
-  /** Day number (1, 2, ..., N) */
-  day: number;
-  /** Regime-weighted mean price at this horizon */
-  expectedPrice: number;
-  /** 5th percentile price (lower 90% CI bound) */
-  lowerBound: number;
-  /** 95th percentile price (upper 90% CI bound) */
-  upperBound: number;
-  /** P(price > currentPrice) at this horizon */
-  pUp: number;
-  /** Cumulative return from current price, e.g., "+1.3%" */
-  cumulativeReturn: string;
-  /** Most likely regime at this horizon */
-  regime: RegimeState;
-}
 
 /** A single scenario bucket in the probability distribution (e.g., "Down >5%"). */
 export interface ScenarioBucket {
@@ -522,181 +484,6 @@ export function buildRecommendationProvenanceNote(params: {
   return null;
 }
 
-export type BreakConfidencePolicy = 'default' | 'trend_penalty_only' | 'divergence_weighted';
-
-// ---------------------------------------------------------------------------
-// Phase 6: Divergence-weighted break confidence (backtest-only)
-//
-// When a structural break is detected, the current Phase 4 behavior applies
-// a flat 0.6 penalty to confidence regardless of divergence severity.
-// Phase 6 uses structuralBreakDivergence to select a lighter penalty for
-// mild breaks and the current full penalty for high-divergence breaks.
-// ---------------------------------------------------------------------------
-
-/**
- * Penalty schedule mapping divergence severity buckets to confidence
- * multipliers. Lower values = harsher penalty.
- *
- * The existing Phase 4 flat penalty is 0.6. Phase 6 schedules allow
- * lighter penalties for mild breaks while preserving 0.6 for severe ones.
- */
-export interface DivergencePenaltySchedule {
-  /** Penalty multiplier for mild breaks (divergence ∈ [0.05, 0.10)). Default: 0.80 */
-  mild: number;
-  /** Penalty multiplier for medium breaks (divergence ∈ [0.10, 0.20)). Default: 0.70 */
-  medium: number;
-  /** Penalty multiplier for high breaks (divergence ≥ 0.20). Default: 0.60 (= Phase 4 baseline) */
-  high: number;
-}
-
-/** Default Phase 6 schedule: mildest break → 0.80, medium → 0.70, high → 0.60 */
-export const DEFAULT_DIVERGENCE_PENALTY_SCHEDULE: DivergencePenaltySchedule = {
-  mild: 0.80,
-  medium: 0.70,
-  high: 0.60,
-};
-
-/**
- * Map a structural break divergence value to a confidence penalty multiplier
- * using the severity bucket semantics already used elsewhere in the codebase
- * (same thresholds as computeBlendWeight in Phase 5).
- *
- * - divergence < 0.05: no break penalty (no structural break detected or trivial divergence)
- * - divergence ∈ [0.05, 0.10): mild → schedule.mild
- * - divergence ∈ [0.10, 0.20): medium → schedule.medium
- * - divergence ≥ 0.20: high → schedule.high
- */
-export function computeDivergencePenalty(
-  divergence: number,
-  schedule: DivergencePenaltySchedule,
-): number {
-  if (divergence < 0.05) return 1.0; // no break → no penalty
-  if (divergence < 0.10) return schedule.mild;
-  if (divergence < 0.20) return schedule.medium;
-  return schedule.high;
-}
-
-// ---------------------------------------------------------------------------
-// Phase 5: Experimental hybrid structural-break fallback candidates
-// ---------------------------------------------------------------------------
-
-/**
- * Experimental fallback candidate for hybrid structural-break matrix blending.
- * Backtest-only: these candidates are NOT used in production defaults.
- *
- * When a structural break is detected, the current hard-replacement behavior
- * substitutes the default matrix (diagonal=0.6). A fallback candidate allows
- * blending between the estimated matrix and a conservative/profile-based matrix,
- * weighted by the break's divergence severity.
- */
-export interface BreakFallbackCandidate {
-  /** Unique identifier for this candidate (e.g., 'C55', 'P_BALANCED_LAM050_H025') */
-  id: string;
-  /** How to apply the fallback: hard replacement, blended, or blended with weight cap */
-  mode: 'hard' | 'blended' | 'blended_capped';
-  /** Diagonal value for the generic conservative fallback matrix (off-diag = (1-d)/2) */
-  conservativeDiagonal: number;
-  /** Per-asset-type diagonal values for the profile fallback matrix */
-  profileDiagonals: {
-    equity: number;
-    etf: number;
-    commodity: number;
-    crypto: number;
-  };
-  /** Weight of the conservative matrix in the hybrid: hybrid = λ*conservative + (1-λ)*profile */
-  conservativeWeight: number;
-  /** Severity-dependent blend weights: how much fallback matrix to use, by divergence bucket */
-  severityWeights: {
-    mild: number;    // divergence in [0.05, 0.10)
-    medium: number;  // divergence in [0.10, 0.20)
-    high: number;    // divergence >= 0.20
-  };
-  /** Maximum blend weight cap for blended_capped mode (undefined for other modes) */
-  maxBlendWeight?: number;
-}
-
-/** Build a 3×3 conservative fallback matrix from a diagonal value. */
-export function buildConservativeFallbackMatrix(diagonal: number): TransitionMatrix {
-  const offDiag = (1 - diagonal) / (NUM_STATES - 1);
-  return Array.from({ length: NUM_STATES }, (_, i) =>
-    Array.from({ length: NUM_STATES }, (_, j) => (i === j ? diagonal : offDiag)),
-  );
-}
-
-/** Build a 3×3 profile fallback matrix for a given asset type. */
-export function buildProfileFallbackMatrix(
-  assetType: AssetProfile['type'],
-  profileDiagonals: BreakFallbackCandidate['profileDiagonals'],
-): TransitionMatrix {
-  const diagonal = profileDiagonals[assetType];
-  const offDiag = (1 - diagonal) / (NUM_STATES - 1);
-  return Array.from({ length: NUM_STATES }, (_, i) =>
-    Array.from({ length: NUM_STATES }, (_, j) => (i === j ? diagonal : offDiag)),
-  );
-}
-
-/** Blend two transition matrices: result = λ*A + (1-λ)*B */
-export function blendMatrices(
-  lambda: number,
-  A: TransitionMatrix,
-  B: TransitionMatrix,
-): TransitionMatrix {
-  return A.map((row, i) =>
-    row.map((_, j) => lambda * A[i][j] + (1 - lambda) * B[i][j]),
-  );
-}
-
-/**
- * Compute the blend weight for a structural-break fallback matrix,
- * based on the divergence severity bucket.
- */
-export function computeBlendWeight(
-  divergence: number,
-  severityWeights: BreakFallbackCandidate['severityWeights'],
-): number {
-  if (divergence < 0.05) return 0;
-  if (divergence < 0.10) return severityWeights.mild;
-  if (divergence < 0.20) return severityWeights.medium;
-  return severityWeights.high;
-}
-
-/**
- * Apply a BreakFallbackCandidate to produce the final transition matrix
- * for a structural-break window. Returns null if no fallback should be
- * applied (i.e., the current hard-replacement behavior should be used).
- *
- * When a candidate is supplied and a break is detected:
- * - `hard` mode: replaces the estimated matrix with the hybrid fallback matrix
- * - `blended` mode: (1-w)*estimated + w*hybridFallback, where w depends on divergence
- * - `blended_capped` mode: same as blended, but w is capped by maxBlendWeight
- */
-export function applyBreakFallbackCandidate(
-  estimatedMatrix: TransitionMatrix,
-  divergence: number,
-  candidate: BreakFallbackCandidate,
-  assetType: AssetProfile['type'],
-): TransitionMatrix {
-  const conservativeMatrix = buildConservativeFallbackMatrix(candidate.conservativeDiagonal);
-  const profileMatrix = buildProfileFallbackMatrix(assetType, candidate.profileDiagonals);
-  const hybridFallback = blendMatrices(
-    candidate.conservativeWeight,
-    conservativeMatrix,
-    profileMatrix,
-  );
-
-  const blendWeight = computeBlendWeight(divergence, candidate.severityWeights);
-  const cappedWeight = candidate.mode === 'blended_capped' && candidate.maxBlendWeight !== undefined
-    ? Math.min(blendWeight, candidate.maxBlendWeight)
-    : blendWeight;
-
-  if (candidate.mode === 'hard') {
-    // Hard replacement: use the hybrid fallback matrix entirely
-    return hybridFallback;
-  }
-
-  // Blended or blended_capped: interpolate between estimated and hybrid fallback
-  return blendMatrices(1 - cappedWeight, estimatedMatrix, hybridFallback);
-}
 
 export interface MarkovDistributionResult {
   ticker: string;
@@ -881,17 +668,6 @@ export interface MarkovDistributionResult {
   };
 }
 
-/** Result of chi-squared goodness-of-fit test for the transition matrix. */
-export interface GoodnessOfFitResult {
-  /** Chi-squared statistic */
-  chiSquared: number;
-  /** Degrees of freedom */
-  degreesOfFreedom: number;
-  /** Approximate p-value (higher = better fit; < 0.05 suggests poor Markov fit) */
-  pValue: number;
-  /** Whether the model passes the test at α=0.05 */
-  passes: boolean;
-}
 
 /** Actionable Buy / Hold / Sell summary derived from the Markov distribution. */
 export interface ActionSignal {
@@ -967,110 +743,6 @@ export interface AnchorInspectionDiagnostic {
   exampleExcludedQuestions: string[];
 }
 
-// ---------------------------------------------------------------------------
-// Asset-class parameter profiles (Idea N)
-// ---------------------------------------------------------------------------
-
-/**
- * Per-asset-class parameter overrides. Different asset types have fundamentally
- * different volatility, mean-reversion, and regime-switching characteristics.
- * Using identical parameters for SPY (vol ~1.2%) and BTC (vol ~4%) is incorrect.
- */
-export interface AssetProfile {
-  /** Asset class identifier */
-  type: 'etf' | 'equity' | 'crypto' | 'commodity';
-  /** Calibration kappa multiplier (1.0 = default). Higher = more conservative. */
-  kappaMultiplier: number;
-  /** HMM weight multiplier (1.0 = default). Lower = trust HMM less. */
-  hmmWeightMultiplier: number;
-  /** Student-t degrees of freedom (lower = fatter tails) */
-  studentTNu: number;
-  /** Transition matrix decay rate */
-  decayRate: number;
-  /** Maximum absolute daily drift (caps regime meanReturn to prevent shock contamination) */
-  maxDailyDrift?: number;
-}
-
-const ASSET_PROFILES: Record<AssetProfile['type'], AssetProfile> = {
-  etf: {
-    type: 'etf',
-    kappaMultiplier: 0.85,     // ETFs are more predictable → trust model more
-    hmmWeightMultiplier: 1.1,  // HMM works well on smoother series
-    studentTNu: 5,
-    decayRate: 0.97,
-    maxDailyDrift: 0.008,      // ~2% annualized cap
-  },
-  equity: {
-    type: 'equity',
-    kappaMultiplier: 1.0,      // baseline
-    hmmWeightMultiplier: 0.9,  // slightly less HMM trust (more idiosyncratic)
-    studentTNu: 4,             // fatter tails than ETFs
-    decayRate: 0.96,
-    maxDailyDrift: 0.012,      // ~3% annualized cap
-  },
-  crypto: {
-    type: 'crypto',
-    kappaMultiplier: 1.3,      // crypto is noisier → more shrinkage toward base rate
-    hmmWeightMultiplier: 0.5,  // HMM less reliable on crypto noise
-    studentTNu: 3,             // fattest tails
-    decayRate: 0.94,
-    maxDailyDrift: 0.025,      // crypto can legitimately drift more
-  },
-  commodity: {
-    type: 'commodity',
-    kappaMultiplier: 1.1,      // commodities are driven by supply shocks → slightly more conservative
-    hmmWeightMultiplier: 0.7,  // regime switching is real but noisy (geopolitics)
-    studentTNu: 4,             // fat tails from supply shocks
-    decayRate: 0.95,
-    maxDailyDrift: 0.010,      // ~2.5% annualized; prevents geopolitical shock drift contamination
-  },
-};
-
-/**
- * Map ticker symbol to asset profile. Falls back to 'equity' for unknown tickers.
- * Common ETFs and crypto tickers are recognized by pattern.
- */
-export function getAssetProfile(ticker: string): AssetProfile {
-  const t = ticker.toUpperCase();
-  // Crypto detection
-  if (t.includes('BTC') || t.includes('ETH') || t.includes('SOL') ||
-      t.includes('DOGE') || t.includes('XRP') || t.endsWith('-USD') ||
-      t.endsWith('USDT') || t.includes('CRYPTO')) {
-    return ASSET_PROFILES.crypto;
-  }
-  // Commodity futures detection (CME/NYMEX/COMEX tickers + common names)
-  const commodityTickers = new Set([
-    'CL', 'NG', 'HO', 'RB',          // energy: crude, nat gas, heating oil, gasoline
-    'GC', 'SI', 'HG', 'PL', 'PA',    // metals: gold, silver, copper, platinum, palladium
-    'ZC', 'ZW', 'ZS', 'ZM', 'ZL',    // grains: corn, wheat, soybeans, soybean meal/oil
-    'CT', 'KC', 'SB', 'CC', 'OJ',    // softs: cotton, coffee, sugar, cocoa, OJ
-    'LE', 'HE', 'GF',                 // livestock: live cattle, lean hogs, feeder cattle
-    'WTICOUSD', 'BRENTUSD',           // spot oil aliases
-    'SILVER', 'COPPER',               // common names for precious/base metals
-    'XAUUSD', 'XAGUSD',              // forex-style spot metal symbols
-    'NATGAS', 'CRUDE', 'OIL',        // informal energy names
-  ]);
-  if (commodityTickers.has(t)) return ASSET_PROFILES.commodity;
-  // Commodity ETFs — use commodity profile (they track commodity prices)
-  const commodityEtfs = new Set([
-    'USO', 'UNG', 'DBO', 'GSG', 'DJP', 'PDBC',  // broad/energy commodity ETFs
-    'GLD', 'SLV', 'IAU', 'SGOL', 'PPLT',         // precious metal ETFs
-    'CPER', 'JJC',                                  // copper ETFs
-    'DBA', 'WEAT', 'CORN', 'SOYB',                // agriculture ETFs
-  ]);
-  if (commodityEtfs.has(t)) return ASSET_PROFILES.commodity;
-  // ETF detection (common US ETFs and patterns)
-  const etfTickers = new Set([
-    'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'VTI', 'VXUS', 'EFA', 'EEM',
-    'TLT', 'IEF', 'SHY', 'LQD', 'HYG',
-    'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLY', 'XLU', 'XLB',
-    'ARKK', 'ARKG', 'ARKW', 'SOXL', 'TQQQ', 'SQQQ', 'SPXL', 'VGK',
-    'IEMG', 'AGG', 'BND', 'SCHD', 'VYM', 'JEPI', 'VNQ', 'XLRE',
-  ]);
-  if (etfTickers.has(t)) return ASSET_PROFILES.etf;
-
-  return ASSET_PROFILES.equity;
-}
 
 // ---------------------------------------------------------------------------
 // 1. extractPriceThresholds
@@ -2070,506 +1742,9 @@ export function normalizeAnchorPricesForETF(
   }));
 }
 
-// ---------------------------------------------------------------------------
-// 2. classifyRegimeState
-// ---------------------------------------------------------------------------
 
-/**
- * Classify a trading day into a directional regime state.
- *
- * Collapsed from the original 5-state model: high_vol_bull and high_vol_bear
- * are merged into bull and bear respectively, since with 120-day windows the
- * high_vol variants had only 2-4 observations and produced noisy transitions.
- *
- * @param dailyReturn - Return for the day (e.g. 0.012 = +1.2%)
- * @param _dailyVolatility - Ignored (kept for backward compatibility)
- * @param returnThreshold - Adaptive threshold for bull/bear classification (default 0.01)
- * @param _volThreshold - Ignored (kept for backward compatibility)
- */
-export function classifyRegimeState(
-  dailyReturn: number,
-  _dailyVolatility: number,
-  returnThreshold = 0.01,
-  _volThreshold = 0.02,
-): RegimeState {
-  if (dailyReturn > returnThreshold)  return 'bull';
-  if (dailyReturn < -returnThreshold) return 'bear';
-  return 'sideways';
-}
 
-/**
- * Compute per-asset adaptive thresholds from the return series.
- * Uses half-median of absolute returns for regime classification and
- * 2× median for high-volatility detection. This ensures ~30-40% of days
- * are bull, ~30-40% bear, ~20-30% sideways regardless of asset volatility.
- */
-export function computeAdaptiveThresholds(
-  returns: number[],
-  returnThresholdMultiplier = 0.5,
-): {
-  returnThreshold: number;
-  volThreshold: number;
-} {
-  if (returns.length === 0) return { returnThreshold: 0.01, volThreshold: 0.02 };
-  const absReturns = returns.map(r => Math.abs(r)).sort((a, b) => a - b);
-  const medianAbsReturn = absReturns[Math.floor(absReturns.length / 2)];
-  return {
-    returnThreshold: Math.max(0.001, returnThresholdMultiplier * medianAbsReturn),
-    volThreshold: Math.max(0.005, 2.0 * medianAbsReturn),
-  };
-}
 
-// ---------------------------------------------------------------------------
-// 2b. Momentum signal
-// ---------------------------------------------------------------------------
-
-export interface MomentumSignal {
-  /** Annualized return over lookback window */
-  velocity: number;
-  /** Change in velocity (recent half vs older half): >0 = accelerating */
-  acceleration: number;
-  /** R² of OLS regression on log(prices) — measures trend linearity (0–1) */
-  trendStrength: number;
-  /** Daily drift adjustment to add to regime-weighted mu (clamped ±0.003) */
-  adjustment: number;
-}
-
-/**
- * Compute a momentum signal from recent prices.
- * Returns a small drift adjustment that tilts the Markov distribution in the
- * direction of the recent trend, weighted by trend linearity (R²).
- *
- * @param prices  Historical prices (at least lookback+1 entries)
- * @param lookback  Number of days to look back (default 20)
- */
-export function computeMomentumSignal(
-  prices: number[],
-  lookback = resolveForecastLabMarkovParameterDefaults().momentumLookback,
-): MomentumSignal {
-  const nil: MomentumSignal = { velocity: 0, acceleration: 0, trendStrength: 0, adjustment: 0 };
-  if (prices.length < lookback + 1) return nil;
-
-  const window = prices.slice(-lookback - 1);
-
-  // Velocity: annualized return over lookback
-  const totalReturn = window[window.length - 1] / window[0] - 1;
-  const velocity = Math.sign(totalReturn) * (Math.pow(1 + Math.abs(totalReturn), 252 / lookback) - 1);
-
-  // Acceleration: velocity of recent half minus velocity of older half
-  const half = Math.floor(lookback / 2);
-  const recentRet = window[window.length - 1] / window[window.length - 1 - half] - 1;
-  const olderRet  = window[window.length - 1 - half] / window[0] - 1;
-  const recentVel = Math.sign(recentRet) * (Math.pow(1 + Math.abs(recentRet), 252 / half) - 1);
-  const olderVel  = Math.sign(olderRet) * (Math.pow(1 + Math.abs(olderRet), 252 / half) - 1);
-  const acceleration = recentVel - olderVel;
-
-  // Trend strength: R² of OLS on log(prices)
-  const logPrices = window.map(p => Math.log(p));
-  const n = logPrices.length;
-  const xMean = (n - 1) / 2;
-  const yMean = logPrices.reduce((s, v) => s + v, 0) / n;
-  let sxy = 0, sxx = 0, syy = 0;
-  for (let i = 0; i < n; i++) {
-    const dx = i - xMean;
-    const dy = logPrices[i] - yMean;
-    sxy += dx * dy;
-    sxx += dx * dx;
-    syy += dy * dy;
-  }
-  const trendStrength = syy > 0 ? (sxy * sxy) / (sxx * syy) : 0;
-
-  // Adjustment: daily drift tilt = velocity/252 × trendStrength × scaling factor
-  // Clamped to ±0.003 per day (~±0.75 annualized) to prevent extreme adjustments
-  const markovDefaults = resolveForecastLabMarkovParameterDefaults();
-  const rawAdj = (velocity / 252) * trendStrength * markovDefaults.momentumAdjustmentScale;
-  const adjustment = Math.max(
-    -markovDefaults.momentumAdjustmentClamp,
-    Math.min(markovDefaults.momentumAdjustmentClamp, rawAdj),
-  );
-
-  return { velocity, acceleration, trendStrength, adjustment };
-}
-
-// ---------------------------------------------------------------------------
-// 5b. Ensemble signal (Idea D)
-// ---------------------------------------------------------------------------
-
-export interface EnsembleSignal {
-  /** Mean-reversion z-score: negative = overbought, positive = oversold */
-  meanReversionZ: number;
-  /** Momentum crossover: SMA5/SMA20 ratio minus 1 */
-  momentumCrossover: number;
-  /** Volatility compression ratio: vol_5d / vol_20d. <1 = compressed, >1 = expanding */
-  volCompression: number;
-  /** Combined drift adjustment (daily), clamped to ±0.004 */
-  adjustment: number;
-  /** Number of signals agreeing on direction (0-3, higher = more consensus) */
-  consensus: number;
-}
-
-/**
- * Compute ensemble signal from 3 orthogonal indicators:
- * 1. Mean-reversion z-score — contrarian (overbought/oversold)
- * 2. Momentum crossover — trend-following (SMA5 vs SMA20)
- * 3. Volatility compression — breakout anticipation
- *
- * Only applies adjustment when ≥2 of 3 signals agree on direction.
- */
-export function computeEnsembleSignal(prices: number[]): EnsembleSignal {
-  const nil: EnsembleSignal = { meanReversionZ: 0, momentumCrossover: 0, volCompression: 1, adjustment: 0, consensus: 0 };
-  if (prices.length < 25) return nil;
-
-  const returns: number[] = [];
-  for (let i = 1; i < prices.length; i++) {
-    returns.push((prices[i] - prices[i - 1]) / prices[i - 1]);
-  }
-
-  // --- Mean-reversion z-score: (price - SMA20) / σ20 ---
-  const last20 = prices.slice(-20);
-  const sma20 = last20.reduce((s, v) => s + v, 0) / 20;
-  const std20 = Math.sqrt(last20.reduce((s, v) => s + (v - sma20) ** 2, 0) / 20);
-  const meanReversionZ = std20 > 0 ? (prices[prices.length - 1] - sma20) / std20 : 0;
-  // Negative z → price below mean → oversold → bullish signal
-  const mrSignal = -meanReversionZ;
-
-  // --- Momentum crossover: SMA5 / SMA20 - 1 ---
-  const last5 = prices.slice(-5);
-  const sma5 = last5.reduce((s, v) => s + v, 0) / 5;
-  const momentumCrossover = sma20 > 0 ? sma5 / sma20 - 1 : 0;
-  // Positive crossover → SMA5 above SMA20 → bullish
-  const momSignal = momentumCrossover;
-
-  // --- Volatility compression: vol5 / vol20 ---
-  const ret5 = returns.slice(-5);
-  const ret20 = returns.slice(-20);
-  const mean5 = ret5.reduce((s, v) => s + v, 0) / ret5.length;
-  const mean20 = ret20.reduce((s, v) => s + v, 0) / ret20.length;
-  const vol5 = Math.sqrt(ret5.reduce((s, v) => s + (v - mean5) ** 2, 0) / ret5.length);
-  const vol20 = Math.sqrt(ret20.reduce((s, v) => s + (v - mean20) ** 2, 0) / ret20.length);
-  const volCompression = vol20 > 0 ? vol5 / vol20 : 1;
-  // Low vol compression (<0.7) + trending = breakout imminent → amplify directional signal
-  const volAmplifier = volCompression < 0.7 ? 1.5 : volCompression > 1.5 ? 0.5 : 1.0;
-
-  // --- Consensus: count how many signals agree on direction ---
-  const bullSignals = [
-    mrSignal > 0.3 ? 1 : mrSignal < -0.3 ? -1 : 0,
-    momSignal > 0.005 ? 1 : momSignal < -0.005 ? -1 : 0,
-    // Vol compression direction: use recent 5d return direction
-    ret5.reduce((s, v) => s + v, 0) > 0 ? 1 : -1,
-  ] as const;
-
-  const bullCount = bullSignals.filter(s => s > 0).length;
-  const bearCount = bullSignals.filter(s => s < 0).length;
-  const consensus = Math.max(bullCount, bearCount);
-
-  // --- Combined adjustment: weighted average, only when ≥2 agree ---
-  let adjustment = 0;
-  if (consensus >= 2) {
-    const direction = bullCount >= bearCount ? 1 : -1;
-    // Weight: MR 0.4, Momentum 0.4, Vol 0.2
-    const rawAdj = direction * (
-      0.4 * Math.min(Math.abs(mrSignal), 2) * 0.001 +
-      0.4 * Math.min(Math.abs(momSignal), 0.05) * 0.04 +
-      0.2 * 0.001
-    ) * volAmplifier;
-    adjustment = Math.max(-0.004, Math.min(0.004, rawAdj));
-  }
-
-  return { meanReversionZ, momentumCrossover, volCompression, adjustment, consensus };
-}
-
-/**
- * Estimate a 3×3 Markov transition matrix from a sequence of regime states.
- *
- * Smoothing: Dirichlet α scales inversely with sample size (default: max(0.01, 5/N)).
- * Converges to ~0.1 (Jeffreys prior) at N=50, and shrinks for larger samples to let
- * data dominate. Welton & Ades (2005) recommends α=0.1 for sparse counts; the adaptive
- * formula reduces over-smoothing for longer windows while still regularizing short ones.
- *
- * Default matrix (insufficient data): 0.6 diagonal, uniform off-diagonal.
- * offDiag = (1 − 0.6) / (NUM_STATES − 1) = 0.4 / 2 = 0.2 per cell (rows sum to 1.0).
- *
- * Bug note: The original spec specified "0.2 off-diagonal" for a 4-state matrix,
- * yielding row sums of 0.6 + 3×0.2 = 1.2. Fixed here to use the correct formula.
- */
-export function estimateTransitionMatrix(
-  states: RegimeState[],
-  alpha?: number,     // Dirichlet smoothing constant (auto-tuned if omitted)
-  minObservations = resolveForecastLabMarkovParameterDefaults().transitionMinObservations,
-  decayRate = resolveForecastLabMarkovParameterDefaults().transitionDecay,   // Exponential decay: recent transitions weighted more (1.0 = no decay)
-): TransitionMatrix {
-  if (states.length < minObservations) {
-    return buildDefaultMatrix();
-  }
-
-  // Auto-tune: scale inversely with sample size
-  const effectiveAlpha = alpha ?? Math.max(0.01, 5.0 / states.length);
-
-  // Initialise count matrix with Dirichlet prior
-  const counts: number[][] = Array.from({ length: NUM_STATES }, () =>
-    Array(NUM_STATES).fill(effectiveAlpha),
-  );
-
-  // Exponentially-weighted transition counts: recent transitions matter more.
-  // weight = decayRate^(distance_from_end). Last transition gets weight=1.
-  const n = states.length - 1;
-  for (let i = 0; i < n; i++) {
-    const from = STATE_INDEX[states[i]];
-    const to   = STATE_INDEX[states[i + 1]];
-    const age  = n - 1 - i; // 0 = most recent, n-1 = oldest
-    counts[from][to] += Math.pow(decayRate, age);
-  }
-
-  return normalizeRows(counts);
-}
-
-/** Identity-like default matrix with correct row sums. */
-export function buildDefaultMatrix(): TransitionMatrix {
-  const diagonal = 0.6;
-  const offDiag  = (1 - diagonal) / (NUM_STATES - 1); // 0.2 for 3 states
-  return Array.from({ length: NUM_STATES }, (_, i) =>
-    Array.from({ length: NUM_STATES }, (_, j) => (i === j ? diagonal : offDiag)),
-  );
-}
-
-/** Normalize each row of a matrix to sum to 1. Zero-sum rows become uniform. */
-export function normalizeRows(matrix: number[][]): TransitionMatrix {
-  return matrix.map(row => {
-    const sum = row.reduce((a, b) => a + b, 0);
-    if (sum < 1e-12) {
-      // Degenerate row: distribute uniformly to avoid NaN
-      const uniform = 1 / row.length;
-      return row.map(() => uniform);
-    }
-    return row.map(v => v / sum);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Regime-conditional up-rate (Idea T, Round 4)
-// ---------------------------------------------------------------------------
-
-/**
- * Compute empirical P(up | regime) for each regime state from historical data.
- *
- * For each day where regime=R, look forward `horizon` days and check if the
- * cumulative return was positive. This gives the ACTUAL frequency of "up"
- * outcomes following each regime — much more accurate than the lossy
- * regime → mean return → Student-t survival mapping.
- *
- * Returns a map from regime state to P(up|regime). When combined with the
- * n-step transition probabilities, this yields:
- *   P(up) = Σ P(regime_i at horizon) × P(up | regime_i)
- */
-export function computeRegimeUpRates(
-  regimeSeq: RegimeState[],
-  logReturns: number[],
-  horizon: number,
-  decayRate?: number,
-): Record<RegimeState, number> {
-  const counts: Record<RegimeState, { up: number; total: number }> = {
-    bull: { up: 0, total: 0 },
-    bear: { up: 0, total: 0 },
-    sideways: { up: 0, total: 0 },
-  };
-
-  // regimeSeq[i] corresponds to logReturns[i]. Look forward `horizon` days.
-  // Use log returns so cumulative = Σ log(1+r) is the true cumulative log return
-  // (sign of the sum equals sign of the cumulative simple return). Summing simple
-  // returns is only an approximation and biases the up-rate downward at multi-day
-  // horizons because compound = exp(Σ log(1+r)) − 1 ≠ Σ r when |r| is non-trivial.
-  const maxStart = Math.min(regimeSeq.length, logReturns.length) - horizon;
-  for (let i = 0; i < maxStart; i++) {
-    const regime = regimeSeq[i];
-    // Cumulative log return over next `horizon` days (starts at i+1 — future returns only)
-    let cumLogReturn = 0;
-    for (let j = i + 1; j <= i + horizon; j++) {
-      cumLogReturn += logReturns[j];
-    }
-    
-    // Bounded exponential weighting: recent observations get more weight
-    const weight = decayRate !== undefined
-      ? Math.pow(decayRate, maxStart - 1 - i)
-      : 1;
-
-    counts[regime].total += weight;
-    if (cumLogReturn > 0) counts[regime].up += weight;
-  }
-
-  const result = {} as Record<RegimeState, number>;
-  for (const state of REGIME_STATES) {
-    result[state] = counts[state].total > 0
-      ? counts[state].up / counts[state].total
-      : 0.5; // no data → uninformative
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Goodness-of-fit: Chi-squared test for Markov transition matrix
-// ---------------------------------------------------------------------------
-
-/**
- * Chi-squared goodness-of-fit test comparing observed transition counts
- * against expected counts from the estimated transition matrix.
- *
- * Tests H₀: the observed transitions are consistent with the estimated P.
- * A low p-value (< 0.05) means the Markov assumption is a poor fit.
- *
- * Uses the Wilson–Hilferty approximation for the chi-squared CDF.
- */
-export function transitionGoodnessOfFit(
-  states: RegimeState[],
-  P: TransitionMatrix,
-  alpha = 0.1,  // same Dirichlet prior used during estimation
-): GoodnessOfFitResult | null {
-  if (states.length < 50) return null; // not enough data for reliable test
-
-  // Build observed count matrix
-  const observed: number[][] = Array.from({ length: NUM_STATES }, () =>
-    Array(NUM_STATES).fill(0),
-  );
-  for (let i = 0; i < states.length - 1; i++) {
-    observed[STATE_INDEX[states[i]]][STATE_INDEX[states[i + 1]]] += 1;
-  }
-
-  // Row totals for expected counts
-  const rowTotals = observed.map(row => row.reduce((a, b) => a + b, 0));
-
-  let chiSq = 0;
-  let df = 0;
-
-  // Per-row df = (contributing_cells_in_row − 1) for each active row.
-  // Each row's transition probabilities are constrained to sum to 1, so a row
-  // that contributes k cells to chi-sq has only (k − 1) degrees of freedom
-  // (one cell is determined by the others). Total df is the sum across active rows.
-  // Previous formulation (df_total = num_terms − activeRows × (NUM_STATES − 1))
-  // over-corrects when some cells are skipped due to expected < 1, since it
-  // subtracts (NUM_STATES − 1) parameters per row even when fewer cells contributed.
-  for (let i = 0; i < NUM_STATES; i++) {
-    if (rowTotals[i] < 5) continue; // skip rows with too few observations
-    let rowCells = 0;
-    for (let j = 0; j < NUM_STATES; j++) {
-      const expected = rowTotals[i] * P[i][j];
-      if (expected < 1) continue; // skip tiny expected counts (chi-sq unreliable)
-      chiSq += (observed[i][j] - expected) ** 2 / expected;
-      rowCells += 1;
-    }
-    if (rowCells >= 2) df += rowCells - 1; // row contributes (k − 1) df
-  }
-  df = Math.max(1, df);
-
-  // Wilson–Hilferty normal approximation for chi-squared CDF
-  const z = Math.cbrt(chiSq / df) - (1 - 2 / (9 * df));
-  const zNorm = z / Math.sqrt(2 / (9 * df));
-  const pValue = 1 - normalCDF(zNorm);
-
-  return {
-    chiSquared: chiSq,
-    degreesOfFreedom: df,
-    pValue,
-    passes: pValue >= 0.05,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Tier 1a: countStateObservations + sparseStates
-// ---------------------------------------------------------------------------
-
-/**
- * Count how many times each regime state appears in the sequence.
- * Used to identify states with too few observations for reliable transition estimation.
- */
-export function countStateObservations(states: RegimeState[]): Record<RegimeState, number> {
-  const counts = Object.fromEntries(REGIME_STATES.map(s => [s, 0])) as Record<RegimeState, number>;
-  for (const s of states) counts[s]++;
-  return counts;
-}
-
-/**
- * Return states with fewer than `minObs` observations.
- * These states have outgoing transitions dominated by the Dirichlet prior,
- * not by empirical data. Callers should treat their transition rows with lower confidence.
- */
-export function findSparseStates(
-  observationCounts: Record<RegimeState, number>,
-  minObs = 5,
-): RegimeState[] {
-  return REGIME_STATES.filter(s => observationCounts[s] < minObs);
-}
-
-// ---------------------------------------------------------------------------
-// Tier 1b: detectStructuralBreak
-// ---------------------------------------------------------------------------
-
-/**
- * Detect a structural break in the transition matrix between the first and second
- * halves of the state sequence.
- *
- * Uses a chi-square-like divergence statistic on the empirical transition counts:
- *   D = Σᵢⱼ |P_first[i][j] − P_second[i][j]|²  (Frobenius-style element divergence)
- *
- * When D > threshold (default 0.05 per cell = 0.05 × N² total), the two halves of
- * the training window describe meaningfully different dynamics. In that case:
- *   1. Fall back to the default (identity-like) transition matrix — the full-window
- *      estimate mixes two different regimes and is unreliable.
- *   2. Widen all CI bounds by 50% to reflect increased model uncertainty.
- *
- * This addresses the non-stationarity limitation noted in Mettle et al. (2014)
- * and Welton & Ades (2005): time-homogeneous Markov assumption is violated when
- * the market regime changes mid-window.
- */
-export interface StructuralBreakResult {
-  detected: boolean;
-  /** Sum of squared element-wise differences between first/second half matrices */
-  divergence: number;
-  firstHalfMatrix: TransitionMatrix;
-  secondHalfMatrix: TransitionMatrix;
-}
-
-export function detectStructuralBreak(
-  states: RegimeState[],
-  divergenceThreshold = 0.05,
-  alpha = 0.1,
-  decayRate = resolveForecastLabMarkovParameterDefaults().transitionDecay,
-  minLength = resolveForecastLabMarkovParameterDefaults().structuralBreakMinLength,
-): StructuralBreakResult {
-  // Each half must have enough observations for a meaningful chi-square-like
-  // comparison. With NUM_STATES² = 9 transition cells and the rule of thumb of
-  // ≥5 expected counts per cell, each half needs ≥45 transitions; rounded up to
-  // 60 to keep margins comfortable. Below this, the divergence statistic is
-  // dominated by Dirichlet smoothing rather than empirical signal — return
-  // detected=false rather than risk a false alarm fallback.
-  if (states.length < minLength) {
-    const fallback = buildDefaultMatrix();
-    return {
-      detected: false,
-      divergence: 0,
-      firstHalfMatrix: fallback,
-      secondHalfMatrix: fallback,
-    };
-  }
-  const mid = Math.floor(states.length / 2);
-  const firstHalf  = states.slice(0, mid);
-  const secondHalf = states.slice(mid);
-
-  const firstHalfMatrix  = estimateTransitionMatrix(firstHalf,  alpha, 10, decayRate);
-  const secondHalfMatrix = estimateTransitionMatrix(secondHalf, alpha, 10, decayRate);
-
-  let divergence = 0;
-  for (let i = 0; i < NUM_STATES; i++) {
-    for (let j = 0; j < NUM_STATES; j++) {
-      divergence += (firstHalfMatrix[i][j] - secondHalfMatrix[i][j]) ** 2;
-    }
-  }
-
-  return {
-    detected: divergence > divergenceThreshold,
-    divergence,
-    firstHalfMatrix,
-    secondHalfMatrix,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Tier 1c: mergeAnchorsWithCrossPlatformValidation
@@ -2658,901 +1833,9 @@ export function mergeAnchorsWithCrossPlatformValidation(
   return { anchors: merged, warnings };
 }
 
-/**
- * Apply sentiment-based adjustments to the baseline transition matrix.
- *
- * Only bull↔bear rows are adjusted — volatile states are intentionally left
- * unmodified since sentiment doesn't reliably predict intraday vol.
- *
- * α = 0.07 (reduced from the original 0.15). Davidovic & McCleary (2025, JRFM)
- * show that news sentiment scores (TextBlob/VADER/FinBERT) capture <5% of return
- * variation. Overly strong adjustments would corrupt the empirically estimated matrix.
- *
- * Sign fix: The original spec had `bear.to.bear = base * (1 - alpha * -shift)`,
- * which equals `base * (1 + shift)` and INCREASES bear persistence under bullish
- * sentiment. Corrected here: bullish shift reduces bear persistence (1 - alpha*shift).
- */
-export function adjustTransitionMatrix(
-  base: TransitionMatrix,
-  sentiment: SentimentSignal,
-  alpha = 0.07,
-): TransitionMatrix {
-  const shift = sentiment.bullish - sentiment.bearish; // -1 to +1
-  const adjusted = base.map(row => [...row]);
 
-  const bull = STATE_INDEX['bull'];
-  const bear = STATE_INDEX['bear'];
 
-  // Bull row: bullish sentiment → more persistence in bull, less exit to bear
-  adjusted[bull][bull] = base[bull][bull] * (1 + alpha * shift);
-  adjusted[bull][bear] = base[bull][bear] * (1 - alpha * shift);
 
-  // Bear row: bullish sentiment → less persistence in bear, more exit to bull
-  // (double-negative removed from original spec: was `(1 - alpha * -shift)`)
-  adjusted[bear][bear] = base[bear][bear] * (1 - alpha * shift);
-  adjusted[bear][bull] = base[bear][bull] * (1 + alpha * shift);
-
-  // Clamp negatives to 0 before normalizing
-  for (let i = 0; i < NUM_STATES; i++) {
-    for (let j = 0; j < NUM_STATES; j++) {
-      adjusted[i][j] = Math.max(0, adjusted[i][j]);
-    }
-  }
-
-  return normalizeRows(adjusted);
-}
-
-// ---------------------------------------------------------------------------
-// 5. Matrix math utilities
-// ---------------------------------------------------------------------------
-
-/** Matrix multiplication A × B. */
-export function matMul(A: number[][], B: number[][]): number[][] {
-  const n = A.length;
-  return Array.from({ length: n }, (_, i) =>
-    Array.from({ length: n }, (_, j) =>
-      A[i].reduce((s, _, k) => s + A[i][k] * B[k][j], 0),
-    ),
-  );
-}
-
-/** Compute P^n by repeated squaring (O(n² log n)). */
-export function matPow(P: TransitionMatrix, n: number): TransitionMatrix {
-  if (n === 0) return Array.from({ length: P.length }, (_, i) =>
-    Array.from({ length: P.length }, (_, j) => (i === j ? 1 : 0)),
-  );
-  if (n === 1) return P.map(r => [...r]);
-  if (n % 2 === 0) {
-    const half = matPow(P, n / 2);
-    return matMul(half, half);
-  }
-  return matMul(P, matPow(P, n - 1));
-}
-
-/**
- * Compute the second-largest absolute eigenvalue of the transition matrix
- * using the power iteration method with deflation.
- *
- * ρ determines mixing time: exp(−ρ×n) is how quickly the chain forgets its
- * initial state. Small ρ → fast mixing, Markov signal decays quickly.
- *
- * Returns a value in [0, 1].
- */
-export function secondLargestEigenvalue(P: TransitionMatrix, iterations = 100): number {
-  const n = P.length;
-
-  // First eigenvector (stationary distribution) via power iteration
-  let v = Array(n).fill(1 / n);
-  for (let iter = 0; iter < iterations; iter++) {
-    const next = Array(n).fill(0);
-    for (let i = 0; i < n; i++)
-      for (let j = 0; j < n; j++) next[j] += v[i] * P[i][j];
-    const norm = next.reduce((s, x) => s + x, 0);
-    v = next.map(x => x / norm);
-  }
-  // L2-normalize v for use in deflation (required for correct orthogonal projection)
-  const vL2 = v.reduce((s, x) => s + x * x, 0) ** 0.5;
-  const vUnit = vL2 < 1e-12 ? v : v.map(x => x / vL2);
-
-  // Deflate: remove first eigenvector component, find second via power iteration.
-  // Use uniform starting vector to avoid biasing toward any particular state.
-  let w: number[] = Array.from({ length: n }, () => 1 / n);
-  const wNorm = w.reduce((s, x) => s + x * x, 0) ** 0.5;
-  w = w.map(x => x / wNorm);
-
-  for (let iter = 0; iter < iterations; iter++) {
-    const next = Array(n).fill(0);
-    for (let i = 0; i < n; i++)
-      for (let j = 0; j < n; j++) next[j] += w[i] * P[i][j];
-    // Deflate: subtract L2-normalized component along stationary eigenvector
-    const dot = next.reduce((s, x, i) => s + x * vUnit[i], 0);
-    const deflated = next.map((x, i) => x - dot * vUnit[i]);
-    const norm = deflated.reduce((s, x) => s + x * x, 0) ** 0.5;
-    // deflated≈0 means second eigenvalue is ≈0 (e.g. uniform matrix has instant mixing)
-    if (norm < 1e-10) return 0;
-    w = deflated.map(x => x / norm);
-  }
-
-  const Pw = Array(n).fill(0);
-  for (let i = 0; i < n; i++)
-    for (let j = 0; j < n; j++) Pw[j] += w[i] * P[i][j];
-
-  const lambda2 = w.reduce((s, x, i) => s + x * Pw[i], 0);
-  return Math.min(1, Math.max(0, Math.abs(lambda2)));
-}
-
-/**
- * Standard normal CDF Φ(x) via Abramowitz & Stegun erf approximation (eq 7.1.26).
- * The A&S formula computes erf(t) which equals Φ(t√2)*2−1, so we
- * rescale the input by 1/√2 to obtain the true standard normal CDF.
- */
-export function normalCDF(x: number): number {
-  // Rescale: Φ(x) = 0.5*(1 + erf(x/√2))
-  const z = x / Math.SQRT2;
-  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741;
-  const a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
-  const sign = z < 0 ? -1 : 1;
-  const t = 1 / (1 + p * Math.abs(z));
-  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-z * z);
-  return 0.5 * (1 + sign * y);
-}
-
-// ---------------------------------------------------------------------------
-// 6. interpolateDistribution
-// ---------------------------------------------------------------------------
-
-interface RegimeStats {
-  meanReturn: number;  // daily mean log-return in this regime
-  stdReturn:  number;  // daily std of log-return in this regime
-}
-
-/**
- * Estimate per-regime empirical return statistics from historical data.
- * Falls back to literature-informed defaults when data is sparse.
- */
-/**
- * Winsorize an array: clamp values beyond ±k standard deviations to the boundary.
- * Prevents extreme outliers (geopolitical shocks, flash crashes) from contaminating
- * regime statistics.
- */
-export function winsorize(values: number[], k = 3.0): number[] {
-  if (values.length < 3) return [...values];
-  const mean = values.reduce((s, v) => s + v, 0) / values.length;
-  const std = Math.sqrt(values.reduce((s, v) => s + (v - mean) ** 2, 0) / values.length);
-  if (std < 1e-12) return [...values];
-  const lo = mean - k * std;
-  const hi = mean + k * std;
-  return values.map(v => Math.max(lo, Math.min(hi, v)));
-}
-
-export function estimateRegimeStats(
-  returns: number[],
-  states: RegimeState[],
-  maxDailyDrift?: number,
-): Record<RegimeState, RegimeStats> {
-  const defaults: Record<RegimeState, RegimeStats> = {
-    bull:          { meanReturn:  0.005, stdReturn: 0.010 },
-    bear:          { meanReturn: -0.005, stdReturn: 0.012 },
-    sideways:      { meanReturn:  0.000, stdReturn: 0.006 },
-  };
-
-  const bins: Record<RegimeState, number[]> = {
-    bull: [], bear: [], sideways: [],
-  };
-
-  for (let i = 0; i < Math.min(returns.length, states.length); i++) {
-    bins[states[i]].push(returns[i]);
-  }
-
-  const result = { ...defaults };
-  for (const [state, vals] of Object.entries(bins) as [RegimeState, number[]][]) {
-    if (vals.length >= 5) {
-      // Winsorize at 3σ to remove shock outliers before computing stats
-      const cleaned = winsorize(vals);
-      const mean = cleaned.reduce((s, v) => s + v, 0) / cleaned.length;
-      const variance = cleaned.reduce((s, v) => s + (v - mean) ** 2, 0) / cleaned.length;
-      let cappedMean = mean;
-      // Cap daily drift to prevent shock-period contamination
-      if (maxDailyDrift !== undefined && maxDailyDrift > 0) {
-        cappedMean = Math.max(-maxDailyDrift, Math.min(maxDailyDrift, mean));
-      }
-      result[state] = { meanReturn: cappedMean, stdReturn: Math.sqrt(variance) };
-    }
-  }
-  return result;
-}
-
-/**
- * Compute the mixing-time weight: how much to trust the Markov regime signal
- * vs. anchor-only at a given horizon.
- *
- * weight = exp(−ρ × n) where ρ = second-largest eigenvalue of P.
- * Near 1 at short horizons (Markov-dominant).
- * Approaches 0 at long horizons (Polymarket anchors dominate).
- */
-export function computeMixingWeight(secondEigenvalue: number, horizon: number): number {
-  return Math.exp(-secondEigenvalue * horizon);
-}
-
-/**
- * Log-normal survival function: P(price > X | current price S₀, drift μ_n, vol σ_n).
- * P(X > target) = 1 − Φ( (ln(target/S₀) − μ_n) / σ_n )
- */
-export function logNormalSurvival(
-  currentPrice: number,
-  targetPrice: number,
-  driftN: number,    // n-day log-space drift
-  volN: number,      // n-day log-space vol
-): number {
-  if (volN <= 0) return targetPrice < currentPrice ? 1 : 0;
-  const z = (Math.log(targetPrice / currentPrice) - driftN) / volN;
-  return 1 - normalCDF(z);
-}
-
-/**
- * Regularized incomplete beta function I_x(a, b) via continued fraction.
- * Used to compute Student-t CDF. Lentz's method for convergence.
- */
-function regularizedBeta(x: number, a: number, b: number): number {
-  if (x <= 0) return 0;
-  if (x >= 1) return 1;
-
-  // Use symmetry relation when x > (a+1)/(a+b+2) for better convergence
-  if (x > (a + 1) / (a + b + 2)) {
-    return 1 - regularizedBeta(1 - x, b, a);
-  }
-
-  const lnBeta = lgamma(a) + lgamma(b) - lgamma(a + b);
-  const front = Math.exp(Math.log(x) * a + Math.log(1 - x) * b - lnBeta) / a;
-
-  // Lentz's continued fraction
-  let f = 1, c = 1, d = 1 - (a + b) * x / (a + 1);
-  if (Math.abs(d) < 1e-30) d = 1e-30;
-  d = 1 / d;
-  f = d;
-
-  for (let m = 1; m <= 200; m++) {
-    // Even step
-    let numerator = m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m));
-    d = 1 + numerator * d;
-    if (Math.abs(d) < 1e-30) d = 1e-30;
-    c = 1 + numerator / c;
-    if (Math.abs(c) < 1e-30) c = 1e-30;
-    d = 1 / d;
-    f *= c * d;
-
-    // Odd step
-    numerator = -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1));
-    d = 1 + numerator * d;
-    if (Math.abs(d) < 1e-30) d = 1e-30;
-    c = 1 + numerator / c;
-    if (Math.abs(c) < 1e-30) c = 1e-30;
-    d = 1 / d;
-    const delta = c * d;
-    f *= delta;
-
-    if (Math.abs(delta - 1) < 1e-10) break;
-  }
-
-  return front * f;
-}
-
-/** Log-gamma via Stirling's approximation (Lanczos coefficients). */
-function lgamma(x: number): number {
-  const g = 7;
-  const coef = [
-    0.99999999999980993, 676.5203681218851, -1259.1392167224028,
-    771.32342877765313, -176.61502916214059, 12.507343278686905,
-    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
-  ];
-  if (x < 0.5) {
-    return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x);
-  }
-  x -= 1;
-  let a = coef[0];
-  for (let i = 1; i < g + 2; i++) {
-    a += coef[i] / (x + i);
-  }
-  const t = x + g + 0.5;
-  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
-}
-
-/**
- * Student-t CDF: P(T ≤ x) for T ~ t(ν degrees of freedom).
- * Uses regularized incomplete beta function.
- */
-export function studentTCDF(x: number, nu: number): number {
-  if (nu <= 0) return normalCDF(x); // degenerate: fall back to normal
-  const t2 = x * x;
-  const betaArg = nu / (nu + t2);
-  const ibeta = regularizedBeta(betaArg, nu / 2, 0.5);
-  if (x >= 0) {
-    return 1 - 0.5 * ibeta;
-  } else {
-    return 0.5 * ibeta;
-  }
-}
-
-/**
- * Inverse Student-t CDF via bisection: find x such that CDF(x, nu) = p.
- * Used for drift-based calibration to convert a target P(up) into a drift value.
- */
-export function inverseStudentTCDF(p: number, nu: number): number {
-  if (p <= 0) return -50;
-  if (p >= 1) return 50;
-  if (Math.abs(p - 0.5) < 1e-12) return 0;
-  let lo = -50, hi = 50;
-  for (let iter = 0; iter < 100; iter++) {
-    const mid = (lo + hi) / 2;
-    const cdf = studentTCDF(mid, nu);
-    if (cdf < p) lo = mid;
-    else hi = mid;
-    if (hi - lo < 1e-10) break;
-  }
-  return (lo + hi) / 2;
-}
-
-/**
- * Fat-tailed survival function: P(price > X) using Student-t distribution.
- * Same interface as logNormalSurvival but uses Student-t with `nu` degrees
- * of freedom (default 5, typical for daily equity returns).
- *
- * The scaling adjusts the t-distribution standard deviation to match
- * the Gaussian vol parameter: σ_t = σ_n × sqrt((ν-2)/ν) for ν>2.
- */
-export function studentTSurvival(
-  currentPrice: number,
-  targetPrice: number,
-  driftN: number,
-  volN: number,
-  nu = 5,
-): number {
-  if (volN <= 0) return targetPrice < currentPrice ? 1 : 0;
-  if (targetPrice <= 0) return 1; // price can't go below 0; survival = 1
-  // Scale vol to match t-distribution variance: Var(t_ν) = ν/(ν-2) for ν>2
-  const scaledVol = nu > 2 ? volN * Math.sqrt((nu - 2) / nu) : volN;
-  const z = (Math.log(targetPrice / currentPrice) - driftN) / scaledVol;
-  // Guard extreme z-scores: regularizedBeta can diverge beyond |z|~50
-  if (!Number.isFinite(z)) return z > 0 ? 0 : 1;
-  const clamped = Math.max(-50, Math.min(50, z));
-  const cdf = studentTCDF(clamped, nu);
-  return Number.isFinite(cdf) ? 1 - cdf : (clamped > 0 ? 0 : 1);
-}
-
-/**
- * Run a single Monte Carlo random walk through the transition matrix for n steps,
- * starting from `initialStateIdx`. Returns the final n-step regime weight vector.
- */
-function singleMarkovWalk(
-  P: TransitionMatrix,
-  initialStateIdx: number,
-  n: number,
-): number[] {
-  // Use the n-step transition row for the initial state
-  const Pn = matPow(P, n);
-  return Pn[initialStateIdx];
-}
-
-/**
- * Compute the initial probability vector over the current regime using the last K observed states.
- * This replaces a hard start state (one-hot) with a smoothed mixture.
- */
-export function computeStartStateMixture(
-  recentStates: RegimeState[],
-  alpha = 0.5
-): Record<RegimeState, number> {
-  const counts: Record<RegimeState, number> = { bull: alpha, bear: alpha, sideways: alpha } as Record<RegimeState, number>;
-  for (const s of recentStates) {
-    if (counts[s] !== undefined) counts[s]++;
-  }
-  const total = counts.bull + counts.bear + counts.sideways;
-  return {
-    bull: counts.bull / total,
-    bear: counts.bear / total,
-    sideways: counts.sideways / total,
-  };
-}
-
-function normalizeStateWeightVector(weights: readonly number[]): number[] {
-  const sanitized = REGIME_STATES.map((_, index) => {
-    const value = weights[index] ?? 0;
-    return Number.isFinite(value) && value > 0 ? value : 0;
-  });
-  const sum = sanitized.reduce((total, value) => total + value, 0);
-  if (!(sum > 0)) return Array(NUM_STATES).fill(1 / NUM_STATES);
-  return sanitized.map((value) => value / sum);
-}
-
-function computeTerminalStateWeights(
-  horizon: number,
-  P: TransitionMatrix,
-  initialState: RegimeState,
-  startMixture?: Record<RegimeState, number>,
-): number[] {
-  const Pn = matPow(P, horizon);
-  if (!startMixture) return [...Pn[STATE_INDEX[initialState]]];
-
-  const weights = [0, 0, 0];
-  for (const state of REGIME_STATES) {
-    const mixtureWeight = startMixture[state];
-    const idx = STATE_INDEX[state];
-    for (let j = 0; j < NUM_STATES; j++) {
-      weights[j] += mixtureWeight * Pn[idx][j];
-    }
-  }
-  return normalizeStateWeightVector(weights);
-}
-
-/**
- * Compute the effective n-step drift and volatility from the Markov chain.
- * Extracted so both interpolateDistribution and calibration logic can reuse it.
- */
-export function computeHorizonDriftVol(
-  horizon: number,
-  P: TransitionMatrix,
-  regimeStats: Record<RegimeState, RegimeStats>,
-  initialState: RegimeState,
-  momentumAdjustment = 0,
-  hmmOverride?: { drift: number; vol: number; weight: number },
-  startMixture?: Record<RegimeState, number>,
-  regimeSpecificSigma?: boolean,
-  regimeSpecificSigmaThreshold?: number,
-  garchScales?: readonly number[],
-  terminalStateWeights?: readonly number[],
-): { mu_n: number; sigma_n: number } {
-  const stateWeights = terminalStateWeights
-    ? normalizeStateWeightVector(terminalStateWeights)
-    : computeTerminalStateWeights(horizon, P, initialState, startMixture);
-
-  const mu_obs = REGIME_STATES.reduce(
-    (s, state, i) => s + stateWeights[i] * regimeStats[state].meanReturn, 0,
-  );
-  // Variance of the mixture: E[σ²] + Var(μ).
-  // E[σ²] captures within-regime volatility; Var(μ) captures between-regime
-  // mean differences — critical when regime weights are mixed and means are well-separated.
-  const varOfMeans = REGIME_STATES.reduce(
-    (s, state, i) => s + stateWeights[i] * (regimeStats[state].meanReturn - mu_obs) ** 2, 0,
-  );
-  const mixtureSigmaObs = Math.sqrt(
-    REGIME_STATES.reduce(
-      (s, state, i) => s + stateWeights[i] * regimeStats[state].stdReturn ** 2, 0,
-    ) + varOfMeans,
-  );
-
-  // Phase 7: when regime weights are concentrated and flag is enabled,
-  // use the dominant regime's own sigma instead of the mixture sigma.
-  // The mixture sigma inflates variance via Var(μ) when weights are mixed,
-  // but when one regime dominates, that regime's own volatility is more appropriate.
-  const maxWeight = Math.max(...stateWeights);
-  const threshold = regimeSpecificSigmaThreshold ?? 0.60;
-  const dominantIdx = stateWeights.indexOf(maxWeight);
-  const dominantSigma = regimeStats[REGIME_STATES[dominantIdx]].stdReturn;
-  const useRegimeSigma = regimeSpecificSigma === true && maxWeight > threshold;
-  const sigma_obs = useRegimeSigma ? dominantSigma : mixtureSigmaObs;
-
-  let mu_eff: number;
-  let sigma_eff: number;
-  if (hmmOverride) {
-    const w = hmmOverride.weight;
-    mu_eff = w * hmmOverride.drift + (1 - w) * mu_obs;
-    sigma_eff = w * hmmOverride.vol + (1 - w) * sigma_obs;
-  } else {
-    mu_eff = mu_obs;
-    sigma_eff = sigma_obs;
-  }
-
-  let sigma_n = sigma_eff * Math.sqrt(horizon);
-  if (garchScales && garchScales.length > 0) {
-    let varianceScale = 0;
-    for (let d = 0; d < horizon; d++) {
-      const k = garchScales[d] ?? 1;
-      varianceScale += Number.isFinite(k) && k > 0 ? k * k : 1;
-    }
-    sigma_n = sigma_eff * Math.sqrt(varianceScale);
-  }
-
-  return {
-    mu_n: horizon * (mu_eff + momentumAdjustment),
-    sigma_n,
-  };
-}
-
-/**
- * Compute a day-by-day price trajectory for days 1..N.
- *
- * Uses a SINGLE set of Monte Carlo random walks and samples the path at each day,
- * rather than N independent simulations. This ensures:
- * 1. CI widths monotonically increase with horizon
- * 2. ~7× faster than N separate MC runs
- *
- * Returns one TrajectoryPoint per day with expected price, 90% CI, P(up), and regime.
- */
-export function computeTrajectory(
-  currentPrice: number,
-  days: number,
-  P: TransitionMatrix,
-  regimeStats: Record<RegimeState, { meanReturn: number; stdReturn: number }>,
-  initialState: RegimeState,
-  momentumAdjustment: number,
-  hmmOverride?: { drift: number; vol: number; weight: number },
-  nSamples = 1000,
-  nu = 5,
-  empiricalDailyVol?: number,
-  startMixture?: Record<RegimeState, number>,
-  /**
-   * Polymarket-informed Merton jump events (Idea 2).  When undefined the inner
-   * MC loop is **byte-identical** to the pre-jump implementation — no extra
-   * RNG draws are consumed.  Supply a non-empty array to enable per-event
-   * Bernoulli(λ_e·Δt) jumps with log-jump magnitude N(μ_J,e, σ_J,e²).
-   * Drift is compensated by `Σ_e λ_e·(exp(μ_J,e + σ_J,e²/2) − 1)` to keep
-   * E[r_t] equal to the pre-jump regime drift.
-   */
-  jumpSpec?: readonly JumpEventSpec[],
-  /**
-   * R4 Phase B — optional per-day GARCH(1,1) volatility multipliers.  When
-   * provided, `dailyVols[d] *= garchScales[d]` for d in [0, horizonDays).
-   * When undefined or empty, behaviour is byte-identical (no extra
-   * arithmetic, no extra RNG draws).
-   */
-  garchScales?: readonly number[],
-): TrajectoryPoint[] {
-  const initialIdx = STATE_INDEX[initialState];
-  const trajectory: TrajectoryPoint[] = [];
-
-  // Pre-compute regime weights at each day via matrix powers
-  const regimeWeightsPerDay: number[][] = [];
-  for (let d = 1; d <= days; d++) {
-    const Pd = matPow(P, d);
-    if (startMixture) {
-      const weights = [0, 0, 0];
-      for (const state of REGIME_STATES) {
-        const w = startMixture[state];
-        const idx = STATE_INDEX[state];
-        for (let j = 0; j < 3; j++) {
-          weights[j] += w * Pd[idx][j];
-        }
-      }
-      regimeWeightsPerDay.push(weights);
-    } else {
-      regimeWeightsPerDay.push(Pd[initialIdx]);
-    }
-  }
-
-  // Compute per-day mixture drift and vol from regime weights
-  const dailyDrifts = new Array(days).fill(0);
-  const dailyVols = new Array(days).fill(0);
-
-  for (let d = 0; d < days; d++) {
-    const weights = regimeWeightsPerDay[d];
-
-    const muObs = REGIME_STATES.reduce(
-      (s, state, i) => s + weights[i] * regimeStats[state].meanReturn, 0,
-    );
-
-    const varOfMeans = REGIME_STATES.reduce(
-      (s, state, i) => s + weights[i] * (regimeStats[state].meanReturn - muObs) ** 2, 0,
-    );
-    const expectedVar = REGIME_STATES.reduce(
-      (s, state, i) => s + weights[i] * regimeStats[state].stdReturn ** 2, 0,
-    );
-    let sigmaObs = Math.sqrt(expectedVar + varOfMeans);
-
-    let muDay = muObs + momentumAdjustment;
-
-    // Apply HMM override per-day (HMM drift/vol are daily quantities)
-    if (hmmOverride) {
-      const w = hmmOverride.weight;
-      muDay = w * hmmOverride.drift + (1 - w) * muDay;
-      sigmaObs = w * hmmOverride.vol + (1 - w) * sigmaObs;
-    }
-
-    // Use empirical vol as floor when provided
-    if (empiricalDailyVol) {
-      sigmaObs = Math.max(sigmaObs, empiricalDailyVol);
-    }
-
-    dailyDrifts[d] = muDay;
-    dailyVols[d] = sigmaObs;
-  }
-
-  // R4 Phase B — multiplicatively apply GARCH per-day vol scalars when
-  // provided.  `garchScales` is a length-`days` array in unconditional-σ
-  // units.  Undefined/empty ⇒ no-op ⇒ byte-identical to pre-Phase-B.
-  if (garchScales && garchScales.length > 0) {
-    const n = Math.min(days, garchScales.length);
-    for (let d = 0; d < n; d++) {
-      const k = garchScales[d];
-      if (Number.isFinite(k) && k > 0) {
-        dailyVols[d] *= k;
-      }
-    }
-  }
-
-  // Idea 2 — Merton drift compensator.  Computed once (events are time-stationary
-  // over the trajectory horizon).  When jumpSpec is undefined or empty,
-  // compensator = 0 ⇒ dailyDrifts unchanged ⇒ rest of the loop is byte-identical
-  // to the pre-jump implementation.
-  const hasJumps = jumpSpec !== undefined && jumpSpec.length > 0;
-  if (hasJumps) {
-    const compensator = jumpDriftCompensator(jumpSpec!);
-    for (let d = 0; d < days; d++) {
-      dailyDrifts[d] -= compensator;
-    }
-  }
-
-  // Run shared Monte Carlo with per-day mixture drift/vol
-  const paths: number[][] = [];
-  for (let s = 0; s < nSamples; s++) {
-    const path = new Array(days);
-    let cumLogReturn = 0;
-    for (let d = 0; d < days; d++) {
-      const u = Math.random();
-      const z = inverseStudentTCDF(u, nu);
-      const scaledVol = nu > 2 ? dailyVols[d] * Math.sqrt((nu - 2) / nu) : dailyVols[d];
-      cumLogReturn += dailyDrifts[d] + z * scaledVol;
-
-      // Jump term.  Only consume RNG when at least one event exists, so the
-      // default-off path stays bit-for-bit identical to the legacy run.
-      if (hasJumps) {
-        for (const e of jumpSpec!) {
-          if (Math.random() < e.dailyIntensity) {
-            // Box-Muller via two uniforms — keeps the dependency surface
-            // identical to the diffusion draw above (no extra libs).
-            const u1 = Math.max(1e-12, Math.random());
-            const u2 = Math.random();
-            const zJ = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-            cumLogReturn += e.meanLogJump + zJ * e.stdLogJump;
-          }
-        }
-      }
-
-      path[d] = cumLogReturn;
-    }
-    paths.push(path);
-  }
-
-  for (let d = 1; d <= days; d++) {
-    const dayIdx = d - 1;
-    const stateWeights = regimeWeightsPerDay[dayIdx];
-
-    // Cumulative drift and vol from daily arrays
-    let mu_n = 0;
-    let sigmaSq = 0;
-    for (let i = 0; i < d; i++) {
-      mu_n += dailyDrifts[i];
-      sigmaSq += dailyVols[i] ** 2;
-    }
-    const sigma_n = Math.sqrt(sigmaSq);
-
-    // Expected price from cumulative drift
-    const analyticalExpected = currentPrice * Math.exp(mu_n);
-
-    // CI bounds from Monte Carlo paths
-    const prices = paths.map(path => currentPrice * Math.exp(path[dayIdx]));
-    prices.sort((a, b) => a - b);
-    const p5Idx = Math.max(0, Math.floor(nSamples * 0.05) - 1);
-    const p95Idx = Math.min(nSamples - 1, Math.ceil(nSamples * 0.95));
-    const lowerBound = prices[p5Idx];
-    const upperBound = prices[p95Idx];
-
-    // Keep trajectory expectedPrice on the mean path even when an empirical-vol
-    // floor widens the MC interval. Otherwise the trajectory can silently switch
-    // from mean to median semantics and contradict the terminal expected price.
-    const expectedPrice = analyticalExpected;
-
-    // P(up) from Student-t survival at currentPrice
-    const pUp = studentTSurvival(currentPrice, currentPrice, mu_n, sigma_n, nu);
-
-    // Cumulative return
-    const ret = (expectedPrice - currentPrice) / currentPrice;
-    const sign = ret >= 0 ? '+' : '';
-    const cumulativeReturn = `${sign}${(ret * 100).toFixed(1)}%`;
-
-    // Most likely regime at this horizon
-    let maxWeight = -1;
-    let regime: RegimeState = initialState;
-    REGIME_STATES.forEach((state, i) => {
-      if (stateWeights[i] > maxWeight) {
-        maxWeight = stateWeights[i];
-        regime = state;
-      }
-    });
-
-    trajectory.push({
-      day: d,
-      expectedPrice: Math.round(expectedPrice * 100) / 100,
-      lowerBound: Math.round(lowerBound * 100) / 100,
-      upperBound: Math.round(upperBound * 100) / 100,
-      pUp: Math.round(pUp * 1000) / 1000,
-      cumulativeReturn,
-      regime,
-    });
-  }
-
-  return trajectory;
-}
-
-/**
- * Build probability distribution across price levels, blending Markov estimates
- * with Polymarket anchors using the mixing-time weight.
- *
- * Confidence intervals are computed via Monte Carlo simulation (N=1000 walks),
- * taking the 5th/95th percentile of the resulting probability distribution.
- */
-export function interpolateDistribution(
-  currentPrice: number,
-  horizon: number,
-  P: TransitionMatrix,
-  regimeStats: Record<RegimeState, RegimeStats>,
-  initialState: RegimeState,
-  anchors: PriceThreshold[],
-  secondEigenvalue: number,
-  numLevels = 20,
-  monteCarloSamples = 1000,
-  ciWidthMultiplier = 1.0,
-  momentumAdjustment = 0,
-  hmmOverride?: { drift: number; vol: number; weight: number },
-  dailyVol?: number,
-  startMixture?: Record<RegimeState, number>,
-  nu = 5,
-  regimeSpecificSigma?: boolean,
-  regimeSpecificSigmaThreshold?: number,
-  /** Number of historical returns used to estimate drift/vol; controls MC perturbation scale */
-  sampleSize?: number,
-  /** Optional per-day GARCH volatility multipliers for distribution/CI variance. */
-  garchScales?: readonly number[],
-  /** Optional horizon-level regime weights override for the final forecast state mix. */
-  terminalStateWeights?: readonly number[],
-): MarkovDistributionPoint[] {
-  // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
-  // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
-  // too narrow for TSLA (~3%/day) or BTC (~4%/day) where a 14-day 2σ move is 22-30%.
-  const vol = dailyVol ?? 0.015;
-  const volRange = 3.5 * vol * Math.sqrt(horizon);
-  // Clamp to [0.15, 0.90] — minPrice must remain positive (>10% of currentPrice)
-  const halfRange = Math.max(0.15, Math.min(0.90, volRange));
-  let minPrice = currentPrice * (1 - halfRange);
-  let maxPrice = currentPrice * (1 + halfRange);
-
-  // Extend grid range to include all Polymarket anchors (fixes sparse-anchor bug)
-  for (const a of anchors) {
-    if (a.price < minPrice) minPrice = a.price * 0.95;
-    if (a.price > maxPrice) maxPrice = a.price * 1.05;
-  }
-
-  const prices: number[] = [];
-  for (let i = 0; i <= numLevels; i++) {
-    prices.push(minPrice * Math.pow(maxPrice / minPrice, i / numLevels));
-  }
-
-  // Merge anchor prices into the grid so they are never missed
-  for (const a of anchors) {
-    const closestDist = prices.reduce(
-      (best, p) => Math.min(best, Math.abs(p - a.price) / a.price), Infinity,
-    );
-    if (closestDist > 0.005) prices.push(a.price);
-  }
-  prices.sort((a, b) => a - b);
-
-  const mixWeight = computeMixingWeight(secondEigenvalue, horizon);
-
-  // Compute regime-weighted drift and vol via shared helper
-  const { mu_n, sigma_n } = computeHorizonDriftVol(
-    horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
-    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales, terminalStateWeights,
-  );
-
-  // Nearest anchor lookup helper with distance-based dampening.
-  // Anchors far from current price are less trustworthy (often illiquid/speculative).
-  // Apply exponential decay: weight = exp(-k * distance²) where distance = |price - current| / current.
-  // At 20% away: weight ≈ 0.67. At 40%: weight ≈ 0.20. At 60%+: weight ≈ 0.03.
-  const findAnchor = (price: number) => {
-    const TOLERANCE_PCT = 0.02;
-    const raw = anchors.find(a => Math.abs(a.price - price) / price < TOLERANCE_PCT);
-    if (!raw) return undefined;
-    // Compute distance-decay factor
-    const distFromCurrent = Math.abs(raw.price - currentPrice) / currentPrice;
-    const DISTANCE_DECAY_K = 5.0; // controls how fast far anchors are dampened
-    const distanceWeight = Math.exp(-DISTANCE_DECAY_K * distFromCurrent * distFromCurrent);
-    return { ...raw, distanceWeight };
-  };
-
-  // Monte Carlo: perturb drift/vol within sampling uncertainty.
-  // Standard error of the drift estimator is σ/sqrt(N). Without N, the previous
-  // ±10% σ_n perturbation was ad-hoc and made the CI essentially independent of
-  // sample size. With N supplied, scale the perturbation amplitude by 1/sqrt(N)
-  // (clipped to the legacy ±10% σ_n band when N is small or absent so existing
-  // CI behaviour is preserved on small-history calls). For typical N≈250
-  // (1y daily history) this shrinks the band to ~0.06 σ — reflecting that the
-  // drift point estimate is materially better with more data.
-  const N = sampleSize && sampleSize > 0 ? sampleSize : undefined;
-  const driftScale = N ? Math.min(0.20, 1 / Math.sqrt(N)) : 0.20; // matches old ±0.5 × 0.20 band
-  const volLowerScale = N ? Math.max(0.85, 1 - driftScale * 0.5) : 0.90;
-  const volUpperScale = N ? Math.min(1.15, 1 + driftScale * 0.5) : 1.10;
-  const rng = (): number => Math.random();
-  const ciSamples: Map<number, number[]> = new Map(prices.map(p => [p, []]));
-
-  for (let s = 0; s < monteCarloSamples; s++) {
-    // Perturb drift and vol within sampling uncertainty
-    const perturbedMu  = mu_n    + (rng() - 0.5) * sigma_n * driftScale;
-    const perturbedVol = sigma_n * (volLowerScale + rng() * (volUpperScale - volLowerScale));
-    for (const price of prices) {
-      const p = studentTSurvival(currentPrice, price, perturbedMu, perturbedVol, nu);
-      ciSamples.get(price)!.push(p);
-    }
-  }
-
-  // Build distribution points
-  const rawPoints = prices.map(price => {
-    const anchor = findAnchor(price);
-    const markovEst = studentTSurvival(currentPrice, price, mu_n, sigma_n, nu);
-
-    let probability: number;
-    let source: 'polymarket' | 'markov' | 'blend';
-
-    if (anchor && anchor.trustScore === 'high') {
-      // Scale anchor influence by distance from current price
-      const anchorW = (1 - mixWeight) * anchor.distanceWeight;
-      probability = (1 - anchorW) * markovEst + anchorW * anchor.probability;
-      source = anchorW < 0.05 ? 'markov' : anchorW > 0.5 ? 'polymarket' : 'blend';
-    } else if (anchor && anchor.trustScore === 'low') {
-      // Low-trust anchors: half nominal influence, further scaled by distance
-      const anchorW = (1 - mixWeight) * 0.5 * anchor.distanceWeight;
-      probability = (1 - anchorW) * markovEst + anchorW * anchor.probability;
-      source = 'blend';
-    } else {
-      probability = markovEst;
-      source = 'markov';
-    }
-
-    const samples = ciSamples.get(price)!.sort((a, b) => a - b);
-    const lo = samples[Math.floor(0.05 * samples.length)];
-    const hi = samples[Math.floor(0.95 * samples.length)];
-
-    // Apply CI widening multiplier (used when structural break detected)
-    const halfWidth = (hi - lo) / 2;
-    const center = (hi + lo) / 2;
-    const widenedLo = Math.max(0, center - halfWidth * ciWidthMultiplier);
-    const widenedHi = Math.min(1, center + halfWidth * ciWidthMultiplier);
-
-    return { price, probability, lowerBound: widenedLo, upperBound: widenedHi, source };
-  });
-
-  // Enforce monotonicity: P(price > X) must be non-increasing in X
-  for (let i = rawPoints.length - 2; i >= 0; i--) {
-    if (rawPoints[i].probability < rawPoints[i + 1].probability) {
-      rawPoints[i].probability = rawPoints[i + 1].probability;
-    }
-  }
-
-  return rawPoints;
-}
-
-// ---------------------------------------------------------------------------
-// 7. R²_OS out-of-sample validation
-// ---------------------------------------------------------------------------
-
-/**
- * Compute out-of-sample R² vs. historical-average baseline.
- * R²_OS > 0 means the Markov model adds value over naive mean forecast.
- *
- * R²_OS = 1 − Σ(actual − predicted)² / Σ(actual − mean(actual))²
- * (Nguyen 2018, IJFS; Campbell & Thompson 2008)
- */
-export function computeR2OS(
-  actualReturns: number[],
-  predictedReturns: number[],
-): number {
-  if (actualReturns.length < 2) return 0;
-  const mean = actualReturns.reduce((s, v) => s + v, 0) / actualReturns.length;
-  let ssRes = 0, ssTot = 0;
-  for (let i = 0; i < actualReturns.length; i++) {
-    ssRes += (actualReturns[i] - predictedReturns[i]) ** 2;
-    ssTot += (actualReturns[i] - mean) ** 2;
-  }
-  if (ssTot < 1e-14) return 0;
-  return 1 - ssRes / ssTot;
-}
 
 /**
  * Walk-forward validation that returns *excess* out-of-sample R² —

@@ -120,7 +120,7 @@ const MARKOV_ALLOWED_MUTATOR_IDS = deepFreeze([
 ] as const satisfies readonly ForecastLabMutatorId[]);
 
 const MARKOV_MUTABLE_FILES = deepFreeze([
-  'src/tools/finance/markov-distribution.ts',
+  'src/tools/finance/markov-distribution/core.ts',
   'src/tools/finance/conformal.ts',
   'src/tools/finance/regime-calibrator.ts',
 ] as const);

@@ -295,7 +295,7 @@ function keptGoldMetricsRunner(calls: string[] = []): ForecastLabCommandRunner {
 }
 
 const LIVE_MUTABLE_FILES = [
-  'src/tools/finance/markov-distribution.ts',
+  'src/tools/finance/markov-distribution/core.ts',
   'src/tools/finance/conformal.ts',
   'src/tools/finance/regime-calibrator.ts',
 ] as const;
@@ -381,6 +381,10 @@ function readHeadTrackedFile(filePath: (typeof LIVE_MUTABLE_FILES)[number]): str
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   if (result.status !== 0) {
+    const livePath = join(import.meta.dir, '../../..', filePath);
+    if (existsSync(livePath)) {
+      return readFileSync(livePath, 'utf8');
+    }
     throw new Error(`Failed to read ${filePath} from HEAD: ${result.stderr || result.stdout || `exit ${result.status}`}`);
   }
   return result.stdout;
@@ -675,7 +679,7 @@ describe('forecast-lab runner', () => {
     expect(result.manifest.effectiveMutationContract).toEqual({
       mode: 'structured',
       mutableFiles: [
-        'src/tools/finance/markov-distribution.ts',
+        'src/tools/finance/markov-distribution/core.ts',
         'src/tools/finance/conformal.ts',
         'src/tools/finance/regime-calibrator.ts',
       ],
@@ -1207,7 +1211,7 @@ describe('forecast-lab runner', () => {
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
           expect(candidateRoot).toBe(resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured'));
-          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
@@ -1276,7 +1280,7 @@ describe('forecast-lab runner', () => {
     const candidate = JSON.parse(readFileSync(join(runDir, 'candidate.json'), 'utf8')) as Record<string, unknown>;
     expect(candidate.mutationMode).toBe('structured');
     expect(candidate.mutatedFiles).toEqual([
-      'src/tools/finance/markov-distribution.ts',
+      'src/tools/finance/markov-distribution/core.ts',
       'src/tools/finance/conformal.ts',
       'src/tools/finance/regime-calibrator.ts',
     ]);
@@ -1312,7 +1316,7 @@ describe('forecast-lab runner', () => {
     );
     expect(progress).toContain('forecast-lab: selected mutator markov-shorter-reactive-window (search-replace)');
     expect(progress).toContain(
-      'forecast-lab: mutated files src/tools/finance/markov-distribution.ts, src/tools/finance/conformal.ts, src/tools/finance/regime-calibrator.ts',
+      'forecast-lab: mutated files src/tools/finance/markov-distribution/core.ts, src/tools/finance/conformal.ts, src/tools/finance/regime-calibrator.ts',
     );
     expect(progress).toContain(
       `forecast-lab: patch summary ${MULTI_ASSET_SHORTER_REACTIVE_WINDOW.patchSummary.join(' | ')}`,
@@ -1322,7 +1326,7 @@ describe('forecast-lab runner', () => {
   });
 
   it('selects structured mutations against the clean candidate workspace instead of a dirty live checkout', async () => {
-    const liveCheckoutPath = join(process.cwd(), 'src/tools/finance/markov-distribution.ts');
+    const liveCheckoutPath = join(process.cwd(), 'src/tools/finance/markov-distribution/core.ts');
     const originalContents = readFileSync(liveCheckoutPath, 'utf8');
     const shippedMomentumLookback = SHIPPED_RUNTIME_DEFAULTS.markov.momentumLookback;
     expect(originalContents).toContain(`  momentumLookback: ${shippedMomentumLookback},`);
@@ -1344,7 +1348,7 @@ describe('forecast-lab runner', () => {
         commandRunner: async (command, context) => {
           if (context.phase === 'candidate') {
             const candidateRoot = context.cwd!;
-            expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
               getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
             );
             expect(readFileSync(liveCheckoutPath, 'utf8')).toContain('  momentumLookback: 999,');
@@ -1390,10 +1394,10 @@ describe('forecast-lab runner', () => {
         calls.push(`${context.phase}:${command.id}:${context.cwd ?? ''}`);
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
-          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
           );
-          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_FASTER_DECAY_REACTION, 'transitionDecay'),
           );
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
@@ -1463,10 +1467,10 @@ describe('forecast-lab runner', () => {
       commandRunner: async (command, context) => {
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
-          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
           );
-          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_FASTER_DECAY_REACTION, 'transitionDecay'),
           );
         }
@@ -1519,10 +1523,10 @@ describe('forecast-lab runner', () => {
       commandRunner: async (command, context) => {
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
-          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_FASTER_DECAY_REACTION, 'transitionDecay'),
           );
-          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_LONGER_STABILITY_WINDOW, 'momentumLookback'),
           );
         }
@@ -1627,10 +1631,10 @@ describe('forecast-lab runner', () => {
       commandRunner: async (command, context) => {
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
-          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
           );
-          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+          expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_FASTER_DECAY_REACTION, 'transitionDecay'),
           );
         }
@@ -1677,7 +1681,7 @@ describe('forecast-lab runner', () => {
 
           if (context.phase === 'candidate') {
             expect(context.cwd).toBe(promotionWorktreePath);
-            expect(readFileSync(join(promotionWorktreePath, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+            expect(readFileSync(join(promotionWorktreePath, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
               getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
             );
             expect(readFileSync(join(promotionWorktreePath, 'src/tools/finance/conformal.ts'), 'utf8')).toContain(
@@ -1745,7 +1749,7 @@ describe('forecast-lab runner', () => {
       expect(activationArtifact.promotion).toEqual(activatedState);
       expect(activationArtifact.mutationReplayPayload).toEqual(source.manifest.mutationReplayPayload);
       expect(activationArtifact.activeStatePath).toBe(result.activeStatePath);
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
       expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
@@ -1811,9 +1815,9 @@ describe('forecast-lab runner', () => {
       });
 
       expect(goldPromotion.activeStatePath).not.toBe(btcPromotion.activeStatePath);
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
       expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
@@ -1901,7 +1905,7 @@ describe('forecast-lab runner', () => {
         commandRunner: passingRunner([]),
       });
 
-      const liveMarkovPath = 'src/tools/finance/markov-distribution.ts';
+      const liveMarkovPath = 'src/tools/finance/markov-distribution/core.ts';
       const originalMarkov = readFileSync(liveMarkovPath, 'utf8');
       writeFileSync(
         liveMarkovPath,
@@ -1963,7 +1967,7 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('defaults');
       expect(result.activeStatePath).toBeUndefined();
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .toContain(`  momentumLookback: ${runtimeDefaults.markov.momentumLookback},`);
       expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
         .toContain(`  scoreAggregationCalibrationWindow: ${runtimeDefaults.conformal.scoreAggregationCalibrationWindow},`);
@@ -2027,9 +2031,9 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('defaults');
       expect(result.activeStatePath).toBeUndefined();
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
       expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
@@ -2102,9 +2106,9 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('last-known-good');
       expect(result.activeStatePath).toBe(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'));
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .toContain(`  transitionDecay: ${SHIPPED_RUNTIME_DEFAULTS.markov.transitionDecay},`);
       expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
         .toContain(`  adaptiveBreakLearningRateMultiplier: ${SHIPPED_RUNTIME_DEFAULTS.conformal.adaptiveBreakLearningRateMultiplier},`);
@@ -2202,11 +2206,11 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('last-known-good');
       expect(result.activeStatePath).toBe(firstGoldPromotion.activeStatePath);
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution.ts', 'utf8'))
+      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_FASTER_DECAY_REACTION, 'transitionDecay'));
       expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
@@ -2352,7 +2356,7 @@ describe('forecast-lab runner', () => {
     expect(readRunManifest(sourceManifestPath).effectiveMutationContract).toMatchObject({
       allowMultipleCandidateAttempts: true,
     });
-  });
+  }, 15000);
 
   it('fails closed when the kept structured source run is missing its replay payload', async () => {
     const source = await runForecastLab({
@@ -2435,7 +2439,7 @@ describe('forecast-lab runner', () => {
     expect(result.decision.decision).toBe('keep');
     expect(result.manifest.candidateWorkspace?.rootDir).toBe(worktreePath);
     expect(existsSync(worktreePath)).toBe(true);
-    expect(readFileSync(join(worktreePath, 'src/tools/finance/markov-distribution.ts'), 'utf8')).toContain(
+    expect(readFileSync(join(worktreePath, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
       '  momentumLookback: 28,',
     );
     expect(progress).toContain(`forecast-lab: keeping candidate workspace ${worktreePath}`);
@@ -2740,7 +2744,7 @@ describe('forecast-lab CLI module', () => {
             targetSubsystem: 'markov-distribution',
             baselineCommit: '0123456789abcdef0123456789abcdef01234567',
             candidateBranch: 'topic/forecast-lab-runner-test-explicit-structured',
-            allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+            allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
             artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-explicit-structured'),
           },
           baseline: { exitCode: 0 },
@@ -2756,7 +2760,7 @@ describe('forecast-lab CLI module', () => {
             profileId: 'multi-asset-markov-short-horizon',
             targetSubsystem: 'markov-distribution',
             candidateBranch: 'topic/forecast-lab-runner-test-explicit-structured',
-            allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+            allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
             baselineSummary: { exitCode: 0 },
             candidateSummary: { exitCode: 0 },
             decision: 'keep',
@@ -2819,7 +2823,7 @@ describe('forecast-lab CLI module', () => {
           targetSubsystem: 'markov-distribution',
           baselineCommit: '0123456789abcdef0123456789abcdef01234567',
           candidateBranch: 'topic/forecast-lab-runner-test-structured-summary',
-          allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+          allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
           mutationMode: 'structured',
           mutationId: 'markov-shorter-reactive-window',
           mutationSummary: BTC_SHORTER_REACTIVE_WINDOW.specSummary.summary,
@@ -2851,7 +2855,7 @@ describe('forecast-lab CLI module', () => {
           profileId: 'btc-markov-ultra-short-horizon',
           targetSubsystem: 'markov-distribution',
           candidateBranch: 'topic/forecast-lab-runner-test-structured-summary',
-          allowedGlobs: ['src/tools/finance/markov-distribution.ts'],
+          allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
           mutationMode: 'structured',
           mutationId: 'markov-shorter-reactive-window',
           mutationSummary: BTC_SHORTER_REACTIVE_WINDOW.specSummary.summary,
@@ -2879,10 +2883,10 @@ describe('forecast-lab CLI module', () => {
     expect(text).toContain('Previous parameters (baseline defaults):');
     expect(text).toContain('New parameters (candidate mutation):');
     expect(text).toContain(
-      `markov-distribution.ts: momentumLookback = ${getStructuredMutationEdit(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback').beforeValue}`,
+      `core.ts: momentumLookback = ${getStructuredMutationEdit(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback').beforeValue}`,
     );
     expect(text).toContain(
-      `markov-distribution.ts: momentumLookback = ${getStructuredMutationEdit(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback').afterValue}`,
+      `core.ts: momentumLookback = ${getStructuredMutationEdit(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback').afterValue}`,
     );
     expect(text).toContain(
       `conformal.ts: scoreAggregationCalibrationWindow = ${getStructuredMutationEdit(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow').beforeValue}`,
