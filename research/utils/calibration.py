@@ -5,22 +5,44 @@ YES-bias correction and other probability calibration helpers.
 
 from __future__ import annotations
 
+import math
+
 
 YES_BIAS_MULTIPLIER = 0.95
+"""Multiplicative YES-bias discount factor (5% haircut).
+
+Used by the Markov distribution module where survival probabilities are
+log-spaced and a multiplicative discount is more natural for interpolation
+across price levels.
+
+Rationale: Reichenbach & Walther (2025) report ~5% aggregate YES overpricing
+across 124M Polymarket trades.
+"""
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
-def adjust_yes_bias(p: float) -> float:
-    """Multiplicative YES-bias correction for conditional return estimation.
+def adjust_yes_bias(p: float, beta: float = 0.035) -> float:
+    """Additive YES-bias correction for conditional return estimation.
 
     Reichenbach & Walther (2025): systematic YES-overtrading across 124M
-    Polymarket trades. Applies multiplicative shrinkage toward 0 to
-    correct overpricing of YES contracts. Mirrors TypeScript implementation.
+    Polymarket trades. Uses an *additive offset* (-beta when p > 0.5)
+    because ensemble conditional returns are linear in p: small absolute
+    shifts in p map directly to small return shifts.
+
+    The Markov distribution module uses a *multiplicative* correction
+    (YES_BIAS_MULTIPLIER) instead, because survival probabilities are
+    log-spaced and a multiplicative discount is more natural for
+    interpolation across price levels.
+
+    Both corrections target the same phenomenon (YES overpricing) but use
+    the form best suited to their downstream math.
     """
-    return _clamp(p * YES_BIAS_MULTIPLIER, 0.01, 0.99)
+    if p > 0.5:
+        return _clamp(p - beta, 0.01, 0.99)
+    return _clamp(p, 0.01, 0.99)
 
 
 def adjust_yes_bias_v2(p: float) -> float:

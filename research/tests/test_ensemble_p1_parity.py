@@ -122,10 +122,13 @@ def test_quality_omitting_days_to_expiry_matches_legacy():
 
 
 def test_quality_near_expiry_boosted():
+    # days=30: depth_decay_haircut=1.0, expiry_boost=1.0
     w_neutral = compute_market_quality(_base_input(days_to_expiry=30))
+    # days=1: depth_decay_haircut=0.5, expiry_boost=1.5 → combined factor 0.75
     w_near = compute_market_quality(_base_input(days_to_expiry=1))
-    assert w_near > w_neutral
-    assert w_near / w_neutral == pytest.approx(1.5, abs=1e-4)
+    # The depth-decay liquidity haircut dominates the near-expiry information boost
+    assert w_near < w_neutral
+    assert w_near / w_neutral == pytest.approx(0.75, abs=1e-4)
 
 
 def test_quality_far_dated_discounted():
