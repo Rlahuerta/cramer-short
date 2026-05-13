@@ -7,12 +7,29 @@
  *   OLLAMA_BASE_URL — Ollama endpoint (default: 'http://127.0.0.1:11434')
  *   E2E_TIMEOUT_MS  — Hard timeout in ms (default: 600 000)
  */
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentEvent, DoneEvent } from '../agent/types.js';
 import { InMemoryChatHistory } from './in-memory-chat-history.js';
 import { isTimeoutError } from './errors.js';
 import { withRetry } from './retry.js';
 
-export const E2E_TIMEOUT_MS = parseInt(process.env.E2E_TIMEOUT_MS ?? '600000', 10);
+const DEFAULT_E2E_TIMEOUT_MS = 600_000;
+
+function resolveE2ETimeoutMs(): number {
+  const raw = process.env.E2E_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return DEFAULT_E2E_TIMEOUT_MS;
+  }
+
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 30_000 && parsed <= 900_000
+    ? parsed
+    : DEFAULT_E2E_TIMEOUT_MS;
+}
+
+export const E2E_TIMEOUT_MS = resolveE2ETimeoutMs();
 export const CHILD_RESULT_MARKER = '__CRAMER_E2E_RESULT__';
 
 const E2E_MODEL_FALLBACK = 'ollama:glm-5:cloud';
@@ -86,6 +103,7 @@ interface E2ERetryOptions extends E2EOptions {
 interface E2EChildPayload {
   query: string;
   opts: E2EOptions;
+  resultFilePath?: string;
 }
 
 function encodeChildPayload(payload: E2EChildPayload): string {
@@ -111,16 +129,73 @@ function buildChildErrorMessage(prefix: string, stdout: string, stderr: string):
   return sections.join('\n\n');
 }
 
-function parseChildResult(stdout: string, stderr: string): E2EResult {
+function createChildResultFilePath(): string {
+  return join(
+    tmpdir(),
+    `cramer-short-e2e-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
+  );
+}
+
+function findChildResultPayload(stdout: string): string | null {
   const markerLine = stdout
     .split(/\r?\n/)
-    .find((line) => line.startsWith(`${CHILD_RESULT_MARKER}:`));
-  if (!markerLine) {
+    .filter((line) => line.startsWith(`${CHILD_RESULT_MARKER}:`))
+    .at(-1);
+  return markerLine ? markerLine.slice(CHILD_RESULT_MARKER.length + 1).trim() : null;
+}
+
+async function readChildResultFile(resultFilePath: string): Promise<E2EResult> {
+  const file = Bun.file(resultFilePath);
+  if (!await file.exists()) {
+    throw new Error(`E2E child result file not found: ${resultFilePath}`);
+  }
+  const json = await file.text();
+  return JSON.parse(json) as E2EResult;
+}
+
+async function parseChildResult(
+  stdout: string,
+  stderr: string,
+  expectedResultFilePath?: string,
+): Promise<E2EResult> {
+  const payload = findChildResultPayload(stdout);
+  const markerResultFilePath =
+    payload && payload.startsWith('file:')
+      ? payload.slice('file:'.length)
+      : null;
+  const resultFilePath = expectedResultFilePath ?? markerResultFilePath;
+
+  if (resultFilePath) {
+    try {
+      return await readChildResultFile(resultFilePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(buildChildErrorMessage(
+        `E2E child emitted an unreadable result file: ${message}`,
+        stdout,
+        stderr,
+      ));
+    } finally {
+      try {
+        rmSync(resultFilePath, { force: true });
+      } catch {}
+    }
+  }
+
+  if (!payload) {
     throw new Error(buildChildErrorMessage('E2E child exited without a result payload.', stdout, stderr));
   }
 
-  const encoded = markerLine.slice(CHILD_RESULT_MARKER.length + 1);
-  return JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as E2EResult;
+  try {
+    return JSON.parse(Buffer.from(payload, 'base64').toString('utf8')) as E2EResult;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(buildChildErrorMessage(
+      `E2E child emitted an unreadable inline result payload: ${message}`,
+      stdout,
+      stderr,
+    ));
+  }
 }
 
 /**
@@ -215,7 +290,8 @@ export async function runAgentE2E(
   }
 
   const childScriptPath = new URL('./e2e-agent-child.ts', import.meta.url).pathname;
-  const payload = encodeChildPayload({ query, opts });
+  const resultFilePath = createChildResultFilePath();
+  const payload = encodeChildPayload({ query, opts, resultFilePath });
   const proc = Bun.spawn({
     cmd: [process.execPath, 'run', childScriptPath, payload],
     cwd: process.cwd(),
@@ -255,7 +331,7 @@ export async function runAgentE2E(
     ));
   }
 
-  return parseChildResult(stdout, stderr);
+  return await parseChildResult(stdout, stderr, resultFilePath);
 }
 
 /**

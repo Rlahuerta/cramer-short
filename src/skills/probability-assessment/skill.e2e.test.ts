@@ -36,6 +36,30 @@ let result: E2EResult;
 let tools: string[];
 let answer: string;
 
+function extractPolymarketSection(text: string): string {
+  const match = text.match(/###\s+Polymarket[\s\S]*?(?=\n---\n|\n###\s|\n##\s|$)/i);
+  return match?.[0] ?? text;
+}
+
+function hasPolymarketYesProbabilityEvidence(text: string): boolean {
+  const section = extractPolymarketSection(text);
+  const hasInlineYesProbability =
+    /\d+\.?\d*\s*%\s*YES/i.test(section) || /\bYES\b.*\d+\.?\d*\s*%/i.test(section);
+  const hasTabularYesProbability =
+    /\|\s*(?:%\s*YES|YES\s*Prob(?:ability)?)\s*\|/i.test(section)
+    && /\|\s*[^|\n]+\|\s*\d+\.?\d*\s*%\s*\|/i.test(section);
+  return hasInlineYesProbability || hasTabularYesProbability;
+}
+
+function hasProbabilitySummaryTable(text: string): boolean {
+  const hasSummaryHeading = /summary table|probability summary/i.test(text);
+  const hasSignalColumn = /\bSignal\b/i.test(text);
+  const hasProbabilityColumn = /\bProbability\b|P\(Higher\)|P\(up\)|Prob(?:ability)?|YES\s*Prob(?:ability)?/i.test(text);
+  const hasWeightColumn = /\bWeight\b/i.test(text);
+  const hasMarkdownTable = /\|.*\|.*\|/.test(text);
+  return (hasSummaryHeading || hasMarkdownTable) && hasSignalColumn && hasProbabilityColumn && hasWeightColumn;
+}
+
 describe('probability_assessment skill E2E', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return; // guard — tests will be skipped via e2eIt when RUN_E2E is false
@@ -93,13 +117,9 @@ describe('probability_assessment skill E2E', () => {
       /░|█|▓|▒/.test(answer) ||
       /─{3,}/.test(answer) ||
       /chart|distribution/i.test(answer);
-    const hasInlineYesProbability =
-      /\d+\.?\d*\s*%\s*YES/i.test(answer) || /\bYES\b.*\d+\.?\d*\s*%/i.test(answer);
-    const hasTabularYesProbability =
-      /\|\s*% YES\s*\|/i.test(answer) && /\|\s*\d+\.?\d*\s*\|/i.test(answer);
     const hasThresholdEvidence =
       /(exceed|reach|above|below)\s+\$\d|(exceed|reach|above|below).*\$\d/i.test(answer) &&
-      (hasInlineYesProbability || hasTabularYesProbability);
+      hasPolymarketYesProbabilityEvidence(answer);
     expect(
       hasChartTool || hasChartContent || hasThresholdEvidence,
       'price_distribution_chart must be called, chart content must appear, or raw threshold evidence must appear in the answer',
@@ -113,11 +133,7 @@ describe('probability_assessment skill E2E', () => {
     expect(answer.toLowerCase()).toMatch(/signal evidence|evidence/);
 
     // Must contain at least one Polymarket market entry, either inline or in a table.
-    const hasInlineYesProbability =
-      /\d+\.?\d*\s*%\s*YES/i.test(answer) || /\bYES\b.*\d+\.?\d*\s*%/i.test(answer);
-    const hasTabularYesProbability =
-      /\|\s*% YES\s*\|/i.test(answer) && /\|\s*\d+\.?\d*\s*\|/i.test(answer);
-    expect(hasInlineYesProbability || hasTabularYesProbability).toBe(true);
+    expect(hasPolymarketYesProbabilityEvidence(answer)).toBe(true);
 
     // Must reference real dollar price thresholds from the markets
     expect(answer).toMatch(/\$\d{2,3}[,.]?\d*[Kk]?|\$\d{1,3},\d{3}/);
@@ -140,7 +156,7 @@ describe('probability_assessment skill E2E', () => {
       /chart|distribution|bucket|threshold/i.test(answer);   // textual fallback
     const hasThresholdEvidence =
       /(exceed|reach|above|below)\s+\$\d|(exceed|reach|above|below).*\$\d/i.test(answer) &&
-      (/\d+\.?\d*\s*%\s*YES/i.test(answer) || /\bYES\b.*\d+\.?\d*\s*%/i.test(answer));
+      hasPolymarketYesProbabilityEvidence(answer);
     expect(
       hasChart || hasThresholdEvidence,
       'answer must embed the chart or include raw threshold evidence from price-level markets',
@@ -150,9 +166,7 @@ describe('probability_assessment skill E2E', () => {
   // ── 4. Probability summary table ───────────────────────────────────────────
 
   e2eIt('answer contains probability summary table with Signal, Probability, Weight columns', () => {
-    expect(answer).toMatch(/Signal/);
-    expect(answer).toMatch(/Probability/);
-    expect(answer).toMatch(/Weight/);
+    expect(hasProbabilitySummaryTable(answer)).toBe(true);
     // Combined row must be present
     expect(answer.toLowerCase()).toMatch(/combined|weighted/);
     // At least one percentage value (allow decimal values and unicode spacing before %)

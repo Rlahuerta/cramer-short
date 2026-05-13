@@ -229,34 +229,10 @@ class SpyChatModel extends BaseChatModel {
   withStructuredOutput(_schema: any, _opts?: any): any { return this; }
 }
 
-const realOpenAI = await import('@langchain/openai');
-const realAnthropic = await import('@langchain/anthropic');
-const realGoogleGenAI = await import('@langchain/google-genai');
-const realOllama = await import('@langchain/ollama');
-
 beforeAll(() => { _setModelFactory((_name, _opts, _thinkOverride) => new SpyChatModel(mockState)); });
 afterAll(() => {
   _setModelFactory(null);
-  mock.module('@langchain/openai', () => realOpenAI);
-  mock.module('@langchain/anthropic', () => realAnthropic);
-  mock.module('@langchain/google-genai', () => realGoogleGenAI);
-  mock.module('@langchain/ollama', () => realOllama);
 });
-mock.module('@langchain/openai', () => ({
-  ChatOpenAI: class { constructor() {} bindTools() { return this; } },
-  OpenAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/anthropic', () => ({
-  ChatAnthropic: class { constructor() {} bindTools() { return this; } },
-}));
-mock.module('@langchain/google-genai', () => ({
-  ChatGoogleGenerativeAI: class { constructor() {} bindTools() { return this; } },
-  GoogleGenerativeAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/ollama', () => ({
-  ChatOllama: class { constructor() {} bindTools() { return this; } },
-  OllamaEmbeddings: class { constructor() {} },
-}));
 
 const { Agent } = await import('./agent.js');
 const { AgentToolExecutor } = await import('./tool-executor.js');

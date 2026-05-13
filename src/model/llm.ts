@@ -61,6 +61,34 @@ async function withRetry<T>(fn: () => Promise<T>, provider: string, maxAttempts 
   throw new Error('Unreachable');
 }
 
+async function invokeRunnable(
+  runnable: Runnable<unknown, unknown>,
+  input: unknown,
+  options: { signal: AbortSignal },
+): Promise<unknown> {
+  const runnableWithFallback = runnable as {
+    invoke?: (value: unknown, opts?: { signal: AbortSignal }) => Promise<unknown>;
+    call?: (value: unknown, opts?: { signal: AbortSignal }) => Promise<unknown>;
+  };
+
+  if (typeof runnableWithFallback.invoke === 'function') {
+    return runnableWithFallback.invoke(input, options);
+  }
+  if (typeof runnableWithFallback.call === 'function') {
+    return runnableWithFallback.call(input, options);
+  }
+
+  const runnableName =
+    typeof runnable === 'object' &&
+    runnable !== null &&
+    'constructor' in runnable &&
+    typeof runnable.constructor === 'function' &&
+    runnable.constructor.name
+      ? runnable.constructor.name
+      : 'unknown runnable';
+  throw new Error(`LangChain runnable ${runnableName} does not expose invoke() or call().`);
+}
+
 /**
  * Race an LLM call against a hard wall-clock timeout.
  * Default: 120 s (configurable via llmCallTimeoutMs setting or
@@ -318,13 +346,13 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
 
     if (provider.id === 'anthropic') {
       const messages = buildAnthropicMessages(finalSystemPrompt, prompt);
-      return withRetry(() => runnable.invoke(messages, invokeOpts), provider.displayName);
+      return withRetry(() => invokeRunnable(runnable, messages, invokeOpts), provider.displayName);
     } else {
       // Build messages directly (same pattern as streamCallLlm) to avoid
       // ChatPromptTemplate parsing `{...}` in system prompt or user content
       // as input variables (e.g. JSON in skill tool results).
       const messages = [new SystemMessage(finalSystemPrompt), new HumanMessage(prompt)];
-      return withRetry(() => runnable.invoke(messages, invokeOpts), provider.displayName);
+      return withRetry(() => invokeRunnable(runnable, messages, invokeOpts), provider.displayName);
     }
   }, timeoutMs ?? getLlmCallTimeoutMs(), `${provider.displayName} call (${model})`);
   const usage = extractUsage(result);

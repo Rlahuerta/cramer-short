@@ -10,6 +10,11 @@ const EMBEDDING_BATCH_SIZE = 64;
 
 type ResolvedProvider = Exclude<EmbeddingProviderId, 'auto' | 'none'>;
 
+type EmbeddingsClientSurface = {
+  embedDocuments?: (texts: string[]) => Promise<number[][]>;
+  embedQuery?: (text: string) => Promise<number[]>;
+};
+
 function resolveProvider(preferred: EmbeddingProviderId): ResolvedProvider | null {
   if (preferred === 'openai' && process.env.OPENAI_API_KEY) {
     return 'openai';
@@ -49,6 +54,19 @@ async function embedInBatches(
   return vectors;
 }
 
+async function embedBatchWithClient(
+  embeddings: EmbeddingsClientSurface,
+  batch: string[],
+): Promise<number[][]> {
+  if (typeof embeddings.embedDocuments === 'function') {
+    return embeddings.embedDocuments(batch);
+  }
+  if (typeof embeddings.embedQuery === 'function') {
+    return Promise.all(batch.map((text) => embeddings.embedQuery!(text)));
+  }
+  throw new Error('Embeddings client does not expose embedDocuments() or embedQuery().');
+}
+
 export function createEmbeddingClient(params: {
   provider: EmbeddingProviderId;
   model?: string;
@@ -68,7 +86,7 @@ export function createEmbeddingClient(params: {
       provider: 'openai',
       model,
       embed: async (texts: string[]) =>
-        embedInBatches(texts, async (batch) => embeddings.embedDocuments(batch)),
+        embedInBatches(texts, async (batch) => embedBatchWithClient(embeddings, batch)),
     };
   }
 
@@ -82,7 +100,7 @@ export function createEmbeddingClient(params: {
       provider: 'gemini',
       model,
       embed: async (texts: string[]) =>
-        embedInBatches(texts, async (batch) => embeddings.embedDocuments(batch)),
+        embedInBatches(texts, async (batch) => embedBatchWithClient(embeddings, batch)),
     };
   }
 
@@ -95,7 +113,7 @@ export function createEmbeddingClient(params: {
     provider: 'ollama',
     model,
     embed: async (texts: string[]) =>
-      embedInBatches(texts, async (batch) => embeddings.embedDocuments(batch)),
+      embedInBatches(texts, async (batch) => embedBatchWithClient(embeddings, batch)),
   };
 }
 

@@ -8,9 +8,17 @@ const {
 } = await import('./e2e-helpers.js');
 
 async function main() {
-  const { query, opts } = readE2EChildPayloadFromArgv();
+  const { query, opts, resultFilePath } = readE2EChildPayloadFromArgv();
   const result = await runAgentE2EInProcess(query, opts);
-  const encoded = Buffer.from(JSON.stringify(result), 'utf8').toString('base64');
+  const json = JSON.stringify(result);
+
+  if (resultFilePath) {
+    await Bun.write(resultFilePath, json);
+    console.log(`${CHILD_RESULT_MARKER}:file:${resultFilePath}`);
+    return;
+  }
+
+  const encoded = Buffer.from(json, 'utf8').toString('base64');
   console.log(`${CHILD_RESULT_MARKER}:${encoded}`);
 }
 

@@ -11,9 +11,8 @@
  *   bun run test:e2e          — E2E tests isolated (real Ollama, sets RUN_E2E=1)
  *   bun run test:all          — all three in sequence (no contamination)
  *
- * Integration tests run automatically when not in CI.
- * E2E tests always require explicit RUN_E2E=1 (set by test:e2e script) because
- * they must run in an isolated process to avoid unit-test mock contamination.
+ * Integration and E2E tests both require explicit opt-in so `bun test`
+ * stays unit-only and live suites run only through the isolated scripts.
  *
  * CI opt-in:
  *   RUN_INTEGRATION=1  — enable integration tests in CI
@@ -24,12 +23,8 @@
  */
 import { it } from 'bun:test';
 
-const IS_CI = process.env.CI === 'true' || process.env.CI === '1';
-
 export const RUN_INTEGRATION =
-  process.env.SKIP_INTEGRATION === '1' ? false
-  : process.env.RUN_INTEGRATION === '1' ? true
-  : !IS_CI;
+  process.env.SKIP_INTEGRATION === '1' ? false : process.env.RUN_INTEGRATION === '1';
 
 // E2E tests always require explicit opt-in to prevent worker contamination:
 // unit test files mock ../model/llm.js which would make E2E use a fake LLM.

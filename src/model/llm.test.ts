@@ -1,37 +1,4 @@
-import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
-
-// Capture real modules before mocking so afterAll can restore them
-const realOllama = await import('@langchain/ollama');
-const realOpenAI = await import('@langchain/openai');
-const realAnthropic = await import('@langchain/anthropic');
-const realGoogleGenAI = await import('@langchain/google-genai');
-
-// ---------------------------------------------------------------------------
-// Mock @langchain/ollama so we can inspect constructor args without Ollama running
-// ---------------------------------------------------------------------------
-const mockChatOllamaInstances: Array<{ model: string; think?: boolean }> = [];
-
-mock.module('@langchain/ollama', () => ({
-  ChatOllama: class MockChatOllama {
-    constructor(args: { model: string; think?: boolean }) {
-      mockChatOllamaInstances.push({ model: args.model, think: args.think });
-    }
-  },
-  OllamaEmbeddings: class { constructor() {} },
-}));
-
-// Stub the other providers so getChatModel doesn't throw for missing API keys
-mock.module('@langchain/openai', () => ({
-  ChatOpenAI: class { constructor() {} },
-  OpenAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/anthropic', () => ({
-  ChatAnthropic: class { constructor() {} },
-}));
-mock.module('@langchain/google-genai', () => ({
-  ChatGoogleGenerativeAI: class { constructor() {} },
-  GoogleGenerativeAIEmbeddings: class { constructor() {} },
-}));
+import { describe, test, expect, mock, beforeEach } from 'bun:test';
 
 const actualConfig = await import('@/utils/config.js');
 
@@ -42,16 +9,10 @@ mock.module('@/utils/config.js', () => ({
   getSetting: mockGetSetting,
 }));
 
-afterAll(() => {
-  mock.module('@langchain/ollama', () => realOllama);
-  mock.module('@langchain/openai', () => realOpenAI);
-  mock.module('@langchain/anthropic', () => realAnthropic);
-  mock.module('@langchain/google-genai', () => realGoogleGenAI);
-});
-
 const {
   isThinkingModel,
   getChatModel,
+  callLlm,
   getLlmCallTimeoutMs,
   DEFAULT_LLM_CALL_TIMEOUT_MS,
   streamCallLlm,
@@ -59,7 +20,6 @@ const {
 } = await import('./llm.js');
 
 beforeEach(() => {
-  mockChatOllamaInstances.length = 0;
   mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
   _setModelFactory(null);
 });
@@ -111,23 +71,40 @@ describe('isThinkingModel', () => {
 
 describe('getChatModel — Ollama think flag', () => {
   test('passes think:true for qwen3 model', () => {
-    getChatModel('ollama:qwen3:4b');
-    expect(mockChatOllamaInstances[0]?.think).toBe(true);
+    const model = getChatModel('ollama:qwen3:4b') as { think?: boolean };
+    expect(model.think).toBe(true);
   });
 
   test('passes think:true for deepseek-r1 model', () => {
-    getChatModel('ollama:deepseek-r1:8b');
-    expect(mockChatOllamaInstances[0]?.think).toBe(true);
+    const model = getChatModel('ollama:deepseek-r1:8b') as { think?: boolean };
+    expect(model.think).toBe(true);
   });
 
   test('does NOT pass think:true for llama3', () => {
-    getChatModel('ollama:llama3.1:8b');
-    expect(mockChatOllamaInstances[0]?.think).toBeUndefined();
+    const model = getChatModel('ollama:llama3.1:8b') as { think?: boolean };
+    expect(model.think).toBeUndefined();
   });
 
   test('strips ollama: prefix before passing model to ChatOllama', () => {
-    getChatModel('ollama:qwen3:4b');
-    expect(mockChatOllamaInstances[0]?.model).toBe('qwen3:4b');
+    const model = getChatModel('ollama:qwen3:4b') as { model?: string };
+    expect(model.model).toBe('qwen3:4b');
+  });
+});
+
+describe('callLlm compatibility fallbacks', () => {
+  test('uses call() when invoke() is unavailable', async () => {
+    const call = mock(async () => ({ content: 'CALL_OK' }));
+    _setModelFactory((() => ({ call })) as any);
+
+    const { response } = await callLlm('Reply with CALL_OK.', {
+      model: 'ollama:llama3.1:8b',
+      systemPrompt: 'Return the requested token.',
+      thinkOverride: false,
+      timeoutMs: 30_000,
+    });
+
+    expect(response).toBe('CALL_OK');
+    expect(call).toHaveBeenCalledTimes(1);
   });
 });
 
