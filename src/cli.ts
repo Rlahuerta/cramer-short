@@ -10,7 +10,7 @@ import type {
 import { DEFAULT_MAX_ITERATIONS } from './agent/index.js';
 import { getApiKeyNameForProvider, getProviderDisplayName } from './utils/env.js';
 import { logger } from './utils/logger.js';
-import { callLlm, isThinkingModel, resolveLlmCallTimeoutMs } from './model/llm.js';
+import { callLlm, isThinkingModel } from './model/llm.js';
 import { MemoryManager } from './memory/index.js';
 import {
   AgentRunnerController,
@@ -55,10 +55,10 @@ import type { SessionIndexEntry } from './utils/session-store.js';
 import type { SessionLlmMessage } from './utils/session-store.js';
 import { discoverSkills } from './skills/registry.js';
 import type { SkillMetadata } from './skills/types.js';
-import { getSetting, setSetting, validateConfigValue } from './utils/config.js';
 import { searchHistory } from './utils/chat-search.js';
 import { countRenderedTuiMarkdownLines, truncateTuiMarkdownTail } from './utils/markdown-table.js';
 import chalk from 'chalk';
+import { handleConfigSlashCommand } from './controllers/slash-commands/config.js';
 
 export function truncateAtWord(str: string, maxLength: number): string {
   if (str.length <= maxLength) {
@@ -1425,72 +1425,14 @@ export async function runCli() {
       return;
     }
 
-    if (query === '/config' || query === '/config show') {
-      const configKeys: Array<{ key: string; default: number }> = [
-        { key: 'maxIterations',    default: 25 },
-        { key: 'contextThreshold', default: 100000 },
-        { key: 'keepToolUses',     default: 5 },
-        { key: 'cacheTtlMs',       default: 900000 },
-        { key: 'parallelToolLimit',default: 0 },
-      ];
-      const lines: string[] = ['Current Configuration:'];
-      for (const { key, default: def } of configKeys) {
-        const raw = getSetting<number | undefined>(key, undefined);
-        const isDefault = raw === undefined;
-        const display = raw ?? def;
-        const extra = isDefault ? ' (default)' : '';
-        const suffix = key === 'parallelToolLimit' && display === 0 ? ' (unlimited)' : '';
-        lines.push(`  ${key.padEnd(18)} ${display}${suffix}${extra}`);
-      }
-
-      // llmCallTimeoutMs: use resolver to capture env fallback
-      const timeout = resolveLlmCallTimeoutMs();
-      const timeoutSource = timeout.source === 'config' ? '' :
-                             timeout.source === 'env' ? ' (from env)' : ' (default)';
-      lines.push(`  ${'llmCallTimeoutMs'.padEnd(18)} ${timeout.value}${timeoutSource}`);
-
-      const provider = getSetting<string | undefined>('provider', undefined);
-      const modelId  = getSetting<string | undefined>('modelId', undefined);
-      if (provider) lines.push(`  ${'provider'.padEnd(18)} ${provider}`);
-      if (modelId)  lines.push(`  ${'modelId'.padEnd(18)} ${modelId}`);
-
-      chatLog.clearAll();
-      chatLog.addQuery(query);
-      chatLog.resetToolGrouping();
-      chatLog.finalizeAnswer(lines.join('\n'));
-      tui.requestRender();
-      return;
-    }
-
-    if (query.startsWith('/config set ')) {
-      const parts = query.slice('/config set '.length).trim().split(/\s+/);
-      if (parts.length < 2) {
-        lastError = 'Usage: /config set <key> <value>';
-        refreshError();
-        tui.requestRender();
-        return;
-      }
-      const [cfgKey, rawVal] = parts;
-      const numVal = Number(rawVal);
-      const value: unknown = Number.isFinite(numVal) ? numVal : rawVal;
-      const validation = validateConfigValue(cfgKey, value);
-      if (!validation.valid) {
-        lastError = `Config error: ${validation.error}`;
-        refreshError();
-        tui.requestRender();
-        return;
-      }
-      const saved = setSetting(cfgKey, value);
-      if (!saved) {
-        lastError = `Failed to save config to disk`;
-        refreshError();
-        tui.requestRender();
-        return;
-      }
-      lastError = null;
-      intro.setModel(`✓ Config: ${cfgKey} = ${String(value)}`);
-      tui.requestRender();
-      setTimeout(() => { intro.setModel(modelSelection.model); tui.requestRender(); }, 3000);
+    if (handleConfigSlashCommand(query, {
+      chatLog,
+      currentModel: () => modelSelection.model,
+      refreshError,
+      requestRender: () => tui.requestRender(),
+      setError: (message) => { lastError = message; },
+      setStatus: (message) => intro.setModel(message),
+    })) {
       return;
     }
 

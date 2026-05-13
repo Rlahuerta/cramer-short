@@ -4,11 +4,23 @@ import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from 'bun:te
 const mockReadCache = mock((..._args: unknown[]) => null as unknown);
 const mockWriteCache = mock((..._args: unknown[]) => undefined);
 const mockDescribeRequest = mock((endpoint: string) => String(endpoint));
+const mockTrackFmpCall = mock(() => ({
+  used: 1,
+  limit: 250,
+  usedPct: 1 / 250,
+  remaining: 249,
+}));
+const mockGetQuotaWarning = mock(() => null as string | null);
 
 mock.module('../../utils/cache.js', () => ({
   readCache: mockReadCache,
   writeCache: mockWriteCache,
   describeRequest: mockDescribeRequest,
+}));
+
+mock.module('../../utils/fmp-quota.js', () => ({
+  trackFmpCall: mockTrackFmpCall,
+  getQuotaWarning: mockGetQuotaWarning,
 }));
 
 // Use a cache-busting query param to force Bun to re-evaluate api.ts with the mocked
@@ -63,6 +75,8 @@ describe('api.get', () => {
   beforeEach(() => {
     mockReadCache.mockClear();
     mockWriteCache.mockClear();
+    mockTrackFmpCall.mockClear();
+    mockGetQuotaWarning.mockClear();
     originalApiKey = process.env.FINANCIAL_DATASETS_API_KEY;
     process.env.FINANCIAL_DATASETS_API_KEY = 'test-key';
 

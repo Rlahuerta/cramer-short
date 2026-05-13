@@ -24,16 +24,36 @@ import { extractTickers as extractTickersFn } from '../memory/ticker-extractor.j
 import { injectPolymarketContext } from '../tools/finance/polymarket-injector.js';
 import { extractSignals as extractSignalsFn } from '../tools/finance/signal-extractor.js';
 import { fetchPolymarketMarkets } from '../tools/finance/polymarket.js';
-import type { MarkovDistributionPoint } from '../tools/finance/markov-distribution.js';
 import { resolveProvider } from '../providers.js';
 import type { ToolCallRecord } from './scratchpad.js';
 import {
+  detectForecastLabCatalogExtensionRequest,
+  detectForecastLabComparisonRequest,
+  detectForecastLabKeepCurrentBestRequest,
+  detectForecastLabMutatorListRequest,
+  detectForecastLabPromotionApproval,
+  detectForecastLabResetRequest,
+  detectForecastLabResultsRequest,
   getForecastLabRoutingHint,
+  type ForecastLabCatalogExtensionHint,
+  type ForecastLabComparisonHint,
+  type ForecastLabKeepCurrentBestHint,
+  type ForecastLabMutatorListHint,
+  type ForecastLabPromotionApprovalHint,
+  type ForecastLabResetHint,
+  type ForecastLabResultsHint,
   type ForecastLabRoutingHint,
-} from './forecast-lab-routing.js';
-import { routeForecastLabQuery } from '../experiments/forecast-lab/router.js';
-import { listForecastLabProfiles, listForecastLabStructuredMutations } from '../experiments/forecast-lab/profiles.js';
+} from '../experiments/forecast-lab/query-router.js';
 import { extractForecastLabRunToolAnswer } from '../tools/forecast-lab-run.js';
+import {
+  buildAbstainingBtcShortHorizonForecastAnswer,
+  buildDistributionWarningPrefix,
+  buildForecastDisagreementPrefix,
+  buildLowConfidenceBtcShortHorizonForecastPrefix,
+  buildSourcesFooter,
+  ensureStructuredDensityTable,
+  stripThinkingTags,
+} from './answer-formatting/index.js';
 import {
   buildForcedCryptoForecastMarkovArgs,
   buildForcedFixedIncomeArgs,
@@ -89,6 +109,37 @@ import {
 } from './query-router.js';
 
 export {
+  buildAbstainingBtcShortHorizonForecastAnswer,
+  buildAbstainingMarkovAnswer,
+  buildDistributionWarningPrefix,
+  buildForecastDisagreementPrefix,
+  buildLowConfidenceBtcShortHorizonForecastPrefix,
+  buildSourcesFooter,
+  buildUnavailableDistributionAnswer,
+  ensureStructuredDensityTable,
+  shouldPreserveAbstainingBtcShortHorizonForecast,
+  stripThinkingTags,
+} from './answer-formatting/index.js';
+export {
+  detectForecastLabCatalogExtensionRequest,
+  detectForecastLabComparisonRequest,
+  detectForecastLabKeepCurrentBestRequest,
+  detectForecastLabMutatorListRequest,
+  detectForecastLabPromotionApproval,
+  detectForecastLabResetRequest,
+  detectForecastLabResultsRequest,
+} from '../experiments/forecast-lab/query-router.js';
+export type {
+  ForecastLabCatalogExtensionHint,
+  ForecastLabComparisonHint,
+  ForecastLabKeepCurrentBestHint,
+  ForecastLabMutatorListHint,
+  ForecastLabPromotionApprovalHint,
+  ForecastLabResetHint,
+  ForecastLabResultsHint,
+} from '../experiments/forecast-lab/query-router.js';
+
+export {
   buildForcedCryptoForecastMarkovArgs,
   buildForcedFixedIncomeArgs,
   buildForcedForecastArbiterArgs,
@@ -127,323 +178,12 @@ export {
 
 const DEFAULT_MODEL = 'gpt-5.4';
 export const DEFAULT_MAX_ITERATIONS = 25;
-
-/**
- * Remove <think>...</think> blocks that Ollama thinking models sometimes embed
- * directly in response text rather than separating into reasoning_content.
- * Also handles orphan </think> tags (e.g. the model output was: <think>…</think>\nAnswer).
- */
-export function stripThinkingTags(text: string): string {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, '') // full <think>…</think> blocks
-    .replace(/^[\s\S]*?<\/think>\s*/i, '')      // orphan </think>: strip everything up to and including it
-    .trim();
-}
 const MAX_OVERFLOW_RETRIES = 2;
 /** Flush memory to disk every N iterations regardless of context size. */
 const PERIODIC_FLUSH_INTERVAL = 5;
 
-/**
- * Build a compact Sources footer from a deduplicated list of URLs.
- * Only appended to answers when the model hasn't already cited inline links.
- * Limits to 10 URLs to keep the footer scannable.
- *
- * Social media post URLs (Reddit, X/Twitter, etc.) are excluded — these are
- * inputs to sentiment analysis, not authoritative research citations.
- */
 
-/** Domains excluded from the Sources footer (social media / UGC). */
-const EXCLUDED_SOURCE_DOMAINS = [
-  'reddit.com',
-  'x.com',
-  'twitter.com',
-  'threads.net',
-  'bsky.app',
-  'bluesky.app',
-];
 
-export function buildSourcesFooter(urls: string[]): string {
-  const filtered = urls.filter(u => {
-    try {
-      const host = new URL(u).hostname.replace(/^www\./, '');
-      return !EXCLUDED_SOURCE_DOMAINS.some(d => host === d || host.endsWith(`.${d}`));
-    } catch {
-      return false;
-    }
-  });
-  const unique = [...new Set(filtered)].slice(0, 10);
-  if (unique.length === 0) return '';
-  const lines = unique.map((u, i) => `${i + 1}. ${u}`).join('\n');
-  return `\n\n---\n**Sources**\n${lines}`;
-}
-
-function formatDiagnosticPrice(value: unknown): string | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  return value >= 1000
-    ? `$${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
-    : `$${value.toFixed(2)}`;
-}
-
-function formatDiagnosticNumber(value: unknown, digits = 3): string | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  return value.toFixed(digits);
-}
-
-function inferRequestedBucketCount(query: string): number | null {
-  const match = query.match(/\b(\d+)\s*(?:parts|buckets|bins|segments)\b/i);
-  if (!match) return null;
-  const parsed = Number.parseInt(match[1]!, 10);
-  return Number.isInteger(parsed) && parsed >= 2 ? parsed : null;
-}
-
-function interpolateSurvivalProbability(
-  distribution: MarkovDistributionPoint[],
-  price: number,
-): number | null {
-  if (distribution.length === 0) return null;
-
-  const sorted = [...distribution].sort((a, b) => a.price - b.price);
-  if (price <= sorted[0]!.price) return sorted[0]!.probability;
-  if (price >= sorted[sorted.length - 1]!.price) return sorted[sorted.length - 1]!.probability;
-
-  for (let i = 0; i < sorted.length - 1; i += 1) {
-    const left = sorted[i]!;
-    const right = sorted[i + 1]!;
-    if (price < left.price || price > right.price) continue;
-    if (right.price === left.price) return left.probability;
-
-    const weight = (price - left.price) / (right.price - left.price);
-    return left.probability + ((right.probability - left.probability) * weight);
-  }
-
-  return sorted[sorted.length - 1]!.probability;
-}
-
-function estimateBucketProbabilityPct(
-  distribution: MarkovDistributionPoint[],
-  lower: number | null,
-  upper: number | null,
-): number | null {
-  const lowerSurvival = lower === null ? 1 : interpolateSurvivalProbability(distribution, lower);
-  const upperSurvival = upper === null ? 0 : interpolateSurvivalProbability(distribution, upper);
-  if (lowerSurvival === null || upperSurvival === null) return null;
-  return Math.max(0, Math.min(100, (lowerSurvival - upperSurvival) * 100));
-}
-
-function formatDensityPrice(value: number): string {
-  return `$${value.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
-function formatDensityRange(lower: number | null, upper: number | null): string {
-  if (lower === null && upper === null) return 'N/A';
-  if (lower === null && upper !== null) return `< ${formatDensityPrice(upper)}`;
-  if (lower !== null && upper === null) return `> ${formatDensityPrice(lower)}`;
-  return `${formatDensityPrice(lower!)}–${formatDensityPrice(upper!)}`;
-}
-
-function buildDensityThresholds(
-  minPrice: number,
-  maxPrice: number,
-  bucketCount: number,
-): number[] {
-  const thresholdCount = bucketCount - 1;
-  if (thresholdCount <= 0) return [];
-
-  const useLogSpacing = minPrice > 0;
-  return Array.from({ length: thresholdCount }, (_, index) => {
-    const weight = (index + 1) / bucketCount;
-    if (useLogSpacing) {
-      const logPrice = Math.log(minPrice) + ((Math.log(maxPrice) - Math.log(minPrice)) * weight);
-      return Math.exp(logPrice);
-    }
-    return minPrice + ((maxPrice - minPrice) * weight);
-  });
-}
-
-function buildCanonicalDensityTable(query: string, toolCalls: ToolCallRecord[]): string | null {
-  const requestedBucketCount = inferRequestedBucketCount(query);
-  if (requestedBucketCount === null) return null;
-
-  const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferMarkovQueryHorizon(query);
-
-  for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
-
-    const data = parseToolCallData(call);
-    if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'ok') continue;
-    if (!Array.isArray(data['distribution'])) continue;
-
-    const distribution = data['distribution']
-      .filter((point): point is MarkovDistributionPoint => (
-        !!point
-        && typeof point === 'object'
-        && isFinitePositiveNumber((point as Record<string, unknown>)['price'])
-        && isFiniteNumber((point as Record<string, unknown>)['probability'])
-      ))
-      .map((point) => point as MarkovDistributionPoint)
-      .sort((a, b) => a.price - b.price);
-
-    if (distribution.length < 2) continue;
-
-    const minPrice = distribution[0]!.price;
-    const maxPrice = distribution[distribution.length - 1]!.price;
-    if (!(minPrice > 0) || !(maxPrice > minPrice)) continue;
-
-    const thresholds = buildDensityThresholds(minPrice, maxPrice, requestedBucketCount);
-
-    const rows: string[] = [];
-    for (let bucketIndex = 0; bucketIndex < requestedBucketCount; bucketIndex += 1) {
-      const lower = bucketIndex === 0 ? null : thresholds[bucketIndex - 1]!;
-      const upper = bucketIndex === requestedBucketCount - 1 ? null : thresholds[bucketIndex]!;
-      const probabilityPct = estimateBucketProbabilityPct(distribution, lower, upper);
-      if (probabilityPct === null) continue;
-
-      rows.push(
-        `| ${bucketIndex + 1} | ${formatDensityRange(lower, upper)} | ${probabilityPct.toFixed(2)}% |`,
-      );
-    }
-
-    if (rows.length < requestedBucketCount) continue;
-
-    return [
-      `## ${requestedBucketCount}-Part Density Probability Table`,
-      '',
-      'Canonical scenario breakdown (P(bucket) = probability mass in each price range):',
-      '',
-      '| Bucket | Price Range | P(bucket) |',
-      '|--------|-------------|-----------|',
-      ...rows,
-    ].join('\n');
-  }
-
-  return null;
-}
-
-export function ensureStructuredDensityTable(
-  answer: string,
-  query: string,
-  toolCalls: ToolCallRecord[],
-): string {
-  if (inferRequestedBucketCount(query) === null) return answer;
-  const canonicalTable = buildCanonicalDensityTable(query, toolCalls);
-  if (!canonicalTable) return answer;
-
-  const densitySectionPattern = /##\s+.*density probability table[\s\S]*?(?=\n---\n|\n##\s|\n###\s|$)/i;
-  if (densitySectionPattern.test(answer)) {
-    return answer.replace(densitySectionPattern, canonicalTable);
-  }
-
-  return `${canonicalTable}\n\n---\n\n${answer}`;
-}
-
-export function buildAbstainingMarkovAnswer(toolCalls: ToolCallRecord[]): string | null {
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(call.result);
-    } catch {
-      continue;
-    }
-
-    const data = parsed && typeof parsed === 'object' ? (parsed as { data?: unknown }).data : null;
-    if (!data || typeof data !== 'object') continue;
-
-    const payload = data as Record<string, unknown>;
-    if (payload['_tool'] !== 'markov_distribution' || payload['status'] !== 'abstain') continue;
-
-    const canonical = payload['canonical'] && typeof payload['canonical'] === 'object'
-      ? payload['canonical'] as Record<string, unknown>
-      : {};
-    const diagnostics = canonical['diagnostics'] && typeof canonical['diagnostics'] === 'object'
-      ? canonical['diagnostics'] as Record<string, unknown>
-      : {};
-    const abstainReasons = Array.isArray(payload['abstainReasons'])
-      ? payload['abstainReasons'].filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
-      : [];
-
-    const ticker = typeof canonical['ticker'] === 'string' ? canonical['ticker'] : 'This asset';
-    const horizon = typeof canonical['horizon'] === 'number' ? canonical['horizon'] : null;
-    const currentPrice = formatDiagnosticPrice(canonical['currentPrice']);
-    const trustedAnchors = typeof diagnostics['trustedAnchors'] === 'number' ? diagnostics['trustedAnchors'] : null;
-    const totalAnchors = typeof diagnostics['totalAnchors'] === 'number' ? diagnostics['totalAnchors'] : null;
-    const anchorQuality = typeof diagnostics['anchorQuality'] === 'string' ? diagnostics['anchorQuality'] : null;
-    const outOfSampleR2 = formatDiagnosticNumber(diagnostics['outOfSampleR2']);
-    const structuralBreakDetected = diagnostics['structuralBreakDetected'] === true;
-    const structuralBreakDivergence = formatDiagnosticNumber(diagnostics['structuralBreakDivergence']);
-    const predictionConfidence = formatDiagnosticNumber(diagnostics['predictionConfidence'], 2);
-
-    const lines = [
-      `## ${ticker} ${horizon !== null ? `${horizon}-Day ` : ''}Probability Distribution: Model Abstained`,
-      '',
-      'A calibrated probability distribution is not available. `markov_distribution` explicitly abstained, so no replacement scenario probabilities are shown.',
-      '',
-      '## Why it abstained',
-      ...(abstainReasons.length > 0
-        ? abstainReasons.map((reason) => `- ${reason}`)
-        : ['- The tool marked this run as diagnostics-only.']),
-      '',
-      '## Diagnostics',
-      '| Metric | Value |',
-      '|--------|-------|',
-      ...(currentPrice ? [`| Current price | ${currentPrice} |`] : []),
-      `| Trusted anchors | ${trustedAnchors !== null && totalAnchors !== null ? `${trustedAnchors} / ${totalAnchors}` : 'N/A'} |`,
-      `| Anchor quality | ${anchorQuality ?? 'N/A'} |`,
-      `| Out-of-sample R² | ${outOfSampleR2 ?? 'N/A'} |`,
-      `| Structural break | ${structuralBreakDetected ? `Yes${structuralBreakDivergence ? ` (${structuralBreakDivergence})` : ''}` : 'No'} |`,
-      `| Prediction confidence | ${predictionConfidence ?? 'N/A'} |`,
-      '',
-      '## Interpretation',
-      'Use later prediction-market searches only as diagnostics about missing or low-quality anchors. They do not justify a replacement calibrated distribution for this horizon.',
-      '',
-      '## Next best option',
-      '- Wait for horizon-matched terminal threshold markets to list, or',
-      '- Use `polymarket_forecast` for a point estimate with a confidence interval instead of a full distribution.',
-    ];
-
-    return lines.join('\n');
-  }
-
-  return null;
-}
-
-export function shouldPreserveAbstainingBtcShortHorizonForecast(
-  query: string,
-  toolCalls: ToolCallRecord[],
-): boolean {
-  if (isExplicitPolymarketForecastRequest(query)) return false;
-  if (hasForecastArbitratorForQuery(query, toolCalls)) return false;
-  if (hasCryptoPolymarketForecastCoverage(query, toolCalls)) return false;
-  if (hasUsableOnchainResultForCryptoQuery(query, toolCalls)) return false;
-  if (hasUsableFixedIncomeResult(toolCalls)) return false;
-  return isBtcShortHorizonForecastQuery(query)
-    && hasAbstainingMarkovDistributionForQuery(query, toolCalls);
-}
-
-export function buildAbstainingBtcShortHorizonForecastAnswer(
-  query: string,
-  toolCalls: ToolCallRecord[],
-): string | null {
-  if (!shouldPreserveAbstainingBtcShortHorizonForecast(query, toolCalls)) return null;
-
-  const diagnostics = buildAbstainingMarkovAnswer(toolCalls);
-  if (!diagnostics) return null;
-
-  return [
-    diagnostics,
-    '',
-    '## Decision guidance',
-    'Treat this horizon as no-trade / no-calibrated-edge unless new horizon-matched terminal threshold markets appear. Any later fallback tools may still be useful for context, but they do not replace the abstained Markov forecast for BTC short horizons.',
-  ].join('\n');
-}
 
 
 function normalizeExplicitGoldCombinedToolCalls(
@@ -512,640 +252,12 @@ function normalizeExplicitGoldCombinedToolCalls(
 
 
 
-const FORECAST_LAB_APPROVAL_PATTERNS = [
-  /\bapprove(?:d|s|ing)?\b/i,
-  /\bgo ahead\b/i,
-  /\bproceed\b/i,
-  /\bpromote\b/i,
-  /^\s*yes\b/i,
-  /^\s*sure\b/i,
-  /^\s*do it\b/i,
-] as const;
 
-const FORECAST_LAB_RESET_PATTERNS = [
-  /\breset\b/i,
-  /\brestore\b/i,
-  /\broll\s+back\b/i,
-] as const;
 
-const SAFE_FORECAST_LAB_RUN_ID = /[A-Za-z0-9][A-Za-z0-9_.-]*/;
 
-export interface ForecastLabPromotionApprovalHint {
-  readonly profileId?: string;
-  readonly sourceRunId?: string;
-}
 
-export interface ForecastLabResetHint {
-  readonly profileId?: string;
-  readonly mode: 'defaults' | 'last-known-good';
-}
 
-export interface ForecastLabComparisonHint {
-  readonly profileId?: string;
-  readonly mutationId?: string;
-}
 
-export interface ForecastLabResultsHint {
-  readonly profileId?: string;
-}
-
-export interface ForecastLabMutatorListHint {
-  readonly profileId?: string;
-}
-
-export interface ForecastLabKeepCurrentBestHint {
-  readonly profileId?: string;
-}
-
-export interface ForecastLabCatalogExtensionHint {
-  readonly profileId?: string;
-}
-
-
-function extractForecastLabProfileId(text: string): string | undefined {
-  const lower = text.toLowerCase();
-  return listForecastLabProfiles().find((profile) => lower.includes(profile.id.toLowerCase()))?.id;
-}
-
-function extractForecastLabSourceRunId(text: string): string | undefined {
-  const match = text.match(new RegExp(`(?:source\\s+run|run)\\s+(${SAFE_FORECAST_LAB_RUN_ID.source})`, 'i'));
-  const candidate = match?.[1];
-  if (!candidate) {
-    return undefined;
-  }
-  if (!candidate.includes('-') && !candidate.includes('.')) {
-    return undefined;
-  }
-  return candidate;
-}
-
-function isForecastLabApprovalIntent(query: string): boolean {
-  if (
-    /\bhow\s+(?:do\s+i\s+)?(?:approve|promote)\b/i.test(query)
-    || /\bhow\s+to\s+(?:approve|promote)\b/i.test(query)
-    || /\bwhat(?:'s| is)\b[\s\S]{0,40}\b(?:approve|promote)\b/i.test(query)
-    || /\bwhich\s+command\b[\s\S]{0,40}\b(?:approve|promote)\b/i.test(query)
-  ) {
-    return false;
-  }
-  return FORECAST_LAB_APPROVAL_PATTERNS.some((pattern) => pattern.test(query));
-}
-
-function isForecastLabResetIntent(query: string): boolean {
-  return FORECAST_LAB_RESET_PATTERNS.some((pattern) => pattern.test(query));
-}
-
-function isForecastLabComparisonIntent(query: string): boolean {
-  const hasBestReference = /\bcurrent best\b|\bbest kept\b|\bbest lineage\b|\blatest kept\b/i.test(query);
-  const hasBaselineReference = /\bshipped default baseline\b|\bshipped baseline\b|\bdefault baseline\b/i.test(query);
-  const hasComparisonCue = /\bbetter than\b|\bcompare\b|\bcomparison\b|\bversus\b|\bvs\.?\b|\bstack up\b/i.test(query);
-  return (hasBestReference && hasBaselineReference) || (hasBaselineReference && hasComparisonCue);
-}
-
-const FORECAST_LAB_NAMED_MUTATION_ID = /(?<![A-Za-z0-9_.-])((?:gold-)?markov-[A-Za-z0-9][A-Za-z0-9_.-]*)\b/i;
-const FORECAST_LAB_REQUESTED_MUTATION_ID = /\brequested\s+mutator\s+id:\s*((?:gold-)?markov-[A-Za-z0-9][A-Za-z0-9_.-]*)/gi;
-const FORECAST_LAB_REQUESTED_MUTATION_ID_CUE = /\brequested mutator id:\s*(?:gold-)?markov-/i;
-
-function extractForecastLabNamedMutationId(query: string): string | undefined {
-  const candidate = query.match(FORECAST_LAB_NAMED_MUTATION_ID)?.[1];
-  return candidate?.replace(/[.,!?;:]+$/, '');
-}
-
-function extractForecastLabComparisonMutationId(query: string): string | undefined {
-  return extractForecastLabNamedMutationId(query);
-}
-
-function extractForecastLabRequestedMutationId(text: string): string | undefined {
-  const matches = [...text.matchAll(FORECAST_LAB_REQUESTED_MUTATION_ID)];
-  const candidate = matches.at(-1)?.[1];
-  return candidate?.replace(/[.,!?;:]+$/, '');
-}
-
-function isKnownForecastLabStructuredMutationId(mutationId: string): boolean {
-  const candidate = mutationId.toLowerCase();
-  return listForecastLabProfiles().some((profile) =>
-    profile.mutation.mode === 'structured'
-    && listForecastLabStructuredMutations(profile.id).some((entry) => entry.id.toLowerCase() === candidate),
-  );
-}
-
-function isForecastLabMutatorVsActiveIntent(query: string, historyText = ''): boolean {
-  const mutationId = extractForecastLabComparisonMutationId(query)
-    ?? extractForecastLabRequestedMutationId(historyText);
-  if (!mutationId) {
-    return false;
-  }
-
-  const hasComparisonCue = /\bcompare\b|\bcomparison\b|\bversus\b|\bvs\.?\b/i.test(query);
-  const hasMetricCue = /\baccurac\w*\b|\baccurace\b|\bnumbers\b|\bmetrics?\b/i.test(query);
-  const hasActiveCue = /\bactive one\b|\bactive baseline\b|\bactive run\b|\bactive mutation\b|\blive one\b|\blive baseline\b|\blive run\b|\bcurrently live\b/i.test(query);
-  const hasCreatedCandidateCue = /\bnew\s+mutat(?:e|or)\b|\bnew\s+one\b|\bthat\s+i\s+created\b|\bi\s+created\b|\bnot\s+promoted\b|\bunpromoted\b/i.test(query);
-  const contextText = `${query}\n${historyText}`;
-  const hasForecastLabContext =
-    mutationId !== undefined
-    || /\bforecast-lab\b/i.test(contextText)
-    || /\bbtc-markov-ultra-short-horizon\b/i.test(contextText)
-    || /\bactive baseline\b/i.test(contextText)
-    || /\bpromoted parameters\b/i.test(contextText)
-    || /src\/tools\/finance\/markov-distribution\.ts/i.test(contextText);
-
-  return hasForecastLabContext && hasActiveCue && (hasComparisonCue || hasMetricCue || hasCreatedCandidateCue);
-}
-
-function isForecastLabResultsIntent(query: string): boolean {
-  const hasResultsCue = /\bresult(?:s)?\b|\boutcome(?:s)?\b|\bstatus\b|\bsummary\b|\brecap\b|\bwhat happened\b/i.test(query);
-  const hasRequestCue = /\bprovide\b|\bshow\b|\bgive\b|\bsummarize\b|\breport\b|\brecap\b|\bwhat\b/i.test(query);
-  const hasWorkflowCue = /\boptimi[sz]e\b|\bimprov(?:e|ement)\b|\bworkflow\b|\bforecast-lab\b/i.test(query);
-  return hasResultsCue && hasRequestCue && hasWorkflowCue;
-}
-
-function isForecastLabMutatorListIntent(query: string): boolean {
-  const hasListCue = /\blist\b|\bshow\b|\bgive\b|\bwhat\b|\bwhich\b/i.test(query);
-  const hasMutatorCue = /\bmutat(?:e|or|ors|ion|ions)\b/i.test(query);
-  const hasCatalogCue = /\bids?\b|\bavail\w*\b|\bshipped\b|\bcatalog\b|\bcurrent\b/i.test(query);
-  return hasMutatorCue && hasListCue && hasCatalogCue;
-}
-
-function isForecastLabKeepCurrentBestIntent(query: string): boolean {
-  return /\bkeep\b[\s\S]{0,30}\bcurrent best candidate\b/i.test(query)
-    || /\bkeep\b[\s\S]{0,20}\bbest candidate\b/i.test(query)
-    || /\bkeep\b[\s\S]{0,20}\bbest run\b/i.test(query);
-}
-
-function hasForecastLabCatalogExtensionContext(text: string): boolean {
-  return /\bforecast-lab\b/i.test(text)
-    || /\bbtc-markov-ultra-short-horizon\b/i.test(text)
-    || /\bbtc\s+1d\/2d\/3d\b/i.test(text)
-    || /\bmarkov forecast workflow\b/i.test(text)
-    || /\bultra-short-horizon\b/i.test(text)
-    || /src\/tools\/finance\/markov-distribution\.ts/i.test(text);
-}
-
-function hasForecastLabCatalogImplementationCue(text: string): boolean {
-  return /\bkeep it bounded\b/i.test(text)
-    || /\badd\b[\s\S]{0,30}\bcatalog\b/i.test(text)
-    || /\bvalidate\b[\s\S]{0,40}\b(?:walk-forward|gate)\b/i.test(text)
-    || /\bsuggested starting values\b/i.test(text)
-    || /\bsearch-replace\b/i.test(text)
-    || /\bsoft-regime weighting\b/i.test(text);
-}
-
-function isForecastLabCatalogExtensionIntent(query: string, historyText = ''): boolean {
-  const requestedMutationId = extractForecastLabNamedMutationId(query)
-    ?? extractForecastLabRequestedMutationId(historyText);
-  const hasImplementationExecutionCue =
-    requestedMutationId !== undefined
-    && !isKnownForecastLabStructuredMutationId(requestedMutationId)
-    && /\bimplement\b|\bregister\b/i.test(query)
-    && /\brun\b|\bre-?run\b|\bexecute\b/i.test(query);
-  const hasMutatorCue = /\bmutator\b/i.test(query);
-  const hasCatalogCue = /\bcatalog\b|\bshipped\b/i.test(query);
-  const hasExtensionCue = /\bdesign\b|\badd\b|\bcreate\b|\bnew\b|\bextend\b|\boutside\b/i.test(query);
-  const hasLineageCue = /\blineage\b|\bre-?run\b/i.test(query);
-  const contextText = `${query}\n${historyText}`;
-  return (
-    hasImplementationExecutionCue
-    && (
-      /\bcatalog-extension plan\b/i.test(historyText)
-      || FORECAST_LAB_REQUESTED_MUTATION_ID_CUE.test(historyText)
-      || hasForecastLabCatalogExtensionContext(contextText)
-    )
-  ) || (
-    hasMutatorCue
-    && hasCatalogCue
-    && hasExtensionCue
-    && (
-      hasLineageCue
-      || hasForecastLabCatalogExtensionContext(contextText)
-      || hasForecastLabCatalogImplementationCue(query)
-    )
-  );
-}
-
-export function detectForecastLabPromotionApproval(
-  query: string,
-  inMemoryHistory?: InMemoryChatHistory,
-): ForecastLabPromotionApprovalHint | null {
-  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
-  const assistantHistory = recentTurns
-    .filter((entry) => entry.role === 'assistant')
-    .map((entry) => entry.content)
-    .join('\n\n');
-  const contextText = `${query}\n${assistantHistory}`;
-  const hasForecastLabContext =
-    /\bforecast-lab\b/i.test(contextText)
-    || /\bpromotion-ready\b/i.test(contextText)
-    || /\bapproval required\b/i.test(contextText);
-
-  if (!hasForecastLabContext || !isForecastLabApprovalIntent(query)) {
-    return null;
-  }
-
-  const profileId = extractForecastLabProfileId(contextText);
-  const sourceRunId = extractForecastLabSourceRunId(query) ?? extractForecastLabSourceRunId(assistantHistory);
-
-  if (!profileId && !sourceRunId && !/\bforecast-lab\b/i.test(query)) {
-    return null;
-  }
-
-  return {
-    ...(profileId ? { profileId } : {}),
-    ...(sourceRunId ? { sourceRunId } : {}),
-  };
-}
-
-export function detectForecastLabResetRequest(
-  query: string,
-  inMemoryHistory?: InMemoryChatHistory,
-): ForecastLabResetHint | null {
-  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
-  const assistantHistory = recentTurns
-    .filter((entry) => entry.role === 'assistant')
-    .map((entry) => entry.content)
-    .join('\n\n');
-  const contextText = `${query}\n${assistantHistory}`;
-  const hasForecastLabContext =
-    /\bforecast-lab\b/i.test(contextText)
-    || /\bactive baseline\b/i.test(contextText)
-    || /\bpromoted parameters\b/i.test(contextText);
-
-  if (!hasForecastLabContext || !isForecastLabResetIntent(query)) {
-    return null;
-  }
-
-  const mode = /\bdefault(?:s)?\b|\bshipped defaults\b/i.test(query)
-    ? 'defaults'
-    : /\blast known good\b|\bprevious(?:ly)? activated\b|\bprevious baseline\b/i.test(query)
-      ? 'last-known-good'
-      : null;
-  if (!mode) {
-    return null;
-  }
-
-  const profileId = extractForecastLabProfileId(contextText);
-  if (!profileId) {
-    return null;
-  }
-
-  return { profileId, mode };
-}
-
-export function detectForecastLabComparisonRequest(
-  query: string,
-  inMemoryHistory?: InMemoryChatHistory,
-): ForecastLabComparisonHint | null {
-  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
-  const historyText = recentTurns
-    .map((entry) => entry.content)
-    .join('\n\n');
-  const contextText = `${query}\n${historyText}`;
-  const mutationId = extractForecastLabComparisonMutationId(query)
-    ?? extractForecastLabRequestedMutationId(historyText);
-  const routedProfileId = routeForecastLabQuery(query).preferredProfileId ?? undefined;
-  const profileId = extractForecastLabProfileId(contextText) ?? routedProfileId;
-
-  if (isForecastLabComparisonIntent(query)) {
-    return profileId ? { profileId } : {};
-  }
-
-  if (!isForecastLabMutatorVsActiveIntent(query, historyText)) {
-    return null;
-  }
-
-  return {
-    ...(profileId ? { profileId } : {}),
-    ...(mutationId ? { mutationId } : {}),
-  };
-}
-
-export function detectForecastLabResultsRequest(
-  query: string,
-  inMemoryHistory?: InMemoryChatHistory,
-): ForecastLabResultsHint | null {
-  if (!isForecastLabResultsIntent(query)) {
-    return null;
-  }
-
-  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
-  const historyText = recentTurns
-    .map((entry) => entry.content)
-    .join('\n\n');
-  const contextText = `${query}\n${historyText}`;
-  const routedProfileId = routeForecastLabQuery(query).preferredProfileId ?? undefined;
-  const profileId = extractForecastLabProfileId(contextText) ?? routedProfileId;
-
-  return profileId ? { profileId } : {};
-}
-
-export function detectForecastLabMutatorListRequest(
-  query: string,
-  inMemoryHistory?: InMemoryChatHistory,
-): ForecastLabMutatorListHint | null {
-  if (!isForecastLabMutatorListIntent(query)) {
-    return null;
-  }
-
-  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
-  const historyText = recentTurns
-    .map((entry) => entry.content)
-    .join('\n\n');
-  const contextText = `${query}\n${historyText}`;
-  const routedProfileId = routeForecastLabQuery(query).preferredProfileId ?? undefined;
-  const profileId = extractForecastLabProfileId(contextText) ?? routedProfileId;
-
-  return profileId ? { profileId } : {};
-}
-
-export function detectForecastLabKeepCurrentBestRequest(
-  query: string,
-  inMemoryHistory?: InMemoryChatHistory,
-): ForecastLabKeepCurrentBestHint | null {
-  if (!isForecastLabKeepCurrentBestIntent(query)) {
-    return null;
-  }
-
-  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
-  const historyText = recentTurns
-    .map((entry) => entry.content)
-    .join('\n\n');
-  const explicitProfileId = extractForecastLabProfileId(query);
-  const contextText = explicitProfileId ? `${query}\n${historyText}` : historyText;
-  const hasForecastLabContext =
-    /\bforecast-lab\b/i.test(query)
-    || explicitProfileId !== undefined
-    || /\bforecast-lab\b/i.test(historyText)
-    || /\bapproval required\b/i.test(historyText)
-    || /\bcurrent best\b/i.test(historyText)
-    || /\bkept lineage\b/i.test(historyText)
-    || /\bbtc-markov-ultra-short-horizon\b/i.test(historyText);
-  if (!hasForecastLabContext) {
-    return null;
-  }
-
-  const profileId = explicitProfileId ?? extractForecastLabProfileId(historyText);
-  return profileId ? { profileId } : {};
-}
-
-export function detectForecastLabCatalogExtensionRequest(
-  query: string,
-  inMemoryHistory?: InMemoryChatHistory,
-): ForecastLabCatalogExtensionHint | null {
-  const recentTurns = inMemoryHistory?.getRecentTurns() ?? [];
-  const historyText = recentTurns
-    .map((entry) => entry.content)
-    .join('\n\n');
-  if (!isForecastLabCatalogExtensionIntent(query, historyText)) {
-    return null;
-  }
-  const profileId = extractForecastLabProfileId(`${query}\n${historyText}`);
-
-  return profileId ? { profileId } : {};
-}
-
-
-
-
-function parseToolCallData(call: ToolCallRecord): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(call.result) as { data?: unknown };
-    return parsed?.data && typeof parsed.data === 'object'
-      ? parsed.data as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function hasErrorLikeToolResult(result: string): boolean {
-  return /^Error:/i.test(result) || /"error"\s*:/i.test(result);
-}
-
-function hasNonEmptyParsedToolData(call: ToolCallRecord): boolean {
-  const data = parseToolCallData(call);
-  return data !== null && Object.keys(data).length > 0;
-}
-
-function extractPositiveNumericValue(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-    return value;
-  }
-
-  if (typeof value === 'string' && value.trim().length > 0) {
-    const parsed = Number.parseFloat(value);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
-
-function extractPriceFromPayload(value: unknown): number | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-
-  const directPrice = extractPositiveNumericValue(record['price']);
-  if (directPrice !== null) {
-    return directPrice;
-  }
-
-  const closePrice = extractPositiveNumericValue(record['close']);
-  if (closePrice !== null) {
-    return closePrice;
-  }
-
-  const lastTradePrice = extractPositiveNumericValue(record['lastTradePrice']);
-  if (lastTradePrice !== null) {
-    return lastTradePrice;
-  }
-
-  const snapshot = record['snapshot'];
-  if (snapshot && typeof snapshot === 'object') {
-    const snapshotRecord = snapshot as Record<string, unknown>;
-    const snapshotPrice = extractPositiveNumericValue(snapshotRecord['price'])
-      ?? extractPositiveNumericValue(snapshotRecord['close'])
-      ?? extractPositiveNumericValue(snapshotRecord['lastTradePrice']);
-    if (snapshotPrice !== null) {
-      return snapshotPrice;
-    }
-  }
-
-  return null;
-}
-
-
-function extractCurrentPriceFromAbstainingMarkovQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
-  const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferDistributionHorizon(query);
-
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
-
-    const data = parseToolCallData(call);
-    if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'abstain') continue;
-
-    const canonical = data['canonical'];
-    if (!canonical || typeof canonical !== 'object') continue;
-
-    const currentPrice = extractPositiveNumericValue((canonical as Record<string, unknown>)['currentPrice']);
-    if (currentPrice !== null) {
-      return currentPrice;
-    }
-  }
-
-  return null;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isFinitePositiveNumber(value: unknown): value is number {
-  return isFiniteNumber(value) && value > 0;
-}
-
-function numbersApproximatelyMatch(actual: unknown, expected: number): boolean {
-  if (!isFiniteNumber(actual)) return false;
-  const tolerance = Math.max(1e-6, Math.abs(expected) * 1e-6);
-  return Math.abs(actual - expected) <= tolerance;
-}
-
-
-
-
-
-
-function getForecastHorizonArg(args: Record<string, unknown>): number {
-  return isFinitePositiveNumber(args['horizon_days']) ? Math.trunc(args['horizon_days']) : 7;
-}
-
-function getPositiveIntegerArg(args: Record<string, unknown>, key: string): number | null {
-  return isFinitePositiveNumber(args[key]) ? Math.trunc(args[key]) : null;
-}
-
-function matchesTickerAndOptionalHorizon(
-  args: Record<string, unknown>,
-  ticker: string | null,
-  horizonKey: string,
-  horizon: number | null,
-): boolean {
-  if (ticker) {
-    const existingTicker = typeof args['ticker'] === 'string' ? args['ticker'].toUpperCase() : null;
-    const expectedTicker = ticker.toUpperCase();
-    const equivalentCryptoTicker = expectedTicker.endsWith('-USD')
-      && existingTicker === expectedTicker.replace(/-USD$/, '');
-    if (existingTicker !== expectedTicker && !equivalentCryptoTicker) return false;
-  }
-
-  if (horizon !== null && getPositiveIntegerArg(args, horizonKey) !== horizon) {
-    return false;
-  }
-
-  return true;
-}
-
-function hasMarkovDistributionStatusForQuery(
-  query: string,
-  toolCalls: ToolCallRecord[],
-  status: 'ok' | 'abstain',
-): boolean {
-  const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferMarkovQueryHorizon(query);
-
-  return toolCalls.some((call) => {
-    if (call.tool !== 'markov_distribution') return false;
-    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) return false;
-
-    const data = parseToolCallData(call);
-    return data?._tool === 'markov_distribution' && data.status === status;
-  });
-}
-
-
-function hasSuccessfulMarkovDistribution(toolCalls: ToolCallRecord[]): boolean {
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-    try {
-      const parsed = JSON.parse(call.result) as { data?: { _tool?: string; status?: string } };
-      if (parsed?.data?._tool === 'markov_distribution' && parsed.data.status === 'ok') {
-        return true;
-      }
-    } catch {
-      continue;
-    }
-  }
-  return false;
-}
-
-export function buildUnavailableDistributionAnswer(query: string, toolCalls: ToolCallRecord[]): string | null {
-  if (!isDistributionQuery(query)) return null;
-  if (hasSuccessfulMarkovDistribution(toolCalls)) return null;
-
-  return [
-    '## Probability Distribution Unavailable',
-    '',
-    'A calibrated price-distribution answer is not available for this query. No successful non-abstaining `markov_distribution` result was produced, so I am not emitting substitute distribution buckets or historical-volatility scenario percentages.',
-    '',
-    '## Why this answer stops here',
-    '- A price-distribution request needs horizon-matched terminal threshold anchors or a validated canonical Markov distribution.',
-    '- Neither condition was met in this run, so any bucketed probability table would be speculative rather than grounded.',
-    '',
-    '## Safe next options',
-    '- Wait for terminal threshold markets that match the requested horizon, or',
-    '- Use `polymarket_forecast` for a point estimate with a confidence interval instead of a full distribution.',
-  ].join('\n');
-}
-
-export function buildDistributionWarningPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
-  if (!isDistributionQuery(query)) return null;
-  if (hasSuccessfulMarkovDistribution(toolCalls)) return null;
-
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(call.result);
-    } catch {
-      continue;
-    }
-
-    const data = parsed && typeof parsed === 'object' ? (parsed as { data?: unknown }).data : null;
-    if (!data || typeof data !== 'object') continue;
-
-    const payload = data as Record<string, unknown>;
-    if (payload['_tool'] !== 'markov_distribution' || payload['status'] !== 'abstain') continue;
-
-    const abstainReasons = Array.isArray(payload['abstainReasons'])
-      ? payload['abstainReasons'].filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
-      : [];
-
-    return [
-      '## Warning: no calibrated Markov terminal distribution was available',
-      '',
-      'The Markov distribution workflow abstained for this query. Any fallback analysis below must be treated as non-distribution context unless it comes directly from a validated canonical Markov payload.',
-      ...(abstainReasons.length > 0
-        ? ['', 'Key abstain reasons:', ...abstainReasons.map((reason) => `- ${reason}`)]
-        : []),
-      '',
-      '---',
-      '',
-    ].join('\n');
-  }
-
-  return [
-    '## Warning: no validated Markov distribution was produced',
-    '',
-    'Cramer-Short did not produce a successful non-abstaining `markov_distribution` result for this distribution query. Any answer below should be read as fallback analysis, not a calibrated probability distribution.',
-    '',
-    '---',
-    '',
-  ].join('\n');
-}
 
 
 function hasPrematureForecastArbitratorCall(response: AIMessage, query: string, toolCalls: ToolCallRecord[]): boolean {
@@ -1178,37 +290,7 @@ export function isAcceptedFirstPlanningToolCall(
 }
 
 
-export function buildForecastDisagreementPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
-  if (!detectBtcShortHorizonDisagreement(query, toolCalls)) return null;
 
-  return [
-    '## Warning: BTC short-horizon signals are mixed',
-    '',
-    'Markov and Polymarket are pointing in different directions for this BTC short-horizon forecast. Read any directional takeaway below as mixed evidence with moderated confidence, not a high-conviction signal.',
-    '',
-    '---',
-    '',
-  ].join('\n');
-}
-
-export function buildLowConfidenceBtcShortHorizonForecastPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
-  if (!hasLowConfidenceBtcShortHorizonMarkov(query, toolCalls)) return null;
-
-  const predictionConfidence = extractMarkovPredictionConfidenceForQuery(query, toolCalls);
-  const selectiveBtcThreshold = getBtcSelectiveMarkovConfidenceThreshold();
-  const confidenceText = predictionConfidence !== null
-    ? predictionConfidence.toFixed(2)
-    : 'N/A';
-
-  return [
-    '## Warning: BTC short-horizon selective Markov gate did not clear',
-    '',
-    `The Markov run completed, but prediction confidence ${confidenceText} is below the ${selectiveBtcThreshold.toFixed(2)} selective threshold. Do not treat the Markov direction here as part of the aggregate selective-accuracy slice or as a validated BTC edge. Read any forecast below as fallback context, not a selective Markov signal.`,
-    '',
-    '---',
-    '',
-  ].join('\n');
-}
 
 // ============================================================================
 // Context summary helpers (exported for unit tests)
