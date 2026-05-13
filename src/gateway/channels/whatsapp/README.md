@@ -44,7 +44,7 @@ Use your own WhatsApp to talk to Dexter by messaging yourself. The linked phone 
 
 If Dexter has its own phone number (e.g. a separate SIM), choose this option and enter the phone number(s) allowed to message it. The gateway will be configured with `dmPolicy: "allowlist"` so other people can DM the bot.
 
-Credentials are saved to `.dexter/credentials/whatsapp/default/`.
+Credentials are saved to `.cramer-short/credentials/whatsapp/default/`.
 
 ## 🚀 How to Run
 
@@ -80,7 +80,7 @@ Dexter: NVIDIA's revenue for fiscal year 2024 was $60.9 billion...
 
 ## ⚙️ Configuration
 
-The gateway configuration is stored at `.dexter/gateway.json`. It's auto-created when you run `gateway:login`.
+The gateway configuration is stored at `.cramer-short/gateway.json`. It's auto-created when you run `gateway:login`.
 
 **Self-chat configuration** (personal phone, message yourself):
 ```json
@@ -140,7 +140,7 @@ Dexter can participate in WhatsApp group chats, responding only when @-mentioned
 
 ### Setup
 
-Add group policy to your account in `.dexter/gateway.json`:
+Add group policy to your account in `.cramer-short/gateway.json`:
 
 ```jsonc
 {
@@ -182,7 +182,7 @@ If you need to relink your WhatsApp (e.g., after logging out or switching phones
 1. Stop the gateway (Ctrl+C)
 2. Delete the credentials:
    ```bash
-   rm -rf .dexter/credentials/whatsapp/default
+   rm -rf .cramer-short/credentials/whatsapp/default
    ```
 3. Run login again:
    ```bash
@@ -197,11 +197,11 @@ If you need to relink your WhatsApp (e.g., after logging out or switching phones
 - Try relinking (see above)
 
 **Messages not being received:**
-- Verify your phone number is in `allowFrom` in `.dexter/gateway.json`
+- Verify your phone number is in `allowFrom` in `.cramer-short/gateway.json`
 - Make sure you're messaging yourself (self-chat mode)
 
 **Debug logs:**
-- Check `.dexter/gateway-debug.log` for detailed logs
+- Check `.cramer-short/gateway-debug.log` for detailed logs
 
 ## 🔧 Full Reset
 
@@ -216,9 +216,9 @@ If you're experiencing persistent issues (connection problems, encryption errors
 
 3. **Clear all local data:**
    ```bash
-   rm -rf .dexter/credentials/whatsapp/default
-   rm -rf .dexter/gateway.json
-   rm -rf .dexter/gateway-debug.log
+   rm -rf .cramer-short/credentials/whatsapp/default
+   rm -rf .cramer-short/gateway.json
+   rm -rf .cramer-short/gateway-debug.log
    ```
 
 4. **Relink and start fresh:**

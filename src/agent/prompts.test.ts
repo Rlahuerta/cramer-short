@@ -4,8 +4,8 @@ const {
   getForecastLabMarkovRuntimeDefaults,
   setForecastLabMarkovRuntimeDefaults,
 } = await import('../tools/finance/markov-distribution.js');
+const { getCurrentDate } = await import('../utils/date.js');
 const {
-  getCurrentDate,
   buildSystemPrompt,
   buildIterationPrompt,
   buildGroupSection,

@@ -9,7 +9,7 @@
 import { describe, it, expect, mock } from 'bun:test';
 import { AgentRunnerController } from './agent-runner.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 import type {
   AnswerChunkEvent,
   DoneEvent,

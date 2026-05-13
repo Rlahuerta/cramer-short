@@ -15,7 +15,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { getCramerShortDir } from './paths.js';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

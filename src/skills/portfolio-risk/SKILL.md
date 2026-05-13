@@ -11,10 +11,11 @@ Use this skill when the user asks about portfolio risk, Value at Risk (VaR), Sha
 
 ### Step 1 — Fetch Risk Metrics
 
-Call the `portfolio_risk` tool. If the user specified tickers, pass them; otherwise omit `tickers` to auto-read the watchlist.
+Call the `portfolio_risk` tool with explicit tickers. If the user asks about their watchlist, pass the watchlist entries supplied in the prompt/context as the watchlist_entries argument.
 
 ```
-portfolio_risk({ tickers?: [...], lookback_days: 252, confidence_level: 0.95, risk_free_rate: 0.05 })
+portfolio_risk({ tickers: ["AAPL", "MSFT", "GOOGL"], lookback_days: 252, confidence_level: 0.95, risk_free_rate: 0.05 })
+portfolio_risk({ watchlist_entries: [{ ticker: "AAPL", shares: 10, costBasis: 150, addedAt: "2026-01-01" }] })
 ```
 
 This returns per-ticker volatility, Sharpe, VaR, CVaR, maxDrawdown, and the full correlation matrix plus equal-weighted portfolio aggregates.

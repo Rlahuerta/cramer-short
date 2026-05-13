@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 import type { ToolEndEvent, ToolStartEvent } from '../agent/types.js';
 import { cramerShortPath } from './paths.js';
 

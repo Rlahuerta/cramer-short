@@ -767,9 +767,13 @@ describe('Agent E2E — basic financial query flows', () => {
           }
         }
       } else {
+        const lowerAnswer = result.answer.toLowerCase();
         expect(markovPayload.data?.status).toBe('abstain');
-        expect(result.answer.toLowerCase()).toMatch(/markov[^\n]*abstain|abstained/);
-        expect(result.answer.toLowerCase()).toMatch(/no calibrated.*distribution|distribution was emitted|abstained from emitting.*distribution/);
+        expect(lowerAnswer).toMatch(/markov[^\n]*abstain|abstained/);
+        expect(
+          /(?:no calibrated|did not emit|abstained from emitting).*(?:scenario\s+)?distribution/.test(lowerAnswer)
+          || /distribution.*(?:was not emitted|not emitted)/.test(lowerAnswer),
+        ).toBe(true);
       }
 
       expect(result.answer.toLowerCase()).toMatch(/btc|bitcoin/);

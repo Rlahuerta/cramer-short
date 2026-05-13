@@ -47,7 +47,7 @@ import {
   createSkillSelector,
 } from './components/index.js';
 import { editorTheme, theme } from './theme.js';
-import type { HistoryItem } from './types.js';
+import type { HistoryItem } from './controllers/types.js';
 import { formatDuration, formatExchangeForScrollback } from './utils/scrollback.js';
 import { logError } from './utils/error-logger.js';
 import { exportSession } from './utils/export.js';
@@ -1518,6 +1518,12 @@ export async function runCli() {
     if (!sessionStarted) {
       sessionStarted = true;
       void sessionController.startSession(query);
+    }
+
+    try {
+      agentRunner.setWatchlistEntries(new WatchlistController(process.cwd()).list());
+    } catch {
+      agentRunner.setWatchlistEntries([]);
     }
 
     const result = await agentRunner.runQuery(query);

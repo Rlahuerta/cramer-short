@@ -12,7 +12,7 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { stripThinkingTags } from './agent/agent.js';
 import { formatDuration, formatExchangeForScrollback } from './utils/scrollback.js';
-import type { HistoryItem } from './types.js';
+import type { HistoryItem } from './controllers/types.js';
 
 // Strip ANSI escape codes for structural assertions.
 const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');

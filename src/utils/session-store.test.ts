@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 import {
   generateSessionName,
   createSession,

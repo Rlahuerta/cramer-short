@@ -19,7 +19,7 @@ import {
 import { DEFAULT_MAX_ITERATIONS } from './agent/index.js';
 import type { PriceSnapshot } from './controllers/watchlist-display.js';
 import type { WatchlistEntry } from './controllers/watchlist-controller.js';
-import type { HistoryItem } from './types.js';
+import type { HistoryItem } from './controllers/types.js';
 import { Container } from '@mariozechner/pi-tui';
 
 // ─────────────────────────────────────────────────────────────────────────────

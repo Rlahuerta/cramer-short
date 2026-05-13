@@ -15,7 +15,11 @@ import { heartbeatTool, HEARTBEAT_TOOL_DESCRIPTION } from './heartbeat/heartbeat
 import { memoryGetTool, MEMORY_GET_DESCRIPTION, memorySearchTool, MEMORY_SEARCH_DESCRIPTION, memoryUpdateTool, MEMORY_UPDATE_DESCRIPTION, recallFinancialContextTool, RECALL_FINANCIAL_CONTEXT_DESCRIPTION, storeFinancialInsightTool, STORE_FINANCIAL_INSIGHT_DESCRIPTION } from './memory/index.js';
 import { discoverSkills } from '../skills/index.js';
 import { sequentialThinkingTool, sequentialThinkingEngine, SEQUENTIAL_THINKING_DESCRIPTION } from './thinking/sequential.js';
-import { portfolioRiskTool, PORTFOLIO_RISK_DESCRIPTION } from './finance/portfolio-risk.js';
+import {
+  createPortfolioRiskTool,
+  PORTFOLIO_RISK_DESCRIPTION,
+  type PortfolioRiskWatchlistEntry,
+} from './finance/portfolio-risk.js';
 import { waccInputsTool, WACC_INPUTS_DESCRIPTION } from './finance/wacc-inputs.js';
 import { geopoliticsSearchTool, GEOPOLITICS_SEARCH_DESCRIPTION } from './osint/geopolitics-search.js';
 import { getFixedIncomeTool, FIXED_INCOME_DESCRIPTION } from './finance/fixed-income.js';
@@ -42,6 +46,10 @@ export interface RegisteredTool {
   description: string;
 }
 
+export interface ToolRegistryOptions {
+  watchlistEntries?: PortfolioRiskWatchlistEntry[];
+}
+
 /**
  * Get all registered tools with their descriptions.
  * Conditionally includes tools based on environment configuration.
@@ -49,7 +57,7 @@ export interface RegisteredTool {
  * @param model - The model name (needed for tools that require model-specific configuration)
  * @returns Array of registered tools
  */
-export function getToolRegistry(model: string): RegisteredTool[] {
+export function getToolRegistry(model: string, options: ToolRegistryOptions = {}): RegisteredTool[] {
   // Reset sequential thinking state for each new agent session
   sequentialThinkingEngine.reset();
 
@@ -91,7 +99,7 @@ export function getToolRegistry(model: string): RegisteredTool[] {
     },
     {
       name: 'portfolio_risk',
-      tool: portfolioRiskTool,
+      tool: createPortfolioRiskTool({ watchlistEntries: options.watchlistEntries }),
       description: PORTFOLIO_RISK_DESCRIPTION,
     },
     {
@@ -275,8 +283,8 @@ export function getToolRegistry(model: string): RegisteredTool[] {
  * @param model - The model name
  * @returns Array of tool instances
  */
-export function getTools(model: string): StructuredToolInterface[] {
-  return getToolRegistry(model).map((t) => t.tool);
+export function getTools(model: string, options: ToolRegistryOptions = {}): StructuredToolInterface[] {
+  return getToolRegistry(model, options).map((t) => t.tool);
 }
 
 /**

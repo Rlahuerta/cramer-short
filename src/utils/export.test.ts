@@ -11,7 +11,7 @@ mock.module('./paths.js', () => ({
 
 const { exportToMarkdown, exportToJson, exportToCsv, exportSession } =
   await import(`./export.js?t=${Date.now()}`) as typeof import('./export.js');
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 import type { DisplayEvent } from '../agent/types.js';
 
 // ============================================================================

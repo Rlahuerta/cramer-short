@@ -3,7 +3,7 @@ import { AIMessage } from '@langchain/core/messages';
 
 // Capture real modules before mocking so afterAll can restore
 const realLlm = await import('../../model/llm.js');
-const realPrompts = await import('../../agent/prompts.js');
+const realDate = await import('../../utils/date.js');
 const realFilings = await import('./filings.js');
 
 const mockCallLlm = mock(async () => ({
@@ -34,10 +34,8 @@ mock.module('../../model/llm.js', () => ({
   callLlm: mockCallLlm,
 }));
 
-mock.module('../../agent/prompts.js', () => ({
+mock.module('../../utils/date.js', () => ({
   getCurrentDate: () => '2024-01-15',
-  buildSystemPrompt: () => 'Mock system prompt',
-  SYSTEM_PROMPT_CACHE_TTL: 60000,
 }));
 
 mock.module('./filings.js', () => ({
@@ -50,7 +48,7 @@ mock.module('./filings.js', () => ({
 
 afterAll(() => {
   mock.module('../../model/llm.js', () => realLlm);
-  mock.module('../../agent/prompts.js', () => realPrompts);
+  mock.module('../../utils/date.js', () => realDate);
   mock.module('./filings.js', () => realFilings);
 });
 

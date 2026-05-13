@@ -58,6 +58,13 @@ export interface AgentConfig {
   memoryEnabled?: boolean;
   /** Optional explicit tool set for tests or isolated harnesses. */
   tools?: StructuredToolInterface[];
+  /** Watchlist entries supplied by the controller layer for tools that need portfolio context. */
+  watchlistEntries?: Array<{
+    ticker: string;
+    costBasis?: number;
+    shares?: number;
+    addedAt?: string;
+  }>;
   /** Optional tool-description override for prompt-construction tests. */
   toolDescriptionsOverride?: string;
   /**

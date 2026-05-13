@@ -13,7 +13,7 @@ import type {
 import { logError } from '../utils/error-logger.js';
 import { classifyError } from '../utils/errors.js';
 import type { DisplayEvent } from '../agent/types.js';
-import type { HistoryItem, HistoryItemStatus, WorkingState } from '../types.js';
+import type { HistoryItem, HistoryItemStatus, WorkingState } from '../controllers/types.js';
 import { autoStoreFromRun } from '../memory/auto-store.js';
 
 type ChangeListener = () => void;
@@ -101,6 +101,10 @@ export class AgentRunnerController {
    */
   setModel(model: string, provider: string): void {
     this.agentConfig = { ...this.agentConfig, model, modelProvider: provider };
+  }
+
+  setWatchlistEntries(entries: NonNullable<AgentConfig['watchlistEntries']>): void {
+    this.agentConfig = { ...this.agentConfig, watchlistEntries: entries };
   }
 
   get history(): HistoryItem[] {

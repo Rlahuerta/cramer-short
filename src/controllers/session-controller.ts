@@ -17,7 +17,7 @@ import {
 } from '../utils/session-store.js';
 import { DEFAULT_HISTORY_LIMIT } from '../utils/history-context.js';
 import type { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 
 export type SummarizerFn = (messages: SessionLlmMessage[]) => Promise<string>;
 

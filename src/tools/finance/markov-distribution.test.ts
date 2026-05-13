@@ -5818,16 +5818,11 @@ describe('markov_distribution tool output envelope', () => {
       }));
 
       const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
-      // Mean-reverting prices with no persistent trend confuse the discrete-state Markov model
-      // and produce outOfSampleR^2 well below -0.03
-      const prices: number[] = [];
-      const meanPrice = 65000;
-      for (let i = 0; i < 80; i++) {
-        const meanReversion = (meanPrice - (prices[prices.length - 1] ?? meanPrice)) * 0.3;
-        const noise = (Math.random() - 0.5) * 800;
-        const nextPrice = (prices[prices.length - 1] ?? meanPrice) + meanReversion + noise;
-        prices.push(Math.round(nextPrice * 100) / 100);
-      }
+      // Deterministic alternating prices produce poor out-of-sample R^2 without
+      // making this regression depend on Math.random().
+      const prices = Array.from({ length: 80 }, (_, i) => (
+        Math.round((65000 + (i % 2 === 0 ? 2000 : -2000) + (i % 5) * 10) * 100) / 100
+      ));
 
       const result = await freshTool.func({
         ticker: 'BTC-USD',

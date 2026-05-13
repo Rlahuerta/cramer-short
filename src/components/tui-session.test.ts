@@ -22,7 +22,7 @@ import { DEFAULT_HISTORY_LIMIT, FULL_ANSWER_TURNS } from '../utils/history-conte
 import { SessionController } from '../controllers/session-controller.js';
 import { AgentRunnerController } from '../controllers/agent-runner.js';
 import { formatRelativeTime, createSessionSelector } from '../components/select-list.js';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 import type { SessionIndexEntry } from '../utils/session-store.js';
 
 // ─── helpers ────────────────────────────────────────────────────────────────

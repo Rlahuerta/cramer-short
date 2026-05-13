@@ -2,7 +2,8 @@ export { Agent } from './agent.js';
 
 export { Scratchpad } from './scratchpad.js';
 
-export { getCurrentDate, buildSystemPrompt, buildIterationPrompt, getDefaultSystemPrompt, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
+export { buildSystemPrompt, buildIterationPrompt, getDefaultSystemPrompt, DEFAULT_SYSTEM_PROMPT } from './prompts.js';
+export { getCurrentDate } from '../utils/date.js';
 
 export type { 
   ApprovalDecision,

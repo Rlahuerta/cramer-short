@@ -11,7 +11,7 @@ import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
 import { DEFAULT_HISTORY_LIMIT } from '../utils/history-context.js';
 import { loadSession } from '../utils/session-store.js';
 import { SessionController } from './session-controller.js';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 

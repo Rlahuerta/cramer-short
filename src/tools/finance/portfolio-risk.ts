@@ -2,7 +2,6 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { api } from './api.js';
 import { formatToolResult } from '../types.js';
-import { WatchlistController } from '../../controllers/watchlist-controller.js';
 import { buildPortfolioRiskReport } from '../../utils/portfolio-stats.js';
 
 export const PORTFOLIO_RISK_DESCRIPTION = `
@@ -19,10 +18,10 @@ When to use this tool:
 When NOT to use this tool:
 - For a single stock's current price or fundamentals (use get_financials instead)
 - For screening stocks by financial ratios (use stock_screener)
-- When the user has no watchlist and no tickers are provided
 
 Inputs:
-- tickers: optional list of ticker symbols; if omitted, reads from the user's watchlist
+- tickers: list of ticker symbols to analyse
+- watchlist_entries: watchlist entries supplied by the caller; pass these when the user asks about their watchlist
 - lookback_days: historical window for price data (default 252 ≈ 1 trading year)
 - confidence_level: VaR / CVaR confidence (default 0.95)
 - risk_free_rate: annual risk-free rate used for Sharpe (default 0.05)
@@ -37,7 +36,16 @@ const PortfolioRiskInputSchema = z.object({
   tickers: z
     .array(z.string())
     .optional()
-    .describe('Ticker symbols to analyse. Omit to auto-read from the user watchlist.'),
+    .describe('Ticker symbols to analyse. Pass explicitly unless watchlist_entries is supplied.'),
+  watchlist_entries: z
+    .array(z.object({
+      ticker: z.string(),
+      costBasis: z.number().optional(),
+      shares: z.number().optional(),
+      addedAt: z.string().optional(),
+    }))
+    .optional()
+    .describe('Watchlist entries supplied by the CLI/controller layer. Used when tickers is omitted.'),
   lookback_days: z
     .number()
     .int()
@@ -59,6 +67,17 @@ const PortfolioRiskInputSchema = z.object({
     .describe('Annual risk-free rate used for Sharpe ratio (default 0.05 = 5%).'),
 });
 
+export interface PortfolioRiskWatchlistEntry {
+  ticker: string;
+  costBasis?: number;
+  shares?: number;
+  addedAt?: string;
+}
+
+export interface PortfolioRiskToolOptions {
+  watchlistEntries?: PortfolioRiskWatchlistEntry[];
+}
+
 /** Return a YYYY-MM-DD date that is `days` calendar days in the past. */
 function dateNDaysAgo(days: number): string {
   const d = new Date();
@@ -71,90 +90,98 @@ function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export const portfolioRiskTool = new DynamicStructuredTool({
-  name: 'portfolio_risk',
-  description: PORTFOLIO_RISK_DESCRIPTION,
-  schema: PortfolioRiskInputSchema,
-  func: async (input) => {
-    if (!process.env.FINANCIAL_DATASETS_API_KEY) {
-      return formatToolResult({
-        error: 'FINANCIAL_DATASETS_API_KEY is not set. Portfolio risk analysis requires historical price data.',
-      });
-    }
+function normalizeTickers(input: { tickers?: string[]; watchlist_entries?: PortfolioRiskWatchlistEntry[] }): string[] {
+  const rawTickers = input.tickers?.length
+    ? input.tickers
+    : input.watchlist_entries?.map((entry) => entry.ticker) ?? [];
 
-    // Resolve ticker list
-    let tickers: string[] = (input.tickers ?? []).map((t) => t.trim().toUpperCase());
-    if (tickers.length === 0) {
-      try {
-        const entries = new WatchlistController(process.cwd()).list();
-        tickers = entries.map((e) => e.ticker);
-      } catch {
-        // watchlist unreadable — fall through to empty-list error below
+  return [...new Set(
+    rawTickers
+      .map((ticker) => ticker.trim().toUpperCase())
+      .filter((ticker) => ticker.length > 0),
+  )];
+}
+
+export function createPortfolioRiskTool(options: PortfolioRiskToolOptions = {}): DynamicStructuredTool {
+  return new DynamicStructuredTool({
+    name: 'portfolio_risk',
+    description: PORTFOLIO_RISK_DESCRIPTION,
+    schema: PortfolioRiskInputSchema,
+    func: async (input) => {
+      if (!process.env.FINANCIAL_DATASETS_API_KEY) {
+        return formatToolResult({
+          error: 'FINANCIAL_DATASETS_API_KEY is not set. Portfolio risk analysis requires historical price data.',
+        });
       }
-    }
 
-    if (tickers.length === 0) {
-      return formatToolResult({
-        error:
-          'No tickers provided and watchlist is empty. Add tickers to /watchlist or pass them explicitly.',
-      });
-    }
+      const effectiveInput = !input.tickers?.length && !input.watchlist_entries?.length && options.watchlistEntries?.length
+        ? { ...input, watchlist_entries: options.watchlistEntries }
+        : input;
+      const tickers = normalizeTickers(effectiveInput);
+      if (tickers.length === 0) {
+        return formatToolResult({
+          error: 'No tickers provided. Pass tickers explicitly, or pass watchlist_entries from the controller layer.',
+        });
+      }
 
-    const startDate = dateNDaysAgo(input.lookback_days);
-    const endDate = todayStr();
-    const sourceUrls: string[] = [];
+      const startDate = dateNDaysAgo(effectiveInput.lookback_days);
+      const endDate = todayStr();
+      const sourceUrls: string[] = [];
 
-    // Fetch close-price history for each ticker in parallel
-    const pricesByTicker: Record<string, number[]> = {};
-    const errors: string[] = [];
+      // Fetch close-price history for each ticker in parallel
+      const pricesByTicker: Record<string, number[]> = {};
+      const errors: string[] = [];
 
-    await Promise.all(
-      tickers.map(async (ticker) => {
-        try {
-          const { data, url } = await api.get('/prices/', {
-            ticker,
-            interval: 'day',
-            start_date: startDate,
-            end_date: endDate,
-          });
-          sourceUrls.push(url);
-          const prices: number[] = ((data as { prices?: unknown[] }).prices ?? [])
-            .map((p) => (p as { close: number }).close)
-            .filter((v): v is number => typeof v === 'number' && isFinite(v));
-          if (prices.length < 20) {
-            errors.push(`${ticker}: insufficient price history (${prices.length} days)`);
-            return;
+      await Promise.all(
+        tickers.map(async (ticker) => {
+          try {
+            const { data, url } = await api.get('/prices/', {
+              ticker,
+              interval: 'day',
+              start_date: startDate,
+              end_date: endDate,
+            });
+            sourceUrls.push(url);
+            const prices: number[] = ((data as { prices?: unknown[] }).prices ?? [])
+              .map((p) => (p as { close: number }).close)
+              .filter((v): v is number => typeof v === 'number' && isFinite(v));
+            if (prices.length < 20) {
+              errors.push(`${ticker}: insufficient price history (${prices.length} days)`);
+              return;
+            }
+            pricesByTicker[ticker] = prices;
+          } catch (err) {
+            errors.push(
+              `${ticker}: price fetch failed — ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
-          pricesByTicker[ticker] = prices;
-        } catch (err) {
-          errors.push(
-            `${ticker}: price fetch failed — ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }),
-    );
+        }),
+      );
 
-    const validTickers = Object.keys(pricesByTicker);
-    if (validTickers.length === 0) {
-      return formatToolResult({ error: 'Could not fetch price data for any ticker.', errors });
-    }
+      const validTickers = Object.keys(pricesByTicker);
+      if (validTickers.length === 0) {
+        return formatToolResult({ error: 'Could not fetch price data for any ticker.', errors });
+      }
 
-    // Equal weights
-    const w = 1 / validTickers.length;
-    const weights: Record<string, number> = Object.fromEntries(
-      validTickers.map((t) => [t, w]),
-    );
+      // Equal weights
+      const w = 1 / validTickers.length;
+      const weights: Record<string, number> = Object.fromEntries(
+        validTickers.map((t) => [t, w]),
+      );
 
-    const report = buildPortfolioRiskReport(
-      pricesByTicker,
-      weights,
-      input.confidence_level,
-      input.risk_free_rate,
-    );
+      const report = buildPortfolioRiskReport(
+        pricesByTicker,
+        weights,
+        effectiveInput.confidence_level,
+        effectiveInput.risk_free_rate,
+      );
 
-    const result: Record<string, unknown> = report as unknown as Record<string, unknown>;
-    if (errors.length > 0) result['warnings'] = errors;
+      const result: Record<string, unknown> = report as unknown as Record<string, unknown>;
+      if (errors.length > 0) result['warnings'] = errors;
 
-    return formatToolResult(result, sourceUrls);
-  },
-});
+      return formatToolResult(result, sourceUrls);
+    },
+  });
+}
+
+export const portfolioRiskTool = createPortfolioRiskTool();

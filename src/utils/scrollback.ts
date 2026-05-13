@@ -6,7 +6,7 @@ import type {
   ToolErrorEvent,
   ToolStartEvent,
 } from '../agent/types.js';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 import { theme } from '../theme.js';
 import { formatResponse } from './markdown-table.js';
 

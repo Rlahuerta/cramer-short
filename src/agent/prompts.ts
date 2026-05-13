@@ -4,48 +4,25 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getChannelProfile } from './channels.js';
-import { resolveForecastLabMarkovParameterDefaults } from '../tools/finance/markov-distribution.js';
 import {
+  getBtcSelectiveMarkovConfidenceThreshold,
+  isExplicitCombinedMarkovPolymarketRequest,
   isExplicitGoldCombinedMarkovPolymarketRequest,
   isExplicitPolymarketForecastRequest,
   shouldInjectBtcShortHorizonLowConfidencePrompt,
   shouldInjectBtcShortHorizonMixedEvidencePrompt,
-} from './agent.js';
+} from './query-router.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { cramerShortPath } from '../utils/paths.js';
+import { getCurrentDate } from '../utils/date.js';
 import type { ForecastLabRoutingHint } from './forecast-lab-routing.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-function getBtcSelectiveMarkovConfidenceThreshold(): number {
-  return resolveForecastLabMarkovParameterDefaults('btc').recommendedConfidenceThreshold;
-}
-
-function isExplicitCombinedMarkovPolymarketRequest(query: string): boolean {
-  const lower = query.toLowerCase();
-  const hasMarkovMention = /\bmarkov(?: chain| distribution)?\b/.test(lower);
-  const hasPolymarketMention = /\bpolymarket\b/.test(lower) || lower.includes('polymarket_forecast');
-  const hasForecastIntent = /\b(?:forecast|prediction|predict|price target|price outlook|outlook)\b/.test(lower);
-  return hasMarkovMention && hasPolymarketMention && hasForecastIntent;
-}
-
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/**
- * Returns the current date formatted for prompts.
- */
-export function getCurrentDate(): string {
-  const options: Intl.DateTimeFormatOptions = {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  };
-  return new Date().toLocaleDateString('en-US', options);
-}
 
 /**
  * Load SOUL.md content from user override or bundled file.

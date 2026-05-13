@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { formatExchangeForScrollback, formatDuration } from './scrollback.js';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 
 function makeItem(overrides: Partial<HistoryItem> = {}): HistoryItem {
   return {

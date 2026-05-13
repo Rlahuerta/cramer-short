@@ -4,7 +4,7 @@ import { AIMessage, ToolCall } from '@langchain/core/messages';
 import { z } from 'zod';
 import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
-import { getCurrentDate } from '../../agent/prompts.js';
+import { getCurrentDate } from '../../utils/date.js';
 import { tavilySearch } from '../search/tavily.js';
 import { getPreferredApi, setPreferredApi } from '../../utils/api-routing-cache.js';
 
