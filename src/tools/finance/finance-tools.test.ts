@@ -1,4 +1,7 @@
-import { mock, describe, it, expect, beforeEach, spyOn, afterAll } from 'bun:test';
+import { mock, describe, it, expect, beforeEach, spyOn, afterAll, setSystemTime } from 'bun:test';
+
+const FIXED_NOW = new Date('2026-01-15T12:00:00.000Z');
+const FIXED_TODAY = FIXED_NOW.toISOString().slice(0, 10);
 
 // Capture real module before mocking so afterAll can restore
 const realApi = await import('./api.js');
@@ -14,6 +17,7 @@ mock.module('./api.js', () => ({
 }));
 
 afterAll(() => {
+  setSystemTime();
   mock.module('./api.js', () => realApi);
 });
 
@@ -21,20 +25,20 @@ afterAll(() => {
 // Cache-busting ?t= forces Bun to re-evaluate each module in a fresh context so it
 // picks up the mock.module('./api.js') above — rather than reusing a module instance
 // that was already loaded (with real api.js) by another test file in the same worker.
-const t = Date.now();
-const { getEarnings } = await import(`./earnings.js?t=${t}`) as typeof import('./earnings.js');
-const { getAnalystEstimates } = await import(`./estimates.js?t=${t}`) as typeof import('./estimates.js');
-const { getCompanyNews } = await import(`./news.js?t=${t}`) as typeof import('./news.js');
-const { getCryptoPriceSnapshot, getCryptoPrices, getCryptoTickers } = await import(`./crypto.js?t=${t}`) as typeof import('./crypto.js');
-const { getInsiderTrades } = await import(`./insider_trades.js?t=${t}`) as typeof import('./insider_trades.js');
-const { getSegmentedRevenues } = await import(`./segments.js?t=${t}`) as typeof import('./segments.js');
-const { getStockPrice, getStockPrices, getStockTickers } = await import(`./stock-price.js?t=${t}`) as typeof import('./stock-price.js');
-const { getKeyRatios, getHistoricalKeyRatios } = await import(`./key-ratios.js?t=${t}`) as typeof import('./key-ratios.js');
-const { getIncomeStatements, getBalanceSheets, getCashFlowStatements, getAllFinancialStatements } = await import(`./fundamentals.js?t=${t}`) as typeof import('./fundamentals.js');
-const { getFilings, get10KFilingItems, get10QFilingItems, get8KFilingItems } = await import(`./filings.js?t=${t}`) as typeof import('./filings.js');
+const importCacheKey = 'finance-tools-test';
+const { getEarnings } = await import(`./earnings.js?t=${importCacheKey}`) as typeof import('./earnings.js');
+const { getAnalystEstimates } = await import(`./estimates.js?t=${importCacheKey}`) as typeof import('./estimates.js');
+const { getCompanyNews } = await import(`./news.js?t=${importCacheKey}`) as typeof import('./news.js');
+const { getCryptoPriceSnapshot, getCryptoPrices, getCryptoTickers } = await import(`./crypto.js?t=${importCacheKey}`) as typeof import('./crypto.js');
+const { getInsiderTrades } = await import(`./insider_trades.js?t=${importCacheKey}`) as typeof import('./insider_trades.js');
+const { getSegmentedRevenues } = await import(`./segments.js?t=${importCacheKey}`) as typeof import('./segments.js');
+const { getStockPrice, getStockPrices, getStockTickers } = await import(`./stock-price.js?t=${importCacheKey}`) as typeof import('./stock-price.js');
+const { getKeyRatios, getHistoricalKeyRatios } = await import(`./key-ratios.js?t=${importCacheKey}`) as typeof import('./key-ratios.js');
+const { getIncomeStatements, getBalanceSheets, getCashFlowStatements, getAllFinancialStatements } = await import(`./fundamentals.js?t=${importCacheKey}`) as typeof import('./fundamentals.js');
+const { getFilings, get10KFilingItems, get10QFilingItems, get8KFilingItems } = await import(`./filings.js?t=${importCacheKey}`) as typeof import('./filings.js');
 // getFilingItemTypes has a module-level cache (cachedItemTypes) — always import fresh so
 // prior test runs don't serve stale data from a different worker's fetch mock.
-const { getFilingItemTypes } = await import(`./filings.js?getFilingItemTypes=${t}`) as typeof import('./filings.js');
+const { getFilingItemTypes } = await import(`./filings.js?getFilingItemTypes=${importCacheKey}`) as typeof import('./filings.js');
 
 // Rich mock data covering all tool response shapes
 const mockApiData: Record<string, unknown> = {
@@ -54,7 +58,30 @@ const mockApiData: Record<string, unknown> = {
   filings: [{ accession_number: '0001234', filing_type: '10-K' }],
 };
 
+type ApiGetCall = [
+  path: string,
+  params?: Record<string, unknown>,
+  options?: Record<string, unknown>,
+];
+
+function firstApiGetCall(): ApiGetCall {
+  return mockGet.mock.calls[0] as unknown as ApiGetCall;
+}
+
+function expectApiPath(path: string): void {
+  expect(firstApiGetCall()[0]).toBe(path);
+}
+
+function expectApiParams(params: Record<string, unknown>): void {
+  expect(firstApiGetCall()[1]).toMatchObject(params);
+}
+
+function expectApiOptions(options: Record<string, unknown>): void {
+  expect(firstApiGetCall()[2]).toMatchObject(options);
+}
+
 beforeEach(() => {
+  setSystemTime(FIXED_NOW);
   mockGet.mockClear();
   mockGet.mockImplementation(() =>
     Promise.resolve({ data: mockApiData, url: 'https://api.example.com/test' })
@@ -68,8 +95,8 @@ beforeEach(() => {
 describe('getEarnings', () => {
   it('uppercases ticker and calls /earnings', async () => {
     const result = JSON.parse(await getEarnings.invoke({ ticker: 'aapl' }));
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/earnings');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL' });
+    expectApiPath('/earnings');
+    expectApiParams({ ticker: 'AAPL' });
     expect(result.data).toEqual(mockApiData.earnings);
   });
 
@@ -86,8 +113,8 @@ describe('getEarnings', () => {
 describe('getAnalystEstimates', () => {
   it('passes period param and calls /analyst-estimates/', async () => {
     await getAnalystEstimates.invoke({ ticker: 'aapl', period: 'quarterly' });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/analyst-estimates/');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ period: 'quarterly' });
+    expectApiPath('/analyst-estimates/');
+    expectApiParams({ period: 'quarterly' });
   });
 
   it('returns valid JSON', async () => {
@@ -103,18 +130,18 @@ describe('getAnalystEstimates', () => {
 describe('getCompanyNews', () => {
   it('uppercases ticker and calls /news', async () => {
     await getCompanyNews.invoke({ ticker: 'aapl', limit: 5 });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/news');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL' });
+    expectApiPath('/news');
+    expectApiParams({ ticker: 'AAPL' });
   });
 
   it('caps limit at 10', async () => {
     await getCompanyNews.invoke({ ticker: 'AAPL', limit: 20 });
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ limit: 10 });
+    expectApiParams({ limit: 10 });
   });
 
   it('allows limit <= 10 unchanged', async () => {
     await getCompanyNews.invoke({ ticker: 'AAPL', limit: 7 });
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ limit: 7 });
+    expectApiParams({ limit: 7 });
   });
 });
 
@@ -125,7 +152,7 @@ describe('getCompanyNews', () => {
 describe('getCryptoPriceSnapshot', () => {
   it('calls /crypto/prices/snapshot/', async () => {
     await getCryptoPriceSnapshot.invoke({ ticker: 'BTC-USD' });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/crypto/prices/snapshot/');
+    expectApiPath('/crypto/prices/snapshot/');
   });
 });
 
@@ -138,7 +165,7 @@ describe('getCryptoPrices', () => {
       start_date: '2023-01-01',
       end_date: '2023-06-01',
     });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/crypto/prices/');
+    expectApiPath('/crypto/prices/');
   });
 
   it('sets cacheable=true for fully closed date windows', async () => {
@@ -149,11 +176,11 @@ describe('getCryptoPrices', () => {
       start_date: '2023-01-01',
       end_date: '2023-06-01',
     });
-    expect((mockGet.mock.calls as any[][])[0][2]).toMatchObject({ cacheable: true });
+    expectApiOptions({ cacheable: true });
   });
 
   it('sets cacheable=false when end_date is today or future', async () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = FIXED_TODAY;
     await getCryptoPrices.invoke({
       ticker: 'BTC-USD',
       interval: 'day',
@@ -161,14 +188,14 @@ describe('getCryptoPrices', () => {
       start_date: '2023-01-01',
       end_date: today,
     });
-    expect((mockGet.mock.calls as any[][])[0][2]).toMatchObject({ cacheable: false });
+    expectApiOptions({ cacheable: false });
   });
 });
 
 describe('getCryptoTickers', () => {
   it('calls /crypto/prices/tickers/', async () => {
     await getCryptoTickers.invoke({});
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/crypto/prices/tickers/');
+    expectApiPath('/crypto/prices/tickers/');
   });
 });
 
@@ -179,8 +206,8 @@ describe('getCryptoTickers', () => {
 describe('getInsiderTrades', () => {
   it('uppercases ticker and calls /insider-trades/', async () => {
     await getInsiderTrades.invoke({ ticker: 'aapl', limit: 5 });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/insider-trades/');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL', limit: 5 });
+    expectApiPath('/insider-trades/');
+    expectApiParams({ ticker: 'AAPL', limit: 5 });
   });
 
   it('passes optional date filters', async () => {
@@ -190,7 +217,7 @@ describe('getInsiderTrades', () => {
       filing_date_gte: '2023-01-01',
       filing_date_lte: '2023-12-31',
     });
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({
+    expectApiParams({
       filing_date_gte: '2023-01-01',
       filing_date_lte: '2023-12-31',
     });
@@ -204,8 +231,8 @@ describe('getInsiderTrades', () => {
 describe('getSegmentedRevenues', () => {
   it('calls /financials/segmented-revenues/ with correct params', async () => {
     await getSegmentedRevenues.invoke({ ticker: 'AAPL', period: 'annual', limit: 4 });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/financials/segmented-revenues/');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL', period: 'annual', limit: 4 });
+    expectApiPath('/financials/segmented-revenues/');
+    expectApiParams({ ticker: 'AAPL', period: 'annual', limit: 4 });
   });
 });
 
@@ -216,8 +243,8 @@ describe('getSegmentedRevenues', () => {
 describe('getStockPrice', () => {
   it('uppercases and trims ticker, calls /prices/snapshot/', async () => {
     await getStockPrice.invoke({ ticker: '  aapl  ' });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/prices/snapshot/');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL' });
+    expectApiPath('/prices/snapshot/');
+    expectApiParams({ ticker: 'AAPL' });
   });
 });
 
@@ -229,7 +256,7 @@ describe('getStockPrices', () => {
       start_date: '2023-01-01',
       end_date: '2023-06-01',
     });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/prices/');
+    expectApiPath('/prices/');
   });
 
   it('sets cacheable=true for fully closed date windows', async () => {
@@ -239,25 +266,25 @@ describe('getStockPrices', () => {
       start_date: '2023-01-01',
       end_date: '2023-06-01',
     });
-    expect((mockGet.mock.calls as any[][])[0][2]).toMatchObject({ cacheable: true });
+    expectApiOptions({ cacheable: true });
   });
 
   it('sets cacheable=false when end_date is today', async () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = FIXED_TODAY;
     await getStockPrices.invoke({
       ticker: 'AAPL',
       interval: 'day',
       start_date: '2023-01-01',
       end_date: today,
     });
-    expect((mockGet.mock.calls as any[][])[0][2]).toMatchObject({ cacheable: false });
+    expectApiOptions({ cacheable: false });
   });
 });
 
 describe('getStockTickers', () => {
   it('calls /prices/snapshot/tickers/', async () => {
     await getStockTickers.invoke({});
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/prices/snapshot/tickers/');
+    expectApiPath('/prices/snapshot/tickers/');
   });
 });
 
@@ -268,16 +295,16 @@ describe('getStockTickers', () => {
 describe('getKeyRatios', () => {
   it('uppercases ticker and calls /financial-metrics/snapshot/', async () => {
     await getKeyRatios.invoke({ ticker: 'aapl' });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/financial-metrics/snapshot/');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL' });
+    expectApiPath('/financial-metrics/snapshot/');
+    expectApiParams({ ticker: 'AAPL' });
   });
 });
 
 describe('getHistoricalKeyRatios', () => {
   it('calls /financial-metrics/ with params', async () => {
     await getHistoricalKeyRatios.invoke({ ticker: 'AAPL', period: 'annual', limit: 4 });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/financial-metrics/');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL', period: 'annual', limit: 4 });
+    expectApiPath('/financial-metrics/');
+    expectApiParams({ ticker: 'AAPL', period: 'annual', limit: 4 });
   });
 
   it('passes optional date filter params', async () => {
@@ -287,7 +314,7 @@ describe('getHistoricalKeyRatios', () => {
       limit: 4,
       report_period_gte: '2022-01-01',
     });
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ report_period_gte: '2022-01-01' });
+    expectApiParams({ report_period_gte: '2022-01-01' });
   });
 });
 
@@ -298,29 +325,29 @@ describe('getHistoricalKeyRatios', () => {
 describe('getIncomeStatements', () => {
   it('calls /financials/income-statements/ with correct params', async () => {
     await getIncomeStatements.invoke({ ticker: 'AAPL', period: 'annual', limit: 4 });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/financials/income-statements/');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL', period: 'annual', limit: 4 });
+    expectApiPath('/financials/income-statements/');
+    expectApiParams({ ticker: 'AAPL', period: 'annual', limit: 4 });
   });
 });
 
 describe('getBalanceSheets', () => {
   it('calls /financials/balance-sheets/', async () => {
     await getBalanceSheets.invoke({ ticker: 'AAPL', period: 'annual', limit: 4 });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/financials/balance-sheets/');
+    expectApiPath('/financials/balance-sheets/');
   });
 });
 
 describe('getCashFlowStatements', () => {
   it('calls /financials/cash-flow-statements/', async () => {
     await getCashFlowStatements.invoke({ ticker: 'AAPL', period: 'annual', limit: 4 });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/financials/cash-flow-statements/');
+    expectApiPath('/financials/cash-flow-statements/');
   });
 });
 
 describe('getAllFinancialStatements', () => {
   it('calls /financials/', async () => {
     await getAllFinancialStatements.invoke({ ticker: 'AAPL', period: 'annual', limit: 4 });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/financials/');
+    expectApiPath('/financials/');
   });
 });
 
@@ -331,8 +358,8 @@ describe('getAllFinancialStatements', () => {
 describe('getFilings', () => {
   it('calls /filings/ with correct params', async () => {
     const result = await getFilings.invoke({ ticker: 'AAPL', limit: 5 });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/filings/');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL', limit: 5 });
+    expectApiPath('/filings/');
+    expectApiParams({ ticker: 'AAPL', limit: 5 });
     expect(() => JSON.parse(result)).not.toThrow();
   });
 });
@@ -340,9 +367,9 @@ describe('getFilings', () => {
 describe('get10KFilingItems', () => {
   it('uppercases ticker, sets filing_type=10-K, and uses cacheable=true', async () => {
     await get10KFilingItems.invoke({ ticker: 'aapl', accession_number: '0001234' });
-    expect((mockGet.mock.calls as any[][])[0][0]).toBe('/filings/items/');
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL', filing_type: '10-K' });
-    expect((mockGet.mock.calls as any[][])[0][2]).toMatchObject({ cacheable: true });
+    expectApiPath('/filings/items/');
+    expectApiParams({ ticker: 'AAPL', filing_type: '10-K' });
+    expectApiOptions({ cacheable: true });
   });
 });
 
@@ -353,14 +380,14 @@ describe('get10QFilingItems', () => {
       accession_number: '0001234',
       items: ['Part-1,Item-1'],
     });
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL', filing_type: '10-Q' });
+    expectApiParams({ ticker: 'AAPL', filing_type: '10-Q' });
   });
 });
 
 describe('get8KFilingItems', () => {
   it('uppercases ticker, sets filing_type=8-K', async () => {
     await get8KFilingItems.invoke({ ticker: 'aapl', accession_number: '0001234' });
-    expect((mockGet.mock.calls as any[][])[0][1]).toMatchObject({ ticker: 'AAPL', filing_type: '8-K' });
+    expectApiParams({ ticker: 'AAPL', filing_type: '8-K' });
   });
 });
 

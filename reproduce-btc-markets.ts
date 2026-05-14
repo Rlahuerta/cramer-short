@@ -4,6 +4,7 @@
  * Uses the same internal logic as src/tools/finance/polymarket-forecast.ts
  */
 
+import { MS_PER_DAY } from './src/utils/time.js';
 import { resolveTickerSearchIdentity } from './src/tools/finance/asset-resolver.js';
 import { extractSignals, scoreMarketRelevance } from './src/tools/finance/signal-extractor.js';
 import { fetchPolymarketMarkets, type PolymarketMarketResult } from './src/tools/finance/polymarket.js';
@@ -26,7 +27,7 @@ function daysUntilEndDate(endDate: string | null | undefined): number | null {
   if (!endDate) return null;
   const target = new Date(endDate);
   if (Number.isNaN(target.getTime())) return null;
-  return (target.getTime() - Date.now()) / 86_400_000;
+  return (target.getTime() - Date.now()) / MS_PER_DAY;
 }
 
 function isAlignedToHorizon(daysToExpiry: number | null, horizonDays: number): boolean {

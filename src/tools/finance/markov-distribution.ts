@@ -17,6 +17,7 @@
  *  - Davidovic & McCleary (2025, JRFM): Sentiment alpha ≪ VIX for return prediction
  */
 
+import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { resolveTickerSearchIdentity } from './asset-resolver.js';
@@ -968,7 +969,7 @@ function inspectAnchorCandidate(
     && options?.horizonDays != null
     && options.horizonDays > 14;
   const isNearTargetResolution = options?.horizonDays != null && endDate
-    ? Math.abs((Date.parse(endDate) - now) / 86_400_000 - options.horizonDays) <= 2
+    ? Math.abs((Date.parse(endDate) - now) / MS_PER_DAY - options.horizonDays) <= 2
     : false;
   const { trustScore, trustWeight, lowTrustReasons } = evaluateAnchorTrust({
     hasVolume,
@@ -1036,7 +1037,7 @@ function summarizeAnchorInspection(
   const closestResolution = accepted
     .filter((inspection) => inspection.endDate != null && !Number.isNaN(Date.parse(inspection.endDate)))
     .map((inspection) => {
-      const offset = (Date.parse(inspection.endDate!) - now) / 86_400_000 - (options?.horizonDays ?? 0);
+      const offset = (Date.parse(inspection.endDate!) - now) / MS_PER_DAY - (options?.horizonDays ?? 0);
       return { inspection, offset };
     })
     .sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))[0];
@@ -1069,7 +1070,7 @@ function getAnchorResolutionOffsetDays(
   const endMs = Date.parse(endDate);
   if (Number.isNaN(endMs)) return null;
   const now = options.referenceTimeMs ?? Date.now();
-  return Math.abs((endMs - now) / 86_400_000 - options.horizonDays);
+  return Math.abs((endMs - now) / MS_PER_DAY - options.horizonDays);
 }
 
 function shouldReplaceExistingAnchor(
@@ -1222,7 +1223,7 @@ export function applyCryptoTerminalAnchorFallback(
       } satisfies PriceThreshold;
     }
 
-    const daysUntilResolution = (endMs - now) / 86_400_000;
+    const daysUntilResolution = (endMs - now) / MS_PER_DAY;
     const daysOffset = Math.abs(daysUntilResolution - horizon);
 
     if (daysOffset <= HORIZON_TOLERANCE_DAYS) {
@@ -1291,7 +1292,7 @@ export function buildPolymarketAnchorQueryVariants(
   ];
   const monthVariants = isBtc14d
     ? (() => {
-        const monthName = new Date(Date.now() + 14 * 86_400_000)
+        const monthName = new Date(Date.now() + 14 * MS_PER_DAY)
           .toLocaleString('en-US', { month: 'long' });
         return [
           normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} ${monthName}`),
@@ -1352,8 +1353,8 @@ export function sortMarketsByHorizonCloseness<T extends { endDate?: string | nul
 ): T[] {
   const now = referenceTimeMs ?? Date.now();
   return [...markets].sort((a, b) => {
-    const aDays = a.endDate ? (Date.parse(a.endDate) - now) / 86_400_000 : Number.POSITIVE_INFINITY;
-    const bDays = b.endDate ? (Date.parse(b.endDate) - now) / 86_400_000 : Number.POSITIVE_INFINITY;
+    const aDays = a.endDate ? (Date.parse(a.endDate) - now) / MS_PER_DAY : Number.POSITIVE_INFINITY;
+    const bDays = b.endDate ? (Date.parse(b.endDate) - now) / MS_PER_DAY : Number.POSITIVE_INFINITY;
     const aDist = Number.isFinite(aDays) ? Math.abs(aDays - horizonDays) : Number.POSITIVE_INFINITY;
     const bDist = Number.isFinite(bDays) ? Math.abs(bDays - horizonDays) : Number.POSITIVE_INFINITY;
     if (aDist !== bDist) return aDist - bDist;
@@ -1371,7 +1372,7 @@ export function filterMarketsToHorizon<T extends { endDate?: string | null }>(
     if (!market.endDate) return true;
     const endMs = Date.parse(market.endDate);
     if (Number.isNaN(endMs)) return true;
-    const daysUntilResolution = (endMs - now) / 86_400_000;
+    const daysUntilResolution = (endMs - now) / MS_PER_DAY;
     return Math.abs(daysUntilResolution - horizonDays) <= Math.max(2, horizonDays * 0.5);
   });
 
@@ -1404,8 +1405,8 @@ async function fetchCandidatePolymarketAnchors(
     const toleranceDays = isBtc14d
       ? Math.max(7, Math.ceil(horizonDays * 0.65))
       : Math.max(5, horizonDays * 0.5);
-    const minDate = new Date(now + (horizonDays - toleranceDays) * 86_400_000);
-    const maxDate = new Date(now + (horizonDays + toleranceDays) * 86_400_000);
+    const minDate = new Date(now + (horizonDays - toleranceDays) * MS_PER_DAY);
+    const maxDate = new Date(now + (horizonDays + toleranceDays) * MS_PER_DAY);
     endDateFilter = {
       end_date_min: minDate.toISOString().slice(0, 10),
       end_date_max: maxDate.toISOString().slice(0, 10),
@@ -1536,7 +1537,7 @@ async function fetchCandidatePolymarketAnchors(
       question: market.question,
       probability: market.probability,
       volume: market.volume24h,
-      createdAt: market.ageDays != null ? Date.now() - market.ageDays * 86_400_000 : undefined,
+      createdAt: market.ageDays != null ? Date.now() - market.ageDays * MS_PER_DAY : undefined,
       endDate: market.endDate ?? null,
     }))
     .filter((market) => {
@@ -1620,7 +1621,7 @@ async function fetchCandidatePolymarketAnchors(
           question: market.question,
           probability: market.probability,
           volume: market.volume24h,
-          createdAt: market.ageDays != null ? Date.now() - market.ageDays * 86_400_000 : undefined,
+          createdAt: market.ageDays != null ? Date.now() - market.ageDays * MS_PER_DAY : undefined,
           endDate: market.endDate ?? null,
         }))
         .filter((market) => {
@@ -1662,7 +1663,7 @@ async function fetchCandidatePolymarketAnchors(
         if (!m.endDate) return true;
         const endMs = Date.parse(m.endDate);
         if (Number.isNaN(endMs)) return true;
-        const daysUntil = (endMs - Date.now()) / 86_400_000;
+        const daysUntil = (endMs - Date.now()) / MS_PER_DAY;
         return daysUntil > 0 && daysUntil <= horizonDays * 2;
       });
       anchorTrace('fetch_candidates_broader_fallback', {

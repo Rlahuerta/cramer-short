@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 import type {
   ArbiterReplayBundle,
   ArbiterReplayPolymarketMarket,
@@ -27,7 +28,7 @@ function sortPoints(points: ReplayPricePoint[]): ReplayPricePoint[] {
 }
 
 function forecastTargetTimeMs(bundle: ArbiterReplayBundle): number {
-  return Date.parse(bundle.capturedAt) + bundle.horizonDays * 86_400_000;
+  return Date.parse(bundle.capturedAt) + bundle.horizonDays * MS_PER_DAY;
 }
 
 function marketTargetTimeMs(

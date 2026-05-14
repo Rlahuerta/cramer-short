@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../../utils/time.js';
 import { describe, expect, it } from 'bun:test';
 import { computeMarkovDistribution } from '../markov-distribution.js';
 import {
@@ -258,9 +259,9 @@ describe('R5 longshot shrinkage RND wiring', () => {
     const currentPrice = 100;
     const now = Date.UTC(2026, 3, 29);
     const markets = [
-      { question: 'Will Bitcoin be above $95 on May 13?', probability: 0.99, volume: 100_000, createdAt: now - 5 * 86_400_000, endDate: new Date(now + 14 * 86_400_000).toISOString() },
-      { question: 'Will Bitcoin be above $100 on May 13?', probability: 0.50, volume: 100_000, createdAt: now - 5 * 86_400_000, endDate: new Date(now + 14 * 86_400_000).toISOString() },
-      { question: 'Will Bitcoin be above $105 on May 13?', probability: 0.01, volume: 100_000, createdAt: now - 5 * 86_400_000, endDate: new Date(now + 14 * 86_400_000).toISOString() },
+      { question: 'Will Bitcoin be above $95 on May 13?', probability: 0.99, volume: 100_000, createdAt: now - 5 * MS_PER_DAY, endDate: new Date(now + 14 * MS_PER_DAY).toISOString() },
+      { question: 'Will Bitcoin be above $100 on May 13?', probability: 0.50, volume: 100_000, createdAt: now - 5 * MS_PER_DAY, endDate: new Date(now + 14 * MS_PER_DAY).toISOString() },
+      { question: 'Will Bitcoin be above $105 on May 13?', probability: 0.01, volume: 100_000, createdAt: now - 5 * MS_PER_DAY, endDate: new Date(now + 14 * MS_PER_DAY).toISOString() },
     ];
 
     const disabled = await withSeed(33, () => computeMarkovDistribution({

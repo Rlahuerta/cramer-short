@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { api } from './api.js';
@@ -76,7 +77,7 @@ export const getCryptoPrices = new DynamicStructuredTool({
       return formatToolResult(data.prices || [], [url]);
     } catch {
       const startDate = new Date(input.start_date + 'T00:00:00');
-      const days = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / 86_400_000) + 1);
+      const days = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / MS_PER_DAY) + 1);
       const closes = await fetchBinanceDailyCloses(input.ticker, days);
       if (closes.length === 0) {
         return formatToolResult({ error: `No crypto price history available for ${input.ticker}` });

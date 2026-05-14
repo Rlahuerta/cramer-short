@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock, setSystemTime } from 'bun:test';
 import { MemoryManager } from '../../memory/index.js';
 import { memoryGetTool } from './memory-get.js';
 import { memorySearchTool } from './memory-search.js';
@@ -11,6 +11,10 @@ function parseResult(result: string): unknown {
   return (JSON.parse(result) as { data: unknown }).data;
 }
 
+const FIXED_NOW = new Date('2026-01-15T12:00:00.000Z');
+const FIXED_TODAY = FIXED_NOW.toISOString().slice(0, 10);
+const FIXED_TIMESTAMP = FIXED_NOW.getTime();
+
 // ---------------------------------------------------------------------------
 // Shared spy lifecycle
 // ---------------------------------------------------------------------------
@@ -18,13 +22,72 @@ function parseResult(result: string): unknown {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let managerSpy: ReturnType<typeof spyOn<any, any>>;
 
+beforeEach(() => {
+  setSystemTime(FIXED_NOW);
+});
+
 afterEach(() => {
   managerSpy?.mockRestore();
+  setSystemTime();
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function setupManager(partial: Record<string, unknown>): void {
   managerSpy = spyOn(MemoryManager, 'get').mockResolvedValue(partial as never);
+}
+
+type FinancialInsightFixture = {
+  id: number;
+  ticker: string;
+  content: string;
+  tags: string[];
+  updatedAt: number;
+};
+
+function financialInsight(overrides: Partial<FinancialInsightFixture> = {}): FinancialInsightFixture {
+  return {
+    id: 1,
+    ticker: 'AAPL',
+    content: 'test',
+    tags: [],
+    updatedAt: FIXED_TIMESTAMP,
+    ...overrides,
+  };
+}
+
+function financialStore(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    recallByTicker: () => [],
+    search: () => [],
+    getRouting: () => null,
+    getRelatedInsights: () => [],
+    ...overrides,
+  };
+}
+
+function setupFinancialStore(overrides: Record<string, unknown> = {}): void {
+  setupManager({ getFinancialStore: () => financialStore(overrides) });
+}
+
+function setupStoreFinancialInsight(id = 1): {
+  mockStore: ReturnType<typeof mock>;
+  mockAppend: ReturnType<typeof mock>;
+} {
+  const mockStore = mock(async () => id);
+  const mockAppend = mock(async () => {});
+  setupManager({
+    getFinancialStore: () => ({ storeInsight: mockStore }),
+    appendMemory: mockAppend,
+  });
+  return { mockStore, mockAppend };
+}
+
+function firstMockCall(fn: ReturnType<typeof mock>): unknown[] {
+  return fn.mock.calls[0] as unknown[];
+}
+
+function storedInsightTags(mockStore: ReturnType<typeof mock>): string[] {
+  return (firstMockCall(mockStore)[0] as { tags: string[] }).tags;
 }
 
 // ---------------------------------------------------------------------------
@@ -46,7 +109,7 @@ describe('memory_get', () => {
 
     await memoryGetTool.invoke({ path: 'MEMORY.md', from: 5, lines: 2 });
 
-    expect((mockGet.mock.calls as any[][])[0][0]).toEqual({ path: 'MEMORY.md', from: 5, lines: 2 });
+    expect(firstMockCall(mockGet)[0]).toEqual({ path: 'MEMORY.md', from: 5, lines: 2 });
   });
 
   it('reads a daily log file', async () => {
@@ -54,7 +117,7 @@ describe('memory_get', () => {
     setupManager({ get: mockGet });
 
     await memoryGetTool.invoke({ path: '2026-01-01.md' });
-    expect((mockGet.mock.calls as any[][])[0][0].path).toBe('2026-01-01.md');
+    expect((firstMockCall(mockGet)[0] as { path: string }).path).toBe('2026-01-01.md');
   });
 });
 
@@ -79,7 +142,7 @@ describe('memory_search', () => {
     setupManager({ isAvailable: () => true, search: mockSearch });
 
     await memorySearchTool.invoke({ query: 'my specific query' });
-    expect((mockSearch.mock.calls as any[][])[0][0]).toBe('my specific query');
+    expect(firstMockCall(mockSearch)[0]).toBe('my specific query');
   });
 
   it('returns disabled error when memory is unavailable', async () => {
@@ -136,7 +199,7 @@ describe('memory_update — append', () => {
 
     expect(result.success).toBe(true);
     expect(result.file).toBe('MEMORY.md');
-    expect((mockAppend.mock.calls as any[][])[0]).toEqual(['long_term', 'Test content']);
+    expect(firstMockCall(mockAppend)).toEqual(['long_term', 'Test content']);
   });
 
   it('resolves daily to today YYYY-MM-DD.md', async () => {
@@ -144,7 +207,7 @@ describe('memory_update — append', () => {
       await memoryUpdateTool.invoke({ content: 'Daily note', action: 'append', file: 'daily' }),
     ) as { success: boolean; file: string };
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = FIXED_TODAY;
     expect(result.success).toBe(true);
     expect(result.file).toBe(`${today}.md`);
   });
@@ -195,7 +258,7 @@ describe('memory_update — edit', () => {
     ) as { success: boolean };
 
     expect(result.success).toBe(true);
-    expect((mockEdit.mock.calls as any[][])[0]).toEqual(['long_term', 'old value', 'new value']);
+    expect(firstMockCall(mockEdit)).toEqual(['long_term', 'old value', 'new value']);
   });
 
   it('returns error when text is not found', async () => {
@@ -240,7 +303,7 @@ describe('memory_update — delete', () => {
     ) as { success: boolean };
 
     expect(result.success).toBe(true);
-    expect((mockDelete.mock.calls as any[][])[0]).toEqual(['long_term', 'Remove me']);
+    expect(firstMockCall(mockDelete)).toEqual(['long_term', 'Remove me']);
   });
 
   it('returns error when text is not found', async () => {
@@ -279,43 +342,22 @@ describe('recall_financial_context', () => {
   });
 
   it('returns no-context message when no insights found', async () => {
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [],
-        search: () => [],
-        getRouting: () => null,
-        getRelatedInsights: () => [],
-      }),
-    });
+    setupFinancialStore();
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL' });
     expect(result).toContain('No prior financial context found for AAPL');
   });
 
   it('includes namespace in no-context message', async () => {
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [],
-        search: () => [],
-        getRouting: () => null,
-        getRelatedInsights: () => [],
-      }),
-    });
+    setupFinancialStore();
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL', namespace: 'dcf' });
     expect(result).toContain('No prior financial context found for AAPL [ns:dcf]');
   });
 
   it('returns insights when byTicker finds results', async () => {
-    const insight = { id: 1, ticker: 'AAPL', content: 'Great company', tags: ['analysis:thesis'], updatedAt: Date.now() };
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [insight],
-        search: () => [],
-        getRouting: () => null,
-        getRelatedInsights: () => [],
-      }),
-    });
+    const insight = financialInsight({ content: 'Great company', tags: ['analysis:thesis'] });
+    setupFinancialStore({ recallByTicker: () => [insight] });
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL' });
     expect(result).toContain('Great company');
@@ -324,14 +366,10 @@ describe('recall_financial_context', () => {
   });
 
   it('includes routing hint when routing is set', async () => {
-    const insight = { id: 1, ticker: 'VWS.CO', content: 'Wind energy', tags: [], updatedAt: Date.now() };
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [insight],
-        search: () => [],
-        getRouting: () => 'fmp-premium',
-        getRelatedInsights: () => [],
-      }),
+    const insight = financialInsight({ ticker: 'VWS.CO', content: 'Wind energy' });
+    setupFinancialStore({
+      recallByTicker: () => [insight],
+      getRouting: () => 'fmp-premium',
     });
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'VWS.CO' });
@@ -340,15 +378,11 @@ describe('recall_financial_context', () => {
   });
 
   it('merges byTicker and byQuery results, deduplicating by id', async () => {
-    const shared = { id: 1, ticker: 'AAPL', content: 'Shared insight', tags: [], updatedAt: Date.now() };
-    const unique = { id: 2, ticker: 'AAPL', content: 'Query-only insight', tags: [], updatedAt: Date.now() };
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [shared],
-        search: () => [shared, unique],
-        getRouting: () => null,
-        getRelatedInsights: () => [],
-      }),
+    const shared = financialInsight({ content: 'Shared insight' });
+    const unique = financialInsight({ id: 2, content: 'Query-only insight' });
+    setupFinancialStore({
+      recallByTicker: () => [shared],
+      search: () => [shared, unique],
     });
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL', query: 'analysis' });
@@ -360,14 +394,10 @@ describe('recall_financial_context', () => {
       relation: 'peer',
       insight: { ticker: 'MSFT', content: 'Related company insight', tags: [] },
     };
-    const insight = { id: 1, ticker: 'AAPL', content: 'Main insight', tags: [], updatedAt: Date.now() };
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [insight],
-        search: () => [],
-        getRouting: () => null,
-        getRelatedInsights: () => [related],
-      }),
+    const insight = financialInsight({ content: 'Main insight' });
+    setupFinancialStore({
+      recallByTicker: () => [insight],
+      getRelatedInsights: () => [related],
     });
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL' });
@@ -375,15 +405,8 @@ describe('recall_financial_context', () => {
   });
 
   it('includes namespace in result header', async () => {
-    const insight = { id: 1, ticker: 'AAPL', content: 'DCF analysis', tags: [], updatedAt: Date.now() };
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [insight],
-        search: () => [],
-        getRouting: () => null,
-        getRelatedInsights: () => [],
-      }),
-    });
+    const insight = financialInsight({ content: 'DCF analysis' });
+    setupFinancialStore({ recallByTicker: () => [insight] });
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL', namespace: 'dcf' });
     expect(result).toContain('[ns:dcf]');
@@ -391,14 +414,10 @@ describe('recall_financial_context', () => {
 
   // routingHint branches
   it('routingHint fmp-ok → FMP free tier works', async () => {
-    const insight = { id: 1, ticker: 'AAPL', content: 'test', tags: [], updatedAt: Date.now() };
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [insight],
-        search: () => [],
-        getRouting: () => 'fmp-ok',
-        getRelatedInsights: () => [],
-      }),
+    const insight = financialInsight();
+    setupFinancialStore({
+      recallByTicker: () => [insight],
+      getRouting: () => 'fmp-ok',
     });
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL' });
@@ -406,14 +425,10 @@ describe('recall_financial_context', () => {
   });
 
   it('routingHint yahoo-ok → Yahoo Finance works', async () => {
-    const insight = { id: 1, ticker: 'AAPL', content: 'test', tags: [], updatedAt: Date.now() };
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [insight],
-        search: () => [],
-        getRouting: () => 'yahoo-ok',
-        getRelatedInsights: () => [],
-      }),
+    const insight = financialInsight();
+    setupFinancialStore({
+      recallByTicker: () => [insight],
+      getRouting: () => 'yahoo-ok',
     });
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL' });
@@ -421,14 +436,10 @@ describe('recall_financial_context', () => {
   });
 
   it('routingHint web-fallback → all APIs failed', async () => {
-    const insight = { id: 1, ticker: 'AAPL', content: 'test', tags: [], updatedAt: Date.now() };
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [insight],
-        search: () => [],
-        getRouting: () => 'web-fallback',
-        getRelatedInsights: () => [],
-      }),
+    const insight = financialInsight();
+    setupFinancialStore({
+      recallByTicker: () => [insight],
+      getRouting: () => 'web-fallback',
     });
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL' });
@@ -436,14 +447,10 @@ describe('recall_financial_context', () => {
   });
 
   it('routingHint unknown value → returns routing string as-is', async () => {
-    const insight = { id: 1, ticker: 'AAPL', content: 'test', tags: [], updatedAt: Date.now() };
-    setupManager({
-      getFinancialStore: () => ({
-        recallByTicker: () => [insight],
-        search: () => [],
-        getRouting: () => 'custom-source',
-        getRelatedInsights: () => [],
-      }),
+    const insight = financialInsight();
+    setupFinancialStore({
+      recallByTicker: () => [insight],
+      getRouting: () => 'custom-source',
     });
 
     const result = await recallFinancialContextTool.invoke({ ticker: 'AAPL' });
@@ -464,61 +471,40 @@ describe('store_financial_insight', () => {
   });
 
   it('stores insight and returns confirmation with id', async () => {
-    const mockStore = mock(async () => 42);
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mock(async () => {}),
-    });
+    setupStoreFinancialInsight(42);
 
     const result = await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'Great company' });
     expect(result).toContain('Stored insight #42 for AAPL');
   });
 
   it('automatically adds ticker tag (uppercased)', async () => {
-    const mockStore = mock(async () => 1);
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mock(async () => {}),
-    });
+    const { mockStore } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({ ticker: 'aapl', content: 'test' });
-    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = storedInsightTags(mockStore);
     expect(storedTags).toContain('ticker:AAPL');
   });
 
   it('does not duplicate ticker tag if already present', async () => {
-    const mockStore = mock(async () => 1);
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mock(async () => {}),
-    });
+    const { mockStore } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'test', tags: ['ticker:AAPL'] });
-    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = storedInsightTags(mockStore);
     expect(storedTags.filter((t) => t === 'ticker:AAPL').length).toBe(1);
   });
 
   it('adds routing tag and writes to FINANCE.md', async () => {
-    const mockStore = mock(async () => 1);
-    const mockAppend = mock(async () => {});
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mockAppend,
-    });
+    const { mockStore, mockAppend } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'test', routing: 'fmp-ok' });
-    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = storedInsightTags(mockStore);
     expect(storedTags).toContain('routing:fmp-ok');
-    expect((mockAppend.mock.calls as any[][])[0][0]).toBe('FINANCE.md');
-    expect((mockAppend.mock.calls as any[][])[0][1]).toContain('AAPL');
+    expect(firstMockCall(mockAppend)[0]).toBe('FINANCE.md');
+    expect(firstMockCall(mockAppend)[1]).toContain('AAPL');
   });
 
   it('does not duplicate routing tag if already in tags', async () => {
-    const mockStore = mock(async () => 1);
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mock(async () => {}),
-    });
+    const { mockStore } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({
       ticker: 'AAPL',
@@ -526,52 +512,36 @@ describe('store_financial_insight', () => {
       routing: 'fmp-ok',
       tags: ['routing:fmp-ok'],
     });
-    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = storedInsightTags(mockStore);
     expect(storedTags.filter((t) => t.startsWith('routing:')).length).toBe(1);
   });
 
   it('adds sector tag (lowercased)', async () => {
-    const mockStore = mock(async () => 1);
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mock(async () => {}),
-    });
+    const { mockStore } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'test', sector: 'Technology' });
-    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = storedInsightTags(mockStore);
     expect(storedTags).toContain('sector:technology');
   });
 
   it('adds exchange tag (uppercased)', async () => {
-    const mockStore = mock(async () => 1);
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mock(async () => {}),
-    });
+    const { mockStore } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({ ticker: 'VWS.CO', content: 'test', exchange: 'cph' });
-    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = storedInsightTags(mockStore);
     expect(storedTags).toContain('exchange:CPH');
   });
 
   it('adds namespace tag', async () => {
-    const mockStore = mock(async () => 1);
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mock(async () => {}),
-    });
+    const { mockStore } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'test', namespace: 'dcf' });
-    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = storedInsightTags(mockStore);
     expect(storedTags).toContain('ns:dcf');
   });
 
   it('includes namespace in return string', async () => {
-    const mockStore = mock(async () => 1);
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mock(async () => {}),
-    });
+    setupStoreFinancialInsight();
 
     const result = await storeFinancialInsightTool.invoke({
       ticker: 'AAPL',
@@ -582,22 +552,14 @@ describe('store_financial_insight', () => {
   });
 
   it('does not write to FINANCE.md when routing is not provided', async () => {
-    const mockAppend = mock(async () => {});
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mock(async () => 1) }),
-      appendMemory: mockAppend,
-    });
+    const { mockAppend } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({ ticker: 'AAPL', content: 'test' });
     expect(mockAppend).not.toHaveBeenCalled();
   });
 
   it('includes exchange in FINANCE.md entry', async () => {
-    const mockAppend = mock(async () => {});
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mock(async () => 1) }),
-      appendMemory: mockAppend,
-    });
+    const { mockAppend } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({
       ticker: 'VWS.CO',
@@ -605,22 +567,18 @@ describe('store_financial_insight', () => {
       routing: 'fmp-premium',
       exchange: 'CPH',
     });
-    expect((mockAppend.mock.calls as any[][])[0][1]).toContain('(CPH)');
+    expect(firstMockCall(mockAppend)[1]).toContain('(CPH)');
   });
 
   it('includes all passed tags alongside auto-generated ones', async () => {
-    const mockStore = mock(async () => 1);
-    setupManager({
-      getFinancialStore: () => ({ storeInsight: mockStore }),
-      appendMemory: mock(async () => {}),
-    });
+    const { mockStore } = setupStoreFinancialInsight();
 
     await storeFinancialInsightTool.invoke({
       ticker: 'AAPL',
       content: 'test',
       tags: ['analysis:thesis', 'analysis:risk'],
     });
-    const storedTags: string[] = ((mockStore.mock.calls as any[][])[0][0] as { tags: string[] }).tags;
+    const storedTags: string[] = storedInsightTags(mockStore);
     expect(storedTags).toContain('analysis:thesis');
     expect(storedTags).toContain('analysis:risk');
     expect(storedTags).toContain('ticker:AAPL');

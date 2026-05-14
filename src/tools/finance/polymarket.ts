@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
@@ -228,7 +229,7 @@ function computeAgeDays(createdAt: string | undefined): number | undefined {
   if (!createdAt) return undefined;
   const ms = Date.now() - new Date(createdAt).getTime();
   if (isNaN(ms) || ms < 0) return undefined;
-  return Math.floor(ms / 86_400_000);
+  return Math.floor(ms / MS_PER_DAY);
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +330,7 @@ export function scoreAnchorMarketRelevance(
   if (horizonDays != null && endDate) {
     const endMs = Date.parse(endDate);
     if (Number.isFinite(endMs)) {
-      const daysUntilResolution = Math.abs((endMs - Date.now()) / 86_400_000 - horizonDays);
+      const daysUntilResolution = Math.abs((endMs - Date.now()) / MS_PER_DAY - horizonDays);
       score += Math.max(0, 4 - Math.min(4, daysUntilResolution));
     }
   }
@@ -1019,7 +1020,7 @@ export function extractJumpEventMarkets(
     const endMs = Date.parse(m.endDate);
     if (!Number.isFinite(endMs) || endMs > horizonMs) continue;
     // P1c — drop markets settling in <24h (too noisy, often whale-driven).
-    const rawDaysToSettle = (endMs - now.getTime()) / 86_400_000;
+    const rawDaysToSettle = (endMs - now.getTime()) / MS_PER_DAY;
     if (rawDaysToSettle < 1) continue;
     const daysToSettlement = Math.max(1, Math.ceil(rawDaysToSettle));
     out.push({

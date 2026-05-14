@@ -48,6 +48,7 @@ export interface RegisteredTool {
 
 export interface ToolRegistryOptions {
   watchlistEntries?: PortfolioRiskWatchlistEntry[];
+  discoverSkills?: typeof discoverSkills;
 }
 
 /**
@@ -265,7 +266,7 @@ export function getToolRegistry(model: string, options: ToolRegistryOptions = {}
   }
 
   // Include skill tool if any skills are available
-  const availableSkills = discoverSkills();
+  const availableSkills = (options.discoverSkills ?? discoverSkills)();
   if (availableSkills.length > 0) {
     tools.push({
       name: 'skill',
@@ -294,8 +295,8 @@ export function getTools(model: string, options: ToolRegistryOptions = {}): Stru
  * @param model - The model name
  * @returns Formatted string with all tool descriptions
  */
-export function buildToolDescriptions(model: string): string {
-  return getToolRegistry(model)
+export function buildToolDescriptions(model: string, options: ToolRegistryOptions = {}): string {
+  return getToolRegistry(model, options)
     .map((t) => `### ${t.name}\n\n${t.description}`)
     .join('\n\n');
 }

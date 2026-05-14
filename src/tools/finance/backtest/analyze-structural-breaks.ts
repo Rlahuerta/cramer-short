@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../../utils/time.js';
 import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { walkForward, type WalkForwardResult } from './walk-forward.js';
@@ -246,7 +247,7 @@ const MAX_CLUSTER_DURATION_DAYS = 60;
 function dateDiffDays(a: string, b: string): number {
   const aMs = Date.parse(`${a}T00:00:00Z`);
   const bMs = Date.parse(`${b}T00:00:00Z`);
-  return Math.round((bMs - aMs) / 86_400_000);
+  return Math.round((bMs - aMs) / MS_PER_DAY);
 }
 
 function rangesOverlap(startA: string, endA: string, startB: string, endB: string): boolean {

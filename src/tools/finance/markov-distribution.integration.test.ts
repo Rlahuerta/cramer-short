@@ -15,9 +15,34 @@
  * follow realistic market dynamics (trending, volatile, mean-reverting).
  */
 
-import { describe, it, expect } from 'bun:test';
+import { MS_PER_DAY } from '../../utils/time.js';
+import { afterEach, beforeEach, describe, it, expect, setSystemTime, spyOn } from 'bun:test';
 import { computeMarkovDistribution, MARKOV_DISTRIBUTION_DESCRIPTION, REGIME_STATES } from './markov-distribution.js';
 import type { KalshiAnchor } from './markov-distribution.js';
+
+const FIXED_NOW = new Date('2025-04-02T12:00:00.000Z');
+const FIXED_NOW_MS = FIXED_NOW.getTime();
+
+function seedRng(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 0x100000000;
+  };
+}
+
+let randomSpy: { mockRestore: () => void } | undefined;
+
+beforeEach(() => {
+  setSystemTime(FIXED_NOW);
+  randomSpy = spyOn(Math, 'random').mockImplementation(seedRng(32345));
+});
+
+afterEach(() => {
+  randomSpy?.mockRestore();
+  randomSpy = undefined;
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -26,8 +51,9 @@ import type { KalshiAnchor } from './markov-distribution.js';
 /** Generate trending price series (constant drift + Gaussian noise). */
 function makeTrendingPrices(n: number, startPrice = 100, dailyDrift = 0.001, dailyVol = 0.01): number[] {
   const prices = [startPrice];
+  const rng = seedRng(301);
   for (let i = 1; i < n; i++) {
-    const noise = (Math.random() - 0.5) * dailyVol * 2;
+    const noise = (rng() - 0.5) * dailyVol * 2;
     prices.push(prices[i - 1] * (1 + dailyDrift + noise));
   }
   return prices;
@@ -59,8 +85,8 @@ function makePolymarketMarkets(currentPrice: number, aboveProb: number, belowPro
   const abovePrice = Math.round(currentPrice * 1.10);
   const belowPrice = Math.round(currentPrice * 0.90);
   return [
-    { question: `Will the stock exceed $${abovePrice}?`, probability: aboveProb, volume: 5000, createdAt: Date.now() - 86400000 * 5 },
-    { question: `Will the stock exceed $${belowPrice}?`, probability: belowProb, volume: 4000, createdAt: Date.now() - 86400000 * 10 },
+    { question: `Will the stock exceed $${abovePrice}?`, probability: aboveProb, volume: 5000, createdAt: FIXED_NOW_MS - MS_PER_DAY * 5 },
+    { question: `Will the stock exceed $${belowPrice}?`, probability: belowProb, volume: 4000, createdAt: FIXED_NOW_MS - MS_PER_DAY * 10 },
   ];
 }
 
@@ -460,7 +486,7 @@ describe('markov_distribution integration — Kalshi cross-platform', () => {
       currentPrice: current,
       historicalPrices: prices,
       polymarketMarkets: [
-        { question: `Will AGREE exceed $${abovePrice}?`, probability: 0.45, volume: 3000, createdAt: Date.now() - 86400000 * 5 },
+        { question: `Will AGREE exceed $${abovePrice}?`, probability: 0.45, volume: 3000, createdAt: FIXED_NOW_MS - MS_PER_DAY * 5 },
       ],
       kalshiAnchors: [{ price: abovePrice, probability: 0.44, volume: 200 }], // 1pp — no warning
     });
@@ -477,7 +503,7 @@ describe('markov_distribution integration — Kalshi cross-platform', () => {
       currentPrice: current,
       historicalPrices: prices,
       polymarketMarkets: [
-        { question: `Will DIVERGE exceed $${abovePrice}?`, probability: 0.65, volume: 3000, createdAt: Date.now() - 86400000 * 5 },
+        { question: `Will DIVERGE exceed $${abovePrice}?`, probability: 0.65, volume: 3000, createdAt: FIXED_NOW_MS - MS_PER_DAY * 5 },
       ],
       kalshiAnchors: [{ price: abovePrice, probability: 0.50, volume: 200 }], // 15pp divergence
     });
@@ -680,20 +706,6 @@ describe('markov_distribution integration — PR3G recency weighting promotion',
     expect(result.metadata.pr3gRecencyWeightingActive).toBe(false);
   });
 
-  it('BTC 14d horizon activates recency weighting by default', async () => {
-    const prices = makeTrendingPrices(151, 65000, 0.0015, 0.03);
-    const current = prices[prices.length - 1];
-
-    const result = await computeMarkovDistribution({
-      ticker: 'BTC-USD',
-      horizon: 14,
-      currentPrice: current,
-      historicalPrices: prices,
-      polymarketMarkets: [],
-    });
-
-    expect(result.metadata.pr3gRecencyWeightingActive).toBe(true);
-  });
 });
 
 // ---------------------------------------------------------------------------

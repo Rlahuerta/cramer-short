@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../../utils/time.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
@@ -15,7 +16,7 @@ import {
 } from './replay-label-runner.js';
 import { assertNoCanonicalPathCollision } from './path-collision-guard.js';
 
-const DAY_MS = 86_400_000;
+const DAY_MS = MS_PER_DAY;
 
 export interface ReplayTickerHistoryRequest {
   ticker: string;

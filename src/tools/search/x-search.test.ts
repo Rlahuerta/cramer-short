@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 import { describe, expect, it, afterEach, beforeEach } from 'bun:test';
 import { xSearchTool, X_SEARCH_DESCRIPTION } from './x-search.js';
 
@@ -279,7 +280,7 @@ describe('parseSince (via search URL)', () => {
   });
 
   it('parses "3d" into an ISO start_time roughly 3 days ago', async () => {
-    const before = Date.now() - 3 * 86_400_000 - 5000;
+    const before = Date.now() - 3 * MS_PER_DAY - 5000;
     const url = await captureUrl('3d');
     const match = url.match(/start_time=([^&]+)/);
     const t = new Date(decodeURIComponent(match![1])).getTime();

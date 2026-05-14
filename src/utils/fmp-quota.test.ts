@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from './time.js';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -41,7 +42,7 @@ describe('trackFmpCall', () => {
   });
 
   it('resets counter when stored date does not match today', () => {
-    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - MS_PER_DAY).toISOString().slice(0, 10);
     writeFileSync(quotaPath, JSON.stringify({ date: yesterday, count: 200 }));
     const status = trackFmpCall(quotaPath);
     expect(status.used).toBe(1); // reset

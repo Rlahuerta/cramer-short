@@ -8,6 +8,7 @@
  * Research basis:
  *   Reichenbach & Walther (2025) · Cordoba et al. (2024) · Tsang & Yang (2026)
  */
+import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
@@ -186,7 +187,7 @@ type LiveBrierReplayCalibrationDecision =
       evidenceBundles: number;
     };
 
-const DAY_MS = 86_400_000;
+const DAY_MS = MS_PER_DAY;
 const HOUR_MS = 3_600_000;
 const TWO_HOURS_MS = 2 * 3_600_000;
 const THREE_HOURS_MS = 3 * 3_600_000;
@@ -821,7 +822,7 @@ function daysUntilEndDate(endDate: string | null | undefined): number | null {
   if (!endDate) return null;
   const target = new Date(endDate);
   if (Number.isNaN(target.getTime())) return null;
-  return (target.getTime() - Date.now()) / 86_400_000;
+  return (target.getTime() - Date.now()) / MS_PER_DAY;
 }
 
 function isResolutionAlignedToHorizon(daysUntilResolution: number | null, horizonDays: number): boolean {

@@ -6,6 +6,7 @@ import { logger } from '@/utils';
 
 let browser: Browser | null = null;
 let page: Page | null = null;
+let launchBrowser: typeof chromium.launch = chromium.launch.bind(chromium);
 
 // Store refs from the last snapshot for action resolution
 let currentRefs: Map<string, { role: string; name?: string; nth?: number }> = new Map();
@@ -135,7 +136,7 @@ To press Enter:
  */
 async function ensureBrowser(): Promise<Page> {
   if (!browser) {
-    browser = await chromium.launch({ headless: false });
+    browser = await launchBrowser({ headless: false });
   }
   if (!page) {
     const context = await browser.newContext();
@@ -156,6 +157,10 @@ export async function closeBrowser(): Promise<void> {
     page = null;
     currentRefs.clear();
   }
+}
+
+export function _setBrowserLauncherForTest(launcher?: typeof chromium.launch): void {
+  launchBrowser = launcher ?? chromium.launch.bind(chromium);
 }
 
 /**

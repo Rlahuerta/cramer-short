@@ -21,7 +21,7 @@ function debugLog(msg: string) {
   appendFileSync(LOG_PATH, `${new Date().toISOString()} ${msg}\n`);
 }
 
-function extractMentionedJids(message: WAMessage): string[] {
+export function extractMentionedJids(message: WAMessage): string[] {
   const rawMsg = message.message;
   if (!rawMsg) return [];
 
@@ -39,7 +39,7 @@ function extractMentionedJids(message: WAMessage): string[] {
   return Array.isArray(jids) ? jids.filter((j): j is string => typeof j === 'string') : [];
 }
 
-function extractText(message: WAMessage): string {
+export function extractText(message: WAMessage): string {
   const rawMsg = message.message;
   if (!rawMsg) {
     debugLog(`[extractText] no message content`);
@@ -88,14 +88,14 @@ function extractText(message: WAMessage): string {
   return '';
 }
 
-function toPhoneFromJid(jid: string): string {
+export function toPhoneFromJid(jid: string): string {
   const base = jid.split('@')[0] ?? '';
   const match = base.match(/^(\d+)(?::\d+)?$/);
   const digits = match?.[1] ?? base.replace(/\D/g, '');
   return digits ? `+${digits}` : '';
 }
 
-function jidToE164(jid?: string | null): string | null {
+export function jidToE164(jid?: string | null): string | null {
   if (!jid) {
     return null;
   }
@@ -323,4 +323,3 @@ export async function monitorWebInbox(params: {
     },
   };
 }
-

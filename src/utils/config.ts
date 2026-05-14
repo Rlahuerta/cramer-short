@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from './time.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { z } from 'zod';
@@ -31,7 +32,7 @@ export const ConfigSchema = z.object({
   maxIterations: z.number().min(5).max(100).optional(),
   contextThreshold: z.number().min(10000).max(500000).optional(),
   keepToolUses: z.number().min(2).max(20).optional(),
-  cacheTtlMs: z.number().min(60000).max(86400000).optional(),
+  cacheTtlMs: z.number().min(60000).max(MS_PER_DAY).optional(),
   parallelToolLimit: z.number().min(0).max(10).optional(),
   llmCallTimeoutMs: z.number().min(30000).max(600000).optional(),
   /**
@@ -100,7 +101,7 @@ const CONFIG_VALIDATION_RULES: Record<string, { min: number; max: number }> = {
   maxIterations:    { min: 5,     max: 100       },
   contextThreshold: { min: 10000, max: 500000    },
   keepToolUses:     { min: 2,     max: 20        },
-  cacheTtlMs:       { min: 60000, max: 86400000  },
+  cacheTtlMs:       { min: 60000, max: MS_PER_DAY  },
   parallelToolLimit:{ min: 0,     max: 10        },
   llmCallTimeoutMs: { min: 30000, max: 600000    },
 };

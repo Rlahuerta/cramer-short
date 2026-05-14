@@ -1,7 +1,8 @@
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { getCramerShortDir } from './paths.js';
+import { atomicWriteFile } from './atomic-write.js';
 
 /**
  * Represents a conversation entry (user message + agent response pair)
@@ -65,14 +66,8 @@ export class LongTermChatHistory {
    * Creates directories if they don't exist.
    */
   private async save(): Promise<void> {
-    const dir = dirname(this.filePath);
-    
-    if (!existsSync(dir)) {
-      await mkdir(dir, { recursive: true });
-    }
-
     const data: MessagesFile = { messages: this.messages };
-    await writeFile(this.filePath, JSON.stringify(data, null, 2), 'utf-8');
+    await atomicWriteFile(this.filePath, JSON.stringify(data, null, 2));
   }
 
   /**

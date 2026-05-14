@@ -9,6 +9,7 @@ import type {
 import type { HistoryItem } from '../controllers/types.js';
 import { theme } from '../theme.js';
 import { formatResponse } from './markdown-table.js';
+import { summarizeToolResult } from './tool-result-summary.js';
 
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -49,27 +50,6 @@ function formatToolArgs(tool: string, args: Record<string, unknown>): string {
       .map(([k, v]) => `${k}=${truncate(String(v).replace(/\n/g, '\\n'), 60)}`)
       .join(', '),
   );
-}
-
-function summarizeToolResult(tool: string, args: Record<string, unknown>, result: string): string {
-  if (tool === 'skill') return `Loaded ${args.skill as string} skill`;
-  try {
-    const parsed = JSON.parse(result);
-    if (parsed.data) {
-      if (Array.isArray(parsed.data)) return `Received ${parsed.data.length} items`;
-      if (typeof parsed.data === 'object') {
-        const keys = Object.keys(parsed.data).filter((k) => !k.startsWith('_'));
-        if (tool === 'get_financials' || tool === 'get_market_data' || tool === 'stock_screener') {
-          return keys.length === 1 ? 'Called 1 data source' : `Called ${keys.length} data sources`;
-        }
-        if (tool === 'web_search') return 'Did 1 search';
-        return `Received ${keys.length} fields`;
-      }
-    }
-  } catch {
-    return truncate(result, 50);
-  }
-  return 'Received data';
 }
 
 /**

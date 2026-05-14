@@ -7,6 +7,7 @@
  * fallback query variants, and a weight for the log-odds probability combiner.
  */
 
+import { MS_PER_DAY } from '../../utils/time.js';
 import {
   extractExclusiveAssetOverride,
   resolveAssetIntent,
@@ -517,7 +518,7 @@ function buildSignalsFromTemplates(
 }
 
 function buildShortHorizonCryptoSignals(horizonDays: number): SignalCategory[] {
-  const targetDate = new Date(Date.now() + horizonDays * 86_400_000);
+  const targetDate = new Date(Date.now() + horizonDays * MS_PER_DAY);
   const targetMonthDay = targetDate.toLocaleString('en-US', { month: 'short', day: 'numeric' }).replace(',', '');
   const targetWeekday = targetDate.toLocaleString('en-US', { weekday: 'long' });
   const relativePhrase = horizonDays === 1 ? 'tomorrow' : `in ${horizonDays} days`;

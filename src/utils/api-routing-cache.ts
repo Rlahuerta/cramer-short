@@ -10,9 +10,10 @@
  * notice when a broker gains or loses data.
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { atomicWriteFile } from './atomic-write.js';
 import { cramerShortPath } from './paths.js';
+import { MS_PER_DAY } from './time.js';
 
 export type ApiPreference = 'fmp' | 'yahoo' | 'web' | 'financial-datasets' | 'robinhood';
 
@@ -28,7 +29,7 @@ interface RoutingCacheFile {
 }
 
 const CACHE_PATH = cramerShortPath('api-routing.json');
-const TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const TTL_MS = 30 * MS_PER_DAY;
 
 let inMemoryCache: Map<string, RoutingEntry> | null = null;
 let dirty = false;
@@ -60,8 +61,7 @@ async function persist(): Promise<void> {
     routes: Object.fromEntries(inMemoryCache),
   };
   try {
-    await mkdir(dirname(CACHE_PATH), { recursive: true });
-    await writeFile(CACHE_PATH, JSON.stringify(data, null, 2), 'utf-8');
+    await atomicWriteFile(CACHE_PATH, JSON.stringify(data, null, 2));
     dirty = false;
   } catch {
     // Non-fatal — routing cache is best-effort

@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import {
@@ -26,7 +27,7 @@ const mockMarkets: PolymarketMarketResult[] = [
 ];
 
 function futureIso(daysAhead: number): string {
-  return new Date(Date.now() + daysAhead * 86_400_000).toISOString();
+  return new Date(Date.now() + daysAhead * MS_PER_DAY).toISOString();
 }
 
 // ---------------------------------------------------------------------------

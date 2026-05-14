@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 const BINANCE_BASE = 'https://api.binance.com';
 
 type BinanceTicker24h = {
@@ -74,7 +75,7 @@ export async function fetchBinanceDailyCloses(
 ): Promise<number[]> {
   const symbol = toBinanceSymbol(ticker);
   const endTime = Date.now();
-  const startTime = endTime - days * 86_400_000;
+  const startTime = endTime - days * MS_PER_DAY;
   const params = new URLSearchParams({
     symbol,
     interval: '1d',

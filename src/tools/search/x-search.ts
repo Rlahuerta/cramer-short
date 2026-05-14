@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
@@ -109,7 +110,7 @@ function parseSince(since: string): string | null {
     const ms =
       unit === 'm' ? num * 60_000 :
       unit === 'h' ? num * 3_600_000 :
-      num * 86_400_000;
+      num * MS_PER_DAY;
     return new Date(Date.now() - ms).toISOString();
   }
   if (since.includes('T') || /^\d{4}-/.test(since)) {

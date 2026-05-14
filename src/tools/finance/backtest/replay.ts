@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../../utils/time.js';
 import { type WalkForwardConfig, type WalkForwardResult, walkForward } from './walk-forward.js';
 import { computeMarkovDistribution, getAssetProfile, type MarkovDistributionResult } from '../markov-distribution.js';
 import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
@@ -73,7 +74,7 @@ function isReplayMarketAlignedToHorizon(
   if (!market.endDate) return true;
   const endMs = Date.parse(market.endDate);
   if (!Number.isFinite(endMs)) return true;
-  const daysUntilResolution = (endMs - referenceTimeMs) / 86_400_000;
+  const daysUntilResolution = (endMs - referenceTimeMs) / MS_PER_DAY;
   return Math.abs(daysUntilResolution - horizonDays) <= Math.max(2, horizonDays * 0.5);
 }
 
