@@ -272,15 +272,17 @@ const {
    isAcceptedFirstPlanningToolCall,
    detectExplicitSkillRequest,
    isForecastLabPlanOnlyQuery,
-  detectForecastLabPromotionApproval,
-  detectForecastLabResetRequest,
-  detectForecastLabComparisonRequest,
-  detectForecastLabResultsRequest,
-  detectForecastLabMutatorListRequest,
-  detectForecastLabKeepCurrentBestRequest,
-  detectForecastLabCatalogExtensionRequest,
  } = await import('./agent.js');
-  const { getForecastLabRoutingHint } = await import('./forecast-lab-routing.js');
+  const {
+    detectForecastLabPromotionApproval,
+    detectForecastLabResetRequest,
+    detectForecastLabComparisonRequest,
+    detectForecastLabResultsRequest,
+    detectForecastLabMutatorListRequest,
+    detectForecastLabKeepCurrentBestRequest,
+    detectForecastLabCatalogExtensionRequest,
+    getForecastLabRoutingHint,
+  } = await import('../experiments/forecast-lab/query-router.js');
 const { createForecastArbitratorTool } = await import('../tools/finance/forecast-arbitrator.js');
 const { InMemoryChatHistory } = await import('../utils/in-memory-chat-history.js');
 const {

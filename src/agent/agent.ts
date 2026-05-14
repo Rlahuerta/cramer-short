@@ -6,7 +6,6 @@ import { getTools } from '../tools/registry.js';
 import {
   buildSystemPrompt,
   buildIterationPrompt,
-  injectForecastLabRoutingHint,
   loadSoulDocument,
 } from './prompts.js';
 import { extractTextContent, hasToolCalls, extractReasoningContent } from '../utils/ai-message.js';
@@ -27,23 +26,10 @@ import { extractSignals as extractSignalsFn } from '../tools/finance/signal-extr
 import { fetchPolymarketMarkets } from '../tools/finance/polymarket.js';
 import { resolveProvider } from '../providers.js';
 import {
-  detectForecastLabCatalogExtensionRequest,
-  detectForecastLabComparisonRequest,
-  detectForecastLabKeepCurrentBestRequest,
-  detectForecastLabMutatorListRequest,
-  detectForecastLabPromotionApproval,
-  detectForecastLabResetRequest,
-  detectForecastLabResultsRequest,
-  getForecastLabRoutingHint,
-  type ForecastLabCatalogExtensionHint,
-  type ForecastLabComparisonHint,
-  type ForecastLabKeepCurrentBestHint,
-  type ForecastLabMutatorListHint,
-  type ForecastLabPromotionApprovalHint,
-  type ForecastLabResetHint,
-  type ForecastLabResultsHint,
+  forecastLabRouter,
+  type ForecastLabIntentRoute,
   type ForecastLabRoutingHint,
-} from '../experiments/forecast-lab/query-router.js';
+} from './forecast-lab-routing.js';
 import { extractForecastLabRunToolAnswer } from '../tools/forecast-lab-run.js';
 import {
   hasPrematureForecastArbitratorCall,
@@ -133,24 +119,13 @@ export {
   shouldPreserveAbstainingBtcShortHorizonForecast,
   stripThinkingTags,
 } from './answer-formatting/index.js';
-export {
-  detectForecastLabCatalogExtensionRequest,
-  detectForecastLabComparisonRequest,
-  detectForecastLabKeepCurrentBestRequest,
-  detectForecastLabMutatorListRequest,
-  detectForecastLabPromotionApproval,
-  detectForecastLabResetRequest,
-  detectForecastLabResultsRequest,
-} from '../experiments/forecast-lab/query-router.js';
-export type {
-  ForecastLabCatalogExtensionHint,
-  ForecastLabComparisonHint,
-  ForecastLabKeepCurrentBestHint,
-  ForecastLabMutatorListHint,
-  ForecastLabPromotionApprovalHint,
-  ForecastLabResetHint,
-  ForecastLabResultsHint,
-} from '../experiments/forecast-lab/query-router.js';
+type ForecastLabResetHint = NonNullable<ForecastLabIntentRoute['resetRequest']>;
+type ForecastLabPromotionApprovalHint = NonNullable<ForecastLabIntentRoute['promotionApproval']>;
+type ForecastLabKeepCurrentBestHint = NonNullable<ForecastLabIntentRoute['keepCurrentBestRequest']>;
+type ForecastLabCatalogExtensionHint = NonNullable<ForecastLabIntentRoute['catalogExtensionRequest']>;
+type ForecastLabComparisonHint = NonNullable<ForecastLabIntentRoute['comparisonRequest']>;
+type ForecastLabResultsHint = NonNullable<ForecastLabIntentRoute['resultsRequest']>;
+type ForecastLabMutatorListHint = NonNullable<ForecastLabIntentRoute['mutatorListRequest']>;
 
 export {
   buildForcedCryptoForecastMarkovArgs,
@@ -277,17 +252,21 @@ export class Agent {
     const memoryFlushState = { alreadyFlushed: false };
     const periodicFlushState = { lastFlushedIteration: 0 };
     const forecastingConfig = loadConfig().forecasting;
-    const forecastLabRoutingHint = getForecastLabRoutingHint(query, {
+    const forecastLabIntent = forecastLabRouter.routeIntent(query, {
+      inMemoryHistory,
       enableAutoRoute: forecastingConfig?.enableForecastLabAutoRoute,
       enableSkillHint: forecastingConfig?.enableForecastLabSkillHint,
     });
-    const forecastLabResetRequest = detectForecastLabResetRequest(query, inMemoryHistory);
-    const forecastLabPromotionApproval = detectForecastLabPromotionApproval(query, inMemoryHistory);
-    const forecastLabKeepCurrentBestRequest = detectForecastLabKeepCurrentBestRequest(query, inMemoryHistory);
-    const forecastLabCatalogExtensionRequest = detectForecastLabCatalogExtensionRequest(query, inMemoryHistory);
-    const forecastLabComparisonRequest = detectForecastLabComparisonRequest(query, inMemoryHistory);
-    const forecastLabResultsRequest = detectForecastLabResultsRequest(query, inMemoryHistory);
-    const forecastLabMutatorListRequest = detectForecastLabMutatorListRequest(query, inMemoryHistory);
+    const {
+      routingHint: forecastLabRoutingHint,
+      resetRequest: forecastLabResetRequest,
+      promotionApproval: forecastLabPromotionApproval,
+      keepCurrentBestRequest: forecastLabKeepCurrentBestRequest,
+      catalogExtensionRequest: forecastLabCatalogExtensionRequest,
+      comparisonRequest: forecastLabComparisonRequest,
+      resultsRequest: forecastLabResultsRequest,
+      mutatorListRequest: forecastLabMutatorListRequest,
+    } = forecastLabIntent;
     if (forecastLabResetRequest) {
       yield* this.runForecastLabResetFlow(ctx, forecastLabResetRequest);
       return;
@@ -1385,15 +1364,15 @@ export class Agent {
     forecastLabRoutingHint?: ForecastLabRoutingHint | null,
   ): string {
     if (!inMemoryChatHistory?.hasMessages()) {
-      return injectForecastLabRoutingHint(query, forecastLabRoutingHint);
+      return forecastLabRouter.injectRoutingHint(query, forecastLabRoutingHint);
     }
 
     const recentTurns = inMemoryChatHistory.getRecentTurns();
     if (recentTurns.length === 0) {
-      return injectForecastLabRoutingHint(query, forecastLabRoutingHint);
+      return forecastLabRouter.injectRoutingHint(query, forecastLabRoutingHint);
     }
 
-    return injectForecastLabRoutingHint(buildHistoryContext({
+    return forecastLabRouter.injectRoutingHint(buildHistoryContext({
       entries: recentTurns,
       currentMessage: query,
     }), forecastLabRoutingHint);

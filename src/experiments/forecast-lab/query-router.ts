@@ -20,6 +20,21 @@ export interface ForecastLabRoutingOptions {
   readonly enableSkillHint?: boolean;
 }
 
+export interface ForecastLabIntentContext extends ForecastLabRoutingOptions {
+  readonly inMemoryHistory?: InMemoryChatHistory;
+}
+
+export interface ForecastLabIntentRoute {
+  readonly routingHint: ForecastLabRoutingHint | null;
+  readonly resetRequest: ForecastLabResetHint | null;
+  readonly promotionApproval: ForecastLabPromotionApprovalHint | null;
+  readonly keepCurrentBestRequest: ForecastLabKeepCurrentBestHint | null;
+  readonly catalogExtensionRequest: ForecastLabCatalogExtensionHint | null;
+  readonly comparisonRequest: ForecastLabComparisonHint | null;
+  readonly resultsRequest: ForecastLabResultsHint | null;
+  readonly mutatorListRequest: ForecastLabMutatorListHint | null;
+}
+
 const FORECAST_LAB_MUTATOR_ID = /(?:using\s+mutator|mutator)\s+([A-Za-z0-9][A-Za-z0-9_.-]*)/i;
 
 export function extractForecastLabMutatorId(query: string): string | undefined {
@@ -447,3 +462,54 @@ export function detectForecastLabCatalogExtensionRequest(
 
   return profileId ? { profileId } : {};
 }
+
+function buildForecastLabRoutingHintSection(hint: ForecastLabRoutingHint): string {
+  return `## Forecast-Lab Routing Hint
+
+- Recommended profile: ${hint.recommendedProfileId ?? 'none'}
+- Why it matched: ${hint.whyMatched}
+- Mutation allowed: ${hint.mutationAllowed ? 'yes' : 'no'}
+- Invoke skill("forecast-lab"): ${hint.shouldInvokeSkill ? 'yes' : 'no'}
+- Mode: Treat this as a bounded forecast-workflow improvement task, not an ordinary live forecast request.
+- First step: Call skill("forecast-lab") before ordinary forecast/data tools. Use repo-local forecast surfaces, not live market-enrichment tools, unless the user explicitly asks for live market evidence.
+- Safety: Do NOT auto-run mutation or any tool solely because of this hint.`;
+}
+
+export function injectForecastLabRoutingHint(
+  prompt: string,
+  hint?: ForecastLabRoutingHint | null,
+): string {
+  if (!hint) {
+    return prompt;
+  }
+
+  return `${buildForecastLabRoutingHintSection(hint)}
+
+${prompt}`;
+}
+
+export function routeForecastLabIntent(
+  query: string,
+  context: ForecastLabIntentContext = {},
+): ForecastLabIntentRoute {
+  const inMemoryHistory = context.inMemoryHistory;
+
+  return {
+    routingHint: getForecastLabRoutingHint(query, {
+      enableAutoRoute: context.enableAutoRoute,
+      enableSkillHint: context.enableSkillHint,
+    }),
+    resetRequest: detectForecastLabResetRequest(query, inMemoryHistory),
+    promotionApproval: detectForecastLabPromotionApproval(query, inMemoryHistory),
+    keepCurrentBestRequest: detectForecastLabKeepCurrentBestRequest(query, inMemoryHistory),
+    catalogExtensionRequest: detectForecastLabCatalogExtensionRequest(query, inMemoryHistory),
+    comparisonRequest: detectForecastLabComparisonRequest(query, inMemoryHistory),
+    resultsRequest: detectForecastLabResultsRequest(query, inMemoryHistory),
+    mutatorListRequest: detectForecastLabMutatorListRequest(query, inMemoryHistory),
+  };
+}
+
+export const forecastLabRouter = {
+  routeIntent: routeForecastLabIntent,
+  injectRoutingHint: injectForecastLabRoutingHint,
+} as const;

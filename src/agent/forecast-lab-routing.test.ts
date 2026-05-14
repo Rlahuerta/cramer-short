@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 
-import { extractForecastLabMutatorId, getForecastLabRoutingHint } from './forecast-lab-routing.js';
+import {
+  extractForecastLabMutatorId,
+  getForecastLabRoutingHint,
+  routeForecastLabIntent,
+} from '../experiments/forecast-lab/query-router.js';
 
 describe('forecast-lab routing hint', () => {
   it('builds a deterministic skill hint for forecast improvement queries', () => {
@@ -55,6 +59,18 @@ describe('forecast-lab routing hint', () => {
     expect(
       getForecastLabRoutingHint('Give me a BTC forecast for the next 7 days and explain the drivers.'),
     ).toBeNull();
+  });
+
+  it('routes all forecast-lab intent hints through the compact facade', () => {
+    const route = routeForecastLabIntent(
+      'Optimize the BTC 1d/2d/3d Markov forecast logic without broad self-editing.',
+    );
+
+    expect(route.routingHint?.recommendedProfileId).toBe('btc-markov-ultra-short-horizon');
+    expect(route.routingHint?.shouldInvokeSkill).toBe(true);
+    expect(route.resetRequest).toBeNull();
+    expect(route.promotionApproval).toBeNull();
+    expect(route.catalogExtensionRequest).toBeNull();
   });
 
   it('does not build a skill hint for live BitMEX trade-brief prompts that avoid improvement wording', () => {

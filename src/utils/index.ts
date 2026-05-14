@@ -8,6 +8,9 @@ export {
 export { InMemoryChatHistory } from './in-memory-chat-history.js';
 export { logger } from './logger.js';
 export type { LogEntry, LogLevel } from './logger.js';
+export { logError } from './error-logger.js';
+export { exportSession } from './export.js';
+export type { SessionIndexEntry } from './session-store.js';
 export { extractTextContent, hasToolCalls } from './ai-message.js';
 export { LongTermChatHistory } from './long-term-chat-history.js';
 export type { ConversationEntry } from './long-term-chat-history.js';

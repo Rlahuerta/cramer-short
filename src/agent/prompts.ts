@@ -15,7 +15,10 @@ import {
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { cramerShortPath } from '../utils/paths.js';
 import { getCurrentDate } from '../utils/date.js';
-import type { ForecastLabRoutingHint } from './forecast-lab-routing.js';
+import {
+  injectForecastLabRoutingHint,
+  type ForecastLabRoutingHint,
+} from '../experiments/forecast-lab/query-router.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -483,34 +486,7 @@ ${formatBullets}${tablesSection}${groupContext ? '\n\n' + buildGroupSection(grou
 // User Prompts
 // ============================================================================
 
-function formatBooleanPromptValue(value: boolean): string {
-  return value ? 'yes' : 'no';
-}
-
-function buildForecastLabRoutingHintSection(hint: ForecastLabRoutingHint): string {
-  return `## Forecast-Lab Routing Hint
-
-- Recommended profile: ${hint.recommendedProfileId ?? 'none'}
-- Why it matched: ${hint.whyMatched}
-- Mutation allowed: ${formatBooleanPromptValue(hint.mutationAllowed)}
-- Invoke skill("forecast-lab"): ${formatBooleanPromptValue(hint.shouldInvokeSkill)}
-- Mode: Treat this as a bounded forecast-workflow improvement task, not an ordinary live forecast request.
-- First step: Call skill("forecast-lab") before ordinary forecast/data tools. Use repo-local forecast surfaces, not live market-enrichment tools, unless the user explicitly asks for live market evidence.
-- Safety: Do NOT auto-run mutation or any tool solely because of this hint.`;
-}
-
-export function injectForecastLabRoutingHint(
-  prompt: string,
-  hint?: ForecastLabRoutingHint | null,
-): string {
-  if (!hint) {
-    return prompt;
-  }
-
-  return `${buildForecastLabRoutingHintSection(hint)}
-
-${prompt}`;
-}
+export { injectForecastLabRoutingHint };
 
 /**
  * Build user prompt for agent iteration with full tool results.

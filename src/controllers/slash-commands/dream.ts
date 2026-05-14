@@ -1,25 +1,8 @@
 import { runDream, shouldRunDream } from '../../memory/dream.js';
 import { MemoryStore } from '../../memory/store.js';
-import type { HistoryItem } from '../types.js';
+import type { TuiStateController } from '../tui-state-controller.js';
 
-interface DreamSlashCommandOptions {
-  readonly history: () => HistoryItem[];
-  readonly flushedItems: WeakSet<HistoryItem>;
-  readonly flushItemToScrollback: (item: HistoryItem) => void;
-  readonly isAgentProcessing: () => boolean;
-  readonly isDreamRunning: () => boolean;
-  readonly setDreamRunning: (running: boolean) => void;
-  readonly currentModel: () => string;
-  readonly setError: (message: string | null) => void;
-  readonly refreshError: () => void;
-  readonly requestRender: () => void;
-  readonly setStatus: (message: string) => void;
-  readonly setTimeoutFn?: typeof setTimeout;
-  readonly setIntervalFn?: typeof setInterval;
-  readonly clearIntervalFn?: typeof clearInterval;
-}
-
-export async function handleDreamSlashCommand(query: string, options: DreamSlashCommandOptions): Promise<boolean> {
+export async function handleDreamSlashCommand(query: string, tuiState: TuiStateController): Promise<boolean> {
   if (!query.startsWith('/dream')) {
     return false;
   }
@@ -75,7 +58,7 @@ export async function handleDreamSlashCommand(query: string, options: DreamSlash
       ``,
       `_Run \`/dream force\` to consolidate regardless of conditions._`,
     ].join('\n');
-    options.flushItemToScrollback({
+    tuiState.flushItemToScrollback({
       id: `dream-show-${Date.now()}`,
       query,
       events: [],
@@ -86,27 +69,27 @@ export async function handleDreamSlashCommand(query: string, options: DreamSlash
     return true;
   }
 
-  if (options.isAgentProcessing() || options.isDreamRunning()) {
-    options.setError(options.isDreamRunning()
+  if (tuiState.dream.isAgentProcessing() || tuiState.dream.isRunning()) {
+    tuiState.setError(tuiState.dream.isRunning()
       ? 'Dream is already running.'
       : 'Cannot run Dream while the agent is busy.');
-    options.refreshError();
-    options.requestRender();
+    tuiState.refreshError();
+    tuiState.requestRender();
     return true;
   }
   const force = query.slice('/dream'.length).trim() === 'force';
   const dreamStore = new MemoryStore();
-  options.setDreamRunning(true);
-  options.setStatus('🌙 Dream: consolidating memories…');
-  options.requestRender();
+  tuiState.dream.setRunning(true);
+  tuiState.setStatus('🌙 Dream: consolidating memories…');
+  tuiState.requestRender();
   const dreamStart = Date.now();
   // Keep TUI alive during the long LLM consolidation call (can take 2-5 min).
-  const interval = options.setIntervalFn ?? setInterval;
-  const clear = options.clearIntervalFn ?? clearInterval;
-  const dreamHeartbeat = interval(() => options.requestRender(), 1500);
+  const interval = tuiState.timers?.setInterval ?? setInterval;
+  const clear = tuiState.timers?.clearInterval ?? clearInterval;
+  const dreamHeartbeat = interval(() => tuiState.requestRender(), 1500);
   let dreamAnswer = '';
   try {
-    const dreamResult = await runDream(dreamStore, options.currentModel(), { force });
+    const dreamResult = await runDream(dreamStore, tuiState.currentModel(), { force });
     if (dreamResult.ran) {
       const n = dreamResult.archivedFiles.length;
       const files = dreamResult.archivedFiles.map((f) => `  • ${f}`).join('\n');
@@ -114,28 +97,28 @@ export async function handleDreamSlashCommand(query: string, options: DreamSlash
         ? `**Archived ${n} daily file${n === 1 ? '' : 's'}:**\n${files}\n\n`
         : `_No daily session files to archive — exit Cramer-Short (ctrl+c) after conversations to generate them._\n\n`;
       dreamAnswer = `✨ **Dream complete** — memory consolidated\n\n${archiveLine}**Updated:** MEMORY.md, FINANCE.md`;
-      options.setStatus(`✨ Dream: archived ${n} file${n === 1 ? '' : 's'}, memory updated`);
+      tuiState.setStatus(`✨ Dream: archived ${n} file${n === 1 ? '' : 's'}, memory updated`);
     } else {
       dreamAnswer = `🌙 **Dream skipped**\n\n${dreamResult.reason}\n\nUse \`/dream force\` to run regardless of conditions.`;
-      options.setStatus(`🌙 Dream: ${dreamResult.reason}`);
+      tuiState.setStatus(`🌙 Dream: ${dreamResult.reason}`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     dreamAnswer = `❌ **Dream error**\n\n${msg}`;
-    options.setStatus(`Dream error: ${msg}`);
+    tuiState.setStatus(`Dream error: ${msg}`);
   } finally {
-    options.setDreamRunning(false);
+    tuiState.dream.setRunning(false);
     clear(dreamHeartbeat);
   }
   // Flush previous agent exchange to scrollback before rendering the dream answer.
-  const prevItem = options.history().at(-1);
-  if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted') && !options.flushedItems.has(prevItem)) {
-    options.flushItemToScrollback(prevItem);
-    options.flushedItems.add(prevItem);
+  const prevItem = tuiState.history().at(-1);
+  if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted') && !tuiState.flushedItems.has(prevItem)) {
+    tuiState.flushItemToScrollback(prevItem);
+    tuiState.flushedItems.add(prevItem);
     // Small yield: let TUI settle before the second flush.
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
-  options.flushItemToScrollback({
+  tuiState.flushItemToScrollback({
     id: `dream-${dreamStart}`,
     query,
     events: [],
@@ -143,7 +126,7 @@ export async function handleDreamSlashCommand(query: string, options: DreamSlash
     status: 'complete',
     duration: Date.now() - dreamStart,
   });
-  const timeout = options.setTimeoutFn ?? setTimeout;
-  timeout(() => { options.setStatus(options.currentModel()); options.requestRender(); }, 5000);
+  const timeout = tuiState.timers?.setTimeout ?? setTimeout;
+  timeout(() => { tuiState.setStatus(tuiState.currentModel()); tuiState.requestRender(); }, 5000);
   return true;
 }

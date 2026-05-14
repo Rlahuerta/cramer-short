@@ -2,23 +2,22 @@ import { Container, ProcessTerminal, Spacer, Text, TUI } from '@mariozechner/pi-
 import { AtPathAutocompleteProvider } from './components/at-path-provider.js';
 import type { ApprovalDecision } from './agent/index.js';
 import { DEFAULT_MAX_ITERATIONS } from './agent/index.js';
-import { getApiKeyNameForProvider, getProviderDisplayName } from './utils/env.js';
-import { logger } from './utils/logger.js';
 import { isThinkingModel } from './model/llm.js';
 import {
   AgentRunnerController,
+  fetchLivePrices,
+  fetchShowData,
   InputHistoryController,
+  makePriceFetcher,
   ModelSelectionController,
+  SessionController,
+  WatchlistController,
+  writeSessionDailySummary,
+  type PriceSnapshot,
+  type TuiStateController,
+  type WatchlistEntry,
 } from './controllers/index.js';
-import { SessionController } from './controllers/session-controller.js';
-import { WatchlistController } from './controllers/watchlist-controller.js';
-import type { WatchlistEntry } from './controllers/watchlist-controller.js';
-import { fetchLivePrices } from './controllers/watchlist-display.js';
-import type { PriceSnapshot } from './controllers/watchlist-display.js';
-import { fetchShowData, makePriceFetcher } from './controllers/watchlist-price-fetchers.js';
-import { MemoryStore } from './memory/store.js';
-import { runDream, incrementDreamSessionCount, shouldRunDream } from './memory/dream.js';
-import { seedWatchlistEntries } from './memory/auto-store.js';
+import { MemoryStore, incrementDreamSessionCount, runDream, seedWatchlistEntries, shouldRunDream } from './memory/index.js';
 import {
   ApiKeyInputComponent,
   ApprovalPromptComponent,
@@ -36,9 +35,14 @@ import {
 } from './components/index.js';
 import { editorTheme, theme } from './theme.js';
 import type { HistoryItem } from './controllers/types.js';
-import { logError } from './utils/error-logger.js';
-import { exportSession } from './utils/export.js';
-import type { SessionIndexEntry } from './utils/session-store.js';
+import {
+  exportSession,
+  getApiKeyNameForProvider,
+  getProviderDisplayName,
+  logger,
+  logError,
+  type SessionIndexEntry,
+} from './utils/index.js';
 import type { SkillMetadata } from './skills/types.js';
 import {
   SLASH_COMMANDS,
@@ -47,12 +51,12 @@ import {
   buildShowPanel,
   buildWatchlistPanel,
   createScreen,
-} from './controllers/slash-commands/panels.js';
-import { handleCoreSlashCommand, handleExitCommand } from './controllers/slash-commands/core.js';
-import { handleDreamSlashCommand } from './controllers/slash-commands/dream.js';
-import { handleWatchlistSlashCommand } from './controllers/slash-commands/watchlist.js';
+  handleCoreSlashCommand,
+  handleDreamSlashCommand,
+  handleExitCommand,
+  handleWatchlistSlashCommand,
+} from './controllers/slash-commands/index.js';
 import { flushExchangeToScrollback, renderCurrentQuery } from './controllers/cli-rendering.js';
-import { writeSessionDailySummary } from './controllers/session-summary.js';
 
 export {
   buildHelpPanel,
@@ -237,6 +241,35 @@ export async function runCli() {
     return ` · refreshed ${Math.floor(secs / 60)}m ago`;
   };
 
+  const tuiState: TuiStateController = {
+    cwd: () => process.cwd(),
+    history: () => agentRunner.history,
+    flushedItems,
+    flushItemToScrollback: (item) => flushExchangeToScrollback(tui, chatLog, item),
+    currentModel: () => modelSelection.model,
+    setStatus: (message) => intro.setModel(message),
+    setError: (message) => { lastError = message; },
+    refreshError,
+    requestRender: () => tui.requestRender(),
+    renderSelectionOverlay: () => renderSelectionOverlay(),
+    watchlist: {
+      isVisible: () => watchlistVisible,
+      setVisible: (visible) => { watchlistVisible = visible; },
+      setEntries: (entries) => { watchlistEntries = entries; },
+      setPrices: (prices) => { watchlistPrices = prices; },
+      setMode: (mode) => { watchlistMode = mode; },
+      setShowTicker: (ticker) => { watchlistShowTicker = ticker; },
+      refreshPrices: refreshWatchlistPrices,
+      getRefreshIntervalMs: () => watchlistRefreshIntervalMs,
+      setRefresh: setWatchlistRefresh,
+    },
+    dream: {
+      isAgentProcessing: () => agentRunner.isProcessing,
+      isRunning: () => dreamRunning,
+      setRunning: (running) => { dreamRunning = running; },
+    },
+  };
+
   const handleSubmit = async (query: string) => {
     if (answerViewerVisible) {
       answerViewerVisible = false;
@@ -302,44 +335,13 @@ export async function runCli() {
       return;
     }
 
-    const watchlistResult = await handleWatchlistSlashCommand(query, {
-      cwd: () => process.cwd(),
-      history: () => agentRunner.history,
-      flushItemToScrollback: (item) => flushExchangeToScrollback(tui, chatLog, item),
-      setError: (message) => { lastError = message; },
-      refreshError,
-      requestRender: () => tui.requestRender(),
-      renderSelectionOverlay,
-      currentModel: () => modelSelection.model,
-      setStatus: (message) => intro.setModel(message),
-      isWatchlistVisible: () => watchlistVisible,
-      setWatchlistVisible: (visible) => { watchlistVisible = visible; },
-      setWatchlistEntries: (entries) => { watchlistEntries = entries; },
-      setWatchlistPrices: (prices) => { watchlistPrices = prices; },
-      setWatchlistMode: (mode) => { watchlistMode = mode; },
-      setWatchlistShowTicker: (ticker) => { watchlistShowTicker = ticker; },
-      refreshWatchlistPrices,
-      getWatchlistRefreshIntervalMs: () => watchlistRefreshIntervalMs,
-      setWatchlistRefresh,
-    });
+    const watchlistResult = await handleWatchlistSlashCommand(query, tuiState);
     if (watchlistResult.handled) {
       return;
     }
     query = watchlistResult.query ?? query;
 
-    if (await handleDreamSlashCommand(query, {
-      history: () => agentRunner.history,
-      flushedItems,
-      flushItemToScrollback: (item) => flushExchangeToScrollback(tui, chatLog, item),
-      isAgentProcessing: () => agentRunner.isProcessing,
-      isDreamRunning: () => dreamRunning,
-      setDreamRunning: (running) => { dreamRunning = running; },
-      currentModel: () => modelSelection.model,
-      setError: (message) => { lastError = message; },
-      refreshError,
-      requestRender: () => tui.requestRender(),
-      setStatus: (message) => intro.setModel(message),
-    })) {
+    if (await handleDreamSlashCommand(query, tuiState)) {
       return;
     }
 
