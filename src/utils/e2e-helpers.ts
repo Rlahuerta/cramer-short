@@ -7,8 +7,7 @@
  *   OLLAMA_BASE_URL — Ollama endpoint (default: 'http://127.0.0.1:11434')
  *   E2E_TIMEOUT_MS  — Hard timeout in ms (default: 600 000)
  */
-import { rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentEvent, DoneEvent } from '../agent/types.js';
 import { InMemoryChatHistory } from './in-memory-chat-history.js';
@@ -24,7 +23,7 @@ function resolveE2ETimeoutMs(): number {
   }
 
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 30_000 && parsed <= 900_000
+  return Number.isFinite(parsed) && parsed >= 40_000 && parsed <= 900_000
     ? parsed
     : DEFAULT_E2E_TIMEOUT_MS;
 }
@@ -32,6 +31,9 @@ function resolveE2ETimeoutMs(): number {
 export const E2E_TIMEOUT_MS = resolveE2ETimeoutMs();
 export const CHILD_RESULT_MARKER = '__CRAMER_E2E_RESULT__';
 
+const E2E_RESULT_DIR = join(process.cwd(), '.cramer-short', 'e2e-results');
+const E2E_CHILD_TIMEOUT_MS = Math.max(30_000, E2E_TIMEOUT_MS - 10_000);
+const DEFAULT_E2E_PREFLIGHT_TIMEOUT_MS = 30_000;
 const E2E_MODEL_FALLBACK = 'ollama:glm-5:cloud';
 const E2E_MODEL_PREFERENCES = [
   'glm-5.1:cloud',
@@ -43,6 +45,102 @@ const E2E_MODEL_PREFERENCES = [
 ] as const;
 
 let resolvedDefaultE2EModelPromise: Promise<string> | null = null;
+const preflightPromises = new Map<string, Promise<E2EPreflightStatus>>();
+let dynamicSkipReason: string | null = null;
+
+export class E2EPreflightSkipError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'E2EPreflightSkipError';
+  }
+}
+
+export function isE2EPreflightSkipError(error: unknown): error is E2EPreflightSkipError {
+  return error instanceof E2EPreflightSkipError || (
+    error instanceof Error && error.name === 'E2EPreflightSkipError'
+  );
+}
+
+export function markE2ESkippedFromError(error: unknown): boolean {
+  if (!isE2EPreflightSkipError(error)) {
+    return false;
+  }
+  dynamicSkipReason = error.message;
+  console.warn(error.message);
+  return true;
+}
+
+export function getE2EDynamicSkipReason(): string | null {
+  return dynamicSkipReason;
+}
+
+export interface E2EPreflightStatus {
+  available: boolean;
+  model: string;
+  reason?: string;
+}
+
+function resolveE2EPreflightTimeoutMs(): number {
+  const raw = process.env.E2E_PREFLIGHT_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return DEFAULT_E2E_PREFLIGHT_TIMEOUT_MS;
+  }
+
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1_000 && parsed <= 120_000
+    ? parsed
+    : DEFAULT_E2E_PREFLIGHT_TIMEOUT_MS;
+}
+
+function normalizeOllamaModel(model: string): string {
+  return model.replace(/^ollama:/i, '');
+}
+
+function isOllamaModel(model: string): boolean {
+  return model.toLowerCase().startsWith('ollama:');
+}
+
+async function probeOllamaModel(model: string, timeoutMs: number): Promise<string | null> {
+  const baseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+  const ollamaModel = normalizeOllamaModel(model);
+
+  try {
+    const tagsResponse = await fetch(`${baseUrl}/api/tags`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(Math.min(timeoutMs, 5_000)),
+    });
+    if (!tagsResponse.ok) {
+      return `Ollama health check failed at ${baseUrl}/api/tags with HTTP ${tagsResponse.status}`;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `Ollama is unavailable at ${baseUrl}: ${message}`;
+  }
+
+  try {
+    const response = await fetch(`${baseUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        model: ollamaModel,
+        prompt: 'Reply with OK.',
+        stream: false,
+        options: { num_predict: 1 },
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return `Ollama model ${ollamaModel} is unavailable (HTTP ${response.status}${text ? `: ${text.slice(0, 240)}` : ''})`;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `Ollama model ${ollamaModel} did not respond within ${timeoutMs}ms: ${message}`;
+  }
+
+  return null;
+}
 
 async function resolveDefaultE2EModel(): Promise<string> {
   const override = process.env.E2E_MODEL?.trim();
@@ -69,6 +167,37 @@ async function resolveDefaultE2EModel(): Promise<string> {
   }
 
   return resolvedDefaultE2EModelPromise;
+}
+
+export async function getE2EPreflightStatus(modelOverride?: string): Promise<E2EPreflightStatus> {
+  const model = modelOverride ?? await resolveDefaultE2EModel();
+  const cacheKey = `${model}\0${process.env.OLLAMA_BASE_URL ?? ''}\0${process.env.E2E_PREFLIGHT_TIMEOUT_MS ?? ''}`;
+  const cached = preflightPromises.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const promise = (async (): Promise<E2EPreflightStatus> => {
+    if (!isOllamaModel(model)) {
+      return { available: true, model };
+    }
+
+    const reason = await probeOllamaModel(model, resolveE2EPreflightTimeoutMs());
+    return reason
+      ? { available: false, model, reason }
+      : { available: true, model };
+  })();
+  preflightPromises.set(cacheKey, promise);
+  return promise;
+}
+
+async function assertE2EPreflight(modelOverride?: string): Promise<void> {
+  const status = await getE2EPreflightStatus(modelOverride);
+  if (!status.available) {
+    throw new E2EPreflightSkipError(
+      `Skipping live E2E for ${status.model}: ${status.reason ?? 'preflight failed'}`,
+    );
+  }
 }
 
 export interface E2EResult {
@@ -130,8 +259,9 @@ function buildChildErrorMessage(prefix: string, stdout: string, stderr: string):
 }
 
 function createChildResultFilePath(): string {
+  mkdirSync(E2E_RESULT_DIR, { recursive: true });
   return join(
-    tmpdir(),
+    E2E_RESULT_DIR,
     `cramer-short-e2e-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
   );
 }
@@ -220,6 +350,7 @@ export async function runAgentE2EInProcess(
   }
 
   const model = opts.model ?? await resolveDefaultE2EModel();
+  await assertE2EPreflight(model);
   const maxIterations = opts.maxIterations ?? defaultMaxIter;
 
   // Dynamic import to avoid mock.module contamination from unit test files
@@ -290,6 +421,8 @@ export async function runAgentE2E(
   }
 
   const childScriptPath = new URL('./e2e-agent-child.ts', import.meta.url).pathname;
+  const model = opts.model ?? await resolveDefaultE2EModel();
+  await assertE2EPreflight(model);
   const resultFilePath = createChildResultFilePath();
   const payload = encodeChildPayload({ query, opts, resultFilePath });
   const proc = Bun.spawn({
@@ -309,7 +442,7 @@ export async function runAgentE2E(
   const timer = setTimeout(() => {
     timedOut = true;
     proc.kill();
-  }, E2E_TIMEOUT_MS);
+  }, E2E_CHILD_TIMEOUT_MS);
 
   const exitCode = await proc.exited;
   clearTimeout(timer);
@@ -317,7 +450,7 @@ export async function runAgentE2E(
 
   if (timedOut) {
     throw new Error(buildChildErrorMessage(
-      `E2E child timed out after ${E2E_TIMEOUT_MS}ms.`,
+      `E2E child timed out after ${E2E_CHILD_TIMEOUT_MS}ms.`,
       stdout,
       stderr,
     ));

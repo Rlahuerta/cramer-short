@@ -7,12 +7,12 @@
  * The agent is invoked ONCE via beforeAll; all tests share the same result
  * to avoid paying the LLM cost multiple times.
  *
- * Model: ollama:kimi-k2.6:cloud (override via E2E_MODEL env var)
+ * Model: E2E_MODEL env var or the shared live E2E auto-resolver.
  * Timeout: E2E_TIMEOUT_MS (default 600 s)
  */
 import { describe, expect, beforeAll } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
-import { runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
+import { markE2ESkippedFromError, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { E2EResult } from '@/utils/e2e-helpers.js';
 
 // Financial data tool names registered in src/tools/registry.ts
@@ -29,7 +29,6 @@ const FINANCIAL_TOOL_NAMES = [
 ];
 
 const DCF_E2E_MAX_ITERATIONS = 6;
-const DCF_E2E_MODEL = 'ollama:glm-5:cloud';
 
 let result: E2EResult;
 let tools: string[];
@@ -38,12 +37,16 @@ let answer: string;
 describe('DCF skill E2E', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return; // guard — tests will be skipped via e2eIt
-    result = await runAgentE2EWithTimeoutRetry('--deep Use the DCF skill to value Apple (AAPL)', {
-      maxIterations: DCF_E2E_MAX_ITERATIONS,
-      model: DCF_E2E_MODEL,
-    });
-    tools = result.toolsCalled;
-    answer = result.answer;
+    try {
+      result = await runAgentE2EWithTimeoutRetry('--deep Use the DCF skill to value Apple (AAPL)', {
+        maxIterations: DCF_E2E_MAX_ITERATIONS,
+      });
+      tools = result.toolsCalled;
+      answer = result.answer;
+    } catch (error) {
+      if (markE2ESkippedFromError(error)) return;
+      throw error;
+    }
   }, E2E_TIMEOUT_MS);
 
   e2eIt('invokes the skill tool or executes the DCF workflow directly', () => {

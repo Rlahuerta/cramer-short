@@ -19,7 +19,9 @@ export async function getOllamaModels(): Promise<string[]> {
   const baseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
   
   try {
-    const response = await fetch(`${baseUrl}/api/tags`);
+    const response = await fetch(`${baseUrl}/api/tags`, {
+      signal: AbortSignal.timeout(5_000),
+    });
 
     if (!response.ok) {
       return [];
@@ -34,4 +36,3 @@ export async function getOllamaModels(): Promise<string[]> {
     return [];
   }
 }
-

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, beforeAll } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { integrationIt } from '@/utils/test-guards.js';
-import { fetchBitmexDailyCloses } from '../bitmex.js';
 import { walkForward, type WalkForwardResult } from './walk-forward.js';
 import { brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
 
@@ -18,6 +19,12 @@ const WARMUP = 120;
 const HISTORY_DAYS = 365;
 const TIMEOUT = 480_000;
 
+interface FixtureData {
+  tickers: Record<string, {
+    closes: number[];
+  }>;
+}
+
 interface HorizonMetrics {
   steps: BacktestStep[];
   errors: number;
@@ -27,6 +34,8 @@ interface HorizonMetrics {
   structuralBreakCount: number;
   abstainCount: number;
 }
+
+let fixture: FixtureData;
 
 function formatPct(value: number, digits = 1): string {
   return `${(value * 100).toFixed(digits)}%`;
@@ -48,12 +57,12 @@ function scorePrimaryShortHorizons(metrics: Record<string, { directionalAccuracy
   );
 }
 
-async function loadPrices(): Promise<number[]> {
-  return fetchBitmexDailyCloses(TICKER, HISTORY_DAYS);
+function loadPrices(): number[] {
+  return fixture.tickers['SOL-USD']?.closes.slice(-HISTORY_DAYS) ?? [];
 }
 
 async function runCurrentLaneForHorizon(horizon: number): Promise<HorizonMetrics> {
-  const prices = await loadPrices();
+  const prices = loadPrices();
   const result: WalkForwardResult = await walkForward({
     ticker: TICKER,
     prices,
@@ -74,6 +83,11 @@ async function runCurrentLaneForHorizon(horizon: number): Promise<HorizonMetrics
 }
 
 describe('Walk-forward SOL short-horizon benchmark', () => {
+  beforeAll(() => {
+    const fixturePath = join(import.meta.dir, '..', 'fixtures', 'crypto-peer-prices.json');
+    fixture = JSON.parse(readFileSync(fixturePath, 'utf-8')) as FixtureData;
+  });
+
   it('keeps the SOL mutator contract centered on 1d/2d/3d while treating 7d/14d as guardrails', () => {
     const baseline = {
       h1: { directionalAccuracy: 0.51 },

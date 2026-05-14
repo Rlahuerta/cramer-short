@@ -9,7 +9,7 @@
  */
 import { describe, expect, beforeAll } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
-import { runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
+import { markE2ESkippedFromError, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { E2EResult, E2ESeedMessage } from '@/utils/e2e-helpers.js';
 import type { ToolStartEvent } from '@/agent/types.js';
 
@@ -145,114 +145,119 @@ function findToolCall(result: E2EResult, toolName: string): ToolStartEvent | und
 describe('forecast-lab skill E2E', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return;
-    optimizationResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_OPTIMIZATION_QUERY, {
-      maxIterations: 6,
-    });
-    optimizationTools = optimizationResult.toolsCalled;
-    optimizationAnswer = optimizationResult.answer;
-    ordinaryForecastResult = await runAgentE2EWithTimeoutRetry(ORDINARY_BTC_FORECAST_QUERY, {
-      maxIterations: 6,
-    });
-    lifecycleResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_LIFECYCLE_QUERY, {
-      maxIterations: 6,
-    });
-    lifecycleTools = lifecycleResult.toolsCalled;
-    lifecycleAnswer = lifecycleResult.answer;
-    exhaustionResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_EXHAUSTION_QUERY, {
-      maxIterations: 6,
-      historySeed: FORECAST_LAB_EXHAUSTED_LINEAGE_HISTORY,
-    });
-    exhaustionTools = exhaustionResult.toolsCalled;
-    exhaustionAnswer = exhaustionResult.answer;
-    mutatorGuidanceResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_MUTATOR_GUIDANCE_QUERY, {
-      maxIterations: 6,
-    });
-    mutatorGuidanceTools = mutatorGuidanceResult.toolsCalled;
-    mutatorGuidanceAnswer = mutatorGuidanceResult.answer;
-    mutatorExecutionResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_MUTATOR_EXECUTION_QUERY, {
-      maxIterations: 6,
-    });
-    mutatorExecutionTools = mutatorExecutionResult.toolsCalled;
-    mutatorExecutionAnswer = mutatorExecutionResult.answer;
-    approvalCommandResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_APPROVAL_COMMAND_QUERY, {
-      maxIterations: 4,
-      historySeed: FORECAST_LAB_APPROVAL_HISTORY,
-    });
-    approvalCommandTools = approvalCommandResult.toolsCalled;
-    approvalCommandAnswer = approvalCommandResult.answer;
-    comparisonResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_COMPARISON_QUERY, {
-      maxIterations: 4,
-      historySeed: FORECAST_LAB_APPROVAL_HISTORY,
-    });
-    comparisonTools = comparisonResult.toolsCalled;
-    comparisonAnswer = comparisonResult.answer;
-    resultsQueryResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_RESULTS_QUERY, {
-      maxIterations: 4,
-    });
-    resultsQueryTools = resultsQueryResult.toolsCalled;
-    resultsQueryAnswer = resultsQueryResult.answer;
-    keepCurrentBestResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_KEEP_CURRENT_BEST_QUERY, {
-      maxIterations: 4,
-      historySeed: FORECAST_LAB_APPROVAL_HISTORY,
-    });
-    keepCurrentBestTools = keepCurrentBestResult.toolsCalled;
-    keepCurrentBestAnswer = keepCurrentBestResult.answer;
-    catalogExtensionResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_CATALOG_EXTENSION_QUERY, {
-      maxIterations: 4,
-      historySeed: FORECAST_LAB_EXHAUSTED_LINEAGE_HISTORY,
-    });
-    catalogExtensionTools = catalogExtensionResult.toolsCalled;
-    catalogExtensionAnswer = catalogExtensionResult.answer;
-    catalogExtensionImplementationResult = await runAgentE2EWithTimeoutRetry(
-      FORECAST_LAB_CATALOG_EXTENSION_IMPLEMENTATION_QUERY,
-      {
+    try {
+      optimizationResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_OPTIMIZATION_QUERY, {
+        maxIterations: 6,
+      });
+      optimizationTools = optimizationResult.toolsCalled;
+      optimizationAnswer = optimizationResult.answer;
+      ordinaryForecastResult = await runAgentE2EWithTimeoutRetry(ORDINARY_BTC_FORECAST_QUERY, {
+        maxIterations: 6,
+      });
+      lifecycleResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_LIFECYCLE_QUERY, {
+        maxIterations: 6,
+      });
+      lifecycleTools = lifecycleResult.toolsCalled;
+      lifecycleAnswer = lifecycleResult.answer;
+      exhaustionResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_EXHAUSTION_QUERY, {
+        maxIterations: 6,
+        historySeed: FORECAST_LAB_EXHAUSTED_LINEAGE_HISTORY,
+      });
+      exhaustionTools = exhaustionResult.toolsCalled;
+      exhaustionAnswer = exhaustionResult.answer;
+      mutatorGuidanceResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_MUTATOR_GUIDANCE_QUERY, {
+        maxIterations: 6,
+      });
+      mutatorGuidanceTools = mutatorGuidanceResult.toolsCalled;
+      mutatorGuidanceAnswer = mutatorGuidanceResult.answer;
+      mutatorExecutionResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_MUTATOR_EXECUTION_QUERY, {
+        maxIterations: 6,
+      });
+      mutatorExecutionTools = mutatorExecutionResult.toolsCalled;
+      mutatorExecutionAnswer = mutatorExecutionResult.answer;
+      approvalCommandResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_APPROVAL_COMMAND_QUERY, {
         maxIterations: 4,
-      },
-    );
-    catalogExtensionImplementationTools = catalogExtensionImplementationResult.toolsCalled;
-    catalogExtensionImplementationAnswer = catalogExtensionImplementationResult.answer;
-    mutatorVsActiveResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_MUTATOR_VS_ACTIVE_QUERY, {
-      maxIterations: 4,
-      historySeed: [
+        historySeed: FORECAST_LAB_APPROVAL_HISTORY,
+      });
+      approvalCommandTools = approvalCommandResult.toolsCalled;
+      approvalCommandAnswer = approvalCommandResult.answer;
+      comparisonResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_COMPARISON_QUERY, {
+        maxIterations: 4,
+        historySeed: FORECAST_LAB_APPROVAL_HISTORY,
+      });
+      comparisonTools = comparisonResult.toolsCalled;
+      comparisonAnswer = comparisonResult.answer;
+      resultsQueryResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_RESULTS_QUERY, {
+        maxIterations: 4,
+      });
+      resultsQueryTools = resultsQueryResult.toolsCalled;
+      resultsQueryAnswer = resultsQueryResult.answer;
+      keepCurrentBestResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_KEEP_CURRENT_BEST_QUERY, {
+        maxIterations: 4,
+        historySeed: FORECAST_LAB_APPROVAL_HISTORY,
+      });
+      keepCurrentBestTools = keepCurrentBestResult.toolsCalled;
+      keepCurrentBestAnswer = keepCurrentBestResult.answer;
+      catalogExtensionResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_CATALOG_EXTENSION_QUERY, {
+        maxIterations: 4,
+        historySeed: FORECAST_LAB_EXHAUSTED_LINEAGE_HISTORY,
+      });
+      catalogExtensionTools = catalogExtensionResult.toolsCalled;
+      catalogExtensionAnswer = catalogExtensionResult.answer;
+      catalogExtensionImplementationResult = await runAgentE2EWithTimeoutRetry(
+        FORECAST_LAB_CATALOG_EXTENSION_IMPLEMENTATION_QUERY,
         {
-          query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
-          answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
-          summary: null,
+          maxIterations: 4,
         },
-      ],
-    });
-    mutatorVsActiveTools = mutatorVsActiveResult.toolsCalled;
-    mutatorVsActiveAnswer = mutatorVsActiveResult.answer;
-    historyMutatorVsActiveResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_HISTORY_MUTATOR_VS_ACTIVE_QUERY, {
-      maxIterations: 4,
-      historySeed: [
-        {
-          query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
-          answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
-          summary: null,
-        },
-      ],
-    });
-    historyMutatorVsActiveTools = historyMutatorVsActiveResult.toolsCalled;
-    historyMutatorVsActiveAnswer = historyMutatorVsActiveResult.answer;
-    implementNewMutatorResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_IMPLEMENT_NEW_MUTATOR_QUERY, {
-      maxIterations: 4,
-      historySeed: [
-        {
-          query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
-          answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
-          summary: null,
-        },
-      ],
-    });
-    implementNewMutatorTools = implementNewMutatorResult.toolsCalled;
-    implementNewMutatorAnswer = implementNewMutatorResult.answer;
-    listMutatorsResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_LIST_MUTATORS_QUERY, {
-      maxIterations: 4,
-      historySeed: FORECAST_LAB_APPROVAL_HISTORY,
-    });
-    listMutatorsTools = listMutatorsResult.toolsCalled;
-    listMutatorsAnswer = listMutatorsResult.answer;
+      );
+      catalogExtensionImplementationTools = catalogExtensionImplementationResult.toolsCalled;
+      catalogExtensionImplementationAnswer = catalogExtensionImplementationResult.answer;
+      mutatorVsActiveResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_MUTATOR_VS_ACTIVE_QUERY, {
+        maxIterations: 4,
+        historySeed: [
+          {
+            query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
+            answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+            summary: null,
+          },
+        ],
+      });
+      mutatorVsActiveTools = mutatorVsActiveResult.toolsCalled;
+      mutatorVsActiveAnswer = mutatorVsActiveResult.answer;
+      historyMutatorVsActiveResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_HISTORY_MUTATOR_VS_ACTIVE_QUERY, {
+        maxIterations: 4,
+        historySeed: [
+          {
+            query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
+            answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+            summary: null,
+          },
+        ],
+      });
+      historyMutatorVsActiveTools = historyMutatorVsActiveResult.toolsCalled;
+      historyMutatorVsActiveAnswer = historyMutatorVsActiveResult.answer;
+      implementNewMutatorResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_IMPLEMENT_NEW_MUTATOR_QUERY, {
+        maxIterations: 4,
+        historySeed: [
+          {
+            query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
+            answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+            summary: null,
+          },
+        ],
+      });
+      implementNewMutatorTools = implementNewMutatorResult.toolsCalled;
+      implementNewMutatorAnswer = implementNewMutatorResult.answer;
+      listMutatorsResult = await runAgentE2EWithTimeoutRetry(FORECAST_LAB_LIST_MUTATORS_QUERY, {
+        maxIterations: 4,
+        historySeed: FORECAST_LAB_APPROVAL_HISTORY,
+      });
+      listMutatorsTools = listMutatorsResult.toolsCalled;
+      listMutatorsAnswer = listMutatorsResult.answer;
+    } catch (error) {
+      if (markE2ESkippedFromError(error)) return;
+      throw error;
+    }
   }, E2E_TIMEOUT_MS);
 
   e2eIt('invokes the forecast-lab skill for optimization queries', () => {

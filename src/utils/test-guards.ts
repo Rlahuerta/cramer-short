@@ -22,6 +22,7 @@
  *   SKIP_INTEGRATION=1 — disable integration tests locally
  */
 import { it } from 'bun:test';
+import { getE2EDynamicSkipReason, getE2EPreflightStatus, markE2ESkippedFromError } from './e2e-helpers.js';
 
 export const RUN_INTEGRATION =
   process.env.SKIP_INTEGRATION === '1' ? false : process.env.RUN_INTEGRATION === '1';
@@ -31,8 +32,35 @@ export const RUN_INTEGRATION =
 // Use `bun run test:e2e` which sets RUN_E2E=1 and runs only e2e files.
 export const RUN_E2E = process.env.RUN_E2E === '1';
 
+const initialE2EPreflight = RUN_E2E ? await getE2EPreflightStatus() : null;
+if (initialE2EPreflight && !initialE2EPreflight.available) {
+  console.warn(
+    `Skipping live E2E for ${initialE2EPreflight.model}: ${initialE2EPreflight.reason ?? 'preflight failed'}`,
+  );
+}
+
 /** Use instead of `it` for tests that hit real external APIs (no LLM). */
 export const integrationIt: typeof it = RUN_INTEGRATION ? it : it.skip;
 
+const guardedE2EIt: typeof it = ((label: string, fn: () => void | Promise<unknown>, options?: Parameters<typeof it>[2]) => {
+  it(label, async () => {
+    const skipReason = getE2EDynamicSkipReason();
+    if (skipReason) {
+      console.warn(skipReason);
+      return;
+    }
+
+    try {
+      await fn();
+    } catch (error) {
+      if (markE2ESkippedFromError(error)) {
+        return;
+      }
+      throw error;
+    }
+  }, options);
+}) as unknown as typeof it;
+
 /** Use instead of `it` for tests that run the full Cramer-Short agent against Ollama. */
-export const e2eIt: typeof it = RUN_E2E ? it : it.skip;
+export const e2eIt: typeof it =
+  RUN_E2E && (initialE2EPreflight?.available ?? false) ? guardedE2EIt : it.skip;

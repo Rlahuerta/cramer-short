@@ -21,7 +21,7 @@
  */
 import { describe, expect, beforeAll } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
-import { runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
+import { markE2ESkippedFromError, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { E2EResult } from '@/utils/e2e-helpers.js';
 
 const PROBABILITY_QUERY =
@@ -63,11 +63,16 @@ function hasProbabilitySummaryTable(text: string): boolean {
 describe('probability_assessment skill E2E', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return; // guard — tests will be skipped via e2eIt when RUN_E2E is false
-    result = await runAgentE2EWithTimeoutRetry(PROBABILITY_QUERY, {
-      maxIterations: PROBABILITY_E2E_MAX_ITERATIONS,
-    });
-    tools = result.toolsCalled;
-    answer = result.answer;
+    try {
+      result = await runAgentE2EWithTimeoutRetry(PROBABILITY_QUERY, {
+        maxIterations: PROBABILITY_E2E_MAX_ITERATIONS,
+      });
+      tools = result.toolsCalled;
+      answer = result.answer;
+    } catch (error) {
+      if (markE2ESkippedFromError(error)) return;
+      throw error;
+    }
   }, E2E_TIMEOUT_MS);
 
   // ── 1. Tool chain ──────────────────────────────────────────────────────────
@@ -236,9 +241,14 @@ let markovAnswer: string;
 describe('markov_distribution E2E — price distribution workflow', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return;
-    markovResult = await runAgentE2EWithTimeoutRetry(MARKOV_QUERY);
-    markovTools = markovResult.toolsCalled;
-    markovAnswer = markovResult.answer;
+    try {
+      markovResult = await runAgentE2EWithTimeoutRetry(MARKOV_QUERY);
+      markovTools = markovResult.toolsCalled;
+      markovAnswer = markovResult.answer;
+    } catch (error) {
+      if (markE2ESkippedFromError(error)) return;
+      throw error;
+    }
   }, E2E_TIMEOUT_MS);
 
   // ── Tool chain ──────────────────────────────────────────────────────────
