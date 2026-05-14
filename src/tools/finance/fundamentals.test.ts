@@ -61,7 +61,20 @@ import { api } from './api.js';
 const { getIncomeStatements, getBalanceSheets, getCashFlowStatements } =
   await import('./fundamentals.js');
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let apiGetSpy: ReturnType<typeof spyOn<any, any>> | undefined;
+
 afterEach(() => {
+  apiGetSpy?.mockRestore();
+  apiGetSpy = undefined;
+  mockFmpIncomeInvoke.mockReset();
+  mockFmpBalanceInvoke.mockReset();
+  mockFmpCashFlowInvoke.mockReset();
+  mockYahooIncomeInvoke.mockReset();
+  mockYahooAnalystTargetsInvoke.mockReset();
+  mockYahooAnalystRecommendationsInvoke.mockReset();
+  mockYahooUpgradeDowngradeHistoryInvoke.mockReset();
+  mockTavilyInvoke.mockReset();
   delete process.env.TAVILY_API_KEY;
 });
 
@@ -86,7 +99,8 @@ const FD_ENDPOINTS = {
 type FdStatementKey = keyof typeof FD_ENDPOINTS;
 
 function mockFdResponse(data: Record<string, unknown>, url = ''): void {
-  spyOn(api, 'get').mockResolvedValue({ data, url });
+  apiGetSpy?.mockRestore();
+  apiGetSpy = spyOn(api, 'get').mockResolvedValue({ data, url });
 }
 
 function mockFdStatements(key: FdStatementKey, rows: unknown[], url: string = FD_ENDPOINTS[key]): void {
@@ -98,7 +112,8 @@ function mockFdEmpty(key: FdStatementKey): void {
 }
 
 function mockFdFailure(message = '[Financial Datasets API] 404'): void {
-  spyOn(api, 'get').mockRejectedValue(new Error(message));
+  apiGetSpy?.mockRestore();
+  apiGetSpy = spyOn(api, 'get').mockRejectedValue(new Error(message));
 }
 
 function enableTavily(): void {

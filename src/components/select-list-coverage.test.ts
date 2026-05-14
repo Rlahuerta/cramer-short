@@ -8,7 +8,8 @@
  *
  * NOTE: VimSelectList j/k navigation is tested indirectly via the selectors.
  */
-import { describe, it, expect, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import {
   createProviderSelector,
   createModelSelector,
@@ -19,6 +20,14 @@ import {
   ApiKeyInputComponent,
 } from './select-list.js';
 import type { SessionIndexEntry } from '../utils/session-store.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // createProviderSelector
@@ -192,18 +201,18 @@ describe('createSessionSelector — with sessions', () => {
       id: 'sess-1',
       name: '2024-01-01 Morning session',
       firstQuery: 'What is the PE ratio of AAPL?',
-      lastModified: Date.now() - 3600_000,
+      lastModified: FIXED_TEST_NOW_MS - 3600_000,
       queryCount: 3,
-      created: Date.now() - 3600_000,
+      created: FIXED_TEST_NOW_MS - 3600_000,
       file: 'sess-1.json',
     },
     {
       id: 'sess-2',
       name: '2024-01-02 Afternoon session',
       firstQuery: 'Analyze Tesla earnings',
-      lastModified: Date.now() - 7200_000,
+      lastModified: FIXED_TEST_NOW_MS - 7200_000,
       queryCount: 5,
-      created: Date.now() - 7200_000,
+      created: FIXED_TEST_NOW_MS - 7200_000,
       file: 'sess-2.json',
     },
   ];

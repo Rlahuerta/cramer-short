@@ -1,7 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   getGatewayConfigPath,
   loadGatewayConfig,
@@ -16,7 +25,7 @@ let originalCwd: string;
 
 beforeEach(() => {
   originalCwd = process.cwd();
-  tmpDir = join(tmpdir(), `gateway-config-test-${Date.now()}`);
+  tmpDir = join(tmpdir(), `gateway-config-test-${FIXED_TEST_NOW_MS}`);
   mkdirSync(tmpDir, { recursive: true });
   process.chdir(tmpDir);
 });

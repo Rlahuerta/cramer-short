@@ -1,16 +1,25 @@
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { MS_PER_DAY } from './time.js';
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writeFileSync } from 'node:fs';
 import { trackFmpCall, getQuotaStatus, getQuotaWarning } from './fmp-quota.js';
 
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
+
 let testDir: string;
 let quotaPath: string;
 
 beforeEach(async () => {
-  testDir = join(tmpdir(), `dexter-quota-test-${Date.now()}`);
+  testDir = join(tmpdir(), `dexter-quota-test-${FIXED_TEST_NOW_MS}`);
   await mkdir(testDir, { recursive: true });
   quotaPath = join(testDir, 'fmp-quota.json');
 });
@@ -42,7 +51,7 @@ describe('trackFmpCall', () => {
   });
 
   it('resets counter when stored date does not match today', () => {
-    const yesterday = new Date(Date.now() - MS_PER_DAY).toISOString().slice(0, 10);
+    const yesterday = new Date(FIXED_TEST_NOW_MS - MS_PER_DAY).toISOString().slice(0, 10);
     writeFileSync(quotaPath, JSON.stringify({ date: yesterday, count: 200 }));
     const status = trackFmpCall(quotaPath);
     expect(status.used).toBe(1); // reset

@@ -12,9 +12,18 @@
  *   - requestToolApproval (lines 234-239)
  *
  */
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { AgentRunnerController } from './agent-runner.js';
 import type { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ─── Fake agent state — reset per test ───────────────────────────────────────
 
@@ -78,7 +87,7 @@ function makeController() {
   const ctrl = new AgentRunnerController(
     { model: undefined },
     makeFakeChatHistory(),
-    () => changes.push(Date.now()),
+    () => changes.push(FIXED_TEST_NOW_MS),
     {
       createAgent: fakeCreateAgent as never,
       autoStoreFromRun: fakeAutoStoreFromRun as never,

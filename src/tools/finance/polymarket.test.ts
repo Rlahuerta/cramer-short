@@ -1,5 +1,6 @@
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { MS_PER_DAY } from '../../utils/time.js';
-import { describe, expect, it, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -8,6 +9,14 @@ import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import type { PolymarketMarketResult } from './polymarket.js';
 import { readSnapshotRecords } from './polymarket-snapshots.js';
 import { computeMaxHourlyLogitJump, computePriceVelocityLogitPerHour } from './polymarket-clob.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // Disable retry delays in tests to avoid timeouts
 let originalDelays: number[];
@@ -225,13 +234,13 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will the price of Bitcoin be above $70,000 on April 9?',
       'BTC-USD',
       7,
-      new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
     );
     const barrier = scoreAnchorMarketRelevance(
       'Will Bitcoin reach $70,000 this week?',
       'BTC-USD',
       7,
-      new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
     );
     expect(barrier).toBe(0);
     expect(threshold).toBeGreaterThan(barrier);
@@ -242,13 +251,13 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will Barrick Gold close above $25 by June?',
       'GOLD',
       30,
-      new Date(Date.now() + 30 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 30 * MS_PER_DAY).toISOString(),
     );
     const genericGold = scoreAnchorMarketRelevance(
       'Will gold exceed $3500 by June?',
       'GOLD',
       30,
-      new Date(Date.now() + 30 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 30 * MS_PER_DAY).toISOString(),
     );
 
     expect(barrick).toBeGreaterThan(0);
@@ -260,13 +269,13 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will Bitcoin reach $80,000 in April?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
     const equityBarrier = scoreAnchorMarketRelevance(
       'Will NVDA reach $200 in April?',
       'NVDA',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
     expect(cryptoBarrier).toBe(0);
     expect(equityBarrier).toBeGreaterThan(cryptoBarrier);
@@ -277,13 +286,13 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will the price of Bitcoin be above $84,000 on April 17?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 2 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 2 * MS_PER_DAY).toISOString(),
     );
     const cryptoBarrier = scoreAnchorMarketRelevance(
       'Will Bitcoin dip to $65,000 in April?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
     expect(cryptoBarrier).toBe(0);
     expect(cryptoTerminal).toBeGreaterThan(cryptoBarrier);
@@ -294,13 +303,13 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will Bitcoin trade above $70,000 on April 17?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 2 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 2 * MS_PER_DAY).toISOString(),
     );
     const tradeBelow = scoreAnchorMarketRelevance(
       'Will Bitcoin trade below $65,000 at April 17?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 2 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 2 * MS_PER_DAY).toISOString(),
     );
     expect(tradeAbove).toBeGreaterThan(0);
     expect(tradeBelow).toBeGreaterThan(0);
@@ -311,7 +320,7 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will Bitcoin trade above $70,000 at expiry?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
     expect(result).toBe(0);
   });
@@ -321,7 +330,7 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will Bitcoin trade above $70,000 at close?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
     expect(result).toBe(0);
   });
@@ -331,13 +340,13 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will Bitcoin stay above $70,000 through April 17?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
     const moveTo = scoreAnchorMarketRelevance(
       'Will Bitcoin move to $80,000 in April?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
 
     expect(stayAbove).toBe(0);
@@ -349,7 +358,7 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will the price of Ethereum be above $4,000 on May 18?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
 
     expect(ethThreshold).toBe(0);
@@ -360,7 +369,7 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will the SEC approve a Bitcoin ETF by May 18?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
 
     expect(bitcoinEtf).toBe(0);
@@ -371,7 +380,7 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will SPY reach $600 in April?',
       'SPY',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
     // SPY should get the generic -3 penalty, not the extra crypto -4
     // Total score should be higher than the same question for BTC-USD
@@ -379,7 +388,7 @@ describe('scoreAnchorMarketRelevance', () => {
       'Will Bitcoin reach $80,000 in April?',
       'BTC-USD',
       14,
-      new Date(Date.now() + 14 * MS_PER_DAY).toISOString(),
+      new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY).toISOString(),
     );
     expect(spyReach).toBeGreaterThan(btcReach);
   });
@@ -398,26 +407,26 @@ describe('fetchPolymarketAnchorMarkets', () => {
           question: 'Will Bitcoin reach $70,000 this week?',
           outcomes: '["Yes","No"]',
           outcomePrices: '["0.30","0.70"]',
-          endDateIso: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+          endDateIso: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
           volume24hr: 400000,
           volumeNum: 400000,
           liquidityNum: 100000,
           active: true,
           closed: false,
-          createdAt: new Date(Date.now() - 3 * MS_PER_DAY).toISOString(),
+          createdAt: new Date(FIXED_TEST_NOW_MS - 3 * MS_PER_DAY).toISOString(),
         },
         {
           id: '2',
           question: 'Will the price of Bitcoin be above $70,000 on April 9?',
           outcomes: '["Yes","No"]',
           outcomePrices: '["0.45","0.55"]',
-          endDateIso: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+          endDateIso: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
           volume24hr: 120000,
           volumeNum: 120000,
           liquidityNum: 50000,
           active: true,
           closed: false,
-          createdAt: new Date(Date.now() - 3 * MS_PER_DAY).toISOString(),
+          createdAt: new Date(FIXED_TEST_NOW_MS - 3 * MS_PER_DAY).toISOString(),
         },
       ],
     };
@@ -428,7 +437,7 @@ describe('fetchPolymarketAnchorMarkets', () => {
   });
 
   it('passes endDateFilter to constrain anchor search for long-horizon crypto', async () => {
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const thirtyDayEvent = {
       id: 'btc-30d',
       title: 'Bitcoin 30-day',
@@ -484,13 +493,13 @@ describe('fetchPolymarketAnchorMarkets', () => {
           question: 'Will the price of Bitcoin be above $90000 in June?',
           outcomes: '["Yes","No"]',
           outcomePrices: '["0.40","0.60"]',
-          endDateIso: new Date(Date.now() + 60 * MS_PER_DAY).toISOString(),
+          endDateIso: new Date(FIXED_TEST_NOW_MS + 60 * MS_PER_DAY).toISOString(),
           volume24hr: 200000,
           volumeNum: 200000,
           liquidityNum: 80000,
           active: true,
           closed: false,
-          createdAt: new Date(Date.now() - 2 * MS_PER_DAY).toISOString(),
+          createdAt: new Date(FIXED_TEST_NOW_MS - 2 * MS_PER_DAY).toISOString(),
         },
       ],
     };
@@ -508,7 +517,7 @@ describe('fetchPolymarketAnchorMarkets', () => {
       } as Response;
     }) as typeof fetch;
 
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const results = await fetchPolymarketAnchorMarkets('Bitcoin price target', 5, {
       ticker: 'BTC-USD',
       horizonDays: 30,
@@ -732,7 +741,7 @@ describe('polymarket commodity search filtering (regression)', () => {
       },
     ], []) as typeof fetch;
 
-    const { fetchPolymarketMarkets: isolatedFetchPolymarketMarkets } = await import(`./polymarket.js?commodity-regression=${Date.now()}`) as {
+    const { fetchPolymarketMarkets: isolatedFetchPolymarketMarkets } = await import(`./polymarket.js?commodity-regression=${nextTestId('module')}`) as {
       fetchPolymarketMarkets: (query: string, limit: number) => Promise<PolymarketMarketResult[]>;
     };
     const results = await isolatedFetchPolymarketMarkets('gold price', 5);
@@ -751,7 +760,7 @@ describe('fetchPolymarketMarkets snapshot write path', () => {
 
     try {
       globalThis.fetch = mockFetch([MOCK_EVENT], [MOCK_MARKET]) as typeof fetch;
-      const { fetchPolymarketMarkets: isolatedFetchPolymarketMarkets } = await import(`./polymarket.js?snapshots=${Date.now()}`) as {
+      const { fetchPolymarketMarkets: isolatedFetchPolymarketMarkets } = await import(`./polymarket.js?snapshots=${nextTestId('module')}`) as {
         fetchPolymarketMarkets: (query: string, limit: number, options?: { snapshotFilePath?: string; capturedAt?: string }) => Promise<PolymarketMarketResult[]>;
       };
 
@@ -994,7 +1003,7 @@ describe('ageDays population', () => {
   afterEach(() => { globalThis.fetch = savedFetch; });
 
   it('populates ageDays in tool output when createdAt is present', async () => {
-    const twoDaysAgo = new Date(Date.now() - 2 * MS_PER_DAY).toISOString();
+    const twoDaysAgo = new Date(FIXED_TEST_NOW_MS - 2 * MS_PER_DAY).toISOString();
     globalThis.fetch = (async () => ({
       ok: true,
       status: 200,
@@ -1098,7 +1107,7 @@ describe('fetchPolymarketAnchorMarketsWithQueries', () => {
               liquidityNum: 50000,
               active: true,
               closed: false,
-              createdAt: new Date(Date.now() - 7 * MS_PER_DAY).toISOString(),
+              createdAt: new Date(FIXED_TEST_NOW_MS - 7 * MS_PER_DAY).toISOString(),
             }],
           }],
         } as Response;
@@ -1195,7 +1204,7 @@ describe('fetchPolymarketAnchorMarketsWithQueries', () => {
               liquidityNum: 60000,
               active: true,
               closed: false,
-              createdAt: new Date(Date.now() - 7 * MS_PER_DAY).toISOString(),
+              createdAt: new Date(FIXED_TEST_NOW_MS - 7 * MS_PER_DAY).toISOString(),
             }],
           }],
         } as Response;

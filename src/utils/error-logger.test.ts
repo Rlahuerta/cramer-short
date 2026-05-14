@@ -1,8 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, mock, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync, readFileSync, existsSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { classifyError } from './errors.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Isolation: mock getCramerShortDir to return an absolute per-test tmpDir.
@@ -19,7 +28,7 @@ mock.module('./paths.js', () => ({
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `error-logger-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `error-logger-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   // Point getCramerShortDir at <tmpDir>/.cramer-short so logError writes to
   // the same path the test assertions check (join(tmpDir, '.cramer-short', 'logs', ...)).

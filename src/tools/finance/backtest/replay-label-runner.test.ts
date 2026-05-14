@@ -1,9 +1,18 @@
-import { afterEach, afterAll, describe, expect, it } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { afterEach, afterAll, describe, expect, it, beforeEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ArbiterReplayBundle } from '../arbiter-replay.js';
 import type { ReplayPriceHistory } from '../arbiter-replay-labeler.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   runReplayLabelPass,
   runReplayLabelPassFromFile,
@@ -259,9 +268,9 @@ describe('runReplayLabelPass', () => {
   });
 
   it('uses the current timestamp as labeledAt when none is provided', () => {
-    const before = Date.now();
+    const before = FIXED_TEST_NOW_MS;
     const result = runReplayLabelPass({ bundles: [makeBundle()], getHistory: () => FULL_HISTORY });
-    const after = Date.now();
+    const after = FIXED_TEST_NOW_MS;
 
     const labeledAtMs = Date.parse(result.labeledAt);
     expect(labeledAtMs).toBeGreaterThanOrEqual(before);

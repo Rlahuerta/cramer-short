@@ -4,10 +4,19 @@
  * File system isolation: chdir into a tmpdir before each test so that
  * Scratchpad JSONL files do not accumulate in the project tree.
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 const actualPaths = await import('../utils/paths.js');
 
@@ -27,7 +36,7 @@ let tmpDir: string;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `run-ctx-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `run-ctx-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);
@@ -63,9 +72,9 @@ describe('createRunContext — shape', () => {
   });
 
   it('startTime is within the last 5 seconds', () => {
-    const before = Date.now();
+    const before = FIXED_TEST_NOW_MS;
     const ctx = createRunContext('timing test');
-    const after = Date.now();
+    const after = FIXED_TEST_NOW_MS;
     expect(ctx.startTime).toBeGreaterThanOrEqual(before);
     expect(ctx.startTime).toBeLessThanOrEqual(after);
   });

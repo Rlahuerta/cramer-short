@@ -1,8 +1,17 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, expect, it, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { heartbeatTool, HEARTBEAT_TOOL_DESCRIPTION } from './heartbeat-tool.js';
 import { mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // We test the heartbeat tool by redirecting DEXTER_DIR to a temp folder so we
@@ -17,7 +26,7 @@ let originalCwd: string;
 
 beforeEach(() => {
   originalCwd = process.cwd();
-  tmpDir = join(tmpdir(), `dexter-heartbeat-test-${Date.now()}`);
+  tmpDir = join(tmpdir(), `dexter-heartbeat-test-${FIXED_TEST_NOW_MS}`);
   mkdirSync(tmpDir, { recursive: true });
   process.chdir(tmpDir);
 });

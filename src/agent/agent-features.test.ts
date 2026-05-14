@@ -5,7 +5,8 @@
  * 2. Graceful degradation at max iterations — synthesis instead of bare error
  * 3. Parallel tool execution event ordering — all tool_starts before tool_ends
  */
-import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -14,6 +15,14 @@ import type { BaseMessage } from '@langchain/core/messages';
 import { AIMessage, AIMessageChunk } from '@langchain/core/messages';
 import { _setModelFactory } from '../model/llm.js';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Isolation: each test gets a fresh tmp working dir so scratchpad JSONL files
@@ -24,7 +33,7 @@ let originalCwd: string;
 let prevOpenAiKey: string | undefined;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `agent-feat-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `agent-feat-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);
@@ -274,7 +283,7 @@ describe('Agent — parallel tool execution event ordering', () => {
     const { AgentToolExecutor } = await import('./tool-executor.js');
     const { createRunContext } = await import('./run-context.js');
     const { AIMessage } = await import('@langchain/core/messages');
-    const subDir = join(tmpdir(), `parallel-order-${Date.now()}`);
+    const subDir = join(tmpdir(), `parallel-order-${FIXED_TEST_NOW_MS}`);
     mkdirSync(subDir, { recursive: true });
     const savedCwd = process.cwd();
     process.chdir(subDir);

@@ -8,7 +8,8 @@
  * - Uncacheable tools (browser, skill, write_file, etc.) are never cached.
  * - Cache key is stable regardless of arg key ordering.
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -31,6 +32,14 @@ import { AIMessage } from '@langchain/core/messages';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
+
 // ---------------------------------------------------------------------------
 // Isolation: each test gets its own tmp dir so Scratchpad JSONL files don't
 // accumulate in the project tree.
@@ -39,7 +48,7 @@ let tmpDir: string;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `tool-exec-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `tool-exec-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);

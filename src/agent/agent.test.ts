@@ -4,7 +4,8 @@
  * Uses the same @langchain/* mock pattern as agent-features.test.ts to avoid
  * Bun module-registry contamination (never mocks llm.js directly).
  */
-import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,14 @@ import type { AgentEvent, DoneEvent } from './types.js';
 import { _setModelFactory } from '../model/llm.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { AIMessage, AIMessageChunk, type BaseMessage } from '@langchain/core/messages';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Filesystem isolation
@@ -21,7 +30,7 @@ let originalCwd: string;
 let prevOpenAiKey: string | undefined;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `agent-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `agent-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);

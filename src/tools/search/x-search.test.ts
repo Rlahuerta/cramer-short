@@ -1,6 +1,15 @@
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { MS_PER_DAY } from '../../utils/time.js';
-import { describe, expect, it, afterEach, beforeEach } from 'bun:test';
+import { describe, expect, it, afterEach, beforeEach, setSystemTime } from 'bun:test';
 import { xSearchTool, X_SEARCH_DESCRIPTION } from './x-search.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -161,7 +170,7 @@ describe('xSearchTool — search command', () => {
   });
 
   it('handles rate limit (429) with descriptive error', async () => {
-    const resetTime = String(Math.floor(Date.now() / 1000) + 60);
+    const resetTime = String(Math.floor(FIXED_TEST_NOW_MS / 1000) + 60);
     globalThis.fetch = (async () =>
       new Response('Too Many Requests', {
         status: 429,
@@ -271,7 +280,7 @@ describe('parseSince (via search URL)', () => {
   }
 
   it('parses "1h" into an ISO start_time roughly 1 hour ago', async () => {
-    const before = Date.now() - 3_700_000;
+    const before = FIXED_TEST_NOW_MS - 3_700_000;
     const url = await captureUrl('1h');
     const match = url.match(/start_time=([^&]+)/);
     expect(match).toBeTruthy();
@@ -280,7 +289,7 @@ describe('parseSince (via search URL)', () => {
   });
 
   it('parses "3d" into an ISO start_time roughly 3 days ago', async () => {
-    const before = Date.now() - 3 * MS_PER_DAY - 5000;
+    const before = FIXED_TEST_NOW_MS - 3 * MS_PER_DAY - 5000;
     const url = await captureUrl('3d');
     const match = url.match(/start_time=([^&]+)/);
     const t = new Date(decodeURIComponent(match![1])).getTime();

@@ -1,7 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, mock, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Isolation: each test gets a unique tmp dir and re-mocks `./paths.js` to
@@ -13,7 +22,7 @@ import { tmpdir } from 'node:os';
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `cache-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   // Re-install a mock that points paths.js at this test's tmp dir. Because the
   // dynamic import below uses a cache-busting query string, the cache module
@@ -35,7 +44,7 @@ async function getCacheModule() {
   // CACHE_DIR is computed at module init from getCramerShortDir(), so we
   // re-import per test to pick up the mocked paths.js. Bun caches modules by
   // specifier, so we use a timestamp+random query param to bust the cache.
-  const mod = await import(`./cross-session-cache.js?t=${Date.now()}-${Math.random()}`);
+  const mod = await import(`./cross-session-cache.js?t=${nextTestId('module')}`);
   return mod as typeof import('./cross-session-cache.js');
 }
 

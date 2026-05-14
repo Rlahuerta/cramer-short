@@ -1,4 +1,13 @@
-import { mock, describe, it, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { mock, describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // Mock external search dependencies BEFORE importing the search tools
 const mockExaInvoke = mock(() =>
@@ -35,7 +44,7 @@ mock.module('@langchain/tavily', () => ({
 // registry entry for 'src/tools/search/tavily.js'), these imports resolve to a DIFFERENT
 // module cache key that bypasses the override and loads the real tavily.ts — which then
 // picks up our mock.module('@langchain/tavily') above.
-const t = Date.now();
+const t = FIXED_TEST_NOW_MS;
 const { exaSearch } = await import(`./exa.js?t=${t}`) as typeof import('./exa.js');
 const { tavilySearch } = await import(`./tavily.js?t=${t}`) as typeof import('./tavily.js');
 

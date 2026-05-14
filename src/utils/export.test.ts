@@ -1,4 +1,5 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { join } from 'node:path';
 
 // Isolate from mock contamination: other tests (e.g. error-logger.test.ts)
@@ -10,9 +11,17 @@ mock.module('./paths.js', () => ({
 }));
 
 const { exportToMarkdown, exportToJson, exportToCsv, exportSession } =
-  await import(`./export.js?t=${Date.now()}`) as typeof import('./export.js');
+  await import(`./export.js?t=${nextTestId('module')}`) as typeof import('./export.js');
 import type { HistoryItem } from '../controllers/types.js';
 import type { DisplayEvent } from '../agent/types.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ============================================================================
 // Mock data helpers
@@ -42,7 +51,7 @@ function makeItem(overrides: Partial<HistoryItem> = {}): HistoryItem {
     ],
     answer: 'AAPL looks strong.',
     status: 'complete',
-    startTime: Date.now() - 8500,
+    startTime: FIXED_TEST_NOW_MS - 8500,
     duration: 8500,
     ...overrides,
   };

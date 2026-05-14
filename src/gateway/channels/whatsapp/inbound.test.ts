@@ -1,5 +1,14 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { afterAll, beforeEach, describe, expect, it, mock, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 type Handler = (payload: any) => unknown;
 
@@ -79,7 +88,7 @@ const {
   jidToE164,
   monitorWebInbox,
   toPhoneFromJid,
-} = await import(`./inbound.js?t=${Date.now()}`) as typeof import('./inbound.js');
+} = await import(`./inbound.js?t=${nextTestId('module')}`) as typeof import('./inbound.js');
 
 beforeEach(() => {
   rmSync('.cramer-short-test/whatsapp-inbound', { recursive: true, force: true });

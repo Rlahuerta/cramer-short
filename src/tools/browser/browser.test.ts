@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 type LocatorCall = {
   selector?: string;
@@ -60,7 +69,7 @@ function makePage(title: string) {
 }
 
 const { _setBrowserLauncherForTest, browserTool } =
-  await import(`./browser.js?t=${Date.now()}`) as typeof import('./browser.js');
+  await import(`./browser.js?t=${nextTestId('module')}`) as typeof import('./browser.js');
 
 function parseToolResult(result: string): Record<string, unknown> {
   return (JSON.parse(result) as { data: Record<string, unknown> }).data;

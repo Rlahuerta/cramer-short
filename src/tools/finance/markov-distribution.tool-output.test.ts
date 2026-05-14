@@ -2,7 +2,8 @@
  * Tool-output envelope tests split from markov-distribution.test.ts.
  */
 
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, afterEach, beforeEach, setSystemTime } from 'bun:test';
 import { integrationIt } from '../../utils/test-guards.js';
 import {
   classifyRegimeState,
@@ -69,6 +70,14 @@ import {
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 import { MS_PER_DAY } from '../../utils/time.js';
 
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
+
 const realPolymarketModule = { ...(await import('./polymarket.js')) };
 const realHmmModule = { ...(await import('./hmm.js')) };
 const realApiModule = { ...(await import('./api.js')) };
@@ -90,28 +99,28 @@ function installDefaultPolymarketMock(): void {
         probability: 0.78,
         volume24h: 250000,
         ageDays: 5,
-        endDate: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+        endDate: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
       },
       {
         question: 'Will the price of Bitcoin be above $66000 on April 9?',
         probability: 0.54,
         volume24h: 220000,
         ageDays: 5,
-        endDate: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+        endDate: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
       },
       {
         question: 'Will the price of Bitcoin be above $68000 on April 9?',
         probability: 0.31,
         volume24h: 190000,
         ageDays: 5,
-        endDate: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+        endDate: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
       },
       {
         question: 'Will Bitcoin reach $70000 this week?',
         probability: 0.22,
         volume24h: 180000,
         ageDays: 5,
-        endDate: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+        endDate: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
       },
     ],
     fetchPolymarketAnchorMarkets: async (_query: string, _limit: number, _options: unknown) => [
@@ -120,28 +129,28 @@ function installDefaultPolymarketMock(): void {
         probability: 0.85,
         volume24h: 300000,
         ageDays: 7,
-        endDate: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+        endDate: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
       },
       {
         question: 'Will the price of Bitcoin be above $65000 by end of week?',
         probability: 0.62,
         volume24h: 260000,
         ageDays: 6,
-        endDate: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+        endDate: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
       },
       {
         question: 'Will the price of Bitcoin be above $68000 by end of week?',
         probability: 0.38,
         volume24h: 210000,
         ageDays: 5,
-        endDate: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+        endDate: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
       },
       {
         question: 'Will the price of Bitcoin fall below $63000 by end of week?',
         probability: 0.25,
         volume24h: 190000,
         ageDays: 5,
-        endDate: new Date(Date.now() + 7 * MS_PER_DAY).toISOString(),
+        endDate: new Date(FIXED_TEST_NOW_MS + 7 * MS_PER_DAY).toISOString(),
       },
     ],
   }));
@@ -169,7 +178,7 @@ function repeatStates(pattern: ReturnType<typeof classifyRegimeState>[], n: numb
 describe('markov_distribution tool output envelope', () => {
   integrationIt('auto-fetches candidate Polymarket anchors when polymarketMarkets are omitted', async () => {
     installDefaultPolymarketMock();
-    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 120; i++) {
@@ -194,7 +203,7 @@ describe('markov_distribution tool output envelope', () => {
   });
 
   it('recovers earlier BTC terminal anchors when strict 14-day auto-fetch results are barrier-only', async () => {
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const day = MS_PER_DAY;
 
     mock.module('./polymarket.js', () => ({
@@ -210,7 +219,7 @@ describe('markov_distribution tool output envelope', () => {
       ],
     }));
 
-    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 120; i++) {
@@ -237,7 +246,7 @@ describe('markov_distribution tool output envelope', () => {
   });
 
   it('emits via sparse crypto anchor wrapper path when BTC 14-day has exactly one trusted anchor', async () => {
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const day = MS_PER_DAY;
 
     mock.module('./polymarket.js', () => ({
@@ -249,7 +258,7 @@ describe('markov_distribution tool output envelope', () => {
       ],
     }));
 
-    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 120; i++) {
@@ -276,7 +285,7 @@ describe('markov_distribution tool output envelope', () => {
   });
 
   it('retries later BTC 14-day query variants when front-slice anchors are all low-trust', async () => {
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const day = MS_PER_DAY;
     const targetMonth = new Date(now + 14 * day)
       .toLocaleString('en-US', { month: 'long' });
@@ -333,7 +342,7 @@ describe('markov_distribution tool output envelope', () => {
       },
     }));
 
-    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 120; i++) {
@@ -379,7 +388,7 @@ describe('markov_distribution tool output envelope', () => {
   it('uses a date-windowed search for BTC 14-day anchor auto-fetch before later-query retry', async () => {
     const frontCalls: Array<{ query: string; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
     const retryCalls: Array<{ queries: string[]; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
-    const targetMonth = new Date(Date.now() + 14 * MS_PER_DAY)
+    const targetMonth = new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY)
       .toLocaleString('en-US', { month: 'long' });
 
     mock.module('./polymarket.js', () => ({
@@ -403,7 +412,7 @@ describe('markov_distribution tool output envelope', () => {
       },
     }));
 
-    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 120; i++) {
@@ -478,7 +487,7 @@ describe('markov_distribution tool output envelope', () => {
       fetchPolymarketAnchorMarkets: async () => [],
       fetchPolymarketAnchorMarketsWithQueries: async () => [],
     }));
-    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 120; i++) {
@@ -537,7 +546,7 @@ describe('markov_distribution tool output envelope', () => {
     }
 
     const currentPrice = prices[prices.length - 1];
-    const offHorizonEndDate = new Date(Date.now() + 6 * MS_PER_DAY);
+    const offHorizonEndDate = new Date(FIXED_TEST_NOW_MS + 6 * MS_PER_DAY);
     const offHorizonLabel = offHorizonEndDate.toLocaleString('en-US', {
       month: 'long',
       day: 'numeric',
@@ -555,21 +564,21 @@ describe('markov_distribution tool output envelope', () => {
           question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.02)} on ${offHorizonLabel}?`,
           probability: 0.42,
           volume: 2000,
-          createdAt: Date.now(),
+          createdAt: FIXED_TEST_NOW_MS,
           endDate: offHorizonIso,
         },
         {
           question: `Will the price of Bitcoin be below $${Math.round(currentPrice * 0.96)} on ${offHorizonLabel}?`,
           probability: 0.18,
           volume: 1200,
-          createdAt: Date.now(),
+          createdAt: FIXED_TEST_NOW_MS,
           endDate: offHorizonIso,
         },
         {
           question: `Will the price of Bitcoin be between $${Math.round(currentPrice * 0.99)} and $${Math.round(currentPrice * 1.01)} on ${offHorizonLabel}?`,
           probability: 0.22,
           volume: 400,
-          createdAt: Date.now(),
+          createdAt: FIXED_TEST_NOW_MS,
           endDate: offHorizonIso,
         },
       ],
@@ -604,7 +613,7 @@ describe('markov_distribution tool output envelope', () => {
       fetchPolymarketAnchorMarkets: async () => [],
     }));
 
-    const { markovDistributionTool: emitTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: emitTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
     const prices: number[] = [];
     let p = 65000;
@@ -639,7 +648,7 @@ describe('markov_distribution tool output envelope', () => {
       fetchPolymarketAnchorMarkets: async () => [],
     }));
 
-    const { markovDistributionTool: emitTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: emitTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 100; i++) {
@@ -1038,8 +1047,8 @@ describe('markov_distribution tool output envelope', () => {
         currentPrice,
         historicalPrices: prices,
         polymarketMarkets: [
-          { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.98)} on April 25?`, probability: 0.68, volume: 5000, createdAt: Date.now() - MS_PER_DAY * 4 },
-          { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.02)} on April 25?`, probability: 0.34, volume: 5000, createdAt: Date.now() - MS_PER_DAY * 4 },
+          { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.98)} on April 25?`, probability: 0.68, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 4 },
+          { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.02)} on April 25?`, probability: 0.34, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 4 },
         ],
         trajectory: false,
       });
@@ -1108,7 +1117,7 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
       const prices = btcBreakPrices(80);
 
       const result = await freshTool.func({
@@ -1133,9 +1142,9 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
       // Deterministic alternating prices produce poor out-of-sample R^2 without
-      // making this regression depend on Math.random().
+      // making this regression depend on deterministicRandom().
       const prices = Array.from({ length: 80 }, (_, i) => (
         Math.round((65000 + (i % 2 === 0 ? 2000 : -2000) + (i % 5) * 10) * 100) / 100
       ));
@@ -1160,7 +1169,7 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
       // Very short price history (low confidence from sparse data)
       const prices: number[] = [];
       let p = 65000;
@@ -1993,7 +2002,7 @@ describe('markov_distribution tool output envelope', () => {
   });
 
   it('keeps BTC 30-day off-window fallback candidates from enabling canonical emission', async () => {
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const day = MS_PER_DAY;
 
     mock.module('./polymarket.js', () => ({
@@ -2010,7 +2019,7 @@ describe('markov_distribution tool output envelope', () => {
       ],
     }));
 
-    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 120; i++) {
@@ -2071,7 +2080,7 @@ describe('markov_distribution tool output envelope', () => {
       },
     }));
 
-    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 120; i++) {
@@ -2103,7 +2112,7 @@ describe('markov_distribution tool output envelope', () => {
   it('BTC 14d uses undated fallback when date-windowed queries return empty', async () => {
     const frontCalls: Array<{ query: string; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
     const fallbackCalls: Array<{ queries: string[]; endDateFilter?: { end_date_min: string; end_date_max: string } }> = [];
-    const targetMonth = new Date(Date.now() + 14 * MS_PER_DAY)
+    const targetMonth = new Date(FIXED_TEST_NOW_MS + 14 * MS_PER_DAY)
       .toLocaleString('en-US', { month: 'long' });
 
     mock.module('./polymarket.js', () => ({
@@ -2140,7 +2149,7 @@ describe('markov_distribution tool output envelope', () => {
       },
     }));
 
-    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 120; i++) {
@@ -2200,9 +2209,9 @@ describe('markov_distribution tool output envelope', () => {
       currentPrice,
       historicalPrices: prices,
       polymarketMarkets: [
-        { question: `Will TEST be above $${Math.round(currentPrice * 0.97)} on April 9?`, probability: 0.72, volume: 5000, createdAt: Date.now() - MS_PER_DAY * 5 },
-        { question: `Will TEST be above $${Math.round(currentPrice)} on April 9?`, probability: 0.50, volume: 5000, createdAt: Date.now() - MS_PER_DAY * 5 },
-        { question: `Will TEST be above $${Math.round(currentPrice * 1.03)} on April 9?`, probability: 0.28, volume: 5000, createdAt: Date.now() - MS_PER_DAY * 5 },
+        { question: `Will TEST be above $${Math.round(currentPrice * 0.97)} on April 9?`, probability: 0.72, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 5 },
+        { question: `Will TEST be above $${Math.round(currentPrice)} on April 9?`, probability: 0.50, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 5 },
+        { question: `Will TEST be above $${Math.round(currentPrice * 1.03)} on April 9?`, probability: 0.28, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 5 },
       ],
       trajectory: false,
     });
@@ -2221,6 +2230,7 @@ describe('markov_distribution tool output envelope', () => {
 
   it('emits context-only output when short-horizon BTC has good anchors but validation is unavailable', async () => {
     const now = Date.parse('2026-05-08T12:00:00Z');
+    setSystemTime(new Date(now));
     const prices: number[] = [];
     let p = 65000;
     for (let i = 0; i < 30; i++) {
@@ -2276,9 +2286,9 @@ describe('markov_distribution tool output envelope', () => {
       currentPrice,
       historicalPrices: prices,
       polymarketMarkets: [
-        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.97)} on April 9?`, probability: 0.72, volume: 5000, createdAt: Date.now() - MS_PER_DAY * 3 },
-        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice)} on April 9?`, probability: 0.51, volume: 5000, createdAt: Date.now() - MS_PER_DAY * 3 },
-        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.03)} on April 9?`, probability: 0.29, volume: 5000, createdAt: Date.now() - MS_PER_DAY * 3 },
+        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 0.97)} on April 9?`, probability: 0.72, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 3 },
+        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice)} on April 9?`, probability: 0.51, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 3 },
+        { question: `Will the price of Bitcoin be above $${Math.round(currentPrice * 1.03)} on April 9?`, probability: 0.29, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 3 },
       ],
       trajectory: false,
     });
@@ -2301,7 +2311,7 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
       const prices: number[] = [];
       let p = 180;
@@ -2335,7 +2345,7 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
       // Deterministic oscillating series that produces strongly negative R² without a structural break.
       const prices: number[] = [];
@@ -2367,7 +2377,7 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
       // Very short series (25 prices) to get low predictionConfidence
       const prices: number[] = [];
@@ -2398,7 +2408,7 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
       // Generate prices with sharp break after index 85
       const prices: number[] = [];
@@ -2430,7 +2440,7 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
       const prices: number[] = [];
       let p = 180;
@@ -2461,7 +2471,7 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
       const prices: number[] = [];
       let p = 180;
@@ -2511,7 +2521,7 @@ describe('markov_distribution tool output envelope', () => {
         },
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
       const result = await freshTool.func({
         ticker: 'GLD',
@@ -2717,7 +2727,7 @@ describe('markov_distribution tool output envelope', () => {
         },
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
       const result = await freshTool.func({
         ticker: 'BTC-USD',
@@ -2744,7 +2754,7 @@ describe('markov_distribution tool output envelope', () => {
         fetchPolymarketAnchorMarkets: async () => [],
       }));
 
-      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${Date.now()}`);
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
       const prices: number[] = [];
       let p = 65000;
@@ -2781,6 +2791,7 @@ describe('markov_distribution tool output envelope', () => {
 
     it('keeps anchored BTC abstain reports free of GOLD proxy metadata and commodity bypass wording', async () => {
       const now = Date.parse('2026-05-08T12:00:00Z');
+      setSystemTime(new Date(now));
       const prices: number[] = [];
       let p = 65000;
       for (let i = 0; i < 95; i++) {

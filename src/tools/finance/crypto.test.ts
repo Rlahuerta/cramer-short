@@ -1,6 +1,15 @@
-import { describe, test, expect, spyOn, beforeEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, test, expect, spyOn, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { api } from './api.js';
 import { getCryptoPriceSnapshot, getCryptoPrices, getCryptoTickers } from './crypto.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 function parseResult(raw: unknown): { data: unknown; sourceUrls?: string[] } {
   return JSON.parse(raw as string);
@@ -103,7 +112,7 @@ describe('getCryptoPrices', () => {
       url: 'https://api.financialdatasets.ai/crypto/prices/',
     });
     spy.mockClear();
-    const futureDate = new Date();
+    const futureDate = new Date(FIXED_TEST_NOW_MS);
     futureDate.setFullYear(futureDate.getFullYear() + 1);
     await getCryptoPrices.invoke({
       ticker: 'BTC-USD',

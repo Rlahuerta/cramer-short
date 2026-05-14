@@ -17,9 +17,10 @@
  * 4. Thinking text is truncated to 500 chars so verbose models (e.g. Qwen)
  *    that embed raw JSON in their reasoning text don't flood the terminal.
  */
-import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { StructuredToolInterface } from '@langchain/core/tools';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
@@ -28,6 +29,14 @@ import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distri
 import { _setModelFactory } from '../model/llm.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { AIMessage, AIMessageChunk, type BaseMessage } from '@langchain/core/messages';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Mutable mock state — reset before each test.
@@ -202,7 +211,7 @@ beforeEach(() => {
   mockState.streamShouldThrow = false;
   mockState.callLlmQueue = [];
 
-  tmpDir = join(tmpdir(), `agent-resp-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `agent-resp-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);
@@ -212,8 +221,16 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.chdir(originalCwd);
-  rmSync(tmpDir, { recursive: true, force: true });
+  const cleanupCwd = originalCwd === tmpDir || originalCwd.startsWith(`${tmpDir}/`)
+    ? dirname(tmpDir)
+    : originalCwd;
+  process.chdir(cleanupCwd);
+  try {
+    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EBUSY') throw error;
+  }
+  if (process.cwd() !== cleanupCwd) process.chdir(cleanupCwd);
   if (!prevOpenAiKey) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = prevOpenAiKey;
 });
@@ -269,9 +286,9 @@ describe('Agent — no redundant stream call for direct answers', () => {
     // If streamCallLlm were called (the old bug), it would be a second async op.
     // With the fix we get immediate fake-streaming — done arrives right away.
     const agent = await createResponseTestAgent(3);
-    const start = Date.now();
+    const start = FIXED_TEST_NOW_MS;
     await collectEvents(agent.run('test query'));
-    const elapsed = Date.now() - start;
+    const elapsed = FIXED_TEST_NOW_MS - start;
 
     // Should complete in well under 1 second (no real LLM calls, no second trip).
     expect(elapsed).toBeLessThan(1000);

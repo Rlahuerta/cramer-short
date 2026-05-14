@@ -1,4 +1,13 @@
-import { afterEach, afterAll, describe, expect, it, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { afterEach, afterAll, describe, expect, it, mock, beforeEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 const realApi = await import('./api.js');
 
@@ -12,7 +21,7 @@ afterAll(() => {
   mock.module('./api.js', () => realApi);
 });
 
-const t = Date.now();
+const t = FIXED_TEST_NOW_MS;
 const { getCryptoPriceSnapshot, getCryptoPrices } = await import(`./crypto.js?t=${t}`) as typeof import('./crypto.js');
 
 const originalFetch = globalThis.fetch;

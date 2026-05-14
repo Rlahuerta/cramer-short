@@ -4,7 +4,8 @@
  * All tests use a temporary directory so they never touch the real
  * .cramer-short/watchlist.json.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -14,7 +15,7 @@ let tmpDir: string;
 let ctrl: WatchlistController;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `dexter-wl-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `dexter-wl-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   ctrl = new WatchlistController(tmpDir);
 });
@@ -175,6 +176,14 @@ describe('JSON schema', () => {
 // parseWatchlistSubcommand (pure function — tested independently of CLI)
 // ---------------------------------------------------------------------------
 import { parseWatchlistSubcommand } from './watchlist-controller.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 describe('parseWatchlistSubcommand()', () => {
   it('returns { cmd: "briefing" } for bare /watchlist', () => {

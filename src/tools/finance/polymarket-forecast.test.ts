@@ -1,5 +1,6 @@
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { MS_PER_DAY } from '../../utils/time.js';
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import {
   createPolymarketForecastTool,
@@ -18,6 +19,14 @@ import {
 import type { PolymarketMarketResult } from './polymarket.js';
 import type { ArbiterReplayBundle, RawPolymarketReplayRow } from './arbiter-replay.js';
 
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
+
 const LIVE_BRIER_REPLAY_FLAG = 'POLYMARKET_BRIER_REPLAY_CALIBRATOR_ENABLED';
 const CROSS_PLATFORM_FUSION_FLAG = 'POLYMARKET_CROSS_PLATFORM_FUSION_ENABLED';
 
@@ -27,7 +36,7 @@ const mockMarkets: PolymarketMarketResult[] = [
 ];
 
 function futureIso(daysAhead: number): string {
-  return new Date(Date.now() + daysAhead * MS_PER_DAY).toISOString();
+  return new Date(FIXED_TEST_NOW_MS + daysAhead * MS_PER_DAY).toISOString();
 }
 
 // ---------------------------------------------------------------------------
@@ -2093,7 +2102,7 @@ describe('threshold-implied raw Polymarket forecast path', () => {
   it('suppresses threshold path and warns when a contributing market has transitoryMove', async () => {
     const horizonDays = 7;
     const endDate = futureIso(horizonDays);
-    const nowMs = Date.now();
+    const nowMs = FIXED_TEST_NOW_MS;
 
     // btc-above-90k: current 0.55, spike 3h ago at 0.72, baseline 36h ago at 0.45
     // originalMoveMagnitude = |0.72 - 0.45| = 0.27 > 0.10
@@ -2149,7 +2158,7 @@ describe('threshold-implied raw Polymarket forecast path', () => {
   it('activates threshold path without persistence warning when a contributing market has stablePath', async () => {
     const horizonDays = 7;
     const endDate = futureIso(horizonDays);
-    const nowMs = Date.now();
+    const nowMs = FIXED_TEST_NOW_MS;
 
     const btcThresholdMarkets: PolymarketMarketResult[] = [
       { marketId: 'btc-above-90k', assetId: 'btc-yes-90k', question: 'Will Bitcoin be above $90K in 7 days?', probability: 0.72, volume24h: 250_000, ageDays: 3, endDate },

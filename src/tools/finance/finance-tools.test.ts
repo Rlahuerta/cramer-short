@@ -1,4 +1,4 @@
-import { mock, describe, it, expect, beforeEach, spyOn, afterAll, setSystemTime } from 'bun:test';
+import { mock, describe, it, expect, beforeEach, afterEach, spyOn, afterAll, setSystemTime } from 'bun:test';
 
 const FIXED_NOW = new Date('2026-01-15T12:00:00.000Z');
 const FIXED_TODAY = FIXED_NOW.toISOString().slice(0, 10);
@@ -82,10 +82,20 @@ function expectApiOptions(options: Record<string, unknown>): void {
 
 beforeEach(() => {
   setSystemTime(FIXED_NOW);
-  mockGet.mockClear();
+  mockGet.mockReset();
+  mockPost.mockReset();
   mockGet.mockImplementation(() =>
     Promise.resolve({ data: mockApiData, url: 'https://api.example.com/test' })
   );
+  mockPost.mockImplementation(() =>
+    Promise.resolve({ data: mockApiData, url: 'https://api.example.com/test' })
+  );
+});
+
+afterEach(() => {
+  mockGet.mockReset();
+  mockPost.mockReset();
+  setSystemTime();
 });
 
 // ---------------------------------------------------------------------------

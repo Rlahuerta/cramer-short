@@ -8,13 +8,22 @@
  *
  * File system isolation: chdir into a tmpdir before each test.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { extractKeyFacts, extractTickerMetrics, buildContextSummaryText } from './agent.js';
 import { Scratchpad } from './scratchpad.js';
 import { createRunContext } from './run-context.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // File system isolation
@@ -24,7 +33,7 @@ let tmpDir: string;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `agent-ctx-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `agent-ctx-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);

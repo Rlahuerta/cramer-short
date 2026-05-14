@@ -1,7 +1,16 @@
 /**
  * Tests for Gaussian Hidden Markov Model implementation.
  */
-import { describe, it, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   initializeHMM,
   forward,
@@ -104,7 +113,7 @@ describe('initializeHMM', () => {
   });
 
   it('means are sorted ascending (bear < bull)', () => {
-    const obs = Array.from({ length: 200 }, (_, i) => (i < 100 ? -0.02 : 0.02) + Math.random() * 0.001);
+    const obs = Array.from({ length: 200 }, (_, i) => (i < 100 ? -0.02 : 0.02) + deterministicRandom() * 0.001);
     const params = initializeHMM(obs, 3);
 
     for (let i = 1; i < params.nStates; i++) {
@@ -113,14 +122,14 @@ describe('initializeHMM', () => {
   });
 
   it('pi sums to 1', () => {
-    const obs = Array.from({ length: 50 }, () => Math.random() * 0.04 - 0.02);
+    const obs = Array.from({ length: 50 }, () => deterministicRandom() * 0.04 - 0.02);
     const params = initializeHMM(obs, 3);
     const sum = params.pi.reduce((s, v) => s + v, 0);
     expect(sum).toBeCloseTo(1, 10);
   });
 
   it('each row of A sums to 1', () => {
-    const obs = Array.from({ length: 50 }, () => Math.random() * 0.04 - 0.02);
+    const obs = Array.from({ length: 50 }, () => deterministicRandom() * 0.04 - 0.02);
     const params = initializeHMM(obs, 3);
     for (const row of params.A) {
       const sum = row.reduce((s, v) => s + v, 0);

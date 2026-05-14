@@ -6,10 +6,19 @@
  * by the existing parallel-tool tests.
  */
 
-import { describe, it, expect, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { AgentRunnerController } from './agent-runner.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
 import type { HistoryItem } from '../controllers/types.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import type {
   AnswerChunkEvent,
   DoneEvent,
@@ -34,7 +43,7 @@ function makeController(chatHistory?: InMemoryChatHistory) {
   const ctrl = new AgentRunnerController(
     { model: undefined },
     chatHistory ?? makeFakeChatHistory(),
-    () => changes.push(Date.now()),
+    () => changes.push(FIXED_TEST_NOW_MS),
   );
   return { ctrl, changes };
 }
@@ -47,7 +56,7 @@ function seedProcessingItem(ctrl: AgentRunnerController, partial: Partial<Histor
       events: [],
       answer: '',
       status: 'processing',
-      startTime: Date.now(),
+      startTime: FIXED_TEST_NOW_MS,
       ...partial,
     },
   ];

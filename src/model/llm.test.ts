@@ -1,4 +1,13 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, test, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 const actualConfig = await import('@/utils/config.js');
 
@@ -115,7 +124,7 @@ describe('getLlmCallTimeoutMs', () => {
     mockGetSetting.mockImplementation((key: string, defaultValue: unknown) =>
       key === 'llmCallTimeoutMs' ? 300_000 : defaultValue,
     );
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     expect(freshGetter()).toBe(300_000);
     if (original !== undefined) process.env.LLM_CALL_TIMEOUT_MS = original;
   });
@@ -124,7 +133,7 @@ describe('getLlmCallTimeoutMs', () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     delete process.env.LLM_CALL_TIMEOUT_MS;
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     if (original !== undefined) process.env.LLM_CALL_TIMEOUT_MS = original;
   });
@@ -135,7 +144,7 @@ describe('getLlmCallTimeoutMs', () => {
     mockGetSetting.mockImplementation((key: string) =>
       key === 'llmCallTimeoutMs' ? 300_000 : undefined,
     );
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     expect(freshGetter()).toBe(300_000);
     delete process.env.LLM_CALL_TIMEOUT_MS;
     if (original !== undefined) process.env.LLM_CALL_TIMEOUT_MS = original;
@@ -145,7 +154,7 @@ describe('getLlmCallTimeoutMs', () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '180000';
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     expect(freshGetter()).toBe(180000);
     delete process.env.LLM_CALL_TIMEOUT_MS;
     if (original !== undefined) process.env.LLM_CALL_TIMEOUT_MS = original;
@@ -154,7 +163,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('falls back to default when env value is NaN (non-numeric string)', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = 'not-a-number';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -164,7 +173,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('falls back to default when env value is empty string', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -174,7 +183,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('falls back to default when env value is too small (< 30000)', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '1000';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -184,7 +193,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('falls back to default when env value is too large (> 600000)', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '9999999';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -194,7 +203,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('uses valid env value within range', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '180000';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(180000);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -204,7 +213,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('rejects malformed env value with unit suffix (e.g., "180000ms")', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '180000ms';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -214,7 +223,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('rejects malformed env value with arbitrary suffix (e.g., "300000 seconds")', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '300000 seconds';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -224,7 +233,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('rejects malformed env value with leading garbage (e.g., "timeout:120000")', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = 'timeout:120000';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;

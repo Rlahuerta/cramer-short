@@ -1,6 +1,15 @@
-import { describe, it, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { formatExchangeForScrollback, formatDuration } from './scrollback.js';
 import type { HistoryItem } from '../controllers/types.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 function makeItem(overrides: Partial<HistoryItem> = {}): HistoryItem {
   return {
@@ -9,7 +18,7 @@ function makeItem(overrides: Partial<HistoryItem> = {}): HistoryItem {
     events: [],
     answer: '',
     status: 'complete',
-    startTime: Date.now(),
+    startTime: FIXED_TEST_NOW_MS,
     ...overrides,
   };
 }

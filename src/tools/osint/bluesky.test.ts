@@ -1,4 +1,13 @@
-import { describe, expect, it, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, expect, it, afterEach, beforeEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   searchBskyPosts,
   getBskyAuthorFeed,
@@ -153,7 +162,7 @@ describe('searchBskyPosts', () => {
     }) as unknown as typeof fetch;
 
     // override timeout to be very short so test doesn't hang
-    const { searchBskyPosts: search } = await import('./bluesky.js?t=' + Date.now());
+    const { searchBskyPosts: search } = await import('./bluesky.js?t=' + nextTestId('module'));
     await expect(
       Promise.race([
         search('timeout'),

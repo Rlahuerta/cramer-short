@@ -1,6 +1,15 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { afterEach, describe, expect, it, beforeEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   appendArbiterReplayBundle,
   type ArbiterReplayBundle,
@@ -21,7 +30,7 @@ function makeRepoTempFile(name: string): string {
   const dir = join(
     process.cwd(),
     '.test-artifacts',
-    `short-horizon-benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    `short-horizon-benchmark-${nextTestId('path')}`,
   );
   mkdirSync(dir, { recursive: true });
   repoTempDirs.push(dir);

@@ -1,4 +1,13 @@
-import { describe, expect, it } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, expect, it, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   resolveTimeoutSeconds,
   resolveCacheTtlMs,
@@ -110,7 +119,7 @@ describe('readCache', () => {
 
   it('returns the cached value for a valid (unexpired) entry', () => {
     const cache = new Map<string, CacheEntry<string>>();
-    cache.set('key', { value: 'hello', expiresAt: Date.now() + 60_000, insertedAt: Date.now() });
+    cache.set('key', { value: 'hello', expiresAt: FIXED_TEST_NOW_MS + 60_000, insertedAt: FIXED_TEST_NOW_MS });
     const result = readCache(cache, 'key');
     expect(result?.value).toBe('hello');
     expect(result?.cached).toBe(true);
@@ -118,7 +127,7 @@ describe('readCache', () => {
 
   it('returns null and deletes the entry for an expired key', () => {
     const cache = new Map<string, CacheEntry<string>>();
-    cache.set('key', { value: 'stale', expiresAt: Date.now() - 1, insertedAt: Date.now() - 1000 });
+    cache.set('key', { value: 'stale', expiresAt: FIXED_TEST_NOW_MS - 1, insertedAt: FIXED_TEST_NOW_MS - 1000 });
     const result = readCache(cache, 'key');
     expect(result).toBeNull();
     expect(cache.has('key')).toBe(false);
@@ -146,7 +155,7 @@ describe('writeCache', () => {
   it('evicts the oldest entry when cache is full (100 entries)', () => {
     const cache = new Map<string, CacheEntry<string>>();
     for (let i = 0; i < 100; i++) {
-      cache.set(`key-${i}`, { value: `v${i}`, expiresAt: Date.now() + 60_000, insertedAt: Date.now() });
+      cache.set(`key-${i}`, { value: `v${i}`, expiresAt: FIXED_TEST_NOW_MS + 60_000, insertedAt: FIXED_TEST_NOW_MS });
     }
     const firstKey = cache.keys().next().value;
     writeCache(cache, 'new-key', 'new-value', 60_000);
@@ -157,7 +166,7 @@ describe('writeCache', () => {
 
   it('sets expiresAt approximately ttlMs from now', () => {
     const cache = new Map<string, CacheEntry<string>>();
-    const before = Date.now();
+    const before = FIXED_TEST_NOW_MS;
     writeCache(cache, 'k', 'v', 5_000);
     const entry = cache.get('k')!;
     expect(entry.expiresAt).toBeGreaterThanOrEqual(before + 4_900);

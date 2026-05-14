@@ -5,16 +5,25 @@
  * leaks into other test files in Bun 1.3.x (native module mocks are not
  * fully isolated per test-file worker).
  */
-import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, test, expect, mock, beforeEach, afterAll, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Temp directory — all .env file reads/writes go here
 // ─────────────────────────────────────────────────────────────────────────────
 const originalCwd = process.cwd();
-const tempDir = join(tmpdir(), `dexter-env-test-${Date.now()}`);
+const tempDir = join(tmpdir(), `dexter-env-test-${FIXED_TEST_NOW_MS}`);
 mkdirSync(tempDir, { recursive: true });
 process.chdir(tempDir);
 

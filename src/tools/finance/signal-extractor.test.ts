@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import {
   detectAssetType,
   extractSignals,
@@ -8,6 +9,14 @@ import {
   SIGNAL_KEYWORDS,
 } from './signal-extractor.js';
 import { resolveAssetIntent } from './asset-resolver.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // detectAssetType
@@ -181,7 +190,7 @@ describe('extractSignals', () => {
   });
 
   it('search phrases do NOT contain year tokens (normalisation strips them)', () => {
-    const year = String(new Date().getFullYear());
+    const year = String(new Date(FIXED_TEST_NOW_MS).getFullYear());
     const signals = extractSignals('NVDA');
     for (const sig of signals) {
       expect(sig.searchPhrase).not.toContain(year);
@@ -273,7 +282,7 @@ describe('extractSignals', () => {
   });
 
   it('no queryVariant contains year tokens', () => {
-    const year = String(new Date().getFullYear());
+    const year = String(new Date(FIXED_TEST_NOW_MS).getFullYear());
     for (const sig of extractSignals('NVDA')) {
       for (const v of sig.queryVariants ?? []) {
         expect(v).not.toContain(year);

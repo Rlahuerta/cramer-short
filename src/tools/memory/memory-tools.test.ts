@@ -20,20 +20,27 @@ const FIXED_TIMESTAMP = FIXED_NOW.getTime();
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let managerSpy: ReturnType<typeof spyOn<any, any>>;
+let managerSpy: ReturnType<typeof spyOn<any, any>> | undefined;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const managerSpies: Array<ReturnType<typeof spyOn<any, any>>> = [];
 
 beforeEach(() => {
   setSystemTime(FIXED_NOW);
 });
 
 afterEach(() => {
-  managerSpy?.mockRestore();
+  for (const spy of managerSpies.splice(0)) {
+    spy.mockRestore();
+  }
+  managerSpy = undefined;
   setSystemTime();
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function setupManager(partial: Record<string, unknown>): void {
-  managerSpy = spyOn(MemoryManager, 'get').mockResolvedValue(partial as never);
+  const spy = spyOn(MemoryManager, 'get').mockResolvedValue(partial as never);
+  managerSpy = spy;
+  managerSpies.push(spy);
 }
 
 type FinancialInsightFixture = {

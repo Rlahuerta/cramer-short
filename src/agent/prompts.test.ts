@@ -1,4 +1,13 @@
-import { describe, it, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 const {
   getForecastLabMarkovRuntimeDefaults,
@@ -24,7 +33,7 @@ describe('getCurrentDate', () => {
 
   it('includes the current year', () => {
     const date = getCurrentDate();
-    const currentYear = new Date().getFullYear().toString();
+    const currentYear = new Date(FIXED_TEST_NOW_MS).getFullYear().toString();
     expect(date).toContain(currentYear);
   });
 
@@ -58,7 +67,7 @@ describe('buildSystemPrompt', () => {
 
   it('contains the current date', () => {
     const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
-    const currentYear = new Date().getFullYear().toString();
+    const currentYear = new Date(FIXED_TEST_NOW_MS).getFullYear().toString();
     expect(prompt).toContain(currentYear);
   });
 

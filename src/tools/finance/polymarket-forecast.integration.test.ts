@@ -11,7 +11,8 @@
  * No mocking — all tests use real module implementations (pure logic only,
  * no network calls).
  */
-import { describe, it, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -23,6 +24,14 @@ import { IMPACT_MAP, inferAssetClass, lookupImpact } from './impact-map.js';
 import { computeConditionalReturn, adjustYesBias, computePolymarketSignal, runEnsemble } from '../../utils/ensemble.js';
 import type { MarketInput } from '../../utils/ensemble.js';
 import { appendSnapshotRecord } from './polymarket-snapshots.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 function snapshotRecord(marketId: string, probability: number, capturedAt: string) {
   return {
@@ -86,7 +95,7 @@ describe('signal-extractor × impact-map — category consistency', () => {
 
 describe('polymarket history integration seams', () => {
   it('reads 2-4h and 24-48h snapshots through the real helper contract', async () => {
-    const { evaluateMarketHistory } = await import(`./polymarket-forecast.js?history-helper=${Date.now()}`);
+    const { evaluateMarketHistory } = await import(`./polymarket-forecast.js?history-helper=${nextTestId('module')}`);
     const nowMs = new Date('2026-04-20T12:00:00.000Z').getTime();
 
     const evaluation = evaluateMarketHistory(
@@ -103,7 +112,7 @@ describe('polymarket history integration seams', () => {
   });
 
   it('reads snapshot records from a temp JSONL store via readSnapshotRecords', async () => {
-    const { evaluateHistoryFlags } = await import(`./polymarket-forecast.js?history-store=${Date.now()}`);
+    const { evaluateHistoryFlags } = await import(`./polymarket-forecast.js?history-store=${nextTestId('module')}`);
     const tmpDir = await mkdtemp(join(tmpdir(), 'polymarket-forecast-history-'));
     const snapshotFilePath = join(tmpDir, 'polymarket-snapshots.jsonl');
 

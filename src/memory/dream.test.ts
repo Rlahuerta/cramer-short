@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,14 @@ import {
   type CallLlmFn,
 } from './dream.js';
 import type { DreamMeta } from './types.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,7 +71,7 @@ describe('shouldRunDream', () => {
 
   it('returns false when session count is below threshold', () => {
     const meta: DreamMeta = {
-      lastRunAt: Date.now() - HOURS_24 - 1000,
+      lastRunAt: FIXED_TEST_NOW_MS - HOURS_24 - 1000,
       sessionsSinceLastRun: 2, // needs 3
       totalRuns: 1,
     };
@@ -71,7 +80,7 @@ describe('shouldRunDream', () => {
 
   it('returns false when time elapsed is below threshold', () => {
     const meta: DreamMeta = {
-      lastRunAt: Date.now() - HOURS_24 + 60_000, // 1 minute short of 24h
+      lastRunAt: FIXED_TEST_NOW_MS - HOURS_24 + 60_000, // 1 minute short of 24h
       sessionsSinceLastRun: 5,
       totalRuns: 1,
     };
@@ -80,7 +89,7 @@ describe('shouldRunDream', () => {
 
   it('returns true when both 24h and 3-session conditions are exactly met', () => {
     const meta: DreamMeta = {
-      lastRunAt: Date.now() - HOURS_24 - 1,
+      lastRunAt: FIXED_TEST_NOW_MS - HOURS_24 - 1,
       sessionsSinceLastRun: 3,
       totalRuns: 1,
     };
@@ -89,7 +98,7 @@ describe('shouldRunDream', () => {
 
   it('returns true when conditions are greatly exceeded', () => {
     const meta: DreamMeta = {
-      lastRunAt: Date.now() - 7 * 24 * 3_600_000,
+      lastRunAt: FIXED_TEST_NOW_MS - 7 * 24 * 3_600_000,
       sessionsSinceLastRun: 20,
       totalRuns: 3,
     };
@@ -216,7 +225,7 @@ describe('MemoryStore dream methods', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-store-${Date.now()}`);
+    tmpDir = join(tmpdir(), `dexter-dream-store-${FIXED_TEST_NOW_MS}`);
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });
@@ -286,7 +295,7 @@ describe('gatherSignals', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-signal-${Date.now()}`);
+    tmpDir = join(tmpdir(), `dexter-dream-signal-${FIXED_TEST_NOW_MS}`);
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });
@@ -343,7 +352,7 @@ describe('gatherSignals', () => {
     const signalWithCore = await gatherSignals(store);
 
     // Fresh store without core files
-    const emptyDir = join(tmpdir(), `dexter-dream-signal-empty-${Date.now()}`);
+    const emptyDir = join(tmpdir(), `dexter-dream-signal-empty-${FIXED_TEST_NOW_MS}`);
     mkdirSync(join(emptyDir, 'memory'), { recursive: true });
     const emptyStore = makeStore(emptyDir);
     const signalEmpty = await gatherSignals(emptyStore);
@@ -370,7 +379,7 @@ describe('incrementDreamSessionCount', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-inc-${Date.now()}`);
+    tmpDir = join(tmpdir(), `dexter-dream-inc-${FIXED_TEST_NOW_MS}`);
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });
@@ -411,7 +420,7 @@ describe('runDream — skip conditions', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-skip-${Date.now()}`);
+    tmpDir = join(tmpdir(), `dexter-dream-skip-${FIXED_TEST_NOW_MS}`);
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });
@@ -428,7 +437,7 @@ describe('runDream — skip conditions', () => {
   it('returns ran=false when session/time conditions are not met', async () => {
     seedFile(tmpDir, '2026-01-01.md', 'file 1');
     seedFile(tmpDir, '2026-01-02.md', 'file 2');
-    await store.writeDreamMeta({ lastRunAt: Date.now() - 1000, sessionsSinceLastRun: 1, totalRuns: 1 });
+    await store.writeDreamMeta({ lastRunAt: FIXED_TEST_NOW_MS - 1000, sessionsSinceLastRun: 1, totalRuns: 1 });
     const result = await runDream(store, 'gpt-4', { callLlm: mockLlm() });
     expect(result.ran).toBe(false);
     expect(result.reason).toMatch(/Not yet due/);
@@ -469,7 +478,7 @@ describe('runDream — full cycle (E2E)', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-e2e-${Date.now()}`);
+    tmpDir = join(tmpdir(), `dexter-dream-e2e-${FIXED_TEST_NOW_MS}`);
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });
@@ -532,9 +541,9 @@ describe('runDream — full cycle (E2E)', () => {
     seedRealisticFiles();
     await store.writeDreamMeta({ lastRunAt: 0, sessionsSinceLastRun: 5, totalRuns: 2 });
 
-    const before = Date.now();
+    const before = FIXED_TEST_NOW_MS;
     await runDream(store, 'gpt-4', { force: true, callLlm: mockLlm() });
-    const after = Date.now();
+    const after = FIXED_TEST_NOW_MS;
 
     const meta = await store.readDreamMeta();
     expect(meta!.sessionsSinceLastRun).toBe(0);
@@ -627,7 +636,7 @@ describe('runDream — full cycle (E2E)', () => {
 
   it('does not modify MEMORY.md or FINANCE.md when skipping', async () => {
     seedRealisticFiles();
-    await store.writeDreamMeta({ lastRunAt: Date.now() - 1000, sessionsSinceLastRun: 0, totalRuns: 1 });
+    await store.writeDreamMeta({ lastRunAt: FIXED_TEST_NOW_MS - 1000, sessionsSinceLastRun: 0, totalRuns: 1 });
     const originalMemory = await store.readMemoryFile('MEMORY.md');
     await runDream(store, 'gpt-4', { callLlm: mockLlm() });
     expect(await store.readMemoryFile('MEMORY.md')).toBe(originalMemory);
@@ -635,7 +644,7 @@ describe('runDream — full cycle (E2E)', () => {
 
   it('does not archive daily files when skipping', async () => {
     seedRealisticFiles();
-    await store.writeDreamMeta({ lastRunAt: Date.now() - 1000, sessionsSinceLastRun: 0, totalRuns: 1 });
+    await store.writeDreamMeta({ lastRunAt: FIXED_TEST_NOW_MS - 1000, sessionsSinceLastRun: 0, totalRuns: 1 });
     await runDream(store, 'gpt-4', { callLlm: mockLlm() });
     expect(await store.listDailyFiles()).toHaveLength(2);
   });

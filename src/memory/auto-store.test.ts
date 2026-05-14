@@ -7,8 +7,17 @@
  * - autoStoreFromRun: guard conditions, routing inference, idempotency
  */
 
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, mock, afterEach, setSystemTime } from 'bun:test';
 import { extractTickers } from './auto-store.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // extractTickers — unit tests (pure function, no mocking needed)
@@ -120,7 +129,7 @@ function buildMockStore() {
       stored.push(params);
       const key = params.ticker.toUpperCase();
       if (!mockInsights.has(key)) mockInsights.set(key, []);
-      mockInsights.get(key)!.push({ ...params, updatedAt: Date.now() });
+      mockInsights.get(key)!.push({ ...params, updatedAt: FIXED_TEST_NOW_MS });
       return stored.length;
     },
     getStored: () => stored,
@@ -256,7 +265,7 @@ describe('seedWatchlistEntries — content and idempotency logic', () => {
 
 describe('autoStoreFromRun — 24h cooldown', () => {
   it('recentCutoff is 24h ago', () => {
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const cutoff = now - 24 * 60 * 60 * 1000;
     // A timestamp from 25h ago should be older than cutoff
     const old = now - 25 * 60 * 60 * 1000;
@@ -267,7 +276,7 @@ describe('autoStoreFromRun — 24h cooldown', () => {
   });
 
   it('hasRecent is true when entry was updated within 24h', () => {
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const recentCutoff = now - 24 * 60 * 60 * 1000;
     const existing = [{ updatedAt: now - 1000 }]; // 1 second ago
     const hasRecent = existing.some((e) => (e.updatedAt ?? 0) > recentCutoff);
@@ -275,7 +284,7 @@ describe('autoStoreFromRun — 24h cooldown', () => {
   });
 
   it('hasRecent is false when entry is older than 24h', () => {
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const recentCutoff = now - 24 * 60 * 60 * 1000;
     const existing = [{ updatedAt: now - 25 * 60 * 60 * 1000 }]; // 25h ago
     const hasRecent = existing.some((e) => (e.updatedAt ?? 0) > recentCutoff);
@@ -283,7 +292,7 @@ describe('autoStoreFromRun — 24h cooldown', () => {
   });
 
   it('hasRecent is false when no updatedAt is set', () => {
-    const now = Date.now();
+    const now = FIXED_TEST_NOW_MS;
     const recentCutoff = now - 24 * 60 * 60 * 1000;
     const existing = [{}]; // no updatedAt
     const hasRecent = existing.some((e: { updatedAt?: number }) => (e.updatedAt ?? 0) > recentCutoff);
