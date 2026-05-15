@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import type { AgentEvent, DoneEvent } from '../agent/types.js';
 import { InMemoryChatHistory } from './in-memory-chat-history.js';
 import { isTimeoutError } from './errors.js';
+import { logger } from './logger.js';
 import { withRetry } from './retry.js';
 
 const DEFAULT_E2E_TIMEOUT_MS = 600_000;
@@ -308,7 +309,9 @@ async function parseChildResult(
     } finally {
       try {
         rmSync(resultFilePath, { force: true });
-      } catch {}
+      } catch (error) {
+        logger.debug('Failed to remove E2E child result file', { error, resultFilePath });
+      }
     }
   }
 

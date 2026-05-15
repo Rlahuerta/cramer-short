@@ -1,5 +1,5 @@
 import { Container, Markdown, Spacer } from '@mariozechner/pi-tui';
-import { formatResponseTui } from '../utils/markdown-table.js';
+import { formatResponseTui } from '../utils/ui/markdown-table.js';
 import { markdownTheme } from '../theme.js';
 
 export class AnswerBoxComponent extends Container {

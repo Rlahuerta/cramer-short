@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
 import { cramerShortPath } from '../utils/paths.js';
-import { annotateFinancialNumbers } from '../utils/number-format.js';
+import { annotateFinancialNumbers } from '../utils/finance/number-format.js';
 
 /**
  * Record of a tool call for external consumers (e.g., DoneEvent)

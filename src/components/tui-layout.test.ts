@@ -16,7 +16,7 @@ import { Container, Markdown, Text, type TUI } from '@mariozechner/pi-tui';
 import { ChatLogComponent } from './chat-log.js';
 import { ToolEventComponent } from './tool-event.js';
 import { IntroComponent } from './intro.js';
-import { countRenderedTuiMarkdownLines, formatResponseTui, truncateTuiMarkdownTail } from '../utils/markdown-table.js';
+import { countRenderedTuiMarkdownLines, formatResponseTui, truncateTuiMarkdownTail } from '../utils/ui/markdown-table.js';
 import { markdownTheme } from '../theme.js';
 
 // Minimal TUI stub — components only need the TUI for requestRender callbacks

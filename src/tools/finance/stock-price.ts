@@ -21,6 +21,7 @@ Fetches current stock price snapshots for equities, including open, high, low, c
 export function makeGetStockPrice(
   robinhoodQuote: RobinhoodQuoteFn,
 ): DST {
+  /** Creates the model-aware stock price snapshot tool. */
   return new DynamicStructuredTool({
     name: 'get_stock_price',
     description:
@@ -78,6 +79,7 @@ const StockPricesInputSchema = z.object({
   end_date: z.string().describe('End date in YYYY-MM-DD format. Required.'),
 });
 
+/** Fetches historical stock prices for a ticker. */
 export const getStockPrices = new DynamicStructuredTool({
   name: 'get_stock_prices',
   description:
@@ -98,6 +100,7 @@ export const getStockPrices = new DynamicStructuredTool({
   },
 });
 
+/** Searches supported stock ticker symbols. */
 export const getStockTickers = new DynamicStructuredTool({
   name: 'get_available_stock_tickers',
   description: 'Retrieves the list of available stock tickers that can be used with the stock price tools.',

@@ -23,6 +23,7 @@ const memoryGetSchema = z.object({
   lines: z.number().optional().describe('Maximum number of lines to read.'),
 });
 
+/** Reads project memory files by name. */
 export const memoryGetTool = new DynamicStructuredTool({
   name: 'memory_get',
   description:

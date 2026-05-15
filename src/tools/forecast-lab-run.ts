@@ -1440,6 +1440,7 @@ export function createForecastLabRunTool({
   readTextFileFn = (path: string) => readFileSync(path, 'utf8'),
   existsSyncFn = existsSync,
 }: CreateForecastLabRunToolDeps = {}): DynamicStructuredTool {
+  /** Creates the forecast lab execution tool. */
   return new DynamicStructuredTool({
     name: 'forecast_lab_run',
     description: 'Execute the bounded forecast-lab improvement, comparison, promotion, or reset workflow.',

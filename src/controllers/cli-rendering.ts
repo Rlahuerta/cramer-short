@@ -5,9 +5,9 @@ import type { ChatLogComponent } from '../components/index.js';
 import type { AgentRunnerController } from './agent-runner.js';
 import type { HistoryItem } from './types.js';
 import { theme } from '../theme.js';
-import { countRenderedTuiMarkdownLines, truncateTuiMarkdownTail } from '../utils/markdown-table.js';
-import { formatExchangeForScrollback } from '../utils/scrollback.js';
-import { summarizeToolResult } from '../utils/tool-result-summary.js';
+import { countRenderedTuiMarkdownLines, truncateTuiMarkdownTail } from '../utils/ui/markdown-table.js';
+import { formatExchangeForScrollback } from '../utils/ui/scrollback.js';
+import { summarizeToolResult } from '../utils/parsing/tool-result-summary.js';
 
 export { summarizeToolResult };
 
@@ -186,8 +186,13 @@ export function flushExchangeToScrollback(
   chatLog: ChatLogComponent,
   item: HistoryItem,
 ): void {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tuiInternal = tui as any;
+  const tuiInternal = tui as unknown as {
+    previousLines?: string[];
+    cursorRow?: number;
+    hardwareCursorRow?: number;
+    maxLinesRendered?: number;
+    previousViewportTop?: number;
+  }; // pi-tui private render cache
   // Snapshot BEFORE stop() moves the cursor.
   const prevLineCount: number = tuiInternal.previousLines?.length ?? 0;
 

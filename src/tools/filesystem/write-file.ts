@@ -34,6 +34,7 @@ const writeFileSchema = z.object({
   content: z.string().describe('Content to write to the file.'),
 });
 
+/** Writes UTF-8 text content to disk. */
 export const writeFileTool = new DynamicStructuredTool({
   name: 'write_file',
   description:

@@ -10,7 +10,7 @@ import { Runnable } from '@langchain/core/runnables';
 import { z } from 'zod';
 import { getDefaultSystemPrompt } from '@/agent/prompts';
 import type { TokenUsage } from '@/agent/types';
-import { logger } from '@/utils';
+import { logger } from '../utils/logger.js';
 import { getSetting } from '@/utils/config.js';
 import { classifyError, isNonRetryableError } from '@/utils/errors';
 import { resolveProvider, getProviderById } from '@/providers';

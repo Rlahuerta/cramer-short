@@ -15,18 +15,18 @@
  *   - improvedR5    (improvedR4 + garchHorizonCap=7, garchRegimeCeiling={calm:1.5, turbulent:3.0})
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join } from 'path';
-import { walkForward, type WalkForwardConfig } from './walk-forward.js';
+import type { WalkForwardConfig } from './walk-forward.js';
 import {
-  brierScore,
-  bootstrapDirectionalCI,
-  ciCoverage,
-  directionalAccuracy,
-  meanEdge,
-  sharpness,
-  type BacktestStep,
-} from './metrics.js';
+  computeMetricDelta,
+  renderArmMetricTable,
+  renderDeltaMetricTable,
+  runMultiHorizonArm,
+  writeBacktestDocs,
+  type ArmReport,
+  type DeltaRow,
+} from './comparison-harness.js';
 
 interface FixtureTickerData {
   closes: number[];
@@ -44,24 +44,6 @@ const HORIZONS = [1, 2, 3, 7, 14, 30] as const;
 const WARMUP = 180;
 const STRIDE = 3;
 
-interface MetricBlock {
-  n: number;
-  directionalAccuracy: number;
-  brierScore: number;
-  ciCoverage: number;
-  meanEdge: number;
-  sharpness: number;
-  avgConfidence: number;
-  directionalCi: { lower: number; median: number; upper: number; nResamples: number };
-}
-interface ArmHorizon { horizon: number; metrics: MetricBlock; }
-interface ArmReport  { label: string; perHorizon: ArmHorizon[]; }
-interface DeltaRow {
-  horizon: number; n: number;
-  directionalAccuracyDelta: number; brierScoreDelta: number;
-  ciCoverageDelta: number; meanEdgeDelta: number; sharpnessDelta: number;
-}
-
 export interface BtcMultiHorizonRound5Artifact {
   generatedAt: string;
   ticker: string;
@@ -77,26 +59,6 @@ export interface BtcMultiHorizonRound5Artifact {
   deltaR4VsHA: DeltaRow[];
   deltaR5VsR4: DeltaRow[];
   deltaR5VsBaseline: DeltaRow[];
-}
-
-function summarize(steps: BacktestStep[]): MetricBlock {
-  if (steps.length === 0) {
-    return {
-      n: 0, directionalAccuracy: 0, brierScore: 0, ciCoverage: 0,
-      meanEdge: 0, sharpness: 0, avgConfidence: 0,
-      directionalCi: { lower: 0, median: 0, upper: 0, nResamples: 0 },
-    };
-  }
-  return {
-    n: steps.length,
-    directionalAccuracy: directionalAccuracy(steps),
-    brierScore: brierScore(steps),
-    ciCoverage: ciCoverage(steps),
-    meanEdge: meanEdge(steps),
-    sharpness: sharpness(steps),
-    avgConfidence: steps.reduce((s, x) => s + x.confidence, 0) / steps.length,
-    directionalCi: bootstrapDirectionalCI(steps, 500, 12345),
-  };
 }
 
 /** Convert a closes array to an array of daily log-returns (length = closes.length - 1). */
@@ -131,71 +93,6 @@ const improvedHAFlags: Partial<WalkForwardConfig> = {
   hawkesSigmaThreshold: 3.0,
 };
 
-async function runArm(
-  label: string,
-  prices: number[],
-  flags: Partial<WalkForwardConfig>,
-): Promise<ArmReport> {
-  const perHorizon: ArmHorizon[] = [];
-  for (const horizon of HORIZONS) {
-    const result = await walkForward({
-      ticker: TICKER, prices, horizon, warmup: WARMUP, stride: STRIDE, ...flags,
-    });
-    if (result.errors.length > 0) {
-      console.error(`[${label} h=${horizon}] ${result.errors.length} errors (first: ${result.errors[0].error})`);
-    }
-    const m = summarize(result.steps);
-    perHorizon.push({ horizon, metrics: m });
-    console.log(
-      `[${label} h=${horizon}] n=${result.steps.length} dirAcc=${m.directionalAccuracy.toFixed(3)} brier=${m.brierScore.toFixed(3)} cov=${m.ciCoverage.toFixed(3)} edge=${m.meanEdge.toFixed(4)}`,
-    );
-  }
-  return { label, perHorizon };
-}
-
-function computeDelta(base: ArmReport, ext: ArmReport): DeltaRow[] {
-  return base.perHorizon.map((b, i) => {
-    const e = ext.perHorizon[i];
-    return {
-      horizon: b.horizon, n: b.metrics.n,
-      directionalAccuracyDelta: e.metrics.directionalAccuracy - b.metrics.directionalAccuracy,
-      brierScoreDelta:          e.metrics.brierScore          - b.metrics.brierScore,
-      ciCoverageDelta:          e.metrics.ciCoverage          - b.metrics.ciCoverage,
-      meanEdgeDelta:            e.metrics.meanEdge            - b.metrics.meanEdge,
-      sharpnessDelta:           e.metrics.sharpness           - b.metrics.sharpness,
-    };
-  });
-}
-
-function fmtSign(x: number, digits = 3): string {
-  return `${x >= 0 ? '+' : ''}${x.toFixed(digits)}`;
-}
-
-function renderArmTable(arm: ArmReport): string[] {
-  const lines: string[] = [];
-  lines.push('| h (d) | n | dirAcc | dirAcc 95% CI | Brier | Coverage | meanEdge | sharpness | avgConf |');
-  lines.push('|------:|--:|-------:|---------------|------:|---------:|---------:|----------:|--------:|');
-  for (const row of arm.perHorizon) {
-    const m = row.metrics;
-    lines.push(
-      `| ${row.horizon} | ${m.n} | ${m.directionalAccuracy.toFixed(3)} | [${m.directionalCi.lower.toFixed(3)}, ${m.directionalCi.upper.toFixed(3)}] | ${m.brierScore.toFixed(3)} | ${m.ciCoverage.toFixed(3)} | ${m.meanEdge.toFixed(4)} | ${m.sharpness.toFixed(4)} | ${m.avgConfidence.toFixed(3)} |`,
-    );
-  }
-  return lines;
-}
-
-function renderDeltaTable(rows: DeltaRow[]): string[] {
-  const lines: string[] = [];
-  lines.push('| h (d) | n | ΔdirAcc | ΔBrier | ΔCoverage | ΔmeanEdge | Δsharpness |');
-  lines.push('|------:|--:|--------:|-------:|----------:|----------:|-----------:|');
-  for (const r of rows) {
-    lines.push(
-      `| ${r.horizon} | ${r.n} | ${fmtSign(r.directionalAccuracyDelta)} | ${fmtSign(r.brierScoreDelta)} | ${fmtSign(r.ciCoverageDelta)} | ${fmtSign(r.meanEdgeDelta, 4)} | ${fmtSign(r.sharpnessDelta, 4)} |`,
-    );
-  }
-  return lines;
-}
-
 function renderMarkdown(art: BtcMultiHorizonRound5Artifact): string {
   const lines: string[] = [];
   lines.push('# BTC Multi-Horizon Backtest — Round 5 (R5 Idea #5: horizon-aware GARCH)');
@@ -222,43 +119,43 @@ function renderMarkdown(art: BtcMultiHorizonRound5Artifact): string {
   lines.push('');
   lines.push('## Baseline (defaults)');
   lines.push('');
-  for (const l of renderArmTable(art.baseline)) lines.push(l);
+  for (const l of renderArmMetricTable(art.baseline)) lines.push(l);
   lines.push('');
   lines.push('## Improved (Round-1 W2/W3 toggles ON)');
   lines.push('');
-  for (const l of renderArmTable(art.improved)) lines.push(l);
+  for (const l of renderArmMetricTable(art.improved)) lines.push(l);
   lines.push('');
   lines.push('## Improved + Hawkes + ADWIN (W3R2)');
   lines.push('');
-  for (const l of renderArmTable(art.improvedHA)) lines.push(l);
+  for (const l of renderArmMetricTable(art.improvedHA)) lines.push(l);
   lines.push('');
   lines.push('## Improved + R4 flags (GARCH + KSWIN + Lasso)');
   lines.push('');
-  for (const l of renderArmTable(art.improvedR4)) lines.push(l);
+  for (const l of renderArmMetricTable(art.improvedR4)) lines.push(l);
   lines.push('');
   lines.push('## Improved + R5 (R4 + horizon-aware/regime-clamped GARCH)');
   lines.push('');
-  for (const l of renderArmTable(art.improvedR5)) lines.push(l);
+  for (const l of renderArmMetricTable(art.improvedR5)) lines.push(l);
   lines.push('');
   lines.push('## Δ Improved − Baseline');
   lines.push('');
-  for (const l of renderDeltaTable(art.deltaImprovedVsBaseline)) lines.push(l);
+  for (const l of renderDeltaMetricTable(art.deltaImprovedVsBaseline)) lines.push(l);
   lines.push('');
   lines.push('## Δ Hawkes+ADWIN − Improved');
   lines.push('');
-  for (const l of renderDeltaTable(art.deltaHAVsImproved)) lines.push(l);
+  for (const l of renderDeltaMetricTable(art.deltaHAVsImproved)) lines.push(l);
   lines.push('');
   lines.push('## Δ R4 − Hawkes+ADWIN');
   lines.push('');
-  for (const l of renderDeltaTable(art.deltaR4VsHA)) lines.push(l);
+  for (const l of renderDeltaMetricTable(art.deltaR4VsHA)) lines.push(l);
   lines.push('');
   lines.push('## Δ R5 − R4  *(the R5 ablation that matters)*');
   lines.push('');
-  for (const l of renderDeltaTable(art.deltaR5VsR4)) lines.push(l);
+  for (const l of renderDeltaMetricTable(art.deltaR5VsR4)) lines.push(l);
   lines.push('');
   lines.push('## Δ R5 − Baseline (cumulative gain from defaults)');
   lines.push('');
-  for (const l of renderDeltaTable(art.deltaR5VsBaseline)) lines.push(l);
+  for (const l of renderDeltaMetricTable(art.deltaR5VsBaseline)) lines.push(l);
   lines.push('');
   lines.push('## Notes');
   lines.push('');
@@ -322,15 +219,15 @@ async function main(): Promise<void> {
   };
 
   console.log('\n— BASELINE —');
-  const baseline = await runArm('baseline', btcData.closes, baselineFlags);
+  const baseline = await runMultiHorizonArm('baseline', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: baselineFlags });
   console.log('\n— IMPROVED (Round-1) —');
-  const improved = await runArm('improved', btcData.closes, improvedFlags);
+  const improved = await runMultiHorizonArm('improved', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedFlags });
   console.log('\n— IMPROVED + HAWKES + ADWIN (Round-2) —');
-  const improvedHA = await runArm('improvedHA', btcData.closes, improvedHAFlags);
+  const improvedHA = await runMultiHorizonArm('improvedHA', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedHAFlags });
   console.log('\n— IMPROVED + R4 FLAGS (GARCH + KSWIN + Lasso) —');
-  const improvedR4 = await runArm('improvedR4', btcData.closes, improvedR4Flags);
+  const improvedR4 = await runMultiHorizonArm('improvedR4', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedR4Flags });
   console.log('\n— IMPROVED + R5 (R4 + horizon-aware/regime-clamped GARCH) —');
-  const improvedR5 = await runArm('improvedR5', btcData.closes, improvedR5Flags);
+  const improvedR5 = await runMultiHorizonArm('improvedR5', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedR5Flags });
 
   const artifact: BtcMultiHorizonRound5Artifact = {
     generatedAt: new Date().toISOString(),
@@ -342,22 +239,14 @@ async function main(): Promise<void> {
     },
     config: { warmup: WARMUP, stride: STRIDE, horizons: [...HORIZONS] },
     baseline, improved, improvedHA, improvedR4, improvedR5,
-    deltaImprovedVsBaseline: computeDelta(baseline, improved),
-    deltaHAVsImproved:       computeDelta(improved, improvedHA),
-    deltaR4VsHA:             computeDelta(improvedHA, improvedR4),
-    deltaR5VsR4:             computeDelta(improvedR4, improvedR5),
-    deltaR5VsBaseline:       computeDelta(baseline, improvedR5),
+    deltaImprovedVsBaseline: computeMetricDelta(baseline, improved),
+    deltaHAVsImproved:       computeMetricDelta(improved, improvedHA),
+    deltaR4VsHA:             computeMetricDelta(improvedHA, improvedR4),
+    deltaR5VsR4:             computeMetricDelta(improvedR4, improvedR5),
+    deltaR5VsBaseline:       computeMetricDelta(baseline, improvedR5),
   };
 
-  const outDir = join(process.cwd(), 'docs');
-  mkdirSync(outDir, { recursive: true });
-  const stamp = new Date().toISOString().slice(0, 10);
-  const jsonPath = join(outDir, `btc-multi-horizon-backtest-round5-${stamp}.json`);
-  const mdPath   = join(outDir, `btc-multi-horizon-backtest-round5-${stamp}.md`);
-  writeFileSync(jsonPath, JSON.stringify(artifact, null, 2));
-  writeFileSync(mdPath, renderMarkdown(artifact));
-  console.log(`\nWrote ${jsonPath}`);
-  console.log(`Wrote ${mdPath}`);
+  writeBacktestDocs('btc-multi-horizon-backtest-round5', artifact, renderMarkdown(artifact));
 }
 
 if (import.meta.main) {

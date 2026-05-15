@@ -4,7 +4,7 @@ import { MemoryStore } from '../../memory/store.js';
 import { discoverSkills } from '../../skills/registry.js';
 import type { SkillMetadata } from '../../skills/types.js';
 import { searchHistory } from '../../utils/chat-search.js';
-import { exportSession } from '../../utils/export.js';
+import { exportSession } from '../../utils/parsing/export.js';
 import type { SessionIndexEntry } from '../../utils/session-store.js';
 import type { HistoryItem } from '../types.js';
 import { handleConfigSlashCommand } from './config.js';

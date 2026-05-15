@@ -1,7 +1,7 @@
 import { readCache, writeCache, describeRequest } from '../../utils/cache.js';
 import { logger } from '../../utils/logger.js';
 import { withRetry, isRateLimitError } from '../../utils/retry.js';
-import { trackFmpCall, getQuotaWarning } from '../../utils/fmp-quota.js';
+import { trackFmpCall, getQuotaWarning } from '../../utils/finance/fmp-quota.js';
 
 const BASE_URL = 'https://api.financialdatasets.ai';
 

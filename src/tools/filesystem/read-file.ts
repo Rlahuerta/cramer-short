@@ -36,6 +36,7 @@ const readFileSchema = z.object({
   limit: z.number().optional().describe('Maximum number of lines to read from the offset.'),
 });
 
+/** Reads a UTF-8 text file from disk. */
 export const readFileTool = new DynamicStructuredTool({
   name: 'read_file',
   description:

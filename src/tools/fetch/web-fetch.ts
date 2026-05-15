@@ -444,6 +444,7 @@ async function runWebFetch(params: {
 // Tool definition (adapted for Cramer-Short's LangChain + Zod framework)
 // ============================================================================
 
+/** Fetches and extracts readable content from web URLs. */
 export const webFetchTool = new DynamicStructuredTool({
   name: 'web_fetch',
   description:

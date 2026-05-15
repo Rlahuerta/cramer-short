@@ -21,6 +21,7 @@ import { searchBskyPosts, bskyUriToWebUrl, deduplicatePosts } from './bluesky.js
 import { detectCategories, getAssetImplications, getMappingForCategory, buildGdeltThemeFilter } from './event-asset-map.js';
 import type { AssetCorrelation } from './event-asset-map.js';
 import type { EventCategory } from './accounts.js';
+import { logger } from '../../utils/logger.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Types
@@ -65,6 +66,10 @@ export interface GeopoliticsResult {
   sources: SourceSummary[];
   /** ISO timestamp of when the search was run */
   fetchedAt: string;
+}
+
+function formatUnknownError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -225,8 +230,10 @@ async function runGeopoliticsSearch(input: GeopoliticsInput): Promise<string> {
         topDomains,
       });
     }
-  } catch (_err) {
-    // GDELT failure is non-fatal — continue with other sources
+  } catch (error) {
+    logger.debug('geopolitics_search GDELT source failed; continuing with other sources', {
+      error: formatUnknownError(error),
+    });
   }
 
   // ── 2. Bluesky ──────────────────────────────────────────────────────────
@@ -259,8 +266,10 @@ async function runGeopoliticsSearch(input: GeopoliticsInput): Promise<string> {
         topDomains: handles,
       });
     }
-  } catch (_err) {
-    // Bluesky failure is non-fatal
+  } catch (error) {
+    logger.debug('geopolitics_search Bluesky source failed; continuing with other sources', {
+      error: formatUnknownError(error),
+    });
   }
 
   // ── Classify + deduplicate events ─────────────────────────────────────────
@@ -397,6 +406,9 @@ Returns structured results:
 No API key required — GDELT and Bluesky are free and open.`;
 
 
+/**
+ * Gather rule-based geopolitical event signals and map them to asset implications.
+ */
 export const geopoliticsSearchTool = new DynamicStructuredTool({
   name: 'geopolitics_search',
   description: GEOPOLITICS_SEARCH_DESCRIPTION,

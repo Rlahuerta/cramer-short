@@ -42,6 +42,25 @@ class EmptyModelSelector extends Container {
   }
 }
 
+class EmptySelector extends Container {
+  private readonly onCancel: () => void;
+
+  constructor(lines: string[], onCancel: () => void) {
+    super();
+    this.onCancel = onCancel;
+    for (const line of lines) {
+      this.addChild(new Text(theme.muted(line), 0, 0));
+    }
+  }
+
+  handleInput(keyData: string): void {
+    const kb = getEditorKeybindings();
+    if (kb.matches(keyData, 'selectCancel')) {
+      this.onCancel();
+    }
+  }
+}
+
 export function createProviderSelector(
   currentProvider: string | undefined,
   onSelect: (providerId: string | null) => void,
@@ -254,15 +273,11 @@ export function createSessionSelector(
   onSelect: (id: string | null) => void,
 ) {
   if (sessions.length === 0) {
-    const container = new Container();
-    container.addChild(new Text(theme.muted('No saved sessions yet.'), 0, 0));
-    container.addChild(new Text(theme.muted('Sessions are saved automatically after each query.'), 0, 0));
-    container.addChild(new Text(theme.muted('esc to close'), 0, 0));
-    (container as any).handleInput = (keyData: string) => {
-      const kb = getEditorKeybindings();
-      if (kb.matches(keyData, 'selectCancel')) onSelect(null);
-    };
-    return container;
+    return new EmptySelector([
+      'No saved sessions yet.',
+      'Sessions are saved automatically after each query.',
+      'esc to close',
+    ], () => onSelect(null));
   }
 
   return new SessionBrowserComponent(sessions, Date.now(), onSelect);
@@ -273,14 +288,10 @@ export function createSkillSelector(
   onSelect: (name: string | null) => void,
 ) {
   if (skills.length === 0) {
-    const container = new Container();
-    container.addChild(new Text(theme.muted('  No skills available.'), 0, 0));
-    container.addChild(new Text(theme.muted('  esc to close'), 0, 0));
-    (container as any).handleInput = (keyData: string) => {
-      const kb = getEditorKeybindings();
-      if (kb.matches(keyData, 'selectCancel')) onSelect(null);
-    };
-    return container;
+    return new EmptySelector([
+      '  No skills available.',
+      '  esc to close',
+    ], () => onSelect(null));
   }
 
   const TOTAL_WIDTH = 72;

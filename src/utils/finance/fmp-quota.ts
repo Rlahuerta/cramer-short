@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { getCramerShortDir } from './paths.js';
+import { getCramerShortDir } from '../paths.js';
 
 const DAILY_LIMIT = 250;
 const WARN_THRESHOLD = 0.8; // 80%

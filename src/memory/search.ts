@@ -47,7 +47,11 @@ export async function hybridSearch(params: {
   const minScore = params.options?.minScore ?? params.defaults.minScore;
   const candidateCount = maxResults * 4;
 
-  const queryEmbedding = await embedSingleQuery(params.embeddingClient, params.query).catch(() => null);
+  const queryEmbedding = await embedSingleQuery(params.embeddingClient, params.query).catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[memory-search] vector embedding unavailable; using keyword search only: ${msg}`);
+    return null;
+  });
   const vectorCandidates = queryEmbedding ? params.db.searchVector(queryEmbedding, candidateCount) : [];
   const keywordCandidates = params.db.searchKeyword(params.query, candidateCount);
 

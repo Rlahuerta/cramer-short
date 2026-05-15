@@ -1,6 +1,6 @@
 import { Key, Markdown, matchesKey, type TUI } from '@mariozechner/pi-tui';
 import { markdownTheme, theme } from '../theme.js';
-import { formatResponseTui, renderTuiMarkdownLines } from '../utils/markdown-table.js';
+import { formatResponseTui, renderTuiMarkdownLines } from '../utils/ui/markdown-table.js';
 
 interface FullAnswerViewerOptions {
   viewportRows?: number;
@@ -99,6 +99,12 @@ export class FullAnswerViewerComponent {
       lines.push(theme.muted(`↓ ${bottomHidden} line${bottomHidden === 1 ? '' : 's'} below`));
     }
     return lines;
+  }
+
+  invalidate(): void {
+    this.body.invalidate();
+    this.cachedWidth = -1;
+    this.cachedLines = [];
   }
 
   private getRenderedLines(width?: number): string[] {

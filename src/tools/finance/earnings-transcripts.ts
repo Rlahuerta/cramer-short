@@ -144,6 +144,7 @@ export function extractQaHighlights(qaText: string, count = 3): Array<{ question
   return highlights;
 }
 
+/** Fetches an earnings call transcript for a company quarter. */
 export const getEarningsTranscript = new DynamicStructuredTool({
   name: 'get_earnings_transcript',
   description:

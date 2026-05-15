@@ -7,7 +7,7 @@
 
 import { Markdown } from '@mariozechner/pi-tui';
 import chalk from 'chalk';
-import { markdownTheme } from '../theme.js';
+import { markdownTheme } from '../../theme.js';
 
 // Box-drawing characters
 const BOX = {

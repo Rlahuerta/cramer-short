@@ -23,6 +23,14 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function getErrorCode(error: unknown): string | undefined {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' ? code : undefined;
+  }
+  return undefined;
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -34,15 +42,21 @@ export async function loadSoulDocument(): Promise<string | null> {
   const userSoulPath = cramerShortPath('SOUL.md');
   try {
     return await readFile(userSoulPath, 'utf-8');
-  } catch {
-    // Continue to bundled fallback when user override is missing/unreadable.
+  } catch (error) {
+    if (getErrorCode(error) !== 'ENOENT') {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[cramer-short] unable to read user SOUL.md override: ${message}`);
+    }
   }
 
   const bundledSoulPath = join(__dirname, '../../SOUL.md');
   try {
     return await readFile(bundledSoulPath, 'utf-8');
-  } catch {
-    // SOUL.md is optional; keep prompt behavior unchanged when absent.
+  } catch (error) {
+    if (getErrorCode(error) !== 'ENOENT') {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[cramer-short] unable to read bundled SOUL.md: ${message}`);
+    }
   }
 
   return null;

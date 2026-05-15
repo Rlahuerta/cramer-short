@@ -12,6 +12,7 @@ const KeyRatiosInputSchema = z.object({
     .describe("The stock ticker symbol to fetch key ratios for. For example, 'AAPL' for Apple."),
 });
 
+/** Fetches current key financial ratios for a company. */
 export const getKeyRatios = new DynamicStructuredTool({
   name: 'get_key_ratios',
   description:
@@ -83,6 +84,7 @@ const HistoricalKeyRatiosInputSchema = z.object({
     ),
 });
 
+/** Fetches historical key financial ratios for a company. */
 export const getHistoricalKeyRatios = new DynamicStructuredTool({
   name: 'get_historical_key_ratios',
   description: `Retrieves historical key ratios for a company, such as P/E ratio, revenue per share, and enterprise value, over a specified period. Useful for trend analysis and historical performance evaluation.`,

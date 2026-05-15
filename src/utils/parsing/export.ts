@@ -1,8 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { HistoryItem } from '../controllers/types.js';
-import type { ToolEndEvent, ToolStartEvent } from '../agent/types.js';
-import { cramerShortPath } from './paths.js';
+import type { HistoryItem } from '../../controllers/types.js';
+import type { ToolEndEvent, ToolStartEvent } from '../../agent/types.js';
+import { cramerShortPath } from '../paths.js';
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0');

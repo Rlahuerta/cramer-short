@@ -5,15 +5,15 @@ import { join } from 'node:path';
 // Isolate from mock contamination: other tests (e.g. error-logger.test.ts)
 // mutate paths.js mocks and leave mockDir='' in afterEach, breaking
 // cramerShortPath for all subsequent tests in the same Bun worker.
-mock.module('./paths.js', () => ({
+mock.module('../paths.js', () => ({
   cramerShortPath: (...segments: string[]) => join('.cramer-short', ...segments),
   getCramerShortDir: () => '.cramer-short',
 }));
 
 const { exportToMarkdown, exportToJson, exportToCsv, exportSession } =
   await import(`./export.js?t=${nextTestId('module')}`) as typeof import('./export.js');
-import type { HistoryItem } from '../controllers/types.js';
-import type { DisplayEvent } from '../agent/types.js';
+import type { HistoryItem } from '../../controllers/types.js';
+import type { DisplayEvent } from '../../agent/types.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);

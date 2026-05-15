@@ -3,10 +3,33 @@ import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { quoteSummary as directQuoteSummary } from './yahoo-client.js';
 
-// Minimal type for the quoteSummary function, wide enough for all modules used here.
-// Using `any` response type avoids coupling to yahoo-finance2 internal generics.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type QuoteSummaryFn = (ticker: string, opts: { modules: string[] }) => Promise<any>;
+interface YahooFinancialData {
+  targetHighPrice?: unknown;
+  targetLowPrice?: unknown;
+  targetMeanPrice?: unknown;
+  targetMedianPrice?: unknown;
+  recommendationMean?: unknown;
+  recommendationKey?: unknown;
+  numberOfAnalystOpinions?: unknown;
+}
+
+interface YahooIncomeStatementRecord {
+  endDate?: unknown;
+  totalRevenue?: unknown;
+  grossProfit?: unknown;
+  operatingIncome?: unknown;
+  netIncome?: unknown;
+  ebit?: unknown;
+}
+
+interface YahooQuoteSummary {
+  financialData?: YahooFinancialData;
+  recommendationTrend?: { trend?: unknown[] };
+  upgradeDowngradeHistory?: { history?: unknown[] };
+  incomeStatementHistory?: { incomeStatementHistory?: YahooIncomeStatementRecord[] };
+}
+
+export type QuoteSummaryFn = (ticker: string, opts: { modules: string[] }) => Promise<YahooQuoteSummary>;
 
 const YAHOO_SOURCE_URL = (ticker: string) =>
   `https://finance.yahoo.com/quote/${ticker}/analysis`;
@@ -16,7 +39,11 @@ const YAHOO_SOURCE_URL = (ticker: string) =>
 // without module-level mocking)
 // ---------------------------------------------------------------------------
 
+/**
+ * Build Yahoo Finance tools with an injectable quoteSummary implementation for tests.
+ */
 export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
+  /** Fetches Yahoo Finance analyst price targets. */
   const getYahooAnalystTargets = new DynamicStructuredTool({
     name: 'get_yahoo_analyst_targets',
     description:
@@ -55,6 +82,7 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
     },
   });
 
+  /** Fetches Yahoo Finance analyst recommendation trends. */
   const getYahooAnalystRecommendations = new DynamicStructuredTool({
     name: 'get_yahoo_analyst_recommendations',
     description:
@@ -79,6 +107,7 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
     },
   });
 
+  /** Fetches Yahoo Finance upgrade and downgrade history. */
   const getYahooUpgradeDowngradeHistory = new DynamicStructuredTool({
     name: 'get_yahoo_upgrade_downgrade_history',
     description:
@@ -104,6 +133,7 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
     },
   });
 
+  /** Fetches Yahoo Finance income statements. */
   const getYahooIncomeStatements = new DynamicStructuredTool({
     name: 'get_yahoo_income_statements',
     description:
@@ -121,8 +151,7 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
       const ticker = input.ticker.trim();
       try {
         const result = await quoteSummary(ticker, { modules: ['incomeStatementHistory'] });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const records: any[] = result.incomeStatementHistory?.incomeStatementHistory ?? [];
+        const records = result.incomeStatementHistory?.incomeStatementHistory ?? [];
 
         const data: Record<string, unknown>[] = [];
         for (const r of records.slice(0, input.limit)) {
@@ -155,10 +184,21 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
   return { getYahooAnalystTargets, getYahooAnalystRecommendations, getYahooUpgradeDowngradeHistory, getYahooIncomeStatements };
 }
 
-// Default singleton exports — use the direct Yahoo Finance HTTP client
 const _tools = makeYahooTools(directQuoteSummary);
 
+/**
+ * Yahoo Finance analyst price-target fallback tool using the direct HTTP client.
+ */
 export const getYahooAnalystTargets = _tools.getYahooAnalystTargets;
+/**
+ * Yahoo Finance analyst recommendation fallback tool using the direct HTTP client.
+ */
 export const getYahooAnalystRecommendations = _tools.getYahooAnalystRecommendations;
+/**
+ * Yahoo Finance upgrade/downgrade history fallback tool using the direct HTTP client.
+ */
 export const getYahooUpgradeDowngradeHistory = _tools.getYahooUpgradeDowngradeHistory;
+/**
+ * Yahoo Finance income-statement fallback tool using the direct HTTP client.
+ */
 export const getYahooIncomeStatements = _tools.getYahooIncomeStatements;

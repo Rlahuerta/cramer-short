@@ -52,7 +52,7 @@
  *   pre-R5 behaviour (clamp [0.33, 3.0], no horizon decay).
  */
 
-import { fitGarch11, garchForecast } from '../../utils/garch.js';
+import { fitGarch11, garchForecast } from '../../utils/finance/garch.js';
 
 export interface GarchClampOptions {
   /**

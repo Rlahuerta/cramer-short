@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import { InMemoryChatHistory } from './in-memory-chat-history.js';
-import { DEFAULT_HISTORY_LIMIT } from './history-context.js';
+import { DEFAULT_HISTORY_LIMIT } from './parsing/history-context.js';
 
 function makeMsg(query: string, answer: string, summary: string | null = null) {
   return { query, answer, summary };

@@ -23,8 +23,14 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Check dependency boundaries
+        run: bun run depcruise
+
       - name: Unit tests
         run: bun test
+
+      - name: Coverage gate
+        run: bun run test:coverage
 
       - name: Integration tests
         run: bun run test:integration

@@ -282,7 +282,7 @@ export function buildPortfolioRiskReport(
 
   const lookbackDays = (aligned[tickers[0]] ?? []).length;
 
-  return {
+  const report: PortfolioRiskReport & { _totalWeight: number } = {
     tickers,
     lookbackDays,
     volatility,
@@ -295,5 +295,6 @@ export function buildPortfolioRiskReport(
     confidenceLevel,
     riskFreeRate,
     _totalWeight: totalWeight,
-  } as unknown as PortfolioRiskReport;
+  };
+  return report;
 }

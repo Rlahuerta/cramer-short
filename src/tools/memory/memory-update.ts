@@ -56,6 +56,7 @@ const memoryUpdateSchema = z.object({
     .describe('Replacement text. Required for "edit" action.'),
 });
 
+/** Updates project memory files with new content. */
 export const memoryUpdateTool = new DynamicStructuredTool({
   name: 'memory_update',
   description:

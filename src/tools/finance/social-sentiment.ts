@@ -417,6 +417,7 @@ const schema = z.object({
     .describe('Max posts to fetch per source (default: 25). Higher = more data but slower.'),
 });
 
+/** Aggregates social sentiment signals for a ticker or topic. */
 export const socialSentimentTool = new DynamicStructuredTool({
   name: 'social_sentiment',
   description:

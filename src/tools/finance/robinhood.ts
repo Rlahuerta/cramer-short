@@ -27,6 +27,7 @@ export function makeRobinhoodTools(
   quotesBatchFn: typeof getQuotes = getQuotes,
   fundamentalsBatchFn: typeof getFundamentalsBatch = getFundamentalsBatch,
 ) {
+  /** Fetches a Robinhood quote for a stock symbol. */
   const getRobinhoodQuote = new DynamicStructuredTool({
     name: 'get_robinhood_quote',
     description:
@@ -101,6 +102,7 @@ export function makeRobinhoodTools(
     },
   });
 
+  /** Fetches Robinhood fundamentals for a stock symbol. */
   const getRobinhoodFundamentals = new DynamicStructuredTool({
     name: 'get_robinhood_fundamentals',
     description:

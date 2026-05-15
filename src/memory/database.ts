@@ -8,6 +8,7 @@ import type {
 } from './types.js';
 import { buildFtsQueryExpanded } from './financial-synonyms.js';
 import { extractTickers } from './ticker-extractor.js';
+import { logger } from '../utils/logger.js';
 
 type SqliteQuery<T> = {
   all(...params: unknown[]): T[];
@@ -204,8 +205,10 @@ export class MemoryDatabase {
         const { getLoadablePath } = await import('sqlite-vec');
         db.loadExtension(getLoadablePath());
         vecEnabled = true;
-      } catch {
-        // sqlite-vec not installed or incompatible platform — JS fallback will be used
+      } catch (error) {
+        logger.debug('sqlite-vec extension unavailable; using JS vector search fallback', {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
@@ -264,8 +267,10 @@ export class MemoryDatabase {
       );
       this.vecTableDim = dim;
       return true;
-    } catch {
-      // sqlite-vec unavailable at runtime despite extension load attempt
+    } catch (error) {
+      logger.debug('sqlite-vec table creation failed; disabling vector extension', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       this.vecEnabled = false;
       return false;
     }

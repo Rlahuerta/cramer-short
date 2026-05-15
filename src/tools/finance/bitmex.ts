@@ -185,6 +185,7 @@ Use this for BitMEX-specific trading setup work when you need:
 For forecasting, pass the returned historicalCloses into markov_distribution and then use forecast_arbitrator.
 `.trim();
 
+/** Retrieves BitMEX market data for crypto derivatives. */
 export const bitmexMarketTool = new DynamicStructuredTool({
   name: 'bitmex_market',
   description: BITMEX_MARKET_DESCRIPTION,

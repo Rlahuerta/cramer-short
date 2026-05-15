@@ -1,5 +1,5 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { MS_PER_DAY } from './time.js';
+import { MS_PER_DAY } from '../time.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';

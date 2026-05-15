@@ -1,4 +1,4 @@
-import { Container, ProcessTerminal, Spacer, Text, TUI } from '@mariozechner/pi-tui';
+import { Container, ProcessTerminal, Spacer, Text, TUI, type Component } from '@mariozechner/pi-tui';
 import { AtPathAutocompleteProvider } from './components/at-path-provider.js';
 import type { ApprovalDecision } from './agent/index.js';
 import { DEFAULT_MAX_ITERATIONS } from './agent/index.js';
@@ -534,9 +534,9 @@ export async function runCli() {
   const renderScreenView = (
     title: string,
     description: string,
-    body: any,
+    body: Component,
     footer?: string,
-    focusTarget?: any,
+    focusTarget?: Component,
   ) => {
     root.clear();
     root.addChild(createScreen(title, description, body, footer));
@@ -886,8 +886,12 @@ export async function runCli() {
       if (existingEntries.length > 0) {
         await seedWatchlistEntries(existingEntries);
       }
-    } catch {
-      // Non-critical.
+    } catch (error) {
+      logError({
+        type: 'memory',
+        message: `Watchlist memory seed failed: ${error instanceof Error ? error.message : String(error)}`,
+        context: 'watchlist-seed',
+      });
     }
   })();
 
@@ -920,8 +924,12 @@ export async function runCli() {
           tui.requestRender();
         }
       }
-    } catch {
-      // Non-fatal — Dream failure must never crash the TUI.
+    } catch (error) {
+      logError({
+        type: 'memory',
+        message: `Dream background consolidation failed: ${error instanceof Error ? error.message : String(error)}`,
+        context: 'dream-startup',
+      });
     } finally {
       dreamRunning = false;
     }

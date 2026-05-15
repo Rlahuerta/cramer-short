@@ -1,17 +1,19 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import type { ForecastTrustPolicyLevel } from '../forecast-arbitrator.js';
-import { walkForward, type WalkForwardConfig } from './walk-forward.js';
+import type { WalkForwardConfig } from './walk-forward.js';
 import {
-  brierScore,
-  ciCoverage,
   computeRCCurve,
   directionalAccuracy,
-  selectiveDirectionalAccuracy,
-  sharpness,
   type BacktestStep,
 } from './metrics.js';
 import { effectiveBreakContext } from './break-policy-ablation.js';
+import {
+  runWalkForwardHorizons,
+  summarizeCalibrationSteps,
+  writeBacktestDocs,
+  type CalibrationSummary,
+} from './comparison-harness.js';
 
 interface FixtureTickerData {
   closes: number[];
@@ -22,20 +24,6 @@ interface FixtureData {
   tickers: Record<string, FixtureTickerData>;
   startDate?: string;
   endDate?: string;
-}
-
-interface CalibrationSummary {
-  n: number;
-  ciCoverage: number;
-  coverageError: number;
-  breakCount: number;
-  breakCiCoverage: number | null;
-  breakCoverageError: number | null;
-  sharpness: number;
-  brierScore: number;
-  directionalAccuracy: number;
-  selectiveDirectionalAccuracy045: number;
-  selectiveCoverage045: number;
 }
 
 interface PolicySummary {
@@ -103,26 +91,6 @@ function correctDirection(step: BacktestStep): boolean {
   if (step.recommendation === 'BUY') return step.actualReturn > 0;
   if (step.recommendation === 'SELL') return step.actualReturn < 0;
   return Math.abs(step.actualReturn) < 0.03;
-}
-
-function summarizeCalibration(steps: BacktestStep[]): CalibrationSummary {
-  const breakSteps = steps.filter(step => effectiveBreakContext(step));
-  const selective045 = selectiveDirectionalAccuracy(steps, 0.45);
-  const overallCoverage = ciCoverage(steps);
-  const breakCoverage = breakSteps.length > 0 ? ciCoverage(breakSteps) : null;
-  return {
-    n: steps.length,
-    ciCoverage: overallCoverage,
-    coverageError: Math.abs(overallCoverage - TARGET_CI_COVERAGE),
-    breakCount: breakSteps.length,
-    breakCiCoverage: breakCoverage,
-    breakCoverageError: breakCoverage === null ? null : Math.abs(breakCoverage - TARGET_CI_COVERAGE),
-    sharpness: sharpness(steps),
-    brierScore: brierScore(steps),
-    directionalAccuracy: directionalAccuracy(steps),
-    selectiveDirectionalAccuracy045: selective045.accuracy,
-    selectiveCoverage045: selective045.coverage,
-  };
 }
 
 function nearestRcPoint(
@@ -219,19 +187,18 @@ async function runArm(
   source: ArmReport['source'],
 ): Promise<ArmReport> {
   const horizons: ArmHorizonReport[] = [];
-  for (const horizon of HORIZONS) {
-    const result = await walkForward({
-      ticker: TICKER,
-      prices,
-      horizon,
-      warmup: WARMUP,
-      stride: STRIDE,
-      ...flags,
+  for (const { horizon, result } of await runWalkForwardHorizons(label, {
+    ticker: TICKER,
+    prices,
+    horizons: HORIZONS,
+    warmup: WARMUP,
+    stride: STRIDE,
+    flags,
+  })) {
+    const calibration = summarizeCalibrationSteps(result.steps, {
+      targetCiCoverage: TARGET_CI_COVERAGE,
+      isBreakStep: effectiveBreakContext,
     });
-    if (result.errors.length > 0) {
-      console.error(`[${label} h=${horizon}] ${result.errors.length} errors (first: ${result.errors[0]?.error ?? 'unknown'})`);
-    }
-    const calibration = summarizeCalibration(result.steps);
     const recommendationRC = computeRCCurve(result.steps, [...RC_THRESHOLDS]);
     const policy = policyMode === 'observable-proxy'
       ? summarizeObservablePolicy(result.steps, prices)
@@ -406,15 +373,7 @@ async function main(): Promise<void> {
 
   sanityCheckPolicyProxy(artifact);
 
-  const outDir = join(process.cwd(), 'docs');
-  mkdirSync(outDir, { recursive: true });
-  const stamp = new Date().toISOString().slice(0, 10);
-  const jsonPath = join(outDir, `btc-multi-horizon-backtest-round6-${stamp}.json`);
-  const mdPath = join(outDir, `btc-multi-horizon-backtest-round6-${stamp}.md`);
-  writeFileSync(jsonPath, JSON.stringify(artifact, null, 2));
-  writeFileSync(mdPath, renderMarkdown(artifact));
-  console.log(`Wrote ${jsonPath}`);
-  console.log(`Wrote ${mdPath}`);
+  writeBacktestDocs('btc-multi-horizon-backtest-round6', artifact, renderMarkdown(artifact));
 }
 
 await main();

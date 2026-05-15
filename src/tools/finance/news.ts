@@ -13,6 +13,7 @@ const CompanyNewsInputSchema = z.object({
     .describe('Maximum number of news articles to return (default: 5, max: 10).'),
 });
 
+/** Fetches recent company news articles. */
 export const getCompanyNews = new DynamicStructuredTool({
   name: 'get_company_news',
   description:

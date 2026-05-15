@@ -21,8 +21,8 @@ import { tmpdir } from 'node:os';
 // All integration tests below use inferAssetClass + lookupImpact directly, which
 // correctly tests the full math pipeline without the mocked dependency.
 import { IMPACT_MAP, inferAssetClass, lookupImpact } from './impact-map.js';
-import { computeConditionalReturn, adjustYesBias, computePolymarketSignal, runEnsemble } from '../../utils/ensemble.js';
-import type { MarketInput } from '../../utils/ensemble.js';
+import { computeConditionalReturn, adjustYesBias, computePolymarketSignal, runEnsemble } from '../../utils/finance/ensemble.js';
+import type { MarketInput } from '../../utils/finance/ensemble.js';
 import { appendSnapshotRecord } from './polymarket-snapshots.js';
 
 beforeEach(() => {

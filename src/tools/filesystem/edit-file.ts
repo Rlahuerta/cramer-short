@@ -42,6 +42,7 @@ const editFileSchema = z.object({
   new_text: z.string().describe('New text to replace old_text with.'),
 });
 
+/** Edits an existing file using an exact string replacement. */
 export const editFileTool = new DynamicStructuredTool({
   name: 'edit_file',
   description:

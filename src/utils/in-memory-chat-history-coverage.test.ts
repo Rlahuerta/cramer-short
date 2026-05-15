@@ -24,7 +24,7 @@ afterAll(() => {
 });
 
 import { InMemoryChatHistory } from './in-memory-chat-history.js';
-import { DEFAULT_HISTORY_LIMIT } from './history-context.js';
+import { DEFAULT_HISTORY_LIMIT } from './parsing/history-context.js';
 
 beforeEach(() => {
   mockCallLlm.mockClear();

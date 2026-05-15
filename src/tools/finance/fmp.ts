@@ -102,6 +102,7 @@ const FmpInputSchema = z.object({
 // Income Statements
 // ---------------------------------------------------------------------------
 
+/** Fetches income statements through Financial Modeling Prep. */
 export const getFmpIncomeStatements = new DynamicStructuredTool({
   name: 'get_fmp_income_statements',
   description:
@@ -138,6 +139,7 @@ export const getFmpIncomeStatements = new DynamicStructuredTool({
 // Balance Sheets
 // ---------------------------------------------------------------------------
 
+/** Fetches balance sheets through Financial Modeling Prep. */
 export const getFmpBalanceSheets = new DynamicStructuredTool({
   name: 'get_fmp_balance_sheets',
   description:
@@ -174,6 +176,7 @@ export const getFmpBalanceSheets = new DynamicStructuredTool({
 // Cash Flow Statements
 // ---------------------------------------------------------------------------
 
+/** Fetches cash flow statements through Financial Modeling Prep. */
 export const getFmpCashFlowStatements = new DynamicStructuredTool({
   name: 'get_fmp_cash_flow_statements',
   description:

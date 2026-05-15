@@ -81,7 +81,10 @@ export class AgentToolExecutor {
           this.requestCache.set(k, v);
         }
       }
-    }).catch(() => {});
+    }).catch((err) => {
+      // Auto-store failures are logged but don't block agent execution
+      console.warn('[tool-executor] auto-store failed:', err);
+    });
   }
 
   async *executeAll(

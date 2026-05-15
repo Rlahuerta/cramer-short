@@ -765,6 +765,7 @@ export function createForecastArbitratorTool(
       appendReplayCacheBundle(bundle);
     });
 
+  /** Creates the forecast arbitrator tool for comparing market-derived forecasts. */
   return new DynamicStructuredTool({
     name: 'forecast_arbitrator',
     description: FORECAST_ARBITRATOR_DESCRIPTION,

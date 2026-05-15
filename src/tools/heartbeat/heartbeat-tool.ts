@@ -57,6 +57,7 @@ function ensureHeartbeatEnabled(): void {
   saveGatewayConfig(cfg);
 }
 
+/** Reports that the agent is still working during long runs. */
 export const heartbeatTool = new DynamicStructuredTool({
   name: 'heartbeat',
   description:

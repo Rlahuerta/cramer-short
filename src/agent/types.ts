@@ -283,4 +283,5 @@ export interface DisplayEvent {
   completed?: boolean;
   endEvent?: AgentEvent;
   progressMessage?: string;
+  forwarded?: boolean; // Gateway-specific flag to track streamed events
 }

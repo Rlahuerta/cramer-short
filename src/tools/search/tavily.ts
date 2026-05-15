@@ -14,6 +14,7 @@ function getTavilyClient(): TavilySearch {
   return tavilyClient;
 }
 
+/** Searches the web through Tavily. */
 export const tavilySearch = new DynamicStructuredTool({
   name: 'web_search',
   description:

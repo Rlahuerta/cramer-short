@@ -1083,6 +1083,7 @@ export async function fetchPolymarketAnchorMarkets(
 // Tool
 // ---------------------------------------------------------------------------
 
+/** Searches and analyzes Polymarket prediction markets. */
 export const polymarketTool = new DynamicStructuredTool({
   name: 'polymarket_search',
   description: 'Search Polymarket prediction markets for crowd-sourced probability estimates on macro, geopolitical, and financial events.',

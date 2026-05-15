@@ -233,6 +233,7 @@ const schema = z.object({
   label: z.string().optional().describe('Asset label (e.g. "BTC", "GLD")'),
 });
 
+/** Renders a price distribution chart for forecast scenarios. */
 export const priceDistributionChartTool = new DynamicStructuredTool({
   name: 'price_distribution_chart',
   description: PRICE_DISTRIBUTION_CHART_DESCRIPTION,

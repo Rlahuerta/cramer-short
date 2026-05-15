@@ -2,7 +2,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { api } from './api.js';
 import { formatToolResult } from '../types.js';
-import { buildPortfolioRiskReport } from '../../utils/portfolio-stats.js';
+import { buildPortfolioRiskReport } from '../../utils/finance/portfolio-stats.js';
 
 export const PORTFOLIO_RISK_DESCRIPTION = `
 Computes portfolio risk metrics — VaR, CVaR (Expected Shortfall), Sharpe ratio,
@@ -102,7 +102,11 @@ function normalizeTickers(input: { tickers?: string[]; watchlist_entries?: Portf
   )];
 }
 
+/**
+ * Create the portfolio-risk LangChain tool with optional watchlist injection.
+ */
 export function createPortfolioRiskTool(options: PortfolioRiskToolOptions = {}): DynamicStructuredTool {
+  /** Creates the portfolio risk analysis tool. */
   return new DynamicStructuredTool({
     name: 'portfolio_risk',
     description: PORTFOLIO_RISK_DESCRIPTION,
@@ -176,12 +180,13 @@ export function createPortfolioRiskTool(options: PortfolioRiskToolOptions = {}):
         effectiveInput.risk_free_rate,
       );
 
-      const result: Record<string, unknown> = report as unknown as Record<string, unknown>;
-      if (errors.length > 0) result['warnings'] = errors;
-
+      const result = errors.length > 0 ? { ...report, warnings: errors } : report;
       return formatToolResult(result, sourceUrls);
     },
   });
 }
 
+/**
+ * Default portfolio-risk tool using equal weights and optional watchlist tickers.
+ */
 export const portfolioRiskTool = createPortfolioRiskTool();

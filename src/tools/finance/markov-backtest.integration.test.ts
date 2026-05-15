@@ -18,7 +18,7 @@ import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
 import { walkForward, type WalkForwardResult } from './backtest/walk-forward.js';
 import { formatFailureAnalysisReport, rankFailureBuckets } from './backtest/btc-failure-analysis.js';
-import { runEnsemble } from '@/utils/ensemble.js';
+import { runEnsemble } from '@/utils/finance/ensemble.js';
 import {
   computeFailureDecomposition,
   brierScore,

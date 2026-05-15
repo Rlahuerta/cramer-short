@@ -2699,7 +2699,7 @@ describe('sector ETF differentiation', () => {
 
   it('SLX (materials) and KRE (financial) produce different conditional returns for their respective primary signals', () => {
     const { lookupImpact } = require('./impact-map.js');
-    const { computeConditionalReturn, adjustYesBias } = require('../../utils/ensemble.js');
+    const { computeConditionalReturn, adjustYesBias } = require('../../utils/finance/ensemble.js');
 
     // Both assets at same Polymarket probability (0.72)
     const p = adjustYesBias(0.72);
@@ -2921,7 +2921,7 @@ describe('different asset classes produce distinct conditional returns', () => {
   it('SPY (equity) and GLD (gold) have opposite macro_growth conditional returns at high probability', () => {
     // Import impact-map directly (no mock needed — pure math)
     const { lookupImpact, inferAssetClass } = require('./impact-map.js');
-    const { computeConditionalReturn, adjustYesBias } = require('../../utils/ensemble.js');
+    const { computeConditionalReturn, adjustYesBias } = require('../../utils/finance/ensemble.js');
 
     const p = adjustYesBias(0.75); // high probability of recession
 
@@ -2948,7 +2948,7 @@ describe('different asset classes produce distinct conditional returns', () => {
 
   it('KRE (financial) and IWM (small_cap) have opposite macro_rates conditional returns', () => {
     const { lookupImpact, inferAssetClass } = require('./impact-map.js');
-    const { computeConditionalReturn, adjustYesBias } = require('../../utils/ensemble.js');
+    const { computeConditionalReturn, adjustYesBias } = require('../../utils/finance/ensemble.js');
 
     const p = adjustYesBias(0.80); // high probability of rate cut
 
@@ -2973,7 +2973,7 @@ describe('different asset classes produce distinct conditional returns', () => {
 
   it('SLX (materials) and SPY (equity) have opposite trade_policy conditional returns', () => {
     const { lookupImpact, inferAssetClass } = require('./impact-map.js');
-    const { computeConditionalReturn, adjustYesBias } = require('../../utils/ensemble.js');
+    const { computeConditionalReturn, adjustYesBias } = require('../../utils/finance/ensemble.js');
 
     const p = adjustYesBias(0.97); // near-certain tariff imposition
 

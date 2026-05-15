@@ -5,9 +5,15 @@ import { formatToolResult } from '../types.js';
 import { getFmpIncomeStatements, getFmpBalanceSheets, getFmpCashFlowStatements, FMP_PREMIUM_REQUIRED } from './fmp.js';
 import { getYahooIncomeStatements } from './yahoo-finance.js';
 import { tavilySearch } from '../search/tavily.js';
-import { crossValidateFinancials, type FinancialRecord } from '../../utils/cross-validate.js';
+import { crossValidateFinancials, type FinancialRecord } from '../../utils/finance/cross-validate.js';
+import { logger } from '../../utils/logger.js';
 
 const REDUNDANT_FINANCIAL_FIELDS = ['accession_number', 'currency', 'period'] as const;
+
+function logFallbackDebug(context: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.debug(`[fundamentals] ${context}`, { error: message });
+}
 
 const FinancialStatementsInputSchema = z.object({
   ticker: z
@@ -108,11 +114,15 @@ async function tryTavilySearch(ticker: string, statementType: string): Promise<s
     const parsed = JSON.parse(result) as { data: unknown };
     if (!Array.isArray(parsed.data) || parsed.data.length === 0) return null;
     return result;
-  } catch {
+  } catch (error) {
+    logFallbackDebug(`Tavily fallback failed for ${ticker} ${statementType}`, error);
     return null;
   }
 }
 
+/**
+ * Fetch income statements with Financial Datasets first and international fallbacks.
+ */
 export const getIncomeStatements = new DynamicStructuredTool({
   name: 'get_income_statements',
   description: `Fetches a company's income statements, detailing its revenues, expenses, net income, etc. over a reporting period. Falls back to Financial Modeling Prep for international tickers (e.g. VWS.CO). Useful for evaluating a company's profitability and operational efficiency.`,
@@ -142,15 +152,15 @@ export const getIncomeStatements = new DynamicStructuredTool({
                 return primaryResult + '\n\n' + validation.warnings.join('\n');
               }
             }
-          } catch {
-            // Validation is best-effort — never block primary result
+          } catch (error) {
+            logFallbackDebug(`cross-source validation failed for ${ticker}`, error);
           }
         }
 
         return primaryResult;
       }
-    } catch {
-      // Fall through to FMP
+    } catch (error) {
+      logFallbackDebug(`primary income statements failed for ${ticker}; falling back to FMP`, error);
     }
 
     const fmpResult = await tryFmp(getFmpIncomeStatements, ticker, input.period, input.limit);
@@ -176,6 +186,9 @@ export const getIncomeStatements = new DynamicStructuredTool({
   },
 });
 
+/**
+ * Fetch balance sheets with FMP/Tavily fallback when primary coverage is missing.
+ */
 export const getBalanceSheets = new DynamicStructuredTool({
   name: 'get_balance_sheets',
   description: `Retrieves a company's balance sheets, providing a snapshot of its assets, liabilities, shareholders' equity, etc. at a specific point in time. Falls back to Financial Modeling Prep for international tickers. Useful for assessing a company's financial position.`,
@@ -189,8 +202,8 @@ export const getBalanceSheets = new DynamicStructuredTool({
       if (statements && statements.length > 0) {
         return formatToolResult(stripFieldsDeep(statements, REDUNDANT_FINANCIAL_FIELDS), [url]);
       }
-    } catch {
-      // Fall through to FMP
+    } catch (error) {
+      logFallbackDebug(`primary balance sheets failed for ${ticker}; falling back to FMP`, error);
     }
 
     const fmpResult = await tryFmp(getFmpBalanceSheets, ticker, input.period, input.limit);
@@ -207,6 +220,9 @@ export const getBalanceSheets = new DynamicStructuredTool({
   },
 });
 
+/**
+ * Fetch cash-flow statements and fall back to alternate providers for non-US tickers.
+ */
 export const getCashFlowStatements = new DynamicStructuredTool({
   name: 'get_cash_flow_statements',
   description: `Retrieves a company's cash flow statements, showing how cash is generated and used across operating, investing, and financing activities. Falls back to Financial Modeling Prep for international tickers. Useful for understanding a company's liquidity and solvency.`,
@@ -220,8 +236,8 @@ export const getCashFlowStatements = new DynamicStructuredTool({
       if (statements && statements.length > 0) {
         return formatToolResult(stripFieldsDeep(statements, REDUNDANT_FINANCIAL_FIELDS), [url]);
       }
-    } catch {
-      // Fall through to FMP
+    } catch (error) {
+      logFallbackDebug(`primary cash-flow statements failed for ${ticker}; falling back to FMP`, error);
     }
 
     const fmpResult = await tryFmp(getFmpCashFlowStatements, ticker, input.period, input.limit);
@@ -238,6 +254,9 @@ export const getCashFlowStatements = new DynamicStructuredTool({
   },
 });
 
+/**
+ * Fetch all three core financial statements in one call, preserving provider fallbacks.
+ */
 export const getAllFinancialStatements = new DynamicStructuredTool({
   name: 'get_all_financial_statements',
   description: `Retrieves all three financial statements (income statements, balance sheets, and cash flow statements) for a company in a single API call. This is more efficient than calling each statement type separately when you need all three for comprehensive financial analysis. Falls back to FMP and web search if the primary API is unavailable.`,
@@ -253,8 +272,8 @@ export const getAllFinancialStatements = new DynamicStructuredTool({
           [url],
         );
       }
-    } catch {
-      // Fall through to FMP
+    } catch (error) {
+      logFallbackDebug(`primary combined financial statements failed for ${ticker}; falling back to FMP`, error);
     }
 
     // FMP fallback — try all three statements individually
@@ -289,4 +308,3 @@ export const getAllFinancialStatements = new DynamicStructuredTool({
     );
   },
 });
-

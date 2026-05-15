@@ -4,7 +4,7 @@ import {
   DEFAULT_HISTORY_LIMIT,
   FULL_ANSWER_TURNS,
   type HistoryEntry,
-} from './history-context.js';
+} from './parsing/history-context.js';
 import { z } from 'zod';
 
 /**

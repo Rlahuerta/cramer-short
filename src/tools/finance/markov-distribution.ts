@@ -25,7 +25,7 @@ import {
   resolveForecastLabRuntimeAssetScopeForTicker,
   withForecastLabRuntimeAssetScope,
 } from './forecast-lab-runtime-defaults.js';
-import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
+import { YES_BIAS_MULTIPLIER } from '../../utils/finance/ensemble.js';
 import {
   attachStudentTPredictiveEmissions,
   baumWelch,
@@ -309,8 +309,9 @@ export async function fetchHistoricalPrices(
       start_date: startDate,
       end_date: endDate,
     });
+    const rawData = data as { prices?: Array<{ close: number }> } | Array<{ close: number }>;
     const prices: Array<{ close: number }> =
-      (data as any).prices ?? (data as any) ?? [];
+      (Array.isArray(rawData) ? rawData : (rawData.prices ?? [])) as Array<{ close: number }>;
     const closes = prices
       .map((p) => p.close)
       .filter((v) => typeof v === 'number' && !isNaN(v));
@@ -1270,11 +1271,17 @@ const anchorTrace = process.env.DEBUG_ANCHORS
   ? (...args: unknown[]) => console.error('[ANCHOR_TRACE]', ...args)
   : (..._args: unknown[]) => {};
 
+/**
+ * Infer the default Polymarket search phrase for a ticker's price markets.
+ */
 export function inferPolymarketSearchPhrase(ticker: string): string {
   const identity = resolveTickerSearchIdentity(ticker);
   return normalizeSearchIdentityPhrase(ticker, `${identity.searchQuery} price`);
 }
 
+/**
+ * Build ticker- and horizon-aware Polymarket query variants for anchor discovery.
+ */
 export function buildPolymarketAnchorQueryVariants(
   ticker: string,
   options?: { horizonDays?: number },
@@ -3539,7 +3546,7 @@ export async function computeMarkovDistribution(params: {
     }
   }
 
-  
+
   // --- PR3 Post-Experiment: Sideways Split ---
   const isBtcShortHorizon = sidewaysSplit && assetProfile.type === 'crypto' && horizon <= 14 && (ticker === 'BTC' || ticker === 'BTC-USD');
   let sidewaysSplitActive = false;
@@ -3563,23 +3570,23 @@ export async function computeMarkovDistribution(params: {
     // fallback threshold: at least 5 obs
     if (c4.sideways_coil >= 5 && c4.sideways_chop >= 5) {
       sidewaysSplitActive = true;
-      
+
       const alpha4 = 5.0 / seq4.length;
       let P4 = Array.from({ length: 4 }, () => Array(4).fill(alpha4));
       const idx4: Record<string, number> = { bull: 0, bear: 1, sideways_coil: 2, sideways_chop: 3 };
       const decay4 = 0.97;
       const nSteps = seq4.length - 1;
-      
+
       for (let i = 0; i < nSteps; i++) {
         P4[idx4[seq4[i]]][idx4[seq4[i+1]]] += Math.pow(decay4, nSteps - 1 - i);
       }
-      
+
       // normalize
       P4 = P4.map(row => {
         const sum = row.reduce((a,b)=>a+b,0);
         return row.map(v => v/sum);
       });
-      
+
       // sentiment adjustment (replicate adjustTransitionMatrix logic exactly)
       const shift = sentimentShift;
       const alpha_sent = 0.07;
@@ -3587,7 +3594,7 @@ export async function computeMarkovDistribution(params: {
       P4[0][1] *= (1 - alpha_sent * shift);
       P4[1][1] *= (1 - alpha_sent * shift);
       P4[1][0] *= (1 + alpha_sent * shift);
-      
+
       P4 = P4.map(row => {
         const sum = row.reduce((a,b)=>a+b,0);
         return row.map(v => Math.max(0, v/sum));
@@ -3595,7 +3602,7 @@ export async function computeMarkovDistribution(params: {
 
       const Pn4 = matPow(P4, horizon);
       const w4 = Pn4[idx4[seq4[seq4.length - 1]]];
-      
+
       weights3_experiment = [w4[0], w4[1], w4[2] + w4[3]];
 
       // Compute conditional up rates using the 4-state sequence
@@ -3615,7 +3622,7 @@ export async function computeMarkovDistribution(params: {
         upTotals[state] += weight;
         if (ret > 0) upHits[state] += weight;
       }
-      
+
       const upRates4 = {
         bull: upTotals.bull > 0 ? upHits.bull / upTotals.bull : 0.5,
         bear: upTotals.bear > 0 ? upHits.bear / upTotals.bear : 0.5,
@@ -3623,10 +3630,10 @@ export async function computeMarkovDistribution(params: {
         sideways_chop: upTotals.sideways_chop > 0 ? upHits.sideways_chop / upTotals.sideways_chop : 0.5,
       };
 
-      conditionalPUp_experiment = 
-        w4[0] * upRates4.bull + 
-        w4[1] * upRates4.bear + 
-        w4[2] * upRates4.sideways_coil + 
+      conditionalPUp_experiment =
+        w4[0] * upRates4.bull +
+        w4[1] * upRates4.bear +
+        w4[2] * upRates4.sideways_coil +
         w4[3] * upRates4.sideways_chop;
     }
   }
@@ -3824,7 +3831,7 @@ export async function computeMarkovDistribution(params: {
   // Unlike the old probability-level shrinkage which compressed ALL probabilities
   // toward center (destroying tails), this only adjusts the drift parameter.
   let activeKappaMultiplier = assetProfile.kappaMultiplier;
-  
+
   // Apply PR3B short-horizon crypto override if provided
   if (cryptoShortHorizonKappaMultiplier !== undefined && assetProfile.type === 'crypto' && horizon <= 14) {
     activeKappaMultiplier = cryptoShortHorizonKappaMultiplier;
@@ -4136,7 +4143,7 @@ export async function computeMarkovDistribution(params: {
     Number.isFinite(r2os) &&
     r2os >= COMMODITY_MODEL_ONLY_MIN_R2 &&
     predictionConfidence >= COMMODITY_MODEL_ONLY_MIN_CONFIDENCE;
-  
+
   const anchorBasedDiag =
     anchorCoverage.trustedAnchors > 0 &&
     anchorCoverage.quality === 'good' &&
@@ -4157,7 +4164,7 @@ export async function computeMarkovDistribution(params: {
 
   const rawPUpForBlend = interpolateSurvival(rawDistribution, currentPrice);
   const calPUpForBlend = interpolateSurvival(distribution, currentPrice);
-  
+
   const usePr3fBlend = Boolean(
     pr3fCryptoShortHorizonDisagreementPrior &&
     assetProfile.type === 'crypto' &&
@@ -4167,8 +4174,8 @@ export async function computeMarkovDistribution(params: {
   );
 
   const useRawDecision = Boolean(
-    cryptoShortHorizonRawDecisionAblation && 
-    assetProfile.type === 'crypto' && 
+    cryptoShortHorizonRawDecisionAblation &&
+    assetProfile.type === 'crypto' &&
     horizon <= 14 &&
     !usePr3fBlend
   );
@@ -4431,6 +4438,9 @@ GLD, SLV, USO etc. are ETFs that replicate the underlying commodity price.
 - The horizon is > 90 trading days (model accuracy degrades at long horizons)
 `.trim();
 
+/**
+ * Public Markov distribution tool that blends historical regimes with market anchors.
+ */
 export const markovDistributionTool = new DynamicStructuredTool({
   name: 'markov_distribution',
   description: `

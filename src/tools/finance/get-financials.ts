@@ -193,6 +193,7 @@ const GetFinancialsInputSchema = z.object({
  * Uses native LLM tool calling for routing queries to finance tools.
  */
 export function createGetFinancials(model: string): DynamicStructuredTool {
+  /** Creates the model-aware financial statement retrieval tool. */
   return new DynamicStructuredTool({
     name: 'get_financials',
     description: `Intelligent meta-tool for retrieving company financial data. Takes a natural language query and automatically routes to appropriate financial data tools. Use for:

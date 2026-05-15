@@ -27,6 +27,7 @@ const schema = z.object({
   ),
 });
 
+/** Recalls prior financial context relevant to a query. */
 export const recallFinancialContextTool = new DynamicStructuredTool({
   name: 'recall_financial_context',
   description: RECALL_FINANCIAL_CONTEXT_DESCRIPTION,

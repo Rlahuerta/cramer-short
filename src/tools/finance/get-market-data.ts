@@ -183,6 +183,7 @@ const GetMarketDataInputSchema = z.object({
  * Uses native LLM tool calling for routing queries to market data tools.
  */
 export function createGetMarketData(model: string): DynamicStructuredTool {
+  /** Creates the model-aware market data retrieval tool. */
   return new DynamicStructuredTool({
     name: 'get_market_data',
     description: `Intelligent meta-tool for retrieving market data including prices, news, and insider activity. Takes a natural language query and automatically routes to appropriate market data tools. Use for:

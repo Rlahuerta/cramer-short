@@ -105,6 +105,7 @@ const ScreenStocksInputSchema = z.object({
  * Single LLM call: structured output translates natural language → screener filters.
  */
 export function createScreenStocks(model: string): DynamicStructuredTool {
+  /** Creates the model-aware stock screening tool. */
   return new DynamicStructuredTool({
     name: 'stock_screener',
     description: `Screens for stocks matching financial criteria. Takes a natural language query and returns matching tickers with metric values. Use for:

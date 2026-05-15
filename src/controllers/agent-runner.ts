@@ -19,6 +19,7 @@ import { autoStoreFromRun } from '../memory/auto-store.js';
 type ChangeListener = () => void;
 type CreateAgentFn = typeof Agent.create;
 type AutoStoreFromRunFn = typeof autoStoreFromRun;
+type EventObserver = (event: AgentEvent) => void | Promise<void>;
 
 export interface RunQueryResult {
   answer: string;
@@ -34,6 +35,7 @@ export class AgentRunnerController {
   private readonly onChange?: ChangeListener;
   private readonly createAgent: CreateAgentFn;
   private readonly autoStoreFromRun: AutoStoreFromRunFn;
+  private readonly onEvent?: EventObserver;
   private abortController: AbortController | null = null;
   private approvalResolve: ((decision: ApprovalDecision) => void) | null = null;
   private sessionApprovedTools = new Set<string>();
@@ -77,6 +79,7 @@ export class AgentRunnerController {
     options: {
       createAgent?: CreateAgentFn;
       autoStoreFromRun?: AutoStoreFromRunFn;
+      onEvent?: EventObserver;
     } = {},
   ) {
     this.agentConfig = agentConfig;
@@ -84,6 +87,7 @@ export class AgentRunnerController {
     this.onChange = onChange;
     this.createAgent = options.createAgent ?? Agent.create;
     this.autoStoreFromRun = options.autoStoreFromRun ?? autoStoreFromRun;
+    this.onEvent = options.onEvent;
   }
 
   /**
@@ -101,6 +105,10 @@ export class AgentRunnerController {
    */
   setModel(model: string, provider: string): void {
     this.agentConfig = { ...this.agentConfig, model, modelProvider: provider };
+  }
+
+  setRunOptions(options: Pick<AgentConfig, 'maxIterations' | 'channel' | 'groupContext'>): void {
+    this.agentConfig = { ...this.agentConfig, ...options };
   }
 
   setWatchlistEntries(entries: NonNullable<AgentConfig['watchlistEntries']>): void {
@@ -263,6 +271,8 @@ export class AgentRunnerController {
   };
 
   private async handleEvent(event: AgentEvent) {
+    await this.onEvent?.(event);
+
     switch (event.type) {
       case 'progress': {
         // Propagate iteration counter into the current working state so the
@@ -389,7 +399,10 @@ export class AgentRunnerController {
       case 'done': {
         const done = event as DoneEvent;
         if (done.answer) {
-          await this.inMemoryChatHistory.saveAnswer(done.answer).catch(() => {});
+          await this.inMemoryChatHistory.saveAnswer(done.answer).catch((err) => {
+            // Answer persistence error - log but don't block UI
+            console.warn('[agent-runner] Failed to save answer to history:', err);
+          });
         }
         this.updateLastItem((last) => ({
           ...last,

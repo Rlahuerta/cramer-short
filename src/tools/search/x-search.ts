@@ -35,6 +35,11 @@ interface RawXResponse {
   errors?: unknown[];
 }
 
+interface RawXUserResponse {
+  data?: Record<string, unknown>;
+  errors?: unknown[];
+}
+
 function getBearerToken(): string {
   const token = process.env.X_BEARER_TOKEN;
   if (!token) throw new Error('X_BEARER_TOKEN is not set');
@@ -45,7 +50,7 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function xApiGet(url: string): Promise<RawXResponse> {
+async function xApiGet<T = RawXResponse>(url: string): Promise<T> {
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${getBearerToken()}` },
   });
@@ -63,7 +68,7 @@ async function xApiGet(url: string): Promise<RawXResponse> {
     throw new Error(`X API ${res.status}: ${body.slice(0, 300)}`);
   }
 
-  return res.json() as Promise<RawXResponse>;
+  return res.json() as Promise<T>;
 }
 
 function parseTweets(raw: RawXResponse): XTweet[] {
@@ -172,8 +177,8 @@ async function getProfile(
   const userUrl =
     `${X_API_BASE}/users/by/username/${username}` +
     `?user.fields=public_metrics,description,created_at`;
-  const userData = await xApiGet(userUrl as unknown as string);
-  const user = (userData as unknown as { data: Record<string, unknown> }).data;
+  const userData = await xApiGet<RawXUserResponse>(userUrl);
+  const user = userData.data;
   if (!user) throw new Error(`User @${username} not found`);
 
   await sleep(RATE_DELAY_MS);
@@ -243,6 +248,9 @@ const schema = z.object({
     .describe('Number of pages to fetch for search (1 page ≈ 100 tweets, default: 1)'),
 });
 
+/**
+ * Search X/Twitter via the official API for recent tweets, profiles, or threads.
+ */
 export const xSearchTool = new DynamicStructuredTool({
   name: 'x_search',
   description:

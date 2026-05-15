@@ -174,6 +174,7 @@ Parameters:
 // LangChain tool
 // ---------------------------------------------------------------------------
 
+/** Captures explicit step-by-step reasoning before tool use. */
 export const sequentialThinkingTool = new DynamicStructuredTool({
   name: 'sequential_thinking',
   description: SEQUENTIAL_THINKING_DESCRIPTION,

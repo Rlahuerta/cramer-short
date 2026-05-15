@@ -9,8 +9,8 @@
  * pipeline is byte-identical to the pre-W3 implementation.
  */
 
-import { Adwin } from '../../utils/adwin.js';
-import { detectKswinDrift, type KswinOptions } from '../../utils/kswin.js';
+import { Adwin } from '../../utils/finance/adwin.js';
+import { detectKswinDrift, type KswinOptions } from '../../utils/finance/kswin.js';
 import { fitHawkesMLE, type HawkesFit } from './hawkes.js';
 import type { JumpEventSpec } from './jump-diffusion.js';
 

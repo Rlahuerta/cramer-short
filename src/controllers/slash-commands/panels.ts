@@ -1,4 +1,4 @@
-import { Container, Spacer, Text, type SlashCommand } from '@mariozechner/pi-tui';
+import { Container, Spacer, Text, type Component, type SlashCommand } from '@mariozechner/pi-tui';
 import { discoverSkills } from '../../skills/registry.js';
 import { theme } from '../../theme.js';
 import type { WatchlistEntry } from '../watchlist-controller.js';
@@ -13,7 +13,7 @@ import {
 export function createScreen(
   title: string,
   description: string,
-  body: any,
+  body: Component,
   footer?: string,
 ): Container {
   const container = new Container();

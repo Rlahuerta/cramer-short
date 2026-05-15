@@ -2,7 +2,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { chromium, Browser, Page } from 'playwright';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
-import { logger } from '@/utils';
+import { logger } from '../../utils/logger.js';
 
 let browser: Browser | null = null;
 let page: Page | null = null;
@@ -266,6 +266,7 @@ const actRequestSchema = z.object({
   timeMs: z.number().optional().describe('Wait time in milliseconds'),
 });
 
+/** Exposes browser automation for page navigation and content extraction. */
 export const browserTool = new DynamicStructuredTool({
   name: 'browser',
   description: 'Navigate websites, read content, and interact with pages. Use for accessing company websites, earnings reports, and dynamic content.',

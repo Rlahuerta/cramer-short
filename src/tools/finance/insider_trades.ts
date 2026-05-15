@@ -35,6 +35,7 @@ const InsiderTradesInputSchema = z.object({
     .describe('Filter for trades with filing date less than this date (YYYY-MM-DD).'),
 });
 
+/** Fetches recent insider trade disclosures for a company. */
 export const getInsiderTrades = new DynamicStructuredTool({
   name: 'get_insider_trades',
   description: `Retrieves insider trading transactions for a given company ticker. Insider trades include purchases and sales of company stock by executives, directors, and other insiders. This data is sourced from SEC Form 4 filings. Use filing_date filters to narrow down results by date range.`,

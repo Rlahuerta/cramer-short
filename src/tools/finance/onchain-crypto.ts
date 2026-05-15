@@ -60,12 +60,12 @@ async function fetchWhaleData(
         { headers: { Accept: 'application/json' } },
       );
       if (res.ok) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data: any = await res.json();
+        const data = asRecord(await res.json());
+        const transactions = asRecordArray(data.transactions);
         return {
           source: 'whale-alert',
-          transactions: data.transactions ?? [],
-          count: data.transactions?.length ?? 0,
+          transactions,
+          count: transactions.length,
         };
       }
     } catch {
@@ -83,26 +83,22 @@ async function fetchWhaleData(
       if (!res.ok) {
         return { error: `Blockchain.info returned ${res.status}` };
       }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const data: any = await res.json();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const txs = (data.txs ?? []) as Array<any>;
+      const data = asRecord(await res.json());
+      const txs = asRecordArray(data.txs);
 
       const thresholdBtc = 100;
       const whaleTxs = txs
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .map((tx: any) => {
-          const totalOutput = (tx.out ?? []).reduce(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (sum: number, o: any) => sum + (o.value || 0),
+        .map((tx) => {
+          const totalOutput = asRecordArray(tx.out).reduce(
+            (sum, o) => sum + (numberOrNull(o.value) ?? 0),
             0,
           );
           const btcValue = totalOutput / 1e8;
           return {
-            hash: tx.hash,
+            hash: stringOrNull(tx.hash) ?? '',
             btc_amount: btcValue,
             usd_value: currentPriceUsd ? btcValue * currentPriceUsd : null,
-            time: tx.time,
+            time: tx.time ?? null,
           };
         })
         .filter((tx: { btc_amount: number }) => tx.btc_amount >= thresholdBtc)
@@ -150,35 +146,57 @@ type OnchainCryptoDependencies = {
   recordReplayWhaleCapture?: (row: RawWhaleReplayRow) => void;
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractMarketMetrics(data: any): Record<string, unknown> {
-  const md = data?.market_data ?? {};
+type JsonRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): JsonRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as JsonRecord
+    : {};
+}
+
+function asRecordArray(value: unknown): JsonRecord[] {
+  return Array.isArray(value) ? value.map(asRecord) : [];
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' ? value : null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function extractMarketMetrics(data: unknown): Record<string, unknown> {
+  const record = asRecord(data);
+  const md = asRecord(record.market_data);
+  const athChangePercentage = asRecord(md.ath_change_percentage);
+  const totalVolume = asRecord(md.total_volume);
+  const currentPrice = asRecord(md.current_price);
   return {
     price_change_24h_pct: md.price_change_percentage_24h ?? null,
     price_change_7d_pct: md.price_change_percentage_7d ?? null,
     price_change_30d_pct: md.price_change_percentage_30d ?? null,
-    market_cap_rank: data?.market_cap_rank ?? null,
-    ath_change_percentage: md.ath_change_percentage?.usd ?? null,
-    total_volume_usd: md.total_volume?.usd ?? null,
+    market_cap_rank: record.market_cap_rank ?? null,
+    ath_change_percentage: athChangePercentage.usd ?? null,
+    total_volume_usd: totalVolume.usd ?? null,
     circulating_supply: md.circulating_supply ?? null,
     max_supply: md.max_supply ?? null,
-    current_price_usd: md.current_price?.usd ?? null,
+    current_price_usd: currentPrice.usd ?? null,
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractSentimentMetrics(data: any): Record<string, unknown> {
+function extractSentimentMetrics(data: unknown): Record<string, unknown> {
+  const record = asRecord(data);
   return {
-    sentiment_votes_up_percentage: data?.sentiment_votes_up_percentage ?? null,
-    sentiment_votes_down_percentage: data?.sentiment_votes_down_percentage ?? null,
-    public_interest_score: data?.public_interest_score ?? null,
-    coingecko_score: data?.coingecko_score ?? null,
+    sentiment_votes_up_percentage: record.sentiment_votes_up_percentage ?? null,
+    sentiment_votes_down_percentage: record.sentiment_votes_down_percentage ?? null,
+    public_interest_score: record.public_interest_score ?? null,
+    coingecko_score: record.coingecko_score ?? null,
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractDeveloperMetrics(data: any): Record<string, unknown> {
-  const dd = data?.developer_data ?? {};
+function extractDeveloperMetrics(data: unknown): Record<string, unknown> {
+  const dd = asRecord(asRecord(data).developer_data);
   return {
     forks: dd.forks ?? null,
     stars: dd.stars ?? null,
@@ -189,9 +207,8 @@ function extractDeveloperMetrics(data: any): Record<string, unknown> {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractCommunityMetrics(data: any): Record<string, unknown> {
-  const cd = data?.community_data ?? {};
+function extractCommunityMetrics(data: unknown): Record<string, unknown> {
+  const cd = asRecord(asRecord(data).community_data);
   return {
     twitter_followers: cd.twitter_followers ?? null,
     reddit_subscribers: cd.reddit_subscribers ?? null,
@@ -200,25 +217,31 @@ function extractCommunityMetrics(data: any): Record<string, unknown> {
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function extractGlobalMetrics(globalData: any): Record<string, unknown> {
-  const d = globalData?.data ?? {};
+function extractGlobalMetrics(globalData: unknown): Record<string, unknown> {
+  const d = asRecord(asRecord(globalData).data);
+  const totalMarketCap = asRecord(d.total_market_cap);
+  const totalVolume = asRecord(d.total_volume);
+  const marketCapPercentage = asRecord(d.market_cap_percentage);
   return {
-    total_market_cap_usd: d.total_market_cap?.usd ?? null,
-    total_volume_24h_usd: d.total_volume?.usd ?? null,
-    btc_dominance: d.market_cap_percentage?.btc ?? null,
-    eth_dominance: d.market_cap_percentage?.eth ?? null,
+    total_market_cap_usd: totalMarketCap.usd ?? null,
+    total_volume_24h_usd: totalVolume.usd ?? null,
+    btc_dominance: marketCapPercentage.btc ?? null,
+    eth_dominance: marketCapPercentage.eth ?? null,
     market_cap_change_24h_pct: d.market_cap_change_percentage_24h_usd ?? null,
     active_cryptocurrencies: d.active_cryptocurrencies ?? null,
   };
 }
 
+/**
+ * Create the on-chain crypto LangChain tool with injectable replay-cache writes.
+ */
 export function createGetOnchainCryptoTool(dependencies: OnchainCryptoDependencies = {}) {
   const recordReplayWhaleCapture = dependencies.recordReplayWhaleCapture
     ?? ((row: RawWhaleReplayRow) => {
       appendReplayCacheWhaleCapture(row);
     });
 
+  /** Creates the on-chain crypto analytics tool. */
   return new DynamicStructuredTool({
     name: 'get_onchain_crypto',
     description:
@@ -264,10 +287,9 @@ export function createGetOnchainCryptoTool(dependencies: OnchainCryptoDependenci
             throw new Error(`CoinGecko returned ${res.status} for coin ID "${coinId}"`);
           }
 
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const data: any = await res.json();
-          result.name = data?.name ?? coinId;
-          result.symbol = data?.symbol?.toUpperCase() ?? input.ticker.toUpperCase();
+          const data = asRecord(await res.json());
+          result.name = stringOrNull(data.name) ?? coinId;
+          result.symbol = stringOrNull(data.symbol)?.toUpperCase() ?? input.ticker.toUpperCase();
 
           for (const metric of metrics) {
             switch (metric) {
@@ -284,7 +306,9 @@ export function createGetOnchainCryptoTool(dependencies: OnchainCryptoDependenci
                 result.community = extractCommunityMetrics(data);
                 break;
               case 'whale': {
-                const priceUsd = data?.market_data?.current_price?.usd ?? null;
+                const priceUsd = numberOrNull(
+                  asRecord(asRecord(data.market_data).current_price).usd,
+                );
                 const whale = await fetchWhaleData(input.ticker, priceUsd);
                 result.whale = whale;
                 const rawRow = createRawWhaleReplayRowFromToolResult({
@@ -313,8 +337,7 @@ export function createGetOnchainCryptoTool(dependencies: OnchainCryptoDependenci
           } else if (!globalRes.ok) {
             result.global = { error: `CoinGecko global endpoint returned ${globalRes.status}` };
           } else {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const globalData: any = await globalRes.json();
+            const globalData: unknown = await globalRes.json();
             result.global = extractGlobalMetrics(globalData);
           }
         }

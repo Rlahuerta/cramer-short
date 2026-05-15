@@ -160,6 +160,7 @@ const ReadFilingsInputSchema = z.object({
  * Two-LLM-call workflow: structured output planning, then tool-calling item selection.
  */
 export function createReadFilings(model: string): DynamicStructuredTool {
+  /** Creates the filing reader tool for extracting filing sections. */
   return new DynamicStructuredTool({
     name: 'read_filings',
     description: `Intelligent tool for reading SEC filing content. Takes a natural language query and retrieves full text from 10-K, 10-Q, or 8-K filings. Use for:

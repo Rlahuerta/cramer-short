@@ -19,7 +19,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
-import { DEFAULT_HISTORY_LIMIT, FULL_ANSWER_TURNS } from '../utils/history-context.js';
+import { DEFAULT_HISTORY_LIMIT, FULL_ANSWER_TURNS } from '../utils/parsing/history-context.js';
 import { SessionController } from '../controllers/session-controller.js';
 import { AgentRunnerController } from '../controllers/agent-runner.js';
 import { formatRelativeTime, createSessionSelector } from '../components/select-list.js';

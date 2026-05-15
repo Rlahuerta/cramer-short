@@ -8,9 +8,9 @@ import {
   buildIterationPrompt,
   loadSoulDocument,
 } from './prompts.js';
-import { extractTextContent, hasToolCalls, extractReasoningContent } from '../utils/ai-message.js';
+import { extractTextContent, hasToolCalls, extractReasoningContent } from '../utils/parsing/ai-message.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
-import { buildHistoryContext } from '../utils/history-context.js';
+import { buildHistoryContext } from '../utils/parsing/history-context.js';
 import { estimateTokens, CONTEXT_THRESHOLD, KEEP_TOOL_USES, getContextThreshold, getKeepToolUses } from '../utils/tokens.js';
 import { formatUserFacingError, isContextOverflowError } from '../utils/errors.js';
 import type { AgentConfig, AgentEvent, AnswerStartEvent, AnswerChunkEvent, ContextClearedEvent, ProgressEvent, TokenUsage } from '../agent/types.js';

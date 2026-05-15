@@ -97,6 +97,7 @@ export function createSkillTool(
   getSkillFn: GetSkillFn = getSkill,
   discoverSkillsFn: DiscoverSkillsFn = discoverSkills,
 ): DynamicStructuredTool {
+  /** Creates a project skill invocation tool. */
   return new DynamicStructuredTool({
     name: 'skill',
     description: 'Execute a skill to get specialized instructions for a task. Returns instructions to follow.',

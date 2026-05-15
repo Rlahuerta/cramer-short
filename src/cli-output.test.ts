@@ -11,7 +11,7 @@
  */
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { stripThinkingTags } from './agent/agent.js';
-import { formatDuration, formatExchangeForScrollback } from './utils/scrollback.js';
+import { formatDuration, formatExchangeForScrollback } from './utils/ui/scrollback.js';
 import type { HistoryItem } from './controllers/types.js';
 
 // Strip ANSI escape codes for structural assertions.

@@ -19,6 +19,7 @@ const SegmentedRevenuesInputSchema = z.object({
   limit: z.number().default(4).describe('The number of past periods to retrieve (default: 4). Increase when broader historical segment trends are required.'),
 });
 
+/** Fetches segmented revenue data for a company. */
 export const getSegmentedRevenues = new DynamicStructuredTool({
   name: 'get_segmented_revenues',
   description: `Provides a detailed breakdown of a company's revenue by operating segments, such as products, services, or geographic regions. Useful for analyzing the composition of a company's revenue.`,

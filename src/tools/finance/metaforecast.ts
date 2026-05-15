@@ -138,6 +138,10 @@ export async function fetchMetaforecastQuestions(
   const url = `${METAFORECAST_API}?query=${encodeURIComponent(query)}&limit=${limit}`;
   const res = await fetch(url, { signal: opts.signal });
   if (!res.ok) return [];
-  const json = await res.json().catch(() => null);
+  const json = await res.json().catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[metaforecast] failed to parse response JSON: ${msg}`);
+    return null;
+  });
   return parseMetaforecastResponse(json);
 }

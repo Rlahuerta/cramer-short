@@ -36,7 +36,7 @@ import {
   YES_BIAS_MULTIPLIER,
   type MarketInput,
   type ThresholdLadderPoint,
-} from '../../utils/ensemble.js';
+} from '../../utils/finance/ensemble.js';
 import {
   buildPriceDistributionChart,
   extractPriceThresholds as extractChartPriceThresholds,
@@ -1297,6 +1297,9 @@ function optionsLabel(skew: number): string {
 // Tool
 // ---------------------------------------------------------------------------
 
+/**
+ * Create the Polymarket forecast tool with injectable data sources for tests.
+ */
 export function createPolymarketForecastTool(dependencies: ForecastToolDependencies = {}) {
   const fetchMarkets = dependencies.fetchMarkets ?? fetchPolymarketMarkets;
   const fetchAnchorMarketsWithQueries = dependencies.fetchAnchorMarketsWithQueries ?? fetchPolymarketAnchorMarketsWithQueries;
@@ -1313,6 +1316,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
       appendReplayCachePolymarketCapture(capture);
     });
 
+  /** Creates the Polymarket forecast analysis tool. */
   return new DynamicStructuredTool({
     name: 'polymarket_forecast',
     description:
@@ -1910,4 +1914,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
   });
 }
 
+/**
+ * Default Polymarket forecast tool wired to live market, snapshot, and replay readers.
+ */
 export const polymarketForecastTool = createPolymarketForecastTool();

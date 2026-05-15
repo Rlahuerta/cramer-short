@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { runPython } from '../../utils/python-parity.js';
+import { runPython } from '../../utils/finance/python-parity.js';
 import { transformQToP, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix } from './rnd-integration.js';
 
 describe('TS/Python parity — transform_q_to_p', () => {

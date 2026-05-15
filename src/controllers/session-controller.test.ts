@@ -8,7 +8,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
-import { DEFAULT_HISTORY_LIMIT } from '../utils/history-context.js';
+import { DEFAULT_HISTORY_LIMIT } from '../utils/parsing/history-context.js';
 import { loadSession } from '../utils/session-store.js';
 import { SessionController } from './session-controller.js';
 import type { HistoryItem } from '../controllers/types.js';

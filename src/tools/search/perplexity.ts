@@ -1,7 +1,7 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
-import { logger } from '@/utils';
+import { logger } from '../../utils/logger.js';
 
 const PERPLEXITY_API_URL = 'https://api.perplexity.ai/chat/completions';
 const SONAR_MODEL = 'sonar';
@@ -48,6 +48,7 @@ async function callPerplexity(query: string): Promise<PerplexityCompletionRespon
   return response.json() as Promise<PerplexityCompletionResponse>;
 }
 
+/** Searches the web through Perplexity. */
 export const perplexitySearch = new DynamicStructuredTool({
   name: 'web_search',
   description:

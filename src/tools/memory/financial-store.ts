@@ -35,6 +35,7 @@ const schema = z.object({
   ),
 });
 
+/** Stores a durable financial insight in memory. */
 export const storeFinancialInsightTool = new DynamicStructuredTool({
   name: 'store_financial_insight',
   description: STORE_FINANCIAL_INSIGHT_DESCRIPTION,

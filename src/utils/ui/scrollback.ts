@@ -5,11 +5,11 @@ import type {
   ToolEndEvent,
   ToolErrorEvent,
   ToolStartEvent,
-} from '../agent/types.js';
-import type { HistoryItem } from '../controllers/types.js';
-import { theme } from '../theme.js';
+} from '../../agent/types.js';
+import type { HistoryItem } from '../../controllers/types.js';
+import { theme } from '../../theme.js';
 import { formatResponse } from './markdown-table.js';
-import { summarizeToolResult } from './tool-result-summary.js';
+import { summarizeToolResult } from '../parsing/tool-result-summary.js';
 
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;

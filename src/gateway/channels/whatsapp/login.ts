@@ -1,5 +1,5 @@
 import qrcode from 'qrcode-terminal';
-import { createWaSocket, getStatusCode, waitForWaConnection } from './session.js';
+import { createWaSocket, getStatusCode, waitForWaConnection, type WaSocket } from './session.js';
 import { formatError } from './error.js';
 
 export type LoginResult = {
@@ -20,6 +20,15 @@ function getErrorStatusCode(err: unknown): number | undefined {
     (err as { error?: { output?: { statusCode?: number } } })?.error?.output?.statusCode ??
     getStatusCode(err)
   );
+}
+
+function closeSocketSafely(sock: WaSocket, context: string): void {
+  try {
+    sock.ws.close();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Failed to close WhatsApp socket (${context}): ${message}`);
+  }
 }
 
 export async function loginWhatsApp(params: { authDir: string }): Promise<LoginResult> {
@@ -48,11 +57,7 @@ export async function loginWhatsApp(params: { authDir: string }): Promise<LoginR
     // Handle 515 "restart required" - WhatsApp asks for reconnection after pairing
     if (code === 515) {
       console.log('WhatsApp asked for restart (code 515); credentials saved. Retrying connection...');
-      try {
-        sock.ws.close();
-      } catch {
-        // ignore
-      }
+      closeSocketSafely(sock, 'restart retry');
 
       // Retry without QR - credentials are already saved from the first connection
       const retry = await createWaSocket({
@@ -68,11 +73,7 @@ export async function loginWhatsApp(params: { authDir: string }): Promise<LoginR
         return { phone };
       } finally {
         setTimeout(() => {
-          try {
-            retry.ws.close();
-          } catch {
-            // ignore
-          }
+          closeSocketSafely(retry, 'retry cleanup');
         }, 500);
       }
     }
@@ -83,12 +84,7 @@ export async function loginWhatsApp(params: { authDir: string }): Promise<LoginR
     throw new Error(formatted, { cause: err });
   } finally {
     setTimeout(() => {
-      try {
-        sock.ws.close();
-      } catch {
-        // ignore
-      }
+      closeSocketSafely(sock, 'login cleanup');
     }, 500);
   }
 }
-

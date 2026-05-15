@@ -23,6 +23,7 @@ const memorySearchSchema = z.object({
   query: z.string().describe('Natural language query for memory recall.'),
 });
 
+/** Searches indexed project memory content. */
 export const memorySearchTool = new DynamicStructuredTool({
   name: 'memory_search',
   description:
