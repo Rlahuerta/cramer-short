@@ -1663,6 +1663,9 @@ describe('computeMarkovDistribution trajectory mode', () => {
     });
     expect(result.trajectory).toBeDefined();
     expect(result.trajectory!.length).toBe(7);
+    expect(result.decisionSurface).toBe('calibrated');
+    expect(result.decisionDistribution).toEqual(result.distribution);
+    expect(result.decisionScenarios).toEqual(result.scenarios);
   });
 
   it('trajectory is undefined when trajectory=false', async () => {
@@ -1732,7 +1735,8 @@ describe('markovDistributionTool trajectory output', () => {
       polymarketMarkets: anchors,
       trajectory: true,
     });
-    expect(output).toContain('DAY PRICE TRAJECTORY');
+    expect(output).toContain('DAY PATH CONTEXT TRAJECTORY');
+    expect(output).toContain('Path context only');
     expect(output).toContain('Day │ Expected');
     expect(output).toContain('P(up)');
     expect(output).toContain('Return');

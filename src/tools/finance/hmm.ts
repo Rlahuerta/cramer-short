@@ -611,7 +611,7 @@ export function predict(
 // Matrix power (reused for n-step transition forecast)
 // ---------------------------------------------------------------------------
 
-function matPow(M: number[][], n: number): number[][] {
+export function matPow(M: number[][], n: number): number[][] {
   const size = M.length;
   let result: number[][] = Array.from({ length: size }, (_, i) =>
     Array.from({ length: size }, (_, j) => (i === j ? 1 : 0)),

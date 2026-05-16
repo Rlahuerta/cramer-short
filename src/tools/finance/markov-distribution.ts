@@ -492,6 +492,12 @@ export interface MarkovDistributionResult {
   currentPrice: number;
   horizon: number;
   distribution: MarkovDistributionPoint[];
+  /**
+   * Distribution used for the trade-facing decision surface. This usually
+   * matches `distribution`, but experimental ablations may substitute raw or
+   * blended probabilities for the decision card and scenario summary.
+   */
+  decisionDistribution: MarkovDistributionPoint[];
   /** Raw (pre-calibration) distribution — wider spread, used for CI extraction */
   rawDistribution: MarkovDistributionPoint[];
   /** Actionable Buy / Hold / Sell signal derived from the distribution. */
@@ -502,6 +508,13 @@ export interface MarkovDistributionResult {
    * guaranteed to be consistent with the distribution[] P(>Price) table.
    */
   scenarios: ScenarioProbabilities;
+  /**
+   * Scenario summary for the authoritative decision surface shown in the
+   * report and canonical payload.
+   */
+  decisionScenarios: ScenarioProbabilities;
+  /** Provenance for the decision surface shown in the report. */
+  decisionSurface: 'calibrated' | 'raw' | 'blend';
   /**
    * Prediction confidence score (0–1). Higher values indicate the model is more
    * decisive and historically more accurate. Combines:
@@ -4296,9 +4309,12 @@ export async function computeMarkovDistribution(params: {
     currentPrice,
     horizon,
     distribution,
+    decisionDistribution,
     rawDistribution,
     actionSignal,
     scenarios,
+    decisionScenarios,
+    decisionSurface: usePr3fBlend ? 'blend' : useRawDecision ? 'raw' : 'calibrated',
     predictionConfidence,
     trajectory: trajectoryResult,
     metadata: {
@@ -4734,7 +4750,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       horizon: result.horizon,
       actionSignal: sig,
       regimeState: m.regimeState,
-      scenarios: result.scenarios,
+      scenarios: result.decisionScenarios,
       bearishBreakRecommendationGateActive: m.bearishBreakRecommendationGateActive,
     });
     if (recommendationProvenanceNote) {
@@ -4766,12 +4782,17 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       whatToDo.push(`   Consider selling puts at $${fmt(lvl.stopLoss)} or calls at $${fmt(lvl.targetPrice)} to capture premium`);
     }
 
-    // --- Section 3: Scenario Probability Table (derived from CDF) ---
+    // --- Section 3: Scenario Probability Table (decision surface) ---
     const scenarioSection: string[] = [];
-    if (result.scenarios) {
-      const sc = result.scenarios;
+    if (result.decisionScenarios) {
+      const sc = result.decisionScenarios;
+      const decisionSurfaceLabel = result.decisionSurface === 'blend'
+        ? 'blended decision surface'
+        : result.decisionSurface === 'raw'
+          ? 'raw decision surface'
+          : 'calibrated decision surface';
       scenarioSection.push('');
-      scenarioSection.push('📊 Scenario Probabilities (from calibrated distribution)');
+      scenarioSection.push(`📊 Scenario Probabilities (${decisionSurfaceLabel})`);
       scenarioSection.push('─'.repeat(60));
       for (const b of sc.buckets) {
         const pctStr = (b.probability * 100).toFixed(1).padStart(5);
@@ -4847,7 +4868,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       '',
       'Price         P(>price)    90% CI                 Source',
       '─'.repeat(60),
-      ...result.distribution.map(d =>
+      ...result.decisionDistribution.map(d =>
         `$${d.price.toFixed(2).padStart(9)}   ${(d.probability * 100).toFixed(1).padStart(5)}%   `
         + `[${(d.lowerBound * 100).toFixed(1)}%–${(d.upperBound * 100).toFixed(1)}%]   ${d.source}`,
       ),
@@ -4858,8 +4879,9 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     if (result.trajectory && result.trajectory.length > 0) {
       const trajDays = result.trajectory.length;
       trajectorySection.push('');
-      trajectorySection.push(`═══ ${trajDays}-DAY PRICE TRAJECTORY: ${result.ticker} ═══`);
+      trajectorySection.push(`═══ ${trajDays}-DAY PATH CONTEXT TRAJECTORY: ${result.ticker} ═══`);
       trajectorySection.push(`Current: $${fmt(result.currentPrice)} | Latent regime: ${m.regimeState} | Confidence: ${result.predictionConfidence.toFixed(2)}`);
+      trajectorySection.push('Path context only — intermediate Monte Carlo path averages can diverge from the authoritative terminal decision surface above.');
       trajectorySection.push('');
       trajectorySection.push('Day │ Expected │     90% CI Range    │ P(up) │ Return');
       trajectorySection.push('────┼──────────┼─────────────────────┼───────┼────────');
@@ -4984,7 +5006,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
         ticker: result.ticker,
         currentPrice: result.currentPrice,
         horizon: result.horizon,
-        scenarios: fullCanonical ? result.scenarios : null,
+        scenarios: fullCanonical ? result.decisionScenarios : null,
         actionSignal: fullCanonical ? result.actionSignal : null,
         diagnostics: {
           totalAnchors: m.anchorCoverage.totalAnchors,
@@ -5009,6 +5031,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           originalStructuralBreakDivergence: m.originalStructuralBreakDivergence ?? null,
           predictionConfidence: result.predictionConfidence,
           recommendationProvenance: fullCanonical ? recommendationProvenanceNote ?? null : null,
+          decisionSurface: result.decisionSurface,
+          trajectoryInterpretation: result.trajectory ? 'path_context' : null,
           calibrationMode,
           anchorBypassApplied,
           status: contextOnlyCanonical ? 'context_only' : canEmitCanonical ? 'ok' : 'abstain',
@@ -5020,6 +5044,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
         },
       },
       distribution: canEmitCanonical ? result.distribution : null,
+      decisionDistribution: canEmitCanonical ? result.decisionDistribution : null,
       trajectory: fullCanonical ? (result.trajectory ?? null) : null,
     });
   },

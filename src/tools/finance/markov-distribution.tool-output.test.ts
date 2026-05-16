@@ -217,6 +217,7 @@ describe('markov_distribution tool output envelope', () => {
         { question: 'Will the price of Bitcoin be above $80,000 on April 18?', probability: 0.62, volume24h: 25000, ageDays: 5, endDate: new Date(now + 3 * day).toISOString() },
         { question: 'Will the price of Bitcoin be below $78,000 on April 19?', probability: 0.25, volume24h: 20000, ageDays: 5, endDate: new Date(now + 4 * day).toISOString() },
       ],
+      fetchPolymarketAnchorMarketsWithQueries: async () => [],
     }));
 
     const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
@@ -2224,8 +2225,42 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.actionSignal).toBeDefined();
     expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
     expect(parsed.data.canonical.diagnostics).toHaveProperty('recommendationProvenance');
+    expect(parsed.data.canonical.diagnostics.decisionSurface).toBe('calibrated');
+    expect(parsed.data.canonical.diagnostics.trajectoryInterpretation).toBeNull();
     expect(parsed.data.report).toContain('Latent regime:');
     expect(Array.isArray(parsed.data.distribution)).toBe(true);
+    expect(Array.isArray(parsed.data.decisionDistribution)).toBe(true);
+  });
+
+  it('labels trajectory output as path context while keeping canonical decision metadata explicit', async () => {
+    const prices: number[] = [];
+    let p = 100;
+    for (let i = 0; i < 91; i++) {
+      p *= 1 + Math.sin(i * 0.15) * 0.006;
+      prices.push(Math.round(p * 100) / 100);
+    }
+    const currentPrice = prices[prices.length - 1];
+    const result = await markovDistributionTool.func({
+      ticker: 'TEST_TRAJECTORY',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [
+        { question: `Will TEST_TRAJECTORY be above $${Math.round(currentPrice * 0.97)} on April 9?`, probability: 0.72, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 5 },
+        { question: `Will TEST_TRAJECTORY be above $${Math.round(currentPrice)} on April 9?`, probability: 0.50, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 5 },
+        { question: `Will TEST_TRAJECTORY be above $${Math.round(currentPrice * 1.03)} on April 9?`, probability: 0.28, volume: 5000, createdAt: FIXED_TEST_NOW_MS - MS_PER_DAY * 5 },
+      ],
+      trajectory: true,
+      trajectoryDays: 7,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data.report).toContain('DAY PATH CONTEXT TRAJECTORY');
+    expect(parsed.data.report).toContain('Path context only');
+    expect(parsed.data.canonical.diagnostics.decisionSurface).toBe('calibrated');
+    expect(parsed.data.canonical.diagnostics.trajectoryInterpretation).toBe('path_context');
+    expect(Array.isArray(parsed.data.decisionDistribution)).toBe(true);
+    expect(Array.isArray(parsed.data.trajectory)).toBe(true);
   });
 
   it('emits context-only output when short-horizon BTC has good anchors but validation is unavailable', async () => {
@@ -2843,7 +2878,4 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.report).not.toContain('commodity bypass');
       expect(parsed.data.report).not.toContain('model-only commodity emission');
       expect(parsed.data.report).not.toContain('GLD');
-      expect(parsed.data.report).not.toContain('gold');
-    });
-  });
-});
+      expec
