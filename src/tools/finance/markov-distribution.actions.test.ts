@@ -395,6 +395,26 @@ describe('computeActionSignal', () => {
     expect(sig.recommendationSource).toBe('short_horizon_scenario');
   });
 
+  it('keeps short-horizon crypto HOLD when weak bearish pUp conflicts with positive expected return', () => {
+    const dist: MarkovDistributionPoint[] = [
+      { price: 98,  probability: 1.00, lowerBound: 0.96, upperBound: 1.00, source: 'markov' },
+      { price: 99,  probability: 0.60, lowerBound: 0.56, upperBound: 0.64, source: 'markov' },
+      { price: 100, probability: 0.478, lowerBound: 0.44, upperBound: 0.52, source: 'markov' },
+      { price: 101, probability: 0.38, lowerBound: 0.34, upperBound: 0.42, source: 'markov' },
+      { price: 103, probability: 0.00, lowerBound: 0.00, upperBound: 0.04, source: 'markov' },
+    ];
+    const scenarios = computeScenarioProbabilities(dist, 100);
+
+    const sig = computeActionSignal(dist, 100, 0.05, 0.03, 2, 0.02, scenarios, 'crypto');
+
+    expect(scenarios.pUp).toBeCloseTo(0.478);
+    expect(sig.expectedReturn).toBeGreaterThan(0);
+    expect(sig.riskRewardRatio).toBeGreaterThan(1);
+    expect(sig.recommendation).toBe('HOLD');
+    expect(sig.baseRecommendation).toBe('HOLD');
+    expect(sig.recommendationSource).toBe('expected_return');
+  });
+
   it('keeps the non-target short-horizon equity path unchanged for the same bullish setup', () => {
     const dist: MarkovDistributionPoint[] = [
       { price: 97,  probability: 0.95, lowerBound: 0.90, upperBound: 1.00, source: 'markov' },

@@ -2650,7 +2650,13 @@ export function computeActionSignal(
 
   const shortHorizonCrypto = assetType === 'crypto' && horizon <= 14;
   if (shortHorizonCrypto && recommendation === 'HOLD' && scenarios) {
-    recommendation = scenarios.pUp >= 0.50 ? 'BUY' : 'SELL';
+    const scenarioRecommendation =
+      scenarios.pUp >= 0.55 && expectedReturn >= 0 && riskRewardRatio >= 1
+        ? 'BUY'
+        : scenarios.pUp <= 0.45 && expectedReturn <= 0 && riskRewardRatio <= 1
+          ? 'SELL'
+          : 'HOLD';
+    recommendation = scenarioRecommendation;
     if (recommendation !== baseRecommendation) {
       recommendationSource = 'short_horizon_scenario';
     }
@@ -2666,8 +2672,11 @@ export function computeActionSignal(
     const downScenarios = (scenarios.buckets[0]?.probability ?? 0) + (scenarios.buckets[1]?.probability ?? 0);
 
     if (recommendation === 'BUY') {
-      // Gate 1: P(up) < 50% → CDF says more likely to go down than up → cannot be BUY
-      if (pUp < 0.50) {
+      // Gate 1: only a clearly bearish CDF plus unfavorable reward/risk can veto BUY.
+      // Near-coinflip P(up) can coexist with positive expected return in skewed
+      // distributions, so weak median/mean disagreement should lower confidence
+      // rather than flip the trade side.
+      if (pUp < 0.45 && riskRewardRatio < 1) {
         recommendation = 'HOLD';
       }
       // Gate 2: downside scenarios exceed upside by >5pp → bearish tilt → downgrade
@@ -2675,8 +2684,8 @@ export function computeActionSignal(
         recommendation = 'HOLD';
       }
     } else if (recommendation === 'SELL') {
-      // Mirror: P(up) > 50% → more likely up → cannot be SELL
-      if (pUp > 0.50) {
+      // Mirror: only a clearly bullish CDF plus favorable reward/risk can veto SELL.
+      if (pUp > 0.55 && riskRewardRatio > 1) {
         recommendation = 'HOLD';
       }
       // Mirror: upside scenarios exceed downside by >5pp → bullish tilt → downgrade
