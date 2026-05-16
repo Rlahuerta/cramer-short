@@ -38,6 +38,7 @@ export async function getFilingItemTypes(): Promise<FilingItemTypes> {
 const FilingsInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch filings for. For example, 'AAPL' for Apple."),
   filing_type: z
     .array(z.enum(['10-K', '10-Q', '8-K']))
@@ -70,14 +71,15 @@ export const getFilings = new DynamicStructuredTool({
 });
 
 const Filing10KItemsInputSchema = z.object({
-  ticker: z.string().describe("The stock ticker symbol. For example, 'AAPL' for Apple."),
+  ticker: z.string().max(128).describe("The stock ticker symbol. For example, 'AAPL' for Apple."),
   accession_number: z
     .string()
+    .max(64)
     .describe(
       "The SEC accession number for the 10-K filing. For example, '0000320193-24-000123'. Can be retrieved from the get_filings tool."
     ),
   items: z
-    .array(z.string())
+    .array(z.string().max(64))
     .optional()
     .describe(
       "Optional list of specific item names to retrieve. If omitted, returns all items. Use exact item names from the provided list (e.g., 'Item-1', 'Item-1A', 'Item-7')."
@@ -103,14 +105,15 @@ export const get10KFilingItems = new DynamicStructuredTool({
 });
 
 const Filing10QItemsInputSchema = z.object({
-  ticker: z.string().describe("The stock ticker symbol. For example, 'AAPL' for Apple."),
+  ticker: z.string().max(128).describe("The stock ticker symbol. For example, 'AAPL' for Apple."),
   accession_number: z
     .string()
+    .max(64)
     .describe(
       "The SEC accession number for the 10-Q filing. For example, '0000320193-24-000123'. Can be retrieved from the get_filings tool."
     ),
   items: z
-    .array(z.string())
+    .array(z.string().max(64))
     .optional()
     .describe(
       "Optional list of specific item names to retrieve. If omitted, returns all items. Use exact item names from the provided list (e.g., 'Part-1,Item-1', 'Part-1,Item-2')."
@@ -136,9 +139,10 @@ export const get10QFilingItems = new DynamicStructuredTool({
 });
 
 const Filing8KItemsInputSchema = z.object({
-  ticker: z.string().describe("The stock ticker symbol. For example, 'AAPL' for Apple."),
+  ticker: z.string().max(128).describe("The stock ticker symbol. For example, 'AAPL' for Apple."),
   accession_number: z
     .string()
+    .max(64)
     .describe(
       "The SEC accession number for the 8-K filing. For example, '0000320193-24-000123'. This can be retrieved from the get_filings tool."
     ),
@@ -160,4 +164,3 @@ export const get8KFilingItems = new DynamicStructuredTool({
     return formatToolResult(data, [url]);
   },
 });
-

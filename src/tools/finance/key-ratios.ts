@@ -9,6 +9,7 @@ const REDUNDANT_FINANCIAL_FIELDS = ['accession_number', 'currency', 'period'] as
 const KeyRatiosInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch key ratios for. For example, 'AAPL' for Apple."),
 });
 
@@ -45,6 +46,7 @@ export const getKeyRatios = new DynamicStructuredTool({
 const HistoricalKeyRatiosInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The stock ticker symbol to fetch historical key ratios for. For example, 'AAPL' for Apple."
     ),
@@ -60,24 +62,29 @@ const HistoricalKeyRatiosInputSchema = z.object({
     .describe('The number of past financial statements to retrieve.'),
   report_period: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for key ratios with an exact report period date (YYYY-MM-DD).'),
   report_period_gt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for key ratios with report periods after this date (YYYY-MM-DD).'),
   report_period_gte: z
     .string()
+    .max(32)
     .optional()
     .describe(
       'Filter for key ratios with report periods on or after this date (YYYY-MM-DD).'
     ),
   report_period_lt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for key ratios with report periods before this date (YYYY-MM-DD).'),
   report_period_lte: z
     .string()
+    .max(32)
     .optional()
     .describe(
       'Filter for key ratios with report periods on or before this date (YYYY-MM-DD).'

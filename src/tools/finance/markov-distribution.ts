@@ -4465,18 +4465,18 @@ Set trajectory=true for a day-by-day price forecast with expected price, 90% CI,
 Use trajectoryDays to control the number of days (1–30, default=horizon).
 `.trim(),
   schema: z.object({
-    ticker: z.string().describe('Stock/ETF/commodity ticker symbol, e.g. NVDA, SPY, BTC-USD, GLD. For commodities, prefer the liquid ETF (GLD for gold, SLV for silver, USO for oil) over futures tickers.'),
+    ticker: z.string().max(128).describe('Stock/ETF/commodity ticker symbol, e.g. NVDA, SPY, BTC-USD, GLD. For commodities, prefer the liquid ETF (GLD for gold, SLV for silver, USO for oil) over futures tickers.'),
     horizon: z.number().int().min(1).max(90).describe('Forecast horizon in trading days'),
     currentPrice: z.number().optional().describe('Current price (fetched automatically if omitted)'),
     historicalPrices: z.array(z.number()).optional().describe(
       'Daily close prices oldest-first. Auto-fetched if omitted or empty. Minimum 10 required, 30+ recommended.',
     ),
     polymarketMarkets: z.array(z.object({
-      question:    z.string(),
+      question:    z.string().max(10_000),
       probability: z.number().min(0).max(1),
       volume:      z.number().optional(),
-      createdAt:   z.union([z.string(), z.number()]).optional(),
-      endDate:     z.string().nullable().optional(),
+      createdAt:   z.union([z.string().max(64), z.number()]).optional(),
+      endDate:     z.string().max(64).nullable().optional(),
     })).optional().default([]).describe('Polymarket markets with dollar price thresholds (optional, defaults to empty)'),
     sentiment: z.object({
       bullish: z.number().min(0).max(100),

@@ -8,6 +8,7 @@ const REDUNDANT_FINANCIAL_FIELDS = ['accession_number', 'currency', 'period'] as
 const SegmentedRevenuesInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The stock ticker symbol to fetch segmented revenues for. For example, 'AAPL' for Apple."
     ),
@@ -37,4 +38,3 @@ export const getSegmentedRevenues = new DynamicStructuredTool({
     );
   },
 });
-

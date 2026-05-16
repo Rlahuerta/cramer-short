@@ -647,6 +647,14 @@ function assertSafeProfileCommand(command: ForecastLabCommand): void {
   }
 }
 
+/**
+ * Create a forecast-lab command runner using the provided spawn function.
+ *
+ * **SECURITY NOTE**: The runner uses `shell: true` for the repo-owned profile
+ * command strings in profiles.ts. assertSafeProfileCommand() rejects shell
+ * metacharacters and high-risk git commands; do not pass user-authored commands
+ * to this runner.
+ */
 export function createForecastLabCommandRunner(spawnProcess: typeof spawn): ForecastLabCommandRunner {
   return async (command, context) => {
     assertSafeProfileCommand(command);

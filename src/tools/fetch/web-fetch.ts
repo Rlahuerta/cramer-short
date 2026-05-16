@@ -450,7 +450,7 @@ export const webFetchTool = new DynamicStructuredTool({
   description:
     'Fetch and extract readable content from a URL (HTML → markdown/text). Use for lightweight page access without browser automation.',
   schema: z.object({
-    url: z.string().describe('HTTP or HTTPS URL to fetch.'),
+    url: z.string().max(4096).describe('HTTP or HTTPS URL to fetch.'),
     extractMode: z
       .enum(['markdown', 'text'])
       .optional()

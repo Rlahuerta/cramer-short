@@ -8,6 +8,7 @@ import { formatToolResult } from '../types.js';
 const CryptoPriceSnapshotInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The crypto ticker symbol to fetch the price snapshot for. For example, 'BTC-USD' for Bitcoin."
     ),
@@ -43,6 +44,7 @@ export const getCryptoPriceSnapshot = new DynamicStructuredTool({
 const CryptoPricesInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The crypto ticker symbol to fetch aggregated prices for. For example, 'BTC-USD' for Bitcoin."
     ),
@@ -54,8 +56,8 @@ const CryptoPricesInputSchema = z.object({
     .number()
     .default(1)
     .describe('Multiplier for the interval. Defaults to 1.'),
-  start_date: z.string().describe('Start date in YYYY-MM-DD format. Required.'),
-  end_date: z.string().describe('End date in YYYY-MM-DD format. Required.'),
+  start_date: z.string().max(32).describe('Start date in YYYY-MM-DD format. Required.'),
+  end_date: z.string().max(32).describe('End date in YYYY-MM-DD format. Required.'),
 });
 
 /** Fetches historical crypto prices for a ticker. */

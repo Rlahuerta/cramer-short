@@ -30,8 +30,8 @@ Create or overwrite files in the local workspace or home directory.
 `.trim();
 
 const writeFileSchema = z.object({
-  path: z.string().describe('Path to the file to write (relative, absolute, or ~/... home-relative).'),
-  content: z.string().describe('Content to write to the file.'),
+  path: z.string().max(4096).describe('Path to the file to write (relative, absolute, or ~/... home-relative).'),
+  content: z.string().max(100_000).describe('Content to write to the file.'),
 });
 
 /** Writes UTF-8 text content to disk. */

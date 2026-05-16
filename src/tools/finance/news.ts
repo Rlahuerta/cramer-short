@@ -6,6 +6,7 @@ import { formatToolResult } from '../types.js';
 const CompanyNewsInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch company news for. For example, 'AAPL' for Apple."),
   limit: z
     .number()

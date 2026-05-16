@@ -20,9 +20,10 @@ Fetches earnings call transcripts for a stock from SEC EDGAR 8-K filings. Return
 `.trim();
 
 const EarningsTranscriptInputSchema = z.object({
-  ticker: z.string().describe("Stock ticker symbol, e.g. 'AAPL'"),
+  ticker: z.string().max(128).describe("Stock ticker symbol, e.g. 'AAPL'"),
   quarter: z
     .string()
+    .max(32)
     .optional()
     .describe("Quarter filter e.g. 'Q1 2025'. Omit for most recent."),
 });

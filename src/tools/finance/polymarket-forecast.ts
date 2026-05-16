@@ -1153,7 +1153,7 @@ polymarket_forecast(NVDA, current_price=135.50, fundamental_return=0.18, sentime
 // ---------------------------------------------------------------------------
 
 const schema = z.object({
-  ticker: z.string().describe('Asset ticker or name, e.g. "NVDA", "BTC", "GLD"'),
+  ticker: z.string().max(128).describe('Asset ticker or name, e.g. "NVDA", "BTC", "GLD"'),
   horizon_days: z.number().int().min(1).max(365).default(7)
     .describe('Forecast horizon in days (1–365). Default: 7. Polymarket has markets from 1 day to 12 months — all are valid. Signal quality is highest for 1–90 day horizons.'),
   current_price: z.number().optional()

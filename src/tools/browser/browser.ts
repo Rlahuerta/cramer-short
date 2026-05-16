@@ -259,9 +259,9 @@ async function takeSnapshot(p: Page, maxChars?: number): Promise<{ snapshot: str
 // Schema for the act action's request object
 const actRequestSchema = z.object({
   kind: z.enum(['click', 'type', 'press', 'hover', 'scroll', 'wait']).describe('The type of interaction'),
-  ref: z.string().optional().describe('Element ref from snapshot (e.g., e12)'),
-  text: z.string().optional().describe('Text for type action'),
-  key: z.string().optional().describe('Key for press action (e.g., Enter, Tab)'),
+  ref: z.string().max(128).optional().describe('Element ref from snapshot (e.g., e12)'),
+  text: z.string().max(10_000).optional().describe('Text for type action'),
+  key: z.string().max(128).optional().describe('Key for press action (e.g., Enter, Tab)'),
   direction: z.enum(['up', 'down']).optional().describe('Scroll direction'),
   timeMs: z.number().optional().describe('Wait time in milliseconds'),
 });
@@ -272,7 +272,7 @@ export const browserTool = new DynamicStructuredTool({
   description: 'Navigate websites, read content, and interact with pages. Use for accessing company websites, earnings reports, and dynamic content.',
   schema: z.object({
     action: z.enum(['navigate', 'open', 'snapshot', 'act', 'read', 'close']).describe('The browser action to perform'),
-    url: z.string().optional().describe('URL for navigate action'),
+    url: z.string().max(4096).optional().describe('URL for navigate action'),
     maxChars: z.number().optional().describe('Max characters for snapshot (default 50000)'),
     request: actRequestSchema.optional().describe('Request object for act action'),
   }),

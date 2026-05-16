@@ -130,7 +130,7 @@ async function fetchWhaleData(
 }
 
 const OnchainCryptoInputSchema = z.object({
-  ticker: z.string().describe("Crypto ticker e.g. 'BTC', 'ETH', 'SOL'"),
+  ticker: z.string().max(128).describe("Crypto ticker e.g. 'BTC', 'ETH', 'SOL'"),
   metrics: z
     .array(z.enum(['market', 'sentiment', 'developer', 'community', 'global', 'whale']))
     .default(['market', 'sentiment'])

@@ -7,7 +7,7 @@ import chalk from 'chalk';
 // ---------------------------------------------------------------------------
 
 export const ThoughtSchema = z.object({
-  thought: z.string().describe('Your current thinking step'),
+  thought: z.string().max(50_000).describe('Your current thinking step'),
   nextThoughtNeeded: z
     .boolean()
     .describe('Whether another thought step is needed'),
@@ -39,6 +39,7 @@ export const ThoughtSchema = z.object({
     .describe('Branching point thought number when exploring an alternative path'),
   branchId: z
     .string()
+    .max(128)
     .optional()
     .describe('Identifier for the current branch'),
   needsMoreThoughts: z

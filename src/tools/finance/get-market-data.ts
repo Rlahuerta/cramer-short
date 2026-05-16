@@ -175,7 +175,7 @@ Call the appropriate tool(s) now.`;
 
 // Input schema for the get_market_data tool
 const GetMarketDataInputSchema = z.object({
-  query: z.string().describe('Natural language query about market data, prices, news, or insider activity'),
+  query: z.string().max(10_000).describe('Natural language query about market data, prices, news, or insider activity'),
 });
 
 /**

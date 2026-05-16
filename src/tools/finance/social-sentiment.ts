@@ -388,6 +388,7 @@ function formatSentimentReport(
 const schema = z.object({
   ticker: z
     .string()
+    .max(128)
     .optional()
     .describe(
       'Stock or crypto ticker symbol (e.g. "AAPL", "BTC", "ETH", "SPY"). ' +
@@ -395,6 +396,7 @@ const schema = z.object({
     ),
   query: z
     .string()
+    .max(10_000)
     .optional()
     .describe(
       'Free-text search topic when no ticker applies, e.g. "Federal Reserve rate cut", ' +

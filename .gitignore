@@ -59,7 +59,9 @@ yarn-error.log*
 references/**/*.pdf
 
 logs/
+coverage/
 coverage.json
+*.log
 cramer-short-export-*.json
 cramer-short-export-*.md
 .cramer-short/exports/
@@ -68,7 +70,6 @@ CODE_REVIEW_REPORT.md
 TEST_COVERAGE_VERIFICATION.md
 *.pile
 /.claude
-fmp-quota.json
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/

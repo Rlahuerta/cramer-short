@@ -190,7 +190,7 @@ export const bitmexMarketTool = new DynamicStructuredTool({
   name: 'bitmex_market',
   description: BITMEX_MARKET_DESCRIPTION,
   schema: z.object({
-    tickers: z.array(z.string()).min(1).describe('BitMEX symbols or asset tickers, e.g. ["SOLUSD", "HYPEUSDT", "BTC-USD"].'),
+    tickers: z.array(z.string().max(128)).min(1).describe('BitMEX symbols or asset tickers, e.g. ["SOLUSD", "HYPEUSDT", "BTC-USD"].'),
     days: z.number().int().min(1).max(750).optional().default(120).describe('Number of 1d bucketed closes to fetch for each resolved BitMEX instrument.'),
   }),
   func: async (input) => {

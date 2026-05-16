@@ -40,6 +40,7 @@ Fetches the data needed for a CAPM-based WACC calculation and returns the comput
 const WaccInputsSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("Stock ticker symbol, e.g. 'AAPL'."),
   cost_of_debt: z
     .number()

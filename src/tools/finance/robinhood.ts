@@ -6,8 +6,8 @@ import { getQuote, getFundamentals, getQuotes, getFundamentalsBatch } from './ro
 const RobinhoodQuoteInputSchema = z.object({
   ticker: z
     .union([
-      z.string().describe("Stock ticker symbol, e.g. 'AAPL'."),
-      z.array(z.string()).describe("List of stock ticker symbols for batch lookup, e.g. ['AAPL', 'MSFT']."),
+      z.string().max(128).describe("Stock ticker symbol, e.g. 'AAPL'."),
+      z.array(z.string().max(128)).describe("List of stock ticker symbols for batch lookup, e.g. ['AAPL', 'MSFT']."),
     ])
     .describe('A single ticker or a list of tickers to fetch quotes for.'),
 });
@@ -15,8 +15,8 @@ const RobinhoodQuoteInputSchema = z.object({
 const RobinhoodFundamentalsInputSchema = z.object({
   ticker: z
     .union([
-      z.string().describe("Stock ticker symbol, e.g. 'AAPL'."),
-      z.array(z.string()).describe("List of stock ticker symbols for batch lookup, e.g. ['AAPL', 'MSFT']."),
+      z.string().max(128).describe("Stock ticker symbol, e.g. 'AAPL'."),
+      z.array(z.string().max(128)).describe("List of stock ticker symbols for batch lookup, e.g. ['AAPL', 'MSFT']."),
     ])
     .describe('A single ticker or a list of tickers to fetch fundamentals for.'),
 });

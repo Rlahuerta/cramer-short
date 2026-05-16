@@ -30,7 +30,7 @@
       },
       "devDependencies": {
         "@types/better-sqlite3": "^7.6.13",
-        "@types/bun": "latest",
+        "@types/bun": "1.3.3",
         "@types/qrcode-terminal": "^0.12.2",
         "dependency-cruiser": "^17.4.0",
         "patch-package": "^8.0.1",

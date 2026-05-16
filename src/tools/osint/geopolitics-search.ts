@@ -77,7 +77,7 @@ function formatUnknownError(error: unknown): string {
 // ──────────────────────────────────────────────────────────────────────────────
 
 const INPUT_SCHEMA = z.object({
-  topic: z.string().describe(
+  topic: z.string().max(10_000).describe(
     'Geopolitical topic to research, e.g. "Russia Ukraine ceasefire", "China Taiwan military exercises", "Middle East oil supply"'
   ),
   categories: z
@@ -95,7 +95,7 @@ const INPUT_SCHEMA = z.object({
     .default('1d')
     .describe('How far back to search: 1d = last 24h, 3d = 72h, 7d = last week'),
   watchlistTickers: z
-    .array(z.string())
+    .array(z.string().max(128))
     .optional()
     .describe('User watchlist tickers to cross-reference against asset implications'),
   limit: z

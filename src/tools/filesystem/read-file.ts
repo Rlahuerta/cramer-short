@@ -31,7 +31,7 @@ Read file contents from the local workspace.
 `.trim();
 
 const readFileSchema = z.object({
-  path: z.string().describe('Path to the file to read (relative or absolute).'),
+  path: z.string().max(4096).describe('Path to the file to read (relative or absolute).'),
   offset: z.number().optional().describe('1-indexed line offset to start reading from.'),
   limit: z.number().optional().describe('Maximum number of lines to read from the offset.'),
 });

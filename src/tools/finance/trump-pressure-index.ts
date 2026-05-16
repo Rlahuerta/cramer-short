@@ -970,6 +970,7 @@ Inspired by Deutsche Bank's methodology (Maximilian Uleer), extended with Polyma
 const TrumpPressureInputSchema = z.object({
   query: z
     .string()
+    .max(10_000)
     .optional()
     .describe('Optional context query (e.g. "tariff pressure", "market stress"). Currently unused but reserved for future filtering.'),
 });

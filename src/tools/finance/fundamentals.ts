@@ -18,6 +18,7 @@ function logFallbackDebug(context: string, error: unknown): void {
 const FinancialStatementsInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The stock ticker symbol to fetch financial statements for. For example, 'AAPL' for Apple."
     ),
@@ -34,20 +35,24 @@ const FinancialStatementsInputSchema = z.object({
     ),
   report_period_gt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for financial statements with report periods after this date (YYYY-MM-DD).'),
   report_period_gte: z
     .string()
+    .max(32)
     .optional()
     .describe(
       'Filter for financial statements with report periods on or after this date (YYYY-MM-DD).'
     ),
   report_period_lt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for financial statements with report periods before this date (YYYY-MM-DD).'),
   report_period_lte: z
     .string()
+    .max(32)
     .optional()
     .describe(
       'Filter for financial statements with report periods on or before this date (YYYY-MM-DD).'

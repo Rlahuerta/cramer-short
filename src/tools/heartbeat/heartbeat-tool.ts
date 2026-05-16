@@ -34,6 +34,7 @@ const heartbeatSchema = z.object({
   action: z.enum(['view', 'update']),
   content: z
     .string()
+    .max(100_000)
     .optional()
     .describe('New HEARTBEAT.md content (required for update)'),
 });

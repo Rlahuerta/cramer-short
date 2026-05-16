@@ -84,6 +84,7 @@ export const fmpApi = {
 const FmpInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "Stock ticker symbol, including exchange suffix for international stocks " +
         "(e.g. 'VWS.CO', 'AZN.L', 'SAP.DE', 'AAPL').",

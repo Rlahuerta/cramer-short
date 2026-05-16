@@ -11,6 +11,7 @@ type RobinhoodQuoteFn = (ticker: string) => Promise<RobinhoodQuote | null>;
 const StockPriceInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch current price for. For example, 'AAPL' for Apple."),
 });
 
@@ -70,13 +71,14 @@ export function makeGetStockPrice(
 const StockPricesInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch historical prices for. For example, 'AAPL' for Apple."),
   interval: z
     .enum(['day', 'week', 'month', 'year'])
     .default('day')
     .describe("The time interval for price data. Defaults to 'day'."),
-  start_date: z.string().describe('Start date in YYYY-MM-DD format. Required.'),
-  end_date: z.string().describe('End date in YYYY-MM-DD format. Required.'),
+  start_date: z.string().max(32).describe('Start date in YYYY-MM-DD format. Required.'),
+  end_date: z.string().max(32).describe('End date in YYYY-MM-DD format. Required.'),
 });
 
 /** Fetches historical stock prices for a ticker. */

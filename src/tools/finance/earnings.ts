@@ -6,6 +6,7 @@ import { formatToolResult } from '../types.js';
 const EarningsInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch the latest earnings for. For example, 'AAPL' for Apple."),
 });
 

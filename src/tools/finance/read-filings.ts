@@ -49,6 +49,7 @@ const FilingTypeSchema = z.enum(['10-K', '10-Q', '8-K']);
 const FilingPlanSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe('Stock ticker symbol (e.g. AAPL, TSLA, MSFT)'),
   filing_types: z
     .array(FilingTypeSchema)
@@ -152,7 +153,7 @@ Call the appropriate filing items tool(s) now.`;
 }
 
 const ReadFilingsInputSchema = z.object({
-  query: z.string().describe('Natural language query about SEC filing content to read'),
+  query: z.string().max(10_000).describe('Natural language query about SEC filing content to read'),
 });
 
 /**

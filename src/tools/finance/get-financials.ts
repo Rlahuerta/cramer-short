@@ -185,7 +185,7 @@ Call the appropriate tool(s) now.`;
 
 // Input schema for the get_financials tool
 const GetFinancialsInputSchema = z.object({
-  query: z.string().describe('Natural language query about financial data'),
+  query: z.string().max(10_000).describe('Natural language query about financial data'),
 });
 
 /**

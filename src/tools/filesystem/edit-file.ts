@@ -37,9 +37,9 @@ Perform precise in-place text edits in a local workspace file.
 `.trim();
 
 const editFileSchema = z.object({
-  path: z.string().describe('Path to the file to edit (relative or absolute).'),
-  old_text: z.string().describe('Exact text to find and replace.'),
-  new_text: z.string().describe('New text to replace old_text with.'),
+  path: z.string().max(4096).describe('Path to the file to edit (relative or absolute).'),
+  old_text: z.string().max(50_000).describe('Exact text to find and replace.'),
+  new_text: z.string().max(50_000).describe('New text to replace old_text with.'),
 });
 
 /** Edits an existing file using an exact string replacement. */

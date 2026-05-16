@@ -207,6 +207,7 @@ const schema = z.object({
     ),
   query: z
     .string()
+    .max(10_000)
     .optional()
     .describe(
       'For search: the search query (supports X operators like from:, -is:retweet, OR, etc.). ' +
@@ -214,6 +215,7 @@ const schema = z.object({
     ),
   username: z
     .string()
+    .max(128)
     .optional()
     .describe('For profile: the X/Twitter username (without @)'),
   sort: z
@@ -223,6 +225,7 @@ const schema = z.object({
     .describe('Sort order for results (default: likes)'),
   since: z
     .string()
+    .max(64)
     .optional()
     .describe('Time filter: "1h", "3h", "12h", "1d", "7d" or ISO 8601 timestamp'),
   min_likes: z

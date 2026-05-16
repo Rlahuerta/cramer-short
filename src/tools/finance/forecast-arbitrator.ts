@@ -185,7 +185,7 @@ function optionalString() {
     if (value === null || value === undefined) return undefined;
     if (typeof value === 'string') return value;
     return JSON.stringify(value);
-  }, z.string().optional()).optional();
+  }, z.string().max(10_000).optional()).optional();
 }
 
 function optionalDirection() {
@@ -219,7 +219,7 @@ function optionalConformalMode() {
 }
 
 const schema = z.object({
-  ticker: z.string().describe('Asset ticker, e.g. BTC, BTC-USD, ETH, SPY.'),
+  ticker: z.string().max(128).describe('Asset ticker, e.g. BTC, BTC-USD, ETH, SPY.'),
   horizon_days: z.coerce.number().int().min(1).max(365).default(1),
   current_price: optionalNumber({ positive: true }),
   leverage: optionalNumber({ positive: true, max: 125 }).default(1),
@@ -252,11 +252,11 @@ const schema = z.object({
     confidence: optionalNumber({ min: 0, max: 1 }),
     quality_score: optionalNumber({ min: 0, max: 100 }),
     quality_grade: optionalString(),
-    querySet: z.array(z.coerce.string()).optional(),
+    querySet: z.array(z.coerce.string().max(10_000)).optional(),
     markets: z.array(z.object({
       marketId: optionalString(),
       assetId: optionalString(),
-      question: z.coerce.string(),
+      question: z.coerce.string().max(10_000),
       probability: optionalNumber({ min: 0, max: 1 }),
       semantics: optionalSemantics(),
       price: optionalNumber({ positive: true }),
@@ -276,7 +276,7 @@ const schema = z.object({
     observationWindowEnd: optionalString(),
     txCount: optionalNumber({ min: 0 }),
     notionalUsd: optionalNumber({ min: 0 }),
-    txHashes: z.array(z.coerce.string()).optional(),
+    txHashes: z.array(z.coerce.string().max(256)).optional(),
   }).optional(),
 });
 

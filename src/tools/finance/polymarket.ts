@@ -1088,7 +1088,7 @@ export const polymarketTool = new DynamicStructuredTool({
   name: 'polymarket_search',
   description: 'Search Polymarket prediction markets for crowd-sourced probability estimates on macro, geopolitical, and financial events.',
   schema: z.object({
-    query: z.string().describe(
+    query: z.string().max(10_000).describe(
       'Natural language search query, e.g. "Fed rate cut 2026", "US recession", "tariffs", "OPEC oil production"',
     ),
     limit: z.number().optional().default(8).describe(

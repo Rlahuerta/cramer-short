@@ -79,9 +79,10 @@ function formatContractTable(contracts: ParsedContract[], label: string): string
 }
 
 const OptionsInputSchema = z.object({
-  ticker: z.string().describe("Stock ticker symbol, e.g. 'AAPL'"),
+  ticker: z.string().max(128).describe("Stock ticker symbol, e.g. 'AAPL'"),
   expiry: z
     .string()
+    .max(32)
     .optional()
     .describe('Optional expiry date in YYYY-MM-DD format. Omit for nearest expiry.'),
   type: z

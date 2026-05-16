@@ -40,6 +40,10 @@ function findRepoRoot(): string {
 /**
  * Run a Python one-liner script and return its stdout trimmed.
  * Uses the cramer-research conda environment.
+ *
+ * **INTERNAL USE ONLY**: This function executes arbitrary Python code.
+ * Do NOT expose to untrusted callers or external input.
+ * Current usage is limited to internal parity testing.
  */
 export function runPython(script: string): Promise<string> {
   const python = findCondaPython();

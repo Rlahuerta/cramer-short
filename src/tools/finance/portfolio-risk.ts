@@ -34,15 +34,15 @@ Output:
 
 const PortfolioRiskInputSchema = z.object({
   tickers: z
-    .array(z.string())
+    .array(z.string().max(128))
     .optional()
     .describe('Ticker symbols to analyse. Pass explicitly unless watchlist_entries is supplied.'),
   watchlist_entries: z
     .array(z.object({
-      ticker: z.string(),
+      ticker: z.string().max(128),
       costBasis: z.number().optional(),
       shares: z.number().optional(),
-      addedAt: z.string().optional(),
+      addedAt: z.string().max(64).optional(),
     }))
     .optional()
     .describe('Watchlist entries supplied by the CLI/controller layer. Used when tickers is omitted.'),

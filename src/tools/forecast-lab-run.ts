@@ -75,13 +75,13 @@ Run the bounded forecast-lab workflow for repo-native forecast experiments.
 
 const forecastLabRunSchema = z.object({
   action: z.enum(['guided-improve', 'compare-best-vs-shipped', 'list-mutators', 'catalog-extension-plan', 'mutator-scorecard', 'batch-replay-mutators', 'iterative-improve-mutators', 'promote-approved', 'reset-live']),
-  query: z.string().optional().describe('Original user request. Required when profileId is omitted for guided-improve.'),
-  profileId: z.string().optional().describe('Forecast-lab profile id. Optional when the tool can resolve a unique profile automatically.'),
-  sourceRunId: z.string().optional().describe('Kept run id to promote. Optional when there is a unique pending promotion source.'),
-  mutationId: z.string().optional().describe('For compare-best-vs-shipped: optionally compare a named kept mutator against the active/live promoted run.'),
+  query: z.string().max(10_000).optional().describe('Original user request. Required when profileId is omitted for guided-improve.'),
+  profileId: z.string().max(128).optional().describe('Forecast-lab profile id. Optional when the tool can resolve a unique profile automatically.'),
+  sourceRunId: z.string().max(128).optional().describe('Kept run id to promote. Optional when there is a unique pending promotion source.'),
+  mutationId: z.string().max(128).optional().describe('For compare-best-vs-shipped: optionally compare a named kept mutator against the active/live promoted run.'),
   resetMode: z.enum(['defaults', 'last-known-good']).optional().describe('For reset-live: restore shipped defaults or the last known-good activated baseline.'),
   execute: z.boolean().optional().describe('For guided-improve: when false, return the bounded plan only and do not run commands or write artifacts. Defaults to true.'),
-  mutator: z.string().optional().describe('Optional structured mutator override for guided-improve execution.'),
+  mutator: z.string().max(10_000).optional().describe('Optional structured mutator override for guided-improve execution.'),
   rankMutators: z.boolean().optional().describe('Enable ledger-based mutator ranking for guided-improve execution.'),
   routingSource: z.enum(['auto-routed', 'manual-request']).optional().describe('How the improvement request reached forecast-lab. Defaults to manual-request.'),
   limit: z.number().int().min(1).max(50).optional().describe('For batch-replay-mutators: maximum number of mutators to replay. Defaults to 5. Must be between 1 and 50.'),

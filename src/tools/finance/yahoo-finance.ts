@@ -52,7 +52,7 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
       'recommendationKey (buy/hold/sell), recommendationMean score, and numberOfAnalystOpinions. ' +
       'Covers international tickers (e.g. VWS.CO, AZN.L, SAP.DE) not available in other sources.',
     schema: z.object({
-      ticker: z.string().describe(
+      ticker: z.string().max(128).describe(
         "Stock ticker symbol, including exchange suffix for international stocks (e.g. 'VWS.CO', 'AZN.L', 'SAP.DE', 'AAPL').",
       ),
     }),
@@ -90,7 +90,7 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
       'Returns monthly counts (strongBuy, buy, hold, sell, strongSell) for the current month ' +
       'and the prior 3 months. Covers international tickers.',
     schema: z.object({
-      ticker: z.string().describe(
+      ticker: z.string().max(128).describe(
         "Stock ticker symbol, including exchange suffix for international stocks (e.g. 'VWS.CO', 'AZN.L').",
       ),
     }),
@@ -115,7 +115,7 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
       'Returns firm name, toGrade, fromGrade, action, and date for the most recent analyst actions. ' +
       'Covers international tickers.',
     schema: z.object({
-      ticker: z.string().describe(
+      ticker: z.string().max(128).describe(
         "Stock ticker symbol, including exchange suffix for international stocks (e.g. 'VWS.CO', 'AZN.L').",
       ),
     }),
@@ -142,7 +142,7 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
       'Returns totalRevenue, netIncome, grossProfit, operatingIncome, ebit per annual period. ' +
       'Used as a fallback when Financial Modeling Prep is unavailable or requires a paid plan.',
     schema: z.object({
-      ticker: z.string().describe(
+      ticker: z.string().max(128).describe(
         "Stock ticker symbol, including exchange suffix for international stocks (e.g. 'VWS.CO', 'AZN.L', 'AAPL').",
       ),
       limit: z.number().default(4).describe('Number of periods to return (default: 4).'),
