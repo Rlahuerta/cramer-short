@@ -1,4 +1,6 @@
 /**
+ * Mirrors `research/models/ensemble.py`.
+ *
  * Polymarket weighted ensemble forecast engine.
  *
  * Pure math — no API calls, no side effects. All functions are exported

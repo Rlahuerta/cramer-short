@@ -1,4 +1,6 @@
 /**
+ * Mirrors `research/models/adwin.py`.
+ *
  * ADWIN (ADaptive WINdowing) drift detector.
  *
  * Bifet & Gavaldà 2007 — "Learning from Time-Changing Data with Adaptive

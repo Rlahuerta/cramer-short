@@ -4,6 +4,8 @@ import {
 } from './forecast-lab-runtime-defaults.js';
 
 /**
+ * Mirrors `research/models/conformal.py`.
+ *
  * Online Conformal PID Wrapper.
  *
  * Implements the PID-controller variant of online conformal prediction from

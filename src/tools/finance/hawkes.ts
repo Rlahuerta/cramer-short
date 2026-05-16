@@ -1,4 +1,6 @@
 /**
+ * Mirrors `research/models/hawkes.py`.
+ *
  * Hawkes self-exciting point process.
  *
  * λ(t) = μ + Σ_{t_i < t} α · exp(−β · (t − t_i))

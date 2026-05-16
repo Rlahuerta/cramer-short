@@ -1,4 +1,6 @@
 /**
+ * Mirrors `research/models/calibration_offsets.py`.
+ *
  * Domain × horizon Polymarket recalibration.
  *
  * Reference: Bayesian hierarchical decomposition of prediction-market

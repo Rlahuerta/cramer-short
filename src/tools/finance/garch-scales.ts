@@ -1,4 +1,6 @@
 /**
+ * Mirrors `research/models/garch_scales.py`.
+ *
  * R4 Phase B — GARCH(1,1) per-day volatility scaler for trajectory MC.
  *
  * Given a series of log returns and a horizon in days, produces a

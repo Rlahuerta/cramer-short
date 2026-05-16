@@ -1,4 +1,6 @@
 /**
+ * Mirrors `research/models/hmm.py`.
+ *
  * Gaussian Hidden Markov Model (HMM) for financial regime detection.
  *
  * Replaces threshold-based observable Markov chains with probabilistic

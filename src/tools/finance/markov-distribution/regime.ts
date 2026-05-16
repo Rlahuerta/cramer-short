@@ -1,3 +1,7 @@
+/**
+ * Mirrors `research/models/markov.py` (classify_regime, classify_regime_series).
+ */
+
 import {
   REGIME_STATES,
   resolveForecastLabMarkovParameterDefaults,

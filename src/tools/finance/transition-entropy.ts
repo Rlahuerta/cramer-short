@@ -1,4 +1,6 @@
 /**
+ * Mirrors `research/models/transition_entropy.py`.
+ *
  * R5 Idea #14 — Markov transition-entropy CI modulator.
  *
  * Source: docs/forecast-improvement-ideas-round5-2026-04-29.md (Idea #14),

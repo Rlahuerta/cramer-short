@@ -1,3 +1,8 @@
+/**
+ * Mirrors `research/models/markov.py` (estimate_regime_stats, compute_markov_forecast)
+ * and `research/models/trajectory.py` (compute_trajectory, compute_horizon_drift_vol).
+ */
+
 import {
   NUM_STATES,
   REGIME_STATES,

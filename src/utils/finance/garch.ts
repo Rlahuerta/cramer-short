@@ -10,9 +10,10 @@
  *   h_t  = ω + α · z²_{t-1} · h_{t-1} + β · h_{t-1}
  *   σ_t  = √h_t
  *
- * This is *not* a full MLE estimator. It uses fixed industry priors
- * (α = 0.10, β = 0.85) and matches the unconditional variance to the
- * sample variance — a pragmatic shortcut that captures persistence
+ * Uses fixed industry priors (α = 0.10, β = 0.85) and matches the
+ * unconditional variance to the sample variance — a pragmatic shortcut
+ * that captures volatility clustering without iterative MLE.
+ * Mirrors `research/models/garch.py` with identical moment-matching logic.
  * without an iterative optimiser.
  *
  * For full MLE, use the Python `arch` library via `research/models/garch.py`.

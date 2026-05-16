@@ -1,3 +1,7 @@
+/**
+ * Mirrors `research/models/markov.py` (estimate_transition_matrix).
+ */
+
 import {
   NUM_STATES,
   STATE_INDEX,

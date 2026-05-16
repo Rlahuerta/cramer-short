@@ -1,4 +1,6 @@
 /**
+ * Mirrors `research/models/vol_regime.py`.
+ *
  * P3b — VIX-based volatility regime classifier.
  *
  * Source: docs/polymarket-prediction-improvements-research-2026-07.md §9
