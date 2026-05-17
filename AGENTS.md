@@ -130,4 +130,10 @@ bun run test:integration     # integration tier
 - `bun install` runs `playwright install chromium` in postinstall. CI skips this via `--ignore-scripts`.
 - `bun run test:e2e` and `bun run test:integration` run each file in an isolated Bun process via `scripts/run-isolated-bun-tests.ts` to avoid `mock.module()` contamination.
 - Calendar versioning: `YYYY.M.D`, no zero padding.
-- Schedule mode reads from `~/.cramer-short/schedules.json`, not a project-local path. Job `outputFile` supports `~` and `{dat
+- Schedule mode reads from `~/.cramer-short/schedules.json`, not a project-local path. Job `outputFile` supports `~` and `{date}`.
+- `src/types.ts` was deleted in Phase 1 refactoring. `HistoryItem`, `WorkingState`, and `HistoryItemStatus` now live in `src/controllers/types.ts`.
+- `getCurrentDate()` was extracted from `agent/prompts.ts` into `src/utils/date.ts`. Finance tools import from `../../utils/date.js`, not from agent/.
+- Python parity: 16 TS modules mirror `research/models/`. `research/PARITY.md` is the authoritative manifest. Add a `Mirrors research/models/X.py` docstring tag to new mirrored files.
+- `depcruise` runs in CI on every PR. 32 warnings exist (all accepted as design tradeoffs); new layer violations must be justified.
+- `markov-distribution.ts` was decomposed into `markov-distribution/` with 8 sub-modules. Import from the sub-module, not the top-level barrel unless you need everything.
+- All `z.string()` tool parameters now carry `.max()` validators. New tools must include input length limits.
