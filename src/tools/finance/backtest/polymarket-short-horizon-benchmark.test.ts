@@ -20,6 +20,7 @@ import type {
 } from '../forecast-arbitrator.js';
 import {
   formatShortHorizonReplayBenchmarkReport,
+  parseShortHorizonReplayBenchmarkCliArgs,
   runShortHorizonReplayBenchmark,
   runShortHorizonReplayBenchmarkFromFile,
 } from './polymarket-short-horizon-benchmark.js';
@@ -178,32 +179,6 @@ afterEach(() => {
   }
 });
 
-async function runBenchmarkCli(args: string[]): Promise<{
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}> {
-  const proc = Bun.spawn({
-    cmd: [
-      process.execPath,
-      'run',
-      'src/tools/finance/backtest/polymarket-short-horizon-benchmark.ts',
-      ...args,
-    ],
-    cwd: process.cwd(),
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-
-  return { exitCode, stdout, stderr };
-}
-
 describe('polymarket short-horizon replay benchmark', () => {
   it('reports machine-readable 1d/2d/3d accuracy and Brier metrics by horizon', () => {
     const report = runShortHorizonReplayBenchmark({
@@ -294,12 +269,8 @@ describe('polymarket short-horizon replay benchmark', () => {
     );
   });
 
-  it('rejects flag-like values for --bundle-path', async () => {
-    const result = await runBenchmarkCli(['--bundle-path', '--help']);
-
-    expect(result.exitCode).toBe(1);
-    expect(result.stdout).toBe('');
-    expect(result.stderr.trim()).toBe(
+  it('rejects flag-like values for --bundle-path', () => {
+    expect(() => parseShortHorizonReplayBenchmarkCliArgs(['--bundle-path', '--help'])).toThrow(
       'Invalid value for --bundle-path: expected a path, received flag --help',
     );
   });

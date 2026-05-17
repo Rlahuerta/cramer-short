@@ -42,6 +42,8 @@ type ForecastLabErrorWithCleanupContext = Error & {
   suppressedCleanupError?: unknown;
 };
 
+const materializedFileContentsCache = new Map<string, string>();
+
 function defaultForecastLabGitCommandRunner(
   args: readonly string[],
   options?: { readonly cwd?: string },
@@ -104,6 +106,109 @@ function runGitCommandOrThrow(
   }
 
   return result.stdout.trim();
+}
+
+function runGitCommandStdoutOrThrow(
+  gitCommandRunner: ForecastLabGitCommandRunner,
+  args: readonly string[],
+  options?: { readonly cwd?: string; readonly errorPrefix?: string },
+): string {
+  const result = gitCommandRunner(args, { cwd: options?.cwd });
+
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`;
+    throw new ForecastLabGitError(`${options?.errorPrefix ?? `git ${args.join(' ')}`} failed: ${detail}`);
+  }
+
+  return result.stdout;
+}
+
+function readForecastLabMaterializedFilesBatch(
+  repoRoot: string,
+  baselineCommit: string,
+  paths: readonly string[],
+): Map<string, string> {
+  const result = spawnSync('git', ['cat-file', '--batch'], {
+    cwd: repoRoot,
+    input: `${paths.map((path) => `${baselineCommit}:${path}`).join('\n')}\n`,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  if (result.error) {
+    throw new ForecastLabGitError(result.error.message);
+  }
+  if (result.status !== 0) {
+    const detail = result.stderr.toString('utf8').trim() || result.stdout.toString('utf8').trim() || `exit ${result.status ?? 1}`;
+    throw new ForecastLabGitError(`forecast-lab workspace materialize batch failed: ${detail}`);
+  }
+
+  const contentsByPath = new Map<string, string>();
+  const stdout = result.stdout;
+  let offset = 0;
+
+  for (const path of paths) {
+    const headerEnd = stdout.indexOf(0x0a, offset);
+    if (headerEnd === -1) {
+      throw new ForecastLabGitError(`forecast-lab workspace materialize (${path}) failed: truncated git cat-file header`);
+    }
+
+    const header = stdout.subarray(offset, headerEnd).toString('utf8');
+    offset = headerEnd + 1;
+    if (header.endsWith(' missing')) {
+      throw new ForecastLabGitError(`forecast-lab workspace materialize (${path}) failed: missing blob at ${baselineCommit}`);
+    }
+
+    const parts = header.split(' ');
+    const size = Number(parts[2]);
+    if (parts.length !== 3 || parts[1] !== 'blob' || !Number.isInteger(size) || size < 0) {
+      throw new ForecastLabGitError(`forecast-lab workspace materialize (${path}) failed: unexpected git cat-file header "${header}"`);
+    }
+    if (offset + size > stdout.length) {
+      throw new ForecastLabGitError(`forecast-lab workspace materialize (${path}) failed: truncated git cat-file body`);
+    }
+
+    contentsByPath.set(path, stdout.subarray(offset, offset + size).toString('utf8'));
+    offset += size;
+    if (stdout[offset] === 0x0a) {
+      offset += 1;
+    }
+  }
+
+  return contentsByPath;
+}
+
+function materializeForecastLabWorkspacePathsFromCommit(
+  repoRoot: string,
+  workspaceRootDir: string,
+  baselineCommit: string,
+  gitCommandRunner: ForecastLabGitCommandRunner,
+  paths: readonly string[],
+): void {
+  const normalizedPaths = paths.map((path) => normalizeRepoRelativePath(path));
+  const missingCachePaths = normalizedPaths.filter((path) => !materializedFileContentsCache.has(`${baselineCommit}:${path}`));
+
+  if (missingCachePaths.length > 1 && gitCommandRunner === defaultForecastLabGitCommandRunner) {
+    const materialized = readForecastLabMaterializedFilesBatch(repoRoot, baselineCommit, missingCachePaths);
+    for (const [path, contents] of materialized.entries()) {
+      materializedFileContentsCache.set(`${baselineCommit}:${path}`, contents);
+    }
+  }
+
+  for (const normalizedPath of normalizedPaths) {
+    const targetPath = resolve(workspaceRootDir, normalizedPath);
+    assertInsideRoot(workspaceRootDir, targetPath);
+    mkdirSync(dirname(targetPath), { recursive: true });
+    const cacheKey = `${baselineCommit}:${normalizedPath}`;
+    let contents = materializedFileContentsCache.get(cacheKey);
+    if (contents === undefined) {
+      contents = runGitCommandStdoutOrThrow(gitCommandRunner, ['show', `${baselineCommit}:${normalizedPath}`], {
+        cwd: repoRoot,
+        errorPrefix: `forecast-lab workspace materialize (${normalizedPath})`,
+      });
+      materializedFileContentsCache.set(cacheKey, contents);
+    }
+    writeFileSync(targetPath, contents, 'utf8');
+  }
 }
 
 function gitBranchExists(
@@ -242,6 +347,8 @@ function prepareForecastLabWorkspace(
     readonly branchName?: string;
     readonly repoRoot?: string;
     readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+    readonly materializePaths?: readonly string[];
+    readonly lightweight?: boolean;
     readonly describeWorkspace?: (
       runId: string,
       options?: {
@@ -264,12 +371,109 @@ function prepareForecastLabWorkspace(
       `Refusing to reuse existing forecast-lab worktree path before git unregisters it: ${metadata.rootDir}`,
     );
   }
+  if (options?.lightweight) {
+    try {
+      mkdirSync(metadata.rootDir, { recursive: true });
+      if (options.materializePaths) {
+        materializeForecastLabWorkspacePathsFromCommit(
+          repoRoot,
+          metadata.rootDir,
+          baselineCommit,
+          gitCommandRunner,
+          options.materializePaths,
+        );
+      }
+    } catch (error) {
+      rmSync(metadata.rootDir, { recursive: true, force: true });
+      throw error;
+    }
+
+    return {
+      baselineCommit,
+      metadata,
+      cleanup() {
+        rmSync(metadata.rootDir, { recursive: true, force: true });
+      },
+    };
+  }
+
+  if (gitBranchExists(metadata.branch, gitCommandRunner, repoRoot)) {
+    throw new ForecastLabGitError(`Refusing to reuse existing forecast-lab branch before git unregisters it: ${metadata.branch}`);
+  }
 
   mkdirSync(dirname(metadata.rootDir), { recursive: true });
-  runGitCommandOrThrow(gitCommandRunner, ['worktree', 'add', '-b', metadata.branch, metadata.rootDir, baselineCommit], {
-    cwd: repoRoot,
-    errorPrefix: `forecast-lab worktree create (${metadata.branch})`,
-  });
+  try {
+    runGitCommandOrThrow(
+      gitCommandRunner,
+      [
+        'worktree',
+        'add',
+        ...(options?.materializePaths ? ['--no-checkout'] : []),
+        '-b',
+        metadata.branch,
+        metadata.rootDir,
+        baselineCommit,
+      ],
+      {
+        cwd: repoRoot,
+        errorPrefix: `forecast-lab worktree create (${metadata.branch})`,
+      },
+    );
+    if (options?.materializePaths) {
+      materializeForecastLabWorkspacePathsFromCommit(
+        repoRoot,
+        metadata.rootDir,
+        baselineCommit,
+        gitCommandRunner,
+        options.materializePaths,
+      );
+    }
+  } catch (error) {
+    const cleanupFailures: string[] = [];
+    const originalMessage = error instanceof Error ? error.message : String(error);
+
+    const worktreeRemoval = gitCommandRunner(['worktree', 'remove', '--force', metadata.rootDir], { cwd: repoRoot });
+    if (worktreeRemoval.exitCode !== 0 && existsSync(metadata.rootDir)) {
+      const detail = worktreeRemoval.stderr.trim() || worktreeRemoval.stdout.trim() || `exit ${worktreeRemoval.exitCode}`;
+      cleanupFailures.push(`worktree remove failed: ${detail}`);
+      try {
+        rmSync(metadata.rootDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        const detail = cleanupError instanceof Error
+          ? cleanupError.message
+          : String(cleanupError);
+        cleanupFailures.push(`worktree directory removal failed: ${detail}`);
+      }
+    } else if (existsSync(metadata.rootDir)) {
+      try {
+        rmSync(metadata.rootDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        const detail = cleanupError instanceof Error
+          ? cleanupError.message
+          : String(cleanupError);
+        cleanupFailures.push(`worktree directory removal failed: ${detail}`);
+      }
+    }
+
+    if (gitBranchExists(metadata.branch, gitCommandRunner, repoRoot)) {
+      const branchDeletion = gitCommandRunner(['branch', '-D', metadata.branch], { cwd: repoRoot });
+      if (branchDeletion.exitCode !== 0) {
+        const detail = branchDeletion.stderr.trim() || branchDeletion.stdout.trim() || `exit ${branchDeletion.exitCode}`;
+        cleanupFailures.push(`branch delete failed: ${detail}`);
+      }
+    }
+
+    if (cleanupFailures.length > 0) {
+      throw new ForecastLabGitError(
+        `${originalMessage}; forecast-lab workspace create cleanup failed: ${cleanupFailures.join('; ')}`,
+      );
+    }
+
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new ForecastLabGitError(originalMessage);
+  }
 
   return {
     baselineCommit,
@@ -306,6 +510,8 @@ export function prepareForecastLabCandidateWorkspace(
     readonly branchName?: string;
     readonly repoRoot?: string;
     readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+    readonly materializePaths?: readonly string[];
+    readonly lightweight?: boolean;
   },
 ): ForecastLabPreparedCandidateWorkspace {
   return prepareForecastLabWorkspace(runId, options);
@@ -317,6 +523,8 @@ export function prepareForecastLabPromotionWorkspace(
     readonly branchName?: string;
     readonly repoRoot?: string;
     readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+    readonly materializePaths?: readonly string[];
+    readonly lightweight?: boolean;
   },
 ): ForecastLabPreparedCandidateWorkspace {
   return prepareForecastLabWorkspace(runId, {
@@ -332,12 +540,15 @@ async function withForecastLabWorkspace<T>(
     readonly branchName?: string;
     readonly repoRoot?: string;
     readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+    readonly materializePaths?: readonly string[];
     readonly prepareWorkspace?: (
       runId: string,
       options?: {
         readonly branchName?: string;
         readonly repoRoot?: string;
         readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+        readonly materializePaths?: readonly string[];
+        readonly lightweight?: boolean;
       },
     ) => ForecastLabPreparedCandidateWorkspace;
   },
@@ -386,6 +597,8 @@ export async function withForecastLabCandidateWorkspace<T>(
     readonly branchName?: string;
     readonly repoRoot?: string;
     readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+    readonly materializePaths?: readonly string[];
+    readonly lightweight?: boolean;
   },
 ): Promise<T> {
   return withForecastLabWorkspace(runId, callback, options);
@@ -398,6 +611,8 @@ export async function withForecastLabPromotionWorkspace<T>(
     readonly branchName?: string;
     readonly repoRoot?: string;
     readonly gitCommandRunner?: ForecastLabGitCommandRunner;
+    readonly materializePaths?: readonly string[];
+    readonly lightweight?: boolean;
   },
 ): Promise<T> {
   return withForecastLabWorkspace(runId, callback, {

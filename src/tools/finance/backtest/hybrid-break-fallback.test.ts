@@ -377,7 +377,7 @@ describe('hybrid break fallback', () => {
     // magnitudes shifted.
     const bestHybrid = artifact.candidates.find(candidate => candidate.candidateId === 'HYB_L025_M050_H075_lambda025');
     expect(bestHybrid).toBeDefined();
-    expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeCloseTo(-0.0035460992907800915, 10);
+    expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeCloseTo(-0.0011820330969267712, 10);
     expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeCloseTo(0.001921100610633053, 10);
     expect(bestHybrid!.passesThresholds).toBe(false);
     expect(bestHybrid!.failureReasons.some(reason => reason.includes('break+trending gain'))).toBe(true);

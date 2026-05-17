@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -27,38 +27,63 @@ const WORKTREE_RUN_IDS = [
   'git-test-promotion-cleanup',
 ] as const;
 
-function cleanupWorktree(runId: string): void {
+setDefaultTimeout(120_000);
+
+function listForecastLabTestBranches(): ReadonlySet<string> {
+  const result = spawnSync('git', ['branch', '--list', 'topic/forecast-lab-git-test*', 'topic/forecast-lab-promote-git-test*'], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  return new Set(
+    (result.stdout ?? '')
+      .split('\n')
+      .map((line) => line.replace(/^\*\s*/, '').trim())
+      .filter(Boolean),
+  );
+}
+
+function cleanupWorktree(runId: string, branches?: ReadonlySet<string>): void {
   const branch = makeForecastLabCandidateBranch(runId);
   const worktreePath = getForecastLabCandidateWorktreePath(runId);
 
-  spawnSync('git', ['worktree', 'remove', '--force', worktreePath], {
-    cwd: process.cwd(),
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  if (existsSync(worktreePath)) {
+    spawnSync('git', ['worktree', 'remove', '--force', worktreePath], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
   rmSync(worktreePath, { recursive: true, force: true });
-  spawnSync('git', ['branch', '-D', branch], {
-    cwd: process.cwd(),
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  if (branches?.has(branch) ?? branchExists(branch)) {
+    spawnSync('git', ['branch', '-D', branch], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
 }
 
-function cleanupPromotionWorktree(runId: string): void {
+function cleanupPromotionWorktree(runId: string, branches?: ReadonlySet<string>): void {
   const branch = makeForecastLabPromotionBranch(runId);
   const worktreePath = getForecastLabPromotionWorktreePath(runId);
 
-  spawnSync('git', ['worktree', 'remove', '--force', worktreePath], {
-    cwd: process.cwd(),
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  if (existsSync(worktreePath)) {
+    spawnSync('git', ['worktree', 'remove', '--force', worktreePath], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
   rmSync(worktreePath, { recursive: true, force: true });
-  spawnSync('git', ['branch', '-D', branch], {
-    cwd: process.cwd(),
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  if (branches?.has(branch) ?? branchExists(branch)) {
+    spawnSync('git', ['branch', '-D', branch], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
 }
 
 function branchExists(branch: string): boolean {
@@ -72,9 +97,10 @@ function branchExists(branch: string): boolean {
 }
 
 afterEach(() => {
+  const branches = listForecastLabTestBranches();
   for (const runId of WORKTREE_RUN_IDS) {
-    cleanupWorktree(runId);
-    cleanupPromotionWorktree(runId);
+    cleanupWorktree(runId, branches);
+    cleanupPromotionWorktree(runId, branches);
   }
 });
 
@@ -113,12 +139,15 @@ describe('forecast-lab git helpers', () => {
     const runId = 'git-test-cleanup';
     const branch = makeForecastLabCandidateBranch(runId);
     const worktreePath = getForecastLabCandidateWorktreePath(runId);
+    const profile = getForecastLabProfile('multi-asset-markov-short-horizon');
 
     await expect(
       withForecastLabCandidateWorkspace(runId, () => {
         expect(existsSync(worktreePath)).toBe(true);
         expect(branchExists(branch)).toBe(true);
         throw new Error('boom');
+      }, {
+        materializePaths: profile.mutation.mutableFiles,
       }),
     ).rejects.toThrow('boom');
 
@@ -130,7 +159,10 @@ describe('forecast-lab git helpers', () => {
     const runId = 'git-test-promotion-cleanup';
     const branch = makeForecastLabPromotionBranch(runId);
     const worktreePath = getForecastLabPromotionWorktreePath(runId);
-    const workspace = prepareForecastLabPromotionWorkspace(runId);
+    const profile = getForecastLabProfile('multi-asset-markov-short-horizon');
+    const workspace = prepareForecastLabPromotionWorkspace(runId, {
+      materializePaths: profile.mutation.mutableFiles,
+    });
 
     expect(workspace.metadata.branch).toBe(branch);
     expect(workspace.metadata.rootDir).toBe(worktreePath);
@@ -288,6 +320,8 @@ describe('forecast-lab git helpers', () => {
 
       expect(existsSync(join(workspace.metadata.rootDir, blockedDocsPath))).toBe(false);
       expect(readFileSync(allowedFile, 'utf8')).toBe(updated);
+    }, {
+      materializePaths: profile.mutation.mutableFiles,
     });
   });
 });

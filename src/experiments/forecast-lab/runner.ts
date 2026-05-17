@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import {
@@ -319,6 +319,16 @@ function readStructuredMutationFileContents(rootDir: string, filePath: string): 
   const targetPath = resolve(rootDir, filePath);
   if (existsSync(targetPath)) {
     return readFileSync(targetPath, 'utf8');
+  }
+
+  if (resolve(rootDir) !== resolve(process.cwd())) {
+    const result = spawnSync('git', ['-C', rootDir, 'show', `HEAD:${filePath}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if ((result.status ?? 1) === 0) {
+      return result.stdout ?? '';
+    }
   }
 
   const sourceSnapshot = STRUCTURED_MUTATION_SOURCE_FILE_SNAPSHOTS.get(filePath);
@@ -1174,38 +1184,47 @@ function selectStructuredMutation(
   const allowedMutatorIds = new Set(profile.mutation.allowedMutatorIds);
   const allowedCandidates = catalog.filter((candidate) => allowedMutatorIds.has(candidate.mutatorId));
   const allowedCandidateIds = new Set(allowedCandidates.map((candidate) => candidate.id));
+
+  if (requestedMutatorId) {
+    const selected = allowedCandidates.find((candidate) => candidate.id === requestedMutatorId);
+    if (!selected) {
+      throw new ForecastLabRunnerError(
+        `Unknown forecast-lab mutator "${requestedMutatorId}" for profile "${profile.id}". Expected one of: ${catalog.map((candidate) => candidate.id).join(', ')}`,
+      );
+    }
+
+    if (!isApplicable(selected)) {
+      const catalogState = summarizeStructuredMutationCatalogState(allowedCandidates, usedMutationIds, isApplicable);
+      const remainingApplicableCandidateIds = catalogState.applicableCandidateIds.filter((candidateId) => candidateId !== selected.id);
+      const fallback = remainingApplicableCandidateIds.length > 0
+        ? `Try one of the remaining applicable shipped mutators instead: ${remainingApplicableCandidateIds.join(', ')}.`
+        : formatStructuredMutationCatalogStateMessage(profile.id, catalogState);
+      throw new ForecastLabRunnerError(
+        `Forecast-lab mutator "${selected.id}" is not applicable after replaying the kept parent lineage for profile "${profile.id}". ${fallback}`,
+      );
+    }
+
+    return selected;
+  }
+
   const catalogState = summarizeStructuredMutationCatalogState(allowedCandidates, usedMutationIds, isApplicable);
-  const selected = requestedMutatorId
-    ? allowedCandidates.find((candidate) => candidate.id === requestedMutatorId)
-    : ranking?.rankedCandidates.find((candidate) =>
-        allowedCandidateIds.has(candidate.id) && candidate.unused && candidate.applicable
-      )?.candidate
-      ?? ranking?.rankedCandidates.find((candidate) =>
-        allowedCandidateIds.has(candidate.id) && candidate.applicable
-      )?.candidate
-      ?? allowedCandidates.find((candidate) => !usedMutationIds?.has(candidate.id) && isApplicable(candidate))
-      ?? allowedCandidates.find((candidate) => isApplicable(candidate));
+  const selected = ranking?.rankedCandidates.find((candidate) =>
+    allowedCandidateIds.has(candidate.id) && candidate.unused && candidate.applicable
+  )?.candidate
+    ?? ranking?.rankedCandidates.find((candidate) =>
+      allowedCandidateIds.has(candidate.id) && candidate.applicable
+    )?.candidate
+    ?? allowedCandidates.find((candidate) => !usedMutationIds?.has(candidate.id) && isApplicable(candidate))
+    ?? allowedCandidates.find((candidate) => isApplicable(candidate));
   if (!selected) {
     throw new ForecastLabRunnerError(
-      requestedMutatorId
-        ? `Unknown forecast-lab mutator "${requestedMutatorId}" for profile "${profile.id}". Expected one of: ${catalog.map((candidate) => candidate.id).join(', ')}`
-        : formatStructuredMutationCatalogStateMessage(profile.id, catalogState),
+      formatStructuredMutationCatalogStateMessage(profile.id, catalogState),
     );
   }
 
   if (!allowedMutatorIds.has(selected.mutatorId)) {
     throw new ForecastLabRunnerError(
       `Forecast-lab mutator "${selected.id}" is not allowed by the structured mutation contract for profile "${profile.id}".`,
-    );
-  }
-
-  if (requestedMutatorId && !isApplicable(selected)) {
-    const remainingApplicableCandidateIds = catalogState.applicableCandidateIds.filter((candidateId) => candidateId !== selected.id);
-    const fallback = remainingApplicableCandidateIds.length > 0
-      ? `Try one of the remaining applicable shipped mutators instead: ${remainingApplicableCandidateIds.join(', ')}.`
-      : formatStructuredMutationCatalogStateMessage(profile.id, catalogState);
-    throw new ForecastLabRunnerError(
-      `Forecast-lab mutator "${selected.id}" is not applicable after replaying the kept parent lineage for profile "${profile.id}". ${fallback}`,
     );
   }
 
@@ -1792,6 +1811,8 @@ export async function promoteForecastLab(options: ForecastLabPromotionOptions): 
   const output = options.output;
   const ledgerPath = options.ledgerPath ?? getExperimentLedgerPath({ create: true });
   const commandRunner = options.commandRunner ?? defaultForecastLabCommandRunner;
+  const workspaceMaterializePaths = options.commandRunner ? profile.mutation.mutableFiles : undefined;
+  const lightweightWorkspace = options.commandRunner !== undefined;
   const source = resolvePromotionSource(profile, ledgerPath, options.sourceRunId);
   const releaseSourceLock = acquirePromotionSourceLock(source, runId);
   const runDir = getExperimentRunDir(runId, { create: true });
@@ -1808,7 +1829,10 @@ export async function promoteForecastLab(options: ForecastLabPromotionOptions): 
 
   try {
     progress?.(`forecast-lab: promoting kept run ${source.manifest.runId} for ${profile.id} (${runId})`);
-    const workspace = prepareForecastLabPromotionWorkspace(runId);
+    const workspace = prepareForecastLabPromotionWorkspace(runId, {
+      materializePaths: workspaceMaterializePaths,
+      lightweight: lightweightWorkspace,
+    });
 
     try {
       const structuredMutation = stageStructuredMutationReplay(
@@ -2190,6 +2214,8 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   progress?.(`forecast-lab: manifest written to ${manifestPath}`);
 
   const commandRunner = options.commandRunner ?? defaultForecastLabCommandRunner;
+  const workspaceMaterializePaths = options.commandRunner ? profile.mutation.mutableFiles : undefined;
+  const lightweightWorkspace = options.commandRunner !== undefined;
   const baselineCwd = process.cwd();
   const runBaselineGate = async (): Promise<ForecastLabGateSummary> => {
     progress?.('forecast-lab: starting baseline gate');
@@ -2280,7 +2306,10 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
 
     const candidateRun = mutationPlan.keepWorktree
       ? await (async () => {
-        const workspace = prepareForecastLabCandidateWorkspace(runId);
+        const workspace = prepareForecastLabCandidateWorkspace(runId, {
+          materializePaths: workspaceMaterializePaths,
+          lightweight: lightweightWorkspace,
+        });
 
         try {
           const result = await executeCandidateRun(workspace);
@@ -2291,7 +2320,10 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
           throw error;
         }
       })()
-      : await withForecastLabCandidateWorkspace(runId, executeCandidateRun);
+      : await withForecastLabCandidateWorkspace(runId, executeCandidateRun, {
+        materializePaths: workspaceMaterializePaths,
+        lightweight: lightweightWorkspace,
+      });
 
     baseline = candidateRun.baseline;
     candidate = candidateRun.gate;

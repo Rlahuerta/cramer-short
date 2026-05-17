@@ -1,9 +1,9 @@
 /**
- * E2E test helper — runs the full Cramer-Short agent against the configured Ollama
+ * E2E test helper — runs the full Cramer-Short agent against the configured live
  * model and returns a structured result for assertion.
  *
  * Environment variables:
- *   E2E_MODEL      — Ollama model to use (default: auto-resolved live cloud model)
+ *   E2E_MODEL      — model to use (default: auto-resolved Ollama cloud model)
  *   OLLAMA_BASE_URL — Ollama endpoint (default: 'http://127.0.0.1:11434')
  *   E2E_TIMEOUT_MS  — Hard timeout in ms (default: 600 000)
  */
@@ -11,11 +11,17 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentEvent, DoneEvent } from '../shared/agent-events.js';
 import { loadAgentCtor } from '../shared/agent-loader.js';
-import { InMemoryChatHistory } from './in-memory-chat-history.js';
 import { getEnv, getEnvironment, getEnvOrDefault } from './env.js';
-import { isTimeoutError } from './errors.js';
+import {
+  isAuthError,
+  isBillingError,
+  isOverloadedError,
+  isRateLimitError,
+  isTimeoutError,
+} from './errors.js';
 import { logger } from './logger.js';
 import { withRetry } from './retry.js';
+import { resolveProvider } from '../providers.js';
 
 const DEFAULT_E2E_TIMEOUT_MS = 600_000;
 
@@ -103,15 +109,70 @@ function isOllamaModel(model: string): boolean {
   return model.toLowerCase().startsWith('ollama:');
 }
 
+function stringifyError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function isE2EExternalModelError(error: unknown): boolean {
+  const message = stringifyError(error);
+  if (!message || /E2E: no 'done' event received/i.test(message)) {
+    return false;
+  }
+
+  const lower = message.toLowerCase();
+  return isTimeoutError(message)
+    || isRateLimitError(message)
+    || isOverloadedError(message)
+    || isAuthError(message)
+    || isBillingError(message)
+    || /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT)\b/i.test(message)
+    || lower.includes('ollama is unavailable')
+    || lower.includes('model may be slow or unavailable')
+    || lower.includes('model is unavailable')
+    || lower.includes('llm request failed')
+    || lower.includes('api key')
+    || lower.includes('this operation was aborted');
+}
+
+function getProviderAvailabilityReason(model: string): string | null {
+  const provider = resolveProvider(model);
+  if (!provider.apiKeyEnvVar) {
+    return null;
+  }
+
+  return getEnv(provider.apiKeyEnvVar)
+    ? null
+    : `${provider.displayName} API key is missing (${provider.apiKeyEnvVar})`;
+}
+
 async function probeOllamaModel(model: string, timeoutMs: number): Promise<string | null> {
   const baseUrl = getEnvOrDefault('OLLAMA_BASE_URL', 'http://127.0.0.1:11434');
   const ollamaModel = normalizeOllamaModel(model);
 
+  async function fetchWithHardTimeout(url: string, init: RequestInit, label: string): Promise<Response> {
+    const ac = new AbortController();
+    let hardTimer: ReturnType<typeof setTimeout> | undefined;
+    const abortTimer = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      return await Promise.race([
+        fetch(url, { ...init, signal: ac.signal }),
+        new Promise<Response>((_, reject) => {
+          hardTimer = setTimeout(
+            () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+            timeoutMs + 100,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(abortTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+    }
+  }
+
   try {
-    const tagsResponse = await fetch(`${baseUrl}/api/tags`, {
+    const tagsResponse = await fetchWithHardTimeout(`${baseUrl}/api/tags`, {
       headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(Math.min(timeoutMs, 5_000)),
-    });
+    }, 'Ollama health check');
     if (!tagsResponse.ok) {
       return `Ollama health check failed at ${baseUrl}/api/tags with HTTP ${tagsResponse.status}`;
     }
@@ -121,7 +182,7 @@ async function probeOllamaModel(model: string, timeoutMs: number): Promise<strin
   }
 
   try {
-    const response = await fetch(`${baseUrl}/api/generate`, {
+    const response = await fetchWithHardTimeout(`${baseUrl}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
@@ -130,8 +191,7 @@ async function probeOllamaModel(model: string, timeoutMs: number): Promise<strin
         stream: false,
         options: { num_predict: 1 },
       }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    }, `Ollama model ${ollamaModel} preflight`);
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
@@ -142,6 +202,14 @@ async function probeOllamaModel(model: string, timeoutMs: number): Promise<strin
     return `Ollama model ${ollamaModel} did not respond within ${timeoutMs}ms: ${message}`;
   }
 
+  return null;
+}
+
+function probeProviderModel(model: string): string | null {
+  const apiKeyReason = getProviderAvailabilityReason(model);
+  if (apiKeyReason) {
+    return apiKeyReason;
+  }
   return null;
 }
 
@@ -181,11 +249,10 @@ export async function getE2EPreflightStatus(modelOverride?: string): Promise<E2E
   }
 
   const promise = (async (): Promise<E2EPreflightStatus> => {
-    if (!isOllamaModel(model)) {
-      return { available: true, model };
-    }
-
-    const reason = await probeOllamaModel(model, resolveE2EPreflightTimeoutMs());
+    const timeoutMs = resolveE2EPreflightTimeoutMs();
+    const reason = isOllamaModel(model)
+      ? await probeOllamaModel(model, timeoutMs)
+      : probeProviderModel(model);
     return reason
       ? { available: false, model, reason }
       : { available: true, model };
@@ -357,21 +424,25 @@ export async function runAgentE2EInProcess(
   const model = opts.model ?? await resolveDefaultE2EModel();
   await assertE2EPreflight(model);
   const maxIterations = opts.maxIterations ?? defaultMaxIter;
+  const historySeed = opts.historySeed;
 
   // Dynamic import to avoid mock.module contamination from unit test files
   // that load earlier in the same Bun worker. At this point afterAll hooks
   // from unit tests have already restored the real module exports.
   const AgentCtor = await loadAgentCtor();
 
+  const ac = new AbortController();
   const agent = await AgentCtor.create({
     model,
     maxIterations,
     memoryEnabled: false, // keep E2E tests hermetic — no cross-test memory bleed
+    signal: ac.signal,
   });
-  const inMemoryHistory = opts.historySeed?.length
-    ? (() => {
+  const inMemoryHistory = historySeed?.length
+    ? await (async () => {
+        const { InMemoryChatHistory } = await import('./in-memory-chat-history.js');
         const history = new InMemoryChatHistory(model);
-        for (const message of opts.historySeed) {
+        for (const message of historySeed) {
           history.seedMessage(message);
         }
         return history;
@@ -383,14 +454,13 @@ export async function runAgentE2EInProcess(
   const start = Date.now();
 
   // Race the agent run against the hard wall-clock timeout
-  const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), E2E_TIMEOUT_MS);
 
   try {
     for await (const event of agent.run(actualQuery, inMemoryHistory)) {
-      if (ac.signal.aborted) break;
       events.push(event);
       if (event.type === 'tool_start') toolsCalled.push(event.tool);
+      if (ac.signal.aborted) break;
     }
   } finally {
     clearTimeout(timer);
@@ -398,6 +468,12 @@ export async function runAgentE2EInProcess(
 
   const doneEvent = events.find((e): e is DoneEvent => e.type === 'done');
   if (!doneEvent) {
+    if (ac.signal.aborted) {
+      throw new Error(
+        `E2E agent timed out after ${Date.now() - start}ms. ` +
+          `Tools called: [${toolsCalled.join(', ')}]. Events: [${events.map((e) => e.type).join(', ')}]`,
+      );
+    }
     throw new Error(
       `E2E: no 'done' event received after ${Date.now() - start}ms. ` +
         `Tools called: [${toolsCalled.join(', ')}]. Events: [${events.map((e) => e.type).join(', ')}]`,
@@ -444,13 +520,20 @@ export async function runAgentE2E(
   const stdoutPromise = new Response(proc.stdout).text();
   const stderrPromise = new Response(proc.stderr).text();
   let timedOut = false;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
   const timer = setTimeout(() => {
     timedOut = true;
-    proc.kill();
+    proc.kill('SIGTERM');
+    killTimer = setTimeout(() => {
+      proc.kill('SIGKILL');
+    }, 5_000);
   }, E2E_CHILD_TIMEOUT_MS);
 
   const exitCode = await proc.exited;
   clearTimeout(timer);
+  if (killTimer) {
+    clearTimeout(killTimer);
+  }
   const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
 
   if (timedOut) {
@@ -462,11 +545,12 @@ export async function runAgentE2E(
   }
 
   if (exitCode !== 0) {
-    throw new Error(buildChildErrorMessage(
+    const message = buildChildErrorMessage(
       `E2E child exited with code ${exitCode}.`,
       stdout,
       stderr,
-    ));
+    );
+    throw new Error(message);
   }
 
   return await parseChildResult(stdout, stderr, resultFilePath);
@@ -483,19 +567,27 @@ export async function runAgentE2EWithTimeoutRetry(
 ): Promise<E2EResult> {
   const { retryAttempts = 2, ...runOpts } = opts;
 
-  return withRetry(async () => {
-    const result = await runAgentE2E(query, runOpts);
-    if (isTimeoutError(result.answer)) {
-      throw new Error(result.answer);
+  try {
+    return await withRetry(async () => {
+      const result = await runAgentE2E(query, runOpts);
+      if (isE2EExternalModelError(result.answer)) {
+        throw new Error(result.answer);
+      }
+      return result;
+    }, {
+      maxAttempts: retryAttempts,
+      baseDelayMs: 2_000,
+      maxDelayMs: 5_000,
+      jitter: 0,
+      shouldRetry: (error) => error instanceof Error
+        && (isTimeoutError(error.message) || isOverloadedError(error.message) || isRateLimitError(error.message)),
+    });
+  } catch (error) {
+    if (isE2EPreflightSkipError(error)) {
+      throw error;
     }
-    return result;
-  }, {
-    maxAttempts: retryAttempts,
-    baseDelayMs: 2_000,
-    maxDelayMs: 5_000,
-    jitter: 0,
-    shouldRetry: (error) => error instanceof Error && isTimeoutError(error.message),
-  });
+    throw error;
+  }
 }
 
 export function readE2EChildPayloadFromArgv(): E2EChildPayload {

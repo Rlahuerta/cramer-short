@@ -32,15 +32,15 @@ const BTC_14D_ABSTAIN_REASON =
   'Evaluator abstained on every labeled 14d replay bundle, so directional accuracy is undefined.';
 
 // Deterministic lock for the current BTC replay + price fixtures, not a claim of broad live accuracy.
-// Refreshed after the zero-anchor cryptoModelOnly break fix enabled the more
-// conservative PR3F blend during structural breaks, which raises HOLD counts.
+// Refreshed after the Markov/Python mirror parity update shifted deterministic
+// BTC fixture confidence/HOLD counts while preserving the live-policy lift.
 const BTC_FIXTURE_BASELINE = {
   '1d': {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 20,
-      directionalAccuracy: 0.59375,
+      abstainCount: 28,
+      directionalAccuracy: 0.6145833333333334,
       brierScore: 0.2550127431393302,
       structuralBreakCount: 72,
       ready: true,
@@ -71,8 +71,8 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 16,
-      directionalAccuracy: 0.5,
+      abstainCount: 29,
+      directionalAccuracy: 0.65625,
       brierScore: 0.25477609958328445,
       structuralBreakCount: 50,
       ready: true,
@@ -103,8 +103,8 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 13,
-      directionalAccuracy: 0.5416666666666666,
+      abstainCount: 24,
+      directionalAccuracy: 0.59375,
       brierScore: 0.2637207940101452,
       structuralBreakCount: 50,
       ready: true,
@@ -135,8 +135,8 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 95,
       tradedCount: null,
-      abstainCount: 13,
-      directionalAccuracy: 0.5157894736842106,
+      abstainCount: 17,
+      directionalAccuracy: 0.5578947368421052,
       brierScore: 0.256354982659173,
       structuralBreakCount: 49,
       ready: true,
@@ -167,8 +167,8 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 93,
       tradedCount: null,
-      abstainCount: 9,
-      directionalAccuracy: 0.5161290322580645,
+      abstainCount: 13,
+      directionalAccuracy: 0.5053763440860215,
       brierScore: 0.26736459290288817,
       structuralBreakCount: 85,
       ready: true,
@@ -530,7 +530,7 @@ describe('combined short-horizon benchmark', () => {
     ).length;
 
     expect(naiveOneDay.steps.length).toBe(122);
-    expect(naiveHoldCount).toBe(28);
+    expect(naiveHoldCount).toBe(34);
     expect(naiveBreakCount).toBe(120);
     expect(report.horizons['1d'].markovOnly.observationCount).toBeLessThan(naiveOneDay.steps.length);
     expect(report.horizons['1d'].markovOnly.abstainCount).toBeLessThan(naiveHoldCount);

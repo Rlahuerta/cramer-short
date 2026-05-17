@@ -1,6 +1,9 @@
-import { describe, test, expect, mock, beforeAll } from 'bun:test';
+import { describe, test, expect } from 'bun:test';
 import { webFetchTool } from './web-fetch.js';
 import { extractText as extractPdfText } from 'unpdf';
+// Warm the HTML extractor's dynamic imports outside individual test timers.
+import '@mozilla/readability';
+import 'linkedom';
 
 // Minimal valid 1-page PDF with the text "Hello PDF World"
 const MINIMAL_PDF_BASE64 =
@@ -134,7 +137,9 @@ describe('web_fetch PDF content-type routing', () => {
     ) as unknown as typeof globalThis.fetch;
     try {
       const result = await (webFetchTool.invoke({ url: 'https://example.com/' }) as Promise<string>);
-      expect(result).not.toContain('"extractor": "pdf"');
+      const payload = JSON.parse(result) as { data?: { extractor?: string; text?: string } };
+      expect(payload.data?.extractor).not.toBe('pdf');
+      expect(payload.data?.text).toContain('Hello HTML');
     } finally {
       globalThis.fetch = originalFetch;
     }

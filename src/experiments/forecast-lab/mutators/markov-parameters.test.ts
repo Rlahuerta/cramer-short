@@ -268,16 +268,28 @@ describe('forecast-lab markov parameter mutators', () => {
   });
 
   it('anchors every search-replace spec to the current source text exactly once', () => {
+    const fileCache = new Map<string, string>();
+
     for (const profileId of MARKOV_PROFILE_IDS) {
       for (const candidate of listMarkovParameterMutations(profileId)) {
         for (const edit of candidate.edits) {
-          const fileContents = readFileSync(join(REPO_ROOT, edit.filePath), 'utf8');
+          let fileContents = fileCache.get(edit.filePath);
+          if (fileContents === undefined) {
+            fileContents = readFileSync(join(REPO_ROOT, edit.filePath), 'utf8');
+            fileCache.set(edit.filePath, fileContents);
+          }
+
           const matchCount = fileContents.split(edit.search).length - 1;
           const replaceCount = fileContents.split(edit.replace).length - 1;
+
+          if (matchCount !== edit.expectedReplacements) {
+            throw new Error(
+              `${profileId}/${candidate.id}/${edit.parameterId} expected ${edit.expectedReplacements} anchor in ${edit.filePath}, found ${matchCount}`,
+            );
+          }
+
           const patchedContents = fileContents.replace(edit.search, edit.replace);
 
-          expect(matchCount).toBe(edit.expectedReplacements);
-          expect(patchedContents).not.toBe(fileContents);
           expect(patchedContents.split(edit.search).length - 1).toBe(0);
           expect(patchedContents.split(edit.replace).length - 1).toBe(replaceCount + 1);
         }

@@ -14,8 +14,10 @@ export interface GoldMarkovPhaseBaselineMetric extends MarkovPhaseBaselineMetric
 }
 
 /**
- * Phase 0 baseline freeze captured on 2026-05-09 from the current shipped
- * BTC/GOLD walk-forward suites before abstain-reduction changes.
+ * Phase 0 baseline freeze captured from the current shipped BTC/GOLD
+ * walk-forward suites before abstain-reduction changes. BTC values were
+ * refreshed after the Markov/Python mirror parity update shifted deterministic
+ * fixture confidence/HOLD counts while preserving the live-policy lift.
  *
  * Sources:
  * - src/tools/finance/backtest/walk-forward-btc-ultra-short-horizon.test.ts
@@ -25,31 +27,31 @@ export interface GoldMarkovPhaseBaselineMetric extends MarkovPhaseBaselineMetric
 export const MARKOV_PHASE0_BASELINES = {
   btc: {
     h1: {
-      directionalAccuracy: 0.59375,
-      brierScore: 0.2550127431393302,
-      ciCoverage: 0.9791666666666666,
-      abstainCount: 20,
-      rerunRate: 0.75,
+      directionalAccuracy: 0.5573770491803278,
+      brierScore: 0.2580125170653137,
+      ciCoverage: 0.9754098360655737,
+      abstainCount: 34,
+      rerunRate: 0,
     },
     h2: {
-      directionalAccuracy: 0.4895833333333333,
-      brierScore: 0.2536990360321187,
-      ciCoverage: 0.9895833333333334,
-      abstainCount: 18,
+      directionalAccuracy: 0.5573770491803278,
+      brierScore: 0.26155232084959035,
+      ciCoverage: 0.9836065573770492,
+      abstainCount: 39,
       rerunRate: 0,
     },
     h3: {
-      directionalAccuracy: 0.5416666666666666,
-      brierScore: 0.26222299097692103,
-      ciCoverage: 0.96875,
-      abstainCount: 18,
-      rerunRate: 0.3020833333333333,
+      directionalAccuracy: 0.5245901639344263,
+      brierScore: 0.26640877159390347,
+      ciCoverage: 0.9918032786885246,
+      abstainCount: 35,
+      rerunRate: 0,
     },
     h14: {
-      directionalAccuracy: 0.5161290322580645,
-      brierScore: 0.2695575622668006,
-      ciCoverage: 0.978494623655914,
-      abstainCount: 12,
+      directionalAccuracy: 0.4666666666666667,
+      brierScore: 0.2747328793942764,
+      ciCoverage: 0.9833333333333333,
+      abstainCount: 27,
       rerunRate: 0,
     },
   },

@@ -137,7 +137,7 @@ export function formatShortHorizonReplayBenchmarkReport(
   return JSON.stringify(report, null, 2);
 }
 
-function parseCliArgs(argv: string[]): { bundlePath: string } {
+export function parseShortHorizonReplayBenchmarkCliArgs(argv: string[]): { bundlePath: string } {
   let bundlePath = DEFAULT_ARBITER_REPLAY_CACHE_BUNDLES_PATH;
 
   for (let i = 0; i < argv.length; i++) {
@@ -166,7 +166,7 @@ function parseCliArgs(argv: string[]): { bundlePath: string } {
 
 if (import.meta.main) {
   try {
-    const args = parseCliArgs(process.argv.slice(2));
+    const args = parseShortHorizonReplayBenchmarkCliArgs(process.argv.slice(2));
     const report = runShortHorizonReplayBenchmarkFromFile({
       bundlePath: args.bundlePath,
     });

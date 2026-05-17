@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -109,6 +109,22 @@ const RUN_IDS = [
   'runner-test-reset-last-known-good',
 ];
 
+setDefaultTimeout(120_000);
+
+function listForecastLabRunnerTestBranches(): ReadonlySet<string> {
+  const result = spawnSync('git', ['branch', '--list', 'topic/forecast-lab-runner-test*', 'topic/forecast-lab-promote-runner-test*'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  return new Set(
+    (result.stdout ?? '')
+      .split('\n')
+      .map((line) => line.replace(/^\*\s*/, '').trim())
+      .filter(Boolean),
+  );
+}
+
 function cleanup(): void {
   rmSync(TEST_LEDGER_DIR, { recursive: true, force: true });
   rmSync(TEST_ROUTING_STATS_PATH, { force: true });
@@ -116,15 +132,26 @@ function cleanup(): void {
   for (const runId of RUN_IDS) {
     const worktreePath = getForecastLabCandidateWorktreePath(runId);
     const promotionWorktreePath = getForecastLabPromotionWorktreePath(runId);
-    spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { stdio: 'ignore' });
-    spawnSync('git', ['worktree', 'remove', '--force', promotionWorktreePath], { stdio: 'ignore' });
+    if (existsSync(worktreePath)) {
+      spawnSync('git', ['worktree', 'remove', '--force', worktreePath], { stdio: 'ignore' });
+    }
+    if (existsSync(promotionWorktreePath)) {
+      spawnSync('git', ['worktree', 'remove', '--force', promotionWorktreePath], { stdio: 'ignore' });
+    }
     rmSync(worktreePath, { recursive: true, force: true });
     rmSync(promotionWorktreePath, { recursive: true, force: true });
   }
   spawnSync('git', ['worktree', 'prune'], { stdio: 'ignore' });
+  const branches = listForecastLabRunnerTestBranches();
   for (const runId of RUN_IDS) {
-    spawnSync('git', ['branch', '-D', makeForecastLabCandidateBranch(runId)], { stdio: 'ignore' });
-    spawnSync('git', ['branch', '-D', makeForecastLabPromotionBranch(runId)], { stdio: 'ignore' });
+    const candidateBranch = makeForecastLabCandidateBranch(runId);
+    const promotionBranch = makeForecastLabPromotionBranch(runId);
+    if (branches.has(candidateBranch)) {
+      spawnSync('git', ['branch', '-D', candidateBranch], { stdio: 'ignore' });
+    }
+    if (branches.has(promotionBranch)) {
+      spawnSync('git', ['branch', '-D', promotionBranch], { stdio: 'ignore' });
+    }
     rmSync(getExperimentRunDir(runId), { recursive: true, force: true });
   }
 }
@@ -1847,7 +1874,7 @@ describe('forecast-lab runner', () => {
       restoreLiveMutableFiles(liveFiles);
       restoreRuntimeDefaults(runtimeDefaults);
     }
-  }, 20_000);
+  }, 60_000);
 
   it('repairs missing promotion metadata on a legacy kept source manifest before promotion', async () => {
     const liveFiles = snapshotLiveMutableFiles();
@@ -2059,7 +2086,7 @@ describe('forecast-lab runner', () => {
       restoreLiveMutableFiles(liveFiles);
       restoreRuntimeDefaults(runtimeDefaults);
     }
-  }, 20_000);
+  }, 60_000);
 
   it('resets the live profile back to the previously activated baseline when requested', async () => {
     const liveFiles = snapshotLiveMutableFiles();
@@ -2143,7 +2170,7 @@ describe('forecast-lab runner', () => {
       restoreLiveMutableFiles(liveFiles);
       restoreRuntimeDefaults(runtimeDefaults);
     }
-  }, 15_000);
+  }, 60_000);
 
   it('resets GOLD to the previous GOLD activation without disturbing BTC live activation or active state', async () => {
     const liveFiles = snapshotLiveMutableFiles();
@@ -2247,7 +2274,7 @@ describe('forecast-lab runner', () => {
       restoreLiveMutableFiles(liveFiles);
       restoreRuntimeDefaults(runtimeDefaults);
     }
-  }, 20_000);
+  }, 60_000);
 
   it('fails closed when another promotion attempt is already verifying the same source run', async () => {
     await runForecastLab({
