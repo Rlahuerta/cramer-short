@@ -2,6 +2,8 @@
  * Ollama API utilities
  */
 
+import { getEnvOrDefault } from './env.js';
+
 interface OllamaModel {
   name: string;
   modified_at: string;
@@ -16,7 +18,7 @@ interface OllamaTagsResponse {
  * Fetches locally downloaded models from the Ollama API
  */
 export async function getOllamaModels(): Promise<string[]> {
-  const baseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+  const baseUrl = getEnvOrDefault('OLLAMA_BASE_URL', 'http://127.0.0.1:11434');
   
   try {
     const response = await fetch(`${baseUrl}/api/tags`, {

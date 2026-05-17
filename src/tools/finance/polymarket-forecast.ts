@@ -13,6 +13,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
+import { getEnv, hasEnv } from '../../utils/env.js';
 import {
   fetchPolymarketAnchorMarketsWithQueries,
   fetchPolymarketMarkets,
@@ -211,11 +212,11 @@ const CROSS_PLATFORM_DIVERGENCE_QUALITY_PENALTY = 8;
 const CROSS_PLATFORM_DIVERGENCE_SIGMA_MULTIPLIER = 1.08;
 
 function isLiveBrierReplayCalibratorEnabled(): boolean {
-  return /^(1|true|yes|on)$/i.test(process.env[LIVE_BRIER_REPLAY_FLAG] ?? '');
+  return /^(1|true|yes|on)$/i.test(getEnv(LIVE_BRIER_REPLAY_FLAG) ?? '');
 }
 
 function isCrossPlatformFusionEnabled(): boolean {
-  return /^(1|true|yes|on)$/i.test(process.env[CROSS_PLATFORM_FUSION_FLAG] ?? '');
+  return /^(1|true|yes|on)$/i.test(getEnv(CROSS_PLATFORM_FUSION_FLAG) ?? '');
 }
 
 function isUsablePolymarketProbability(probability: number): boolean {
@@ -1305,7 +1306,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
   const fetchAnchorMarketsWithQueries = dependencies.fetchAnchorMarketsWithQueries ?? fetchPolymarketAnchorMarketsWithQueries;
   const metaforecastQuestionFetcher = dependencies.fetchMetaforecastQuestions ?? fetchMetaforecastQuestions;
   const kalshiSignalFetcher = dependencies.fetchKalshiVolSignals
-    ?? (process.env.KALSHI_API_KEY ? fetchKalshiVolSignals : undefined);
+    ?? (hasEnv('KALSHI_API_KEY') ? fetchKalshiVolSignals : undefined);
   const readRecords = dependencies.readRecords ?? readSnapshotRecords;
   const readReplayBundles = dependencies.readReplayBundles ?? readArbiterReplayBundles;
   const recordReplayPolymarketCapture = dependencies.recordReplayPolymarketCapture

@@ -6,6 +6,7 @@ import { getFmpIncomeStatements, getFmpBalanceSheets, getFmpCashFlowStatements, 
 import { getYahooIncomeStatements } from './yahoo-finance.js';
 import { tavilySearch } from '../search/tavily.js';
 import { crossValidateFinancials, type FinancialRecord } from '../../utils/finance/cross-validate.js';
+import { hasEnv } from '../../utils/env.js';
 import { logger } from '../../utils/logger.js';
 
 const REDUNDANT_FINANCIAL_FIELDS = ['accession_number', 'currency', 'period'] as const;
@@ -93,7 +94,7 @@ async function tryFmp(
   period: string,
   limit: number,
 ): Promise<FmpCallResult> {
-  if (!process.env.FMP_API_KEY) return { kind: 'error' };
+  if (!hasEnv('FMP_API_KEY')) return { kind: 'error' };
   try {
     const raw = await fmpTool.invoke({ ticker, period: fmpPeriod(period), limit });
     const parsed = JSON.parse(raw) as { data: unknown };
@@ -112,7 +113,7 @@ async function tryFmp(
  * Returns null if TAVILY_API_KEY is not set or the search fails.
  */
 async function tryTavilySearch(ticker: string, statementType: string): Promise<string | null> {
-  if (!process.env.TAVILY_API_KEY) return null;
+  if (!hasEnv('TAVILY_API_KEY')) return null;
   try {
     const query = `${ticker} ${statementType} annual financial data 2024 2023`;
     const result = await tavilySearch.invoke({ query });

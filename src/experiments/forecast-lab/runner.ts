@@ -8,6 +8,7 @@ import {
   getExperimentsDir,
 } from '../../utils/paths.js';
 import { loadConfig, type Config } from '../../utils/config.js';
+import { getEnvironment } from '../../utils/env.js';
 import {
   appendLedgerEntry,
   findLatestKeptLedgerEntry,
@@ -696,7 +697,7 @@ export function createForecastLabCommandRunner(spawnProcess: typeof spawn): Fore
       try {
         child = spawnProcess(command.command, {
           cwd: context.cwd ?? process.cwd(),
-          env: { ...process.env, ...(command.env ?? {}) },
+          env: { ...getEnvironment(), ...(command.env ?? {}) },
           shell: true,
           stdio: ['ignore', 'pipe', 'pipe'],
         });

@@ -67,4 +67,11 @@ print(','.join(REGIME_STATES))
     expect(py.split(',').sort()).toEqual(['bear', 'bull', 'sideways']);
   }, PYTHON_PARITY_TIMEOUT_MS);
 
-  test('NUM_S
+  test('NUM_STATES is 3', async () => {
+    const py = await runPython(`
+from research.models.markov import NUM_STATES
+print(NUM_STATES)
+`);
+    expect(parseInt(py)).toBe(3);
+  }, PYTHON_PARITY_TIMEOUT_MS);
+});

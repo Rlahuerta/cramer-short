@@ -3,6 +3,7 @@ import { ExaSearchResults } from '@langchain/exa';
 import Exa from 'exa-js';
 import { z } from 'zod';
 import { formatToolResult, parseSearchResults } from '../types.js';
+import { getEnv } from '../../utils/env.js';
 import { logger } from '../../utils/logger.js';
 
 // Lazily initialized to avoid errors when API key is not set
@@ -11,7 +12,7 @@ type ExaSearchResultsOptions = ConstructorParameters<typeof ExaSearchResults>[0]
 
 function getExaTool(): { invoke: (query: string) => Promise<unknown> } {
   if (!exaTool) {
-    const client = new Exa(process.env.EXASEARCH_API_KEY);
+    const client = new Exa(getEnv('EXASEARCH_API_KEY'));
     // exa-js@2.x (root) vs exa-js@1.x (inside @langchain/exa) have
     // incompatible private fields but are compatible at runtime.
     exaTool = new ExaSearchResults({

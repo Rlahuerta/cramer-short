@@ -15,7 +15,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { getCramerShortDir } from './paths.js';
-import type { HistoryItem } from '../controllers/types.js';
+import type { HistoryItem } from '../shared/history-types.js';
 import { atomicWriteFile } from './atomic-write.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────

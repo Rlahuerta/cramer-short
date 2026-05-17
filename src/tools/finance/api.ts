@@ -1,4 +1,5 @@
 import { readCache, writeCache, describeRequest } from '../../utils/cache.js';
+import { getEnv } from '../../utils/env.js';
 import { logger } from '../../utils/logger.js';
 import { withRetry, isRateLimitError } from '../../utils/retry.js';
 import { trackFmpCall, getQuotaWarning } from '../../utils/finance/fmp-quota.js';
@@ -49,7 +50,7 @@ export function stripFieldsDeep(value: unknown, fields: readonly string[]): unkn
 }
 
 function getApiKey(): string {
-  const key = process.env.FINANCIAL_DATASETS_API_KEY || '';
+  const key = getEnv('FINANCIAL_DATASETS_API_KEY') || '';
   if (!key) {
     throw new Error(
       '[Financial Datasets API] FINANCIAL_DATASETS_API_KEY is not set. ' +

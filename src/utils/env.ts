@@ -5,6 +5,40 @@ import { getProviderById } from '@/providers';
 // Load .env on module import
 config({ quiet: true });
 
+export function getEnv(name: string): string | undefined {
+  return process.env[name];
+}
+
+export function hasEnv(name: string): boolean {
+  const value = getEnv(name);
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function getBooleanEnv(name: string): boolean {
+  return /^(1|true|yes|on)$/i.test(getEnv(name) ?? '');
+}
+
+export function getNumberEnv(name: string): number | undefined {
+  const raw = getEnv(name);
+  if (raw === undefined || raw === '') {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function getEnvOrDefault(name: string, fallback: string): string {
+  return getEnv(name) ?? fallback;
+}
+
+export function getEnvironment(): NodeJS.ProcessEnv {
+  return process.env;
+}
+
+export function setEnv(name: string, value: string): void {
+  process.env[name] = value;
+}
+
 export function getApiKeyNameForProvider(providerId: string): string | undefined {
   return getProviderById(providerId)?.apiKeyEnvVar;
 }
@@ -20,7 +54,7 @@ export function checkApiKeyExistsForProvider(providerId: string): boolean {
 }
 
 export function checkApiKeyExists(apiKeyName: string): boolean {
-  const value = process.env[apiKeyName];
+  const value = getEnv(apiKeyName);
   if (value && value.trim() && !value.trim().startsWith('your-')) {
     return true;
   }

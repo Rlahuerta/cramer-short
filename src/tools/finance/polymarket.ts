@@ -17,6 +17,7 @@ import {
   fetchClobPriceHistory,
   fetchClobSpread,
 } from './polymarket-clob.js';
+import { hasEnv } from '../../utils/env.js';
 
 // ---------------------------------------------------------------------------
 // Description (injected into system prompt)
@@ -638,7 +639,7 @@ function formatResults(markets: FormattedMarket[], query: string, warnings: stri
   return lines.join('\n').trim();
 }
 
-const anchorTrace = process.env.DEBUG_ANCHORS
+const anchorTrace = hasEnv('DEBUG_ANCHORS')
   ? (...args: unknown[]) => console.error('[ANCHOR_TRACE]', ...args)
   : (..._args: unknown[]) => {};
 

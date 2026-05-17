@@ -2,6 +2,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { tavilySearch } from '../search/tavily.js';
+import { hasEnv } from '../../utils/env.js';
 
 export const EARNINGS_TRANSCRIPT_DESCRIPTION = `
 Fetches earnings call transcripts for a stock from SEC EDGAR 8-K filings. Returns management prepared remarks, forward guidance statements, and Q&A highlights from the most recent (or specified) earnings call. Use for management tone analysis, guidance extraction, or when the user asks about what management said on an earnings call.
@@ -260,7 +261,7 @@ export const getEarningsTranscript = new DynamicStructuredTool({
       return formatToolResult(result, [transcriptUrl, indexUrl]);
     } catch (primaryError) {
       // Fall back to Tavily web search
-      if (process.env.TAVILY_API_KEY) {
+      if (hasEnv('TAVILY_API_KEY')) {
         try {
           const year = new Date().getFullYear();
           const q = input.quarter || `Q${Math.ceil((new Date().getMonth() + 1) / 3)} ${year}`;

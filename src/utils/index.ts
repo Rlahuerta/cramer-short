@@ -3,6 +3,12 @@ export {
   getApiKeyNameForProvider,
   getProviderDisplayName,
   checkApiKeyExistsForProvider,
+  getBooleanEnv,
+  getEnv,
+  getEnvironment,
+  getEnvOrDefault,
+  getNumberEnv,
+  hasEnv,
   saveApiKeyForProvider,
 } from './env.js';
 export { InMemoryChatHistory } from './in-memory-chat-history.js';

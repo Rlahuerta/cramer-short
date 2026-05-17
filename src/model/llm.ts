@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { getDefaultSystemPrompt } from '@/agent/prompts';
 import type { TokenUsage } from '@/agent/types';
 import { logger } from '../utils/logger.js';
+import { getEnv, hasEnv } from '../utils/env.js';
 import { getSetting } from '@/utils/config.js';
 import { classifyError, isNonRetryableError } from '@/utils/errors';
 import { resolveProvider, getProviderById } from '@/providers';
@@ -115,7 +116,7 @@ export function resolveLlmCallTimeoutMs(): LlmTimeoutResolution {
   }
 
   // Check env second
-  const envRaw = process.env.LLM_CALL_TIMEOUT_MS;
+  const envRaw = getEnv('LLM_CALL_TIMEOUT_MS');
   if (envRaw !== undefined && envRaw !== '') {
     const envTimeout = Number(envRaw);
     if (Number.isFinite(envTimeout) && envTimeout >= 30000 && envTimeout <= 600000) {
@@ -158,7 +159,7 @@ interface ModelOpts {
 type ModelFactory = (name: string, opts: ModelOpts, thinkOverride?: boolean) => BaseChatModel;
 
 function getApiKey(envVar: string): string {
-  const apiKey = process.env[envVar];
+  const apiKey = getEnv(envVar);
   if (!apiKey) {
     throw new Error(`[LLM] ${envVar} not found in environment variables`);
   }
@@ -222,7 +223,7 @@ const MODEL_FACTORIES: Record<string, ModelFactory> = {
       model: name.replace(/^ollama:/i, ''),
       ...opts,
       ...(useThink ? { think: true } : {}),
-      ...(process.env.OLLAMA_BASE_URL ? { baseUrl: process.env.OLLAMA_BASE_URL } : {}),
+      ...(hasEnv('OLLAMA_BASE_URL') ? { baseUrl: getEnv('OLLAMA_BASE_URL') } : {}),
     });
   },
 };

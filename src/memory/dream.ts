@@ -63,17 +63,37 @@ export interface DreamResult {
 /** Minimal LLM call shape — allows easy test injection without mocking modules. */
 export type CallLlmFn = (
   prompt: string,
-  opts: { model: string },
+  opts: { model: string; signal?: AbortSignal },
 ) => Promise<{ content: string }>;
+
+function createAbortError(message: string = 'Dream run aborted'): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
 
 /**
  * Adapter that wraps the real callLlm and extracts the text content string.
  * Used as the default in production; tests inject their own CallLlmFn directly.
  */
-async function defaultCallLlm(prompt: string, opts: { model: string }): Promise<{ content: string }> {
+async function defaultCallLlm(
+  prompt: string,
+  opts: { model: string; signal?: AbortSignal },
+): Promise<{ content: string }> {
   // Disable thinking for dream consolidation: output must be parseable plain text.
   // Use a 5-minute timeout — consolidation prompts can be large and cloud models may be slow.
-  const result = await realCallLlm(prompt, { model: opts.model, thinkOverride: false, timeoutMs: 300_000 });
+  const result = await realCallLlm(prompt, {
+    model: opts.model,
+    signal: opts.signal,
+    thinkOverride: false,
+    timeoutMs: 300_000,
+  });
   const raw = result.response;
   if (typeof raw === 'string') return { content: raw };
   const rawContent = (raw as { content?: unknown }).content;
@@ -178,20 +198,32 @@ export function parseDreamOutput(raw: string): { memory: string; finance: string
 // ---------------------------------------------------------------------------
 
 /** Analyses all memory files and returns a signal report. No LLM involved. */
-export async function gatherSignals(store: MemoryStore): Promise<DreamSignal> {
+export async function gatherSignals(store: MemoryStore, signal?: AbortSignal): Promise<DreamSignal> {
+  throwIfAborted(signal);
   const dailyFiles = await store.listDailyFiles();
   let estimatedTokens = 0;
   const relativeLanguageFiles: string[] = [];
   const tickerMap = new Map<string, Set<string>>(); // ticker → set of files it appears in
 
   // Include core files in the token estimate.
-  for (const filename of ['MEMORY.md', 'FINANCE.md']) {
-    const content = await store.readMemoryFile(filename);
+  const coreContents = await Promise.all(
+    ['MEMORY.md', 'FINANCE.md'].map(async (filename) => {
+      throwIfAborted(signal);
+      return await store.readMemoryFile(filename);
+    }),
+  );
+  for (const content of coreContents) {
     estimatedTokens += estimateTokens(content);
   }
 
-  for (const filename of dailyFiles) {
-    const content = await store.readMemoryFile(filename);
+  const dailyContents = await Promise.all(
+    dailyFiles.map(async (filename) => {
+      throwIfAborted(signal);
+      return { filename, content: await store.readMemoryFile(filename) };
+    }),
+  );
+  for (const { filename, content } of dailyContents) {
+    throwIfAborted(signal);
     if (!content.trim()) continue;
 
     estimatedTokens += estimateTokens(content);
@@ -256,22 +288,31 @@ async function consolidate(
   signal: DreamSignal,
   model: string,
   callLlmFn: CallLlmFn,
+  abortSignal?: AbortSignal,
 ): Promise<DreamResult> {
   // Build tagged content from all memory files.
-  const sections: string[] = [];
-  for (const filename of ['MEMORY.md', 'FINANCE.md']) {
-    const content = (await store.readMemoryFile(filename)).trim();
-    if (content) sections.push(`### ${filename}\n${content}`);
-  }
-  for (const filename of signal.dailyFiles) {
-    const content = (await store.readMemoryFile(filename)).trim();
-    if (content) sections.push(`### ${filename}\n${content}`);
-  }
+  throwIfAborted(abortSignal);
+  const sections = [
+    ...(await Promise.all(
+      ['MEMORY.md', 'FINANCE.md'].map(async (filename) => {
+        throwIfAborted(abortSignal);
+        const content = (await store.readMemoryFile(filename)).trim();
+        return content ? `### ${filename}\n${content}` : null;
+      }),
+    )),
+    ...(await Promise.all(
+      signal.dailyFiles.map(async (filename) => {
+        throwIfAborted(abortSignal);
+        const content = (await store.readMemoryFile(filename)).trim();
+        return content ? `### ${filename}\n${content}` : null;
+      }),
+    )),
+  ].filter((section): section is string => section !== null);
 
   const today = new Date().toISOString().slice(0, 10);
   const prompt = buildConsolidationPrompt(today, sections.join('\n\n---\n\n'));
 
-  const result = await callLlmFn(prompt, { model });
+  const result = await callLlmFn(prompt, { model, signal: abortSignal });
   const parsed = parseDreamOutput(result.content ?? '');
 
   if (!parsed) {
@@ -281,8 +322,11 @@ async function consolidate(
   }
 
   // Phase 4: read existing files, dedup, then write consolidated files.
-  const existingMemory = await store.readMemoryFile('MEMORY.md').catch(() => '');
-  const existingFinance = await store.readMemoryFile('FINANCE.md').catch(() => '');
+  throwIfAborted(abortSignal);
+  const [existingMemory, existingFinance] = await Promise.all([
+    store.readMemoryFile('MEMORY.md').catch(() => ''),
+    store.readMemoryFile('FINANCE.md').catch(() => ''),
+  ]);
 
   const dedupedMemory = deduplicateInsights(parsed.memory, existingMemory);
   const dedupedFinance = deduplicateInsights(parsed.finance, existingFinance);
@@ -335,10 +379,11 @@ export async function incrementDreamSessionCount(store: MemoryStore): Promise<vo
 export async function runDream(
   store: MemoryStore,
   model: string,
-  options: { force?: boolean; callLlm?: CallLlmFn } = {},
+  options: { force?: boolean; callLlm?: CallLlmFn; signal?: AbortSignal } = {},
 ): Promise<DreamResult> {
-  const { force = false, callLlm: callLlmFn = defaultCallLlm } = options;
+  const { force = false, callLlm: callLlmFn = defaultCallLlm, signal } = options;
 
+  throwIfAborted(signal);
   const [meta, dailyFiles] = await Promise.all([
     store.readDreamMeta(),
     store.listDailyFiles(),
@@ -355,18 +400,18 @@ export async function runDream(
   }
 
   // Phase 2: gather signals.
-  const signal = await gatherSignals(store);
+  const dreamSignal = await gatherSignals(store, signal);
 
   // Skip if total content is too sparse (unless forced).
-  if (!force && signal.estimatedTokens < MIN_TOKENS) {
+  if (!force && dreamSignal.estimatedTokens < MIN_TOKENS) {
     return {
       ran: false,
-      reason: `Content too sparse (${signal.estimatedTokens} tokens, ${MIN_TOKENS} minimum)`,
+      reason: `Content too sparse (${dreamSignal.estimatedTokens} tokens, ${MIN_TOKENS} minimum)`,
       archivedFiles: [],
       updatedFiles: [],
     };
   }
 
   // Phase 3 + 4: LLM consolidation + rewrite.
-  return consolidate(store, signal, model, callLlmFn);
+  return consolidate(store, dreamSignal, model, callLlmFn, signal);
 }

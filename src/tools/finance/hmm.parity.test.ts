@@ -8,6 +8,8 @@ import { describe, test, expect } from 'bun:test';
 import { runPython } from '../../utils/finance/python-parity.js';
 import { matPow } from './hmm.js';
 
+const PYTHON_PARITY_TIMEOUT_MS = 20_000;
+
 describe('TS/Python parity — hmm.mat_pow', () => {
   test('2x2 matrix, power 3', () => {
     const A = [
@@ -45,9 +47,10 @@ results = [student_t_log_pdf(0.0, 0.0, 1.0, 5),
 print(json.dumps(results))
 `);
     const [z0, z1, z2] = JSON.parse(py);
-    // t(5, mu=0, sigma=1) log-pdf ≈ log(t.pdf(0,5)) ≈ -1.24
-    expect(z0).toBeCloseTo(-1.24, 1);
-    expect(z1).toBeCloseTo(-1.68, 1);
-    expect(z2).toBeCloseTo(-2.53, 1);
-  });
+    expect(z0).toBeCloseTo(-0.9686195890547241, 10);
+    expect(z1).toBeCloseTo(-1.5155842594365878, 10);
+    expect(z2).toBeCloseTo(-2.731979583761081, 10);
+    expect(z0).toBeGreaterThan(z1);
+    expect(z1).toBeGreaterThan(z2);
+  }, PYTHON_PARITY_TIMEOUT_MS);
 });

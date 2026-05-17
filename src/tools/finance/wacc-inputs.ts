@@ -8,6 +8,7 @@ import {
   estimateBetaFromSector,
   type WaccInputs,
 } from '../../utils/finance/wacc.js';
+import { hasEnv } from '../../utils/env.js';
 import { logger } from '../../utils/logger.js';
 
 export const WACC_INPUTS_DESCRIPTION = `
@@ -125,7 +126,7 @@ export const waccInputsTool = new DynamicStructuredTool({
     let beta = extractBetaFromSnapshot(snapshot);
     let betaSource = 'Financial Datasets snapshot';
 
-    if (beta === null && process.env.FMP_API_KEY) {
+    if (beta === null && hasEnv('FMP_API_KEY')) {
       try {
         const profile = await fmpApi.get<Array<{ beta?: number; sector?: string }>>('/profile', {
           symbol: ticker,

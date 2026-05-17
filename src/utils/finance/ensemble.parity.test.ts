@@ -97,4 +97,12 @@ print(depth_decay_haircut(None))
   }, PYTHON_PARITY_TIMEOUT_MS);
 });
 
-describe('TS/Python parity — YES_BIAS_MU
+describe('TS/Python parity — YES_BIAS_MULTIPLIER', () => {
+  test('constant matches Python', async () => {
+    const py = await runPython(`
+from research.utils.calibration import YES_BIAS_MULTIPLIER
+print(YES_BIAS_MULTIPLIER)
+`);
+    expect(YES_BIAS_MULTIPLIER).toBeCloseTo(parseFloat(py), 10);
+  }, PYTHON_PARITY_TIMEOUT_MS);
+});

@@ -9,8 +9,10 @@
  */
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AgentEvent, DoneEvent } from '../agent/types.js';
+import type { AgentEvent, DoneEvent } from '../shared/agent-events.js';
+import { loadAgentCtor } from '../shared/agent-loader.js';
 import { InMemoryChatHistory } from './in-memory-chat-history.js';
+import { getEnv, getEnvironment, getEnvOrDefault } from './env.js';
 import { isTimeoutError } from './errors.js';
 import { logger } from './logger.js';
 import { withRetry } from './retry.js';
@@ -18,7 +20,7 @@ import { withRetry } from './retry.js';
 const DEFAULT_E2E_TIMEOUT_MS = 600_000;
 
 function resolveE2ETimeoutMs(): number {
-  const raw = process.env.E2E_TIMEOUT_MS?.trim();
+  const raw = getEnv('E2E_TIMEOUT_MS')?.trim();
   if (!raw) {
     return DEFAULT_E2E_TIMEOUT_MS;
   }
@@ -82,7 +84,7 @@ export interface E2EPreflightStatus {
 }
 
 function resolveE2EPreflightTimeoutMs(): number {
-  const raw = process.env.E2E_PREFLIGHT_TIMEOUT_MS?.trim();
+  const raw = getEnv('E2E_PREFLIGHT_TIMEOUT_MS')?.trim();
   if (!raw) {
     return DEFAULT_E2E_PREFLIGHT_TIMEOUT_MS;
   }
@@ -102,7 +104,7 @@ function isOllamaModel(model: string): boolean {
 }
 
 async function probeOllamaModel(model: string, timeoutMs: number): Promise<string | null> {
-  const baseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+  const baseUrl = getEnvOrDefault('OLLAMA_BASE_URL', 'http://127.0.0.1:11434');
   const ollamaModel = normalizeOllamaModel(model);
 
   try {
@@ -144,7 +146,7 @@ async function probeOllamaModel(model: string, timeoutMs: number): Promise<strin
 }
 
 async function resolveDefaultE2EModel(): Promise<string> {
-  const override = process.env.E2E_MODEL?.trim();
+  const override = getEnv('E2E_MODEL')?.trim();
   if (override) {
     return override;
   }
@@ -172,7 +174,7 @@ async function resolveDefaultE2EModel(): Promise<string> {
 
 export async function getE2EPreflightStatus(modelOverride?: string): Promise<E2EPreflightStatus> {
   const model = modelOverride ?? await resolveDefaultE2EModel();
-  const cacheKey = `${model}\0${process.env.OLLAMA_BASE_URL ?? ''}\0${process.env.E2E_PREFLIGHT_TIMEOUT_MS ?? ''}`;
+  const cacheKey = `${model}\0${getEnv('OLLAMA_BASE_URL') ?? ''}\0${getEnv('E2E_PREFLIGHT_TIMEOUT_MS') ?? ''}`;
   const cached = preflightPromises.get(cacheKey);
   if (cached) {
     return cached;
@@ -359,7 +361,7 @@ export async function runAgentE2EInProcess(
   // Dynamic import to avoid mock.module contamination from unit test files
   // that load earlier in the same Bun worker. At this point afterAll hooks
   // from unit tests have already restored the real module exports.
-  const { Agent: AgentCtor } = await import('../agent/agent.js');
+  const AgentCtor = await loadAgentCtor();
 
   const agent = await AgentCtor.create({
     model,
@@ -419,7 +421,7 @@ export async function runAgentE2E(
   query: string,
   opts: E2EOptions = {},
 ): Promise<E2EResult> {
-  if (process.env.CRAMER_E2E_CHILD === '1') {
+  if (getEnv('CRAMER_E2E_CHILD') === '1') {
     return runAgentE2EInProcess(query, opts);
   }
 
@@ -432,7 +434,7 @@ export async function runAgentE2E(
     cmd: [process.execPath, 'run', childScriptPath, payload],
     cwd: process.cwd(),
     env: {
-      ...process.env,
+      ...getEnvironment(),
       CRAMER_E2E_CHILD: '1',
     },
     stdout: 'pipe',

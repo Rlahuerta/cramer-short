@@ -23,14 +23,15 @@
  */
 import { it } from 'bun:test';
 import { getE2EDynamicSkipReason, getE2EPreflightStatus, markE2ESkippedFromError } from './e2e-helpers.js';
+import { getBooleanEnv } from './env.js';
 
 export const RUN_INTEGRATION =
-  process.env.SKIP_INTEGRATION === '1' ? false : process.env.RUN_INTEGRATION === '1';
+  getBooleanEnv('SKIP_INTEGRATION') ? false : getBooleanEnv('RUN_INTEGRATION');
 
 // E2E tests always require explicit opt-in to prevent worker contamination:
 // unit test files mock ../model/llm.js which would make E2E use a fake LLM.
 // Use `bun run test:e2e` which sets RUN_E2E=1 and runs only e2e files.
-export const RUN_E2E = process.env.RUN_E2E === '1';
+export const RUN_E2E = getBooleanEnv('RUN_E2E');
 
 const initialE2EPreflight = RUN_E2E ? await getE2EPreflightStatus() : null;
 if (initialE2EPreflight && !initialE2EPreflight.available) {

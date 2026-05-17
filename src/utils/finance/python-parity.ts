@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { getEnvironment } from '../env.js';
 
 const CONDA_ENV_NAME = 'cramer-research';
 
@@ -53,7 +54,7 @@ export function runPython(script: string): Promise<string> {
     const proc = Bun.spawn({
       cmd: [python, '-c', script],
       cwd: repoRoot,
-      env: { ...process.env, PYTHONPATH: repoRoot },
+      env: { ...getEnvironment(), PYTHONPATH: repoRoot },
       stdout: 'pipe',
       stderr: 'pipe',
     });

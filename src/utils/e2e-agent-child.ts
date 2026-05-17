@@ -1,4 +1,6 @@
-process.env.CRAMER_E2E_CHILD = '1';
+import { setEnv } from './env.js';
+
+setEnv('CRAMER_E2E_CHILD', '1');
 export {};
 
 const {

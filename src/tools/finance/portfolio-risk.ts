@@ -2,6 +2,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { api } from './api.js';
 import { formatToolResult } from '../types.js';
+import { hasEnv } from '../../utils/env.js';
 import { buildPortfolioRiskReport } from '../../utils/finance/portfolio-stats.js';
 
 export const PORTFOLIO_RISK_DESCRIPTION = `
@@ -112,7 +113,7 @@ export function createPortfolioRiskTool(options: PortfolioRiskToolOptions = {}):
     description: PORTFOLIO_RISK_DESCRIPTION,
     schema: PortfolioRiskInputSchema,
     func: async (input) => {
-      if (!process.env.FINANCIAL_DATASETS_API_KEY) {
+      if (!hasEnv('FINANCIAL_DATASETS_API_KEY')) {
         return formatToolResult({
           error: 'FINANCIAL_DATASETS_API_KEY is not set. Portfolio risk analysis requires historical price data.',
         });

@@ -6,6 +6,7 @@ import {
   createRawWhaleReplayRowFromToolResult,
   type RawWhaleReplayRow,
 } from './arbiter-replay.js';
+import { getEnv } from '../../utils/env.js';
 
 export const ONCHAIN_CRYPTO_DESCRIPTION = `
 Fetches on-chain and market intelligence metrics for cryptocurrencies from CoinGecko (free, no key). Returns market data, community sentiment, developer activity, and global market context. Use when the user asks about crypto fundamentals, on-chain health, developer activity, or market sentiment beyond just price.
@@ -52,7 +53,7 @@ async function fetchWhaleData(
   const upper = ticker.trim().toUpperCase();
 
   // Prefer Whale Alert API when a key is configured (multi-chain)
-  const whaleAlertKey = process.env.WHALE_ALERT_API_KEY;
+  const whaleAlertKey = getEnv('WHALE_ALERT_API_KEY');
   if (whaleAlertKey) {
     try {
       const res = await fetch(

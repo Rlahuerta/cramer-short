@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomInt } from 'node:crypto';
 import { isSelfChatMode, normalizeE164 } from './utils.js';
+import { getEnv } from '../utils/env.js';
 import { cramerShortPath } from '../utils/paths.js';
 
 const PAIRING_REPLY_HISTORY_GRACE_MS = 30_000;
@@ -16,7 +17,7 @@ type PairingStore = Record<string, PairingRequest>;
 
 function pairingPath(): string {
   return (
-    process.env.DEXTER_PAIRING_PATH ??
+    getEnv('DEXTER_PAIRING_PATH') ??
     cramerShortPath('pairing', 'whatsapp.json')
   );
 }
@@ -250,4 +251,3 @@ export async function checkInboundAccessControl(params: {
     resolvedAccountId: params.accountId,
   };
 }
-

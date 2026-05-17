@@ -53,6 +53,7 @@ function makePage(title: string) {
     url: mock(function (this: any) { return this.currentUrl; }),
     title: mock(async function (this: any) { return this.currentTitle; }),
     context: mock(() => ({ newPage: mock(async () => fakeNewPage) })),
+    close: mock(async () => {}),
     waitForLoadState: mock(async () => {}),
     _snapshotForAI: mock(async function (this: any) { return { full: this.snapshot }; }),
     locator: mock((selector: string) => makeLocator({ selector })),
@@ -150,6 +151,7 @@ describe('browser tool with mocked Playwright', () => {
       url: 'https://example.com/new-tab',
       title: 'Second page',
     });
+    expect(fakePage.close).toHaveBeenCalledTimes(1);
 
     const read = parseToolResult(await browserTool.invoke({ action: 'read' }) as string);
     expect(read).toMatchObject({
@@ -160,6 +162,20 @@ describe('browser tool with mocked Playwright', () => {
 
     const close = parseToolResult(await browserTool.invoke({ action: 'close' }) as string);
     expect(close).toEqual({ ok: true, message: 'Browser closed' });
+    expect(browserCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the browser when a Playwright action throws', async () => {
+    fakePage.goto = mock(async () => {
+      throw new Error('navigation failed');
+    });
+
+    const result = parseToolResult(await browserTool.invoke({
+      action: 'navigate',
+      url: 'https://example.com/bad',
+    }) as string);
+
+    expect(result.error).toBe('[Browser (Playwright)] navigation failed');
     expect(browserCloseMock).toHaveBeenCalledTimes(1);
   });
 

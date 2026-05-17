@@ -75,6 +75,7 @@ import type {
   BtcShortHorizonLivePolicy,
   GoldShortHorizonLivePolicy,
 } from './markov-distribution/live-policies.js';
+import { hasEnv } from '../../utils/env.js';
 
 import {
   FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
@@ -1280,7 +1281,7 @@ function normalizeSearchIdentityPhrase(ticker: string, phrase: string): string {
   return normalizeForPolymarket(phrase, shouldReplaceTicker ? identity.canonicalTicker : null);
 }
 
-const anchorTrace = process.env.DEBUG_ANCHORS
+const anchorTrace = hasEnv('DEBUG_ANCHORS')
   ? (...args: unknown[]) => console.error('[ANCHOR_TRACE]', ...args)
   : (..._args: unknown[]) => {};
 

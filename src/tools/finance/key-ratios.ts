@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { api, stripFieldsDeep } from './api.js';
 import { formatToolResult } from '../types.js';
 import { tavilySearch } from '../search/tavily.js';
+import { hasEnv } from '../../utils/env.js';
 
 const REDUNDANT_FINANCIAL_FIELDS = ['accession_number', 'currency', 'period'] as const;
 
@@ -26,7 +27,7 @@ export const getKeyRatios = new DynamicStructuredTool({
       return formatToolResult(data.snapshot || {}, [url]);
     } catch {
       // Primary API failed (402 or network) — fall back to Tavily web search
-      if (process.env.TAVILY_API_KEY) {
+      if (hasEnv('TAVILY_API_KEY')) {
         try {
           return await tavilySearch.invoke({
             query: `${ticker} key financial ratios P/E EV/EBITDA profit margins ROE return on equity 2024 2025`,
@@ -116,7 +117,7 @@ export const getHistoricalKeyRatios = new DynamicStructuredTool({
     } catch {
       // Primary API failed — fall back to Tavily web search
       const ticker = input.ticker.trim().toUpperCase();
-      if (process.env.TAVILY_API_KEY) {
+      if (hasEnv('TAVILY_API_KEY')) {
         try {
           return await tavilySearch.invoke({
             query: `${ticker} historical P/E ratio EV/EBITDA margins valuation trend 2022 2023 2024`,

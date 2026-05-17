@@ -37,7 +37,9 @@ import { editorTheme, theme } from './theme.js';
 import type { HistoryItem } from './controllers/types.js';
 import {
   exportSession,
+  getBooleanEnv,
   getApiKeyNameForProvider,
+  getNumberEnv,
   getProviderDisplayName,
   logger,
   logError,
@@ -133,7 +135,7 @@ export async function runCli() {
   let skillsList: SkillMetadata[] = [];
   // Watchlist auto-refresh state
   let watchlistRefreshIntervalMs: number = (() => {
-    const env = parseInt(process.env.WATCHLIST_REFRESH_INTERVAL_MS ?? '0', 10);
+    const env = getNumberEnv('WATCHLIST_REFRESH_INTERVAL_MS') ?? 0;
     return Number.isFinite(env) && env >= 1000 ? env : 0;
   })();
   let watchlistRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -183,7 +185,7 @@ export async function runCli() {
   const errorText = new Text('', 0, 0);
   const workingIndicator = new WorkingIndicatorComponent(tui);
   const editor = new CustomEditor(tui, editorTheme);
-  const debugPanel = new DebugPanelComponent(8, process.env.DEBUG === 'true' || process.env.DEBUG === '1');
+  const debugPanel = new DebugPanelComponent(8, getBooleanEnv('DEBUG'));
 
   // Detect fd/fdfind for fuzzy @ completion; falls back to readdirSync if absent.
   const fdPath = Bun.which('fd') ?? Bun.which('fdfind') ?? null;

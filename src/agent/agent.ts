@@ -210,18 +210,22 @@ export class Agent {
   static async create(config: AgentConfig = {}): Promise<Agent> {
     const model = config.model ?? DEFAULT_MODEL;
     const tools = config.tools ?? getTools(model, { watchlistEntries: config.watchlistEntries });
-    const soulContent = await loadSoulDocument();
+    const soulContentPromise = loadSoulDocument();
     let memoryFiles: string[] = [];
     let memoryContext: string | null = null;
 
     if (config.memoryEnabled !== false) {
       const memoryManager = await MemoryManager.get();
-      memoryFiles = await memoryManager.listFiles();
-      const session = await memoryManager.loadSessionContext();
+      const [files, session] = await Promise.all([
+        memoryManager.listFiles(),
+        memoryManager.loadSessionContext(),
+      ]);
+      memoryFiles = files;
       if (session.text.trim()) {
         memoryContext = session.text;
       }
     }
+    const soulContent = await soulContentPromise;
 
     const systemPrompt = buildSystemPrompt(
       model,

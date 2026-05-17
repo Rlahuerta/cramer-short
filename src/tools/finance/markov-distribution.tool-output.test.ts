@@ -2878,4 +2878,7 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.report).not.toContain('commodity bypass');
       expect(parsed.data.report).not.toContain('model-only commodity emission');
       expect(parsed.data.report).not.toContain('GLD');
-      expec
+      expect(parsed.data.report).not.toContain('gold');
+    });
+  });
+});

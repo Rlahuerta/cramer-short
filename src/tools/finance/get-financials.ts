@@ -7,6 +7,7 @@ import { formatToolResult } from '../types.js';
 import { getCurrentDate } from '../../utils/date.js';
 import { tavilySearch } from '../search/tavily.js';
 import { getPreferredApi, setPreferredApi } from '../../utils/api-routing-cache.js';
+import { hasEnv } from '../../utils/env.js';
 
 /**
  * Rich description for the get_financials tool.
@@ -318,7 +319,7 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
 
       // When ALL API sub-tools failed, automatically try a web search before giving up.
       // This prevents the agent from having to explicitly call web_search on 402 errors.
-      if (successfulResults.length === 0 && failedResults.length > 0 && process.env.TAVILY_API_KEY) {
+      if (successfulResults.length === 0 && failedResults.length > 0 && hasEnv('TAVILY_API_KEY')) {
         try {
           const ticker = extractTicker(input.query);
           const searchQuery = ticker

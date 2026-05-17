@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HistoryItem } from '../controllers/types.js';
+import type { HistoryItem } from '../shared/history-types.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);

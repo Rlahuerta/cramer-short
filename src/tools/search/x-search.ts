@@ -2,6 +2,7 @@ import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
+import { getEnv } from '../../utils/env.js';
 
 const X_API_BASE = 'https://api.x.com/2';
 const RATE_DELAY_MS = 350; // Delay between pagination requests to reduce rate-limit risk
@@ -41,7 +42,7 @@ interface RawXUserResponse {
 }
 
 function getBearerToken(): string {
-  const token = process.env.X_BEARER_TOKEN;
+  const token = getEnv('X_BEARER_TOKEN');
   if (!token) throw new Error('X_BEARER_TOKEN is not set');
   return token;
 }

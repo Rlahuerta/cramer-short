@@ -12,8 +12,8 @@ mock.module('../paths.js', () => ({
 
 const { exportToMarkdown, exportToJson, exportToCsv, exportSession } =
   await import(`./export.js?t=${nextTestId('module')}`) as typeof import('./export.js');
-import type { HistoryItem } from '../../controllers/types.js';
-import type { DisplayEvent } from '../../agent/types.js';
+import type { DisplayEvent } from '../../shared/agent-events.js';
+import type { HistoryItem } from '../../shared/history-types.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);

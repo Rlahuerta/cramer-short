@@ -2,6 +2,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { stripFieldsDeep } from './api.js';
 import { formatToolResult } from '../types.js';
+import { getEnv } from '../../utils/env.js';
 import { withRetry, isRateLimitError } from '../../utils/retry.js';
 
 const FMP_BASE_URL = 'https://financialmodelingprep.com/stable';
@@ -31,7 +32,7 @@ function toFmpPeriod(period: 'annual' | 'quarterly'): 'annual' | 'quarter' {
  */
 export const fmpApi = {
   async get<T>(path: string, params: Record<string, string | number>): Promise<T> {
-    const apiKey = process.env.FMP_API_KEY ?? '';
+    const apiKey = getEnv('FMP_API_KEY') ?? '';
     if (!apiKey) {
       throw new Error(
         '[FMP API] FMP_API_KEY is not set. ' +

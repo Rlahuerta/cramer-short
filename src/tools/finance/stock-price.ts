@@ -5,6 +5,7 @@ import { formatToolResult } from '../types.js';
 import { tavilySearch } from '../search/tavily.js';
 import type { DynamicStructuredTool as DST } from '@langchain/core/tools';
 import type { RobinhoodQuote } from './robinhood-client.js';
+import { hasEnv } from '../../utils/env.js';
 
 type RobinhoodQuoteFn = (ticker: string) => Promise<RobinhoodQuote | null>;
 
@@ -50,7 +51,7 @@ export function makeGetStockPrice(
           };
           return formatToolResult(data, [`https://robinhood.com/stocks/${ticker}`]);
         }
-        if (process.env.TAVILY_API_KEY) {
+        if (hasEnv('TAVILY_API_KEY')) {
           try {
             return await tavilySearch.invoke({
               query: `${ticker} stock price today current share price market cap`,

@@ -23,6 +23,46 @@ type ActiveListener = {
 
 const listeners = new Map<string, ActiveListener>();
 
+function createAbortError(message: string = 'WhatsApp send aborted'): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+async function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  if (signal.aborted) {
+    throw createAbortError();
+  }
+
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(createAbortError());
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export function setActiveWebListener(accountId: string, sock: WaSocket | null): void {
   if (!sock) {
     listeners.delete(accountId);
@@ -95,6 +135,7 @@ export async function sendMessageWhatsApp(params: {
   body: string;
   accountId?: string;
   media?: AnyMessageContent;
+  signal?: AbortSignal;
 }): Promise<{ messageId: string; toJid: string }> {
   const active = getActive(params.accountId);
   debugLog(`[outbound] input to=${params.to}`);
@@ -103,7 +144,7 @@ export async function sendMessageWhatsApp(params: {
   const payload = params.media ?? { text: params.body };
   debugLog(`[outbound] sending message...`);
   const startedAt = Date.now();
-  const result = await active.sock.sendMessage(to, payload);
+  const result = await withAbort(active.sock.sendMessage(to, payload), params.signal);
   const durationMs = Date.now() - startedAt;
   const messageId = result?.key?.id ?? 'unknown';
   console.log(`Sent message ${messageId} -> ${to} (${durationMs}ms)`);
@@ -116,4 +157,3 @@ export async function sendComposing(params: { to: string; accountId?: string }):
   const { toJid: to } = assertOutboundAllowed({ to: params.to, accountId: params.accountId });
   await active.sock.sendPresenceUpdate('composing', to);
 }
-

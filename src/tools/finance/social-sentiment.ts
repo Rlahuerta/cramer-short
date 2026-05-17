@@ -13,6 +13,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { xApiBreaker } from '../../utils/circuit-breaker.js';
+import { getEnv } from '../../utils/env.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -189,7 +190,7 @@ async function fetchReddit(query: string, subreddits: string[], limit = 25): Pro
 // ---------------------------------------------------------------------------
 
 async function fetchXTweets(query: string, limit: number): Promise<SentimentPost[]> {
-  const token = process.env.X_BEARER_TOKEN;
+  const token = getEnv('X_BEARER_TOKEN');
   if (!token) return [];
 
   if (xApiBreaker.isOpen()) return [];

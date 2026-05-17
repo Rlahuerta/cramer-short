@@ -1,3 +1,5 @@
+import { getEnv } from '../../utils/env.js';
+
 type KalshiEventType = 'fomc' | 'cpi' | 'nfp' | 'other';
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -129,7 +131,7 @@ export class KalshiUnconfiguredError extends Error {
 }
 
 export async function fetchKalshiVolSignals(opts: KalshiFetchOptions): Promise<KalshiVolSignal[]> {
-  const apiKey = opts.apiKey ?? process.env.KALSHI_API_KEY;
+  const apiKey = opts.apiKey ?? getEnv('KALSHI_API_KEY');
   if (!apiKey) throw new KalshiUnconfiguredError();
 
   const fetchImpl = opts.fetchImpl ?? fetch;

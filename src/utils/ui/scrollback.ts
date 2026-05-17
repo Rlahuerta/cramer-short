@@ -5,8 +5,8 @@ import type {
   ToolEndEvent,
   ToolErrorEvent,
   ToolStartEvent,
-} from '../../agent/types.js';
-import type { HistoryItem } from '../../controllers/types.js';
+} from '../../shared/agent-events.js';
+import type { HistoryItem } from '../../shared/history-types.js';
 import { theme } from '../../theme.js';
 import { formatResponse } from './markdown-table.js';
 import { summarizeToolResult } from '../parsing/tool-result-summary.js';
