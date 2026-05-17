@@ -104,6 +104,22 @@ def _mat_pow(P: np.ndarray, n: int) -> np.ndarray:
     return np.linalg.matrix_power(P, n)
 
 
+def _normalize_state_weight_vector(weights: np.ndarray | list[float]) -> np.ndarray:
+    arr = np.asarray(weights, dtype=float)
+    if arr.size != NUM_STATES:
+        return np.full(NUM_STATES, 1 / NUM_STATES, dtype=float)
+    sanitized = np.where(np.isfinite(arr) & (arr >= 0), arr, 0.0)
+    total = float(np.sum(sanitized))
+    if total <= 0:
+        return np.full(NUM_STATES, 1 / NUM_STATES, dtype=float)
+    return sanitized / total
+
+
+def compute_mixing_weight(second_eigenvalue: float, horizon: int) -> float:
+    """Trust the Markov signal less as the horizon extends."""
+    return math.exp(-float(second_eigenvalue) * float(horizon))
+
+
 # ---------------------------------------------------------------------------
 # Horizon drift/vol
 # ---------------------------------------------------------------------------
@@ -116,21 +132,29 @@ def compute_horizon_drift_vol(
     momentum_adjustment: float = 0.0,
     start_mixture: dict[RegimeState, float] | None = None,
     hmm_override: dict[str, float] | None = None,
+    regime_specific_sigma: bool = False,
+    regime_specific_sigma_threshold: float | None = None,
+    garch_scales: list[float] | None = None,
+    terminal_state_weights: list[float] | np.ndarray | None = None,
 ) -> dict[str, float]:
     """Compute regime-weighted drift and vol at a given horizon.
 
     mu_n = horizon * (mu_eff + momentum_adjustment)
     sigma_n = sigma_eff * sqrt(horizon)
     """
-    Pn = _mat_pow(P, horizon)
-
-    if start_mixture:
-        state_weights = np.zeros(NUM_STATES)
-        for state, w in start_mixture.items():
-            idx = STATE_INDEX[state]
-            state_weights += w * Pn[idx]
+    if terminal_state_weights is not None:
+        state_weights = _normalize_state_weight_vector(terminal_state_weights)
     else:
-        state_weights = Pn[STATE_INDEX[initial_state]]
+        Pn = _mat_pow(P, horizon)
+
+        if start_mixture:
+            state_weights = np.zeros(NUM_STATES)
+            for state, w in start_mixture.items():
+                idx = STATE_INDEX[state]
+                state_weights += w * Pn[idx]
+            state_weights = _normalize_state_weight_vector(state_weights)
+        else:
+            state_weights = _normalize_state_weight_vector(Pn[STATE_INDEX[initial_state]])
 
     mu_obs = sum(
         state_weights[i] * regime_stats[state].mean_return
@@ -151,7 +175,10 @@ def compute_horizon_drift_vol(
     )
 
     mu_eff = mu_obs
-    sigma_eff = mixture_sigma
+    dominant_idx = int(np.argmax(state_weights))
+    dominant_sigma = regime_stats[REGIME_STATES[dominant_idx]].std_return
+    threshold = 0.60 if regime_specific_sigma_threshold is None else regime_specific_sigma_threshold
+    sigma_eff = dominant_sigma if regime_specific_sigma and float(np.max(state_weights)) > threshold else mixture_sigma
 
     mu_n = horizon * (mu_eff + momentum_adjustment)
     sigma_n = sigma_eff * math.sqrt(horizon)
@@ -162,6 +189,13 @@ def compute_horizon_drift_vol(
         hmm_vol = hmm_override.get("vol", sigma_eff)
         mu_n = w * (horizon * hmm_drift) + (1 - w) * mu_n
         sigma_n = w * (hmm_vol * math.sqrt(horizon)) + (1 - w) * sigma_n
+
+    if garch_scales:
+        variance_scale = 0.0
+        for day in range(horizon):
+            scale = garch_scales[day] if day < len(garch_scales) else 1.0
+            variance_scale += scale * scale if math.isfinite(scale) and scale > 0 else 1.0
+        sigma_n = sigma_eff * math.sqrt(variance_scale)
 
     return {
         "mu_n": mu_n,
@@ -304,11 +338,7 @@ def compute_trajectory(
         lower_bound = float(prices_sorted[p5_idx])
         upper_bound = float(prices_sorted[p95_idx])
 
-        # Expected price: MC median when empirical vol used, else analytical
-        if empirical_daily_vol:
-            expected_price = float(prices_sorted[p50_idx])
-        else:
-            expected_price = current_price * math.exp(mu_n)
+        expected_price = current_price * math.exp(mu_n)
 
         # P(up) from Student-t survival
         p_up = student_t_survival(current_price, current_price, mu_n, sigma_n, nu)
@@ -418,15 +448,165 @@ def compute_scenario_probabilities(
 
     expected_return = (expected_price - current_price) / current_price
 
-    return {
+    def _bucket(label: str, probability: float, lo: float | None, hi: float | None) -> dict:
+        price_range = [round(lo, 2) if lo is not None else None, round(hi, 2) if hi is not None else None]
+        return {
+            "label": label,
+            "probability": max(0.0, probability),
+            "range": price_range,
+            "priceRange": price_range,
+        }
+
+    result = {
         "buckets": [
-            {"label": "Down >5%", "probability": max(0.0, p_down_over5), "range": [None, round(down5, 2)]},
-            {"label": "Down 3-5%", "probability": max(0.0, p_down_3to5), "range": [round(down5, 2), round(down3, 2)]},
-            {"label": "Flat +/-3%", "probability": max(0.0, p_flat), "range": [round(down3, 2), round(up3, 2)]},
-            {"label": "Up 3-5%", "probability": max(0.0, p_up_3to5), "range": [round(up3, 2), round(up5, 2)]},
-            {"label": "Up >5%", "probability": max(0.0, p_up_over5), "range": [round(up5, 2), None]},
+            _bucket("Down >5%", p_down_over5, None, down5),
+            _bucket("Down 3–5%", p_down_3to5, down5, down3),
+            _bucket("Flat ±3%", p_flat, down3, up3),
+            _bucket("Up 3–5%", p_up_3to5, up3, up5),
+            _bucket("Up >5%", p_up_over5, up5, None),
         ],
         "expected_price": round(expected_price, 2),
         "expected_return": round(expected_return, 4),
         "p_up": round(interpolate_survival(distribution, current_price), 3),
     }
+    result["expectedPrice"] = result["expected_price"]
+    result["expectedReturn"] = result["expected_return"]
+    result["pUp"] = result["p_up"]
+    return result
+
+
+def interpolate_distribution(
+    current_price: float,
+    horizon: int,
+    P: np.ndarray,
+    regime_stats: dict[RegimeState, RegimeStats],
+    initial_state: RegimeState,
+    anchors: list[dict],
+    second_eigenvalue: float,
+    num_levels: int = 20,
+    monte_carlo_samples: int = 1000,
+    ci_width_multiplier: float = 1.0,
+    momentum_adjustment: float = 0.0,
+    hmm_override: dict[str, float] | None = None,
+    daily_vol: float | None = None,
+    start_mixture: dict[RegimeState, float] | None = None,
+    nu: int = 5,
+    regime_specific_sigma: bool = False,
+    regime_specific_sigma_threshold: float | None = None,
+    sample_size: int | None = None,
+    garch_scales: list[float] | None = None,
+    terminal_state_weights: list[float] | np.ndarray | None = None,
+) -> list[dict]:
+    vol = daily_vol or 0.015
+    vol_range = 3.5 * vol * math.sqrt(horizon)
+    half_range = max(0.15, min(0.90, vol_range))
+    min_price = current_price * (1 - half_range)
+    max_price = current_price * (1 + half_range)
+
+    for anchor in anchors:
+        price = float(anchor["price"])
+        if price < min_price:
+            min_price = price * 0.95
+        if price > max_price:
+            max_price = price * 1.05
+
+    prices = [
+        min_price * math.pow(max_price / min_price, step / num_levels)
+        for step in range(num_levels + 1)
+    ]
+
+    for anchor in anchors:
+        price = float(anchor["price"])
+        closest_dist = min(abs(existing - price) / price for existing in prices)
+        if closest_dist > 0.005:
+            prices.append(price)
+    prices.sort()
+
+    mix_weight = compute_mixing_weight(second_eigenvalue, horizon)
+    horizon_stats = compute_horizon_drift_vol(
+        horizon,
+        P,
+        regime_stats,
+        initial_state,
+        momentum_adjustment,
+        start_mixture,
+        hmm_override,
+        regime_specific_sigma,
+        regime_specific_sigma_threshold,
+        garch_scales,
+        terminal_state_weights,
+    )
+    mu_n = float(horizon_stats["mu_n"])
+    sigma_n = float(horizon_stats["sigma_n"])
+
+    def find_anchor(price: float) -> dict | None:
+        tolerance_pct = 0.02
+        raw = next(
+            (
+                anchor
+                for anchor in anchors
+                if abs(float(anchor["price"]) - price) / price < tolerance_pct
+            ),
+            None,
+        )
+        if raw is None:
+            return None
+        dist_from_current = abs(float(raw["price"]) - current_price) / current_price
+        distance_weight = math.exp(-5.0 * dist_from_current * dist_from_current)
+        return {**raw, "distanceWeight": distance_weight}
+
+    sample_n = sample_size if sample_size and sample_size > 0 else None
+    drift_scale = min(0.20, 1 / math.sqrt(sample_n)) if sample_n else 0.20
+    vol_lower_scale = max(0.85, 1 - drift_scale * 0.5) if sample_n else 0.90
+    vol_upper_scale = min(1.15, 1 + drift_scale * 0.5) if sample_n else 1.10
+    ci_samples: dict[float, list[float]] = {price: [] for price in prices}
+
+    for _ in range(monte_carlo_samples):
+        perturbed_mu = mu_n + (float(np.random.random()) - 0.5) * sigma_n * drift_scale
+        perturbed_vol = sigma_n * (
+            vol_lower_scale + float(np.random.random()) * (vol_upper_scale - vol_lower_scale)
+        )
+        for price in prices:
+            probability = student_t_survival(price, current_price, perturbed_mu, perturbed_vol, nu)
+            ci_samples[price].append(probability)
+
+    raw_points: list[dict] = []
+    for price in prices:
+        anchor = find_anchor(price)
+        markov_est = student_t_survival(price, current_price, mu_n, sigma_n, nu)
+
+        if anchor is not None and anchor.get("trustScore") == "high":
+            anchor_weight = (1 - mix_weight) * float(anchor["distanceWeight"])
+            probability = (1 - anchor_weight) * markov_est + anchor_weight * float(anchor["probability"])
+            source = "markov" if anchor_weight < 0.05 else "polymarket" if anchor_weight > 0.5 else "blend"
+        elif anchor is not None and anchor.get("trustScore") == "low":
+            anchor_weight = (1 - mix_weight) * 0.5 * float(anchor["distanceWeight"])
+            probability = (1 - anchor_weight) * markov_est + anchor_weight * float(anchor["probability"])
+            source = "blend"
+        else:
+            probability = markov_est
+            source = "markov"
+
+        samples = sorted(ci_samples[price])
+        lo = samples[math.floor(0.05 * len(samples))]
+        hi = samples[math.floor(0.95 * len(samples))]
+        half_width = (hi - lo) / 2
+        center = (hi + lo) / 2
+        widened_lo = max(0.0, center - half_width * ci_width_multiplier)
+        widened_hi = min(1.0, center + half_width * ci_width_multiplier)
+
+        raw_points.append(
+            {
+                "price": price,
+                "probability": probability,
+                "lowerBound": widened_lo,
+                "upperBound": widened_hi,
+                "source": source,
+            }
+        )
+
+    for index in range(len(raw_points) - 2, -1, -1):
+        if raw_points[index]["probability"] < raw_points[index + 1]["probability"]:
+            raw_points[index]["probability"] = raw_points[index + 1]["probability"]
+
+    return raw_points

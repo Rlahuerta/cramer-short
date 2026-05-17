@@ -38,7 +38,7 @@ JSDoc tag AND its math is verified against the Python implementation.
 | `src/tools/finance/transition-entropy.ts` | `research/models/transition_entropy.py` | 🟡 | — | `test_transition_entropy_parity.py` |
 | `src/tools/finance/markov-distribution/regime.ts` | `research/models/markov.py` | 🟡 | — | `test_markov_parity.py` |
 | `src/tools/finance/markov-distribution/transition.ts` | `research/models/markov.py` | 🟡 | — | `test_markov_parity.py` |
-| `src/tools/finance/markov-distribution/confidence-intervals.ts` | `research/models/markov.py` + `research/models/trajectory.py` | 🟡 | — | `test_markov_parity.py` + `test_trajectory_parity.py` |
+| `src/tools/finance/markov-distribution/confidence-intervals.ts` | `research/models/markov.py` + `research/models/trajectory.py` | 🟡 | Distribution interpolation, scenario aliases, trajectory semantics, and regime-specific sigma are mirrored; TS still carries a wider production surface. | `test_markov_parity.py` + `test_trajectory_parity.py` |
 | `src/utils/finance/ensemble.ts` | `research/models/ensemble.py` | 🟡 | — | `test_ensemble_parity.py` + `test_ensemble_p1_parity.py` |
 | `src/utils/finance/vol-regime.ts` | `research/models/vol_regime.py` | 🟡 | — | `test_vol_regime_parity.py` |
 | `src/utils/finance/adwin.ts` | `research/models/adwin.py` | 🟡 | — | `test_adwin_parity.py` |
@@ -48,7 +48,7 @@ JSDoc tag AND its math is verified against the Python implementation.
 | TS File | Python File | Divergence |
 |---------|-------------|------------|
 | `src/utils/finance/garch.ts` | `research/models/garch.py` | 🔸 TS uses fixed-prior moment-matching shortcut; Python uses full MLE (golden-section). TS header explicitly says "not a mirror — for full MLE see garch.py". |
-| `src/tools/finance/markov-distribution.ts` | `research/models/markov.py` | 🔸 TS (5,006 lines) has extensive forecast-lab parameter defaults, anchor inspection, live policies, and action signals that may not be mirrored. Python (775 lines) covers core regime logic, short-horizon live policies, and validation gates. |
+| `src/tools/finance/markov-distribution.ts` | `research/models/markov.py` | 🔸 Core Markov calibration, confidence, action-signal, context-only canonical, BTC short-horizon confidence caps, BTC 14d bearish-break sell gate, and weighted anchor trust are now mirrored in Python. The remaining gap is the broader TS production/tooling surface (full tool wrapper, arbitrator integration, and richer backtest/metrics controls). |
 
 ## Utils & Runtime Layer
 
@@ -58,7 +58,7 @@ JSDoc tag AND its math is verified against the Python implementation.
 | `src/tools/finance/regime-calibrator.ts` | `research/utils/regime_calibrator.py` | 🟡 | Single-pass regime-conditional Platt recalibrator |
 | `src/tools/finance/regime-calibrator-two-pass.ts` | `research/utils/regime_calibrator_two_pass.py` | 🟡 | Two-pass iterative Platt recalibrator |
 | `src/tools/finance/kalshi-vol-signals.ts` | `research/utils/kalshi_vol_signals.py` | 🟡 | Kalshi macro event volatility signals |
-| — | `research/utils/anchor_trust.py` | 🟡 | Anchor trust evaluation (no standalone TS file; likely inline in markov-distribution) |
+| — | `research/utils/anchor_trust.py` | 🟡 | Weighted anchor trust evaluation mirrored from the inline TS helper in `markov-distribution.ts` |
 | — | `research/utils/calibration.py` | 🟡 | YES-bias correction v1/v2 (mirrored inline in `ensemble.ts`) |
 
 ## Backtest Layer

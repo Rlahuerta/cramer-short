@@ -20,6 +20,7 @@ def test_anchor_trust_decision_table():
         is_near_target_resolution=True,
     )
     assert young_short.trust_score == "high"
+    assert young_short.trust_weight == 0.7
     assert young_short.low_trust_reasons == ["young_market"]
 
     young_short_off_window = evaluate_anchor_trust(
@@ -30,6 +31,7 @@ def test_anchor_trust_decision_table():
         is_near_target_resolution=False,
     )
     assert young_short_off_window.trust_score == "low"
+    assert young_short_off_window.trust_weight == 0.35
     assert young_short_off_window.low_trust_reasons == ["young_market", "resolution_mismatch"]
 
     mature_long = evaluate_anchor_trust(
@@ -40,6 +42,7 @@ def test_anchor_trust_decision_table():
         is_near_target_resolution=True,
     )
     assert mature_long.trust_score == "high"
+    assert mature_long.trust_weight == 0.9
     assert mature_long.low_trust_reasons == []
 
     mature_long_off_window = evaluate_anchor_trust(
@@ -50,4 +53,5 @@ def test_anchor_trust_decision_table():
         is_near_target_resolution=False,
     )
     assert mature_long_off_window.trust_score == "low"
+    assert mature_long_off_window.trust_weight == 0.35
     assert mature_long_off_window.low_trust_reasons == ["resolution_mismatch"]

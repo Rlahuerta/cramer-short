@@ -20,9 +20,14 @@ from research.models.soft_regime import blend_regime_mixtures
 from research.utils.forecast_lab_runtime_defaults import (
     create_forecast_lab_asset_scoped_runtime_defaults,
     ForecastLabRuntimeAssetScope,
+    resolve_forecast_lab_runtime_asset_scope_for_ticker,
 )
 
 RegimeState = Literal["bull", "bear", "sideways"]
+PredictionConfidenceMode = Literal["legacy", "rebalanced"]
+BreakConfidencePolicy = Literal["default", "trend_penalty_only", "divergence_weighted"]
+ActionRecommendation = Literal["BUY", "HOLD", "SELL"]
+ActionConfidence = Literal["HIGH", "MEDIUM", "LOW"]
 REGIME_STATES: list[RegimeState] = ["bull", "bear", "sideways"]
 STATE_INDEX: dict[RegimeState, int] = {"bull": 0, "bear": 1, "sideways": 2}
 NUM_STATES = len(REGIME_STATES)
@@ -59,6 +64,12 @@ PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULTS: dict[str, float | int | bool] = {
     "recommendedConfidenceThreshold": 0.15,
     "momentumAdjustmentScale": 0.48,
     "momentumAdjustmentClamp": 0.0058,
+}
+
+DEFAULT_DIVERGENCE_PENALTY_SCHEDULE: dict[str, float] = {
+    "mild": 0.80,
+    "medium": 0.70,
+    "high": 0.60,
 }
 
 _forecast_lab_markov_runtime_defaults = create_forecast_lab_asset_scoped_runtime_defaults(
@@ -147,7 +158,7 @@ def get_btc_short_horizon_live_policy(
 
 def is_gold_ticker_symbol(ticker: str) -> bool:
     upper = ticker.strip().upper()
-    return upper in {"GLD", "GOLD"}
+    return upper == "GLD"
 
 
 def get_gold_short_horizon_live_policy(
@@ -772,4 +783,613 @@ def evaluate_can_emit_canonical(
         or sparse_crypto_anchor_allowed
         or commodity_model_only
         or crypto_model_only
+    )
+
+
+def _is_finite_number(value: float | int | None) -> bool:
+    return value is not None and math.isfinite(float(value))
+
+
+def compute_divergence_penalty(
+    divergence: float,
+    schedule: dict[str, float] | None = None,
+) -> float:
+    effective_schedule = schedule or DEFAULT_DIVERGENCE_PENALTY_SCHEDULE
+    if divergence < 0.05:
+        return 1.0
+    if divergence < 0.10:
+        return float(effective_schedule["mild"])
+    if divergence < 0.20:
+        return float(effective_schedule["medium"])
+    return float(effective_schedule["high"])
+
+
+def should_emit_context_only_canonical(
+    ticker: str,
+    asset_type: str,
+    horizon: int,
+    prediction_confidence: float,
+    out_of_sample_r2: float | None,
+    anchor_quality: str,
+    trusted_anchors: int,
+    goodness_of_fit_passes: bool | None = None,
+) -> bool:
+    crypto_short_horizon = asset_type == "crypto" and horizon <= 14
+    validation_unavailable = not _is_finite_number(out_of_sample_r2)
+    supportive_anchors = anchor_quality == "good" and trusted_anchors >= 2
+    fit_supportive = goodness_of_fit_passes if goodness_of_fit_passes is not None else True
+    recommended_confidence_threshold = float(
+        resolve_forecast_lab_markov_parameter_defaults(
+            resolve_forecast_lab_runtime_asset_scope_for_ticker(ticker)
+        )["recommendedConfidenceThreshold"]
+    )
+
+    return (
+        crypto_short_horizon
+        and validation_unavailable
+        and supportive_anchors
+        and fit_supportive
+        and prediction_confidence >= recommended_confidence_threshold
+    )
+
+
+def _read_distribution_bound(
+    point: dict,
+    camel_key: str,
+    snake_key: str,
+    fallback: float,
+) -> float:
+    value = point.get(camel_key, point.get(snake_key, fallback))
+    if value is None or not math.isfinite(float(value)):
+        return fallback
+    return float(value)
+
+
+def _with_distribution_bounds(point: dict, lower: float, upper: float) -> dict:
+    updated = {
+        **point,
+        "lowerBound": lower,
+        "upperBound": upper,
+    }
+    if "lower_bound" in point:
+        updated["lower_bound"] = lower
+    if "upper_bound" in point:
+        updated["upper_bound"] = upper
+    return updated
+
+
+def calibrate_probabilities(
+    distribution: list[dict],
+    *,
+    ensemble_consensus: int = 0,
+    historical_days: int = 60,
+    hmm_converged: bool = False,
+    base_rate: float = 0.5,
+    kappa_multiplier: float = 1.0,
+    current_regime: str | None = None,
+    mature_bull_calibration_active: bool = False,
+    current_price: float | None = None,
+    drift_n: float | None = None,
+    vol_n: float | None = None,
+    nu: int = 5,
+) -> list[dict]:
+    from research.models.trajectory import student_t_ppf, student_t_survival
+
+    consensus = ensemble_consensus
+    n_days = historical_days
+    center = max(0.25, min(0.80, base_rate))
+
+    kappa = 0.45
+    kappa -= consensus * 0.07
+    if n_days > 60:
+        kappa -= min(0.08, 0.04 * math.log2(n_days / 60))
+    if hmm_converged:
+        kappa -= 0.03
+    kappa *= kappa_multiplier
+
+    if mature_bull_calibration_active:
+        kappa += 0.10
+    elif current_regime in {"bull", "bear"}:
+        kappa -= 0.03
+    elif current_regime == "sideways":
+        kappa += 0.03
+
+    kappa = max(0.15, min(0.55, kappa))
+
+    if (
+        current_price is not None
+        and drift_n is not None
+        and vol_n is not None
+        and vol_n > 0
+    ):
+        raw_p_up = student_t_survival(current_price, current_price, drift_n, vol_n, nu)
+        target_p_up = max(0.01, min(0.99, kappa * center + (1 - kappa) * raw_p_up))
+        scaled_vol = vol_n * math.sqrt((nu - 2) / nu) if nu > 2 else vol_n
+        z_target = student_t_ppf(1 - target_p_up, nu)
+        calibrated_drift = -z_target * scaled_vol
+
+        calibrated: list[dict] = []
+        for point in distribution:
+            probability = float(point["probability"])
+            source = point.get("source", "markov")
+            if source == "markov":
+                new_prob = student_t_survival(
+                    float(point["price"]),
+                    current_price,
+                    calibrated_drift,
+                    vol_n,
+                    nu,
+                )
+            else:
+                old_markov = student_t_survival(
+                    float(point["price"]),
+                    current_price,
+                    drift_n,
+                    vol_n,
+                    nu,
+                )
+                new_markov = student_t_survival(
+                    float(point["price"]),
+                    current_price,
+                    calibrated_drift,
+                    vol_n,
+                    nu,
+                )
+                new_prob = max(0.0, min(1.0, probability + (new_markov - old_markov)))
+
+            delta = new_prob - probability
+            new_lower = max(
+                0.0,
+                min(
+                    1.0,
+                    _read_distribution_bound(point, "lowerBound", "lower_bound", new_prob)
+                    + delta,
+                ),
+            )
+            new_upper = max(
+                0.0,
+                min(
+                    1.0,
+                    _read_distribution_bound(point, "upperBound", "upper_bound", new_prob)
+                    + delta,
+                ),
+            )
+            calibrated.append(
+                _with_distribution_bounds(
+                    {
+                        **point,
+                        "probability": new_prob,
+                    },
+                    min(new_lower, new_prob),
+                    max(new_upper, new_prob),
+                )
+            )
+
+        for index in range(len(calibrated) - 2, -1, -1):
+            if calibrated[index]["probability"] < calibrated[index + 1]["probability"]:
+                calibrated[index]["probability"] = calibrated[index + 1]["probability"]
+                if calibrated[index]["upperBound"] < calibrated[index]["probability"]:
+                    calibrated[index]["upperBound"] = calibrated[index]["probability"]
+                if calibrated[index]["lowerBound"] > calibrated[index]["probability"]:
+                    calibrated[index]["lowerBound"] = calibrated[index]["probability"]
+                if "upper_bound" in calibrated[index]:
+                    calibrated[index]["upper_bound"] = calibrated[index]["upperBound"]
+                if "lower_bound" in calibrated[index]:
+                    calibrated[index]["lower_bound"] = calibrated[index]["lowerBound"]
+        return calibrated
+
+    calibrated = []
+    for point in distribution:
+        probability = float(point["probability"])
+        new_prob = kappa * center + (1 - kappa) * probability
+        delta = new_prob - probability
+        new_lower = max(
+            0.0,
+            min(
+                1.0,
+                _read_distribution_bound(point, "lowerBound", "lower_bound", new_prob)
+                + delta,
+            ),
+        )
+        new_upper = max(
+            0.0,
+            min(
+                1.0,
+                _read_distribution_bound(point, "upperBound", "upper_bound", new_prob)
+                + delta,
+            ),
+        )
+        calibrated.append(
+            _with_distribution_bounds(
+                {
+                    **point,
+                    "probability": new_prob,
+                },
+                min(new_lower, new_prob),
+                max(new_upper, new_prob),
+            )
+        )
+
+    for index in range(len(calibrated) - 2, -1, -1):
+        if calibrated[index]["probability"] < calibrated[index + 1]["probability"]:
+            calibrated[index]["probability"] = calibrated[index + 1]["probability"]
+
+    return calibrated
+
+
+def compute_prediction_confidence_breakdown(
+    *,
+    p_up: float,
+    ensemble_consensus: int,
+    hmm_converged: bool,
+    regime_run_length: int,
+    structural_break: bool,
+    asset_type: Literal["etf", "equity", "crypto", "commodity"] | None = None,
+    recent_vol: float | None = None,
+    momentum_agreement: float | None = None,
+    calibrated_p_up: float | None = None,
+    base_rate: float | None = None,
+    trusted_anchors: int | None = None,
+    horizon_days: int | None = None,
+    out_of_sample_r2: float | None = None,
+    break_confidence_policy: BreakConfidencePolicy = "default",
+    skip_sideways_break_penalty: bool = False,
+    regime_state: RegimeState | None = None,
+    structural_break_divergence: float | None = None,
+    divergence_penalty_schedule: dict[str, float] | None = None,
+    confidence_mode: PredictionConfidenceMode = "legacy",
+    posterior_entropy: float | None = None,
+) -> dict:
+    mode = confidence_mode
+    crypto_short_horizon = asset_type == "crypto" and horizon_days is not None and horizon_days <= 14
+    anchors_helpful = (trusted_anchors or 0) >= 2
+    r2 = out_of_sample_r2
+    r2_unavailable = not _is_finite_number(r2)
+    r2_clearly_bad = _is_finite_number(r2) and float(r2) < -0.05
+    r2_near_zero = _is_finite_number(r2) and -0.02 <= float(r2) <= 0.02
+
+    decisiveness = min(1.0, abs(p_up - 0.5) * 2)
+    consensus_score = ensemble_consensus / 3
+    hmm_score = 1.0 if hmm_converged else 0.0
+    stability_score = min(1.0, regime_run_length / 20)
+    momentum_agr = momentum_agreement or 0.0
+
+    components = {
+        "decisiveness": 0.30 * decisiveness,
+        "ensembleConsensus": 0.15 * consensus_score,
+        "hmmConvergence": 0.10 * hmm_score,
+        "regimeStability": 0.15 * stability_score,
+        "momentumAgreement": 0.10 * momentum_agr,
+        "baseRateAlignment": 0.0,
+        "nearZeroR2Bonus": 0.0,
+        "anchorSupport": 0.0,
+    }
+
+    if calibrated_p_up is not None and base_rate is not None:
+        pred_direction = 1 if calibrated_p_up >= 0.5 else -1
+        base_direction = 1 if base_rate >= 0.5 else -1
+        base_strength = abs(base_rate - 0.5) * 2
+        if pred_direction == base_direction:
+            components["baseRateAlignment"] = 0.20 * base_strength
+        else:
+            components["baseRateAlignment"] = -0.08 * base_strength
+
+    if crypto_short_horizon and r2_near_zero:
+        components["nearZeroR2Bonus"] = 0.08
+
+    if mode == "rebalanced":
+        if crypto_short_horizon:
+            components["anchorSupport"] = 0.05 if anchors_helpful else 0.03
+        elif anchors_helpful:
+            components["anchorSupport"] = 0.02
+
+    confidence = sum(components.values())
+
+    structural_break_multiplier = 1.0
+    if structural_break:
+        skip_break_penalty = regime_state == "sideways" and (
+            break_confidence_policy == "trend_penalty_only"
+            or skip_sideways_break_penalty
+        )
+        if not skip_break_penalty:
+            if break_confidence_policy == "divergence_weighted":
+                break_penalty = compute_divergence_penalty(
+                    structural_break_divergence or 0.20,
+                    divergence_penalty_schedule,
+                )
+            else:
+                break_penalty = (
+                    0.85
+                    if crypto_short_horizon and anchors_helpful and r2_unavailable
+                    else 0.8
+                    if crypto_short_horizon and anchors_helpful and not r2_clearly_bad
+                    else 0.6
+                )
+            structural_break_multiplier = break_penalty
+            confidence *= structural_break_multiplier
+
+    asset_type_multiplier = 1.0
+    if asset_type == "crypto":
+        if mode == "rebalanced":
+            if crypto_short_horizon:
+                if anchors_helpful and r2_unavailable:
+                    asset_type_multiplier = 0.95
+                elif anchors_helpful and not r2_clearly_bad:
+                    asset_type_multiplier = 0.92
+                else:
+                    asset_type_multiplier = 0.82
+            else:
+                asset_type_multiplier = 0.74
+        else:
+            asset_type_multiplier = 0.85 if crypto_short_horizon and anchors_helpful else 0.7
+    elif asset_type == "commodity":
+        asset_type_multiplier = 0.85
+    elif asset_type == "etf":
+        asset_type_multiplier = 1.1
+    confidence *= asset_type_multiplier
+
+    volatility_multiplier = 1.0
+    if recent_vol is not None and recent_vol > 0.02:
+        if mode == "rebalanced" and crypto_short_horizon:
+            volatility_multiplier = max(0.85, 1 - (recent_vol - 0.02) * 3)
+        else:
+            volatility_multiplier = max(0.7, 1 - (recent_vol - 0.02) * 5)
+        confidence *= volatility_multiplier
+
+    normalization_multiplier = (
+        1.6
+        if mode == "rebalanced" and asset_type == "crypto" and crypto_short_horizon
+        else 1.35
+        if mode == "rebalanced" and asset_type == "crypto"
+        else 1.0
+    )
+    confidence *= normalization_multiplier
+
+    posterior_uncertainty_multiplier = (
+        max(0.65, 1 - posterior_entropy * 0.35)
+        if posterior_entropy is not None
+        else 1.0
+    )
+    confidence *= posterior_uncertainty_multiplier
+
+    return {
+        "mode": mode,
+        "total": max(0.0, min(1.0, confidence)),
+        "components": components,
+        "multipliers": {
+            "structuralBreak": structural_break_multiplier,
+            "assetType": asset_type_multiplier,
+            "volatility": volatility_multiplier,
+            "normalization": normalization_multiplier,
+            "posteriorUncertainty": posterior_uncertainty_multiplier,
+        },
+    }
+
+
+def compute_prediction_confidence(**kwargs) -> float:
+    return float(compute_prediction_confidence_breakdown(**kwargs)["total"])
+
+
+def compute_action_levels(
+    distribution: list[dict],
+    current_price: float,
+) -> dict[str, float]:
+    def find_price_at_prob(target_prob: float) -> float:
+        if not distribution:
+            return current_price
+        for index in range(len(distribution) - 1):
+            hi = distribution[index]
+            lo = distribution[index + 1]
+            hi_prob = float(hi["probability"])
+            lo_prob = float(lo["probability"])
+            if hi_prob >= target_prob >= lo_prob:
+                if abs(hi_prob - lo_prob) < 1e-10:
+                    return float(hi["price"])
+                t = (hi_prob - target_prob) / (hi_prob - lo_prob)
+                return float(hi["price"]) + t * (float(lo["price"]) - float(hi["price"]))
+        if target_prob >= float(distribution[0]["probability"]):
+            return float(distribution[0]["price"])
+        return float(distribution[-1]["price"])
+
+    return {
+        "medianPrice": find_price_at_prob(0.50),
+        "targetPrice": find_price_at_prob(0.30),
+        "stopLoss": find_price_at_prob(0.90),
+        "bullCase": find_price_at_prob(0.20),
+        "bearCase": find_price_at_prob(0.80),
+    }
+
+
+def compute_action_signal(
+    distribution: list[dict],
+    current_price: float,
+    buy_threshold: float = 0.05,
+    sell_threshold: float = 0.03,
+    horizon: int = 30,
+    recent_vol: float | None = None,
+    scenarios: dict | None = None,
+    asset_type: Literal["etf", "equity", "crypto", "commodity"] | None = None,
+) -> dict:
+    from research.models.trajectory import interpolate_survival
+
+    if not distribution:
+        action_levels = compute_action_levels([], current_price)
+        return {
+            "buyProbability": 0.0,
+            "holdProbability": 1.0,
+            "sellProbability": 0.0,
+            "recommendation": "HOLD",
+            "baseRecommendation": "HOLD",
+            "recommendationSource": "expected_return",
+            "confidence": "LOW",
+            "expectedReturn": 0.0,
+            "riskRewardRatio": 1.0,
+            "buyThreshold": buy_threshold,
+            "sellThreshold": sell_threshold,
+            "actionLevels": action_levels,
+        }
+
+    p_above_buy = interpolate_survival(distribution, current_price * (1 + buy_threshold))
+    p_above_sell = interpolate_survival(distribution, current_price * (1 - sell_threshold))
+    p_below_sell = 1 - p_above_sell
+    p_hold = max(0.0, 1 - p_above_buy - p_below_sell)
+
+    expected_price = 0.0
+    for index in range(len(distribution) - 1):
+        mass = float(distribution[index]["probability"]) - float(distribution[index + 1]["probability"])
+        mid = (float(distribution[index]["price"]) + float(distribution[index + 1]["price"])) / 2
+        expected_price += mass * mid
+    expected_price += (1 - float(distribution[0]["probability"])) * float(distribution[0]["price"])
+    expected_price += float(distribution[-1]["probability"]) * float(distribution[-1]["price"])
+
+    expected_return = (
+        (expected_price - current_price) / current_price
+        if current_price > 0 and math.isfinite(expected_price)
+        else 0.0
+    )
+
+    expected_upside = 0.0
+    expected_downside = 0.0
+    for index in range(len(distribution) - 1):
+        mass = float(distribution[index]["probability"]) - float(distribution[index + 1]["probability"])
+        mid = (float(distribution[index]["price"]) + float(distribution[index + 1]["price"])) / 2
+        expected_upside += mass * max(0.0, mid - current_price)
+        expected_downside += mass * max(0.0, current_price - mid)
+    expected_downside += (1 - float(distribution[0]["probability"])) * max(
+        0.0, current_price - float(distribution[0]["price"])
+    )
+    expected_upside += float(distribution[-1]["probability"]) * max(
+        0.0, float(distribution[-1]["price"]) - current_price
+    )
+
+    raw_rrr = expected_upside / expected_downside if expected_downside > 0 else 1.0
+    risk_reward_ratio = raw_rrr if math.isfinite(raw_rrr) else 1.0
+
+    if recent_vol is not None and recent_vol > 0:
+        vol_scaled = recent_vol * math.sqrt(horizon)
+        action_buy_thr = max(0.001, 0.08 * vol_scaled)
+        action_sell_thr = max(0.001, 0.06 * vol_scaled)
+    else:
+        action_buy_thr = 0.003 if horizon <= 7 else 0.005 if horizon <= 30 else 0.008
+        action_sell_thr = 0.002 if horizon <= 7 else 0.003 if horizon <= 30 else 0.005
+
+    if expected_return > action_buy_thr:
+        recommendation: ActionRecommendation = "BUY"
+    elif expected_return < -action_sell_thr:
+        recommendation = "SELL"
+    else:
+        recommendation = "HOLD"
+    base_recommendation = recommendation
+    recommendation_source = "expected_return"
+
+    short_horizon_crypto = asset_type == "crypto" and horizon <= 14
+    if short_horizon_crypto and recommendation == "HOLD" and scenarios:
+        scenarios_p_up = float(scenarios.get("pUp", scenarios.get("p_up", 0.5)))
+        if scenarios_p_up >= 0.55 and expected_return >= 0 and risk_reward_ratio >= 1:
+            scenario_recommendation: ActionRecommendation = "BUY"
+        elif scenarios_p_up <= 0.45 and expected_return <= 0 and risk_reward_ratio <= 1:
+            scenario_recommendation = "SELL"
+        else:
+            scenario_recommendation = "HOLD"
+        recommendation = scenario_recommendation
+        if recommendation != base_recommendation:
+            recommendation_source = "short_horizon_scenario"
+
+    if scenarios:
+        scenario_p_up = float(scenarios.get("pUp", scenarios.get("p_up", 0.5)))
+        buckets = scenarios.get("buckets", [])
+        up_scenarios = sum(float(bucket.get("probability", 0.0)) for bucket in buckets[3:5])
+        down_scenarios = sum(float(bucket.get("probability", 0.0)) for bucket in buckets[0:2])
+
+        if recommendation == "BUY":
+            if scenario_p_up < 0.45 and risk_reward_ratio < 1:
+                recommendation = "HOLD"
+            elif down_scenarios > up_scenarios + 0.05:
+                recommendation = "HOLD"
+        elif recommendation == "SELL":
+            if scenario_p_up > 0.55 and risk_reward_ratio > 1:
+                recommendation = "HOLD"
+            elif up_scenarios > down_scenarios + 0.05:
+                recommendation = "HOLD"
+
+    active_thr = action_buy_thr if recommendation == "BUY" else action_sell_thr
+    conviction = abs(expected_return)
+    confidence: ActionConfidence = (
+        "HIGH"
+        if conviction >= 2 * active_thr
+        else "MEDIUM"
+        if conviction >= active_thr
+        else "LOW"
+    )
+
+    action_levels = compute_action_levels(distribution, current_price)
+    median_return = (action_levels["medianPrice"] - current_price) / current_price if current_price > 0 else 0.0
+    if (
+        (expected_return > 0 and median_return < -0.005)
+        or (expected_return < 0 and median_return > 0.005)
+    ) and confidence == "HIGH":
+        confidence = "MEDIUM"
+
+    return {
+        "buyProbability": p_above_buy,
+        "holdProbability": p_hold,
+        "sellProbability": p_below_sell,
+        "recommendation": recommendation,
+        "baseRecommendation": base_recommendation,
+        "recommendationSource": recommendation_source,
+        "confidence": confidence,
+        "expectedReturn": expected_return,
+        "riskRewardRatio": risk_reward_ratio,
+        "buyThreshold": buy_threshold,
+        "sellThreshold": sell_threshold,
+        "actionLevels": action_levels,
+    }
+
+
+def cap_btc_short_horizon_confidence(
+    ticker: str,
+    horizon: int,
+    structural_break_detected: bool,
+    out_of_sample_r2: float | None,
+    prediction_confidence: float,
+    confidence: ActionConfidence,
+) -> ActionConfidence:
+    is_btc_short_horizon = is_btc_ticker_symbol(ticker) and horizon <= 14
+    weak_validation = (
+        _is_finite_number(out_of_sample_r2) and float(out_of_sample_r2) < 0.05
+    ) or prediction_confidence < 0.40
+
+    if (
+        is_btc_short_horizon
+        and structural_break_detected
+        and weak_validation
+        and confidence == "HIGH"
+    ):
+        return "MEDIUM"
+    return confidence
+
+
+def should_apply_btc14d_bearish_break_sell_gate(
+    ticker: str,
+    horizon: int,
+    recommendation: ActionRecommendation,
+    raw_recommendation: ActionRecommendation | None,
+    structural_break_detected: bool,
+    regime_state: RegimeState,
+    prediction_confidence: float,
+    raw_predicted_prob: float,
+    predicted_prob: float,
+    expected_return: float,
+) -> bool:
+    is_target_slice = is_btc_ticker_symbol(ticker) and horizon == 14
+    return (
+        is_target_slice
+        and recommendation == "BUY"
+        and raw_recommendation == "SELL"
+        and structural_break_detected
+        and regime_state != "bull"
+        and prediction_confidence <= 0.09
+        and raw_predicted_prob <= 0.50
+        and predicted_prob <= 0.54
+        and expected_return <= 0.025
     )

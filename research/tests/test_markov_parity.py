@@ -195,10 +195,10 @@ def test_get_gold_short_horizon_live_policy_rejects_non_gold():
     assert get_gold_short_horizon_live_policy("GLD", 0) is None
 
 
-def test_get_gold_short_horizon_live_policy_accepts_both_tickers():
+def test_get_gold_short_horizon_live_policy_rejects_barrick_gold_ticker():
     from research.models.markov import get_gold_short_horizon_live_policy
     assert get_gold_short_horizon_live_policy("GLD", 7) is not None
-    assert get_gold_short_horizon_live_policy("GOLD", 7) is not None
+    assert get_gold_short_horizon_live_policy("GOLD", 7) is None
     assert get_gold_short_horizon_live_policy("gld", 2) is not None
 
 
@@ -583,3 +583,196 @@ class TestEvaluateCanEmitCanonical:
     def test_validation_fails_no_bypass_fails(self):
         from research.models.markov import evaluate_can_emit_canonical
         assert evaluate_can_emit_canonical(3, "good", False, False, False) is False
+
+
+class TestContextOnlyCanonical:
+    def test_crypto_short_horizon_requires_missing_validation_and_good_anchors(self):
+        from research.models.markov import should_emit_context_only_canonical
+
+        assert should_emit_context_only_canonical(
+            "BTC-USD",
+            "crypto",
+            7,
+            0.30,
+            None,
+            "good",
+            2,
+            True,
+        ) is True
+
+    def test_validation_present_blocks_context_only_emission(self):
+        from research.models.markov import should_emit_context_only_canonical
+
+        assert should_emit_context_only_canonical(
+            "BTC-USD",
+            "crypto",
+            7,
+            0.30,
+            -0.01,
+            "good",
+            2,
+            True,
+        ) is False
+
+
+class TestProbabilityCalibration:
+    def test_probability_calibration_shrinks_and_preserves_monotonicity(self):
+        from research.models.markov import calibrate_probabilities
+
+        distribution = [
+            {"price": 90.0, "probability": 0.92, "lowerBound": 0.88, "upperBound": 0.96, "source": "markov"},
+            {"price": 100.0, "probability": 0.58, "lowerBound": 0.52, "upperBound": 0.64, "source": "markov"},
+            {"price": 110.0, "probability": 0.12, "lowerBound": 0.08, "upperBound": 0.16, "source": "markov"},
+        ]
+        calibrated = calibrate_probabilities(distribution, base_rate=0.5)
+
+        assert calibrated[0]["probability"] >= calibrated[1]["probability"] >= calibrated[2]["probability"]
+        assert calibrated[1]["probability"] < distribution[1]["probability"]
+        assert calibrated[2]["probability"] > distribution[2]["probability"]
+
+    def test_drift_based_calibration_moves_probabilities_consistently(self):
+        from research.models.markov import calibrate_probabilities
+
+        distribution = [
+            {"price": 90.0, "probability": 0.80, "lowerBound": 0.75, "upperBound": 0.85, "source": "markov"},
+            {"price": 100.0, "probability": 0.55, "lowerBound": 0.50, "upperBound": 0.60, "source": "blend"},
+            {"price": 110.0, "probability": 0.20, "lowerBound": 0.15, "upperBound": 0.25, "source": "markov"},
+        ]
+        calibrated = calibrate_probabilities(
+            distribution,
+            current_price=100.0,
+            drift_n=0.02,
+            vol_n=0.15,
+            base_rate=0.65,
+        )
+
+        assert calibrated[0]["probability"] >= calibrated[1]["probability"] >= calibrated[2]["probability"]
+        assert 0 <= calibrated[1]["lowerBound"] <= calibrated[1]["probability"] <= calibrated[1]["upperBound"] <= 1
+
+
+class TestPredictionConfidenceBreakdown:
+    def test_rebalanced_short_horizon_uses_anchor_and_r2_bonuses(self):
+        from research.models.markov import compute_prediction_confidence_breakdown
+
+        breakdown = compute_prediction_confidence_breakdown(
+            p_up=0.60,
+            ensemble_consensus=2,
+            hmm_converged=True,
+            regime_run_length=20,
+            structural_break=False,
+            asset_type="crypto",
+            momentum_agreement=0.75,
+            calibrated_p_up=0.60,
+            base_rate=0.70,
+            trusted_anchors=2,
+            horizon_days=7,
+            out_of_sample_r2=0.0,
+            confidence_mode="rebalanced",
+        )
+
+        assert breakdown["components"]["nearZeroR2Bonus"] == pytest.approx(0.08)
+        assert breakdown["components"]["anchorSupport"] == pytest.approx(0.05)
+        assert breakdown["multipliers"]["assetType"] == pytest.approx(0.92)
+        assert 0 < breakdown["total"] <= 1
+
+    def test_divergence_weighted_break_uses_mild_penalty(self):
+        from research.models.markov import compute_prediction_confidence_breakdown
+
+        breakdown = compute_prediction_confidence_breakdown(
+            p_up=0.65,
+            ensemble_consensus=3,
+            hmm_converged=True,
+            regime_run_length=20,
+            structural_break=True,
+            asset_type="equity",
+            confidence_mode="legacy",
+            break_confidence_policy="divergence_weighted",
+            structural_break_divergence=0.07,
+        )
+
+        assert breakdown["multipliers"]["structuralBreak"] == pytest.approx(0.80)
+
+
+class TestActionSignalMirror:
+    def test_action_signal_returns_buy_for_upside_skew(self):
+        from research.models.markov import compute_action_signal
+
+        distribution = [
+            {"price": 90.0, "probability": 1.0},
+            {"price": 100.0, "probability": 0.85},
+            {"price": 110.0, "probability": 0.65},
+            {"price": 120.0, "probability": 0.35},
+            {"price": 130.0, "probability": 0.10},
+        ]
+        signal = compute_action_signal(
+            distribution,
+            100.0,
+            horizon=7,
+            recent_vol=0.02,
+            asset_type="crypto",
+        )
+
+        assert signal["recommendation"] == "BUY"
+        assert signal["buyProbability"] > signal["sellProbability"]
+        assert signal["actionLevels"]["medianPrice"] >= 100.0
+
+    def test_action_signal_short_horizon_scenario_override_can_promote_hold(self):
+        from research.models.markov import compute_action_signal
+
+        distribution = [
+            {"price": 95.0, "probability": 0.98},
+            {"price": 100.0, "probability": 0.60},
+            {"price": 105.0, "probability": 0.22},
+            {"price": 110.0, "probability": 0.03},
+        ]
+        signal = compute_action_signal(
+            distribution,
+            100.0,
+            horizon=7,
+            recent_vol=0.40,
+            asset_type="crypto",
+            scenarios={
+                "pUp": 0.56,
+                "buckets": [
+                    {"probability": 0.05},
+                    {"probability": 0.10},
+                    {"probability": 0.20},
+                    {"probability": 0.25},
+                    {"probability": 0.40},
+                ],
+            },
+        )
+
+        assert signal["baseRecommendation"] == "HOLD"
+        assert signal["recommendation"] == "BUY"
+        assert signal["recommendationSource"] == "short_horizon_scenario"
+
+
+class TestBtcShortHorizonGuards:
+    def test_confidence_cap_downgrades_high_break_case(self):
+        from research.models.markov import cap_btc_short_horizon_confidence
+
+        assert cap_btc_short_horizon_confidence(
+            "BTC-USD",
+            7,
+            True,
+            0.01,
+            0.35,
+            "HIGH",
+        ) == "MEDIUM"
+
+    def test_btc14d_bearish_break_sell_gate_matches_ts_slice(self):
+        from research.models.markov import should_apply_btc14d_bearish_break_sell_gate
+
+        assert should_apply_btc14d_bearish_break_sell_gate(
+            "BTC-USD",
+            14,
+            "BUY",
+            "SELL",
+            True,
+            "bear",
+            0.09,
+            0.50,
+            0.54,
+            0.02,
+        ) is True

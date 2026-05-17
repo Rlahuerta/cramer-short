@@ -9,6 +9,7 @@ from research.models.trajectory import (
     RegimeStats,
     compute_trajectory,
     compute_horizon_drift_vol,
+    interpolate_distribution,
     compute_scenario_probabilities,
     normal_cdf,
     student_t_cdf,
@@ -229,3 +230,77 @@ def test_compute_scenario_probabilities_expected_price():
     scenarios = compute_scenario_probabilities(dist, 100)
     assert scenarios["expected_price"] > 90
     assert scenarios["expected_price"] < 110
+
+
+def test_compute_scenario_probabilities_exposes_ts_alias_keys():
+    dist = [
+        {"price": 90, "probability": 0.9},
+        {"price": 100, "probability": 0.5},
+        {"price": 110, "probability": 0.1},
+    ]
+    scenarios = compute_scenario_probabilities(dist, 100)
+    assert scenarios["expectedPrice"] == scenarios["expected_price"]
+    assert scenarios["expectedReturn"] == scenarios["expected_return"]
+    assert scenarios["pUp"] == scenarios["p_up"]
+    assert scenarios["buckets"][0]["priceRange"] == scenarios["buckets"][0]["range"]
+
+
+def test_compute_trajectory_keeps_analytical_mean_under_empirical_vol_floor():
+    P = np.eye(3)
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.01, std_return=0.02),
+        "bear": RegimeStats(mean_return=-0.01, std_return=0.025),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.015),
+    }
+    trajectory = compute_trajectory(
+        100.0,
+        1,
+        P,
+        regime_stats,
+        "bull",
+        empirical_daily_vol=0.5,
+        n_samples=200,
+    )
+    assert trajectory[0].expected_price == pytest.approx(round(100.0 * math.exp(0.01), 2))
+
+
+def test_compute_horizon_drift_vol_supports_regime_specific_sigma_and_garch():
+    P = np.eye(3)
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.01, std_return=0.02),
+        "bear": RegimeStats(mean_return=-0.01, std_return=0.05),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.03),
+    }
+    result = compute_horizon_drift_vol(
+        2,
+        P,
+        regime_stats,
+        "bull",
+        regime_specific_sigma=True,
+        garch_scales=[2.0, 2.0],
+    )
+    assert result["mu_n"] == pytest.approx(0.02, abs=1e-10)
+    assert result["sigma_n"] == pytest.approx(0.02 * math.sqrt(8), abs=1e-10)
+
+
+def test_interpolate_distribution_returns_ts_style_distribution_points():
+    P = np.eye(3)
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.01, std_return=0.02),
+        "bear": RegimeStats(mean_return=-0.01, std_return=0.025),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.015),
+    }
+    points = interpolate_distribution(
+        100.0,
+        7,
+        P,
+        regime_stats,
+        "bull",
+        [],
+        second_eigenvalue=0.5,
+        monte_carlo_samples=50,
+    )
+    assert points
+    assert all("lowerBound" in point and "upperBound" in point and "source" in point for point in points)
+    assert all(points[i]["price"] <= points[i + 1]["price"] for i in range(len(points) - 1))
+    assert all(points[i]["probability"] >= points[i + 1]["probability"] for i in range(len(points) - 1))
