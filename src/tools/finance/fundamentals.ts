@@ -82,6 +82,18 @@ function fmpPeriod(period: string): 'annual' | 'quarterly' {
 
 type FmpCallResult = { kind: 'ok'; result: string } | { kind: 'premium' } | { kind: 'error' };
 
+interface ToolErrorPayload {
+  error?: unknown;
+}
+
+interface FinancialStatementApiRow {
+  report_period?: string;
+  period?: string;
+  revenue?: number;
+  total_revenue?: number;
+  net_income?: number;
+}
+
 /**
  * Try the FMP fallback tool.  Returns:
  * - `{ kind: 'ok', result }` when FMP returns real data
@@ -99,7 +111,7 @@ async function tryFmp(
     const raw = await fmpTool.invoke({ ticker, period: fmpPeriod(period), limit });
     const parsed = JSON.parse(raw) as { data: unknown };
     if (!parsed.data) return { kind: 'error' };
-    const error = (parsed.data as Record<string, unknown>)?.error;
+    const error = (parsed.data as ToolErrorPayload).error;
     if (typeof error === 'string' && error.includes(FMP_PREMIUM_REQUIRED)) return { kind: 'premium' };
     if (error) return { kind: 'error' };
     return { kind: 'ok', result: raw };
@@ -148,10 +160,10 @@ export const getIncomeStatements = new DynamicStructuredTool({
             const fmpResult = await tryFmp(getFmpIncomeStatements, ticker, 'annual', input.limit);
             if (fmpResult.kind === 'ok') {
               const fmpData = JSON.parse(fmpResult.result) as { data?: FinancialRecord[] };
-              const primaryRecords: FinancialRecord[] = (statements as Array<Record<string, unknown>>).map(s => ({
-                year: new Date(s.report_period as string ?? s.period as string ?? '').getFullYear(),
-                totalRevenue: s.revenue as number ?? s.total_revenue as number,
-                netIncome: s.net_income as number,
+              const primaryRecords: FinancialRecord[] = (statements as FinancialStatementApiRow[]).map(s => ({
+                year: new Date(s.report_period ?? s.period ?? '').getFullYear(),
+                totalRevenue: s.revenue ?? s.total_revenue,
+                netIncome: s.net_income,
               }));
               const validation = crossValidateFinancials(primaryRecords, fmpData.data ?? []);
               if (!validation.ok) {
@@ -178,7 +190,7 @@ export const getIncomeStatements = new DynamicStructuredTool({
     const yahooHasData =
       yahooParsed.data !== undefined &&
       yahooParsed.data !== null &&
-      !(yahooParsed.data as Record<string, unknown>)?.error;
+      !(yahooParsed.data as ToolErrorPayload).error;
     if (yahooHasData) return yahooRaw;
 
     // Last resort: Tavily web search
@@ -289,12 +301,16 @@ export const getAllFinancialStatements = new DynamicStructuredTool({
       tryFmp(getFmpCashFlowStatements, ticker, input.period, input.limit),
     ]);
 
-    const fmpData: Record<string, unknown> = {};
+    const fmpData: {
+      income_statements?: unknown;
+      balance_sheets?: unknown;
+      cash_flow_statements?: unknown;
+    } = {};
     for (const [key, settled] of [
       ['income_statements', incomeResult],
       ['balance_sheets', balanceResult],
       ['cash_flow_statements', cashResult],
-    ] as [string, PromiseSettledResult<FmpCallResult>][]) {
+    ] as [keyof typeof fmpData, PromiseSettledResult<FmpCallResult>][]) {
       if (settled.status === 'fulfilled' && settled.value.kind === 'ok') {
         const parsed = JSON.parse(settled.value.result) as { data: unknown };
         fmpData[key] = parsed.data;

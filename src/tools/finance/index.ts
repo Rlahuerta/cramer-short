@@ -1,3 +1,15 @@
+/**
+ * Finance tool error contract:
+ * - Provider, network, auth, and schema failures may throw inside lower-level
+ *   clients and should be caught at DynamicStructuredTool boundaries where the
+ *   public result becomes a formatted error string.
+ * - Missing/unsupported market data should return null, an empty collection, or
+ *   a formatted "no data" result instead of throwing.
+ * - Public registry tool names remain stable snake_case; keep internal renames
+ *   behind this barrel/registry boundary.
+ */
+export const FINANCE_TOOL_ERROR_CONTRACT = 'throw-provider-failures; null-or-empty-missing-data' as const;
+
 export { getIncomeStatements, getBalanceSheets, getCashFlowStatements, getAllFinancialStatements } from './fundamentals.js';
 export { getFilings, get10KFilingItems, get10QFilingItems, get8KFilingItems } from './filings.js';
 export { getKeyRatios, getHistoricalKeyRatios } from './key-ratios.js';

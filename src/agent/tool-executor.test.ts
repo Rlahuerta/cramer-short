@@ -12,7 +12,6 @@ import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } f
 import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 
 const actualPaths = await import('../utils/paths.js');
 
@@ -22,6 +21,11 @@ mock.module('../utils/paths.js', () => ({
   ...actualPaths,
   cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
   getCramerShortDir: mock(() => '.dexter'),
+}));
+
+mock.module('../utils/cross-session-cache.js', () => ({
+  loadCacheFromDisk: async () => new Map<string, string>(),
+  saveCacheToDisk: () => {},
 }));
 
 const { AgentToolExecutor } = await import('./tool-executor.js');
@@ -48,9 +52,9 @@ let tmpDir: string;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `tool-exec-test-${nextTestId('path')}`);
-  mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
+  tmpDir = join(originalCwd, '.cramer-short', 'test-runs', `tool-exec-test-${nextTestId('path')}`);
+  mkdirSync(tmpDir, { recursive: true });
   process.chdir(tmpDir);
 });
 
@@ -412,6 +416,89 @@ describe('AgentToolExecutor — parallel request deduplication (pendingRequests)
     expect(ends[1].result).toBe('{"price":150}');
   });
 
+  it('does not evict active pending requests when the pending registry is full', async () => {
+    let invocationCount = 0;
+    const resolvers: Array<() => void> = [];
+    const slowTool = {
+      name: 'financial_search',
+      invoke: async (args: { query?: string }) => {
+        invocationCount++;
+        await new Promise<void>((resolve) => resolvers.push(resolve));
+        return `result-${args.query}`;
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+
+    const executor = new AgentToolExecutor(
+      new Map([['financial_search', slowTool]]),
+      undefined,
+      undefined,
+      undefined,
+      { pendingRequestsMaxSize: 1 },
+    );
+    const ctx = makeCtx();
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [
+        { id: 'c1', name: 'financial_search', args: { query: 'q0' }, type: 'tool_call' as const },
+        { id: 'c2', name: 'financial_search', args: { query: 'q1' }, type: 'tool_call' as const },
+        { id: 'c3', name: 'financial_search', args: { query: 'q0' }, type: 'tool_call' as const },
+      ],
+    });
+
+    const eventsPromise = drainEvents(executor.executeAll(msg, ctx));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(invocationCount).toBe(2);
+
+    for (const resolve of resolvers) resolve();
+    const events = await eventsPromise;
+    const ends = events.filter((e) => e.type === 'tool_end') as ToolEndEvent[];
+    expect(ends).toHaveLength(3);
+  });
+
+  it('intentionally leaves new unique requests untracked when the pending registry is full', async () => {
+    const invokedQueries: string[] = [];
+    const resolvers: Array<() => void> = [];
+    const slowTool = {
+      name: 'financial_search',
+      invoke: async (args: { query?: string }) => {
+        invokedQueries.push(args.query ?? '');
+        await new Promise<void>((resolve) => resolvers.push(resolve));
+        return `result-${args.query}`;
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+
+    const executor = new AgentToolExecutor(
+      new Map([['financial_search', slowTool]]),
+      undefined,
+      undefined,
+      undefined,
+      { pendingRequestsMaxSize: 1 },
+    );
+    const ctx = makeCtx();
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [
+        { id: 'c1', name: 'financial_search', args: { query: 'tracked-q0' }, type: 'tool_call' as const },
+        { id: 'c2', name: 'financial_search', args: { query: 'untracked-q1' }, type: 'tool_call' as const },
+        { id: 'c3', name: 'financial_search', args: { query: 'untracked-q1' }, type: 'tool_call' as const },
+      ],
+    });
+
+    const eventsPromise = drainEvents(executor.executeAll(msg, ctx));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(invokedQueries).toEqual(['tracked-q0', 'untracked-q1', 'untracked-q1']);
+
+    for (const resolve of resolvers) resolve();
+    const events = await eventsPromise;
+    const ends = events.filter((e) => e.type === 'tool_end') as ToolEndEvent[];
+    expect(ends).toHaveLength(3);
+  });
+
   it('two parallel calls with different args each fire the tool', async () => {
     const fakeTool = makeFakeTool('financial_search', 'data');
     const executor = new AgentToolExecutor(new Map([['financial_search', fakeTool]]));
@@ -536,5 +623,54 @@ describe('AgentToolExecutor — parallel request deduplication (pendingRequests)
     expect(records).toHaveLength(1);
     expect(records[0]?.tool).toBe('markov_distribution');
     expect(records[0]?.result).toContain('Received tool input did not match expected schema');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requestCache bounded eviction
+// ---------------------------------------------------------------------------
+describe('AgentToolExecutor — requestCache bounded eviction', () => {
+  it('keeps requestCache bounded and evicts the least recently used entry', async () => {
+    const tools = new Map<string, import('@langchain/core/tools').StructuredToolInterface>();
+    let invokeCount = 0;
+    const fakeTool = {
+      name: 'financial_search',
+      invoke: async (args: { query?: string }) => {
+        invokeCount++;
+        return `res-${args.query}-${invokeCount}`;
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+    tools.set('financial_search', fakeTool);
+
+    const requestCacheMaxSize = 3;
+    const executor = new AgentToolExecutor(tools, undefined, undefined, undefined, { requestCacheMaxSize });
+    const ctx = makeCtx();
+
+    const run = async (i: number) => {
+      const msg = new AIMessage({
+        content: '',
+        tool_calls: [{ id: `c${i}`, name: 'financial_search', args: { query: `q${i}` }, type: 'tool_call' as const }],
+      });
+      return drainEvents(executor.executeAll(msg, ctx));
+    };
+
+    for (let i = 0; i < requestCacheMaxSize; i++) {
+      await run(i);
+    }
+    expect(invokeCount).toBe(requestCacheMaxSize);
+
+    await run(0); // cache hit; refreshes q0 so q1 becomes least-recently-used
+    expect(invokeCount).toBe(requestCacheMaxSize);
+
+    await run(requestCacheMaxSize); // over capacity; evicts q1
+    expect(invokeCount).toBe(requestCacheMaxSize + 1);
+
+    await run(0); // still cached due recency refresh
+    expect(invokeCount).toBe(requestCacheMaxSize + 1);
+
+    await run(1); // q1 was evicted, so the tool runs again
+    expect(invokeCount).toBe(requestCacheMaxSize + 2);
   });
 });

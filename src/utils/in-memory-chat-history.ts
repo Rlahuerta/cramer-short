@@ -36,6 +36,19 @@ Keep summaries to 1-2 sentences that capture the key information.`;
 const MESSAGE_SELECTION_SYSTEM_PROMPT = `You are a relevance evaluator. Select which previous conversation messages are relevant to the current query.
 Return only message IDs that contain information directly useful for answering the current query.`;
 
+/** Max entries in the per-instance relevance cache. LRU eviction on overflow. */
+export const RELEVANCE_CACHE_MAX_SIZE = 100;
+
+function setBoundedLru<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number): void {
+  if (map.has(key)) {
+    map.delete(key);
+  } else if (map.size >= maxSize) {
+    const oldest = map.keys().next();
+    if (!oldest.done) map.delete(oldest.value);
+  }
+  map.set(key, value);
+}
+
 /**
  * Manages in-memory conversation history for multi-turn conversations.
  * Stores user queries, final answers, and LLM-generated summaries.
@@ -132,8 +145,10 @@ Generate a brief 1-2 sentence summary of this answer.`;
 
     // Check cache first
     const cacheKey = this.hashQuery(currentQuery);
-    const cached = this.relevantMessagesByQuery.get(cacheKey);
-    if (cached) {
+    if (this.relevantMessagesByQuery.has(cacheKey)) {
+      const cached = this.relevantMessagesByQuery.get(cacheKey)!;
+      this.relevantMessagesByQuery.delete(cacheKey);
+      this.relevantMessagesByQuery.set(cacheKey, cached);
       return cached;
     }
 
@@ -164,8 +179,7 @@ Select which previous messages are relevant to understanding or answering the cu
         .map((idx) => this.messages[idx])
         .filter((m) => m.answer !== null); // Ensure we only return completed messages
 
-      // Cache the result
-      this.relevantMessagesByQuery.set(cacheKey, selectedMessages);
+      setBoundedLru(this.relevantMessagesByQuery, cacheKey, selectedMessages, RELEVANCE_CACHE_MAX_SIZE);
 
       return selectedMessages;
     } catch {

@@ -29,6 +29,42 @@ type ToolExecutionEvent =
 const TOOLS_REQUIRING_APPROVAL = ['write_file', 'edit_file'] as const;
 const FORECAST_LAB_GUARDED_TOOLS = new Set(['write_file', 'edit_file', 'create_file']);
 
+/** Max entries in the in-session request result cache. LRU eviction on overflow. */
+export const REQUEST_CACHE_MAX_SIZE = 256;
+/** Max tracked entries in the in-flight request registry. */
+export const PENDING_REQUESTS_MAX_SIZE = 64;
+
+export interface AgentToolExecutorLimits {
+  requestCacheMaxSize?: number;
+  pendingRequestsMaxSize?: number;
+}
+
+function setBoundedLru<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number): void {
+  if (map.has(key)) {
+    map.delete(key);
+  } else if (map.size >= maxSize) {
+    const oldest = map.keys().next();
+    if (!oldest.done) map.delete(oldest.value);
+  }
+  map.set(key, value);
+}
+
+function getAndRefreshLru<K, V>(map: Map<K, V>, key: K): V | undefined {
+  const value = map.get(key);
+  if (value !== undefined) {
+    map.delete(key);
+    map.set(key, value);
+  }
+  return value;
+}
+
+function tryAdmitPendingRequest<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number): boolean {
+  if (map.has(key)) return false;
+  if (map.size >= maxSize) return false;
+  map.set(key, value);
+  return true;
+}
+
 function isInsideForecastLabExperiments(path: string): boolean {
   const experimentsRoot = resolve(getExperimentsDir());
   const resolved = resolve(path);
@@ -40,6 +76,8 @@ function isInsideForecastLabExperiments(path: string): boolean {
  */
 export class AgentToolExecutor {
   private readonly sessionApprovedTools: Set<string>;
+  private readonly requestCacheMaxSize: number;
+  private readonly pendingRequestsMaxSize: number;
 
   /**
    * In-session request cache keyed on `toolName:stableJsonArgs`.
@@ -47,6 +85,8 @@ export class AgentToolExecutor {
    * times in a complex compound query (e.g. "compare NVDA vs AMD" may trigger
    * two independent financial_search calls for the same ticker).
    *
+   * Bounded to REQUEST_CACHE_MAX_SIZE entries; least-recently-used entry is
+   * evicted on overflow.
    * Tools that are stateful, produce side-effects, or are intentionally
    * non-deterministic are excluded — see UNCACHEABLE_TOOLS below.
    */
@@ -60,6 +100,11 @@ export class AgentToolExecutor {
    *
    * Each entry is removed once the originating call settles (success or error)
    * and the result is promoted to `requestCache` on success.
+   * Tracks at most PENDING_REQUESTS_MAX_SIZE entries using admission control,
+   * not LRU eviction. Once full, new unique in-flight requests still run but
+   * are intentionally untracked (degraded dedupe for those new keys); active
+   * promises are never evicted or reordered, so already-tracked duplicates
+   * remain deduplicated until the originating call settles.
    */
   private readonly pendingRequests = new Map<string, Promise<string>>();
 
@@ -71,15 +116,16 @@ export class AgentToolExecutor {
       args: Record<string, unknown>;
     }) => Promise<ApprovalDecision>,
     sessionApprovedTools?: Set<string>,
+    limits: AgentToolExecutorLimits = {},
   ) {
     this.sessionApprovedTools = sessionApprovedTools ?? new Set();
+    this.requestCacheMaxSize = limits.requestCacheMaxSize ?? REQUEST_CACHE_MAX_SIZE;
+    this.pendingRequestsMaxSize = limits.pendingRequestsMaxSize ?? PENDING_REQUESTS_MAX_SIZE;
 
     // Pre-populate in-session cache from disk (fire-and-forget)
     loadCacheFromDisk().then((diskCache) => {
       for (const [k, v] of diskCache) {
-        if (!this.requestCache.has(k)) {
-          this.requestCache.set(k, v);
-        }
+        if (!this.requestCache.has(k)) setBoundedLru(this.requestCache, k, v, this.requestCacheMaxSize);
       }
     }).catch((err) => {
       // Auto-store failures are logged but don't block agent execution
@@ -226,8 +272,9 @@ export class AgentToolExecutor {
 
     const toolStartTime = Date.now();
 
-    // Declared before try so the catch block can clean up pendingRequests on error.
+    // Declared before try so the catch block can clean up a pending entry on error.
     let cacheKey: string | null = null;
+    let trackedPendingPromise: Promise<string> | null = null;
 
     try {
       const tool = this.toolMap.get(toolName);
@@ -247,8 +294,8 @@ export class AgentToolExecutor {
         ? `${toolName}:${JSON.stringify(Object.fromEntries(Object.entries(toolArgs).sort()))}`
         : null;
 
-      if (cacheKey && this.requestCache.has(cacheKey)) {
-        const cached = this.requestCache.get(cacheKey)!;
+      const cached = cacheKey ? getAndRefreshLru(this.requestCache, cacheKey) : undefined;
+      if (cacheKey && cached !== undefined) {
         yield { type: 'tool_end', tool: toolName, args: toolArgs, result: cached, duration: 0 };
         ctx.scratchpad.recordToolCall(toolName, toolQuery);
         ctx.scratchpad.addToolResult(toolName, toolArgs, cached);
@@ -260,8 +307,9 @@ export class AgentToolExecutor {
       // the same parallel batch), attach to its Promise instead of firing a
       // second API call. The originating call owns the channel and channel
       // draining; we just wait for the shared result.
-      if (cacheKey && this.pendingRequests.has(cacheKey)) {
-        const result = await this.pendingRequests.get(cacheKey)!;
+      const pending = cacheKey ? this.pendingRequests.get(cacheKey) : undefined;
+      if (cacheKey && pending) {
+        const result = await pending;
         yield { type: 'tool_end', tool: toolName, args: toolArgs, result, duration: 0 };
         ctx.scratchpad.recordToolCall(toolName, toolQuery);
         ctx.scratchpad.addToolResult(toolName, toolArgs, result);
@@ -291,7 +339,16 @@ export class AgentToolExecutor {
 
       // Register before awaiting so any parallel call with the same key can
       // attach to this Promise rather than firing a duplicate API request.
-      if (cacheKey) this.pendingRequests.set(cacheKey, resultPromise);
+      if (cacheKey) {
+        trackedPendingPromise = tryAdmitPendingRequest(
+          this.pendingRequests,
+          cacheKey,
+          resultPromise,
+          this.pendingRequestsMaxSize,
+        )
+          ? resultPromise
+          : null;
+      }
 
       // Drain progress events in real-time as the tool executes
       for await (const message of channel) {
@@ -304,8 +361,10 @@ export class AgentToolExecutor {
 
       // Promote from in-flight registry to completed cache
       if (cacheKey) {
-        this.pendingRequests.delete(cacheKey);
-        this.requestCache.set(cacheKey, result);
+        if (trackedPendingPromise && this.pendingRequests.get(cacheKey) === trackedPendingPromise) {
+          this.pendingRequests.delete(cacheKey);
+        }
+        setBoundedLru(this.requestCache, cacheKey, result, this.requestCacheMaxSize);
         const ttlMs = getSetting('cacheTtlMs', 900000);
         saveCacheToDisk(cacheKey, result, toolName, ttlMs);
       }
@@ -320,7 +379,9 @@ export class AgentToolExecutor {
     } catch (error) {
       // Remove from in-flight registry so subsequent calls can retry rather
       // than attaching to a permanently-failed Promise.
-      if (cacheKey) this.pendingRequests.delete(cacheKey);
+      if (cacheKey && trackedPendingPromise && this.pendingRequests.get(cacheKey) === trackedPendingPromise) {
+        this.pendingRequests.delete(cacheKey);
+      }
 
       const errorMessage = error instanceof Error ? error.message : String(error);
       yield { type: 'tool_error', tool: toolName, error: errorMessage };

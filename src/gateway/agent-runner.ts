@@ -17,7 +17,51 @@ type SessionState = {
   eventForwarder: EventForwarder;
 };
 
-const sessions = new Map<string, SessionState>();
+type SessionEntry =
+  | { kind: 'active'; session: SessionState }
+  | { kind: 'test-placeholder' };
+
+/** Maximum number of concurrent sessions to keep in memory. LRU eviction on overflow. */
+const MAX_SESSIONS = 50;
+
+const sessions = new Map<string, SessionEntry>();
+
+function setBoundedSessionEntry(sessionKey: string, entry: SessionEntry): void {
+  if (sessions.has(sessionKey)) {
+    sessions.delete(sessionKey);
+  } else if (sessions.size >= MAX_SESSIONS) {
+    const oldest = sessions.keys().next();
+    if (!oldest.done) sessions.delete(oldest.value);
+  }
+  sessions.set(sessionKey, entry);
+}
+
+function setBoundedSession(sessionKey: string, session: SessionState): void {
+  setBoundedSessionEntry(sessionKey, { kind: 'active', session });
+}
+
+/** Exposed for observability and testing only. */
+export function getSessionCount(): number {
+  return sessions.size;
+}
+
+/** @internal Test-only: inject a fake session entry to drive eviction tests. */
+export function _addSessionForTest(key: string): void {
+  setBoundedSessionEntry(key, { kind: 'test-placeholder' });
+}
+
+/** @internal Test-only: inspect session-key membership without exposing the Map. */
+export function _hasSessionForTest(key: string): boolean {
+  return sessions.has(key);
+}
+
+/** @internal Test-only: clear all sessions for test isolation. */
+export function _clearSessionsForTest(): void {
+  sessions.clear();
+}
+
+/** @internal Test-only: expose MAX_SESSIONS for assertions. */
+export { MAX_SESSIONS };
 
 export class BufferedEventForwarder implements EventForwarder {
   private handler: ((event: AgentEvent) => void | Promise<void>) | undefined;
@@ -59,8 +103,10 @@ export class BufferedEventForwarder implements EventForwarder {
 
 function getSession(sessionKey: string, model: string, modelProvider: string): SessionState {
   const existing = sessions.get(sessionKey);
-  if (existing) {
-    return existing;
+  if (existing?.kind === 'active') {
+    sessions.delete(sessionKey);
+    sessions.set(sessionKey, existing);
+    return existing.session;
   }
 
   const inMemoryChatHistory = new InMemoryChatHistory(model);
@@ -78,7 +124,7 @@ function getSession(sessionKey: string, model: string, modelProvider: string): S
     tail: Promise.resolve(),
     eventForwarder,
   };
-  sessions.set(sessionKey, created);
+  setBoundedSession(sessionKey, created);
   return created;
 }
 

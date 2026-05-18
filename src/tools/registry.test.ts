@@ -42,6 +42,12 @@ afterEach(() => {
 });
 
 describe('getToolRegistry core tools', () => {
+  it('keeps public registry names in stable snake_case', () => {
+    for (const name of names()) {
+      expect(name).toMatch(/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/);
+    }
+  });
+
   it('always registers core local tools without gated env vars', () => {
     expect(names()).toEqual(expect.arrayContaining([
       'sequential_thinking',

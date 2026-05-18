@@ -397,12 +397,80 @@ export function shouldForceNonCryptoForecastFallback(query: string, toolCalls: T
   return needsCurrentPriceFetch || needsForecastRun;
 }
 
+// ---------------------------------------------------------------------------
+// Typed interfaces for Markov tool result payloads (replaces Record<string,unknown> casts)
+// ---------------------------------------------------------------------------
+
+interface ParsedMarkovConformal {
+  applied?: boolean;
+  radius?: number;
+  coverageEstimate?: number | null;
+  mode?: 'normal' | 'break';
+}
+
+interface ParsedMarkovDiagnostics {
+  predictionConfidence?: number;
+  markovWeight?: number;
+  structuralBreakDetected?: boolean;
+  trustedAnchors?: number;
+  totalAnchors?: number;
+  anchorQuality?: string;
+  conformal?: ParsedMarkovConformal;
+  structuralBreakDivergence?: number;
+  ciWidened?: boolean;
+}
+
+interface ParsedMarkovActionSignal {
+  expectedReturn?: number;
+  confidence?: string;
+}
+
+interface ParsedMarkovScenariosBucket {
+  label?: string;
+  probability?: number;
+}
+
+interface ParsedMarkovScenarios {
+  pUp?: number;
+  expectedReturn?: number;
+  buckets?: ParsedMarkovScenariosBucket[];
+}
+
+interface ParsedMarkovCanonical {
+  actionSignal?: ParsedMarkovActionSignal;
+  diagnostics?: ParsedMarkovDiagnostics;
+  scenarios?: ParsedMarkovScenarios;
+  currentPrice?: number;
+}
+
+interface ParsedMarkovForecastHint {
+  markovReturn?: number;
+  confidenceScore?: number;
+}
+
+interface ParsedPricePayload {
+  price?: number;
+  close?: number;
+  lastTradePrice?: number;
+  snapshot?: ParsedPricePayload;
+}
+
+interface ParsedPolymarketForecastPayload {
+  forecastReturn?: unknown;
+  result?: unknown;
+}
+
+/** Narrows `v` to `T` only if it is a non-null, non-array object. */
+function narrowObj<T>(v: unknown): T | null {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? v as T : null;
+}
+
+// ---------------------------------------------------------------------------
+
 function parseToolCallData(call: ToolCallRecord): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(call.result) as { data?: unknown };
-    return parsed?.data && typeof parsed.data === 'object'
-      ? parsed.data as Record<string, unknown>
-      : null;
+    return narrowObj<Record<string, unknown>>(parsed?.data);
   } catch {
     return null;
   }
@@ -434,29 +502,29 @@ function extractPositiveNumericValue(value: unknown): number | null {
 
 function extractPriceFromPayload(value: unknown): number | null {
   if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
+  const record = value as ParsedPricePayload;
 
-  const directPrice = extractPositiveNumericValue(record['price']);
+  const directPrice = extractPositiveNumericValue(record.price);
   if (directPrice !== null) {
     return directPrice;
   }
 
-  const closePrice = extractPositiveNumericValue(record['close']);
+  const closePrice = extractPositiveNumericValue(record.close);
   if (closePrice !== null) {
     return closePrice;
   }
 
-  const lastTradePrice = extractPositiveNumericValue(record['lastTradePrice']);
+  const lastTradePrice = extractPositiveNumericValue(record.lastTradePrice);
   if (lastTradePrice !== null) {
     return lastTradePrice;
   }
 
-  const snapshot = record['snapshot'];
+  const snapshot = record.snapshot;
   if (snapshot && typeof snapshot === 'object') {
-    const snapshotRecord = snapshot as Record<string, unknown>;
-    const snapshotPrice = extractPositiveNumericValue(snapshotRecord['price'])
-      ?? extractPositiveNumericValue(snapshotRecord['close'])
-      ?? extractPositiveNumericValue(snapshotRecord['lastTradePrice']);
+    const snapshotRecord = snapshot as ParsedPricePayload;
+    const snapshotPrice = extractPositiveNumericValue(snapshotRecord.price)
+      ?? extractPositiveNumericValue(snapshotRecord.close)
+      ?? extractPositiveNumericValue(snapshotRecord.lastTradePrice);
     if (snapshotPrice !== null) {
       return snapshotPrice;
     }
@@ -502,10 +570,10 @@ function extractCurrentPriceFromAbstainingMarkovQuery(query: string, toolCalls: 
     const data = parseToolCallData(call);
     if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'abstain') continue;
 
-    const canonical = data['canonical'];
-    if (!canonical || typeof canonical !== 'object') continue;
+    const canonical = narrowObj<ParsedMarkovCanonical>(data['canonical']);
+    if (!canonical) continue;
 
-    const currentPrice = extractPositiveNumericValue((canonical as Record<string, unknown>)['currentPrice']);
+    const currentPrice = extractPositiveNumericValue(canonical.currentPrice);
     if (currentPrice !== null) {
       return currentPrice;
     }
@@ -622,15 +690,15 @@ export function extractMarkovReturnFromToolCalls(toolCalls: ToolCallRecord[]): n
     const data = parseToolCallData(call);
     if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'ok') continue;
 
-    const canonical = data['canonical'];
-    if (!canonical || typeof canonical !== 'object') continue;
+    const canonical = narrowObj<ParsedMarkovCanonical>(data['canonical']);
+    if (!canonical) continue;
 
-    const actionSignal = (canonical as Record<string, unknown>)['actionSignal'];
-    const diagnostics = (canonical as Record<string, unknown>)['diagnostics'];
-    if (!actionSignal || typeof actionSignal !== 'object' || !diagnostics || typeof diagnostics !== 'object') continue;
+    const actionSignal = narrowObj<ParsedMarkovActionSignal>(canonical.actionSignal);
+    const diagnostics = narrowObj<ParsedMarkovDiagnostics>(canonical.diagnostics);
+    if (!actionSignal || !diagnostics) continue;
 
-    const expectedReturn = (actionSignal as Record<string, unknown>)['expectedReturn'];
-    const markovWeight = (diagnostics as Record<string, unknown>)['markovWeight'];
+    const { expectedReturn } = actionSignal;
+    const { markovWeight } = diagnostics;
     if (
       typeof expectedReturn === 'number' && Number.isFinite(expectedReturn)
       && typeof markovWeight === 'number' && Number.isFinite(markovWeight)
@@ -659,14 +727,14 @@ function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[])
     if (!data || data['_tool'] !== 'markov_distribution') continue;
 
     if (data['status'] === 'ok') {
-      const canonical = data['canonical'];
-      if (!canonical || typeof canonical !== 'object') continue;
+      const canonical = narrowObj<ParsedMarkovCanonical>(data['canonical']);
+      if (!canonical) continue;
 
-      const actionSignal = (canonical as Record<string, unknown>)['actionSignal'];
-      const diagnostics = (canonical as Record<string, unknown>)['diagnostics'];
-      if (!actionSignal || typeof actionSignal !== 'object' || !diagnostics || typeof diagnostics !== 'object') continue;
+      const actionSignal = narrowObj<ParsedMarkovActionSignal>(canonical.actionSignal);
+      const diagnostics = narrowObj<ParsedMarkovDiagnostics>(canonical.diagnostics);
+      if (!actionSignal || !diagnostics) continue;
 
-      const predictionConfidence = (diagnostics as Record<string, unknown>)['predictionConfidence'];
+      const { predictionConfidence } = diagnostics;
       if (
         requiresSelectiveBtcGate
         && isFiniteNumber(predictionConfidence)
@@ -675,8 +743,8 @@ function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[])
         return null;
       }
 
-      const expectedReturn = (actionSignal as Record<string, unknown>)['expectedReturn'];
-      const markovWeight = (diagnostics as Record<string, unknown>)['markovWeight'];
+      const { expectedReturn } = actionSignal;
+      const { markovWeight } = diagnostics;
       if (
         typeof expectedReturn === 'number' && Number.isFinite(expectedReturn)
         && typeof markovWeight === 'number' && Number.isFinite(markovWeight)
@@ -703,13 +771,13 @@ export function extractMarkovPredictionConfidenceForQuery(query: string, toolCal
 
     if (data['status'] !== 'ok') continue;
 
-    const canonical = data['canonical'];
-    if (!canonical || typeof canonical !== 'object') continue;
+    const canonical = narrowObj<ParsedMarkovCanonical>(data['canonical']);
+    if (!canonical) continue;
 
-    const diagnostics = (canonical as Record<string, unknown>)['diagnostics'];
-    if (!diagnostics || typeof diagnostics !== 'object') continue;
+    const diagnostics = narrowObj<ParsedMarkovDiagnostics>(canonical.diagnostics);
+    if (!diagnostics) continue;
 
-    const predictionConfidence = (diagnostics as Record<string, unknown>)['predictionConfidence'];
+    const { predictionConfidence } = diagnostics;
     if (isFiniteNumber(predictionConfidence)) return predictionConfidence;
   }
 
@@ -730,37 +798,32 @@ function extractMarkovArbiterEvidence(query: string, toolCalls: ToolCallRecord[]
 
     if (data['status'] === 'abstain') {
       const evidence: NonNullable<ForcedForecastArbiterArgs['markov']> = {};
-      const forecastHint = data['forecastHint'];
-      if (forecastHint && typeof forecastHint === 'object') {
-        const hintRecord = forecastHint as Record<string, unknown>;
-        if (isFiniteNumber(hintRecord['markovReturn'])) evidence.forecast_return = hintRecord['markovReturn'];
-        if (isFiniteNumber(hintRecord['confidenceScore'])) evidence.confidence = hintRecord['confidenceScore'];
+      const hint = narrowObj<ParsedMarkovForecastHint>(data['forecastHint']);
+      if (hint) {
+        if (isFiniteNumber(hint.markovReturn)) evidence.forecast_return = hint.markovReturn;
+        if (isFiniteNumber(hint.confidenceScore)) evidence.confidence = hint.confidenceScore;
       }
       const reasons = Array.isArray(data['abstainReasons'])
         ? data['abstainReasons'].filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
         : [];
-      const canonical = data['canonical'] && typeof data['canonical'] === 'object'
-        ? data['canonical'] as Record<string, unknown>
-        : null;
-      const diagnostics = canonical?.['diagnostics'] && typeof canonical['diagnostics'] === 'object'
-        ? canonical['diagnostics'] as Record<string, unknown>
-        : null;
+      const canonical = narrowObj<ParsedMarkovCanonical>(data['canonical']);
+      const diagnostics = narrowObj<ParsedMarkovDiagnostics>(canonical?.diagnostics);
       if (diagnostics) {
-        if (typeof diagnostics['structuralBreakDetected'] === 'boolean') evidence.structural_break = diagnostics['structuralBreakDetected'];
-        if (isFiniteNumber(diagnostics['trustedAnchors'])) evidence.trusted_anchors = diagnostics['trustedAnchors'];
-        if (isFiniteNumber(diagnostics['totalAnchors'])) evidence.total_anchors = diagnostics['totalAnchors'];
-        if (typeof diagnostics['anchorQuality'] === 'string') evidence.anchor_quality = diagnostics['anchorQuality'];
-        if (evidence.confidence === undefined && isFiniteNumber(diagnostics['predictionConfidence'])) {
-          evidence.confidence = diagnostics['predictionConfidence'];
+        if (typeof diagnostics.structuralBreakDetected === 'boolean') evidence.structural_break = diagnostics.structuralBreakDetected;
+        if (isFiniteNumber(diagnostics.trustedAnchors)) evidence.trusted_anchors = diagnostics.trustedAnchors;
+        if (isFiniteNumber(diagnostics.totalAnchors)) evidence.total_anchors = diagnostics.totalAnchors;
+        if (typeof diagnostics.anchorQuality === 'string') evidence.anchor_quality = diagnostics.anchorQuality;
+        if (evidence.confidence === undefined && isFiniteNumber(diagnostics.predictionConfidence)) {
+          evidence.confidence = diagnostics.predictionConfidence;
         }
       }
-      const structuralBreakSummary = diagnostics?.['structuralBreakDetected'] === true
+      const structuralBreakSummary = diagnostics?.structuralBreakDetected === true
         ? [
             'Structural break detected',
-            isFiniteNumber(diagnostics['structuralBreakDivergence'])
-              ? `divergence ${diagnostics['structuralBreakDivergence'].toFixed(3)}`
+            isFiniteNumber(diagnostics.structuralBreakDivergence)
+              ? `divergence ${diagnostics.structuralBreakDivergence.toFixed(3)}`
               : null,
-            diagnostics['ciWidened'] === true ? 'CI widening applied' : null,
+            diagnostics.ciWidened === true ? 'CI widening applied' : null,
           ].filter((part): part is string => part !== null).join(', ')
         : null;
       evidence.summary = [
@@ -774,65 +837,60 @@ function extractMarkovArbiterEvidence(query: string, toolCalls: ToolCallRecord[]
 
     if (data['status'] !== 'ok') continue;
 
-    const canonical = data['canonical'];
-    if (!canonical || typeof canonical !== 'object') continue;
-    const canonicalRecord = canonical as Record<string, unknown>;
-    const scenarios = canonicalRecord['scenarios'];
-    const diagnostics = canonicalRecord['diagnostics'];
-    const actionSignal = canonicalRecord['actionSignal'];
+    const canonical = narrowObj<ParsedMarkovCanonical>(data['canonical']);
+    if (!canonical) continue;
+    const scenarios = narrowObj<ParsedMarkovScenarios>(canonical.scenarios);
+    const diagnostics = narrowObj<ParsedMarkovDiagnostics>(canonical.diagnostics);
+    const actionSignal = narrowObj<ParsedMarkovActionSignal>(canonical.actionSignal);
     const distribution = data['distribution'];
 
     const evidence: NonNullable<ForcedForecastArbiterArgs['markov']> = {};
     const weightedReturn = extractMarkovReturnForQuery(query, toolCalls);
     if (weightedReturn !== null) evidence.forecast_return = weightedReturn;
 
-    if (scenarios && typeof scenarios === 'object') {
-      const scenarioRecord = scenarios as Record<string, unknown>;
-      if (isFiniteNumber(scenarioRecord['pUp'])) evidence.p_up = scenarioRecord['pUp'];
-      if (isFiniteNumber(scenarioRecord['expectedReturn']) && evidence.forecast_return === undefined) {
-        evidence.forecast_return = scenarioRecord['expectedReturn'];
+    if (scenarios) {
+      if (isFiniteNumber(scenarios.pUp)) evidence.p_up = scenarios.pUp;
+      if (isFiniteNumber(scenarios.expectedReturn) && evidence.forecast_return === undefined) {
+        evidence.forecast_return = scenarios.expectedReturn;
       }
-      const buckets = scenarioRecord['buckets'];
-      if (Array.isArray(buckets)) {
-        const flat = buckets.find((bucket) =>
+      if (Array.isArray(scenarios.buckets)) {
+        const flat = scenarios.buckets.find((bucket) =>
           bucket && typeof bucket === 'object'
-          && typeof (bucket as Record<string, unknown>)['label'] === 'string'
-          && ((bucket as Record<string, unknown>)['label'] as string).toLowerCase().includes('flat')
-        ) as Record<string, unknown> | undefined;
-        if (flat && isFiniteNumber(flat['probability'])) evidence.flat_probability = flat['probability'];
+          && typeof bucket.label === 'string'
+          && bucket.label.toLowerCase().includes('flat')
+        );
+        if (flat && isFiniteNumber(flat.probability)) evidence.flat_probability = flat.probability;
       }
     }
 
-    if (diagnostics && typeof diagnostics === 'object') {
-      const diagnosticRecord = diagnostics as Record<string, unknown>;
-      if (isFiniteNumber(diagnosticRecord['predictionConfidence'])) evidence.confidence = diagnosticRecord['predictionConfidence'];
-      if (typeof diagnosticRecord['structuralBreakDetected'] === 'boolean') evidence.structural_break = diagnosticRecord['structuralBreakDetected'];
-      if (isFiniteNumber(diagnosticRecord['trustedAnchors'])) evidence.trusted_anchors = diagnosticRecord['trustedAnchors'];
-      if (isFiniteNumber(diagnosticRecord['totalAnchors'])) evidence.total_anchors = diagnosticRecord['totalAnchors'];
-      if (typeof diagnosticRecord['anchorQuality'] === 'string') evidence.anchor_quality = diagnosticRecord['anchorQuality'];
-      const conformal = diagnosticRecord['conformal'];
-      if (conformal && typeof conformal === 'object') {
-        const conformalRecord = conformal as Record<string, unknown>;
+    if (diagnostics) {
+      if (isFiniteNumber(diagnostics.predictionConfidence)) evidence.confidence = diagnostics.predictionConfidence;
+      if (typeof diagnostics.structuralBreakDetected === 'boolean') evidence.structural_break = diagnostics.structuralBreakDetected;
+      if (isFiniteNumber(diagnostics.trustedAnchors)) evidence.trusted_anchors = diagnostics.trustedAnchors;
+      if (isFiniteNumber(diagnostics.totalAnchors)) evidence.total_anchors = diagnostics.totalAnchors;
+      if (typeof diagnostics.anchorQuality === 'string') evidence.anchor_quality = diagnostics.anchorQuality;
+      const conformal = narrowObj<ParsedMarkovConformal>(diagnostics.conformal);
+      if (conformal) {
         const conformed: NonNullable<NonNullable<ForcedForecastArbiterArgs['markov']>['conformal']> = {};
-        if (typeof conformalRecord['applied'] === 'boolean') conformed.applied = conformalRecord['applied'];
-        if (isFiniteNumber(conformalRecord['radius'])) conformed.radius = conformalRecord['radius'];
-        if (conformalRecord['coverageEstimate'] === null || isFiniteNumber(conformalRecord['coverageEstimate'])) {
-          conformed.coverageEstimate = conformalRecord['coverageEstimate'] as number | null;
+        if (typeof conformal.applied === 'boolean') conformed.applied = conformal.applied;
+        if (isFiniteNumber(conformal.radius)) conformed.radius = conformal.radius;
+        if (conformal.coverageEstimate === null || isFiniteNumber(conformal.coverageEstimate)) {
+          conformed.coverageEstimate = conformal.coverageEstimate;
         }
-        if (conformalRecord['mode'] === 'normal' || conformalRecord['mode'] === 'break') {
-          conformed.mode = conformalRecord['mode'];
+        if (conformal.mode === 'normal' || conformal.mode === 'break') {
+          conformed.mode = conformal.mode;
         }
         if (Object.keys(conformed).length > 0) evidence.conformal = conformed;
       }
     }
 
-    if (actionSignal && typeof actionSignal === 'object' && typeof (actionSignal as Record<string, unknown>)['confidence'] === 'string') {
-      evidence.summary = `Markov action signal confidence ${(actionSignal as Record<string, unknown>)['confidence']}`;
+    if (actionSignal && typeof actionSignal.confidence === 'string') {
+      evidence.summary = `Markov action signal confidence ${actionSignal.confidence}`;
     }
 
     if (Array.isArray(distribution)) {
       const prices = distribution
-        .map((point) => point && typeof point === 'object' ? (point as Record<string, unknown>)['price'] : null)
+        .map((point) => narrowObj<{ price?: unknown }>(point)?.price ?? null)
         .filter((price): price is number => isFinitePositiveNumber(price));
       if (prices.length > 0) {
         evidence.ci_low = Math.min(...prices);
@@ -1178,15 +1236,15 @@ function extractPolymarketForecastReturnForQuery(query: string, toolCalls: ToolC
     }
 
     const data = parsed && typeof parsed === 'object' ? (parsed as { data?: unknown }).data : null;
-    if (!data || typeof data !== 'object') continue;
-    const payload = data as Record<string, unknown>;
+    const payload = narrowObj<ParsedPolymarketForecastPayload>(data);
+    if (!payload) continue;
 
-    const directForecastReturn = payload['forecastReturn'];
+    const directForecastReturn = payload.forecastReturn;
     if (typeof directForecastReturn === 'number' && Number.isFinite(directForecastReturn)) {
       return directForecastReturn;
     }
 
-    const resultText = payload['result'];
+    const resultText = payload.result;
     if (typeof resultText !== 'string') continue;
     const match = resultText.match(/(?:forecast return|expected return)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)%/i);
     if (!match) continue;
