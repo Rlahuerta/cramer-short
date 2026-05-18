@@ -11,6 +11,19 @@ import { summarizeToolResult } from '../utils/parsing/tool-result-summary.js';
 
 export { summarizeToolResult };
 
+function getTuiPreviousLineCount(tui: TUI): number {
+  const previousLines = Reflect.get(tui, 'previousLines');
+  return Array.isArray(previousLines) ? previousLines.length : 0;
+}
+
+function resetTuiRenderCache(tui: TUI): void {
+  Reflect.set(tui, 'previousLines', []);
+  Reflect.set(tui, 'cursorRow', 0);
+  Reflect.set(tui, 'hardwareCursorRow', 0);
+  Reflect.set(tui, 'maxLinesRendered', 0);
+  Reflect.set(tui, 'previousViewportTop', 0);
+}
+
 export function truncateAtWord(str: string, maxLength: number): string {
   if (str.length <= maxLength) {
     return str;
@@ -186,15 +199,8 @@ export function flushExchangeToScrollback(
   chatLog: ChatLogComponent,
   item: HistoryItem,
 ): void {
-  const tuiInternal = tui as unknown as {
-    previousLines?: string[];
-    cursorRow?: number;
-    hardwareCursorRow?: number;
-    maxLinesRendered?: number;
-    previousViewportTop?: number;
-  }; // pi-tui private render cache
   // Snapshot BEFORE stop() moves the cursor.
-  const prevLineCount: number = tuiInternal.previousLines?.length ?? 0;
+  const prevLineCount: number = getTuiPreviousLineCount(tui);
 
   // Stop TUI: moves cursor to end of rendered content (+\r\n), disables raw mode.
   tui.stop();
@@ -230,11 +236,7 @@ export function flushExchangeToScrollback(
   // at its current value. With previousLines=[] and widthChanged=false, the render
   // takes the "first render" path → fullRender(clear=false) → writes UI content at
   // the current cursor position WITHOUT touching the scrollback buffer.
-  tuiInternal.previousLines = [];
-  tuiInternal.cursorRow = 0;
-  tuiInternal.hardwareCursorRow = 0;
-  tuiInternal.maxLinesRendered = 0;
-  tuiInternal.previousViewportTop = 0;
+  resetTuiRenderCache(tui);
   // Do NOT reset previousWidth — keeps widthChanged=false → no \x1b[3J scrollback wipe.
   tui.start();
   tui.requestRender(); // non-force: uses manual state above, hits "first render" path

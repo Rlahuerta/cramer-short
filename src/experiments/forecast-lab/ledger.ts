@@ -14,6 +14,7 @@ import type {
   ForecastLabPromotionState,
   ForecastLabRunManifest,
   ForecastLabRoutingContext,
+  JsonValue,
 } from './types.js';
 
 export const LEDGER_COLUMNS = [
@@ -192,7 +193,7 @@ export class ForecastLabLedgerError extends Error {
   override name = 'ForecastLabLedgerError';
 }
 
-function assertJsonSerializable(field: string, value: unknown): void {
+function assertJsonSerializable(field: string, value: unknown): asserts value is JsonValue {
   if (value === undefined) {
     throw new ForecastLabLedgerError(`${field} must not be undefined`);
   }
@@ -222,7 +223,7 @@ function assertJsonSerializable(field: string, value: unknown): void {
   }
 }
 
-function stableValue(value: unknown): unknown {
+function stableValue(value: JsonValue): JsonValue {
   if (Array.isArray(value)) {
     return value.map(stableValue);
   }
@@ -776,6 +777,7 @@ export function findLatestKeptLedgerEntry(
 
 export function serializeManifest(manifest: ForecastLabRunManifest): string {
   validateRunManifest(manifest);
+  assertJsonSerializable('manifest', manifest);
   return `${JSON.stringify(stableValue(manifest), null, 2)}\n`;
 }
 

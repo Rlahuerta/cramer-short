@@ -138,6 +138,27 @@ function countAbstains(steps: readonly BacktestStep[]): number {
   return steps.filter((step) => step.recommendation === 'HOLD').length;
 }
 
+type MutableImprovementMetrics = {
+  -readonly [Key in keyof ForecastLabImprovementMetrics]: ForecastLabImprovementMetrics[Key];
+};
+
+function emptyImprovementMetrics(): MutableImprovementMetrics {
+  const emptyHorizonMetrics: ForecastLabImprovementHorizonMetrics = {
+    directionalAccuracy: 0,
+    brierScore: 0,
+    ciCoverage: 0,
+    structuralBreakCount: 0,
+    abstainCount: 0,
+  };
+  return {
+    h1: emptyHorizonMetrics,
+    h2: emptyHorizonMetrics,
+    h3: emptyHorizonMetrics,
+    h7: emptyHorizonMetrics,
+    h14: emptyHorizonMetrics,
+  };
+}
+
 function scalarLiteral(value: ForecastLabMutationScalarValue): string {
   return typeof value === 'boolean' ? String(value) : `${value}`;
 }
@@ -415,7 +436,8 @@ async function benchmarkProfileMetrics(
   const config = getShortHorizonProfileConfig(profileId);
 
   return withMutationOverrides(config.assetScope, mutation, async () => {
-    const results = await Promise.all(config.horizons.map(async (horizon) => {
+    const metrics = emptyImprovementMetrics();
+    await Promise.all(config.horizons.map(async (horizon) => {
       const walkForwardResult = await walkForward({
         ticker: config.ticker,
         prices: [...prices],
@@ -423,19 +445,16 @@ async function benchmarkProfileMetrics(
         warmup: config.warmup,
         stride: config.stride,
       });
-      return [
-        `h${horizon}`,
-        {
-          directionalAccuracy: walkForwardResult.steps.length > 0 ? directionalAccuracy(walkForwardResult.steps) : 0,
-          brierScore: walkForwardResult.steps.length > 0 ? brierScore(walkForwardResult.steps) : 0,
-          ciCoverage: walkForwardResult.steps.length > 0 ? ciCoverage(walkForwardResult.steps) : 0,
-          structuralBreakCount: countStructuralBreaks(walkForwardResult.steps),
-          abstainCount: countAbstains(walkForwardResult.steps),
-        } satisfies ForecastLabImprovementHorizonMetrics,
-      ] as const;
+      metrics[`h${horizon}`] = {
+        directionalAccuracy: walkForwardResult.steps.length > 0 ? directionalAccuracy(walkForwardResult.steps) : 0,
+        brierScore: walkForwardResult.steps.length > 0 ? brierScore(walkForwardResult.steps) : 0,
+        ciCoverage: walkForwardResult.steps.length > 0 ? ciCoverage(walkForwardResult.steps) : 0,
+        structuralBreakCount: countStructuralBreaks(walkForwardResult.steps),
+        abstainCount: countAbstains(walkForwardResult.steps),
+      };
     }));
 
-    return Object.fromEntries(results) as unknown as ForecastLabImprovementMetrics;
+    return metrics;
   });
 }
 

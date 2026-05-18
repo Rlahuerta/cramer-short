@@ -215,7 +215,7 @@ Evaluate and provide:
 // Evaluation generator - yields progress events for the UI
 // ============================================================================
 
-function createEvaluationRunner(sampleSize?: number) {
+function createEvaluationRunner(sampleSize?: number): () => AsyncGenerator<EvalProgressEvent, void, unknown> {
   return async function* runEvaluation(): AsyncGenerator<EvalProgressEvent, void, unknown> {
     // Load and parse dataset
     const csvPath = path.join(__dirname, 'dataset', 'finance_agent.csv');

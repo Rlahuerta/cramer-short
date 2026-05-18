@@ -5,7 +5,9 @@ import {
   FULL_ANSWER_TURNS,
   type HistoryEntry,
 } from './parsing/history-context.js';
-import { z } from 'zod';
+import { SelectedMessagesSchema } from '../schemas/in-memory-chat-history.js';
+
+export { SelectedMessagesSchema, type SelectedMessages } from '../schemas/in-memory-chat-history.js';
 
 /**
  * Represents a single conversation turn (query + answer + summary)
@@ -16,13 +18,6 @@ export interface Message {
   answer: string | null;   // null until answer completes
   summary: string | null;  // LLM-generated summary, null until answer arrives
 }
-
-/**
- * Schema for LLM to select relevant messages
- */
-export const SelectedMessagesSchema = z.object({
-  message_ids: z.array(z.number()).describe('List of relevant message IDs (0-indexed)'),
-});
 
 /**
  * System prompt for generating message summaries
@@ -172,7 +167,8 @@ Select which previous messages are relevant to understanding or answering the cu
         outputSchema: SelectedMessagesSchema,
       });
 
-      const selectedIds = (response as unknown as { message_ids: number[] }).message_ids || [];
+      const selected = SelectedMessagesSchema.safeParse(response);
+      const selectedIds = selected.success ? selected.data.message_ids : [];
 
       const selectedMessages = selectedIds
         .filter((idx) => idx >= 0 && idx < this.messages.length)

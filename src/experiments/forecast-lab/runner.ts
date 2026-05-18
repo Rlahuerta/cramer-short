@@ -225,6 +225,33 @@ export class ForecastLabRunnerError extends Error {
   override name = 'ForecastLabRunnerError';
 }
 
+function isJsonValue(value: unknown): value is JsonValue {
+  if (
+    value === null
+    || typeof value === 'string'
+    || typeof value === 'boolean'
+  ) {
+    return true;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value);
+  }
+  if (Array.isArray(value)) {
+    return value.every(isJsonValue);
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.values(value).every(isJsonValue);
+  }
+  return false;
+}
+
+function toJsonValue(value: unknown, context: string): JsonValue {
+  if (!isJsonValue(value)) {
+    throw new ForecastLabRunnerError(`${context} must be JSON-serializable`);
+  }
+  return value;
+}
+
 interface StructuredMutationCatalogState {
   readonly appliedCandidateIds: readonly string[];
   readonly applicableCandidateIds: readonly string[];
@@ -953,7 +980,7 @@ function buildCandidateArtifact(
   dryRun: boolean,
 ): JsonValue {
   if (structuredMutation) {
-    return {
+    return toJsonValue({
       ...candidate,
       mutationMode: structuredMutation.mutationMode,
       mutationId: structuredMutation.mutationId,
@@ -978,13 +1005,13 @@ function buildCandidateArtifact(
         : {}),
       mutatedFiles: [...structuredMutation.mutatedFiles],
       patchSummary: [...structuredMutation.patchSummary],
-    } as unknown as JsonValue;
+    }, 'structured mutation candidate artifact');
   }
 
-  return {
+  return toJsonValue({
     ...candidate,
     mutation: dryRun ? 'dry-run: no code mutation attempted' : 'skipped by --skip-mutation',
-  } as unknown as JsonValue;
+  }, 'candidate artifact');
 }
 
 function buildPendingPromotionState(
@@ -1652,7 +1679,33 @@ function repairPromotionSourceManifestIfNeeded(
   return repairedManifest;
 }
 
-function snapshotPromotionSourceInvariants(manifest: ForecastLabRunManifest): unknown {
+type PromotionSourceInvariantSnapshot = {
+  readonly runId: string;
+  readonly startedAt: string;
+  readonly profileId: string;
+  readonly targetSubsystem: string;
+  readonly baselineCommit?: string;
+  readonly candidateBranch: string;
+  readonly allowedGlobs: readonly string[];
+  readonly routingContext?: ForecastLabRoutingContext;
+  readonly effectiveMutationContract?: ForecastLabRunManifest['effectiveMutationContract'];
+  readonly mutationMode?: ForecastLabMutationMode;
+  readonly parentRunId?: string;
+  readonly mutationId?: string;
+  readonly mutationSummary?: string;
+  readonly lineage?: ForecastLabMutationLineage;
+  readonly mutationSpecSummary?: ForecastLabRunManifest['mutationSpecSummary'];
+  readonly mutationReplayPayload?: ForecastLabMarkovParameterMutationReplayPayload;
+  readonly candidateWorkspace?: ForecastLabRunManifest['candidateWorkspace'];
+  readonly promotion?: {
+    readonly source: ForecastLabPromotionState['source'];
+    readonly requestedAt: string;
+  };
+  readonly promotionSource?: ForecastLabRunManifest['promotionSource'];
+  readonly artifactsPath: string;
+};
+
+function snapshotPromotionSourceInvariants(manifest: ForecastLabRunManifest): PromotionSourceInvariantSnapshot {
   return {
     runId: manifest.runId,
     startedAt: manifest.startedAt,
@@ -2037,7 +2090,7 @@ export async function promoteForecastLab(options: ForecastLabPromotionOptions): 
         sourceRunId: source.manifest.runId,
         manifest,
         sourceManifest: updatedSourceManifest,
-        baseline: baseline as unknown as JsonValue,
+        baseline: toJsonValue(baseline, 'promotion baseline summary'),
         candidate: candidateArtifact,
         decision,
         activation,
@@ -2412,7 +2465,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
   return {
     runId,
     manifest,
-    baseline: baseline as unknown as JsonValue,
+    baseline: toJsonValue(baseline, 'run baseline summary'),
     candidate: candidateArtifact,
     decision,
     ledgerEntry,

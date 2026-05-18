@@ -36,6 +36,18 @@ const SKIP_FIELDS = new Set([
   'type', 'name', 'description', 'exchange', 'currency', 'sector', 'industry',
 ]);
 
+export type AnnotatedFinancialValue =
+  | null
+  | boolean
+  | number
+  | string
+  | undefined
+  | symbol
+  | bigint
+  | Function
+  | AnnotatedFinancialValue[]
+  | { [key: string]: AnnotatedFinancialValue };
+
 /**
  * Format a monetary value to a compact human-readable string.
  * Examples: 12345678901 → "$12.3B", 4500000 → "$4.5M", 980000 → "$980K"
@@ -69,19 +81,19 @@ export function formatShares(value: number): string {
  * Only annotates known monetary/share fields; all other fields pass through
  * unchanged so downstream calculations still work on raw values.
  */
-export function annotateFinancialNumbers(obj: unknown, depth = 0): unknown {
+export function annotateFinancialNumbers(obj: unknown, depth = 0): AnnotatedFinancialValue {
   // Hard depth limit to prevent runaway recursion on deeply nested structures
-  if (depth > 8) return obj;
+  if (depth > 8) return obj as AnnotatedFinancialValue;
 
   if (Array.isArray(obj)) {
     return obj.map(item => annotateFinancialNumbers(item, depth + 1));
   }
 
   if (obj !== null && typeof obj === 'object') {
-    const result: Record<string, unknown> = {};
+    const result: Record<string, AnnotatedFinancialValue> = {};
     for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
       if (SKIP_FIELDS.has(key)) {
-        result[key] = value;
+        result[key] = value as AnnotatedFinancialValue;
       } else if (typeof value === 'number' && isFinite(value) && MONETARY_FIELDS.has(key)) {
         // Keep the raw value AND append a human-readable annotation
         result[key] = value;
@@ -96,5 +108,5 @@ export function annotateFinancialNumbers(obj: unknown, depth = 0): unknown {
     return result;
   }
 
-  return obj;
+  return obj as AnnotatedFinancialValue;
 }

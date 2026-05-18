@@ -43,24 +43,30 @@ if (initialE2EPreflight && !initialE2EPreflight.available) {
 /** Use instead of `it` for tests that hit real external APIs (no LLM). */
 export const integrationIt: typeof it = RUN_INTEGRATION ? it : it.skip;
 
-const guardedE2EIt: typeof it = ((label: string, fn: () => void | Promise<unknown>, options?: Parameters<typeof it>[2]) => {
-  it(label, async () => {
-    const skipReason = getE2EDynamicSkipReason();
-    if (skipReason) {
-      console.warn(skipReason);
-      return;
-    }
-
-    try {
-      await fn();
-    } catch (error) {
-      if (markE2ESkippedFromError(error)) {
+function createGuardedE2EIt(): typeof it {
+  // Bun's `it` carries helper properties on its callable value; this wrapper
+  // preserves the public test function shape while interposing E2E skip logic.
+  return ((label: string, fn: () => void | Promise<unknown>, options?: Parameters<typeof it>[2]) => {
+    it(label, async () => {
+      const skipReason = getE2EDynamicSkipReason();
+      if (skipReason) {
+        console.warn(skipReason);
         return;
       }
-      throw error;
-    }
-  }, options);
-}) as unknown as typeof it;
+
+      try {
+        await fn();
+      } catch (error) {
+        if (markE2ESkippedFromError(error)) {
+          return;
+        }
+        throw error;
+      }
+    }, options);
+  }) as typeof it;
+}
+
+const guardedE2EIt: typeof it = createGuardedE2EIt();
 
 /** Use instead of `it` for tests that run the full Cramer-Short agent against Ollama. */
 export const e2eIt: typeof it =

@@ -21,6 +21,13 @@ function debugLog(msg: string) {
   appendFileSync(LOG_PATH, `${new Date().toISOString()} ${msg}\n`);
 }
 
+function getSocketUserLid(user: unknown): string | null {
+  if (!user || typeof user !== 'object' || !('lid' in user)) {
+    return null;
+  }
+  return typeof user.lid === 'string' ? user.lid : null;
+}
+
 export function extractMentionedJids(message: WAMessage): string[] {
   const rawMsg = message.message;
   if (!rawMsg) return [];
@@ -127,7 +134,7 @@ export async function monitorWebInbox(params: {
   console.log('[whatsapp] Connected');
   const connectedAtMs = Date.now();
   const selfJid = sock.user?.id;
-  const selfLid = (sock.user as unknown as Record<string, unknown>)?.lid as string | undefined ?? null;
+  const selfLid = getSocketUserLid(sock.user);
   const selfFromSock = jidToE164(selfJid);
   const selfFromCreds = readSelfId(params.authDir).e164;
   const selfE164 = selfFromSock ?? selfFromCreds;

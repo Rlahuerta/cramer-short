@@ -409,15 +409,22 @@ export function inferTagSlugs(query: string): string[] {
 // Core fetch helpers
 // ---------------------------------------------------------------------------
 
-function parseJsonField<T>(raw: string | T): T {
-  if (typeof raw === 'string') {
-    try {
-      return JSON.parse(raw) as T;
-    } catch {
-      return [] as unknown as T;
-    }
-  }
-  return raw;
+function parseStringArrayField(raw: string | readonly string[] | undefined): string[] {
+  const parsed = typeof raw === 'string'
+    ? (() => {
+        try {
+          return JSON.parse(raw) as unknown;
+        } catch {
+          return [];
+        }
+      })()
+    : raw;
+
+  return Array.isArray(parsed)
+    ? parsed
+        .filter((item): item is string | number => typeof item === 'string' || typeof item === 'number')
+        .map((item) => String(item))
+    : [];
 }
 
 function formatVolume(n: number | undefined): string {
@@ -428,9 +435,9 @@ function formatVolume(n: number | undefined): string {
 }
 
 function formatMarket(m: PolymarketMarket): FormattedMarket | null {
-  const outcomes = parseJsonField<string[]>(m.outcomes);
-  const prices = parseJsonField<string[]>(m.outcomePrices);
-  const clobTokenIds = parseJsonField<string[]>(m.clobTokenIds ?? []);
+  const outcomes = parseStringArrayField(m.outcomes);
+  const prices = parseStringArrayField(m.outcomePrices);
+  const clobTokenIds = parseStringArrayField(m.clobTokenIds);
   if (!outcomes.length || !prices.length) return null;
 
   const probabilities: Record<string, string> = {};

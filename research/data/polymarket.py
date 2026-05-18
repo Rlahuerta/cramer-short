@@ -9,6 +9,9 @@ Mirrors TS logic from polymarket.ts:
 
 from __future__ import annotations
 
+import json
+import math
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -32,37 +35,80 @@ _RETRY_DELAYS = [1.0, 2.0, 4.0]
 # Tag-slug map (mirrors TS logic)
 # ---------------------------------------------------------------------------
 
-_TAG_SLUG_MAP: dict[str, list[str]] = {
-    "bitcoin": ["bitcoin", "crypto-prices", "crypto"],
-    "btc": ["bitcoin", "crypto-prices", "crypto"],
-    "ethereum": ["ethereum", "crypto-prices", "crypto"],
-    "eth": ["ethereum", "crypto-prices", "crypto"],
-    "solana": ["solana", "crypto-prices", "crypto"],
-    "sol": ["solana", "crypto-prices", "crypto"],
-    "crypto": ["crypto-prices", "crypto", "bitcoin"],
-    "fed": ["fed-rates", "fed", "economic-policy"],
-    "fed rate": ["fed-rates", "fed", "economic-policy"],
-    "tariff": ["tariffs", "trade", "economic-policy"],
-    "oil": ["oil", "energy", "commodities"],
-    "election": ["us-elections", "politics", "us-politics"],
-    "trump": ["us-politics", "politics", "us-elections"],
-    "recession": ["economy", "macro", "economic-policy"],
-    "gdp": ["economy", "macro", "economic-policy"],
-    "inflation": ["economy", "macro", "fed"],
-    "nvidia": ["nvidia", "tech", "ai"],
-    "nvda": ["nvidia", "tech", "ai"],
-}
+_TAG_SLUG_PATTERNS: list[tuple[list[str], list[str]]] = [
+    (["bitcoin", "btc"], ["bitcoin", "crypto-prices", "crypto"]),
+    (["ethereum", "eth"], ["ethereum", "crypto-prices", "crypto"]),
+    (["solana", "sol", "crypto", "defi", "nft", "web3"], ["crypto-prices", "crypto"]),
+    (
+        ["fed", "fomc", "federal reserve", "rate cut", "rate hike", "interest rate", "basis point"],
+        ["fed-rates", "fed", "economic-policy"],
+    ),
+    (
+        ["recession", "gdp", "inflation", "cpi", "unemployment", "economic"],
+        ["economy", "business", "economic-policy"],
+    ),
+    (["tariff", "trade war", "trade deal", "import duty"], ["tariffs", "politics", "world"]),
+    (
+        ["oil", "opec", "crude", "energy", "wti", "brent", "petroleum"],
+        ["commodities", "world", "business"],
+    ),
+    (
+        ["gold", "silver", "copper", "platinum", "palladium", "precious metal", "metal"],
+        ["commodities", "business"],
+    ),
+    (["wheat", "corn", "soybean", "coffee", "sugar", "grain", "natural gas"], ["commodities"]),
+    (
+        ["fda", "drug approval", "clinical trial", "pharma", "pfizer", "moderna", "eli lilly"],
+        ["science", "health"],
+    ),
+    (
+        [
+            "nvidia",
+            "apple",
+            "microsoft",
+            "google",
+            "amazon",
+            "meta",
+            "tesla",
+            "broadcom",
+            "qualcomm",
+            "intel",
+            "spacex",
+        ],
+        ["big-tech", "tech", "business"],
+    ),
+    (["earnings", "revenue", "eps", "quarterly results"], ["business", "finance"]),
+    (
+        ["ai regulation", "artificial intelligence", "chatgpt", "openai", "antitrust"],
+        ["tech", "science"],
+    ),
+    (
+        [
+            "middle east",
+            "ukraine",
+            "russia",
+            "china",
+            "taiwan",
+            "war",
+            "conflict",
+            "sanctions",
+            "geopolitical",
+        ],
+        ["world", "politics"],
+    ),
+    (
+        ["election", "president", "senate", "congress", "trump", "white house"],
+        ["elections", "us-politics", "politics"],
+    ),
+    (["ipo", "initial public offering"], ["ipos", "ipo", "business"]),
+]
 
 
 def _infer_tag_slugs(query: str) -> list[str]:
     """Infer tag slugs from query text."""
-    q = query.lower().strip()
-    # Direct lookup
-    if q in _TAG_SLUG_MAP:
-        return _TAG_SLUG_MAP[q]
-    # Partial match
-    for key, slugs in _TAG_SLUG_MAP.items():
-        if key in q:
+    lower = query.lower()
+    for patterns, slugs in _TAG_SLUG_PATTERNS:
+        if any(pattern in lower for pattern in patterns):
             return slugs
     return []
 
@@ -71,29 +117,62 @@ def _infer_tag_slugs(query: str) -> list[str]:
 # Client-side text filtering
 # ---------------------------------------------------------------------------
 
-_STOP_WORDS = {"the", "a", "an", "and", "or", "of", "in", "on", "at", "to"}
+_TEXT_FILTER_STOP_WORDS = {
+    "the",
+    "and",
+    "for",
+    "are",
+    "not",
+    "will",
+    "can",
+    "has",
+    "was",
+    "how",
+    "what",
+    "that",
+    "this",
+    "its",
+    "from",
+    "with",
+}
 
-
-def _tokenize(text: str) -> set[str]:
-    return {
-        w.strip(".,!?;:'\"")
-        for w in text.lower().split()
-        if w.strip(".,!?;:'\"") not in _STOP_WORDS
-    }
+_WEAK_QUERY_WORDS = {
+    "price",
+    "prices",
+    "market",
+    "markets",
+    "commodity",
+    "commodities",
+    "forecast",
+    "forecasts",
+    "current",
+    "target",
+    "targets",
+}
 
 
 def _question_matches_query(question: str, query: str) -> bool:
     """Client-side relevance filter (mirrors TS questionMatchesQuery)."""
-    q_tokens = _tokenize(query)
-    q_tokens.add(query.lower().strip())
-    q_text = query.lower()
+    words = [
+        re.sub(r"[^a-z0-9]", "", word)
+        for word in re.split(r"[\s\-_/]+", query.lower())
+    ]
+    words = [
+        word
+        for word in words
+        if len(word) >= 3 and word not in _TEXT_FILTER_STOP_WORDS
+    ]
 
-    q_str = question.lower()
-    q_tokens = _tokenize(q_text)
+    if len(words) == 0:
+        return True
 
-    # Score tokens present in question
-    hits = sum(1 for t in q_tokens if t in q_str)
-    return hits > 0 or any(t in q_str for t in q_tokens)
+    anchor_words = [word for word in words if word not in _WEAK_QUERY_WORDS]
+    if len(words) > 0 and len(anchor_words) == 0:
+        return False
+
+    candidate_words = anchor_words if len(anchor_words) > 0 else words
+    lower = question.lower()
+    return any(word in lower for word in candidate_words)
 
 
 # ---------------------------------------------------------------------------
@@ -170,24 +249,92 @@ def _format_volume(vol: Any) -> float:
     return 0.0
 
 
-def _parse_markets(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _parse_string_array_field(raw: Any) -> list[str]:
+    parsed: Any
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = []
+    else:
+        parsed = raw
+
+    if not isinstance(parsed, list):
+        return []
+
+    return [
+        str(item)
+        for item in parsed
+        if isinstance(item, (str, int, float)) and not isinstance(item, bool)
+    ]
+
+
+def _parse_yes_probability(outcomes: list[str], prices: list[str]) -> float | None:
+    if not outcomes or not prices:
+        return None
+    lower_outcomes = [outcome.lower() for outcome in outcomes]
+    price_index = lower_outcomes.index("yes") if "yes" in lower_outcomes else 0
+    try:
+        probability = float(prices[price_index] if price_index < len(prices) else "0")
+    except (TypeError, ValueError):
+        probability = 0.0
+    if not math.isfinite(probability):
+        probability = 0.0
+    return min(1.0, max(0.0, probability))
+
+
+def _first_non_empty_token(tokens: list[str]) -> str | None:
+    for token in tokens:
+        if token.strip():
+            return token
+    return None
+
+
+def _parse_markets(
+    events: list[dict[str, Any]],
+    *,
+    per_event_limit: int = 4,
+) -> list[dict[str, Any]]:
     """Extract and flatten markets from Gamma events response."""
     markets: list[dict[str, Any]] = []
     for event in events:
         if not isinstance(event, dict):
             continue
-        for m in event.get("markets", []):
+        event_markets = event.get("markets", [])
+        if not isinstance(event_markets, list):
+            continue
+        active_markets = [
+            m
+            for m in event_markets
+            if isinstance(m, dict)
+            and m.get("active") is True
+            and m.get("closed") is not True
+        ]
+        active_markets.sort(key=lambda m: _format_volume(m.get("volume24hr")), reverse=True)
+        for m in active_markets[:per_event_limit]:
             if not isinstance(m, dict):
                 continue
-            markets.append({
-                "market_id": m.get("id", m.get("marketId", "")),
-                "question": m.get("question", ""),
-                "probability": float(m.get("probability", 0.0)),
-                "volume_24h": _format_volume(m.get("volume24hr", m.get("volume24h", 0))),
-                "age_days": None,  # computed later
-                "end_date": m.get("endDate"),
-                "event_title": event.get("title", ""),
-            })
+            outcomes = _parse_string_array_field(m.get("outcomes"))
+            prices = _parse_string_array_field(m.get("outcomePrices"))
+            probability = _parse_yes_probability(outcomes, prices)
+            if probability is None:
+                continue
+            clob_token_ids = _parse_string_array_field(m.get("clobTokenIds"))
+            markets.append(
+                {
+                    "market_id": m.get("conditionId") or m.get("id", m.get("marketId", "")),
+                    "asset_id": _first_non_empty_token(clob_token_ids),
+                    "question": m.get("question", ""),
+                    "probability": probability,
+                    "volume_24h": _format_volume(m.get("volume24hr", m.get("volume24h", 0))),
+                    "age_days": _compute_age_days(m.get("createdAt")),
+                    "end_date": m.get("endDateIso"),
+                    "event_title": event.get("title", ""),
+                    "active": m.get("active"),
+                    "closed": m.get("closed"),
+                    "enable_order_book": m.get("enableOrderBook"),
+                }
+            )
     return markets
 
 
@@ -196,8 +343,10 @@ def _compute_age_days(created_at: str | None) -> int | None:
         return None
     try:
         dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         days = (datetime.now(timezone.utc) - dt).days
-        return max(0, days)
+        return days if days >= 0 else None
     except Exception:
         return None
 
@@ -247,7 +396,7 @@ def fetch_polymarket_markets(
             }
             try:
                 events = _fetch_with_retry(url, params)
-                markets = _parse_markets(events)
+                markets = _parse_markets(events, per_event_limit=4)
                 all_markets.extend(markets)
                 if len(all_markets) >= limit * 4:
                     break
@@ -263,14 +412,17 @@ def fetch_polymarket_markets(
         }
         try:
             events = _fetch_with_retry(url, params)
-            all_markets = _parse_markets(events)
+            all_markets = _parse_markets(events, per_event_limit=2)
         except Exception:
             all_markets = []
 
     # Client-side text filtering
     filtered = [
         m for m in all_markets
-        if _question_matches_query(m["question"], query)
+        if (
+            _question_matches_query(m["event_title"], query)
+            or _question_matches_query(m["question"], query)
+        )
         and m["volume_24h"] >= min_volume_24h
     ]
 
@@ -292,7 +444,8 @@ def fetch_polymarket_markets(
         df = pd.DataFrame(
             columns=[
                 "market_id", "question", "probability", "volume_24h",
-                "age_days", "end_date", "event_title",
+                "age_days", "end_date", "event_title", "asset_id",
+                "active", "closed", "enable_order_book",
             ]
         )
     else:

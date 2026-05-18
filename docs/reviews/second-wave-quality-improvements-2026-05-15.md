@@ -1,6 +1,6 @@
 # Second-Wave Quality Improvements
 
-**Status**: Corrected after verification — Phase 1 applied
+**Status**: Corrected after verification — Phases 1, 2, 3, and 4 applied
 **Date**: 2026-05-15
 **Scope**: Post-phase-4 continuous improvement audit
 **Source**: 4 parallel audit agents (type safety, performance, API design, security)
@@ -24,7 +24,7 @@ The original 4-phase refactoring plan eliminated all layer violations, `as any`/
 1. **Input length limits**: many tool schemas accepted unbounded `z.string()` inputs — allows trivial DoS via large content/query payloads
 2. **Dependency/git hygiene**: before Phase 1, `@types/bun` was unpinned, `coverage/` and `*.log` were not gitignored, and `fmp-quota.json` was duplicated; Phase 1 now pins `@types/bun` to `1.3.3` and fixes the `.gitignore` entries
 3. **Path/command safety audit**: forecast-lab has sandbox/root guards and git argv validation; remaining risk is profile command execution through `shell: true`
-4. **Architecture warnings**: depcruiser found 32 violations (19 circular warnings, 11 utils-layer warnings, 2 info orphans, 0 errors) — moved to P2 architecture review
+4. **Architecture warnings**: post-Phase-2 depcruiser now reports 21 accepted violations (19 circular warnings, 2 info orphans, 0 utils-layer warnings, 0 errors)
 
 ---
 
@@ -72,9 +72,9 @@ The original 4-phase refactoring plan eliminated all layer violations, `as any`/
 
 ### 1.6 New Circular Dependencies (depcruiser)
 
-Dependency-cruiser found **32 violations** across the restructured codebase:
-- 19 circular import warnings (most are benign tool co-dependencies)
-- 11 utils-layer warnings (utils/ importing from agent/ or controllers/)
+Dependency-cruiser originally found **32 violations** across the restructured codebase. After Phase 2, rerunning `bun run depcruise` now leaves **21 accepted violations**:
+- 19 circular import warnings (retained as documented design tradeoffs)
+- 0 utils-layer warnings (the prior 11 shared-type leaks were removed)
 - 2 info-level orphan warnings
 - **0 error-level violations**
 
@@ -95,7 +95,14 @@ warn no-circular: src/tools/finance/markov-distribution.ts →
   src/tools/finance/markov-distribution.ts   ← direct cycle (shared parameter defaults)
 ```
 
-Most violations are acceptable design tradeoffs. Breaking these would require invasive refactoring with limited safety benefit.
+Most remaining violations are acceptable design tradeoffs. Breaking these would require invasive refactoring with limited safety benefit.
+
+Accepted circular-warning clusters after Phase 2 verification:
+- Memory tool barrels ↔ memory runtime ↔ prompts/registry (`src/tools/memory/*`, `src/memory/*`, `src/model/llm.ts`, `src/agent/prompts.ts`, `src/tools/registry.ts`)
+- Tool-registry / LLM-routed finance meta-tools (`screen-stocks.ts`, `read-filings.ts`, `get-market-data.ts`, `get-financials.ts`, `src/tools/finance/index.ts`)
+- Forecast engines with intentional paired calibration modules (`markov-distribution.ts` ↔ `regime-calibrator.ts`, `arbiter-replay.ts` ↔ `forecast-arbitrator.ts`)
+- Memory runtime self-reference (`auto-store.ts` ↔ `memory/index.ts`)
+- Agent/prompt/forecast-routing cycles (`agent/types.ts`, `agent/prompts.ts`, `agent/channels.ts`, `experiments/forecast-lab/query-router.ts`, `utils/in-memory-chat-history.ts`, `model/llm.ts`)
 
 ---
 
@@ -121,7 +128,9 @@ The most pervasive pattern. **213+ occurrences** in production code (not the 150
 
 ### 2.2 `as unknown as` Cast Without Guards
 
-**~15 occurrences in production code** (not 5 as originally estimated). Examples:
+**Phase 4 fresh audit found 15 occurrences in production code** (not 5 as originally estimated). Phase 4 replaced all production `as unknown as` occurrences with typed guards/helpers or isolated single-cast adapters where framework/private APIs require it. After Phase 4: **0 production `as unknown as` occurrences**; remaining occurrences are test-only.
+
+Pre-Phase-4 examples included:
 
 | File:Line | Pattern |
 |-----------|---------|
@@ -131,7 +140,7 @@ The most pervasive pattern. **213+ occurrences** in production code (not the 150
 | `src/utils/in-memory-chat-history.ts:160` | `response as unknown as { message_ids: number[] }` |
 | `src/controllers/cli-rendering.ts:189` | `tui as unknown as { ... }` — private API access |
 
-Pattern: `as unknown as Target` is a type-punning escape hatch that suppresses the compiler's type checking entirely. It's equivalent to `as any` but passes linters.
+Pattern: `as unknown as Target` is a type-punning escape hatch that suppresses the compiler's type checking entirely. It's equivalent to `as any` but passes linters. Phase 4 kept public behavior/tool names intact while removing this pattern from production.
 
 ### 2.3 Unsafe Type Assertions (Not `as any`)
 
@@ -157,14 +166,14 @@ Most optional chaining in the codebase is appropriate defensive coding.
 
 ### 2.5 Export Return Type Omissions
 
-Most exported functions in the restructured codebase **do** have explicit return types. A few exceptions:
+Most exported functions in the restructured codebase **do** have explicit return types. Phase 4 fixed the listed exceptions:
 
 | File | Function | Missing Return |
 |------|----------|----------------|
-| `src/evals/run.ts:217` | `createEvaluationRunner` | No return type annotation |
-| `src/experiments/forecast-lab/runner.ts:1627` | `snapshotPromotionSourceInvariants` | Returns `unknown` (same problem) |
-| `src/utils/finance/number-format.ts:72` | `annotateFinancialNumbers` | Returns `unknown` |
-| `src/experiments/forecast-lab/ledger.ts:225` | `stableValue` | Returns `unknown` |
+| `src/evals/run.ts:217` | `createEvaluationRunner` | **Fixed in Phase 4** — returns `() => AsyncGenerator<EvalProgressEvent, void, unknown>` |
+| `src/experiments/forecast-lab/runner.ts:1627` | `snapshotPromotionSourceInvariants` | **Fixed in Phase 4** — returns `PromotionSourceInvariantSnapshot` |
+| `src/utils/finance/number-format.ts:72` | `annotateFinancialNumbers` | **Fixed in Phase 4** — returns `AnnotatedFinancialValue` |
+| `src/experiments/forecast-lab/ledger.ts:225` | `stableValue` | **Fixed in Phase 4** — returns `JsonValue` |
 
 Several functions return `unknown` explicitly — this is correct but defeats inference. Better to narrow to specific types.
 
@@ -335,8 +344,8 @@ No single convention. Some integration tests use `.test.ts` alone, others append
 ### 4.9 Zod Schema Location
 
 - **Co-located**: Schemas live in tool files (e.g., `FinancialStatementsInputSchema` in `fundamentals.ts`)
-- **Separated**: Config schemas in `utils/config.ts`, chat history validation in `utils/in-memory-chat-history.ts`
-- No centralized `schemas/` directory — schemas are scattered inline
+- **Separated**: Phase 4 moved utility-owned config and chat-history schemas into `src/schemas/`; `utils/config.ts` and `utils/in-memory-chat-history.ts` re-export them to preserve existing imports.
+- Tool schemas remain co-located in tool files, which is intentional because tool name/schema/description behavior should stay together.
 
 ---
 
@@ -356,33 +365,33 @@ No single convention. Some integration tests use `.test.ts` alone, others append
 
 | ID | Task | Effort |
 |----|------|--------|
-| **6** | Review and document circular dependencies (19 circular warnings acceptable if by design) | 2h |
-| **7** | Fix the 11 `utils-no-import-agent` layer violations if safely addressable | 3h |
-| **8** | Add AbortSignal propagation to `browser.ts`, heartbeat runner, `dream.ts` | 3h |
-| **9** | Wrap Playwright tool in try/finally with `closeBrowser()` guarantee | 2h |
-| **10** | Add `Promise.all` batching to `agent.ts` startup and `dream.ts` reads | 2h |
-| **11** | Centralize `process.env` access through `utils/env.ts` (except tool registry gating) | 3h |
+| **6** | Review and document circular dependencies (19 circular warnings acceptable if by design) — **Done in Phase 2** | 2h |
+| **7** | Fix the 11 `utils-no-import-agent` layer violations if safely addressable — **Done in Phase 2** | 3h |
+| **8** | Add AbortSignal propagation to `browser.ts`, heartbeat runner, `dream.ts` — **Done in Phase 2** | 3h |
+| **9** | Wrap Playwright tool in try/finally with `closeBrowser()` guarantee — **Done in Phase 2** | 2h |
+| **10** | Add `Promise.all` batching to `agent.ts` startup and `dream.ts` reads — **Done in Phase 2** | 2h |
+| **11** | Centralize `process.env` access through `utils/env.ts` (except tool registry gating) — **Done in Phase 2** | 3h |
 
 ### P3 — Medium Priority (Week 4–6)
 
 | ID | Task | Effort |
 |----|------|--------|
-| **12** | Define typed result interfaces for top-10 most-used tools (replace `Record<string, unknown>`) | 6h |
-| **13** | Standardize tool naming: pick `snake_case` registry names, `kebab-case` files, `camelCase` symbols | 3h |
-| **14** | Establish single error-handling contract (throw vs return null) for `tools/finance/` | 4h |
-| **15** | Add LRU eviction to unbounded Maps (`tool-executor.ts`, `agent-runner.ts`, `chat-history.ts`) | 4h |
-| **16** | Move `utils/finance/` domain algorithms to `tools/finance/` or `experiments/` | 3h |
-| **17** | Standardize test naming: always include tier suffix or never include it | 2h |
-| **18** | Move `tools/forecast-lab-run.ts` into `experiments/forecast-lab/` | 2h |
+| **12** | Define typed result interfaces for top-10 most-used tools (replace `Record<string, unknown>`) — **Done in Phase 3** | 6h |
+| **13** | Standardize tool naming: pick `snake_case` registry names, `kebab-case` files, `camelCase` symbols — **Convention documented/tested in Phase 3; broad renames deferred** | 3h |
+| **14** | Establish single error-handling contract (throw vs return null) for `tools/finance/` — **Documented in Phase 3** | 4h |
+| **15** | Add LRU eviction to unbounded Maps (`tool-executor.ts`, `agent-runner.ts`, `chat-history.ts`) — **Done in Phase 3** | 4h |
+| **16** | Move `utils/finance/` domain algorithms to `tools/finance/` or `experiments/` — **Deferred (Phase 3)** | 3h |
+| **17** | Standardize test naming: always include tier suffix or never include it — **Deferred (Phase 3)** | 2h |
+| **18** | Move `tools/forecast-lab-run.ts` into `experiments/forecast-lab/` — **Deferred (Phase 3)** | 2h |
 
 ### P4 — Low Priority: Polish (Ongoing)
 
 | ID | Task | Effort |
 |----|------|--------|
-| **19** | Replace `as unknown as Target` patterns with proper type guards (~15 locations) | 3h |
-| **20** | Replace `.catch(() => {})` in remaining test files (2 locations) | 15m |
-| **21** | Add explicit return types to `createEvaluationRunner` and the 4 `unknown`-returning functions | 1h |
-| **22** | Move inline Zod schemas from `utils/` to either co-locate or into `schemas/` | 2h |
+| **19** | Replace `as unknown as Target` patterns with proper type guards (~15 locations) — **Done in Phase 4** | 3h |
+| **20** | Replace `.catch(() => {})` in remaining test files (2 locations) — **Done in Phase 4** | 15m |
+| **21** | Add explicit return types to `createEvaluationRunner` and the 4 `unknown`-returning functions — **Done in Phase 4** | 1h |
+| **22** | Move inline Zod schemas from `utils/` to either co-locate or into `schemas/` — **Done in Phase 4** | 2h |
 
 ---
 
@@ -394,13 +403,16 @@ No single convention. Some integration tests use `.test.ts` alone, others append
 - [x] `.gitignore` updated: `coverage/` and `*.log` added, duplicate `fmp-quota.json` removed
 - [x] Forecast-lab `shell: true` usage documented with profile command constraints
 - [x] Python-parity marked internal-only or guarded if exposed
-- [ ] depcruiser violations reviewed and documented (0 errors; warnings acceptable if by design)
-- [ ] `process.env` access centralized through `utils/env.ts` (except in registry.ts which gates tool availability)
-- [ ] AbortSignal flows through browser, heartbeat, and dream async paths
-- [ ] Top 5 tools have typed result interfaces (replacing `Record<string, unknown>`)
-- [ ] Tool naming standardized
+- [x] depcruiser violations reviewed and documented (0 errors; warnings acceptable if by design)
+- [x] `process.env` access centralized through `utils/env.ts` (except in registry.ts which gates tool availability)
+- [x] AbortSignal flows through browser, heartbeat, and dream async paths
+- [x] Top 5 tools have typed result interfaces (replacing `Record<string, unknown>`) — **Phase 3**: Added `ParsedMarkovCanonical`, `ParsedMarkovDiagnostics`, `ParsedMarkovActionSignal`, `ParsedMarkovScenarios`, `ParsedMarkovForecastHint`, `ParsedPricePayload`, `ParsedMarkovConformal` interfaces in `query-router.ts`; `narrowObj<T>()` helper replaces all 30+ `as Record<string, unknown>` casts; `FinancialStatementApiRow` added to `fundamentals.ts`
+- [x] Tool naming convention documented and registry snake_case enforced — broad public/internal renames deferred to avoid breaking tool names
 - [x] `bun run typecheck` passes clean
-- [x] `bun test` passes all unit tests
+- [x] Focused Phase 3 tests passed (see Appendix B); full `bun test` was not run in Phase 3
+- [x] Phase 4 fresh audit completed: production `as unknown as` went 15 → 0; empty `.catch(() => {})` went 2 test-only → 0; inline `z.` schemas in `src/utils/` went 2 files → 0.
+- [x] Phase 4 explicit return types added for `createEvaluationRunner`, `snapshotPromotionSourceInvariants`, `annotateFinancialNumbers`, and `stableValue`.
+- [x] Phase 4 validation passed: `bun run typecheck`; focused tests for touched areas; diff/audit check found no added `as any`, `: any`, `as unknown as`, or empty `.catch(() => {})` in touched Phase 4 scope.
 
 ---
 
@@ -414,3 +426,84 @@ Four independent background agents scanned the entire codebase in parallel:
 4. **Security Agent**: Checked dependency pinning, env var usage, hardcoded secrets, shell injection, path traversal, input limits, dependency freshness, circular deps, .gitignore coverage, Bun-specific APIs.
 
 Results were synthesized into this document for review and prioritization.
+
+---
+
+## Appendix B: Phase 3 Change Summary (2026-05-15)
+
+### Task 1 — Typed interfaces replacing `Record<string, unknown>`
+
+**`src/agent/query-router.ts`** (30+ hotspots eliminated):
+- Added 9 local interfaces: `ParsedMarkovConformal`, `ParsedMarkovDiagnostics`, `ParsedMarkovActionSignal`, `ParsedMarkovScenariosBucket`, `ParsedMarkovScenarios`, `ParsedMarkovCanonical`, `ParsedMarkovForecastHint`, `ParsedPricePayload`, `ParsedPolymarketForecastPayload`
+- Added `narrowObj<T>(v: unknown): T | null` helper for safe object narrowing
+- Replaced all `(x as Record<string, unknown>)['field']` patterns in: `extractPriceFromPayload`, `extractCurrentPriceFromAbstainingMarkovQuery`, `extractMarkovReturnFromToolCalls`, `extractMarkovReturnForQuery`, `extractMarkovPredictionConfidenceForQuery`, `extractMarkovArbiterEvidence`
+
+**`src/tools/finance/fundamentals.ts`** (4 unsafe casts):
+- Added `FinancialStatementApiRow` interface (`report_period`, `period`, `revenue`, `total_revenue`, `net_income`)
+- Replaced `statements as Array<Record<string, unknown>>` with typed cast; removed `as string` / `as number` casts from map body
+
+### Task 2 — Bounded caches/admission control for unbounded Maps
+
+| File | Map | Capacity | Exported constant |
+|------|-----|----------|-------------------|
+| `src/agent/tool-executor.ts` | `requestCache` | 256 | `REQUEST_CACHE_MAX_SIZE` |
+| `src/agent/tool-executor.ts` | `pendingRequests` | 64 | `PENDING_REQUESTS_MAX_SIZE` |
+| `src/gateway/agent-runner.ts` | `sessions` | 50 | `MAX_SESSIONS` |
+| `src/utils/in-memory-chat-history.ts` | `relevantMessagesByQuery` | 100 | `RELEVANCE_CACHE_MAX_SIZE` |
+
+Result/session/relevance caches use a bounded LRU pattern: cache hits refresh insertion order; inserting over capacity deletes `map.keys().next().value` before adding the new entry. `pendingRequests` is bounded with admission control instead of evicting active promises, so already-tracked concurrent duplicates remain deduplicated.
+
+New tests added:
+- `src/agent/tool-executor.test.ts` — `AgentToolExecutor — requestCache bounded eviction` proves `q0` stays cached after recency refresh and `q1` is evicted; pending-request tests prove a full pending registry does not evict active tracked requests and explicitly documents degraded dedupe for new unique requests left untracked while full
+- `src/gateway/agent-runner.test.ts` — `sessions Map — bounded LRU eviction` proves helper insertion caps size and refreshes recency
+- `src/gateway/agent-runner-eviction.test.ts` — `sessions LRU eviction` integration tests via `mock.module`
+- `src/utils/in-memory-chat-history-eviction.test.ts` — mocked `callLlm` count proves relevance-cache hits refresh recency and LRU misses call the LLM again
+
+Test-only exports added to `gateway/agent-runner.ts`: `_addSessionForTest`, `_hasSessionForTest`, `_clearSessionsForTest`, `MAX_SESSIONS`.
+
+### Task 3 — Error contract documentation
+
+The `tools/finance/` layer follows **throw-on-network-failure, null/empty-on-missing-data** as the dominant pattern across `api.ts`, `fundamentals.ts`, `markov-distribution.ts`, and related files. Exceptions from underlying clients propagate to tool boundaries, where public results become formatted error strings; unsupported/missing market data returns null, empty collections, or a formatted "no data" result. This is now documented in source by `FINANCE_TOOL_ERROR_CONTRACT` in `src/tools/finance/index.ts`.
+
+Tool naming is now documented at the registry boundary in `src/tools/registry.ts` and enforced by `src/tools/registry.test.ts`: public registry names remain stable `snake_case`; new tool files should use kebab-case; internal symbols should use camelCase/PascalCase. Existing inconsistent symbols/files are intentionally left in place to avoid breaking public registry names.
+
+### Tasks 4 — Module moves: deferred
+
+- **`tools/forecast-lab-run.ts` → `experiments/forecast-lab/`**: Deferred. File is 1420+ lines with many callers. Risk of import-path churn exceeds benefit at this stage.
+- **`utils/finance/` algorithms → `tools/finance/`**: Deferred. Cross-cutting utilities used by both `tools/` and `experiments/`; moving would require depcruiser re-evaluation and circular dep analysis.
+
+### Task 5 — Test naming: deferred
+
+Standardizing existing test filenames was deferred because it would be a broad repository rename with little runtime benefit and high churn for imports, watch scripts, and manually maintained test command lists. The Phase 3 convention work instead keeps new public tool naming enforceable while leaving a test-file naming sweep for a dedicated follow-up.
+
+---
+
+## Appendix C: Phase 4 Change Summary (2026-05-15)
+
+### Fresh audit results
+
+| Pattern | Before Phase 4 | After Phase 4 |
+|---------|----------------|---------------|
+| Production `as unknown as` | 15 occurrences | 0 occurrences |
+| All tracked `as unknown as` | 246 occurrences (231 test-only after production fixes) | 231 occurrences, all test-only |
+| Empty `.catch(() => {})` | 2 occurrences, both in `src/controllers/agent-runner-runquery.test.ts` | 0 occurrences |
+| Inline Zod schemas in `src/utils/` | `utils/config.ts`, `utils/in-memory-chat-history.ts` | 0; moved to `src/schemas/` with compatibility re-exports |
+
+### Implemented
+
+- Replaced production `as unknown as` with Zod parsing, runtime type guards, JSON validation helpers, `Reflect` access for private framework fields, and narrow single-cast adapters for unavoidable third-party type incompatibilities.
+- Replaced empty test promise swallowing with awaited approval promises / `expect(...).resolves`.
+- Added explicit return types requested by Task 21.
+- Moved utility schemas to `src/schemas/config.ts` and `src/schemas/in-memory-chat-history.ts`; existing utility exports remain available.
+
+### Validation
+
+- `bun run typecheck` — passed.
+- Focused tests — passed:
+  - `bun test src/components/custom-editor.test.ts src/cli-output.test.ts src/controllers/agent-runner-runquery.test.ts src/utils/config.test.ts src/utils/in-memory-chat-history.test.ts src/utils/finance/number-format.test.ts src/experiments/forecast-lab/improvement-loop.test.ts src/experiments/forecast-lab/runner.test.ts src/experiments/forecast-lab/ledger.test.ts src/tools/forecast-lab-run.test.ts src/tools/finance/polymarket.test.ts src/tools/finance/backtest/replay-price-history-adapter.test.ts src/gateway/channels/whatsapp/inbound.test.ts src/gateway/channels/whatsapp/reconnect.test.ts`
+- Diff/audit checks — passed: no added `as any`, `: any`, `as unknown as`, or empty `.catch(() => {})` in touched Phase 4 scope.
+
+### Deferred / remaining risk
+
+- Test files still contain `as unknown as` patterns from older test scaffolding. Phase 4 intentionally scoped production code and the specified empty-catch tests to avoid broad test churn.
+- `src/tools/search/exa.ts` still needs a narrow compatibility adapter because `exa-js` is present at two versions with incompatible private TypeScript fields while remaining runtime-compatible.

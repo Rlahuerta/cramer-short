@@ -207,6 +207,11 @@ describe('runQuery — success path', () => {
     const ctrl = new AgentRunnerController(
       { model: undefined },
       chatHistory,
+      undefined,
+      {
+        createAgent: fakeCreateAgent as never,
+        autoStoreFromRun: fakeAutoStoreFromRun as never,
+      },
     );
     await ctrl.runQuery('my research question');
     expect((chatHistory.saveUserQuery as ReturnType<typeof mock>).mock.calls).toHaveLength(1);
@@ -388,18 +393,16 @@ describe('cancelExecution — with pending approval', () => {
     const promise = (ctrl as unknown as {
       requestToolApproval: (r: typeof req) => Promise<string>
     }).requestToolApproval(req);
-    promise.then((d) => { resolvedDecision = d; }).catch(() => {});
-
     // Now cancel — should auto-deny the pending approval
     ctrl.cancelExecution();
-    await promise;
+    resolvedDecision = await promise;
 
     expect(resolvedDecision).toBe('deny');
     expect(getPendingApproval(ctrl)).toBeNull();
     expect(getApprovalResolve(ctrl)).toBeNull();
   });
 
-  it('sets workingState to idle after cancelling with pending approval', () => {
+  it('sets workingState to idle after cancelling with pending approval', async () => {
     const { ctrl } = makeController();
     const req = { tool: 'browser', args: {} };
 
@@ -408,7 +411,7 @@ describe('cancelExecution — with pending approval', () => {
     }).requestToolApproval(req);
 
     ctrl.cancelExecution();
-    promise.catch(() => {});
+    await expect(promise).resolves.toBe('deny');
     expect(getWorkingStatus(ctrl)).toBe('idle');
   });
 });

@@ -62,6 +62,35 @@ function hasFixtureSeries(value: unknown): value is ReplayFixtureTickerSeries {
   return isRecord(value) && Array.isArray(value.dates) && Array.isArray(value.closes);
 }
 
+function isStringOrUndefined(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string';
+}
+
+function isReplayFixtureTickerSeries(value: unknown): value is ReplayFixtureTickerSeries {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (value.type === 'stock' || value.type === 'etf' || value.type === 'crypto')
+    && Array.isArray(value.closes)
+    && value.closes.every((close) => typeof close === 'number' && Number.isFinite(close))
+    && Array.isArray(value.dates)
+    && value.dates.every((date) => typeof date === 'string')
+    && typeof value.count === 'number'
+    && Number.isInteger(value.count)
+    && (value.synthetic === undefined || typeof value.synthetic === 'boolean');
+}
+
+function isReplayFixturePriceStore(value: unknown): value is ReplayFixturePriceStore {
+  if (!isRecord(value) || !isRecord(value.tickers)) {
+    return false;
+  }
+  return isStringOrUndefined(value.generatedAt)
+    && isStringOrUndefined(value.startDate)
+    && isStringOrUndefined(value.endDate)
+    && isStringOrUndefined(value.syntheticNote)
+    && Object.values(value.tickers).every(isReplayFixtureTickerSeries);
+}
+
 export function normalizeReplayPriceHistory(
   source: ReplayPriceHistory | ReplayFixtureTickerSeries | ReplayHistoryBar[],
 ): ReplayPriceHistory | null {
@@ -101,11 +130,11 @@ export function normalizeReplayPriceHistory(
 
 function readReplayFixturePriceStore(fixturePath: string | URL): ReplayFixturePriceStore {
   const parsed = JSON.parse(readFileSync(fixturePath, 'utf-8')) as unknown;
-  if (!isRecord(parsed) || !isRecord(parsed.tickers)) {
+  if (!isReplayFixturePriceStore(parsed)) {
     throw new Error('replay-price-history-adapter: fixture store must contain a tickers object.');
   }
 
-  return parsed as unknown as ReplayFixturePriceStore;
+  return parsed;
 }
 
 function tickerCandidates(ticker: string): string[] {

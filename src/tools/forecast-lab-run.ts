@@ -298,6 +298,20 @@ export type ForecastLabRunToolPayload =
   | ForecastLabResetPayload
   | ForecastLabErrorPayload;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isForecastLabRunToolPayload(payload: unknown): payload is ForecastLabRunToolPayload {
+  if (!isRecord(payload)) {
+    return false;
+  }
+  return payload['_tool'] === 'forecast_lab_run'
+    && typeof payload.action === 'string'
+    && typeof payload.status === 'string'
+    && typeof payload.answer === 'string';
+}
+
 type CreateForecastLabRunToolDeps = {
   readonly runForecastLabFn?: (options: ForecastLabRunOptions) => Promise<ForecastLabRunResult>;
   readonly runForecastLabImprovementLoopFn?: (options: {
@@ -1412,12 +1426,11 @@ export function parseForecastLabRunToolPayload(result: string): ForecastLabRunTo
       return null;
     }
 
-    const payload = data as Record<string, unknown>;
-    if (payload['_tool'] !== 'forecast_lab_run') {
+    if (!isForecastLabRunToolPayload(data)) {
       return null;
     }
 
-    return payload as unknown as ForecastLabRunToolPayload;
+    return data;
   } catch {
     return null;
   }

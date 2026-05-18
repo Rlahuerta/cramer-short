@@ -10,13 +10,21 @@ import { logger } from '../../utils/logger.js';
 let exaTool: { invoke: (query: string) => Promise<unknown> } | null = null;
 type ExaSearchResultsOptions = ConstructorParameters<typeof ExaSearchResults>[0];
 
+function createLangChainExaClient(apiKey: string): ExaSearchResultsOptions['client'] {
+  // exa-js@2.x (root) vs exa-js@1.x (inside @langchain/exa) have
+  // incompatible private fields but are compatible at runtime.
+  const compatibleClient: unknown = new Exa(apiKey);
+  return compatibleClient as ExaSearchResultsOptions['client'];
+}
+
 function getExaTool(): { invoke: (query: string) => Promise<unknown> } {
   if (!exaTool) {
-    const client = new Exa(getEnv('EXASEARCH_API_KEY'));
-    // exa-js@2.x (root) vs exa-js@1.x (inside @langchain/exa) have
-    // incompatible private fields but are compatible at runtime.
+    const apiKey = getEnv('EXASEARCH_API_KEY')?.trim();
+    if (!apiKey) {
+      throw new Error('EXASEARCH_API_KEY is required to use Exa search');
+    }
     exaTool = new ExaSearchResults({
-      client: client as unknown as ExaSearchResultsOptions['client'],
+      client: createLangChainExaClient(apiKey),
       searchArgs: { numResults: 5, highlights: true },
     });
   }

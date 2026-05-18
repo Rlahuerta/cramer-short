@@ -12,6 +12,17 @@ import { maybeRestoreCredsFromBackup, backupCredsBeforeSave } from './auth-store
 
 export type WaSocket = ReturnType<typeof makeWASocket>;
 
+type ErrorEventSource = {
+  on(event: 'error', listener: () => void): void;
+};
+
+function hasErrorEventSource(value: unknown): value is ErrorEventSource {
+  return typeof value === 'object'
+    && value !== null
+    && 'on' in value
+    && typeof value.on === 'function';
+}
+
 export async function createWaSocket(params: {
   authDir: string;
   printQr: boolean;
@@ -51,7 +62,7 @@ export async function createWaSocket(params: {
   });
 
   // Handle WebSocket-level errors to prevent unhandled exceptions
-  if (sock.ws && typeof (sock.ws as unknown as { on?: unknown }).on === 'function') {
+  if (hasErrorEventSource(sock.ws)) {
     sock.ws.on('error', () => {
       // Silently handle WebSocket errors - reconnection logic handles recovery
     });
@@ -86,4 +97,3 @@ export function getStatusCode(error: unknown): number | undefined {
 export function isLoggedOutReason(error: unknown): boolean {
   return getStatusCode(error) === DisconnectReason.loggedOut;
 }
-
