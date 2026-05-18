@@ -36,6 +36,14 @@ import { forecastLabRunTool, FORECAST_LAB_RUN_DESCRIPTION } from './forecast-lab
 
 /**
  * A registered tool with its rich description for system prompt injection.
+ *
+ * Naming contract:
+ * - `name` is the public API and must remain stable snake_case.
+ * - New tool module files should use kebab-case.
+ * - Internal symbols should use camelCase factories/values or PascalCase types.
+ *
+ * Existing exceptions stay aliased at the registry boundary instead of renaming
+ * user-facing tool names.
  */
 export interface RegisteredTool {
   /** Tool name (must match the tool's name property) */
