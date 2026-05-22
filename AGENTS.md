@@ -68,7 +68,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | `src/providers.ts` | Canonical LLM provider registry + model-prefix routing. Default: `gpt-5.4` / `openai` |
 | `src/tools/registry.ts` | Canonical tool registry. Env-gated: `web_search` needs `EXASEARCH_API_KEY` \| `PERPLEXITY_API_KEY` \| `TAVILY_API_KEY`; `x_search` needs `X_BEARER_TOKEN`; `skill` only when skills are discovered |
 | `src/agent/agent.ts` | Core execution loop (1,400 lines post-refactor). Query routing, tool orchestration, memory injection, answer post-processing |
-| `src/agent/query-router.ts` | Finance/tool routing heuristics (query regex, ticker extraction, forecast-lab intent detection, forced-tool-call args) |
+| `src/agent/query-router.ts` | Compatibility re-export barrel; query-router implementation lives in `src/agent/query-router/` |
 | `src/agent/answer-formatting/` | 7 focused modules for final-answer guards, warnings, sources, density tables, abstention logic |
 | `src/utils/paths.ts` | Runtime state lives under `.cramer-short/` (never `.dexter/`) |
 | `src/utils/config.ts` | `settings.json` Zod schema. Preserves unknown keys; invalid known fields warn+strip. Auto-migrates legacy model/provider settings |
