@@ -31,6 +31,16 @@ function makeTextResponse(body: string, status = 200, setCookie = ''): Response 
   return new Response(body, { status, headers });
 }
 
+const VALID_FINANCIAL_DATA = {
+  targetHighPrice: 250,
+  targetLowPrice: 150,
+  targetMeanPrice: 200,
+  targetMedianPrice: 205,
+  recommendationMean: 2.1,
+  recommendationKey: 'buy',
+  numberOfAnalystOpinions: 30,
+};
+
 // Standard happy-path sequence: consent → crumb → data
 function setupHappyPath(dataBody: unknown) {
   let callCount = 0;
@@ -63,12 +73,12 @@ describe('yahoo-client — quoteSummary', () => {
       if (u.includes('fc.yahoo.com')) return Promise.resolve(makeTextResponse('ok', 200, 'A1=s'));
       if (u.includes('getcrumb')) return Promise.resolve(makeTextResponse('crumb1'));
       return Promise.resolve(makeJsonResponse({
-        quoteSummary: { result: [{ financialData: { targetMeanPrice: 200 } }], error: null },
+        quoteSummary: { result: [{ financialData: VALID_FINANCIAL_DATA }], error: null },
       }));
     };
 
     const result = await quoteSummary('AAPL', { modules: ['financialData'] });
-    expect(result.financialData.targetMeanPrice).toBe(200);
+    expect(result.financialData?.targetMeanPrice).toBe(200);
     expect(calls).toHaveLength(3);
     expect(calls[0]).toContain('fc.yahoo.com');
     expect(calls[1]).toContain('getcrumb');
@@ -83,7 +93,7 @@ describe('yahoo-client — quoteSummary', () => {
       if (u.includes('fc.yahoo.com')) return Promise.resolve(makeTextResponse('ok', 200, 'A1=s'));
       if (u.includes('getcrumb')) return Promise.resolve(makeTextResponse('crumb1'));
       return Promise.resolve(makeJsonResponse({
-        quoteSummary: { result: [{ financialData: {} }], error: null },
+        quoteSummary: { result: [{ financialData: VALID_FINANCIAL_DATA }], error: null },
       }));
     };
 
@@ -102,12 +112,19 @@ describe('yahoo-client — quoteSummary', () => {
       dataCallCount++;
       if (dataCallCount === 1) return Promise.resolve(new Response('Unauthorized', { status: 401 }));
       return Promise.resolve(makeJsonResponse({
-        quoteSummary: { result: [{ recommendationTrend: { trend: ['buy'] } }], error: null },
+        quoteSummary: {
+          result: [{
+            recommendationTrend: {
+              trend: [{ period: '0m', strongBuy: 2, buy: 8, hold: 4, sell: 1, strongSell: 0 }],
+            },
+          }],
+          error: null,
+        },
       }));
     };
 
     const result = await quoteSummary('TSLA', { modules: ['recommendationTrend'] });
-    expect(result.recommendationTrend.trend).toEqual(['buy']);
+    expect(result.recommendationTrend?.trend?.[0]?.buy).toBe(8);
     expect(dataCallCount).toBe(2); // first failed, second succeeded
   });
 
@@ -134,6 +151,83 @@ describe('yahoo-client — quoteSummary', () => {
     await expect(quoteSummary('EMPTY', { modules: ['financialData'] })).rejects.toThrow('No data returned');
   });
 
+  it('throws when consumed module fields have invalid shapes', async () => {
+    setupHappyPath({
+      quoteSummary: {
+        result: [{ recommendationTrend: { trend: 'buy' } }],
+        error: null,
+      },
+    });
+
+    await expect(quoteSummary('BADSHAPE', { modules: ['recommendationTrend'] })).rejects.toThrow();
+  });
+
+  it('throws when requested financialData fields are missing from a nonempty result', async () => {
+    setupHappyPath({
+      quoteSummary: { result: [{}], error: null },
+    });
+
+    await expect(quoteSummary('BADFD', { modules: ['financialData'] })).rejects.toThrow();
+  });
+
+  it('throws when financialData consumed fields have invalid scalar types', async () => {
+    setupHappyPath({
+      quoteSummary: {
+        result: [{ financialData: { targetMeanPrice: '200' } }],
+        error: null,
+      },
+    });
+
+    await expect(quoteSummary('BADFD', { modules: ['financialData'] })).rejects.toThrow();
+  });
+
+  it('throws when requested recommendationTrend is missing from a nonempty result', async () => {
+    setupHappyPath({
+      quoteSummary: { result: [{}], error: null },
+    });
+
+    await expect(quoteSummary('BADTREND', { modules: ['recommendationTrend'] })).rejects.toThrow();
+  });
+
+  it('throws when incomeStatementHistory consumed fields have invalid scalar types', async () => {
+    setupHappyPath({
+      quoteSummary: {
+        result: [{
+          incomeStatementHistory: {
+            incomeStatementHistory: [{ endDate: '2024-12-31', totalRevenue: '17295000000' }],
+          },
+        }],
+        error: null,
+      },
+    });
+
+    await expect(quoteSummary('BADINCOME', { modules: ['incomeStatementHistory'] })).rejects.toThrow();
+  });
+
+  it('accepts valid incomeStatementHistory fields including nullable metrics', async () => {
+    setupHappyPath({
+      quoteSummary: {
+        result: [{
+          incomeStatementHistory: {
+            incomeStatementHistory: [{
+              endDate: '2024-12-31',
+              totalRevenue: 17_295_000_000,
+              grossProfit: null,
+              operatingIncome: 800_000_000,
+              netIncome: 499_000_000,
+              ebit: null,
+            }],
+          },
+        }],
+        error: null,
+      },
+    });
+
+    const result = await quoteSummary('GOODINCOME', { modules: ['incomeStatementHistory'] });
+    expect(result.incomeStatementHistory?.incomeStatementHistory?.[0]?.totalRevenue)
+      .toBe(17_295_000_000);
+  });
+
   it('throws when crumb endpoint returns empty string', async () => {
     fetchImpl = (url) => {
       const u = url.toString();
@@ -153,7 +247,7 @@ describe('yahoo-client — quoteSummary', () => {
       if (u.includes('getcrumb')) return Promise.resolve(makeTextResponse('my crumb/special'));
       dataUrl = u;
       return Promise.resolve(makeJsonResponse({
-        quoteSummary: { result: [{}], error: null },
+        quoteSummary: { result: [{ financialData: VALID_FINANCIAL_DATA }], error: null },
       }));
     };
 

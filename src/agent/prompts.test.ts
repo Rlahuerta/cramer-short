@@ -136,6 +136,21 @@ describe('buildSystemPrompt', () => {
     const prompt = buildSystemPrompt('gpt-5.4');
     expect(prompt).toContain('Cramer-Short');
   });
+
+  it('omits memory policy sections when memory is disabled', () => {
+    const prompt = buildSystemPrompt(
+      'gpt-5.4',
+      null,
+      'cli',
+      undefined,
+      ['MEMORY.md'],
+      'Stored context',
+      MOCK_TOOL_DESCRIPTIONS,
+      false,
+    );
+    expect(prompt).not.toContain('## Financial Memory Policy');
+    expect(prompt).not.toContain('## Memory');
+  });
 });
 
 describe('buildIterationPrompt', () => {

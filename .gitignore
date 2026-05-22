@@ -61,6 +61,8 @@ references/**/*.pdf
 logs/
 coverage/
 coverage.json
+bun-test-audit.xml
+test-output.txt
 *.log
 cramer-short-export-*.json
 cramer-short-export-*.md

@@ -23,6 +23,8 @@ import { logger } from './logger.js';
 import { withRetry } from './retry.js';
 import { resolveProvider } from '../providers.js';
 
+const MIN_E2E_TIMEOUT_MS = 40_000;
+const MAX_E2E_TIMEOUT_MS = 900_000;
 const DEFAULT_E2E_TIMEOUT_MS = 600_000;
 
 function resolveE2ETimeoutMs(): number {
@@ -32,7 +34,7 @@ function resolveE2ETimeoutMs(): number {
   }
 
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 40_000 && parsed <= 900_000
+  return Number.isFinite(parsed) && parsed >= MIN_E2E_TIMEOUT_MS && parsed <= MAX_E2E_TIMEOUT_MS
     ? parsed
     : DEFAULT_E2E_TIMEOUT_MS;
 }
@@ -41,7 +43,6 @@ export const E2E_TIMEOUT_MS = resolveE2ETimeoutMs();
 export const CHILD_RESULT_MARKER = '__CRAMER_E2E_RESULT__';
 
 const E2E_RESULT_DIR = join(process.cwd(), '.cramer-short', 'e2e-results');
-const E2E_CHILD_TIMEOUT_MS = Math.max(30_000, E2E_TIMEOUT_MS - 10_000);
 const DEFAULT_E2E_PREFLIGHT_TIMEOUT_MS = 30_000;
 const E2E_MODEL_FALLBACK = 'ollama:glm-5:cloud';
 const E2E_MODEL_PREFERENCES = [
@@ -132,6 +133,11 @@ export function isE2EExternalModelError(error: unknown): boolean {
     || lower.includes('llm request failed')
     || lower.includes('api key')
     || lower.includes('this operation was aborted');
+}
+
+export function isRetryableE2EExternalModelError(error: unknown): boolean {
+  const message = stringifyError(error);
+  return isRateLimitError(message) || isOverloadedError(message);
 }
 
 function getProviderAvailabilityReason(model: string): string | null {
@@ -293,6 +299,7 @@ interface E2EOptions {
   maxIterations?: number;
   model?: string;
   historySeed?: readonly E2ESeedMessage[];
+  timeoutMs?: number;
 }
 
 interface E2ERetryOptions extends E2EOptions {
@@ -326,6 +333,16 @@ function buildChildErrorMessage(prefix: string, stdout: string, stderr: string):
   }
 
   return sections.join('\n\n');
+}
+
+function resolveE2ERunTimeoutMs(timeoutMs?: number): number {
+  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs)) {
+    return E2E_TIMEOUT_MS;
+  }
+
+  return timeoutMs >= MIN_E2E_TIMEOUT_MS && timeoutMs <= MAX_E2E_TIMEOUT_MS
+    ? timeoutMs
+    : E2E_TIMEOUT_MS;
 }
 
 function createChildResultFilePath(): string {
@@ -407,7 +424,7 @@ async function parseChildResult(
  * to `maxIterations: 40` (in the CLI it is a process.argv flag, not part of
  * the query, so passing it literally confuses the LLM).
  *
- * Throws if no `done` event is received within E2E_TIMEOUT_MS.
+ * Throws if no `done` event is received within the configured E2E timeout.
  */
 export async function runAgentE2EInProcess(
   query: string,
@@ -425,6 +442,7 @@ export async function runAgentE2EInProcess(
   await assertE2EPreflight(model);
   const maxIterations = opts.maxIterations ?? defaultMaxIter;
   const historySeed = opts.historySeed;
+  const timeoutMs = resolveE2ERunTimeoutMs(opts.timeoutMs);
 
   // Dynamic import to avoid mock.module contamination from unit test files
   // that load earlier in the same Bun worker. At this point afterAll hooks
@@ -454,7 +472,7 @@ export async function runAgentE2EInProcess(
   const start = Date.now();
 
   // Race the agent run against the hard wall-clock timeout
-  const timer = setTimeout(() => ac.abort(), E2E_TIMEOUT_MS);
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
 
   try {
     for await (const event of agent.run(actualQuery, inMemoryHistory)) {
@@ -505,7 +523,13 @@ export async function runAgentE2E(
   const model = opts.model ?? await resolveDefaultE2EModel();
   await assertE2EPreflight(model);
   const resultFilePath = createChildResultFilePath();
-  const payload = encodeChildPayload({ query, opts, resultFilePath });
+  const timeoutMs = resolveE2ERunTimeoutMs(opts.timeoutMs);
+  const childTimeoutMs = Math.max(30_000, timeoutMs - 10_000);
+  const payload = encodeChildPayload({
+    query,
+    opts: { ...opts, model, timeoutMs },
+    resultFilePath,
+  });
   const proc = Bun.spawn({
     cmd: [process.execPath, 'run', childScriptPath, payload],
     cwd: process.cwd(),
@@ -527,7 +551,7 @@ export async function runAgentE2E(
     killTimer = setTimeout(() => {
       proc.kill('SIGKILL');
     }, 5_000);
-  }, E2E_CHILD_TIMEOUT_MS);
+  }, childTimeoutMs);
 
   const exitCode = await proc.exited;
   clearTimeout(timer);
@@ -538,7 +562,7 @@ export async function runAgentE2E(
 
   if (timedOut) {
     throw new Error(buildChildErrorMessage(
-      `E2E child timed out after ${E2E_CHILD_TIMEOUT_MS}ms.`,
+      `E2E child timed out after ${childTimeoutMs}ms.`,
       stdout,
       stderr,
     ));
@@ -557,9 +581,7 @@ export async function runAgentE2E(
 }
 
 /**
- * Retry whole-agent E2E runs when the final answer is just a timeout error.
- * This stabilizes E2E suites that intermittently hit provider/model latency
- * spikes under full-suite load.
+ * Retry whole-agent E2E runs only for transient provider backpressure.
  */
 export async function runAgentE2EWithTimeoutRetry(
   query: string,
@@ -579,8 +601,7 @@ export async function runAgentE2EWithTimeoutRetry(
       baseDelayMs: 2_000,
       maxDelayMs: 5_000,
       jitter: 0,
-      shouldRetry: (error) => error instanceof Error
-        && (isTimeoutError(error.message) || isOverloadedError(error.message) || isRateLimitError(error.message)),
+      shouldRetry: (error) => error instanceof Error && isRetryableE2EExternalModelError(error),
     });
   } catch (error) {
     if (isE2EPreflightSkipError(error)) {

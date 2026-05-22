@@ -20,11 +20,17 @@ type LocatorCall = {
 const locatorCalls: LocatorCall[] = [];
 const pageCalls: Array<{ action: string; value?: unknown }> = [];
 const browserCloseMock = mock(async () => {});
-const launchMock = mock(async () => fakeBrowser);
 
-let fakePage: any;
-let fakeNewPage: any;
-let fakeBrowser: any;
+type FakePageThis = {
+  currentUrl: string;
+  currentTitle: string;
+  snapshot: string;
+};
+
+let fakePage: ReturnType<typeof makePage>;
+let fakeNewPage: ReturnType<typeof makePage>;
+let fakeBrowser: ReturnType<typeof makeBrowser>;
+const launchMock = mock(async () => fakeBrowser);
 
 function makeLocator(seed: LocatorCall = {}) {
   return {
@@ -46,16 +52,16 @@ function makePage(title: string) {
       '  - button "Download" [ref=e3] [nth=1]',
       '  - paragraph: This is deliberately long snapshot content for truncation checks.',
     ].join('\n'),
-    goto: mock(async function (this: any, url: string) {
+    goto: mock(async function (this: FakePageThis, url: string) {
       this.currentUrl = url;
       pageCalls.push({ action: 'goto', value: url });
     }),
-    url: mock(function (this: any) { return this.currentUrl; }),
-    title: mock(async function (this: any) { return this.currentTitle; }),
+    url: mock(function (this: FakePageThis) { return this.currentUrl; }),
+    title: mock(async function (this: FakePageThis) { return this.currentTitle; }),
     context: mock(() => ({ newPage: mock(async () => fakeNewPage) })),
     close: mock(async () => {}),
     waitForLoadState: mock(async () => {}),
-    _snapshotForAI: mock(async function (this: any) { return { full: this.snapshot }; }),
+    _snapshotForAI: mock(async function (this: FakePageThis) { return { full: this.snapshot }; }),
     locator: mock((selector: string) => makeLocator({ selector })),
     getByRole: mock((role: string, options: unknown) => makeLocator({ role, options })),
     keyboard: {
@@ -69,7 +75,14 @@ function makePage(title: string) {
   };
 }
 
-const { _setBrowserLauncherForTest, browserTool } =
+function makeBrowser(page: ReturnType<typeof makePage>, close = browserCloseMock) {
+  return {
+    newContext: mock(async () => ({ newPage: mock(async () => page) })),
+    close,
+  };
+}
+
+const { _setBrowserLauncherForTest, browserTool, createBrowserRuntime, createBrowserTool } =
   await import(`./browser.js?t=${nextTestId('module')}`) as typeof import('./browser.js');
 
 function parseToolResult(result: string): Record<string, unknown> {
@@ -83,11 +96,8 @@ beforeEach(() => {
   launchMock.mockClear();
   fakePage = makePage('First page');
   fakeNewPage = makePage('Second page');
-  fakeBrowser = {
-    newContext: mock(async () => ({ newPage: mock(async () => fakePage) })),
-    close: browserCloseMock,
-  };
-  _setBrowserLauncherForTest(launchMock as any);
+  fakeBrowser = makeBrowser(fakePage);
+  _setBrowserLauncherForTest(launchMock);
 });
 
 afterEach(async () => {
@@ -100,6 +110,33 @@ describe('browser tool with mocked Playwright', () => {
     const result = parseToolResult(await browserTool.invoke({ action: 'navigate' }) as string);
 
     expect(result.error).toBe('url is required for navigate action');
+    expect(launchMock).not.toHaveBeenCalled();
+  });
+
+  it('uses an injected runtime launcher without touching the production singleton launcher', async () => {
+    const isolatedPage = makePage('Isolated page');
+    const isolatedCloseMock = mock(async () => {});
+    const isolatedBrowser = makeBrowser(isolatedPage, isolatedCloseMock);
+    const isolatedLaunchMock = mock(async () => isolatedBrowser);
+    const isolatedTool = createBrowserTool({
+      runtime: createBrowserRuntime({ launchBrowser: isolatedLaunchMock }),
+    });
+
+    const result = parseToolResult(await isolatedTool.invoke({
+      action: 'navigate',
+      url: 'https://example.com/isolated',
+    }) as string);
+
+    expect(result).toMatchObject({
+      ok: true,
+      url: 'https://example.com/isolated',
+      title: 'Isolated page',
+    });
+    expect(isolatedLaunchMock).toHaveBeenCalledWith({ headless: false });
+    expect(launchMock).not.toHaveBeenCalled();
+
+    await isolatedTool.invoke({ action: 'close' });
+    expect(isolatedCloseMock).toHaveBeenCalledTimes(1);
     expect(launchMock).not.toHaveBeenCalled();
   });
 

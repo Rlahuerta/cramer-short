@@ -1,5 +1,6 @@
 import type { StructuredToolInterface } from '@langchain/core/tools';
 import type { GroupContext } from './prompts.js';
+import type { MemorySearchOptions, MemorySearchResult, MemorySessionContext } from '../memory/types.js';
 
 // ============================================================================
 // Channel Profiles
@@ -20,6 +21,17 @@ export interface ChannelProfile {
   responseFormat: string[];
   /** Full tables instruction block, or null to omit the section entirely */
   tables: string | null;
+}
+
+// ============================================================================
+// Memory
+// ============================================================================
+
+/** Minimal memory surface Agent needs for startup and prompt-context injection. */
+export interface AgentMemoryManager {
+  listFiles(): Promise<string[]>;
+  loadSessionContext(): Promise<MemorySessionContext>;
+  search(query: string, options?: MemorySearchOptions): Promise<MemorySearchResult[]>;
 }
 
 // ============================================================================
@@ -56,6 +68,8 @@ export interface AgentConfig {
   sessionApprovedTools?: Set<string>;
   /** Enable/disable persistent memory integration for this run */
   memoryEnabled?: boolean;
+  /** Optional memory manager factory for tests or isolated harnesses. Defaults to MemoryManager.get(). */
+  getMemoryManager?: () => Promise<AgentMemoryManager>;
   /** Optional explicit tool set for tests or isolated harnesses. */
   tools?: StructuredToolInterface[];
   /** Watchlist entries supplied by the controller layer for tools that need portfolio context. */

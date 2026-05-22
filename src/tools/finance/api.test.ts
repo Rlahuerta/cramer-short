@@ -37,7 +37,11 @@ mock.module('../../utils/fmp-quota.js', () => ({
 // module init time before any mock is set), leaving spyOn(api, 'get') stacks that are never
 // restored. The ?t= suffix guarantees this file gets a fresh api module whose cache
 // bindings point at the mocks and whose .get method has never been spied on.
-const { api, stripFieldsDeep } = await import(`./api.js?t=${nextTestId('module')}`) as typeof import('./api.js');
+const {
+  api,
+  parseFinancialDatasetsPricesPayload,
+  stripFieldsDeep,
+} = await import(`./api.js?t=${nextTestId('module')}`) as typeof import('./api.js');
 const { logger } = await import('../../utils/logger.js');
 
 // ---------------------------------------------------------------------------
@@ -70,6 +74,28 @@ describe('stripFieldsDeep', () => {
     expect(stripFieldsDeep(42, ['a'])).toBe(42);
     expect(stripFieldsDeep('hello', ['a'])).toBe('hello');
     expect(stripFieldsDeep(null, ['a'])).toBeNull();
+  });
+});
+
+describe('parseFinancialDatasetsPricesPayload', () => {
+  it('accepts object-wrapped price arrays and preserves close values', () => {
+    expect(parseFinancialDatasetsPricesPayload({ prices: [{ close: 101.25, volume: 10 }] }))
+      .toEqual([{ close: 101.25, volume: 10 }]);
+  });
+
+  it('accepts bare price arrays and preserves close values', () => {
+    expect(parseFinancialDatasetsPricesPayload([{ close: 99.5, volume: 8 }]))
+      .toEqual([{ close: 99.5, volume: 8 }]);
+  });
+
+  it('rejects object payloads without a prices array', () => {
+    expect(() => parseFinancialDatasetsPricesPayload({}))
+      .toThrow(/Malformed Financial Datasets prices payload/);
+  });
+
+  it('rejects malformed close values', () => {
+    expect(() => parseFinancialDatasetsPricesPayload({ prices: [{ close: '101.25' }] }))
+      .toThrow(/Malformed Financial Datasets prices payload/);
   });
 });
 

@@ -21,6 +21,13 @@ function names(): string[] {
   return getToolRegistry('gpt-5.4', { discoverSkills: () => availableSkills }).map((entry) => entry.name);
 }
 
+function namesWithMemoryDisabled(): string[] {
+  return getToolRegistry('gpt-5.4', {
+    discoverSkills: () => availableSkills,
+    memoryEnabled: false,
+  }).map((entry) => entry.name);
+}
+
 beforeEach(() => {
   availableSkills = [];
   for (const key of GATED_ENV_KEYS) {
@@ -63,6 +70,21 @@ describe('getToolRegistry core tools', () => {
       'memory_update',
       'recall_financial_context',
       'store_financial_insight',
+    ]));
+  });
+
+  it('omits persistent memory tools when memory is disabled', () => {
+    expect(namesWithMemoryDisabled()).not.toEqual(expect.arrayContaining([
+      'memory_search',
+      'memory_get',
+      'memory_update',
+      'recall_financial_context',
+      'store_financial_insight',
+    ]));
+    expect(namesWithMemoryDisabled()).toEqual(expect.arrayContaining([
+      'sequential_thinking',
+      'web_fetch',
+      'read_file',
     ]));
   });
 

@@ -2,7 +2,8 @@ import { AIMessage } from '@langchain/core/messages';
 import { StructuredToolInterface } from '@langchain/core/tools';
 import { callLlm, streamCallLlm, getLlmCallTimeoutMs } from '../model/llm.js';
 import { getSetting, loadConfig } from '../utils/config.js';
-import { getTools } from '../tools/registry.js';
+import { logger } from '../utils/logger.js';
+import { buildToolDescriptions, getTools } from '../tools/registry.js';
 import {
   buildSystemPrompt,
   buildIterationPrompt,
@@ -13,8 +14,14 @@ import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
 import { buildHistoryContext } from '../utils/parsing/history-context.js';
 import { estimateTokens, CONTEXT_THRESHOLD, KEEP_TOOL_USES, getContextThreshold, getKeepToolUses } from '../utils/tokens.js';
 import { formatUserFacingError, isContextOverflowError } from '../utils/errors.js';
-import type { AgentConfig, AgentEvent, AnswerStartEvent, AnswerChunkEvent, ContextClearedEvent, ProgressEvent, TokenUsage } from '../agent/types.js';
+import type { AgentConfig, AgentEvent, AgentMemoryManager, AnswerStartEvent, AnswerChunkEvent, ContextClearedEvent, ProgressEvent, TokenUsage } from '../agent/types.js';
 import { createRunContext, type RunContext } from './run-context.js';
+import {
+  createRunLoopState,
+  type MemoryFlushState,
+  type PeriodicMemoryFlushState,
+  type RunLoopState,
+} from './run-loop-state.js';
 import { buildContextSummaryText } from './context-summary.js';
 import { AgentToolExecutor } from './tool-executor.js';
 import { MemoryManager } from '../memory/index.js';
@@ -39,6 +46,7 @@ import {
 import {
   buildAbstainingBtcShortHorizonForecastAnswer,
   buildDistributionWarningPrefix,
+  buildExplicitGoldCombinedForecastAnswer,
   buildForecastDisagreementPrefix,
   buildLowConfidenceBtcShortHorizonForecastPrefix,
   buildSourcesFooter,
@@ -98,6 +106,7 @@ import {
   shouldInjectBtcShortHorizonMixedEvidencePrompt,
   shouldRerunPolymarketForecastWithMarkov,
 } from './query-router.js';
+import { hasPolymarketForecastErrorForCoverage } from './query-router/coverage.js';
 
 export {
   FACT_PATTERNS,
@@ -111,6 +120,7 @@ export {
   buildAbstainingBtcShortHorizonForecastAnswer,
   buildAbstainingMarkovAnswer,
   buildDistributionWarningPrefix,
+  buildExplicitGoldCombinedForecastAnswer,
   buildForecastDisagreementPrefix,
   buildLowConfidenceBtcShortHorizonForecastPrefix,
   buildSourcesFooter,
@@ -170,9 +180,21 @@ const MAX_OVERFLOW_RETRIES = 2;
 /** Flush memory to disk every N iterations regardless of context size. */
 const PERIODIC_FLUSH_INTERVAL = 5;
 
+type ForcedToolExecutionStatus = 'success' | 'denied' | 'error';
+type ForcedToolRouteStatus = ForcedToolExecutionStatus | 'idle';
 
+function getMemoryManagerFactory(config: AgentConfig): () => Promise<AgentMemoryManager> {
+  return config.getMemoryManager ?? (() => MemoryManager.get());
+}
 
-
+function mergeForcedToolStatus(
+  current: ForcedToolRouteStatus,
+  next: ForcedToolExecutionStatus,
+): ForcedToolRouteStatus {
+  if (next === 'denied') return 'denied';
+  if (next === 'error') return 'error';
+  return current === 'idle' ? 'success' : current;
+}
 
 /**
  * The core agent class that handles the agent loop and tool execution.
@@ -186,6 +208,7 @@ export class Agent {
   private readonly systemPrompt: string;
   private readonly signal?: AbortSignal;
   private readonly memoryEnabled: boolean;
+  private readonly getMemoryManager: () => Promise<AgentMemoryManager>;
   private readonly thinkEnabled: boolean | undefined;
 
   private constructor(
@@ -201,6 +224,7 @@ export class Agent {
     this.systemPrompt = systemPrompt;
     this.signal = config.signal;
     this.memoryEnabled = config.memoryEnabled ?? true;
+    this.getMemoryManager = getMemoryManagerFactory(config);
     this.thinkEnabled = config.thinkEnabled;
   }
 
@@ -209,13 +233,18 @@ export class Agent {
    */
   static async create(config: AgentConfig = {}): Promise<Agent> {
     const model = config.model ?? DEFAULT_MODEL;
-    const tools = config.tools ?? getTools(model, { watchlistEntries: config.watchlistEntries });
+    const memoryEnabled = config.memoryEnabled ?? true;
+    const registryOptions = {
+      watchlistEntries: config.watchlistEntries,
+      memoryEnabled,
+    };
+    const tools = config.tools ?? getTools(model, registryOptions);
     const soulContentPromise = loadSoulDocument();
     let memoryFiles: string[] = [];
     let memoryContext: string | null = null;
 
-    if (config.memoryEnabled !== false) {
-      const memoryManager = await MemoryManager.get();
+    if (memoryEnabled) {
+      const memoryManager = await getMemoryManagerFactory(config)();
       const [files, session] = await Promise.all([
         memoryManager.listFiles(),
         memoryManager.loadSessionContext(),
@@ -234,7 +263,8 @@ export class Agent {
       config.groupContext,
       memoryFiles,
       memoryContext,
-      config.toolDescriptionsOverride,
+      config.toolDescriptionsOverride ?? buildToolDescriptions(model, registryOptions),
+      memoryEnabled,
     );
     return new Agent(config, tools, systemPrompt);
   }
@@ -253,8 +283,7 @@ export class Agent {
     }
 
     const ctx = createRunContext(query);
-    const memoryFlushState = { alreadyFlushed: false };
-    const periodicFlushState = { lastFlushedIteration: 0 };
+    const runState = createRunLoopState();
     const forecastingConfig = loadConfig().forecasting;
     const forecastLabIntent = forecastLabRouter.routeIntent(query, {
       inMemoryHistory,
@@ -308,10 +337,12 @@ export class Agent {
     let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory, forecastLabRoutingHint);
 
     // Auto-inject relevant prior research memories based on tickers mentioned
-    currentPrompt = await injectMemoryContext(query, currentPrompt, {
-      getMemoryManager: () => MemoryManager.get(),
-      extractTickers: (text) => extractTickersFn(text),
-    });
+    if (this.memoryEnabled) {
+      currentPrompt = await injectMemoryContext(query, currentPrompt, {
+        getMemoryManager: this.getMemoryManager,
+        extractTickers: (text) => extractTickersFn(text),
+      });
+    }
 
     // Auto-inject Polymarket prediction market context for detected asset signals
     currentPrompt = await injectPolymarketContext(query, currentPrompt, {
@@ -321,16 +352,12 @@ export class Agent {
 
     const explicitlyRequestedSkill = detectExplicitSkillRequest(query);
 
-    // Track whether sequential_thinking has been used at least once this session
-    let sequentialThinkingUsed = false;
     // Cap retries for the sequential_thinking compliance reminder to avoid
     // an infinite loop when a model persistently ignores the instruction.
-    let sequentialThinkingRetries = 0;
     const MAX_ST_RETRIES = 3;
     // Hard cap on total sequential_thinking calls so planning never burns all
     // iterations before any research tool runs. Models sometimes loop through
     // 10-15 thoughts on complex queries, leaving no budget for actual research.
-    let sequentialThinkingCallCount = 0;
     const MAX_SEQUENTIAL_THOUGHTS = 6;
 
     if (explicitlyRequestedSkill) {
@@ -347,11 +374,10 @@ export class Agent {
         currentPrompt = `${currentPrompt}\n\nData retrieved from tool calls:\n${toolResults}`;
       }
 
-      sequentialThinkingUsed = true;
+      runState.sequentialThinkingUsed = true;
     }
 
     // Main agent loop
-    let overflowRetries = 0;
     while (ctx.iteration < this.maxIterations) {
       ctx.iteration++;
       yield { type: 'progress', iteration: ctx.iteration, maxIterations: this.maxIterations } as ProgressEvent;
@@ -364,13 +390,13 @@ export class Agent {
           const result = await this.callModel(currentPrompt);
           response = result.response;
           usage = result.usage;
-          overflowRetries = 0;
+          runState.overflowRetries = 0;
           break;
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
 
-          if (isContextOverflowError(errorMessage) && overflowRetries < MAX_OVERFLOW_RETRIES) {
-            overflowRetries++;
+          if (isContextOverflowError(errorMessage) && runState.overflowRetries < MAX_OVERFLOW_RETRIES) {
+            runState.overflowRetries++;
             const overflowKeep = Math.max(2, getKeepToolUses() - 2);
             this.injectContextSummaryBeforeClearing(ctx, overflowKeep);
             const clearedCount = ctx.scratchpad.clearOldestToolResults(overflowKeep);
@@ -427,57 +453,49 @@ export class Agent {
       // No tool calls = final answer is in this response
       if (typeof response === 'string' || !hasToolCalls(response)) {
         if (shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
-          const forced = yield* this.forceCryptoForecastTools(ctx);
-          if (forced) {
-            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-            currentPrompt = buildIterationPrompt(
-              query,
-              ctx.scratchpad.getToolResults(),
-              ctx.scratchpad.formatToolUsageForPrompt(),
-              forecastLabRoutingHint,
-            );
+          const forcedStatus = yield* this.forceCryptoForecastTools(ctx);
+          if (forcedStatus === 'denied') {
+            yield* this.finishAfterToolDenied(ctx);
+            return;
+          }
+          if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+            currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
             continue;
           }
         }
 
         if (shouldForceNonCryptoForecastFallback(query, ctx.scratchpad.getToolCallRecords())) {
-          const forced = yield* this.forceNonCryptoForecastFallback(ctx);
-          if (forced) {
-            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-            currentPrompt = buildIterationPrompt(
-              query,
-              ctx.scratchpad.getToolResults(),
-              ctx.scratchpad.formatToolUsageForPrompt(),
-              forecastLabRoutingHint,
-            );
+          const forcedStatus = yield* this.forceNonCryptoForecastFallback(ctx);
+          if (forcedStatus === 'denied') {
+            yield* this.finishAfterToolDenied(ctx);
+            return;
+          }
+          if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+            currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
             continue;
           }
         }
 
         if (shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
-          const forced = yield* this.forceMarkovDistribution(ctx);
-          if (forced) {
-            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-            currentPrompt = buildIterationPrompt(
-              query,
-              ctx.scratchpad.getToolResults(),
-              ctx.scratchpad.formatToolUsageForPrompt(),
-              forecastLabRoutingHint,
-            );
+          const forcedStatus = yield* this.forceMarkovDistribution(ctx);
+          if (forcedStatus === 'denied') {
+            yield* this.finishAfterToolDenied(ctx);
+            return;
+          }
+          if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+            currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
             continue;
           }
         }
 
         if (shouldForceGoldCombinedForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
-          const forced = yield* this.forceGoldCombinedForecastTools(ctx);
-          if (forced) {
-            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-            currentPrompt = buildIterationPrompt(
-              query,
-              ctx.scratchpad.getToolResults(),
-              ctx.scratchpad.formatToolUsageForPrompt(),
-              forecastLabRoutingHint,
-            );
+          const forcedStatus = yield* this.forceGoldCombinedForecastTools(ctx);
+          if (forcedStatus === 'denied') {
+            yield* this.finishAfterToolDenied(ctx);
+            return;
+          }
+          if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+            currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
             continue;
           }
         }
@@ -491,6 +509,15 @@ export class Agent {
           return;
         }
 
+        const explicitGoldCombinedAnswer = buildExplicitGoldCombinedForecastAnswer(
+          query,
+          ctx.scratchpad.getToolCallRecords(),
+        );
+        if (explicitGoldCombinedAnswer) {
+          yield* this.handleDirectResponse(explicitGoldCombinedAnswer, ctx, currentPrompt);
+          return;
+        }
+
         yield* this.handleDirectResponse(responseText ?? '', ctx, currentPrompt);
         return;
       }
@@ -499,7 +526,7 @@ export class Agent {
       // If the model's first tool call this session is not sequential_thinking,
       // inject a reminder and retry — but only up to MAX_ST_RETRIES times to
       // prevent an infinite loop when a model persistently ignores the reminder.
-      if (!sequentialThinkingUsed) {
+      if (!runState.sequentialThinkingUsed) {
         const firstTool = (response as AIMessage).tool_calls?.[0]?.name;
         if (
           firstTool
@@ -509,8 +536,8 @@ export class Agent {
             explicitlyRequestedSkill,
           )
         ) {
-          if (sequentialThinkingRetries < MAX_ST_RETRIES) {
-            sequentialThinkingRetries++;
+          if (runState.sequentialThinkingRetries < MAX_ST_RETRIES) {
+            runState.sequentialThinkingRetries++;
             ctx.iteration--; // don't charge this iteration
             currentPrompt = forecastLabRoutingHint?.shouldInvokeSkill
               ? `${currentPrompt}\n\nIMPORTANT REMINDER: This routed forecast-lab improvement query must start with skill(\"forecast-lab\") or sequential_thinking. Do NOT start with ordinary forecast/data tools.`
@@ -519,12 +546,12 @@ export class Agent {
           }
           // Retries exhausted — proceed without sequential_thinking rather than
           // looping forever. Mark as satisfied so we stop checking.
-          sequentialThinkingUsed = true;
+          runState.sequentialThinkingUsed = true;
         }
       }
 
       // Mark sequential_thinking as satisfied once it appears in any tool call
-      if (!sequentialThinkingUsed) {
+      if (!runState.sequentialThinkingUsed) {
         const stToolCalls = (response as AIMessage).tool_calls ?? [];
         if (
           stToolCalls.some((tc) => tc.name === 'sequential_thinking')
@@ -533,62 +560,54 @@ export class Agent {
             && stToolCalls.some((tc) => tc.name === 'skill' && tc.args?.skill === 'forecast-lab')
           )
         ) {
-          sequentialThinkingUsed = true;
+          runState.sequentialThinkingUsed = true;
         }
       }
 
-      if (sequentialThinkingUsed && shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
-        const forced = yield* this.forceMarkovDistribution(ctx);
-        if (forced) {
-          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-          currentPrompt = buildIterationPrompt(
-            query,
-            ctx.scratchpad.getToolResults(),
-            ctx.scratchpad.formatToolUsageForPrompt(),
-            forecastLabRoutingHint,
-          );
+      if (runState.sequentialThinkingUsed && shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
+        const forcedStatus = yield* this.forceMarkovDistribution(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
           continue;
         }
       }
 
-      if (sequentialThinkingUsed && shouldForceGoldCombinedForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
-        const forced = yield* this.forceGoldCombinedForecastTools(ctx);
-        if (forced) {
-          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-          currentPrompt = buildIterationPrompt(
-            query,
-            ctx.scratchpad.getToolResults(),
-            ctx.scratchpad.formatToolUsageForPrompt(),
-            forecastLabRoutingHint,
-          );
+      if (runState.sequentialThinkingUsed && shouldForceGoldCombinedForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
+        const forcedStatus = yield* this.forceGoldCombinedForecastTools(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
           continue;
         }
       }
 
-      if (sequentialThinkingUsed && shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
-        const forced = yield* this.forceCryptoForecastTools(ctx);
-        if (forced) {
-          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-          currentPrompt = buildIterationPrompt(
-            query,
-            ctx.scratchpad.getToolResults(),
-            ctx.scratchpad.formatToolUsageForPrompt(),
-            forecastLabRoutingHint,
-          );
+      if (runState.sequentialThinkingUsed && shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
+        const forcedStatus = yield* this.forceCryptoForecastTools(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
           continue;
         }
       }
 
-      if (sequentialThinkingUsed && shouldForceNonCryptoForecastFallback(query, ctx.scratchpad.getToolCallRecords())) {
-        const forced = yield* this.forceNonCryptoForecastFallback(ctx);
-        if (forced) {
-          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-          currentPrompt = buildIterationPrompt(
-            query,
-            ctx.scratchpad.getToolResults(),
-            ctx.scratchpad.formatToolUsageForPrompt(),
-            forecastLabRoutingHint,
-          );
+      if (runState.sequentialThinkingUsed && shouldForceNonCryptoForecastFallback(query, ctx.scratchpad.getToolCallRecords())) {
+        const forcedStatus = yield* this.forceNonCryptoForecastFallback(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
           continue;
         }
       }
@@ -602,48 +621,37 @@ export class Agent {
       // Count sequential_thinking calls before executing tools (needed for nudge below).
       const toolCalls = (response as AIMessage).tool_calls ?? [];
       if (hasPrematureForecastArbitratorCall(response as AIMessage, query, ctx.scratchpad.getToolCallRecords())) {
-        const forced = yield* this.forceCryptoForecastTools(ctx);
-        if (forced) {
-          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-          currentPrompt = buildIterationPrompt(
-            query,
-            ctx.scratchpad.getToolResults(),
-            ctx.scratchpad.formatToolUsageForPrompt(),
-            forecastLabRoutingHint,
-          );
+        const forcedStatus = yield* this.forceCryptoForecastTools(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
           continue;
         }
       }
 
       const stCallsThisIteration = toolCalls.filter((tc) => tc.name === 'sequential_thinking').length;
-      sequentialThinkingCallCount += stCallsThisIteration;
+      runState.sequentialThinkingCallCount += stCallsThisIteration;
 
       // Execute tools and add results to scratchpad (response is AIMessage here)
       for await (const event of this.toolExecutor.executeAll(response, ctx)) {
         yield event;
         if (event.type === 'tool_denied') {
-          const totalTime = Date.now() - ctx.startTime;
-          yield {
-            type: 'done',
-            answer: '',
-            toolCalls: ctx.scratchpad.getToolCallRecords(),
-            iterations: ctx.iteration,
-            totalTime,
-            tokenUsage: ctx.tokenCounter.getUsage(),
-            tokensPerSecond: ctx.tokenCounter.getTokensPerSecond(totalTime),
-          };
+          yield* this.finishAfterToolDenied(ctx);
           return;
         }
       }
-      yield* this.manageContextThreshold(ctx, query, memoryFlushState);
+      yield* this.manageContextThreshold(ctx, query, runState.memoryFlush);
 
       // Periodic auto-save: flush findings to long-term memory every N iterations
       // so a crash doesn't lose all research done so far.
       if (
         this.memoryEnabled &&
-        ctx.iteration - periodicFlushState.lastFlushedIteration >= PERIODIC_FLUSH_INTERVAL
+        ctx.iteration - runState.periodicFlush.lastFlushedIteration >= PERIODIC_FLUSH_INTERVAL
       ) {
-        yield* this.runPeriodicMemoryFlush(ctx, query, periodicFlushState);
+        yield* this.runPeriodicMemoryFlush(ctx, query, runState.periodicFlush);
       }
 
       // Build iteration prompt with full tool results (Anthropic-style)
@@ -656,7 +664,7 @@ export class Agent {
 
       // After the cap is hit, redirect the model to stop planning and start
       // using research tools. Only inject the nudge once (at the boundary).
-      if (stCallsThisIteration > 0 && sequentialThinkingCallCount >= MAX_SEQUENTIAL_THOUGHTS) {
+      if (stCallsThisIteration > 0 && runState.sequentialThinkingCallCount >= MAX_SEQUENTIAL_THOUGHTS) {
         currentPrompt += '\n\n[SYSTEM NOTE: Planning phase complete. You have used the maximum number of sequential_thinking steps allowed. You MUST now proceed directly to research tools (financial_search, web_search, read_filings, etc.) to gather data and answer the question. Do not call sequential_thinking again.]';
       }
     }
@@ -672,6 +680,15 @@ export class Agent {
     );
     if (abstainingBtcForecastAnswer) {
       yield* this.handleDirectResponse(abstainingBtcForecastAnswer, ctx, currentPrompt);
+      return;
+    }
+
+    const explicitGoldCombinedAnswer = buildExplicitGoldCombinedForecastAnswer(
+      query,
+      ctx.scratchpad.getToolCallRecords(),
+    );
+    if (explicitGoldCombinedAnswer) {
+      yield* this.handleDirectResponse(explicitGoldCombinedAnswer, ctx, currentPrompt);
       return;
     }
 
@@ -946,26 +963,90 @@ export class Agent {
     return { response: result.response, usage: result.usage };
   }
 
+  private shouldRebuildAfterForcedTools(
+    forcedStatus: ForcedToolRouteStatus,
+    runState: RunLoopState,
+  ): boolean {
+    if (forcedStatus === 'idle') return false;
+    if (forcedStatus === 'error') {
+      if (runState.forcedToolErrorPromptRebuilt) return false;
+      runState.forcedToolErrorPromptRebuilt = true;
+    }
+    return true;
+  }
+
+  private async *rebuildPromptAfterForcedTools(
+    ctx: RunContext,
+    query: string,
+    memoryFlush: MemoryFlushState,
+    forecastLabRoutingHint: ForecastLabRoutingHint | null,
+  ): AsyncGenerator<AgentEvent, string> {
+    yield* this.manageContextThreshold(ctx, query, memoryFlush);
+    return buildIterationPrompt(
+      query,
+      ctx.scratchpad.getToolResults(),
+      ctx.scratchpad.formatToolUsageForPrompt(),
+      forecastLabRoutingHint,
+    );
+  }
+
+  private async *finishAfterToolDenied(ctx: RunContext): AsyncGenerator<AgentEvent, void> {
+    const totalTime = Date.now() - ctx.startTime;
+    yield {
+      type: 'done',
+      answer: '',
+      toolCalls: ctx.scratchpad.getToolCallRecords(),
+      iterations: ctx.iteration,
+      totalTime,
+      tokenUsage: ctx.tokenCounter.getUsage(),
+      tokensPerSecond: ctx.tokenCounter.getTokensPerSecond(totalTime),
+    };
+  }
+
+  private async runMemoryFlushSafely(
+    params: Parameters<typeof runMemoryFlush>[0],
+  ): Promise<{ flushed: boolean; written: boolean; content?: string }> {
+    try {
+      return await runMemoryFlush(params);
+    } catch (error) {
+      logger.warn('[Agent] memory flush failed', error);
+      return { flushed: false, written: false };
+    }
+  }
+
   private async *forceMarkovDistribution(
     ctx: RunContext,
-  ): AsyncGenerator<AgentEvent, boolean> {
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
     const args = buildForcedMarkovArgs(ctx.query);
-    if (!args) return false;
+    if (!args) return 'idle';
 
-    for await (const event of this.toolExecutor.executeTool('markov_distribution', args, ctx)) {
+    return yield* this.executeForcedTool(ctx, 'markov_distribution', args);
+  }
+
+  private async *executeForcedTool(
+    ctx: RunContext,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): AsyncGenerator<AgentEvent, ForcedToolExecutionStatus> {
+    let status: ForcedToolExecutionStatus = 'success';
+
+    for await (const event of this.toolExecutor.executeTool(toolName, args, ctx)) {
       yield event;
-      if (event.type === 'tool_error' || event.type === 'tool_denied') {
-        return false;
+      if (event.type === 'tool_denied') {
+        return 'denied';
+      }
+      if (event.type === 'tool_error') {
+        status = 'error';
       }
     }
 
-    return true;
+    return status;
   }
 
   private async *forceCryptoForecastTools(
     ctx: RunContext,
-  ): AsyncGenerator<AgentEvent, boolean> {
-    let forcedAny = false;
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
+    let forcedStatus: ForcedToolRouteStatus = 'idle';
 
     const getToolCalls = () => ctx.scratchpad.getToolCallRecords();
 
@@ -976,171 +1057,118 @@ export class Agent {
     ) {
       const args = marketDataArgs;
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('get_market_data', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'get_market_data', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (extractSentimentScoreFromToolCalls(getToolCalls()) === null) {
       const args = buildForcedSocialSentimentArgs(ctx.query);
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('social_sentiment', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'social_sentiment', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (!hasCompletedMarkovDistributionForQuery(ctx.query, getToolCalls())) {
       const args = buildForcedCryptoForecastMarkovArgs(ctx.query);
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('markov_distribution', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'markov_distribution', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (!hasCryptoPolymarketForecastCoverage(ctx.query, getToolCalls())) {
       const args = buildForcedPolymarketForecastArgs(ctx.query, getToolCalls());
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('polymarket_forecast', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'polymarket_forecast', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (shouldRerunPolymarketForecastWithMarkov(ctx.query, getToolCalls())) {
       const args = buildForcedPolymarketForecastArgs(ctx.query, getToolCalls());
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('polymarket_forecast', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'polymarket_forecast', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (!hasUsableOnchainResultForCryptoQuery(ctx.query, getToolCalls())) {
       const args = buildForcedOnchainArgs(ctx.query);
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('get_onchain_crypto', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'get_onchain_crypto', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (!hasUsableFixedIncomeResult(getToolCalls())) {
       const args = buildForcedFixedIncomeArgs();
-      let ok = true;
-      for await (const event of this.toolExecutor.executeTool('get_fixed_income', args, ctx)) {
-        yield event;
-        if (event.type === 'tool_error' || event.type === 'tool_denied') {
-          ok = false;
-          break;
-        }
-      }
-      forcedAny = forcedAny || ok;
+      const status = yield* this.executeForcedTool(ctx, 'get_fixed_income', args);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
     }
 
     if (shouldForceForecastArbitrator(ctx.query, getToolCalls())) {
       const args = buildForcedForecastArbiterArgs(ctx.query, getToolCalls());
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('forecast_arbitrator', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'forecast_arbitrator', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
-    return forcedAny;
+    return forcedStatus;
   }
 
   /** Force the explicit GOLD combined seam after a usable Markov result exists. */
   private async *forceGoldCombinedForecastTools(
     ctx: RunContext,
-  ): AsyncGenerator<AgentEvent, boolean> {
-    let forcedAny = false;
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
+    let forcedStatus: ForcedToolRouteStatus = 'idle';
     const getToolCalls = () => ctx.scratchpad.getToolCallRecords();
 
     const marketDataArgs = buildForcedNonCryptoMarketDataArgs(ctx.query);
     if (marketDataArgs && !hasMarketDataQuery(getToolCalls(), marketDataArgs.query)) {
-      let ok = true;
-      for await (const event of this.toolExecutor.executeTool('get_market_data', marketDataArgs, ctx)) {
-        yield event;
-        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
-      }
-      forcedAny = forcedAny || ok;
+      const status = yield* this.executeForcedTool(ctx, 'get_market_data', marketDataArgs);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
     }
 
     const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(ctx.query, getToolCalls());
-    if (forecastArgs && !hasPolymarketForecastCoverage(getToolCalls(), forecastArgs)) {
-      let ok = true;
-      for await (const event of this.toolExecutor.executeTool('polymarket_forecast', forecastArgs, ctx)) {
-        yield event;
-        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
-      }
-      forcedAny = forcedAny || ok;
+    if (
+      forecastArgs
+      && !hasPolymarketForecastCoverage(getToolCalls(), forecastArgs)
+      && !hasPolymarketForecastErrorForCoverage(getToolCalls(), forecastArgs)
+    ) {
+      const status = yield* this.executeForcedTool(ctx, 'polymarket_forecast', forecastArgs);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
     }
 
     if (shouldForceGoldCombinedForecastArbitrator(ctx.query, getToolCalls())) {
       const args = buildForcedGoldCombinedForecastArbiterArgs(ctx.query, getToolCalls());
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('forecast_arbitrator', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'forecast_arbitrator', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
-    return forcedAny;
+    return forcedStatus;
   }
 
   /** Force get_market_data + polymarket_forecast for non-crypto forecast asks after Markov abstains. */
   private async *forceNonCryptoForecastFallback(
     ctx: RunContext,
-  ): AsyncGenerator<AgentEvent, boolean> {
-    let forcedAny = false;
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
+    let forcedStatus: ForcedToolRouteStatus = 'idle';
     const getToolCalls = () => ctx.scratchpad.getToolCallRecords();
 
     const marketDataArgs = buildForcedNonCryptoMarketDataArgs(ctx.query);
@@ -1148,25 +1176,23 @@ export class Agent {
       marketDataArgs
       && !hasMarketDataQuery(getToolCalls(), marketDataArgs.query)
     ) {
-      let ok = true;
-      for await (const event of this.toolExecutor.executeTool('get_market_data', marketDataArgs, ctx)) {
-        yield event;
-        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
-      }
-      forcedAny = forcedAny || ok;
+      const status = yield* this.executeForcedTool(ctx, 'get_market_data', marketDataArgs);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
     }
 
     const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(ctx.query, getToolCalls());
-    if (forecastArgs && !hasPolymarketForecastCoverage(getToolCalls(), forecastArgs)) {
-      let ok = true;
-      for await (const event of this.toolExecutor.executeTool('polymarket_forecast', forecastArgs, ctx)) {
-        yield event;
-        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
-      }
-      forcedAny = forcedAny || ok;
+    if (
+      forecastArgs
+      && !hasPolymarketForecastCoverage(getToolCalls(), forecastArgs)
+      && !hasPolymarketForecastErrorForCoverage(getToolCalls(), forecastArgs)
+    ) {
+      const status = yield* this.executeForcedTool(ctx, 'polymarket_forecast', forecastArgs);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
     }
 
-    return forcedAny;
+    return forcedStatus;
   }
 
   /**
@@ -1226,7 +1252,8 @@ export class Agent {
           streamedAnswer += chunk;
           yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
         }
-      } catch {
+      } catch (error) {
+        logger.warn('[Agent] final synthesis failed', error);
         // Synthesis timed out or failed — surface the raw tool results so the
         // user has something to work with rather than seeing a blank answer.
         const toolSummary = ctx.scratchpad.getToolResults().trim();
@@ -1279,7 +1306,7 @@ export class Agent {
   private async *manageContextThreshold(
     ctx: RunContext,
     query: string,
-    memoryFlushState: { alreadyFlushed: boolean },
+    memoryFlushState: MemoryFlushState,
   ): AsyncGenerator<ContextClearedEvent | AgentEvent, void> {
     const fullToolResults = ctx.scratchpad.getToolResults();
     const estimatedContextTokens = estimateTokens(this.systemPrompt + ctx.query + fullToolResults);
@@ -1293,13 +1320,13 @@ export class Agent {
         })
       ) {
         yield { type: 'memory_flush', phase: 'start' };
-        const flushResult = await runMemoryFlush({
+        const flushResult = await this.runMemoryFlushSafely({
           model: this.model,
           systemPrompt: this.systemPrompt,
           query,
           toolResults: fullToolResults,
           signal: this.signal,
-        }).catch(() => ({ flushed: false, written: false as const }));
+        });
         memoryFlushState.alreadyFlushed = flushResult.flushed;
         yield {
           type: 'memory_flush',
@@ -1341,17 +1368,17 @@ export class Agent {
   private async *runPeriodicMemoryFlush(
     ctx: RunContext,
     query: string,
-    state: { lastFlushedIteration: number },
+    state: PeriodicMemoryFlushState,
   ): AsyncGenerator<AgentEvent, void> {
     state.lastFlushedIteration = ctx.iteration;
     yield { type: 'memory_flush', phase: 'start' };
-    const flushResult = await runMemoryFlush({
+    const flushResult = await this.runMemoryFlushSafely({
       model: this.model,
       systemPrompt: this.systemPrompt,
       query,
       toolResults: ctx.scratchpad.getToolResults(),
       signal: this.signal,
-    }).catch(() => ({ flushed: false, written: false as const }));
+    });
     yield {
       type: 'memory_flush',
       phase: 'end',

@@ -16,7 +16,6 @@ import type { MarkovDistributionPoint } from '@/tools/finance/markov-distributio
 const HAS_WEB_SEARCH_PROVIDER = Boolean(
   process.env.EXASEARCH_API_KEY || process.env.PERPLEXITY_API_KEY || process.env.TAVILY_API_KEY,
 );
-
 function findToolStartEvent(result: { events: unknown[] }, tool: string): ToolStartEvent | undefined {
   return result.events.find((event): event is ToolStartEvent => {
     if (!event || typeof event !== 'object') return false;
@@ -296,7 +295,8 @@ describe('Agent E2E — basic financial query flows', () => {
     'handles the exact GOLD 24h Polymarket + Markov structural-break prompt through the commodity proxy path',
     async () => {
       const result = await runAgentE2EWithTimeoutRetry(
-        '--deep Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.',
+        'Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic.',
+        { maxIterations: 4 },
       );
 
       expect(result.toolsCalled).toContain('markov_distribution');

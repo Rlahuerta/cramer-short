@@ -399,8 +399,9 @@ export function buildSystemPrompt(
   memoryFiles?: string[],
   memoryContext?: string | null,
   toolDescriptionsOverride?: string,
+  memoryEnabled = true,
 ): string {
-  const toolDescriptions = toolDescriptionsOverride ?? buildToolDescriptions(model);
+  const toolDescriptions = toolDescriptionsOverride ?? buildToolDescriptions(model, { memoryEnabled });
   const profile = getChannelProfile(channel);
 
   const behaviorBullets = profile.behavior.map(b => `- ${b}`).join('\n');
@@ -408,6 +409,26 @@ export function buildSystemPrompt(
 
   const tablesSection = profile.tables
     ? `\n## Tables (for comparative/tabular data)\n\n${profile.tables}`
+    : '';
+
+  const financialMemoryPolicySection = memoryEnabled
+    ? `## Financial Memory Policy
+
+At startup, your memory context already includes FINANCE.md (ticker routing cache, company profiles)
+and recent financial insights from previous sessions. Use this before reaching for tools.
+
+1. **Before calling get_financials or get_market_data for any ticker**, call recall_financial_context
+   to check for cached routing and prior analysis. If routing says fmp-premium, skip FMP entirely.
+2. **If routing says web-fallback or fmp-premium**, go directly to web_search — do not waste a call
+   on FMP or Yahoo first.
+3. **After completing analysis**, call store_financial_insight to persist your findings:
+   - The routing result that worked (so future sessions skip failed sources)
+   - Key thesis, metrics, or conclusions
+   - Any red flags or analyst consensus discovered`
+    : '';
+
+  const memorySection = memoryEnabled && (((memoryFiles?.length ?? 0) > 0) || !!memoryContext)
+    ? buildMemorySection(memoryFiles ?? [], memoryContext)
     : '';
 
   return `You are Cramer-Short, a ${profile.label} assistant with access to research tools.
@@ -443,19 +464,7 @@ ${toolDescriptions}
 - For factual questions about entities (companies, people, organizations), use tools to verify current state
 - Only respond directly for: conceptual definitions, stable historical facts, or conversational queries
 
-## Financial Memory Policy
-
-At startup, your memory context already includes FINANCE.md (ticker routing cache, company profiles)
-and recent financial insights from previous sessions. Use this before reaching for tools.
-
-1. **Before calling get_financials or get_market_data for any ticker**, call recall_financial_context
-   to check for cached routing and prior analysis. If routing says fmp-premium, skip FMP entirely.
-2. **If routing says web-fallback or fmp-premium**, go directly to web_search — do not waste a call
-   on FMP or Yahoo first.
-3. **After completing analysis**, call store_financial_insight to persist your findings:
-   - The routing result that worked (so future sessions skip failed sources)
-   - Key thesis, metrics, or conclusions
-   - Any red flags or analyst consensus discovered
+${financialMemoryPolicySection}
 
 ## Financial Data Fallback Policy
 
@@ -471,7 +480,7 @@ ${buildFinancialStandardsSection()}
 
 ${buildSkillsSection()}
 
-${(memoryFiles && memoryFiles.length > 0) || memoryContext ? buildMemorySection(memoryFiles ?? [], memoryContext) : ''}
+${memorySection}
 
 ## Heartbeat
 

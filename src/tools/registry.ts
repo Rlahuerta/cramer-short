@@ -57,6 +57,7 @@ export interface RegisteredTool {
 export interface ToolRegistryOptions {
   watchlistEntries?: PortfolioRiskWatchlistEntry[];
   discoverSkills?: typeof discoverSkills;
+  memoryEnabled?: boolean;
 }
 
 /**
@@ -69,6 +70,7 @@ export interface ToolRegistryOptions {
 export function getToolRegistry(model: string, options: ToolRegistryOptions = {}): RegisteredTool[] {
   // Reset sequential thinking state for each new agent session
   sequentialThinkingEngine.reset();
+  const memoryEnabled = options.memoryEnabled ?? true;
 
   const tools: RegisteredTool[] = [
     {
@@ -216,32 +218,37 @@ export function getToolRegistry(model: string, options: ToolRegistryOptions = {}
       tool: heartbeatTool,
       description: HEARTBEAT_TOOL_DESCRIPTION,
     },
-    {
-      name: 'memory_search',
-      tool: memorySearchTool,
-      description: MEMORY_SEARCH_DESCRIPTION,
-    },
-    {
-      name: 'memory_get',
-      tool: memoryGetTool,
-      description: MEMORY_GET_DESCRIPTION,
-    },
-    {
-      name: 'memory_update',
-      tool: memoryUpdateTool,
-      description: MEMORY_UPDATE_DESCRIPTION,
-    },
-    {
-      name: 'recall_financial_context',
-      tool: recallFinancialContextTool,
-      description: RECALL_FINANCIAL_CONTEXT_DESCRIPTION,
-    },
-    {
-      name: 'store_financial_insight',
-      tool: storeFinancialInsightTool,
-      description: STORE_FINANCIAL_INSIGHT_DESCRIPTION,
-    },
   ];
+
+  if (memoryEnabled) {
+    tools.push(
+      {
+        name: 'memory_search',
+        tool: memorySearchTool,
+        description: MEMORY_SEARCH_DESCRIPTION,
+      },
+      {
+        name: 'memory_get',
+        tool: memoryGetTool,
+        description: MEMORY_GET_DESCRIPTION,
+      },
+      {
+        name: 'memory_update',
+        tool: memoryUpdateTool,
+        description: MEMORY_UPDATE_DESCRIPTION,
+      },
+      {
+        name: 'recall_financial_context',
+        tool: recallFinancialContextTool,
+        description: RECALL_FINANCIAL_CONTEXT_DESCRIPTION,
+      },
+      {
+        name: 'store_financial_insight',
+        tool: storeFinancialInsightTool,
+        description: STORE_FINANCIAL_INSIGHT_DESCRIPTION,
+      },
+    );
+  }
 
   // Include web_search if Exa, Perplexity, or Tavily API key is configured (Exa → Perplexity → Tavily)
   if (process.env.EXASEARCH_API_KEY) {

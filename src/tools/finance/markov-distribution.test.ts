@@ -81,6 +81,7 @@ import {
   getBtcShortHorizonLivePolicy,
   getGoldShortHorizonLivePolicy,
   normalizeHistoricalPriceTicker,
+  fetchHistoricalPrices,
   shouldEmitContextOnlyCanonical,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
@@ -201,6 +202,155 @@ function allClose(a: number, b: number, tol = 1e-9): boolean {
 function repeatStates(pattern: ReturnType<typeof classifyRegimeState>[], n: number) {
   return Array.from({ length: n }, (_, i) => pattern[i % pattern.length]);
 }
+
+describe('fetchHistoricalPrices Financial Datasets validation', () => {
+  it('returns valid Financial Datasets closes without falling through', async () => {
+    const prices = Array.from({ length: 12 }, (_, i) => ({ close: 100 + i }));
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockResolvedValue({
+      data: { prices },
+      url: 'https://api.financialdatasets.ai/prices/?ticker=AAPL',
+    });
+
+    try {
+      await expect(fetchHistoricalPrices('AAPL', 30)).resolves.toEqual(prices.map((p) => p.close));
+    } finally {
+      apiGetSpy.mockRestore();
+    }
+  });
+
+  it('surfaces malformed Financial Datasets payloads instead of falling through', async () => {
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockResolvedValue({
+      data: {},
+      url: 'https://api.financialdatasets.ai/prices/?ticker=AAPL',
+    });
+
+    try {
+      await expect(fetchHistoricalPrices('AAPL', 30)).rejects.toThrow(
+        /Malformed Financial Datasets prices payload/,
+      );
+    } finally {
+      apiGetSpy.mockRestore();
+    }
+  });
+
+  it('surfaces Financial Datasets parse failures instead of falling through', async () => {
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(
+      new Error('[Financial Datasets API] request failed: invalid JSON (200 OK)'),
+    );
+
+    try {
+      await expect(fetchHistoricalPrices('AAPL', 30)).rejects.toThrow(/invalid JSON/);
+    } finally {
+      apiGetSpy.mockRestore();
+    }
+  });
+
+
+  it('surfaces malformed Yahoo chart fallback payloads instead of returning empty success', async () => {
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockResolvedValue({
+      data: { prices: [] },
+      url: 'https://api.financialdatasets.ai/prices/?ticker=AAPL',
+    });
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('query1.finance.yahoo.com')) {
+          return new Response(JSON.stringify({ chart: { result: [{ indicators: { quote: [{}] } }] } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    try {
+      await expect(fetchHistoricalPrices('AAPL', 30)).rejects.toThrow(
+        /Malformed Yahoo Finance chart payload/,
+      );
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('returns valid Yahoo chart fallback closes without filtering them', async () => {
+    const yahooCloses = Array.from({ length: 12 }, (_, i) => 100 + i);
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockResolvedValue({
+      data: { prices: [] },
+      url: 'https://api.financialdatasets.ai/prices/?ticker=AAPL',
+    });
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('query1.finance.yahoo.com')) {
+          return new Response(JSON.stringify({
+            chart: {
+              result: [{
+                indicators: {
+                  quote: [{ close: yahooCloses }],
+                },
+              }],
+            },
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    try {
+      await expect(fetchHistoricalPrices('AAPL', 30)).resolves.toEqual(yahooCloses);
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('rejects malformed Yahoo chart close entries instead of silently dropping them', async () => {
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockResolvedValue({
+      data: { prices: [] },
+      url: 'https://api.financialdatasets.ai/prices/?ticker=AAPL',
+    });
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('query1.finance.yahoo.com')) {
+          return new Response(JSON.stringify({
+            chart: {
+              result: [{
+                indicators: {
+                  quote: [{ close: [100, null, 102] }],
+                },
+              }],
+            },
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    try {
+      await expect(fetchHistoricalPrices('AAPL', 30)).rejects.toThrow(
+        /Malformed Yahoo Finance chart payload for AAPL: chart\.result\.0\.indicators\.quote\.0\.close\.1/,
+      );
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Fix 10: classifyRegimeState — joint states (no priority override)

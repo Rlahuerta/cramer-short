@@ -20,10 +20,55 @@ export const FMP_PREMIUM_REQUIRED = 'FMP_PREMIUM_REQUIRED';
 // Metadata-only fields that add noise without analytical value.
 // Note: the new stable API uses 'filingDate' (fixed typo from legacy v3 'fillingDate').
 const FMP_STRIP_FIELDS = ['cik', 'link', 'finalLink', 'filingDate', 'acceptedDate'] as const;
+const FmpNullableNumber = z.number().nullable();
+const FmpBaseStatementSchema = z.object({
+  date: z.string(),
+  symbol: z.string(),
+}).passthrough();
+const FmpIncomeStatementSchema = FmpBaseStatementSchema.extend({
+  revenue: FmpNullableNumber,
+  grossProfit: FmpNullableNumber,
+  operatingIncome: FmpNullableNumber,
+  netIncome: FmpNullableNumber,
+  eps: FmpNullableNumber,
+  ebitda: FmpNullableNumber,
+});
+const FmpBalanceSheetSchema = FmpBaseStatementSchema.extend({
+  totalAssets: FmpNullableNumber,
+  totalLiabilities: FmpNullableNumber,
+  totalStockholdersEquity: FmpNullableNumber,
+  totalDebt: FmpNullableNumber,
+});
+const FmpCashFlowStatementSchema = FmpBaseStatementSchema.extend({
+  operatingCashFlow: FmpNullableNumber,
+  capitalExpenditure: FmpNullableNumber,
+  freeCashFlow: FmpNullableNumber,
+});
+
+class FmpPayloadValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FmpPayloadValidationError';
+  }
+}
 
 /** Map our period enum to the value FMP expects in its query param. */
 function toFmpPeriod(period: 'annual' | 'quarterly'): 'annual' | 'quarter' {
   return period === 'quarterly' ? 'quarter' : 'annual';
+}
+
+function parseFmpStatementArray<T extends Record<string, unknown>>(
+  data: unknown,
+  schema: z.ZodType<T>,
+  label: string,
+  ticker: string,
+): T[] {
+  const result = z.array(schema).safeParse(data);
+  if (!result.success) {
+    const issue = result.error.issues[0]?.message ?? 'schema validation failed';
+    throw new FmpPayloadValidationError(`[FMP API] Invalid ${label} data returned for ${ticker}: ${issue}`);
+  }
+  return result.data;
 }
 
 /**
@@ -117,22 +162,26 @@ export const getFmpIncomeStatements = new DynamicStructuredTool({
     try {
       const data = await fmpApi.get<unknown[]>(`/income-statement`, {
         symbol: ticker,
-        period: toFmpPeriod(input.period as 'annual' | 'quarterly'),
+        period: toFmpPeriod(input.period),
         limit: input.limit,
       });
-      if (!Array.isArray(data) || data.length === 0) {
+      const statements = parseFmpStatementArray(data, FmpIncomeStatementSchema, 'income statement', ticker);
+      if (statements.length === 0) {
         return formatToolResult(
           { error: `No income statement data found for ${ticker} on FMP.` },
           [],
         );
       }
       return formatToolResult(
-        stripFieldsDeep(data, FMP_STRIP_FIELDS) as unknown[],
+        stripFieldsDeep(statements, FMP_STRIP_FIELDS),
         [FMP_SOURCE_URL(ticker)],
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return formatToolResult({ error: message }, []);
+      if (error instanceof FmpPayloadValidationError) throw error;
+      if (error instanceof Error) {
+        return formatToolResult({ error: error.message }, []);
+      }
+      throw error;
     }
   },
 });
@@ -154,22 +203,26 @@ export const getFmpBalanceSheets = new DynamicStructuredTool({
     try {
       const data = await fmpApi.get<unknown[]>(`/balance-sheet-statement`, {
         symbol: ticker,
-        period: toFmpPeriod(input.period as 'annual' | 'quarterly'),
+        period: toFmpPeriod(input.period),
         limit: input.limit,
       });
-      if (!Array.isArray(data) || data.length === 0) {
+      const statements = parseFmpStatementArray(data, FmpBalanceSheetSchema, 'balance sheet', ticker);
+      if (statements.length === 0) {
         return formatToolResult(
           { error: `No balance sheet data found for ${ticker} on FMP.` },
           [],
         );
       }
       return formatToolResult(
-        stripFieldsDeep(data, FMP_STRIP_FIELDS) as unknown[],
+        stripFieldsDeep(statements, FMP_STRIP_FIELDS),
         [FMP_SOURCE_URL(ticker)],
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return formatToolResult({ error: message }, []);
+      if (error instanceof FmpPayloadValidationError) throw error;
+      if (error instanceof Error) {
+        return formatToolResult({ error: error.message }, []);
+      }
+      throw error;
     }
   },
 });
@@ -191,22 +244,26 @@ export const getFmpCashFlowStatements = new DynamicStructuredTool({
     try {
       const data = await fmpApi.get<unknown[]>(`/cash-flow-statement`, {
         symbol: ticker,
-        period: toFmpPeriod(input.period as 'annual' | 'quarterly'),
+        period: toFmpPeriod(input.period),
         limit: input.limit,
       });
-      if (!Array.isArray(data) || data.length === 0) {
+      const statements = parseFmpStatementArray(data, FmpCashFlowStatementSchema, 'cash flow statement', ticker);
+      if (statements.length === 0) {
         return formatToolResult(
           { error: `No cash flow data found for ${ticker} on FMP.` },
           [],
         );
       }
       return formatToolResult(
-        stripFieldsDeep(data, FMP_STRIP_FIELDS) as unknown[],
+        stripFieldsDeep(statements, FMP_STRIP_FIELDS),
         [FMP_SOURCE_URL(ticker)],
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return formatToolResult({ error: message }, []);
+      if (error instanceof FmpPayloadValidationError) throw error;
+      if (error instanceof Error) {
+        return formatToolResult({ error: error.message }, []);
+      }
+      throw error;
     }
   },
 });

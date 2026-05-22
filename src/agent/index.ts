@@ -8,6 +8,7 @@ export { getCurrentDate } from '../utils/date.js';
 export type { 
   ApprovalDecision,
   AgentConfig, 
+  AgentMemoryManager,
   Message,
   AgentEvent,
   ThinkingEvent,

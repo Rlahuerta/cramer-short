@@ -9,6 +9,7 @@ export {
   buildAbstainingBtcShortHorizonForecastAnswer,
   shouldPreserveAbstainingBtcShortHorizonForecast,
 } from './btc-forecast.js';
+export { buildExplicitGoldCombinedForecastAnswer } from './gold-combined-forecast.js';
 export {
   buildDistributionWarningPrefix,
   buildForecastDisagreementPrefix,

@@ -396,16 +396,10 @@ async function runWebFetch(params: {
         url: finalUrl,
         extractMode: params.extractMode,
       });
-      if (readable?.text) {
+      if (readable) {
         text = readable.text;
         title = readable.title;
-        extractor = "readability";
-      } else {
-        // Fallback to htmlToMarkdown (OpenClaw falls to Firecrawl here)
-        const rendered = htmlToMarkdown(body);
-        text = params.extractMode === "text" ? markdownToText(rendered.text) : rendered.text;
-        title = rendered.title;
-        extractor = "htmlToMarkdown";
+        extractor = readable.extractor;
       }
     } else if (contentType.includes("application/json")) {
       try {

@@ -98,7 +98,10 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
       const ticker = input.ticker.trim();
       try {
         const result = await quoteSummary(ticker, { modules: ['recommendationTrend'] });
-        const trend = result.recommendationTrend?.trend ?? [];
+        const trend = result.recommendationTrend?.trend;
+        if (!trend || trend.length === 0) {
+          return formatToolResult({ error: `No recommendation trend data returned by Yahoo Finance for ${ticker}` }, []);
+        }
         return formatToolResult(trend, [YAHOO_SOURCE_URL(ticker)]);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -123,7 +126,10 @@ export function makeYahooTools(quoteSummary: QuoteSummaryFn) {
       const ticker = input.ticker.trim();
       try {
         const result = await quoteSummary(ticker, { modules: ['upgradeDowngradeHistory'] });
-        const history = result.upgradeDowngradeHistory?.history ?? [];
+        const history = result.upgradeDowngradeHistory?.history;
+        if (!history || history.length === 0) {
+          return formatToolResult({ error: `No upgrade/downgrade history returned by Yahoo Finance for ${ticker}` }, []);
+        }
         // Return the 10 most recent entries to keep context size manageable
         return formatToolResult(history.slice(0, 10), [YAHOO_SOURCE_URL(ticker)]);
       } catch (error) {

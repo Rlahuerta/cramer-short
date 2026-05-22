@@ -155,6 +155,16 @@ describe('getYahooAnalystRecommendations', () => {
 
     expect((result.data as Record<string, unknown>).error).toBeDefined();
   });
+
+  test('returns error object instead of sourced empty output when trend is missing', async () => {
+    mockQuoteSummary.mockResolvedValueOnce({});
+
+    const raw = await getYahooAnalystRecommendations.invoke({ ticker: 'EMPTY' });
+    const result = parseResult(raw);
+
+    expect((result.data as Record<string, unknown>).error).toBeDefined();
+    expect(result.sourceUrls ?? []).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -198,6 +208,16 @@ describe('getYahooUpgradeDowngradeHistory', () => {
     const result = parseResult(raw);
 
     expect((result.data as Record<string, unknown>).error).toBeDefined();
+  });
+
+  test('returns error object instead of sourced empty output when history is missing', async () => {
+    mockQuoteSummary.mockResolvedValueOnce({});
+
+    const raw = await getYahooUpgradeDowngradeHistory.invoke({ ticker: 'EMPTY' });
+    const result = parseResult(raw);
+
+    expect((result.data as Record<string, unknown>).error).toBeDefined();
+    expect(result.sourceUrls ?? []).toEqual([]);
   });
 });
 

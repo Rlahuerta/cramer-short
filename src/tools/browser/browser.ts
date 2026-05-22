@@ -1,16 +1,106 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import type { RunnableConfig } from '@langchain/core/runnables';
-import { chromium, Browser, Page } from 'playwright';
+import { chromium } from 'playwright';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { logger } from '../../utils/logger.js';
 
-let browser: Browser | null = null;
-let page: Page | null = null;
-let launchBrowser: typeof chromium.launch = chromium.launch.bind(chromium);
+type BrowserRef = { role: string; name?: string; nth?: number };
+type BrowserLaunchOptions = { headless: boolean };
+type LocatorLike = {
+  click(options: { timeout: number }): Promise<void>;
+  fill(text: string, options: { timeout: number }): Promise<void>;
+  hover(options: { timeout: number }): Promise<void>;
+  nth(nth: number): LocatorLike;
+  ariaSnapshot(): Promise<string>;
+};
+type BrowserContextLike = {
+  newPage(): Promise<PageLike>;
+};
+type PageLike = {
+  goto(url: string, options: { timeout: number; waitUntil: 'networkidle' }): Promise<unknown>;
+  url(): string;
+  title(): Promise<string>;
+  context(): BrowserContextLike;
+  close(): Promise<void>;
+  waitForLoadState(state: 'networkidle', options: { timeout: number }): Promise<void>;
+  locator(selector: string): LocatorLike;
+  getByRole(role: string, options: { name?: string | RegExp; exact?: boolean }): LocatorLike;
+  keyboard: {
+    press(key: string): Promise<void>;
+  };
+  mouse: {
+    wheel(x: number, y: number): Promise<void>;
+  };
+  waitForTimeout(ms: number): Promise<void>;
+  evaluate(pageFunction: () => unknown): Promise<unknown>;
+  _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<SnapshotForAIResult>;
+};
+type BrowserLike = {
+  newContext(): Promise<BrowserContextLike>;
+  close(): Promise<void>;
+};
+type BrowserLauncher = (options: BrowserLaunchOptions) => Promise<BrowserLike>;
+type BrowserRuntimeOptions = { launchBrowser?: BrowserLauncher };
 
-// Store refs from the last snapshot for action resolution
-let currentRefs: Map<string, { role: string; name?: string; nth?: number }> = new Map();
+const actRequestSchema = z.object({
+  kind: z.enum(['click', 'type', 'press', 'hover', 'scroll', 'wait']).describe('The type of interaction'),
+  ref: z.string().max(128).optional().describe('Element ref from snapshot (e.g., e12)'),
+  text: z.string().max(10_000).optional().describe('Text for type action'),
+  key: z.string().max(128).optional().describe('Key for press action (e.g., Enter, Tab)'),
+  direction: z.enum(['up', 'down']).optional().describe('Scroll direction'),
+  timeMs: z.number().optional().describe('Wait time in milliseconds'),
+});
+type BrowserActRequest = z.infer<typeof actRequestSchema>;
+
+interface BrowserNavigateResult {
+  ok: true;
+  url: string;
+  title: string;
+  hint: string;
+}
+
+type BrowserOpenResult = BrowserNavigateResult;
+
+interface BrowserSnapshotResult {
+  url: string;
+  title: string;
+  snapshot: string;
+  truncated: boolean;
+  refCount: number;
+  refs: Record<string, BrowserRef>;
+  partial?: true;
+  loadWarning?: string;
+  hint: string;
+}
+
+type BrowserActResult =
+  | { ok: true; clicked: string; loadWarning?: string; hint: string }
+  | { ok: true; ref: string; typed: string }
+  | { ok: true; pressed: string; loadWarning?: string }
+  | { ok: true; hovered: string }
+  | { ok: true; scrolled: 'up' | 'down' }
+  | { ok: true; waited: number };
+
+interface BrowserReadResult {
+  url: string;
+  title: string;
+  content: string;
+  loadWarning?: string;
+}
+
+export interface BrowserRuntime {
+  navigate(url: string, signal?: AbortSignal): Promise<BrowserNavigateResult>;
+  open(url: string, signal?: AbortSignal): Promise<BrowserOpenResult>;
+  snapshot(maxChars?: number, signal?: AbortSignal): Promise<BrowserSnapshotResult>;
+  act(request: BrowserActRequest, signal?: AbortSignal): Promise<BrowserActResult>;
+  read(signal?: AbortSignal): Promise<BrowserReadResult>;
+  close(): Promise<void>;
+}
+
+function defaultBrowserLauncher(): BrowserLauncher {
+  return (options) => chromium.launch(options);
+}
 
 function createAbortError(message: string = 'Browser action aborted'): Error {
   const error = new Error(message);
@@ -22,6 +112,10 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw createAbortError();
   }
+}
+
+function isPlaywrightTimeoutError(error: unknown): error is Error {
+  return error instanceof Error && error.name === 'TimeoutError';
 }
 
 async function withAbort<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -56,15 +150,279 @@ async function withAbort<T>(operation: () => Promise<T>, signal?: AbortSignal): 
   });
 }
 
+async function waitForNetworkIdleOrMarkPartial(
+  page: PageLike,
+  timeout: number,
+  signal: AbortSignal | undefined,
+  markPartial: () => void,
+): Promise<void> {
+  try {
+    await withAbort(() => page.waitForLoadState('networkidle', { timeout }), signal);
+  } catch (error) {
+    if (isPlaywrightTimeoutError(error)) {
+      markPartial();
+      return;
+    }
+    throw error;
+  }
+}
+
 // Type for Playwright's _snapshotForAI result
 interface SnapshotForAIResult {
   full?: string;
 }
 
-// Extended Page type with _snapshotForAI method
-interface PageWithSnapshotForAI extends Page {
-  _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<SnapshotForAIResult>;
+/** Owns browser/page/ref state for a browser tool instance. */
+class PlaywrightBrowserRuntime implements BrowserRuntime {
+  private browser: BrowserLike | null = null;
+  private page: PageLike | null = null;
+  private launchBrowser: BrowserLauncher;
+  private currentRefs: Map<string, BrowserRef> = new Map();
+
+  constructor(options: BrowserRuntimeOptions = {}) {
+    this.launchBrowser = options.launchBrowser ?? defaultBrowserLauncher();
+  }
+
+  setLauncher(launcher?: BrowserLauncher): void {
+    this.launchBrowser = launcher ?? defaultBrowserLauncher();
+  }
+
+  async navigate(url: string, signal?: AbortSignal): Promise<BrowserNavigateResult> {
+    const p = await this.ensurePage(signal);
+    await withAbort(() => p.goto(url, { timeout: 30000, waitUntil: 'networkidle' }), signal);
+    return {
+      ok: true,
+      url: p.url(),
+      title: await p.title(),
+      hint: 'Page loaded. Call snapshot to see page structure and find elements to interact with.',
+    };
+  }
+
+  async open(url: string, signal?: AbortSignal): Promise<BrowserOpenResult> {
+    const currentPage = await this.ensurePage(signal);
+    const context = currentPage.context();
+    const newPage = await withAbort(() => context.newPage(), signal);
+    await withAbort(() => newPage.goto(url, { timeout: 30000, waitUntil: 'networkidle' }), signal);
+    await this.replaceActivePage(newPage);
+    return {
+      ok: true,
+      url: newPage.url(),
+      title: await newPage.title(),
+      hint: 'New tab opened. Call snapshot to see page structure and find elements to interact with.',
+    };
+  }
+
+  async snapshot(maxChars?: number, signal?: AbortSignal): Promise<BrowserSnapshotResult> {
+    const p = await this.ensurePage(signal);
+    let partialLoad = false;
+    await waitForNetworkIdleOrMarkPartial(p, 5000, signal, () => { partialLoad = true; });
+
+    const { snapshot, truncated } = await this.takeSnapshot(p, maxChars, signal);
+
+    return {
+      url: p.url(),
+      title: await p.title(),
+      snapshot,
+      truncated,
+      refCount: this.refCount,
+      refs: this.refsAsRecord(),
+      ...(partialLoad ? { partial: true, loadWarning: 'Page may not be fully loaded (networkidle timeout). Content could be incomplete — consider retrying or using the read action.' } : {}),
+      hint: 'Use act with kind="click" and ref="eN" to click elements. Or navigate directly to a /url visible in the snapshot.',
+    };
+  }
+
+  async act(request: BrowserActRequest, signal?: AbortSignal): Promise<BrowserActResult> {
+    const p = await this.ensurePage(signal);
+    const { kind, ref, text, key, direction, timeMs } = request;
+
+    switch (kind) {
+      case 'click': {
+        if (!ref) {
+          throw new Error('ref is required for click');
+        }
+        const locator = this.resolveRefToLocator(p, ref);
+        await withAbort(() => locator.click({ timeout: 8000 }), signal);
+        let clickLoadPartial = false;
+        await waitForNetworkIdleOrMarkPartial(p, 10000, signal, () => { clickLoadPartial = true; });
+        return {
+          ok: true,
+          clicked: ref,
+          ...(clickLoadPartial ? { loadWarning: 'Post-click navigation may not be complete (networkidle timeout). Call snapshot to see current state.' } : {}),
+          hint: 'Click successful. Call snapshot to see the updated page.',
+        };
+      }
+
+      case 'type': {
+        if (!ref) {
+          throw new Error('ref is required for type');
+        }
+        if (!text) {
+          throw new Error('text is required for type');
+        }
+        const locator = this.resolveRefToLocator(p, ref);
+        await withAbort(() => locator.fill(text, { timeout: 8000 }), signal);
+        return { ok: true, ref, typed: text };
+      }
+
+      case 'press': {
+        if (!key) {
+          throw new Error('key is required for press');
+        }
+        await withAbort(() => p.keyboard.press(key), signal);
+        let pressLoadPartial = false;
+        await waitForNetworkIdleOrMarkPartial(p, 5000, signal, () => { pressLoadPartial = true; });
+        return { ok: true, pressed: key, ...(pressLoadPartial ? { loadWarning: 'Post-keypress navigation may not be complete. Call snapshot to see current state.' } : {}) };
+      }
+
+      case 'hover': {
+        if (!ref) {
+          throw new Error('ref is required for hover');
+        }
+        const locator = this.resolveRefToLocator(p, ref);
+        await withAbort(() => locator.hover({ timeout: 8000 }), signal);
+        return { ok: true, hovered: ref };
+      }
+
+      case 'scroll': {
+        const scrollDirection = direction ?? 'down';
+        const amount = scrollDirection === 'down' ? 500 : -500;
+        await withAbort(() => p.mouse.wheel(0, amount), signal);
+        await withAbort(() => p.waitForTimeout(500), signal);
+        return { ok: true, scrolled: scrollDirection };
+      }
+
+      case 'wait': {
+        const waitTime = Math.min(timeMs ?? 2000, 10000);
+        await withAbort(() => p.waitForTimeout(waitTime), signal);
+        return { ok: true, waited: waitTime };
+      }
+    }
+  }
+
+  async read(signal?: AbortSignal): Promise<BrowserReadResult> {
+    const p = await this.ensurePage(signal);
+    let readPartial = false;
+    await waitForNetworkIdleOrMarkPartial(p, 5000, signal, () => { readPartial = true; });
+
+    const content = await withAbort(
+      () => p.evaluate(() => {
+        const main = document.querySelector('main, article, [role="main"], .content, #content') as HTMLElement | null;
+        return (main || document.body).innerText;
+      }),
+      signal,
+    );
+    return {
+      url: p.url(),
+      title: await p.title(),
+      content: String(content),
+      ...(readPartial ? { loadWarning: 'Page may not be fully loaded (networkidle timeout). Content could be incomplete.' } : {}),
+    };
+  }
+
+  private async ensurePage(signal?: AbortSignal): Promise<PageLike> {
+    throwIfAborted(signal);
+    if (!this.browser) {
+      this.browser = await withAbort(() => this.launchBrowser({ headless: false }), signal);
+    }
+    const activeBrowser = this.browser;
+    if (!this.page) {
+      const context = await withAbort(() => activeBrowser.newContext(), signal);
+      this.page = await withAbort(() => context.newPage(), signal);
+    }
+    return this.page;
+  }
+
+  async close(): Promise<void> {
+    this.currentRefs.clear();
+    if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
+    }
+    this.page = null;
+  }
+
+  private async replaceActivePage(nextPage: PageLike): Promise<void> {
+    const previousPage = this.page;
+    this.page = nextPage;
+    this.currentRefs.clear();
+
+    if (!previousPage || previousPage === nextPage) {
+      return;
+    }
+
+    try {
+      await previousPage.close();
+    } catch (error) {
+      logger.warn('[Browser (Playwright)] failed to close replaced page', error);
+    }
+  }
+
+  private resolveRefToLocator(p: PageLike, ref: string): LocatorLike {
+    const refData = this.currentRefs.get(ref);
+
+    if (!refData) {
+      return p.locator(`aria-ref=${ref}`);
+    }
+
+    const options: { name?: string | RegExp; exact?: boolean } = {};
+    if (refData.name) {
+      options.name = refData.name;
+      options.exact = true;
+    }
+
+    let locator = p.getByRole(refData.role, options);
+
+    if (typeof refData.nth === 'number' && refData.nth > 0) {
+      locator = locator.nth(refData.nth);
+    }
+
+    return locator;
+  }
+
+  private async takeSnapshot(
+    p: PageLike,
+    maxChars?: number,
+    signal?: AbortSignal,
+  ): Promise<{ snapshot: string; truncated: boolean }> {
+    let snapshot: string;
+
+    if (p._snapshotForAI) {
+      const snapshotForAI = p._snapshotForAI.bind(p);
+      const result = await withAbort(
+        () => snapshotForAI({ timeout: 10000, track: 'response' }),
+        signal,
+      );
+      snapshot = String(result?.full ?? '');
+    } else {
+      snapshot = await withAbort(() => p.locator(':root').ariaSnapshot(), signal);
+    }
+
+    this.currentRefs = parseRefsFromSnapshot(snapshot);
+
+    let truncated = false;
+    const limit = maxChars ?? 50000;
+    if (snapshot.length > limit) {
+      snapshot = `${snapshot.slice(0, limit)}\n\n[...TRUNCATED - page too large, use read action for full text]`;
+      truncated = true;
+    }
+
+    return { snapshot, truncated };
+  }
+
+  private get refCount(): number {
+    return this.currentRefs.size;
+  }
+
+  private refsAsRecord(): Record<string, BrowserRef> {
+    return Object.fromEntries(this.currentRefs);
+  }
 }
+
+export function createBrowserRuntime(options: BrowserRuntimeOptions = {}): BrowserRuntime {
+  return new PlaywrightBrowserRuntime(options);
+}
+
+const productionBrowserRuntime = new PlaywrightBrowserRuntime();
 
 /**
  * Rich description for the browser tool.
@@ -176,62 +534,25 @@ To press Enter:
 `.trim();
 
 /**
- * Ensure browser and page are initialized.
- * Lazily launches a headless Chromium browser on first use.
- */
-async function ensureBrowser(signal?: AbortSignal): Promise<Page> {
-  throwIfAborted(signal);
-  if (!browser) {
-    browser = await withAbort(() => launchBrowser({ headless: false }), signal);
-  }
-  const activeBrowser = browser;
-  if (!page) {
-    const context = await withAbort(() => activeBrowser.newContext(), signal);
-    page = await withAbort(() => context.newPage(), signal);
-  }
-  return page;
-}
-
-/**
- * Close the browser and reset state.
+ * Close the browser and reset production runtime state.
  * Exported so process-exit hooks (registered in src/index.tsx) can release
  * the Chromium subprocess and its file descriptors when the agent shuts down.
  */
 export async function closeBrowser(): Promise<void> {
-  currentRefs.clear();
-  if (browser) {
-    await browser.close();
-    browser = null;
-  }
-  page = null;
+  await productionBrowserRuntime.close();
 }
 
-export function _setBrowserLauncherForTest(launcher?: typeof chromium.launch): void {
-  launchBrowser = launcher ?? chromium.launch.bind(chromium);
-}
-
-async function replaceActivePage(nextPage: Page): Promise<void> {
-  const previousPage = page;
-  page = nextPage;
-  currentRefs.clear();
-
-  if (!previousPage || previousPage === nextPage) {
-    return;
-  }
-
-  try {
-    await previousPage.close();
-  } catch (error) {
-    logger.warn('[Browser (Playwright)] failed to close replaced page', error);
-  }
+/** @internal Test-only: inject a Playwright launcher for the production browser runtime. */
+export function _setBrowserLauncherForTest(launcher?: BrowserLauncher): void {
+  productionBrowserRuntime.setLauncher(launcher);
 }
 
 /**
  * Parse refs from the AI snapshot format.
  * Extracts [ref=eN] patterns and builds a ref map.
  */
-function parseRefsFromSnapshot(snapshot: string): Map<string, { role: string; name?: string; nth?: number }> {
-  const refs = new Map<string, { role: string; name?: string; nth?: number }>();
+function parseRefsFromSnapshot(snapshot: string): Map<string, BrowserRef> {
+  const refs = new Map<string, BrowserRef>();
   const lines = snapshot.split('\n');
   
   for (const line of lines) {
@@ -259,279 +580,94 @@ function parseRefsFromSnapshot(snapshot: string): Map<string, { role: string; na
   return refs;
 }
 
-/**
- * Resolve a ref to a Playwright locator using stored ref data.
- */
-function resolveRefToLocator(p: Page, ref: string): ReturnType<Page['locator']> {
-  const refData = currentRefs.get(ref);
-  
-  if (!refData) {
-    // Fallback to aria-ref selector if ref not in map
-    return p.locator(`aria-ref=${ref}`);
+function getActRequestValidationError(request: BrowserActRequest): string | undefined {
+  switch (request.kind) {
+    case 'click':
+      return request.ref ? undefined : 'ref is required for click';
+    case 'type':
+      if (!request.ref) {
+        return 'ref is required for type';
+      }
+      return request.text ? undefined : 'text is required for type';
+    case 'press':
+      return request.key ? undefined : 'key is required for press';
+    case 'hover':
+      return request.ref ? undefined : 'ref is required for hover';
+    case 'scroll':
+    case 'wait':
+      return undefined;
   }
-  
-  // Use getByRole with the stored role and name for reliable resolution
-  const options: { name?: string | RegExp; exact?: boolean } = {};
-  if (refData.name) {
-    options.name = refData.name;
-    options.exact = true;
-  }
-  
-  let locator = p.getByRole(refData.role as Parameters<Page['getByRole']>[0], options);
-  
-  // Handle nth occurrence if specified
-  if (typeof refData.nth === 'number' && refData.nth > 0) {
-    locator = locator.nth(refData.nth);
-  }
-  
-  return locator;
 }
-
-/**
- * Take an AI-optimized snapshot using Playwright's _snapshotForAI method.
- * Falls back to ariaSnapshot if _snapshotForAI is not available.
- */
-async function takeSnapshot(
-  p: Page,
-  maxChars?: number,
-  signal?: AbortSignal,
-): Promise<{ snapshot: string; truncated: boolean }> {
-  const pageWithSnapshot = p as PageWithSnapshotForAI;
-  
-  let snapshot: string;
-  
-  if (pageWithSnapshot._snapshotForAI) {
-    // Use the AI-optimized snapshot method
-    const result = await withAbort(
-      () => pageWithSnapshot._snapshotForAI!({ timeout: 10000, track: 'response' }),
-      signal,
-    );
-    snapshot = String(result?.full ?? '');
-  } else {
-    // Fallback to standard ariaSnapshot
-    snapshot = await withAbort(() => p.locator(':root').ariaSnapshot(), signal);
-  }
-  
-  // Parse and store refs for later action resolution
-  currentRefs = parseRefsFromSnapshot(snapshot);
-  
-  // Truncate if needed
-  let truncated = false;
-  const limit = maxChars ?? 50000;
-  if (snapshot.length > limit) {
-    snapshot = `${snapshot.slice(0, limit)}\n\n[...TRUNCATED - page too large, use read action for full text]`;
-    truncated = true;
-  }
-  
-  return { snapshot, truncated };
-}
-
-// Schema for the act action's request object
-const actRequestSchema = z.object({
-  kind: z.enum(['click', 'type', 'press', 'hover', 'scroll', 'wait']).describe('The type of interaction'),
-  ref: z.string().max(128).optional().describe('Element ref from snapshot (e.g., e12)'),
-  text: z.string().max(10_000).optional().describe('Text for type action'),
-  key: z.string().max(128).optional().describe('Key for press action (e.g., Enter, Tab)'),
-  direction: z.enum(['up', 'down']).optional().describe('Scroll direction'),
-  timeMs: z.number().optional().describe('Wait time in milliseconds'),
-});
 
 /** Exposes browser automation for page navigation and content extraction. */
-export const browserTool = new DynamicStructuredTool({
-  name: 'browser',
-  description: 'Navigate websites, read content, and interact with pages. Use for accessing company websites, earnings reports, and dynamic content.',
-  schema: z.object({
-    action: z.enum(['navigate', 'open', 'snapshot', 'act', 'read', 'close']).describe('The browser action to perform'),
-    url: z.string().max(4096).optional().describe('URL for navigate action'),
-    maxChars: z.number().optional().describe('Max characters for snapshot (default 50000)'),
-    request: actRequestSchema.optional().describe('Request object for act action'),
-  }),
-  func: async ({ action, url, maxChars, request }, _runManager, config?: RunnableConfig) => {
-    const signal = config?.signal;
-    let shouldCloseBrowser = action === 'close';
+export function createBrowserTool(options: { runtime?: BrowserRuntime } = {}): DynamicStructuredTool {
+  const runtime = options.runtime ?? productionBrowserRuntime;
 
-    try {
-      throwIfAborted(signal);
-      switch (action) {
-        case 'navigate': {
-          if (!url) {
-            return formatToolResult({ error: 'url is required for navigate action' });
+  return new DynamicStructuredTool({
+    name: 'browser',
+    description: 'Navigate websites, read content, and interact with pages. Use for accessing company websites, earnings reports, and dynamic content.',
+    schema: z.object({
+      action: z.enum(['navigate', 'open', 'snapshot', 'act', 'read', 'close']).describe('The browser action to perform'),
+      url: z.string().max(4096).optional().describe('URL for navigate action'),
+      maxChars: z.number().optional().describe('Max characters for snapshot (default 50000)'),
+      request: actRequestSchema.optional().describe('Request object for act action'),
+    }),
+    func: async ({ action, url, maxChars, request }, _runManager, config?: RunnableConfig) => {
+      const signal = config?.signal;
+      let shouldCloseBrowser = action === 'close';
+
+      try {
+        throwIfAborted(signal);
+        switch (action) {
+          case 'navigate':
+            if (!url) {
+              return formatToolResult({ error: 'url is required for navigate action' });
+            }
+            return formatToolResult(await runtime.navigate(url, signal));
+
+          case 'open':
+            if (!url) {
+              return formatToolResult({ error: 'url is required for open action' });
+            }
+            return formatToolResult(await runtime.open(url, signal));
+
+          case 'snapshot':
+            return formatToolResult(await runtime.snapshot(maxChars, signal));
+
+          case 'act': {
+            if (!request) {
+              return formatToolResult({ error: 'request is required for act action' });
+            }
+            const validationError = getActRequestValidationError(request);
+            if (validationError) {
+              return formatToolResult({ error: validationError });
+            }
+            return formatToolResult(await runtime.act(request, signal));
           }
-          const p = await ensureBrowser(signal);
-          // Use networkidle for better JS rendering on dynamic sites
-          await withAbort(() => p.goto(url, { timeout: 30000, waitUntil: 'networkidle' }), signal);
-          return formatToolResult({
-            ok: true,
-            url: p.url(),
-            title: await p.title(),
-            hint: 'Page loaded. Call snapshot to see page structure and find elements to interact with.',
+
+          case 'read':
+            return formatToolResult(await runtime.read(signal));
+
+          case 'close':
+            return formatToolResult({ ok: true, message: 'Browser closed' });
+        }
+      } catch (error) {
+        shouldCloseBrowser = true;
+        if (!(error instanceof Error)) {
+          throw error;
+        }
+        const message = error.message;
+        logger.error(`[Browser (Playwright)] error: ${message}`);
+        return formatToolResult({ error: `[Browser (Playwright)] ${message}` });
+      } finally {
+        if (shouldCloseBrowser) {
+          await runtime.close().catch((error) => {
+            logger.error('[Browser (Playwright)] failed to close browser', error);
           });
         }
-
-        case 'open': {
-          if (!url) {
-            return formatToolResult({ error: 'url is required for open action' });
-          }
-          const currentPage = await ensureBrowser(signal);
-          const context = currentPage.context();
-          const newPage = await withAbort(() => context.newPage(), signal);
-          await withAbort(() => newPage.goto(url, { timeout: 30000, waitUntil: 'networkidle' }), signal);
-          await replaceActivePage(newPage);
-          return formatToolResult({
-            ok: true,
-            url: newPage.url(),
-            title: await newPage.title(),
-            hint: 'New tab opened. Call snapshot to see page structure and find elements to interact with.',
-          });
-        }
-
-        case 'snapshot': {
-          const p = await ensureBrowser(signal);
-          // Wait for any dynamic content to settle; capture timeout to surface partial-load warning
-          let partialLoad = false;
-          await withAbort(
-            () => p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => { partialLoad = true; }),
-            signal,
-          );
-          
-          const { snapshot, truncated } = await takeSnapshot(p, maxChars, signal);
-          
-          return formatToolResult({
-            url: p.url(),
-            title: await p.title(),
-            snapshot,
-            truncated,
-            refCount: currentRefs.size,
-            refs: Object.fromEntries(currentRefs),
-            ...(partialLoad ? { partial: true, loadWarning: 'Page may not be fully loaded (networkidle timeout). Content could be incomplete — consider retrying or using the read action.' } : {}),
-            hint: 'Use act with kind="click" and ref="eN" to click elements. Or navigate directly to a /url visible in the snapshot.',
-          });
-        }
-
-        case 'act': {
-          if (!request) {
-            return formatToolResult({ error: 'request is required for act action' });
-          }
-          
-          const p = await ensureBrowser(signal);
-          const { kind, ref, text, key, direction, timeMs } = request;
-          
-          switch (kind) {
-            case 'click': {
-              if (!ref) {
-                return formatToolResult({ error: 'ref is required for click' });
-              }
-              const locator = resolveRefToLocator(p, ref);
-              await withAbort(() => locator.click({ timeout: 8000 }), signal);
-              // Wait for navigation/content to load; surface timeout as a warning
-              let clickLoadPartial = false;
-              await withAbort(
-                () => p.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { clickLoadPartial = true; }),
-                signal,
-              );
-              return formatToolResult({ 
-                ok: true, 
-                clicked: ref,
-                ...(clickLoadPartial ? { loadWarning: 'Post-click navigation may not be complete (networkidle timeout). Call snapshot to see current state.' } : {}),
-                hint: 'Click successful. Call snapshot to see the updated page.',
-              });
-            }
-            
-            case 'type': {
-              if (!ref) {
-                return formatToolResult({ error: 'ref is required for type' });
-              }
-              if (!text) {
-                return formatToolResult({ error: 'text is required for type' });
-              }
-              const locator = resolveRefToLocator(p, ref);
-              await withAbort(() => locator.fill(text, { timeout: 8000 }), signal);
-              return formatToolResult({ ok: true, ref, typed: text });
-            }
-            
-            case 'press': {
-              if (!key) {
-                return formatToolResult({ error: 'key is required for press' });
-              }
-              await withAbort(() => p.keyboard.press(key), signal);
-              let pressLoadPartial = false;
-              await withAbort(
-                () => p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => { pressLoadPartial = true; }),
-                signal,
-              );
-              return formatToolResult({ ok: true, pressed: key, ...(pressLoadPartial ? { loadWarning: 'Post-keypress navigation may not be complete. Call snapshot to see current state.' } : {}) });
-            }
-            
-            case 'hover': {
-              if (!ref) {
-                return formatToolResult({ error: 'ref is required for hover' });
-              }
-              const locator = resolveRefToLocator(p, ref);
-              await withAbort(() => locator.hover({ timeout: 8000 }), signal);
-              return formatToolResult({ ok: true, hovered: ref });
-            }
-            
-            case 'scroll': {
-              const scrollDirection = direction ?? 'down';
-              const amount = scrollDirection === 'down' ? 500 : -500;
-              await withAbort(() => p.mouse.wheel(0, amount), signal);
-              await withAbort(() => p.waitForTimeout(500), signal);
-              return formatToolResult({ ok: true, scrolled: scrollDirection });
-            }
-            
-            case 'wait': {
-              const waitTime = Math.min(timeMs ?? 2000, 10000);
-              await withAbort(() => p.waitForTimeout(waitTime), signal);
-              return formatToolResult({ ok: true, waited: waitTime });
-            }
-            
-            default:
-              return formatToolResult({ error: `Unknown act kind: ${kind}` });
-          }
-        }
-
-        case 'read': {
-          const p = await ensureBrowser(signal);
-          // Wait for content to be fully loaded; surface timeout warning if partial
-          let readPartial = false;
-          await withAbort(
-            () => p.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => { readPartial = true; }),
-            signal,
-          );
-          
-          // Extract visible text from main content area, falling back to body
-          const content = await withAbort(
-            () => p.evaluate(() => {
-              const main = document.querySelector('main, article, [role="main"], .content, #content') as HTMLElement | null;
-              return (main || document.body).innerText;
-            }),
-            signal,
-          );
-          return formatToolResult({
-            url: p.url(),
-            title: await p.title(),
-            content,
-            ...(readPartial ? { loadWarning: 'Page may not be fully loaded (networkidle timeout). Content could be incomplete.' } : {}),
-          });
-        }
-        case 'close': {
-          return formatToolResult({ ok: true, message: 'Browser closed' });
-        }
-
-        default:
-          return formatToolResult({ error: `Unknown action: ${action}` });
       }
-    } catch (err) {
-      shouldCloseBrowser = true;
-      const message = err instanceof Error ? err.message : String(err);
-      logger.error(`[Browser (Playwright)] error: ${message}`);
-      return formatToolResult({ error: `[Browser (Playwright)] ${message}` });
-    } finally {
-      if (shouldCloseBrowser) {
-        await closeBrowser().catch((error) => {
-          logger.error('[Browser (Playwright)] failed to close browser', error);
-        });
-      }
-    }
-  },
-});
+    },
+  });
+}
+
+export const browserTool = createBrowserTool();

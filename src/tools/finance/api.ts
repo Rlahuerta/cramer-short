@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { readCache, writeCache, describeRequest } from '../../utils/cache.js';
 import { getEnv } from '../../utils/env.js';
 import { logger } from '../../utils/logger.js';
@@ -15,6 +16,37 @@ export const FINANCIAL_DATASETS_PREMIUM = 'FINANCIAL_DATASETS_PREMIUM_REQUIRED';
 export interface ApiResponse {
   data: Record<string, unknown>;
   url: string;
+}
+
+const FinancialDatasetsPriceSchema = z.object({
+  close: z.number(),
+}).passthrough();
+
+const FinancialDatasetsPricesPayloadSchema = z.union([
+  z.array(FinancialDatasetsPriceSchema),
+  z.object({
+    prices: z.array(FinancialDatasetsPriceSchema),
+  }).passthrough(),
+]);
+
+export type FinancialDatasetsPrice = z.infer<typeof FinancialDatasetsPriceSchema>;
+
+export class FinancialDatasetsPayloadValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FinancialDatasetsPayloadValidationError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export function parseFinancialDatasetsPricesPayload(data: unknown): FinancialDatasetsPrice[] {
+  const parsed = FinancialDatasetsPricesPayloadSchema.safeParse(data);
+  if (!parsed.success) {
+    throw new FinancialDatasetsPayloadValidationError(
+      `Malformed Financial Datasets prices payload: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`,
+    );
+  }
+  return Array.isArray(parsed.data) ? parsed.data : parsed.data.prices;
 }
 
 /**

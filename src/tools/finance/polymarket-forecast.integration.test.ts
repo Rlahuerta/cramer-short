@@ -25,6 +25,11 @@ import { computeConditionalReturn, adjustYesBias, computePolymarketSignal, runEn
 import type { MarketInput } from '../../utils/finance/ensemble.js';
 import { appendSnapshotRecord } from './polymarket-snapshots.js';
 
+const {
+  evaluateHistoryFlags,
+  evaluateMarketHistory,
+} = await import(`./polymarket-forecast.js?history-helper=${nextTestId('module')}`);
+
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
 });
@@ -94,8 +99,7 @@ describe('signal-extractor × impact-map — category consistency', () => {
 });
 
 describe('polymarket history integration seams', () => {
-  it('reads 2-4h and 24-48h snapshots through the real helper contract', async () => {
-    const { evaluateMarketHistory } = await import(`./polymarket-forecast.js?history-helper=${nextTestId('module')}`);
+  it('reads 2-4h and 24-48h snapshots through the real helper contract', () => {
     const nowMs = new Date('2026-04-20T12:00:00.000Z').getTime();
 
     const evaluation = evaluateMarketHistory(
@@ -112,7 +116,6 @@ describe('polymarket history integration seams', () => {
   });
 
   it('reads snapshot records from a temp JSONL store via readSnapshotRecords', async () => {
-    const { evaluateHistoryFlags } = await import(`./polymarket-forecast.js?history-store=${nextTestId('module')}`);
     const tmpDir = await mkdtemp(join(tmpdir(), 'polymarket-forecast-history-'));
     const snapshotFilePath = join(tmpDir, 'polymarket-snapshots.jsonl');
 

@@ -1,4 +1,61 @@
 export type ExtractMode = "markdown" | "text";
+export type HtmlExtractor = "htmlToMarkdown" | "readability";
+
+export interface ReadableContentResult {
+  text: string;
+  title?: string;
+  extractor: HtmlExtractor;
+}
+
+interface ReadabilityDocument {
+  baseURI?: string;
+}
+
+type HtmlExtractionDeps = {
+  Readability: new (
+    document: ReadabilityDocument,
+    options?: { charThreshold?: number },
+  ) => {
+    parse(): {
+      content?: string | null;
+      title?: string | null;
+      textContent?: string | null;
+    } | null | undefined;
+  };
+  parseHTML: (html: string) => { document: ReadabilityDocument };
+};
+
+function findPropertyDescriptor(target: object, property: string): PropertyDescriptor | undefined {
+  let current: object | null = target;
+  while (current) {
+    const descriptor = Object.getOwnPropertyDescriptor(current, property);
+    if (descriptor) {
+      return descriptor;
+    }
+    current = Object.getPrototypeOf(current);
+  }
+  return undefined;
+}
+
+function hasWritableBaseUri(document: ReadabilityDocument): boolean {
+  const descriptor = findPropertyDescriptor(document, "baseURI");
+  if (!descriptor) {
+    return Object.isExtensible(document);
+  }
+  return descriptor.writable === true || typeof descriptor.set === "function";
+}
+
+function isObjectRecord(value: unknown): value is Record<PropertyKey, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isDomDocument(value: unknown): value is Document {
+  return (
+    isObjectRecord(value) &&
+    typeof value.querySelector === "function" &&
+    typeof value.createElement === "function"
+  );
+}
 
 function decodeEntities(value: string): string {
   return value
@@ -80,29 +137,91 @@ export function truncateText(
   return { text: value.slice(0, maxChars), truncated: true };
 }
 
+const ARTICLE_LIKE_HTML_PATTERN =
+  /<(?:!doctype|html|head|body|main|article|section|header|footer|title|h1|h2|h3|h4|h5|h6|time|figure|figcaption|blockquote)\b/i;
+const HTML_OPENING_TAG_PATTERN = /<(?!\/|!)([a-z][\w:-]*)\b/gi;
+const PARAGRAPH_LIKE_TAG_PATTERN = /<(?:p|li)\b/gi;
+
+function shouldFastPathHtmlFallback(html: string): boolean {
+  const trimmed = html.trim();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  if (trimmed.length > 4_000 || ARTICLE_LIKE_HTML_PATTERN.test(trimmed)) {
+    return false;
+  }
+  const openingTagCount = trimmed.match(HTML_OPENING_TAG_PATTERN)?.length ?? 0;
+  if (openingTagCount > 6) {
+    return false;
+  }
+  const paragraphLikeTagCount = trimmed.match(PARAGRAPH_LIKE_TAG_PATTERN)?.length ?? 0;
+  return paragraphLikeTagCount <= 1;
+}
+
+function warnReadabilityFallback(error: Error): void {
+  console.warn(
+    `[web_fetch] readability extraction failed; falling back to htmlToMarkdown: ${error.message}`,
+  );
+}
+
 export async function extractReadableContent(params: {
   html: string;
   url: string;
   extractMode: ExtractMode;
-}): Promise<{ text: string; title?: string } | null> {
-  const fallback = (): { text: string; title?: string } => {
+  loadDeps?: () => Promise<HtmlExtractionDeps>;
+}): Promise<ReadableContentResult> {
+  const fallback = (): ReadableContentResult => {
     const rendered = htmlToMarkdown(params.html);
     if (params.extractMode === "text") {
       const text = markdownToText(rendered.text) || normalizeWhitespace(stripTags(params.html));
-      return { text, title: rendered.title };
+      return { text, title: rendered.title, extractor: "htmlToMarkdown" };
     }
-    return rendered;
+    return { ...rendered, extractor: "htmlToMarkdown" };
   };
+  if (shouldFastPathHtmlFallback(params.html)) {
+    return fallback();
+  }
   try {
-    const [{ Readability }, { parseHTML }] = await Promise.all([
-      import("@mozilla/readability"),
-      import("linkedom"),
-    ]);
+    const { Readability, parseHTML } = params.loadDeps
+      ? await params.loadDeps()
+      : await (async (): Promise<HtmlExtractionDeps> => {
+          const [{ Readability }, { parseHTML }] = await Promise.all([
+            import("@mozilla/readability"),
+            import("linkedom"),
+          ]);
+          return {
+            Readability: class {
+              private readonly reader: InstanceType<typeof Readability>;
+
+              constructor(document: ReadabilityDocument, options?: { charThreshold?: number }) {
+                if (!isDomDocument(document)) {
+                  throw new Error("parseHTML did not return a DOM document");
+                }
+                this.reader = new Readability(document, options);
+              }
+
+              parse(): {
+                content?: string | null;
+                title?: string | null;
+                textContent?: string | null;
+              } | null {
+                const parsed = this.reader.parse();
+                if (!parsed) {
+                  return null;
+                }
+                return {
+                  content: typeof parsed.content === "string" ? parsed.content : null,
+                  title: parsed.title,
+                  textContent: parsed.textContent,
+                };
+              }
+            },
+            parseHTML,
+          };
+        })();
     const { document } = parseHTML(params.html);
-    try {
-      (document as { baseURI?: string }).baseURI = params.url;
-    } catch {
-      // Best-effort base URI for relative links.
+    if (hasWritableBaseUri(document)) {
+      document.baseURI = params.url;
     }
     const reader = new Readability(document, { charThreshold: 0 });
     const parsed = reader.parse();
@@ -112,11 +231,15 @@ export async function extractReadableContent(params: {
     const title = parsed.title || undefined;
     if (params.extractMode === "text") {
       const text = normalizeWhitespace(parsed.textContent ?? "");
-      return text ? { text, title } : fallback();
+      return text ? { text, title, extractor: "readability" } : fallback();
     }
     const rendered = htmlToMarkdown(parsed.content);
-    return { text: rendered.text, title: title ?? rendered.title };
-  } catch {
-    return fallback();
+    return { text: rendered.text, title: title ?? rendered.title, extractor: "readability" };
+  } catch (error) {
+    if (error instanceof Error) {
+      warnReadabilityFallback(error);
+      return fallback();
+    }
+    throw error;
   }
 }

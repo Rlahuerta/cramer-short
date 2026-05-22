@@ -1,6 +1,21 @@
 /**
  * Markov Chain Probability Distribution for Asset Price Forecasting
  *
+ * **Architecture**: This file serves as a facade/orchestrator for the markov_distribution
+ * tool. Core logic is decomposed into submodules under `./markov-distribution/`:
+ *  - `core.ts` — Types, constants, defaults
+ *  - `regime.ts` — Regime detection and transition matrices
+ *  - `blending.ts` — Sentiment/signal blending
+ *  - `confidence-intervals.ts` — CI computation and conformal prediction
+ *  - `diagnostics.ts` — Prediction confidence, anchor quality
+ *  - `asset-profile.ts` — Asset-specific parameter profiles
+ *  - `live-policies.ts` — BTC/gold live policy routing
+ *
+ * This top-level file:
+ *  1. Registers the DynamicStructuredTool for LangChain integration
+ *  2. Orchestrates submodule functions into the main execution path
+ *  3. Preserves backward compatibility for existing import paths
+ *
  * Produces full probability distributions for stock/ETF prices at user-specified
  * horizons by combining:
  *  1. Polymarket threshold markets — real-money anchors at specific price levels
@@ -32,7 +47,11 @@ import {
   predict as hmmPredict,
   type HMMParams,
 } from './hmm.js';
-import { api } from './api.js';
+import {
+  FINANCIAL_DATASETS_PREMIUM,
+  api,
+  parseFinancialDatasetsPricesPayload,
+} from './api.js';
 import { fetchBinanceDailyCloses } from './binance.js';
 import { fetchBitmexDailyCloses } from './bitmex.js';
 import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
@@ -256,6 +275,31 @@ export type {
  * Yahoo Finance chart API — free, supports stocks, ETFs, crypto, commodities.
  * Returns oldest-first array of daily close prices.
  */
+const YahooChartCloseSchema = z.number().refine(Number.isFinite, 'Expected finite close price');
+const YahooChartPayloadSchema = z.object({
+  chart: z.object({
+    result: z.array(z.object({
+      indicators: z.object({
+        quote: z.array(z.object({
+          close: z.array(YahooChartCloseSchema),
+        }).passthrough()).nonempty(),
+      }).passthrough(),
+    }).passthrough()).nonempty(),
+  }).passthrough(),
+}).passthrough();
+
+function parseYahooChartClosePrices(data: unknown, ticker: string): number[] {
+  const parsed = YahooChartPayloadSchema.safeParse(data);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const path = issue?.path.length ? issue.path.join('.') : 'payload';
+    const message = issue?.message ?? 'schema validation failed';
+    throw new Error(`Malformed Yahoo Finance chart payload for ${ticker}: ${path} ${message}`);
+  }
+
+  return parsed.data.chart.result[0].indicators.quote[0].close;
+}
+
 async function fetchYahooChartPrices(
   ticker: string,
   days: number,
@@ -268,23 +312,28 @@ async function fetchYahooChartPrices(
   const UA =
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
     '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-  try {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': UA, Accept: 'application/json' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) return [];
-    const json = await res.json() as {
-      chart?: { result?: Array<{
-        indicators?: { quote?: Array<{ close?: (number | null)[] }> };
-      }> };
-    };
-    const closes = json.chart?.result?.[0]?.indicators?.quote?.[0]?.close;
-    if (!Array.isArray(closes)) return [];
-    return closes.filter((v): v is number => typeof v === 'number' && !isNaN(v));
-  } catch {
-    return [];
+  const res = await fetch(url, {
+    headers: { 'User-Agent': UA, Accept: 'application/json' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    throw new Error(`Yahoo Finance chart request failed for ${ticker}: ${res.status} ${res.statusText}`);
   }
+  return parseYahooChartClosePrices(await res.json(), ticker);
+}
+
+function isFinancialDatasetsUnavailable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message;
+  if (message.includes('invalid JSON')) return false;
+
+  return (
+    message.includes('FINANCIAL_DATASETS_API_KEY is not set') ||
+    message.includes(FINANCIAL_DATASETS_PREMIUM) ||
+    message.includes('request timed out') ||
+    message.includes('request failed for') ||
+    /\[Financial Datasets API\] request failed: (401|403|404|429|5\d\d)\b/.test(message)
+  );
 }
 
 /**
@@ -302,23 +351,26 @@ export async function fetchHistoricalPrices(
     .toISOString()
     .slice(0, 10);
 
-  // Try Financial Datasets API first
-  try {
-    const { data } = await api.get('/prices/', {
-      ticker: normalizedTicker,
-      interval: 'day',
-      start_date: startDate,
-      end_date: endDate,
-    });
-    const rawData = data as { prices?: Array<{ close: number }> } | Array<{ close: number }>;
-    const prices: Array<{ close: number }> =
-      (Array.isArray(rawData) ? rawData : (rawData.prices ?? [])) as Array<{ close: number }>;
-    const closes = prices
+  const financialDatasetsResult = await api.get('/prices/', {
+    ticker: normalizedTicker,
+    interval: 'day',
+    start_date: startDate,
+    end_date: endDate,
+  }).then(
+    ({ data }) => ({ status: 'available' as const, data }),
+    (error: unknown) => {
+      if (isFinancialDatasetsUnavailable(error)) {
+        return { status: 'unavailable' as const };
+      }
+      throw error;
+    },
+  );
+
+  if (financialDatasetsResult.status === 'available') {
+    const closes = parseFinancialDatasetsPricesPayload(financialDatasetsResult.data)
       .map((p) => p.close)
       .filter((v) => typeof v === 'number' && !isNaN(v));
     if (closes.length >= 10) return closes;
-  } catch {
-    // Financial Datasets failed (premium required, rate limit, etc.) — fall through
   }
 
   const binanceCloses = await fetchBinanceDailyCloses(normalizedTicker, days);
@@ -3513,7 +3565,8 @@ export async function computeMarkovDistribution(params: {
               volScaleFactor = Math.max(0.5, Math.min(2.0, volScaleFactor)); // clamp
             }
           }
-        } catch {
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
           // Vol HMM failed — use neutral factor
         }
       }
@@ -3564,7 +3617,8 @@ export async function computeMarkovDistribution(params: {
           weight: adjustedHmmWeight,
         };
       }
-    } catch {
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
       // HMM fitting can fail on degenerate data — fall back to observable Markov
     }
   }

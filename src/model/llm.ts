@@ -237,7 +237,7 @@ const DEFAULT_FACTORY: ModelFactory = (name, opts) =>
 
 let _overrideFactory: ModelFactory | null = null;
 
-/** For tests only — inject a custom model factory to intercept LLM calls. */
+/** @internal Test-only: inject a custom model factory to intercept LLM calls. */
 export function _setModelFactory(factory: ModelFactory | null): void {
   _overrideFactory = factory;
 }
@@ -388,8 +388,8 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
 /**
  * Stateful filter that strips <think>…</think> blocks from a character stream.
  * Yields only the non-thinking content as chunks arrive.
+ * @internal Test-only export: production uses this internally; tests cover stream filtering edge cases.
  */
-/** Exported for testing — not part of the public API. */
 export class StreamingThinkFilter {
   private buf = '';
   private thinking = false;
