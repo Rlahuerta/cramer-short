@@ -13,11 +13,8 @@ import type { AgentEvent, DoneEvent } from '../shared/agent-events.js';
 import { loadAgentCtor } from '../shared/agent-loader.js';
 import { getEnv, getEnvironment, getEnvOrDefault } from './env.js';
 import {
-  isAuthError,
   isBillingError,
-  isOverloadedError,
   isRateLimitError,
-  isTimeoutError,
 } from './errors.js';
 import { logger } from './logger.js';
 import { withRetry } from './retry.js';
@@ -114,30 +111,66 @@ function stringifyError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isE2ERateLimitError(message: string): boolean {
+  return isRateLimitError(message);
+}
+
+function isE2EProviderOverloadError(message: string): boolean {
+  return /overloaded_error|"type"\s*:\s*"overloaded_error"/i.test(message)
+    || /\b(?:provider|llm|ai service|api|server|model|ollama|openai|anthropic|gemini|claude|gpt|glm|qwen|kimi|minimax)\b[^\n]{0,120}\boverloaded\b/i.test(message)
+    || /\boverloaded\b[^\n]{0,120}\b(?:provider|llm|ai service|api|server|model|ollama|openai|anthropic|gemini|claude|gpt|glm|qwen|kimi|minimax)\b/i.test(message)
+    || /\b(?:http\s*)?503\b[^\n]{0,120}\bservice(?:\s+temporarily|\s+is)?\s+unavailable\b/i.test(message)
+    || /\bservice unavailable\b[^\n]{0,120}\b(?:provider|llm|ai service|api|server|ollama|openai|anthropic|gemini|claude|gpt|glm|qwen|kimi|minimax)\b/i.test(message)
+    || /\b(?:provider|llm|ai service|api|server|ollama|openai|anthropic|gemini|claude|gpt|glm|qwen|kimi|minimax)\b[^\n]{0,120}\bservice(?:\s+temporarily|\s+is)?\s+unavailable\b/i.test(message)
+    || /\b(?:ollama|openai|anthropic|gemini|claude|gpt|glm|qwen|kimi|minimax)\b[^\n]{0,120}\b(?:api\s+)?(?:is\s+)?temporarily\s+unavailable\b/i.test(message)
+    || /\b(?:provider|llm|ai service|api|server|ollama|openai|anthropic|gemini|claude|gpt|glm|qwen|kimi|minimax)\b[^\n]{0,120}\bhigh demand\b/i.test(message);
+}
+
+function isE2ETimeoutOrTransportError(message: string): boolean {
+  return /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT)\b/i.test(message)
+    || /\bE2E (?:agent|child) timed out\b/i.test(message)
+    || /\b(?:timed out|request timeout|timeout error)\b/i.test(message)
+    || /\b(?:llm|model|provider|api|http|fetch|network|request|response|ollama|openai|anthropic|gemini|claude|gpt|glm|qwen|kimi|minimax)\b[^\n]{0,120}\b(?:timed out|timeout error|request timeout)\b/i.test(message)
+    || /\b(?:deadline exceeded|context deadline exceeded)\b/i.test(message)
+    || /\bthis operation was aborted\b/i.test(message);
+}
+
+function isE2EAuthOrBillingError(message: string): boolean {
+  return isBillingError(message)
+    || /invalid[_ ]?api[_ ]?key|incorrect api key|no api key found|api key is missing|authentication failed/i.test(message)
+    || /\b(?:401|403)\s+(?:unauthorized|forbidden)\b/i.test(message)
+    || /\b(?:http|status|code|response)\s*[:=]?\s*(?:401|403)\b/i.test(message)
+    || /\b(?:unauthorized|forbidden|access denied)\b[^\n]{0,120}\b(?:api|provider|llm|model|ollama|openai|anthropic|gemini|claude|gpt)\b/i.test(message)
+    || /\b(?:api|provider|llm|model|ollama|openai|anthropic|gemini|claude|gpt)\b[^\n]{0,120}\b(?:unauthorized|forbidden|access denied)\b/i.test(message);
+}
+
+function isE2EModelUnavailableError(message: string): boolean {
+  return /\bollama is unavailable\b/i.test(message)
+    || /\bllm request failed\b/i.test(message)
+    || /\bmodel may be slow or unavailable\b/i.test(message)
+    || /\b(?:error|provider error|api error|llm error|model error)\s*[:=-]\s*model\s+(?:is\s+)?unavailable\b/i.test(message)
+    || /(?:^|\n)\s*model\s+(?:is\s+)?unavailable\s*[.!)]?\s*(?:$|\n)/i.test(message)
+    || /(?:^|\n)\s*(?:(?:http|status|response|code)\s*[:=]?\s*)?\d{3}\b[^\n]{0,120}\bmodel\s+(?:is\s+)?unavailable\b/i.test(message)
+    || /\b(?:llm|provider|ollama|openai|anthropic|gemini|claude|gpt|glm|qwen|kimi|minimax)\b[^\n]{0,120}\bmodel\b[^\n]{0,120}\bunavailable\b/i.test(message)
+    || /\bmodel\b[^\n]{0,120}\bunavailable\b[^\n]{0,120}\b(?:provider|ollama|openai|anthropic|gemini|claude|gpt|glm|qwen|kimi|minimax)\b/i.test(message);
+}
+
 export function isE2EExternalModelError(error: unknown): boolean {
   const message = stringifyError(error);
   if (!message || /E2E: no 'done' event received/i.test(message)) {
     return false;
   }
 
-  const lower = message.toLowerCase();
-  return isTimeoutError(message)
-    || isRateLimitError(message)
-    || isOverloadedError(message)
-    || isAuthError(message)
-    || isBillingError(message)
-    || /\b(ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT)\b/i.test(message)
-    || lower.includes('ollama is unavailable')
-    || lower.includes('model may be slow or unavailable')
-    || lower.includes('model is unavailable')
-    || lower.includes('llm request failed')
-    || lower.includes('api key')
-    || lower.includes('this operation was aborted');
+  return isE2ETimeoutOrTransportError(message)
+    || isE2ERateLimitError(message)
+    || isE2EProviderOverloadError(message)
+    || isE2EAuthOrBillingError(message)
+    || isE2EModelUnavailableError(message);
 }
 
 export function isRetryableE2EExternalModelError(error: unknown): boolean {
   const message = stringifyError(error);
-  return isRateLimitError(message) || isOverloadedError(message);
+  return isE2ERateLimitError(message) || isE2EProviderOverloadError(message);
 }
 
 function getProviderAvailabilityReason(model: string): string | null {

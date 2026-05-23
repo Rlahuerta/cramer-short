@@ -12,7 +12,7 @@ const mockPost = mock(() => Promise.resolve({ data: {} as Record<string, unknown
 
 mock.module('./api.js', () => ({
   api: { get: mockGet, post: mockPost },
-  stripFieldsDeep: (val: unknown, _fields: readonly string[]) => val,
+  stripFieldsDeep: realApi.stripFieldsDeep,
   callApi: mockGet,
 }));
 

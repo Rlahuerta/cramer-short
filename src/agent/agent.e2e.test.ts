@@ -518,8 +518,13 @@ describe('Agent E2E — basic financial query flows', () => {
       expect(markovStart?.args.ticker).toBe('BTC-USD');
       expect(markovStart?.args.horizon).toBe(7);
 
-      const markovEnd = findToolEndEvent(result, 'markov_distribution');
-      expect(markovEnd).toBeDefined();
+      const markovEndIndex = result.events.findIndex((event) => {
+        if (!event || typeof event !== 'object') return false;
+        const candidate = event as { type?: string; tool?: string };
+        return candidate.type === 'tool_end' && candidate.tool === 'markov_distribution';
+      });
+      expect(markovEndIndex).toBeGreaterThanOrEqual(0);
+      const markovEnd = result.events[markovEndIndex] as ToolEndEvent;
       const markovPayload = JSON.parse(markovEnd!.result) as {
         data?: {
           status?: string;
@@ -532,10 +537,12 @@ describe('Agent E2E — basic financial query flows', () => {
       };
       expect(['ok', 'abstain']).toContain(markovPayload?.data?.status ?? '');
 
-      const polymarketStarts = result.events.filter((event): event is ToolStartEvent => {
-        if (!event || typeof event !== 'object') return false;
+      const polymarketStarts = result.events.flatMap((event, index): Array<{ event: ToolStartEvent; index: number }> => {
+        if (!event || typeof event !== 'object') return [];
         const candidate = event as { type?: string; tool?: string };
-        return candidate.type === 'tool_start' && candidate.tool === 'polymarket_forecast';
+        return candidate.type === 'tool_start' && candidate.tool === 'polymarket_forecast'
+          ? [{ event: event as ToolStartEvent, index }]
+          : [];
       });
 
       const diagnostics = markovPayload?.data?.canonical?.diagnostics as Record<string, unknown> | undefined;
@@ -546,15 +553,16 @@ describe('Agent E2E — basic financial query flows', () => {
 
       if (markovPayload?.data?.status === 'ok' && hasHighConfidence) {
         expect(polymarketStarts.length).toBeGreaterThanOrEqual(1);
-        const hasMarkovEnrichedForecast = polymarketStarts.some((start) =>
-          typeof start.args['markov_return'] === 'number'
-          && Number.isFinite(start.args['markov_return'] as number),
+        const markovEnrichedForecast = polymarketStarts.find((start) =>
+          typeof start.event.args['markov_return'] === 'number'
+          && Number.isFinite(start.event.args['markov_return'] as number),
         );
-        expect(hasMarkovEnrichedForecast).toBe(true);
+        expect(markovEnrichedForecast).toBeDefined();
+        expect(markovEnrichedForecast!.index).toBeGreaterThan(markovEndIndex);
       } else {
         expect(polymarketStarts.length).toBeGreaterThanOrEqual(1);
         const noAbstainMarkovReturnReuse = polymarketStarts.every((start) =>
-          start.args['markov_return'] === undefined,
+          start.event.args['markov_return'] === undefined,
         );
         expect(noAbstainMarkovReturnReuse).toBe(true);
       }

@@ -6,8 +6,9 @@ import { describe, test, expect, beforeEach, spyOn } from 'bun:test';
 // ---------------------------------------------------------------------------
 process.env.FMP_API_KEY = 'test-fmp-key';
 
+const fmpModulePath: string = './fmp.js?fmp-unit';
 const { fmpApi, getFmpIncomeStatements, getFmpBalanceSheets, getFmpCashFlowStatements, FMP_PREMIUM_REQUIRED } =
-  await import('./fmp.js');
+  await import(fmpModulePath) as typeof import('./fmp.js');
 
 // ---------------------------------------------------------------------------
 // Helpers

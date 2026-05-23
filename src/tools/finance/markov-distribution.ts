@@ -48,6 +48,7 @@ import {
   type HMMParams,
 } from './hmm.js';
 import {
+  FinancialDatasetsHttpError,
   FINANCIAL_DATASETS_PREMIUM,
   api,
   parseFinancialDatasetsPricesPayload,
@@ -322,7 +323,29 @@ async function fetchYahooChartPrices(
   return parseYahooChartClosePrices(await res.json(), ticker);
 }
 
-function isFinancialDatasetsUnavailable(error: unknown): boolean {
+function getFinancialDatasetsHttpStatus(error: Error): number | null {
+  if (error instanceof FinancialDatasetsHttpError) return error.status;
+  const match = error.message.match(/\[Financial Datasets API\] request failed: (\d{3})\b/);
+  return match?.[1] ? Number(match[1]) : null;
+}
+
+function isAssetStyleTicker(ticker: string): boolean {
+  return /^(BTC|ETH|SOL|XRP|DOGE|ADA|BNB|AVAX|LINK|LTC|BCH|DOT|MATIC|TRX|TON|SHIB|UNI|ATOM)-USD$/i.test(ticker);
+}
+
+function isUnsupportedTicker400(error: Error, ticker: string): boolean {
+  if (getFinancialDatasetsHttpStatus(error) !== 400 || !isAssetStyleTicker(ticker)) return false;
+  const detail = error instanceof FinancialDatasetsHttpError
+    ? error.body ?? ''
+    : error.message;
+  return (
+    /\b(ticker|symbol|asset|instrument|crypto|cryptocurrency)\b.{0,120}\b(unsupported|not supported|not available|not found|unknown|unrecognized|not recognized|does not exist|no data)\b/i.test(detail) ||
+    /\b(unsupported|not supported|not available|not found|unknown|unrecognized|not recognized|does not exist|no data)\b.{0,120}\b(ticker|symbol|asset|instrument|crypto|cryptocurrency)\b/i.test(detail) ||
+    (/\binvalid ticker\b/i.test(detail) && /company_tickers\.json/i.test(detail))
+  );
+}
+
+function isFinancialDatasetsUnavailable(error: unknown, ticker: string): boolean {
   if (!(error instanceof Error)) return false;
   const message = error.message;
   if (message.includes('invalid JSON')) return false;
@@ -332,6 +355,7 @@ function isFinancialDatasetsUnavailable(error: unknown): boolean {
     message.includes(FINANCIAL_DATASETS_PREMIUM) ||
     message.includes('request timed out') ||
     message.includes('request failed for') ||
+    isUnsupportedTicker400(error, ticker) ||
     /\[Financial Datasets API\] request failed: (401|403|404|429|5\d\d)\b/.test(message)
   );
 }
@@ -359,7 +383,7 @@ export async function fetchHistoricalPrices(
   }).then(
     ({ data }) => ({ status: 'available' as const, data }),
     (error: unknown) => {
-      if (isFinancialDatasetsUnavailable(error)) {
+      if (isFinancialDatasetsUnavailable(error, normalizedTicker)) {
         return { status: 'unavailable' as const };
       }
       throw error;

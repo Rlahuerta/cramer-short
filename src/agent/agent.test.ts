@@ -1399,7 +1399,7 @@ describe('Agent', () => {
         },
       ];
 
-      const agent = await Agent.create({ maxIterations: 1 });
+      const agent = await Agent.create({ maxIterations: 1, memoryEnabled: false });
       installFixtureTools(agent, [
         { name: 'get_market_data', invoke: async () => JSON.stringify({ data: { ok: true } }) },
         { name: 'markov_distribution', invoke: async () => JSON.stringify({ data: { ok: true } }) },

@@ -564,7 +564,13 @@ export class Agent {
         }
       }
 
-      if (runState.sequentialThinkingUsed && shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
+      const hasPendingMarkovDistributionCall = (response as AIMessage).tool_calls
+        ?.some((tc) => tc.name === 'markov_distribution') ?? false;
+      if (
+        runState.sequentialThinkingUsed
+        && !hasPendingMarkovDistributionCall
+        && shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())
+      ) {
         const forcedStatus = yield* this.forceMarkovDistribution(ctx);
         if (forcedStatus === 'denied') {
           yield* this.finishAfterToolDenied(ctx);

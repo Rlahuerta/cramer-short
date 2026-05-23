@@ -98,6 +98,45 @@ describe('query-router modular barrel', () => {
     expect(shouldForceMarkovDistribution(query, [])).toBe(true);
   });
 
+  it('forces Markov for explicit GOLD Polymarket + Markov forecast prompts', () => {
+    const query = 'Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic.';
+
+    expect(queryRouter.buildForcedMarkovArgs(query)).toEqual({
+      ticker: 'GLD',
+      horizon: 1,
+    });
+    expect(shouldForceMarkovDistribution(query, [])).toBe(true);
+    expect(shouldForceMarkovDistribution(query, [
+      {
+        tool: 'markov_distribution',
+        args: { ticker: 'GLD', horizon: 1 },
+        result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok' } }),
+      },
+    ])).toBe(false);
+  });
+
+  it('does not force Markov for explicit GOLD Polymarket + Markov prompts without a horizon', () => {
+    const query = 'Provide the Polymarket and Markov GOLD forecast';
+
+    expect(queryRouter.buildForcedMarkovArgs(query)).toBeNull();
+    expect(shouldForceMarkovDistribution(query, [])).toBe(false);
+  });
+
+  it('does not force the GOLD Polymarket + Markov path for non-GOLD prompts', () => {
+    const query = 'Provide the Polymarket and Markov SPY forecast for 24 hours.';
+
+    expect(queryRouter.buildForcedMarkovArgs(query)).toEqual({
+      ticker: 'SPY',
+      horizon: 1,
+    });
+    expect(shouldForceMarkovDistribution(query, [])).toBe(false);
+  });
+
+  it('does not force Markov for GOLD Polymarket prompts missing a required keyword', () => {
+    expect(shouldForceMarkovDistribution('Provide the Markov GOLD forecast for 24 hours.', [])).toBe(false);
+    expect(shouldForceMarkovDistribution('Provide the Polymarket GOLD forecast for 24 hours.', [])).toBe(false);
+  });
+
   it('keeps tool-call extraction behavior after splitting modules', () => {
     const toolCalls: ToolCallRecord[] = [
       {

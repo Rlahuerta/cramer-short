@@ -39,6 +39,25 @@ export class FinancialDatasetsPayloadValidationError extends Error {
   }
 }
 
+export class FinancialDatasetsHttpError extends Error {
+  readonly status: number;
+  readonly statusText: string;
+  readonly body?: string;
+
+  constructor(status: number, statusText: string, body?: string) {
+    const detail = `${status} ${statusText}`;
+    const bodyDetail = body?.trim()
+      ? ` — ${body.trim().replace(/\s+/g, ' ').slice(0, 500)}`
+      : '';
+    super(`[Financial Datasets API] request failed: ${detail}${bodyDetail}`);
+    this.name = 'FinancialDatasetsHttpError';
+    this.status = status;
+    this.statusText = statusText;
+    this.body = body;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 export function parseFinancialDatasetsPricesPayload(data: unknown): FinancialDatasetsPrice[] {
   const parsed = FinancialDatasetsPricesPayloadSchema.safeParse(data);
   if (!parsed.success) {
@@ -135,14 +154,17 @@ async function executeRequest(
 
   if (!response.ok) {
     const detail = `${response.status} ${response.statusText}`;
-    logger.error(`[Financial Datasets API] error: ${label} — ${detail}`);
+    const body = typeof (response as Response & { text?: () => Promise<string> }).text === 'function'
+      ? await response.text().catch(() => '')
+      : '';
+    logger.error(`[Financial Datasets API] error: ${label} — ${detail}${body ? ` — ${body}` : ''}`);
     if (response.status === 402) {
       throw new Error(
         `${FINANCIAL_DATASETS_PREMIUM}: This endpoint requires a paid Financial Datasets plan. ` +
           'Upgrade at https://financialdatasets.ai or use web_search as a fallback.',
       );
     }
-    throw new Error(`[Financial Datasets API] request failed: ${detail}`);
+    throw new FinancialDatasetsHttpError(response.status, response.statusText, body);
   }
 
   const data = await response.json().catch(() => {

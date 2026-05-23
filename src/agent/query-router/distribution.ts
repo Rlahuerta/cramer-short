@@ -8,6 +8,7 @@ import {
   isExplicitTerminalDistributionQuery,
   inferTrajectoryRequest,
   isForecastLabImprovementQuery,
+  isExplicitGoldCombinedMarkovPolymarketRequest,
 } from './classification.js';
 import type { ToolCallRecord } from '../scratchpad.js';
 
@@ -169,8 +170,12 @@ export function buildForcedMarkovArgs(query: string): { ticker: string; horizon:
 
 export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCallRecord[]): boolean {
   if (isForecastLabImprovementQuery(query)) return false;
-  return (isExplicitTerminalDistributionQuery(query) || inferTrajectoryRequest(query))
-    && !toolCalls.some((call) => call.tool === 'markov_distribution');
+
+  const shouldForceForQuery = isExplicitTerminalDistributionQuery(query)
+    || inferTrajectoryRequest(query)
+    || (isExplicitGoldCombinedMarkovPolymarketRequest(query) && buildForcedMarkovArgs(query) !== null);
+
+  return shouldForceForQuery && !toolCalls.some((call) => call.tool === 'markov_distribution');
 }
 
 export function shouldInjectBtcShortHorizonMixedEvidencePrompt(

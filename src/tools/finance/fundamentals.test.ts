@@ -1,4 +1,11 @@
-import { describe, test, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
+
+// Signal that FMP is configured — fallback will only run when the key is set.
+process.env.FMP_API_KEY = 'test-fmp-key';
+
+const realFmpModule = await import('./fmp.js');
+const realYahooFinanceModule = await import('./yahoo-finance.js');
+const realTavilyModule = await import('../search/tavily.js');
 
 // ---------------------------------------------------------------------------
 // Mock ./fmp.js BEFORE importing fundamentals.js so the dynamic import picks
@@ -54,9 +61,6 @@ mock.module('../search/tavily.js', () => ({
   tavilySearch: mockTool('web_search', mockTavilyInvoke),
 }));
 
-// Signal that FMP is configured — fallback will only run when the key is set
-process.env.FMP_API_KEY = 'test-fmp-key';
-
 import { api } from './api.js';
 const { getIncomeStatements, getBalanceSheets, getCashFlowStatements } =
   await import('./fundamentals.js');
@@ -76,6 +80,12 @@ afterEach(() => {
   mockYahooUpgradeDowngradeHistoryInvoke.mockReset();
   mockTavilyInvoke.mockReset();
   delete process.env.TAVILY_API_KEY;
+});
+
+afterAll(() => {
+  mock.module('./fmp.js', () => realFmpModule);
+  mock.module('./yahoo-finance.js', () => realYahooFinanceModule);
+  mock.module('../search/tavily.js', () => realTavilyModule);
 });
 
 // ---------------------------------------------------------------------------

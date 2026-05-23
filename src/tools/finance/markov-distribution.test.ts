@@ -85,6 +85,7 @@ import {
   shouldEmitContextOnlyCanonical,
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
+import { FinancialDatasetsHttpError } from './api.js';
 
 const realPolymarketModule = { ...(await import('./polymarket.js')) };
 const realHmmModule = { ...(await import('./hmm.js')) };
@@ -307,6 +308,82 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
 
     try {
       await expect(fetchHistoricalPrices('AAPL', 30)).resolves.toEqual(yahooCloses);
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('falls back to exchange history when Financial Datasets reports a crypto instrument is not recognized', async () => {
+    const binanceCloses = Array.from({ length: 12 }, (_, i) => 77_000 + i * 100);
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(
+      new FinancialDatasetsHttpError(
+        400,
+        'Bad Request',
+        '{"message":"This instrument is not recognized"}',
+      ),
+    );
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('api.binance.com/api/v3/klines')) {
+          return new Response(JSON.stringify(binanceCloses.map((close) => [
+            0,
+            String(close - 50),
+            String(close + 50),
+            String(close - 100),
+            String(close),
+            '0',
+            0,
+            '0',
+            0,
+            '0',
+            '0',
+            '0',
+          ])), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    try {
+      await expect(fetchHistoricalPrices('BTC-USD', 30)).resolves.toEqual(binanceCloses);
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('does not fall back when unsupported-ticker keywords only align across duplicated Financial Datasets body boundaries', async () => {
+    const body = `{"message":"ticker ${'x'.repeat(121)} unsupported"}`;
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(
+      new FinancialDatasetsHttpError(400, 'Bad Request', body),
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch');
+
+    try {
+      await expect(fetchHistoricalPrices('BTC-USD', 30)).rejects.toThrow(/unsupported/);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('surfaces generic Financial Datasets 400 errors instead of falling through', async () => {
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(
+      new FinancialDatasetsHttpError(400, 'Bad Request', '{"error":"Missing required parameter start_date"}'),
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch');
+
+    try {
+      await expect(fetchHistoricalPrices('BTC-USD', 30)).rejects.toThrow(/Missing required parameter/);
+      expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       apiGetSpy.mockRestore();
       fetchSpy.mockRestore();
