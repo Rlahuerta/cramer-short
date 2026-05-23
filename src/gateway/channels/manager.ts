@@ -107,7 +107,10 @@ export function createChannelManager<TConfig, TAccount>(params: {
       });
     }
     if (task) {
-      await task.catch(() => undefined);
+      await task.catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[gateway] account task ended with error during stop: ${msg}`);
+      });
     }
   };
 

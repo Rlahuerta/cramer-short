@@ -4,7 +4,7 @@ import { AIMessage, ToolCall } from '@langchain/core/messages';
 import { z } from 'zod';
 import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
-import { getCurrentDate } from '../../agent/prompts.js';
+import { getCurrentDate } from '../../utils/date.js';
 import { resolveAssetIntent } from './asset-resolver.js';
 
 /**
@@ -175,7 +175,7 @@ Call the appropriate tool(s) now.`;
 
 // Input schema for the get_market_data tool
 const GetMarketDataInputSchema = z.object({
-  query: z.string().describe('Natural language query about market data, prices, news, or insider activity'),
+  query: z.string().max(10_000).describe('Natural language query about market data, prices, news, or insider activity'),
 });
 
 /**
@@ -183,6 +183,7 @@ const GetMarketDataInputSchema = z.object({
  * Uses native LLM tool calling for routing queries to market data tools.
  */
 export function createGetMarketData(model: string): DynamicStructuredTool {
+  /** Creates the model-aware market data retrieval tool. */
   return new DynamicStructuredTool({
     name: 'get_market_data',
     description: `Intelligent meta-tool for retrieving market data including prices, news, and insider activity. Takes a natural language query and automatically routes to appropriate market data tools. Use for:

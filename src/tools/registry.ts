@@ -1,5 +1,5 @@
 import { StructuredToolInterface } from '@langchain/core/tools';
-import { createGetFinancials, createGetMarketData, createReadFilings, createScreenStocks, polymarketTool, POLYMARKET_DESCRIPTION, socialSentimentTool, SOCIAL_SENTIMENT_DESCRIPTION } from './finance/index.js';
+import { BITMEX_MARKET_DESCRIPTION, bitmexMarketTool, createGetFinancials, createGetMarketData, createReadFilings, createScreenStocks, polymarketTool, POLYMARKET_DESCRIPTION, socialSentimentTool, SOCIAL_SENTIMENT_DESCRIPTION } from './finance/index.js';
 import { exaSearch, perplexitySearch, tavilySearch, WEB_SEARCH_DESCRIPTION, xSearchTool, X_SEARCH_DESCRIPTION } from './search/index.js';
 import { skillTool, SKILL_TOOL_DESCRIPTION } from './skill.js';
 import { webFetchTool, WEB_FETCH_DESCRIPTION } from './fetch/web-fetch.js';
@@ -15,7 +15,11 @@ import { heartbeatTool, HEARTBEAT_TOOL_DESCRIPTION } from './heartbeat/heartbeat
 import { memoryGetTool, MEMORY_GET_DESCRIPTION, memorySearchTool, MEMORY_SEARCH_DESCRIPTION, memoryUpdateTool, MEMORY_UPDATE_DESCRIPTION, recallFinancialContextTool, RECALL_FINANCIAL_CONTEXT_DESCRIPTION, storeFinancialInsightTool, STORE_FINANCIAL_INSIGHT_DESCRIPTION } from './memory/index.js';
 import { discoverSkills } from '../skills/index.js';
 import { sequentialThinkingTool, sequentialThinkingEngine, SEQUENTIAL_THINKING_DESCRIPTION } from './thinking/sequential.js';
-import { portfolioRiskTool, PORTFOLIO_RISK_DESCRIPTION } from './finance/portfolio-risk.js';
+import {
+  createPortfolioRiskTool,
+  PORTFOLIO_RISK_DESCRIPTION,
+  type PortfolioRiskWatchlistEntry,
+} from './finance/portfolio-risk.js';
 import { waccInputsTool, WACC_INPUTS_DESCRIPTION } from './finance/wacc-inputs.js';
 import { geopoliticsSearchTool, GEOPOLITICS_SEARCH_DESCRIPTION } from './osint/geopolitics-search.js';
 import { getFixedIncomeTool, FIXED_INCOME_DESCRIPTION } from './finance/fixed-income.js';
@@ -24,12 +28,22 @@ import { getEarningsTranscript, EARNINGS_TRANSCRIPT_DESCRIPTION } from './financ
 import { getOnchainCrypto, ONCHAIN_CRYPTO_DESCRIPTION } from './finance/onchain-crypto.js';
 import { getRobinhoodQuote, getRobinhoodFundamentals } from './finance/robinhood.js';
 import { polymarketForecastTool, POLYMARKET_FORECAST_DESCRIPTION } from './finance/polymarket-forecast.js';
+import { forecastArbitratorTool, FORECAST_ARBITRATOR_DESCRIPTION } from './finance/forecast-arbitrator.js';
 import { priceDistributionChartTool, PRICE_DISTRIBUTION_CHART_DESCRIPTION } from './finance/price-distribution-chart.js';
 import { markovDistributionTool, MARKOV_DISTRIBUTION_DESCRIPTION } from './finance/markov-distribution.js';
 import { trumpPressureIndexTool, TRUMP_PRESSURE_DESCRIPTION } from './finance/trump-pressure-index.js';
+import { forecastLabRunTool, FORECAST_LAB_RUN_DESCRIPTION } from './forecast-lab-run.js';
 
 /**
  * A registered tool with its rich description for system prompt injection.
+ *
+ * Naming contract:
+ * - `name` is the public API and must remain stable snake_case.
+ * - New tool module files should use kebab-case.
+ * - Internal symbols should use camelCase factories/values or PascalCase types.
+ *
+ * Existing exceptions stay aliased at the registry boundary instead of renaming
+ * user-facing tool names.
  */
 export interface RegisteredTool {
   /** Tool name (must match the tool's name property) */
@@ -40,6 +54,12 @@ export interface RegisteredTool {
   description: string;
 }
 
+export interface ToolRegistryOptions {
+  watchlistEntries?: PortfolioRiskWatchlistEntry[];
+  discoverSkills?: typeof discoverSkills;
+  memoryEnabled?: boolean;
+}
+
 /**
  * Get all registered tools with their descriptions.
  * Conditionally includes tools based on environment configuration.
@@ -47,9 +67,10 @@ export interface RegisteredTool {
  * @param model - The model name (needed for tools that require model-specific configuration)
  * @returns Array of registered tools
  */
-export function getToolRegistry(model: string): RegisteredTool[] {
+export function getToolRegistry(model: string, options: ToolRegistryOptions = {}): RegisteredTool[] {
   // Reset sequential thinking state for each new agent session
   sequentialThinkingEngine.reset();
+  const memoryEnabled = options.memoryEnabled ?? true;
 
   const tools: RegisteredTool[] = [
     {
@@ -89,7 +110,7 @@ export function getToolRegistry(model: string): RegisteredTool[] {
     },
     {
       name: 'portfolio_risk',
-      tool: portfolioRiskTool,
+      tool: createPortfolioRiskTool({ watchlistEntries: options.watchlistEntries }),
       description: PORTFOLIO_RISK_DESCRIPTION,
     },
     {
@@ -108,6 +129,11 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       description: POLYMARKET_FORECAST_DESCRIPTION,
     },
     {
+      name: 'forecast_arbitrator',
+      tool: forecastArbitratorTool,
+      description: FORECAST_ARBITRATOR_DESCRIPTION,
+    },
+    {
       name: 'price_distribution_chart',
       tool: priceDistributionChartTool,
       description: PRICE_DISTRIBUTION_CHART_DESCRIPTION,
@@ -116,6 +142,11 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       name: 'markov_distribution',
       tool: markovDistributionTool,
       description: MARKOV_DISTRIBUTION_DESCRIPTION,
+    },
+    {
+      name: 'bitmex_market',
+      tool: bitmexMarketTool,
+      description: BITMEX_MARKET_DESCRIPTION,
     },
     {
       name: 'social_sentiment',
@@ -153,6 +184,11 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       description: ONCHAIN_CRYPTO_DESCRIPTION,
     },
     {
+      name: 'forecast_lab_run',
+      tool: forecastLabRunTool,
+      description: FORECAST_LAB_RUN_DESCRIPTION,
+    },
+    {
       name: 'web_fetch',
       tool: webFetchTool,
       description: WEB_FETCH_DESCRIPTION,
@@ -182,32 +218,37 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       tool: heartbeatTool,
       description: HEARTBEAT_TOOL_DESCRIPTION,
     },
-    {
-      name: 'memory_search',
-      tool: memorySearchTool,
-      description: MEMORY_SEARCH_DESCRIPTION,
-    },
-    {
-      name: 'memory_get',
-      tool: memoryGetTool,
-      description: MEMORY_GET_DESCRIPTION,
-    },
-    {
-      name: 'memory_update',
-      tool: memoryUpdateTool,
-      description: MEMORY_UPDATE_DESCRIPTION,
-    },
-    {
-      name: 'recall_financial_context',
-      tool: recallFinancialContextTool,
-      description: RECALL_FINANCIAL_CONTEXT_DESCRIPTION,
-    },
-    {
-      name: 'store_financial_insight',
-      tool: storeFinancialInsightTool,
-      description: STORE_FINANCIAL_INSIGHT_DESCRIPTION,
-    },
   ];
+
+  if (memoryEnabled) {
+    tools.push(
+      {
+        name: 'memory_search',
+        tool: memorySearchTool,
+        description: MEMORY_SEARCH_DESCRIPTION,
+      },
+      {
+        name: 'memory_get',
+        tool: memoryGetTool,
+        description: MEMORY_GET_DESCRIPTION,
+      },
+      {
+        name: 'memory_update',
+        tool: memoryUpdateTool,
+        description: MEMORY_UPDATE_DESCRIPTION,
+      },
+      {
+        name: 'recall_financial_context',
+        tool: recallFinancialContextTool,
+        description: RECALL_FINANCIAL_CONTEXT_DESCRIPTION,
+      },
+      {
+        name: 'store_financial_insight',
+        tool: storeFinancialInsightTool,
+        description: STORE_FINANCIAL_INSIGHT_DESCRIPTION,
+      },
+    );
+  }
 
   // Include web_search if Exa, Perplexity, or Tavily API key is configured (Exa → Perplexity → Tavily)
   if (process.env.EXASEARCH_API_KEY) {
@@ -240,7 +281,7 @@ export function getToolRegistry(model: string): RegisteredTool[] {
   }
 
   // Include skill tool if any skills are available
-  const availableSkills = discoverSkills();
+  const availableSkills = (options.discoverSkills ?? discoverSkills)();
   if (availableSkills.length > 0) {
     tools.push({
       name: 'skill',
@@ -258,8 +299,8 @@ export function getToolRegistry(model: string): RegisteredTool[] {
  * @param model - The model name
  * @returns Array of tool instances
  */
-export function getTools(model: string): StructuredToolInterface[] {
-  return getToolRegistry(model).map((t) => t.tool);
+export function getTools(model: string, options: ToolRegistryOptions = {}): StructuredToolInterface[] {
+  return getToolRegistry(model, options).map((t) => t.tool);
 }
 
 /**
@@ -269,8 +310,8 @@ export function getTools(model: string): StructuredToolInterface[] {
  * @param model - The model name
  * @returns Formatted string with all tool descriptions
  */
-export function buildToolDescriptions(model: string): string {
-  return getToolRegistry(model)
+export function buildToolDescriptions(model: string, options: ToolRegistryOptions = {}): string {
+  return getToolRegistry(model, options)
     .map((t) => `### ${t.name}\n\n${t.description}`)
     .join('\n\n');
 }

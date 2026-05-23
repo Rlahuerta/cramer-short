@@ -193,4 +193,106 @@ describe('Config schema validation (Zod)', () => {
     expect((result.memory as Record<string, unknown> | undefined)?.embeddingProvider).toBeUndefined();
     expect((result.memory as Record<string, unknown> | undefined)?.embeddingModel).toBe('text-embedding-3-small');
   });
+
+  it('preserves unknown nested memory keys when the rest of the block is valid', () => {
+    const config = {
+      memory: {
+        enabled: true,
+        embeddingModel: 'text-embedding-3-small',
+        legacyMemoryFlag: 'keep-me',
+      },
+    };
+    const result = validateAndSanitizeConfig(config);
+    const memory = result.memory as Record<string, unknown> | undefined;
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(memory?.enabled).toBe(true);
+    expect(memory?.embeddingModel).toBe('text-embedding-3-small');
+    expect(memory?.legacyMemoryFlag).toBe('keep-me');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §5.4 — forecasting block in ConfigSchema
+// ---------------------------------------------------------------------------
+describe('ConfigSchema — forecasting block', () => {
+  it('accepts valid forecasting block with all fields', () => {
+    const raw = {
+      forecasting: {
+        enableJumpDiffusion: true,
+        qToPMprCap: 2.0,
+        enableMSM: false,
+        enableForecastLabAutoRoute: true,
+        enableForecastLabSkillHint: true,
+        enableForecastLabMutatorRanking: false,
+      },
+    };
+    const result = validateAndSanitizeConfig(raw);
+    expect((result as Record<string, unknown>).forecasting).toBeDefined();
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBe(true);
+    expect(f.qToPMprCap).toBe(2.0);
+    expect(f.enableMSM).toBe(false);
+    expect(f.enableForecastLabAutoRoute).toBe(true);
+    expect(f.enableForecastLabSkillHint).toBe(true);
+    expect(f.enableForecastLabMutatorRanking).toBe(false);
+  });
+
+  it('accepts forecasting with only enableJumpDiffusion', () => {
+    const raw = { forecasting: { enableJumpDiffusion: false } };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBe(false);
+  });
+
+  it('strips invalid qToPMprCap (negative)', () => {
+    const raw = { forecasting: { enableJumpDiffusion: false, qToPMprCap: -1 } };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.qToPMprCap).toBeUndefined();
+  });
+
+  it('strips non-boolean enableJumpDiffusion', () => {
+    const raw = { forecasting: { enableJumpDiffusion: 'yes' } };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBeUndefined();
+  });
+
+  it('strips invalid forecast-lab rollout flags while preserving valid forecasting fields', () => {
+    const raw = {
+      forecasting: {
+        enableJumpDiffusion: false,
+        enableForecastLabAutoRoute: true,
+        enableForecastLabSkillHint: 'yes',
+        enableForecastLabMutatorRanking: 1,
+      },
+    };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBe(false);
+    expect(f.enableForecastLabAutoRoute).toBe(true);
+    expect(f.enableForecastLabSkillHint).toBeUndefined();
+    expect(f.enableForecastLabMutatorRanking).toBeUndefined();
+  });
+
+  it('preserves other top-level keys alongside forecasting', () => {
+    const raw = { maxIterations: 30, forecasting: { enableJumpDiffusion: true } };
+    const result = validateAndSanitizeConfig(raw);
+    expect(result.maxIterations).toBe(30);
+  });
+
+  it('preserves unknown nested forecasting keys when the rest of the block is valid', () => {
+    const raw = {
+      forecasting: {
+        enableJumpDiffusion: true,
+        enableForecastLabAutoRoute: false,
+        legacyForecastingFlag: 'keep-me',
+      },
+    };
+    const result = validateAndSanitizeConfig(raw);
+    const f = (result as Record<string, unknown>).forecasting as Record<string, unknown>;
+    expect(f.enableJumpDiffusion).toBe(true);
+    expect(f.enableForecastLabAutoRoute).toBe(false);
+    expect(f.legacyForecastingFlag).toBe('keep-me');
+  });
 });

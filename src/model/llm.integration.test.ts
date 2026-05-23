@@ -102,7 +102,7 @@ describe('Ollama model discovery', () => {
 
 describe('getFastModel — Ollama provider', () => {
   integrationIt('returns the fallback model for ollama (no fastModel defined)', () => {
-    const model = 'ollama:deepseek-v3.2:cloud';
+    const model = 'ollama:kimi-k2.6:cloud';
     const fast = getFastModel('ollama', model);
     expect(fast).toBe(model);
   });

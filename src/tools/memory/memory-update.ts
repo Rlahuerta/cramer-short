@@ -36,6 +36,7 @@ For the common case (remembering something), just pass \`content\`. Action defau
 const memoryUpdateSchema = z.object({
   content: z
     .string()
+    .max(100_000)
     .optional()
     .describe('Text to append. Required for "append" action.'),
   action: z
@@ -44,18 +45,22 @@ const memoryUpdateSchema = z.object({
     .describe('The operation. Defaults to "append". Only pass for "edit" or "delete".'),
   file: z
     .string()
+    .max(256)
     .default('long_term')
     .describe('Target file. Defaults to "long_term" (MEMORY.md). Only pass for "daily" or a specific filename.'),
   old_text: z
     .string()
+    .max(50_000)
     .optional()
     .describe('Existing text to find. Required for "edit" and "delete" actions.'),
   new_text: z
     .string()
+    .max(50_000)
     .optional()
     .describe('Replacement text. Required for "edit" action.'),
 });
 
+/** Updates project memory files with new content. */
 export const memoryUpdateTool = new DynamicStructuredTool({
   name: 'memory_update',
   description:

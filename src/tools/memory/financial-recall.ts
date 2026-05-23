@@ -19,14 +19,15 @@ This avoids wasted tool calls and lets you skip straight to the source that work
 `.trim();
 
 const schema = z.object({
-  ticker: z.string().describe('Ticker symbol, e.g. VWS.CO, AAPL, SAP.DE'),
-  query: z.string().optional().describe('Optional semantic search query for additional context'),
-  namespace: z.string().optional().describe(
+  ticker: z.string().max(128).describe('Ticker symbol, e.g. VWS.CO, AAPL, SAP.DE'),
+  query: z.string().max(10_000).optional().describe('Optional semantic search query for additional context'),
+  namespace: z.string().max(128).optional().describe(
     'Optional namespace to scope the recall (e.g. "dcf", "short-thesis"). ' +
     'When provided, only returns insights stored under that namespace. Omit to retrieve all insights.',
   ),
 });
 
+/** Recalls prior financial context relevant to a query. */
 export const recallFinancialContextTool = new DynamicStructuredTool({
   name: 'recall_financial_context',
   description: RECALL_FINANCIAL_CONTEXT_DESCRIPTION,

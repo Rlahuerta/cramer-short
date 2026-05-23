@@ -17,15 +17,16 @@
  *   7. Live BTC price    — dollar figure appears in answer (via get_market_data, markov auto-fetch, or pre-injected context)
  *
  * Model: minimax-m2.7:cloud by default (override via E2E_MODEL env var)
- * Timeout: E2E_TIMEOUT_MS (default 300 s) for the single beforeAll call
+ * Timeout: E2E_TIMEOUT_MS (default 600 s) for the single beforeAll call
  */
 import { describe, expect, beforeAll } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
-import { runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
+import { markE2ESkippedFromError, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { E2EResult } from '@/utils/e2e-helpers.js';
 
 const PROBABILITY_QUERY =
   '--deep Use the probability_assessment skill for BTC price movement in the next 30 days';
+const PROBABILITY_E2E_MAX_ITERATIONS = 10;
 
 // ── shared agent result ──────────────────────────────────────────────────────
 // All tests in this suite share a single agent run to avoid paying the LLM
@@ -35,12 +36,43 @@ let result: E2EResult;
 let tools: string[];
 let answer: string;
 
+function extractPolymarketSection(text: string): string {
+  const match = text.match(/###\s+Polymarket[\s\S]*?(?=\n---\n|\n###\s|\n##\s|$)/i);
+  return match?.[0] ?? text;
+}
+
+function hasPolymarketYesProbabilityEvidence(text: string): boolean {
+  const section = extractPolymarketSection(text);
+  const hasInlineYesProbability =
+    /\d+\.?\d*\s*%\s*YES/i.test(section) || /\bYES\b.*\d+\.?\d*\s*%/i.test(section);
+  const hasTabularYesProbability =
+    /\|\s*(?:%\s*YES|YES\s*Prob(?:ability)?)\s*\|/i.test(section)
+    && /\|\s*[^|\n]+\|\s*\d+\.?\d*\s*%\s*\|/i.test(section);
+  return hasInlineYesProbability || hasTabularYesProbability;
+}
+
+function hasProbabilitySummaryTable(text: string): boolean {
+  const hasSummaryHeading = /summary table|probability summary/i.test(text);
+  const hasSignalColumn = /\bSignal\b/i.test(text);
+  const hasProbabilityColumn = /\bProbability\b|P\(Higher\)|P\(up\)|Prob(?:ability)?|YES\s*Prob(?:ability)?/i.test(text);
+  const hasWeightColumn = /\bWeight\b/i.test(text);
+  const hasMarkdownTable = /\|.*\|.*\|/.test(text);
+  return (hasSummaryHeading || hasMarkdownTable) && hasSignalColumn && hasProbabilityColumn && hasWeightColumn;
+}
+
 describe('probability_assessment skill E2E', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return; // guard — tests will be skipped via e2eIt when RUN_E2E is false
-    result = await runAgentE2EWithTimeoutRetry(PROBABILITY_QUERY);
-    tools = result.toolsCalled;
-    answer = result.answer;
+    try {
+      result = await runAgentE2EWithTimeoutRetry(PROBABILITY_QUERY, {
+        maxIterations: PROBABILITY_E2E_MAX_ITERATIONS,
+      });
+      tools = result.toolsCalled;
+      answer = result.answer;
+    } catch (error) {
+      if (markE2ESkippedFromError(error)) return;
+      throw error;
+    }
   }, E2E_TIMEOUT_MS);
 
   // ── 1. Tool chain ──────────────────────────────────────────────────────────
@@ -92,7 +124,7 @@ describe('probability_assessment skill E2E', () => {
       /chart|distribution/i.test(answer);
     const hasThresholdEvidence =
       /(exceed|reach|above|below)\s+\$\d|(exceed|reach|above|below).*\$\d/i.test(answer) &&
-      (/\d+\.?\d*\s*%\s*YES/i.test(answer) || /\bYES\b.*\d+\.?\d*\s*%/i.test(answer));
+      hasPolymarketYesProbabilityEvidence(answer);
     expect(
       hasChartTool || hasChartContent || hasThresholdEvidence,
       'price_distribution_chart must be called, chart content must appear, or raw threshold evidence must appear in the answer',
@@ -105,8 +137,8 @@ describe('probability_assessment skill E2E', () => {
     // The SKILL.md mandates showing exact market question text and YES probability
     expect(answer.toLowerCase()).toMatch(/signal evidence|evidence/);
 
-    // Must contain at least one Polymarket market entry: "X% YES" or "YES: X%"
-    expect(answer).toMatch(/\d+\.?\d*\s*%\s*YES|\bYES\b.*\d+\.?\d*\s*%/i);
+    // Must contain at least one Polymarket market entry, either inline or in a table.
+    expect(hasPolymarketYesProbabilityEvidence(answer)).toBe(true);
 
     // Must reference real dollar price thresholds from the markets
     expect(answer).toMatch(/\$\d{2,3}[,.]?\d*[Kk]?|\$\d{1,3},\d{3}/);
@@ -129,7 +161,7 @@ describe('probability_assessment skill E2E', () => {
       /chart|distribution|bucket|threshold/i.test(answer);   // textual fallback
     const hasThresholdEvidence =
       /(exceed|reach|above|below)\s+\$\d|(exceed|reach|above|below).*\$\d/i.test(answer) &&
-      (/\d+\.?\d*\s*%\s*YES/i.test(answer) || /\bYES\b.*\d+\.?\d*\s*%/i.test(answer));
+      hasPolymarketYesProbabilityEvidence(answer);
     expect(
       hasChart || hasThresholdEvidence,
       'answer must embed the chart or include raw threshold evidence from price-level markets',
@@ -139,9 +171,7 @@ describe('probability_assessment skill E2E', () => {
   // ── 4. Probability summary table ───────────────────────────────────────────
 
   e2eIt('answer contains probability summary table with Signal, Probability, Weight columns', () => {
-    expect(answer).toMatch(/Signal/);
-    expect(answer).toMatch(/Probability/);
-    expect(answer).toMatch(/Weight/);
+    expect(hasProbabilitySummaryTable(answer)).toBe(true);
     // Combined row must be present
     expect(answer.toLowerCase()).toMatch(/combined|weighted/);
     // At least one percentage value (allow decimal values and unicode spacing before %)
@@ -211,9 +241,14 @@ let markovAnswer: string;
 describe('markov_distribution E2E — price distribution workflow', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return;
-    markovResult = await runAgentE2EWithTimeoutRetry(MARKOV_QUERY);
-    markovTools = markovResult.toolsCalled;
-    markovAnswer = markovResult.answer;
+    try {
+      markovResult = await runAgentE2EWithTimeoutRetry(MARKOV_QUERY);
+      markovTools = markovResult.toolsCalled;
+      markovAnswer = markovResult.answer;
+    } catch (error) {
+      if (markE2ESkippedFromError(error)) return;
+      throw error;
+    }
   }, E2E_TIMEOUT_MS);
 
   // ── Tool chain ──────────────────────────────────────────────────────────

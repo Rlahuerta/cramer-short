@@ -3,11 +3,20 @@
  * All tests use an isolated tmp directory; no side effects on .cramer-short/.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../shared/history-types.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   generateSessionName,
   createSession,
@@ -30,7 +39,7 @@ afterEach(async () => {
 });
 
 function makeItem(query: string, answer: string): HistoryItem {
-  return { id: String(Date.now()), query, events: [], answer, status: 'complete' };
+  return { id: String(FIXED_TEST_NOW_MS), query, events: [], answer, status: 'complete' };
 }
 
 // Fixed UTC timestamps for deterministic name assertions.
@@ -111,7 +120,7 @@ describe('createSession', () => {
     const updated: SessionFile = {
       ...session,
       queryCount: 3,
-      lastModified: Date.now(),
+      lastModified: FIXED_TEST_NOW_MS,
       llmMessages: [],
       history: [],
     };
@@ -140,7 +149,7 @@ describe('saveSession', () => {
     const updated: SessionFile = {
       ...session,
       queryCount: 1,
-      lastModified: Date.now(),
+      lastModified: FIXED_TEST_NOW_MS,
       llmMessages: [{ query: 'analyze Tesla', answer: 'Tesla is an EV manufacturer', summary: 'EV analysis' }],
       history: [item],
     };
@@ -175,7 +184,7 @@ describe('saveSession', () => {
     const updated: SessionFile = {
       ...session,
       queryCount: 15,
-      lastModified: Date.now(),
+      lastModified: FIXED_TEST_NOW_MS,
       priorSummary: 'Key insight: Chevron is undervalued.',
       llmMessages: [],
       history: [],
@@ -190,7 +199,7 @@ describe('saveSession', () => {
     const session = await createSession('resilience test', tmpDir);
     // Simulate multiple rapid saves
     const saves = Array.from({ length: 5 }, (_, i) =>
-      saveSession({ ...session, queryCount: i + 1, lastModified: Date.now(), llmMessages: [], history: [] }, tmpDir),
+      saveSession({ ...session, queryCount: i + 1, lastModified: FIXED_TEST_NOW_MS, llmMessages: [], history: [] }, tmpDir),
     );
     await Promise.all(saves);
     const loaded = await loadSession(session.id, tmpDir);
@@ -210,8 +219,7 @@ describe('listSessions', () => {
 
   it('returns sessions newest-first', async () => {
     await createSession('first', tmpDir);
-    // Small delay so `created` timestamps differ
-    await new Promise((r) => setTimeout(r, 5));
+    setSystemTime(new Date(FIXED_TEST_NOW_MS + 5));
     await createSession('second', tmpDir);
 
     const sessions = await listSessions(tmpDir);

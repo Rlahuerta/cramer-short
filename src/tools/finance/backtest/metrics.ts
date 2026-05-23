@@ -37,6 +37,8 @@ export type PUpBandSource = 'calibrated' | 'raw';
 
 export type DivergenceBucketLabel = '<0.05' | '0.05–0.10' | '0.10–0.20' | '≥0.20';
 
+export type EntropyCiScaleBucketLabel = 'tightened' | 'neutral' | 'widened';
+
 // ---------------------------------------------------------------------------
 // Provenance types (PR3E)
 // ---------------------------------------------------------------------------
@@ -86,7 +88,8 @@ export type FailureSliceKey =
   | 'divergence'
   | 'hmmConverged'
   | 'ensembleConsensus'
-  | 'pUpBand';
+  | 'pUpBand'
+  | 'entropyCiScale';
 
 export interface NumericBucketDefinition<Label extends string = string> {
   label: Label;
@@ -163,6 +166,20 @@ export interface BacktestStep {
   ciLower: number;
   /** 90% CI upper bound (price) */
   ciUpper: number;
+  /** Literal central 90% interval lower bound from the forecast distribution when available. */
+  central90CiLower?: number;
+  /** Literal central 90% interval upper bound from the forecast distribution when available. */
+  central90CiUpper?: number;
+  /** Literal central 95% interval lower bound from the forecast distribution when available. */
+  central95CiLower?: number;
+  /** Literal central 95% interval upper bound from the forecast distribution when available. */
+  central95CiUpper?: number;
+  /** Literal central 99% interval lower bound from the forecast distribution when available. */
+  central99CiLower?: number;
+  /** Literal central 99% interval upper bound from the forecast distribution when available. */
+  central99CiUpper?: number;
+  /** Compact forecast distribution summary used for mixture-aware scoring diagnostics. */
+  forecastDistribution?: ForecastDistributionPoint[];
   /** Realized price at t + horizon */
   realizedPrice: number;
   /** Recommendation: BUY, HOLD, or SELL */
@@ -197,6 +214,48 @@ export interface BacktestStep {
   breakFallbackMode?: 'hard' | 'blended' | 'blended_capped';
   /** Phase 7 provenance: whether regime-specific sigma was active for this step (backtest-only). */
   regimeSpecificSigmaActive?: boolean;
+  /** R4/R5 provenance: whether GARCH volatility scaling affected the distribution path. */
+  garchVolApplied?: boolean;
+  /** R5 Idea #14 provenance: stationary-weighted transition entropy in nats. */
+  transitionEntropy?: number;
+  /** R5 Idea #14 provenance: transition entropy normalized to [0, 1]. */
+  transitionEntropyNorm?: number;
+  /** R5 Idea #14 provenance: rolling z-score used for CI modulation; null until enough history exists. */
+  transitionEntropyZ?: number | null;
+  /** R5 Idea #14 provenance: multiplier applied to CI half-width. */
+  entropyCiScale?: number;
+  /** R5 Idea #14 provenance: true when entropy changed CI width for this step. */
+  entropyCiModulationApplied?: boolean;
+  /** R6 adaptive conformal provenance: true when the step CI came from online conformal calibration. */
+  conformalApplied?: boolean;
+  /** R6 adaptive conformal provenance: symmetric radius applied around the forecast center. */
+  conformalRadius?: number;
+  /** R6 adaptive conformal provenance: running empirical coverage estimate. */
+  conformalCoverageEstimate?: number;
+  /** R6 adaptive conformal provenance: sample count in the current controller state. */
+  conformalSampleCount?: number;
+  /** R6 adaptive conformal provenance: normal mode vs break-aware accelerated mode. */
+  conformalMode?: 'normal' | 'break';
+  /** R6 adaptive conformal provenance: true when a break-triggered forecaster rerun reset the controller state. */
+  conformalResetTriggered?: boolean;
+  /** Phase 3 provenance: true when score-level conformal aggregation replaced break-time interval merging. */
+  conformalScoreAggregationApplied?: boolean;
+  /** Phase 3 provenance: aggregated symmetric radius applied after score calibration. */
+  conformalScoreAggregationRadius?: number;
+  /** Phase 3 provenance: empirical score multiplier used to project back to a scalar interval radius. */
+  conformalScoreAggregationMultiplier?: number;
+  /** Phase 3 provenance: calibration sample count tracked by the score aggregator. */
+  conformalScoreAggregationSampleCount?: number;
+  /** Item 2 provenance: true when HMM posterior uncertainty altered confidence or CI width. */
+  softRegimeWeightingApplied?: boolean;
+  /** Item 2 provenance: normalized entropy of the current HMM posterior. */
+  softRegimePosteriorEntropy?: number;
+  /** Item 2 provenance: normalized entropy of the horizon-state forecast mixture. */
+  softRegimeForecastEntropy?: number;
+  /** Item 2 provenance: CI width multiplier derived from posterior uncertainty. */
+  softRegimeCiScale?: number;
+  /** Item 2 provenance: confidence multiplier derived from posterior uncertainty. */
+  softRegimeConfidenceMultiplier?: number;
   structuralBreakDivergence?: number | null;
   /** Structural-break divergence from the pre-rerun full-window pass when applicable. */
   originalStructuralBreakDivergence?: number | null;
@@ -221,9 +280,23 @@ export interface ReliabilityBin {
   count: number;
 }
 
+export interface ForecastDistributionPoint {
+  price: number;
+  /** Survival probability P(price > level). */
+  probability: number;
+}
+
 export interface ProvenanceSummary {
   decisionSources: Record<DecisionSource, number>;
   probabilitySources: Record<ProbabilitySource, number>;
+}
+
+export interface MurphyWinklerDecomposition {
+  meanWidth: number;
+  lowerMissPenalty: number;
+  upperMissPenalty: number;
+  totalScore: number;
+  coverage: number;
 }
 
 export interface BacktestReport {
@@ -231,11 +304,28 @@ export interface BacktestReport {
   horizon: number;
   totalSteps: number;
   brierScore: number;
+  /** Legacy primary interval coverage. In current walk-forward runs this is the conservative helper interval. */
   ciCoverage: number;
+  /** Explicit alias for the conservative helper interval coverage used by current walk-forward backtests. */
+  conservativeCiCoverage: number;
+  /** Literal central-90% coverage when the step payload contains the matching interval. */
+  central90CiCoverage: number;
+  /** Literal central-95% coverage when the step payload contains the matching interval. */
+  central95CiCoverage: number;
+  /** Literal central-99% coverage when the step payload contains the matching interval. */
+  central99CiCoverage: number;
   directionalAccuracy: number;
   expectedReturnCorrelation: number;
   sharpness: number;
+  crps: number;
+  mixtureCrps: number;
+  scaledCrps: number;
+  tailWeightedCrps: number;
+  tailWeightedMixtureCrps: number;
+  murphyWinklerScore: number;
+  murphyWinklerDecomposition: MurphyWinklerDecomposition;
   reliabilityBins: ReliabilityBin[];
+  tailReliabilityBins: ReliabilityBin[];
   gofPassRate: number | null;
   balancedDirectionalAccuracy?: number;
   meanEdge?: number;
@@ -246,6 +336,11 @@ export interface BacktestReport {
   trendPenaltyOnlyBreakConfidenceActive?: boolean;
   /** Whether any step in this report came from a run where the BTC 14d bearish-break SELL gate fired. */
   bearishBreakRecommendationGateActive?: boolean;
+}
+
+export interface MultiHorizonBacktestSeries {
+  horizon: number;
+  steps: BacktestStep[];
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +396,39 @@ export function reliabilityBins(steps: BacktestStep[], numBins = 10): Reliabilit
   return bins;
 }
 
+const DEFAULT_TAIL_RELIABILITY_BINS = [
+  [0.0, 0.05],
+  [0.05, 0.10],
+  [0.90, 0.95],
+  [0.95, 1.0],
+] as const;
+
+/**
+ * Reliability bins focused on the extreme probability tails.
+ */
+export function tailReliabilityBins(steps: BacktestStep[]): ReliabilityBin[] {
+  return DEFAULT_TAIL_RELIABILITY_BINS.map(([lower, upper], index) => {
+    const isLast = index === DEFAULT_TAIL_RELIABILITY_BINS.length - 1;
+    const inBin = steps.filter(
+      step => step.predictedProb >= lower && (isLast ? step.predictedProb <= upper : step.predictedProb < upper),
+    );
+    const meanPredicted = inBin.length > 0
+      ? inBin.reduce((sum, step) => sum + step.predictedProb, 0) / inBin.length
+      : (lower + upper) / 2;
+    const actualFrequency = inBin.length > 0
+      ? inBin.reduce((sum, step) => sum + step.actualBinary, 0) / inBin.length
+      : 0;
+
+    return {
+      binLower: lower,
+      binUpper: upper,
+      meanPredicted,
+      actualFrequency,
+      count: inBin.length,
+    };
+  });
+}
+
 /**
  * Maximum absolute deviation between predicted and actual frequency across bins.
  * Only considers bins with ≥ minCount observations.
@@ -316,13 +444,434 @@ export function maxReliabilityDeviation(bins: ReliabilityBin[], minCount = 3): n
 // ---------------------------------------------------------------------------
 
 /**
- * Fraction of steps where the realized price falls within the predicted CI.
- * Target for 90% CI: ~0.90 coverage.
+ * Fraction of steps where the realized price falls within the primary step interval.
+ * In the current walk-forward engine this is a conservative helper interval rather
+ * than a literal central-90% interval.
  */
 export function ciCoverage(steps: BacktestStep[]): number {
   if (steps.length === 0) return 0;
   const covered = steps.filter(s => s.realizedPrice >= s.ciLower && s.realizedPrice <= s.ciUpper);
   return covered.length / steps.length;
+}
+
+function resolveLiteralCentralIntervalBounds(
+  step: BacktestStep,
+  level: 0.9 | 0.95 | 0.99,
+): { lower: number; upper: number } | null {
+  if (level === 0.9 && step.central90CiLower !== undefined && step.central90CiUpper !== undefined) {
+    return { lower: step.central90CiLower, upper: step.central90CiUpper };
+  }
+  if (level === 0.95 && step.central95CiLower !== undefined && step.central95CiUpper !== undefined) {
+    return { lower: step.central95CiLower, upper: step.central95CiUpper };
+  }
+  if (level === 0.99 && step.central99CiLower !== undefined && step.central99CiUpper !== undefined) {
+    return { lower: step.central99CiLower, upper: step.central99CiUpper };
+  }
+  return null;
+}
+
+function resolveCentralIntervalBounds(
+  step: BacktestStep,
+  level: 0.9 | 0.95 | 0.99,
+): { lower: number; upper: number } {
+  const literalBounds = resolveLiteralCentralIntervalBounds(step, level);
+  if (literalBounds) return literalBounds;
+  return { lower: step.ciLower, upper: step.ciUpper };
+}
+
+/**
+ * Coverage of the literal central interval carried on each step when available.
+ * Falls back to the legacy primary interval to keep historical reports defined.
+ */
+export function centralIntervalCoverage(
+  steps: BacktestStep[],
+  level: 0.9 | 0.95 | 0.99 = 0.9,
+): number {
+  if (steps.length === 0) return 0;
+  const covered = steps.filter(step => {
+    const { lower, upper } = resolveCentralIntervalBounds(step, level);
+    return step.realizedPrice >= lower && step.realizedPrice <= upper;
+  });
+  return covered.length / steps.length;
+}
+
+// ---------------------------------------------------------------------------
+// CRPS / interval score diagnostics
+// ---------------------------------------------------------------------------
+
+const CENTRAL_90_Z = 1.6448536269514722;
+const SQRT_PI = Math.sqrt(Math.PI);
+const MIN_SCALE = 1e-9;
+
+function erf(x: number): number {
+  const sign = x < 0 ? -1 : 1;
+  const absX = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * absX);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-absX * absX);
+  return sign * y;
+}
+
+function normalPdf(x: number): number {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+}
+
+function normalCdf(x: number): number {
+  return 0.5 * (1 + erf(x / Math.SQRT2));
+}
+
+function deriveForecastCenter(step: BacktestStep): number {
+  const denominator = 1 + step.actualReturn;
+  const currentPrice = Number.isFinite(denominator) && Math.abs(denominator) > MIN_SCALE
+    ? step.realizedPrice / denominator
+    : (step.ciLower + step.ciUpper) / 2;
+  const forecastCenter = currentPrice * (1 + step.predictedReturn);
+  return Number.isFinite(forecastCenter) ? forecastCenter : (step.ciLower + step.ciUpper) / 2;
+}
+
+function deriveIntervalScale(step: BacktestStep): number {
+  const width = Math.abs(step.ciUpper - step.ciLower);
+  const sigma = width / (2 * CENTRAL_90_Z);
+  return Number.isFinite(sigma) && sigma > MIN_SCALE ? sigma : MIN_SCALE;
+}
+
+function normalCrps(observed: number, mean: number, sigma: number): number {
+  const z = (observed - mean) / sigma;
+  return sigma * (z * (2 * normalCdf(z) - 1) + 2 * normalPdf(z) - 1 / SQRT_PI);
+}
+
+function stepCrps(step: BacktestStep): number {
+  const score = normalCrps(step.realizedPrice, deriveForecastCenter(step), deriveIntervalScale(step));
+  return Number.isFinite(score) ? Math.max(0, score) : 0;
+}
+
+function interpolateSurvivalProbability(
+  distribution: readonly ForecastDistributionPoint[],
+  targetPrice: number,
+): number {
+  if (distribution.length === 0) return 0.5;
+  if (targetPrice <= distribution[0].price) return distribution[0].probability;
+  if (targetPrice >= distribution[distribution.length - 1].price) {
+    return distribution[distribution.length - 1].probability;
+  }
+
+  for (let index = 0; index < distribution.length - 1; index++) {
+    const lower = distribution[index];
+    const upper = distribution[index + 1];
+    if (lower.price <= targetPrice && targetPrice <= upper.price) {
+      const span = upper.price - lower.price;
+      if (Math.abs(span) <= MIN_SCALE) return lower.probability;
+      const frac = (targetPrice - lower.price) / span;
+      return lower.probability + frac * (upper.probability - lower.probability);
+    }
+  }
+
+  return distribution[distribution.length - 1].probability;
+}
+
+function mixtureCdf(
+  distribution: readonly ForecastDistributionPoint[],
+  targetPrice: number,
+): number {
+  return 1 - interpolateSurvivalProbability(distribution, targetPrice);
+}
+
+function interpolatePriceAtSurvivalProbability(
+  distribution: readonly ForecastDistributionPoint[],
+  targetProbability: number,
+): number | null {
+  if (distribution.length === 0) return null;
+  if (targetProbability >= distribution[0].probability) return distribution[0].price;
+  if (targetProbability <= distribution[distribution.length - 1].probability) {
+    return distribution[distribution.length - 1].price;
+  }
+
+  for (let index = 0; index < distribution.length - 1; index++) {
+    const lower = distribution[index];
+    const upper = distribution[index + 1];
+    const lowerProbability = lower.probability;
+    const upperProbability = upper.probability;
+
+    if (
+      (lowerProbability >= targetProbability && targetProbability >= upperProbability) ||
+      (lowerProbability <= targetProbability && targetProbability <= upperProbability)
+    ) {
+      const probabilitySpan = upperProbability - lowerProbability;
+      if (Math.abs(probabilitySpan) <= MIN_SCALE) return lower.price;
+      const frac = (targetProbability - lowerProbability) / probabilitySpan;
+      return lower.price + frac * (upper.price - lower.price);
+    }
+  }
+
+  return distribution[distribution.length - 1].price;
+}
+
+function stepMixtureCrps(step: BacktestStep): number {
+  const distribution = step.forecastDistribution;
+  if (!distribution || distribution.length < 2) return stepCrps(step);
+
+  const nodes = Array.from(
+    new Set([...distribution.map(point => point.price), step.realizedPrice].sort((a, b) => a - b)),
+  );
+  if (nodes.length < 2) return stepCrps(step);
+
+  let area = 0;
+  for (let index = 0; index < nodes.length - 1; index++) {
+    const left = nodes[index];
+    const right = nodes[index + 1];
+    const leftDiff = mixtureCdf(distribution, left) - (left >= step.realizedPrice ? 1 : 0);
+    const rightDiff = mixtureCdf(distribution, right) - (right >= step.realizedPrice ? 1 : 0);
+    area += 0.5 * ((leftDiff * leftDiff) + (rightDiff * rightDiff)) * (right - left);
+  }
+
+  return Number.isFinite(area) ? Math.max(0, area) : stepCrps(step);
+}
+
+function standardizedResidual(step: BacktestStep): number {
+  return Math.abs(step.realizedPrice - deriveForecastCenter(step)) / deriveIntervalScale(step);
+}
+
+function tailWeight(step: BacktestStep, thresholdZ = CENTRAL_90_Z): number {
+  return 1 + Math.max(0, standardizedResidual(step) - thresholdZ);
+}
+
+function centralLevelForThreshold(thresholdZ: number): number {
+  return Math.min(0.999999, Math.max(0, (2 * normalCdf(Math.max(0, thresholdZ))) - 1));
+}
+
+function normalizeIntervalBounds(bounds: { lower: number; upper: number }): { lower: number; upper: number } {
+  return bounds.lower <= bounds.upper
+    ? bounds
+    : { lower: bounds.upper, upper: bounds.lower };
+}
+
+function resolveDistributionTailIntervalBounds(
+  step: BacktestStep,
+  thresholdZ: number,
+): { lower: number; upper: number } | null {
+  const distribution = step.forecastDistribution;
+  if (!distribution || distribution.length < 2) return null;
+
+  const centralLevel = centralLevelForThreshold(thresholdZ);
+  const tailMass = (1 - centralLevel) / 2;
+  const lower = interpolatePriceAtSurvivalProbability(distribution, 1 - tailMass);
+  const upper = interpolatePriceAtSurvivalProbability(distribution, tailMass);
+  if (lower === null || upper === null) return null;
+  return normalizeIntervalBounds({ lower, upper });
+}
+
+function resolveLiteralTailIntervalBounds(
+  step: BacktestStep,
+  thresholdZ: number,
+): { lower: number; upper: number } | null {
+  const targetLevel = centralLevelForThreshold(thresholdZ);
+  const candidateLevels: Array<0.9 | 0.95 | 0.99> = [0.9, 0.95, 0.99];
+  let bestBounds: { lower: number; upper: number } | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const level of candidateLevels) {
+    const bounds = resolveLiteralCentralIntervalBounds(step, level);
+    if (!bounds) continue;
+    const distance = Math.abs(level - targetLevel);
+    if (distance < bestDistance) {
+      bestBounds = bounds;
+      bestDistance = distance;
+    }
+  }
+
+  return bestBounds ? normalizeIntervalBounds(bestBounds) : null;
+}
+
+function intervalAlignedTailWeight(
+  step: BacktestStep,
+  bounds: { lower: number; upper: number },
+  thresholdZ: number,
+): number {
+  const { lower, upper } = normalizeIntervalBounds(bounds);
+  const center = (lower + upper) / 2;
+  const halfWidth = Math.max(Math.abs(upper - lower) / 2, MIN_SCALE);
+  const outsideDistance = Math.max(0, Math.abs(step.realizedPrice - center) - halfWidth);
+  return 1 + (outsideDistance * Math.max(0, thresholdZ)) / halfWidth;
+}
+
+function mixtureTailWeight(step: BacktestStep, thresholdZ = CENTRAL_90_Z): number {
+  const bounds =
+    resolveDistributionTailIntervalBounds(step, thresholdZ) ??
+    resolveLiteralTailIntervalBounds(step, thresholdZ);
+  if (!bounds) return tailWeight(step, thresholdZ);
+  return intervalAlignedTailWeight(step, bounds, thresholdZ);
+}
+
+function weightedStepScore(
+  steps: BacktestStep[],
+  scoreFn: (step: BacktestStep) => number,
+  weightFn: (step: BacktestStep) => number,
+): number {
+  if (steps.length === 0) return 0;
+  let totalWeight = 0;
+  let weightedScore = 0;
+  for (const step of steps) {
+    const weight = weightFn(step);
+    totalWeight += weight;
+    weightedScore += scoreFn(step) * weight;
+  }
+  return totalWeight > 0 ? weightedScore / totalWeight : 0;
+}
+
+/**
+ * Continuous Ranked Probability Score using the current backtest interval as a
+ * central-normal approximation. Lower is better.
+ */
+export function crps(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+  return steps.reduce((sum, step) => sum + stepCrps(step), 0) / steps.length;
+}
+
+/**
+ * Mixture-aware CRPS computed directly from the stored forecast distribution when
+ * available; falls back to the normal approximation otherwise.
+ */
+export function mixtureCrps(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+  return steps.reduce((sum, step) => sum + stepMixtureCrps(step), 0) / steps.length;
+}
+
+/**
+ * Locally scaled CRPS: CRPS divided by the interval-implied scale for each step.
+ * Lower is better and less sensitive to heterogeneous forecast units/volatility.
+ */
+export function scaledCrps(steps: BacktestStep[]): number {
+  if (steps.length === 0) return 0;
+  const sum = steps.reduce((total, step) => total + stepCrps(step) / deriveIntervalScale(step), 0);
+  return sum / steps.length;
+}
+
+/**
+ * Threshold-weighted CRPS using standardized forecast errors to up-weight tail misses.
+ * Lower is better; identical to CRPS when all observations stay inside the threshold.
+ */
+export function tailWeightedCrps(steps: BacktestStep[], thresholdZ = CENTRAL_90_Z): number {
+  return weightedStepScore(steps, stepCrps, step => tailWeight(step, thresholdZ));
+}
+
+/**
+ * Tail-weighted mixture-aware CRPS. Lower is better and identical to mixture CRPS
+ * when all observations stay inside the threshold.
+ */
+export function tailWeightedMixtureCrps(
+  steps: BacktestStep[],
+  thresholdZ = CENTRAL_90_Z,
+): number {
+  return weightedStepScore(steps, stepMixtureCrps, step => mixtureTailWeight(step, thresholdZ));
+}
+
+/**
+ * Forecast AC score: normalized squared forecast error plus a stability penalty for
+ * overlapping horizons that target the same timestamp. Lower is better.
+ */
+export function forecastAccuracyCoherenceScore(
+  series: MultiHorizonBacktestSeries[],
+  stabilityWeight = 1,
+): number {
+  if (series.length === 0) return 0;
+
+  const targets = new Map<number, { realizedPrice: number; forecasts: number[] }>();
+  let totalAccuracyPenalty = 0;
+  let forecastCount = 0;
+
+  for (const { horizon, steps } of series) {
+    for (const step of steps) {
+      const forecastPrice = deriveForecastCenter(step);
+      const normalizedError = step.predictedReturn - step.actualReturn;
+
+      totalAccuracyPenalty += normalizedError * normalizedError;
+      forecastCount++;
+
+      const targetT = step.t + horizon;
+      const target = targets.get(targetT) ?? { realizedPrice: step.realizedPrice, forecasts: [] };
+      target.realizedPrice = step.realizedPrice;
+      target.forecasts.push(forecastPrice);
+      targets.set(targetT, target);
+    }
+  }
+
+  if (forecastCount === 0) return 0;
+
+  let totalCoherencePenalty = 0;
+  let overlappingTargets = 0;
+
+  for (const target of targets.values()) {
+    if (target.forecasts.length < 2) continue;
+    const meanForecast =
+      target.forecasts.reduce((sum, forecast) => sum + forecast, 0) / target.forecasts.length;
+    const variance =
+      target.forecasts.reduce((sum, forecast) => sum + (forecast - meanForecast) ** 2, 0) /
+      target.forecasts.length;
+    const scale = Math.max(Math.abs(target.realizedPrice), MIN_SCALE);
+
+    totalCoherencePenalty += variance / (scale * scale);
+    overlappingTargets++;
+  }
+
+  const accuracyPenalty = totalAccuracyPenalty / forecastCount;
+  const coherencePenalty = overlappingTargets > 0
+    ? totalCoherencePenalty / overlappingTargets
+    : 0;
+  return accuracyPenalty + stabilityWeight * coherencePenalty;
+}
+
+/**
+ * Murphy-Winkler interval score decomposition for the primary step interval.
+ * In current walk-forward runs this is the conservative helper interval unless a
+ * caller populates a different interval into `ciLower` / `ciUpper`.
+ */
+export function murphyWinklerDecomposition(
+  steps: BacktestStep[],
+  alpha = 0.10,
+): MurphyWinklerDecomposition {
+  if (steps.length === 0) {
+    return {
+      meanWidth: 0,
+      lowerMissPenalty: 0,
+      upperMissPenalty: 0,
+      totalScore: 0,
+      coverage: 0,
+    };
+  }
+
+  const penaltyScale = 2 / alpha;
+  let widthSum = 0;
+  let lowerPenaltySum = 0;
+  let upperPenaltySum = 0;
+  let covered = 0;
+
+  for (const step of steps) {
+    const lower = Math.min(step.ciLower, step.ciUpper);
+    const upper = Math.max(step.ciLower, step.ciUpper);
+    widthSum += upper - lower;
+    if (step.realizedPrice < lower) {
+      lowerPenaltySum += penaltyScale * (lower - step.realizedPrice);
+    } else if (step.realizedPrice > upper) {
+      upperPenaltySum += penaltyScale * (step.realizedPrice - upper);
+    } else {
+      covered++;
+    }
+  }
+
+  const meanWidth = widthSum / steps.length;
+  const lowerMissPenalty = lowerPenaltySum / steps.length;
+  const upperMissPenalty = upperPenaltySum / steps.length;
+
+  return {
+    meanWidth,
+    lowerMissPenalty,
+    upperMissPenalty,
+    totalScore: meanWidth + lowerMissPenalty + upperMissPenalty,
+    coverage: covered / steps.length,
+  };
+}
+
+export function murphyWinklerScore(steps: BacktestStep[], alpha = 0.10): number {
+  return murphyWinklerDecomposition(steps, alpha).totalScore;
 }
 
 // ---------------------------------------------------------------------------
@@ -677,6 +1226,21 @@ export function bucketByPUpBand(
   );
 }
 
+export function bucketByEntropyCiScale(steps: BacktestStep[], holdThreshold = 0.03): BucketedMetricRow[] {
+  const labels = ['tightened', 'neutral', 'widened'] as const satisfies readonly EntropyCiScaleBucketLabel[];
+  return summarizeFixedBuckets(
+    steps,
+    [...labels],
+    step => {
+      const scale = step.entropyCiScale ?? 1;
+      if (scale < 0.999) return 'tightened';
+      if (scale > 1.001) return 'widened';
+      return 'neutral';
+    },
+    holdThreshold,
+  );
+}
+
 export function computeFailureDecomposition(
   steps: BacktestStep[],
   holdThreshold = 0.03,
@@ -698,6 +1262,7 @@ export function computeFailureDecomposition(
       { key: 'hmmConverged', rows: bucketByHmmConverged(steps, holdThreshold) },
       { key: 'ensembleConsensus', rows: bucketByEnsembleConsensus(steps, holdThreshold) },
       { key: 'pUpBand', rows: bucketByPUpBand(steps, holdThreshold) },
+      { key: 'entropyCiScale', rows: bucketByEntropyCiScale(steps, holdThreshold) },
     ],
   };
 }
@@ -818,6 +1383,8 @@ export function generateReport(
   steps: BacktestStep[],
 ): BacktestReport {
   const bins = reliabilityBins(steps);
+  const tailBins = tailReliabilityBins(steps);
+  const conservativeCoverage = ciCoverage(steps);
 
   const provenanceSummary: ProvenanceSummary = {
     decisionSources: {
@@ -852,11 +1419,23 @@ export function generateReport(
     horizon,
     totalSteps: steps.length,
     brierScore: brierScore(steps),
-    ciCoverage: ciCoverage(steps),
+    ciCoverage: conservativeCoverage,
+    conservativeCiCoverage: conservativeCoverage,
+    central90CiCoverage: centralIntervalCoverage(steps, 0.9),
+    central95CiCoverage: centralIntervalCoverage(steps, 0.95),
+    central99CiCoverage: centralIntervalCoverage(steps, 0.99),
     directionalAccuracy: directionalAccuracy(steps),
     expectedReturnCorrelation: expectedReturnCorrelation(steps),
     sharpness: sharpness(steps),
+    crps: crps(steps),
+    mixtureCrps: mixtureCrps(steps),
+    scaledCrps: scaledCrps(steps),
+    tailWeightedCrps: tailWeightedCrps(steps),
+    tailWeightedMixtureCrps: tailWeightedMixtureCrps(steps),
+    murphyWinklerScore: murphyWinklerScore(steps),
+    murphyWinklerDecomposition: murphyWinklerDecomposition(steps),
     reliabilityBins: bins,
+    tailReliabilityBins: tailBins,
     gofPassRate: gofPassRate(steps),
     balancedDirectionalAccuracy: balancedDirectionalAccuracy(steps),
     meanEdge: meanEdge(steps),

@@ -11,10 +11,17 @@ const DEFAULT_CHECKLIST = `- Major index moves (S&P 500, NASDAQ, Dow) — alert 
  * Load .cramer-short/HEARTBEAT.md content.
  * Returns the content string, or null if the file doesn't exist.
  */
-export async function loadHeartbeatDocument(): Promise<string | null> {
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
+
+export async function loadHeartbeatDocument(signal?: AbortSignal): Promise<string | null> {
   try {
-    return await readFile(HEARTBEAT_MD_PATH, 'utf-8');
-  } catch {
+    return await readFile(HEARTBEAT_MD_PATH, { encoding: 'utf-8', signal });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
     return null;
   }
 }
@@ -43,8 +50,8 @@ export function isHeartbeatContentEmpty(content: string): boolean {
  * Returns null if the file exists but is empty (skip heartbeat).
  * Uses a default checklist if no file exists.
  */
-export async function buildHeartbeatQuery(): Promise<string | null> {
-  const content = await loadHeartbeatDocument();
+export async function buildHeartbeatQuery(signal?: AbortSignal): Promise<string | null> {
+  const content = await loadHeartbeatDocument(signal);
 
   let checklist: string;
   if (content !== null) {

@@ -1,5 +1,14 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, test, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { makeYahooTools } from './yahoo-finance.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Use factory-based dependency injection — no module-level mocking needed.
@@ -146,6 +155,16 @@ describe('getYahooAnalystRecommendations', () => {
 
     expect((result.data as Record<string, unknown>).error).toBeDefined();
   });
+
+  test('returns error object instead of sourced empty output when trend is missing', async () => {
+    mockQuoteSummary.mockResolvedValueOnce({});
+
+    const raw = await getYahooAnalystRecommendations.invoke({ ticker: 'EMPTY' });
+    const result = parseResult(raw);
+
+    expect((result.data as Record<string, unknown>).error).toBeDefined();
+    expect(result.sourceUrls ?? []).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -189,6 +208,16 @@ describe('getYahooUpgradeDowngradeHistory', () => {
     const result = parseResult(raw);
 
     expect((result.data as Record<string, unknown>).error).toBeDefined();
+  });
+
+  test('returns error object instead of sourced empty output when history is missing', async () => {
+    mockQuoteSummary.mockResolvedValueOnce({});
+
+    const raw = await getYahooUpgradeDowngradeHistory.invoke({ ticker: 'EMPTY' });
+    const result = parseResult(raw);
+
+    expect((result.data as Record<string, unknown>).error).toBeDefined();
+    expect(result.sourceUrls ?? []).toEqual([]);
   });
 });
 
@@ -280,7 +309,7 @@ describe('getYahooIncomeStatements', () => {
   test('returns error when incomeStatementHistory has no usable data', async () => {
     mockQuoteSummary.mockResolvedValueOnce({
       incomeStatementHistory: {
-        incomeStatementHistory: [{ endDate: new Date(), totalRevenue: null, netIncome: null }],
+        incomeStatementHistory: [{ endDate: new Date(FIXED_TEST_NOW_MS), totalRevenue: null, netIncome: null }],
       },
     });
 

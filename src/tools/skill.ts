@@ -97,13 +97,14 @@ export function createSkillTool(
   getSkillFn: GetSkillFn = getSkill,
   discoverSkillsFn: DiscoverSkillsFn = discoverSkills,
 ): DynamicStructuredTool {
+  /** Creates a project skill invocation tool. */
   return new DynamicStructuredTool({
     name: 'skill',
     description: 'Execute a skill to get specialized instructions for a task. Returns instructions to follow.',
     schema: z.object({
-      skill: z.string().describe('Name of the skill to invoke (e.g., "dcf")'),
-      args: z.string().optional().describe('Optional arguments for the skill (e.g., ticker symbol)'),
-      params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+      skill: z.string().max(256).describe('Name of the skill to invoke (e.g., "dcf")'),
+      args: z.string().max(10_000).optional().describe('Optional arguments for the skill (e.g., ticker symbol)'),
+      params: z.record(z.string().max(128), z.union([z.string().max(10_000), z.number(), z.boolean()]))
         .optional()
         .describe('Optional parameters to override skill defaults, e.g. {"wacc": 0.12, "growth_rate": 0.05}'),
     }),

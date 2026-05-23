@@ -7,12 +7,21 @@
  *    from SQL insights and respects the token budget
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MemoryStore } from './store.js';
 import { MemoryDatabase } from './database.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // MemoryStore — FINANCE.md auto-load
@@ -24,7 +33,7 @@ describe('MemoryStore.loadSessionContext — FINANCE.md', () => {
   let store: MemoryStore;
 
   beforeEach(async () => {
-    baseDir = join(tmpdir(), `dexter-store-test-${Date.now()}`);
+    baseDir = join(tmpdir(), `dexter-store-test-${FIXED_TEST_NOW_MS}`);
     memDir = join(baseDir, 'memory');
     await mkdir(memDir, { recursive: true });
     store = new MemoryStore(baseDir);
@@ -79,7 +88,7 @@ describe('MemoryDatabase.loadRecentInsights', () => {
   let db: MemoryDatabase;
 
   beforeEach(async () => {
-    dbPath = join(tmpdir(), `dexter-db-test-${Date.now()}.sqlite`);
+    dbPath = join(tmpdir(), `dexter-db-test-${FIXED_TEST_NOW_MS}.sqlite`);
     db = await MemoryDatabase.create(dbPath);
   });
 
@@ -95,6 +104,7 @@ describe('MemoryDatabase.loadRecentInsights', () => {
 
   it('returns inserted insights ordered by updated_at desc', () => {
     db.upsertInsight({ ticker: 'AAPL', tags: '[]', content: 'Apple insight', contentHash: 'h1' });
+    setSystemTime(new Date(FIXED_TEST_NOW_MS + 1));
     db.upsertInsight({ ticker: 'MSFT', tags: '[]', content: 'Microsoft insight', contentHash: 'h2' });
     const rows = db.loadRecentInsights(10);
     expect(rows.length).toBe(2);

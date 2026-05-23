@@ -1,4 +1,5 @@
-import { describe, test, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, test, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import {
   toDecayLambda,
   calculateTemporalDecayMultiplier,
@@ -6,6 +7,14 @@ import {
   DEFAULT_TEMPORAL_DECAY,
 } from './temporal-decay.js';
 import type { MemorySearchResult } from './types.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 function makeResult(overrides: Partial<MemorySearchResult> = {}): MemorySearchResult {
   return {
@@ -151,8 +160,8 @@ describe('applyTemporalDecay', () => {
     expect(out[0].score).toBe(0.9);
   });
 
-  test('uses Date.now() when nowMs is not provided', () => {
-    const recentDateStr = new Date().toISOString().slice(0, 10);
+  test('uses FIXED_TEST_NOW_MS when nowMs is not provided', () => {
+    const recentDateStr = new Date(FIXED_TEST_NOW_MS).toISOString().slice(0, 10);
     const result = makeResult({ path: `${recentDateStr}.md`, score: 1.0 });
     const out = applyTemporalDecay({
       results: [result],

@@ -1,9 +1,25 @@
-import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // Mock cache module BEFORE importing api.ts
 const mockReadCache = mock((..._args: unknown[]) => null as unknown);
 const mockWriteCache = mock((..._args: unknown[]) => undefined);
 const mockDescribeRequest = mock((endpoint: string) => String(endpoint));
+const mockTrackFmpCall = mock(() => ({
+  used: 1,
+  limit: 250,
+  usedPct: 1 / 250,
+  remaining: 249,
+}));
+const mockGetQuotaWarning = mock(() => null as string | null);
 
 mock.module('../../utils/cache.js', () => ({
   readCache: mockReadCache,
@@ -11,12 +27,21 @@ mock.module('../../utils/cache.js', () => ({
   describeRequest: mockDescribeRequest,
 }));
 
+mock.module('../../utils/fmp-quota.js', () => ({
+  trackFmpCall: mockTrackFmpCall,
+  getQuotaWarning: mockGetQuotaWarning,
+}));
+
 // Use a cache-busting query param to force Bun to re-evaluate api.ts with the mocked
 // cache.js above. Other finance test files statically import api.js (which loads cache.ts at
 // module init time before any mock is set), leaving spyOn(api, 'get') stacks that are never
 // restored. The ?t= suffix guarantees this file gets a fresh api module whose cache
 // bindings point at the mocks and whose .get method has never been spied on.
-const { api, stripFieldsDeep } = await import(`./api.js?t=${Date.now()}`) as typeof import('./api.js');
+const {
+  api,
+  parseFinancialDatasetsPricesPayload,
+  stripFieldsDeep,
+} = await import(`./api.js?t=${nextTestId('module')}`) as typeof import('./api.js');
 const { logger } = await import('../../utils/logger.js');
 
 // ---------------------------------------------------------------------------
@@ -52,6 +77,28 @@ describe('stripFieldsDeep', () => {
   });
 });
 
+describe('parseFinancialDatasetsPricesPayload', () => {
+  it('accepts object-wrapped price arrays and preserves close values', () => {
+    expect(parseFinancialDatasetsPricesPayload({ prices: [{ close: 101.25, volume: 10 }] }))
+      .toEqual([{ close: 101.25, volume: 10 }]);
+  });
+
+  it('accepts bare price arrays and preserves close values', () => {
+    expect(parseFinancialDatasetsPricesPayload([{ close: 99.5, volume: 8 }]))
+      .toEqual([{ close: 99.5, volume: 8 }]);
+  });
+
+  it('rejects object payloads without a prices array', () => {
+    expect(() => parseFinancialDatasetsPricesPayload({}))
+      .toThrow(/Malformed Financial Datasets prices payload/);
+  });
+
+  it('rejects malformed close values', () => {
+    expect(() => parseFinancialDatasetsPricesPayload({ prices: [{ close: '101.25' }] }))
+      .toThrow(/Malformed Financial Datasets prices payload/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // api.get
 // ---------------------------------------------------------------------------
@@ -63,6 +110,8 @@ describe('api.get', () => {
   beforeEach(() => {
     mockReadCache.mockClear();
     mockWriteCache.mockClear();
+    mockTrackFmpCall.mockClear();
+    mockGetQuotaWarning.mockClear();
     originalApiKey = process.env.FINANCIAL_DATASETS_API_KEY;
     process.env.FINANCIAL_DATASETS_API_KEY = 'test-key';
 

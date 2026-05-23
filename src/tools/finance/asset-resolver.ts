@@ -18,17 +18,50 @@ export interface ResolvedTickerSearchIdentity {
   strictQuestionMatch: boolean;
 }
 
-const BARRICK_CONTEXT_RE = /\bbarrick\b|\bgold\s+(?:stock|equity|shares|company|earnings|revenue|miner|mining)\b|\$gold\b/i;
+const BARRICK_CONTEXT_RE = /\bbarrick(?:\s+gold)?\b|\bgold\s+(?:stock|equity|shares|earnings|revenue)\b|\$gold\b/i;
 const GOLD_COMMODITY_RE = /\bgold\b|\bxauusd\b/i;
 const SILVER_COMMODITY_RE = /\bsilver\b|\bxagusd\b/i;
 const OIL_COMMODITY_RE = /\boil\b|\bcrude\b|\bwti\b|\bwticousd\b/i;
 const GOLD_PROXY_TICKERS = new Set(['GLD', 'IAU', 'SGOL', 'XAUUSD']);
 const SILVER_PROXY_TICKERS = new Set(['SLV', 'SIVR', 'XAGUSD', 'SILVER']);
 const OIL_PROXY_TICKERS = new Set(['USO', 'BNO', 'OIL', 'WTICOUSD', 'CRUDE']);
+const EXCLUSIVE_ASSET_ONLY_RE = /\b([A-Z]{2,5}(?:-USD)?|bitcoin|ethereum|solana|gold|silver|oil|crude)\s+only\b/gi;
 
 function normalizeExplicitTicker(explicitTicker?: string | null): string | null {
   const value = explicitTicker?.trim().toUpperCase();
   return value && value.length > 0 ? value : null;
+}
+
+function mapExclusiveAssetToken(token: string): string | null {
+  const normalized = token.trim().toUpperCase();
+  if (normalized === 'BITCOIN' || normalized === 'BTC-USD') return 'BTC';
+  if (normalized === 'ETHEREUM' || normalized === 'ETH-USD') return 'ETH';
+  if (normalized === 'SOLANA' || normalized === 'SOL-USD') return 'SOL';
+  if (normalized === 'GOLD') return 'GOLD';
+  if (normalized === 'SILVER') return 'SILVER';
+  if (normalized === 'CRUDE') return 'CRUDE';
+  if (normalized === 'GLD' || normalized === 'IAU' || normalized === 'SGOL' || normalized === 'XAUUSD') return 'GLD';
+  if (normalized === 'SLV' || normalized === 'SIVR' || normalized === 'XAGUSD') return 'SLV';
+  if (normalized === 'USO' || normalized === 'BNO' || normalized === 'WTICOUSD') return 'USO';
+  if (normalized === 'OIL') return 'OIL';
+  return /^[A-Z]{2,5}(?:-USD)?$/.test(normalized) ? normalized : null;
+}
+
+export function extractExclusiveAssetOverride(query: string): string | null {
+  let lastMatch: { index: number; ticker: string } | null = null;
+
+  for (const match of query.matchAll(EXCLUSIVE_ASSET_ONLY_RE)) {
+    const token = match[1];
+    if (!token) continue;
+    const ticker = mapExclusiveAssetToken(token);
+    if (!ticker) continue;
+    const index = match.index ?? -1;
+    if (!lastMatch || index >= lastMatch.index) {
+      lastMatch = { index, ticker };
+    }
+  }
+
+  return lastMatch?.ticker ?? null;
 }
 
 export function resolveTickerSearchIdentity(ticker: string): ResolvedTickerSearchIdentity {
@@ -85,9 +118,10 @@ export function resolveTickerSearchIdentity(ticker: string): ResolvedTickerSearc
 }
 
 export function resolveAssetIntent(query: string, explicitTicker?: string | null): ResolvedAssetIntent {
-  const normalizedTicker = normalizeExplicitTicker(explicitTicker);
+  const normalizedTicker = normalizeExplicitTicker(extractExclusiveAssetOverride(query) ?? explicitTicker);
+  const bareTicker = normalizedTicker?.replace(/-USD$/, '') ?? null;
 
-  if (normalizedTicker === 'GLD') {
+  if (bareTicker && GOLD_PROXY_TICKERS.has(bareTicker)) {
     return {
       rawQuery: query,
       rawTicker: normalizedTicker,
@@ -99,7 +133,7 @@ export function resolveAssetIntent(query: string, explicitTicker?: string | null
     };
   }
 
-  if (normalizedTicker === 'SLV') {
+  if (bareTicker && SILVER_PROXY_TICKERS.has(bareTicker)) {
     return {
       rawQuery: query,
       rawTicker: normalizedTicker,
@@ -136,7 +170,7 @@ export function resolveAssetIntent(query: string, explicitTicker?: string | null
     };
   }
 
-  if ((normalizedTicker === 'GOLD' && !BARRICK_CONTEXT_RE.test(query)) || GOLD_COMMODITY_RE.test(query)) {
+  if ((bareTicker === 'GOLD' && !BARRICK_CONTEXT_RE.test(query)) || (!normalizedTicker && GOLD_COMMODITY_RE.test(query))) {
     return {
       rawQuery: query,
       rawTicker: normalizedTicker,
@@ -148,7 +182,7 @@ export function resolveAssetIntent(query: string, explicitTicker?: string | null
     };
   }
 
-  if (normalizedTicker === 'SILVER' || normalizedTicker === 'XAGUSD' || SILVER_COMMODITY_RE.test(query)) {
+  if (bareTicker === 'SILVER' || bareTicker === 'XAGUSD' || SILVER_COMMODITY_RE.test(query)) {
     return {
       rawQuery: query,
       rawTicker: normalizedTicker,
@@ -160,7 +194,13 @@ export function resolveAssetIntent(query: string, explicitTicker?: string | null
     };
   }
 
-  if (normalizedTicker === 'OIL' || normalizedTicker === 'USO' || normalizedTicker === 'WTICOUSD' || normalizedTicker === 'CRUDE' || OIL_COMMODITY_RE.test(query)) {
+  if (
+    bareTicker === 'OIL'
+    || bareTicker === 'USO'
+    || bareTicker === 'WTICOUSD'
+    || bareTicker === 'CRUDE'
+    || OIL_COMMODITY_RE.test(query)
+  ) {
     return {
       rawQuery: query,
       rawTicker: normalizedTicker,

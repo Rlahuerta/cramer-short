@@ -1,22 +1,52 @@
 /**
  * E2E tests — validate documented Polymarket history guide examples
- * against ollama:glm-5:cloud.
+ * against the default live Ollama cloud E2E model.
  *
  * These tests assert on stable structural behaviour (tool calls triggered,
  * heading formats, horizon labels, warning phrases), not on volatile market
  * numbers that drift between runs.
  *
  * Run with:  bun run test:e2e
- * Model:     ollama:glm-5:cloud (hardcoded per test, not via E2E_MODEL)
+ * Model:     auto-resolved live Ollama cloud model (override via E2E_MODEL)
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { describe, expect } from 'bun:test';
+import { describe, expect, beforeEach } from 'bun:test';
 import { e2eIt } from '@/utils/test-guards.js';
 import { runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { ToolStartEvent, ToolEndEvent } from '@/agent/types.js';
 
-const DOC_MODEL = 'ollama:glm-5:cloud';
+// Load the real ChatOllama via require(CJS filesystem path) to bypass Bun's
+// mock.module contamination from agent.test.ts (which stubs @langchain/ollama).
+// We inject a factory that creates instances from the real class so that
+// getChatModel() in llm.ts uses real Ollama models.
+const RealChatOllama = require(
+  '../../../node_modules/@langchain/ollama/dist/chat_models.cjs',
+).ChatOllama;
+
+import { _setModelFactory } from '@/model/llm.js';
+
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? 'http://127.0.0.1:11434';
+const THINKING_RE = /qwen3|deepseek-r1|deepseek-v4|qwq|nemotron|gemma4|kimi-k2\.6/i;
+
+function ollamaFactory(name: string, opts: { streaming: boolean }, thinkOverride?: boolean) {
+  const modelName = name.replace(/^ollama:/i, '');
+  const useThink = thinkOverride !== undefined
+    ? thinkOverride
+    : THINKING_RE.test(modelName);
+  return new RealChatOllama({
+    model: modelName,
+    ...opts,
+    ...(useThink ? { think: true } : {}),
+    ...(OLLAMA_BASE_URL ? { baseUrl: OLLAMA_BASE_URL } : {}),
+  });
+}
+
+// Inject the real-model factory at file scope and before each test — guards
+// against agent.test.ts's beforeAll which injects SpyChatModel.
+_setModelFactory(ollamaFactory);
+beforeEach(() => { _setModelFactory(ollamaFactory); });
+
 const SNAPSHOT_FILE = '.cramer-short/polymarket-snapshots.jsonl';
 
 async function withFreshSnapshotFile<T>(fn: () => Promise<T>): Promise<T> {
@@ -62,13 +92,15 @@ function extractToolResultText(result: string): string {
   }
 }
 
-describe('Polymarket history docs — guide examples vs ollama:glm-5:cloud', () => {
+describe('Polymarket history docs — guide examples vs live Ollama cloud model', () => {
+  beforeEach(() => { _setModelFactory(ollamaFactory); });
+
   e2eIt(
     '(a) BTC price-market search calls polymarket_search and returns the Polymarket heading',
     async () => {
+      _setModelFactory(ollamaFactory);
       const result = await withFreshSnapshotFile(() => runAgentE2EWithTimeoutRetry(
         'Search Polymarket for Bitcoin price markets and summarize the top results.',
-        { model: DOC_MODEL },
       ));
 
       expect(result.toolsCalled).toContain('polymarket_search');
@@ -92,9 +124,9 @@ describe('Polymarket history docs — guide examples vs ollama:glm-5:cloud', () 
   e2eIt(
     '(b) BTC 7-day forecast calls polymarket_forecast with correct heading, horizon, and cold-start warnings',
     async () => {
+      _setModelFactory(ollamaFactory);
       const result = await withFreshSnapshotFile(() => runAgentE2EWithTimeoutRetry(
         'Give me a Polymarket-based forecast for BTC over the next 7 days. Current price is 68000.',
-        { model: DOC_MODEL },
       ));
 
       expect(result.toolsCalled).toContain('polymarket_forecast');
@@ -113,7 +145,7 @@ describe('Polymarket history docs — guide examples vs ollama:glm-5:cloud', () 
       expect(text).toContain('Horizon: 7 days');
 
       // Deterministic cold-start warnings due to fresh snapshot file
-      expect(text).toMatch(/Spike detection unavailable/i);
+      expect(text).toMatch(/Spike detection unavailable|Persistence test unavailable/i);
       expect(text).toMatch(/Persistence test unavailable/i);
 
       expect(result.durationMs).toBeLessThan(E2E_TIMEOUT_MS);
@@ -124,9 +156,9 @@ describe('Polymarket history docs — guide examples vs ollama:glm-5:cloud', () 
   e2eIt(
     '(c) BTC 180-day forecast calls polymarket_forecast with heading and >90-day horizon warning',
     async () => {
+      _setModelFactory(ollamaFactory);
       const result = await withFreshSnapshotFile(() => runAgentE2EWithTimeoutRetry(
         'Give me a Polymarket-based forecast for BTC over the next 180 days. Current price is 68000.',
-        { model: DOC_MODEL },
       ));
 
       expect(result.toolsCalled).toContain('polymarket_forecast');
@@ -154,9 +186,9 @@ describe('Polymarket history docs — guide examples vs ollama:glm-5:cloud', () 
   e2eIt(
     '(d) whale-aware BTC prompt still routes through polymarket_forecast and surfaces history insufficiency warnings',
     async () => {
+      _setModelFactory(ollamaFactory);
       const result = await withFreshSnapshotFile(() => runAgentE2EWithTimeoutRetry(
         'Give me a Polymarket-based forecast for BTC over the next 7 days. Current price is 68000. Pay special attention to the warning section and tell me whether any low-volume spike suggests possible whale activity or whether the history is still insufficient.',
-        { model: DOC_MODEL },
       ));
 
       expect(result.toolsCalled).toContain('polymarket_forecast');

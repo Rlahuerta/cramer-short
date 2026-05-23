@@ -57,6 +57,7 @@ const FixedIncomeInputSchema = z.object({
     .describe('Which fixed income data series to fetch'),
 });
 
+/** Retrieves fixed-income market data for analysis. */
 export const getFixedIncomeTool = new DynamicStructuredTool({
   name: 'get_fixed_income',
   description: FIXED_INCOME_DESCRIPTION,

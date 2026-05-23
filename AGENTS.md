@@ -64,16 +64,24 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 | File | What it owns |
 |------|-------------|
-| `src/index.tsx` | Entry point. Loads dotenv, routes default TUI vs `schedule` subcommand |
-| `src/providers.ts` | Canonical provider registry + model-prefix routing. Default: `gpt-5.4` / `openai` |
-| `src/tools/registry.ts` | Tool env-gating: `web_search` needs `EXASEARCH_API_KEY` or `PERPLEXITY_API_KEY` or `TAVILY_API_KEY`; `x_search` needs `X_BEARER_TOKEN` |
-| `src/utils/paths.ts` | Runtime state lives under `.cramer-short/` (not `.dexter/`) |
-| `src/utils/config.ts` | `settings.json` schema. Preserves unknown keys; invalid known fields warn+strip. Auto-migrates legacy model/provider settings |
-| `src/agent/prompts.ts` | Loads `.cramer-short/SOUL.md` first, then repo `SOUL.md`; major agent policy/fallback rules live here |
-| `src/skills/registry.ts` | Loads builtin skills + project overrides from `.cramer-short/skills/`; overrides win by name |
-| `src/utils/test-guards.ts` | Defines unit/integration/e2e tiers and E2E isolation |
+| `src/index.tsx` | Entry point. Routes to TUI (`cli.ts`), schedule, forecast-lab, or replay-label subcommands |
+| `src/providers.ts` | Canonical LLM provider registry + model-prefix routing. Default: `gpt-5.4` / `openai` |
+| `src/tools/registry.ts` | Canonical tool registry. Env-gated: `web_search` needs `EXASEARCH_API_KEY` \| `PERPLEXITY_API_KEY` \| `TAVILY_API_KEY`; `x_search` needs `X_BEARER_TOKEN`; `skill` only when skills are discovered |
+| `src/agent/agent.ts` | Core execution loop (1,400 lines post-refactor). Query routing, tool orchestration, memory injection, answer post-processing |
+| `src/agent/query-router.ts` | Compatibility re-export barrel; query-router implementation lives in `src/agent/query-router/` |
+| `src/agent/answer-formatting/` | 7 focused modules for final-answer guards, warnings, sources, density tables, abstention logic |
+| `src/utils/paths.ts` | Runtime state lives under `.cramer-short/` (never `.dexter/`) |
+| `src/utils/config.ts` | `settings.json` Zod schema. Preserves unknown keys; invalid known fields warn+strip. Auto-migrates legacy model/provider settings |
+| `src/agent/prompts.ts` | System/iteration prompt assembly. Loads `.cramer-short/SOUL.md` first, then repo `SOUL.md` |
+| `src/skills/registry.ts` | Discovers builtin skills + project overrides from `.cramer-short/skills/`; overrides win by name |
+| `src/controllers/types.ts` | Shared `HistoryItem`, `WorkingState`, `HistoryItemStatus` types (moved from deleted `src/types.ts`) |
+| `src/utils/date.ts` | `getCurrentDate()` — used by prompts and finance tools; was previously embedded in `agent/prompts.ts` |
+| `src/utils/test-guards.ts` | Defines unit/integration/e2e tiers + `SKIP_INTEGRATION` / `RUN_E2E` guards |
 | `src/cli-schedule.ts` | Reads `~/.cramer-short/schedules.json` |
-| `scripts/release.sh` | Requires `gh` + `node` + clean tree. Interactive; may create version-bump commit, tag, push tag, create GitHub release |
+| `src/tools/finance/markov-distribution/` | 8 sub-modules decomposed from the original 6,800-line monolith (regime, transition, blending, CI, diagnostics, core, asset-profile, live-policies) |
+| `src/controllers/slash-commands/` | Slash command handlers extracted from `cli.ts` (config, core, dream, panels, watchlist) |
+| `research/PARITY.md` | Exhaustive TS↔Python mirror manifest. Use when cross-language parity is relevant |
+| `scripts/release.sh` | Requires `gh` + `node` + clean tree. Interactive; version-bump commit, tag, push, release |
 
 ## 6. Commands
 
@@ -85,13 +93,15 @@ bun start schedule run       # run all scheduled jobs
 bun start schedule run JOB   # run one scheduled job
 bun run dev                  # watch mode
 bun run typecheck            # type check only
+bun run depcruise            # dependency boundary enforcement
 bun test                     # unit tests
 bun test ./src/foo.test.ts   # single test file
 bun test -t "case name"      # filter by test name
 bun run test:unit            # unit tier
-bun run test:integration     # integration tier (needs RUN_INTEGRATION=1)
-bun run test:e2e             # e2e tier (needs RUN_E2E=1)
+bun run test:integration     # integration tier (isolated process via run-isolated-bun-tests.ts)
+bun run test:e2e             # e2e tier (isolated process via run-isolated-bun-tests.ts)
 bun run test:all             # all tiers
+bun run test:coverage        # coverage gate (targeted files + scripts/check-coverage.ts)
 bun run test:watch           # watch mode
 bun run gateway              # WhatsApp gateway
 bun run gateway:login        # WhatsApp link/QR
@@ -102,7 +112,10 @@ bun run gateway:login        # WhatsApp link/QR
 ```bash
 bun install --frozen-lockfile --ignore-scripts
 bun run typecheck
-bun test                    # unit only; integration/e2e are local-only workflows
+bun run depcruise            # dependency boundary enforcement
+bun test                     # unit tests
+bun run test:coverage        # coverage gate
+bun run test:integration     # integration tier
 ```
 
 ## 8. Gotchas
@@ -115,6 +128,12 @@ bun test                    # unit only; integration/e2e are local-only workflow
 - SOUL.md load order: `.cramer-short/SOUL.md` first, then repo `SOUL.md`. User overrides take priority.
 - Skill overrides in `.cramer-short/skills/` shadow builtins by name.
 - `bun install` runs `playwright install chromium` in postinstall. CI skips this via `--ignore-scripts`.
-- `bun run test:e2e` is a manually maintained list of specific files in `package.json`, not a glob. Add new e2e tests there or the standard e2e command will miss them.
+- `bun run test:e2e` and `bun run test:integration` run each file in an isolated Bun process via `scripts/run-isolated-bun-tests.ts` to avoid `mock.module()` contamination.
 - Calendar versioning: `YYYY.M.D`, no zero padding.
 - Schedule mode reads from `~/.cramer-short/schedules.json`, not a project-local path. Job `outputFile` supports `~` and `{date}`.
+- `src/types.ts` was deleted in Phase 1 refactoring. `HistoryItem`, `WorkingState`, and `HistoryItemStatus` now live in `src/controllers/types.ts`.
+- `getCurrentDate()` was extracted from `agent/prompts.ts` into `src/utils/date.ts`. Finance tools import from `../../utils/date.js`, not from agent/.
+- Python parity: 16 TS modules mirror `research/models/`. `research/PARITY.md` is the authoritative manifest. Add a `Mirrors research/models/X.py` docstring tag to new mirrored files.
+- `depcruise` runs in CI on every PR. 32 warnings exist (all accepted as design tradeoffs); new layer violations must be justified.
+- `markov-distribution.ts` was decomposed into `markov-distribution/` with 8 sub-modules. Import from the sub-module, not the top-level barrel unless you need everything.
+- All `z.string()` tool parameters now carry `.max()` validators. New tools must include input length limits.

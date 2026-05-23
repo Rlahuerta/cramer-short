@@ -1,34 +1,28 @@
-import { describe, it, expect, mock } from 'bun:test';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 
-const testDir = join(tmpdir(), `dexter-prompts-test-${Date.now()}`);
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
 
-mock.module('../tools/registry.js', () => ({
-  buildToolDescriptions: mock(() => 'mock tool descriptions'),
-  getTools: mock(() => []),
-  getToolRegistry: mock(() => []),
-}));
-
-// skills/index.js intentionally NOT mocked here — it re-exports from registry.js
-// and loader.js via ESM live bindings. Any mock.module() call for index.js
-// propagates back through those bindings into registry.js/loader.js, breaking
-// skill.test.ts files that import directly from those sub-modules in the same
-// Bun worker. The real discoverSkills/buildSkillMetadataSection are safe to use
-// in tests because no assertion here checks for skill presence or absence.
-
-mock.module('../utils/paths.js', () => ({
-  cramerShortPath: mock((sub: string) => join(testDir, sub ?? 'SOUL.md')),
-  getCramerShortDir: mock(() => testDir),
-}));
+afterEach(() => {
+  setSystemTime();
+});
 
 const {
-  getCurrentDate,
+  getForecastLabMarkovRuntimeDefaults,
+  setForecastLabMarkovRuntimeDefaults,
+} = await import('../tools/finance/markov-distribution.js');
+const { getCurrentDate } = await import('../utils/date.js');
+const {
   buildSystemPrompt,
   buildIterationPrompt,
   buildGroupSection,
+  injectForecastLabRoutingHint,
   loadSoulDocument,
 } = await import('./prompts.js');
+
+const MOCK_TOOL_DESCRIPTIONS = 'mock tool descriptions';
 
 describe('getCurrentDate', () => {
   it('returns a non-empty string', () => {
@@ -39,7 +33,7 @@ describe('getCurrentDate', () => {
 
   it('includes the current year', () => {
     const date = getCurrentDate();
-    const currentYear = new Date().getFullYear().toString();
+    const currentYear = new Date(FIXED_TEST_NOW_MS).getFullYear().toString();
     expect(date).toContain(currentYear);
   });
 
@@ -67,44 +61,44 @@ describe('loadSoulDocument', () => {
 
 describe('buildSystemPrompt', () => {
   it('contains tool descriptions', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
+    const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).toContain('mock tool descriptions');
   });
 
   it('contains the current date', () => {
-    const prompt = buildSystemPrompt('gpt-5.4');
-    const currentYear = new Date().getFullYear().toString();
+    const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
+    const currentYear = new Date(FIXED_TEST_NOW_MS).getFullYear().toString();
     expect(prompt).toContain(currentYear);
   });
 
   it('includes soul content when provided', () => {
     const soulContent = 'I am a focused financial analyst.';
-    const prompt = buildSystemPrompt('gpt-5.4', soulContent);
+    const prompt = buildSystemPrompt('gpt-5.4', soulContent, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).toContain(soulContent);
   });
 
   it('does not include Identity section when soul is null', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null);
+    const prompt = buildSystemPrompt('gpt-5.4', null, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).not.toContain('## Identity');
   });
 
   it('uses WhatsApp profile preamble when channel=whatsapp', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp');
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp', undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt.toLowerCase()).toContain('whatsapp');
   });
 
   it('uses CLI profile when channel=cli', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli', undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).toContain('CLI');
   });
 
   it('omits tables section for whatsapp channel', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp');
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'whatsapp', undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).not.toContain('## Tables');
   });
 
   it('includes tables section for CLI channel', () => {
-    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli', undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).toContain('Tables');
   });
 
@@ -141,6 +135,21 @@ describe('buildSystemPrompt', () => {
   it('mentions Cramer-Short as the assistant name', () => {
     const prompt = buildSystemPrompt('gpt-5.4');
     expect(prompt).toContain('Cramer-Short');
+  });
+
+  it('omits memory policy sections when memory is disabled', () => {
+    const prompt = buildSystemPrompt(
+      'gpt-5.4',
+      null,
+      'cli',
+      undefined,
+      ['MEMORY.md'],
+      'Stored context',
+      MOCK_TOOL_DESCRIPTIONS,
+      false,
+    );
+    expect(prompt).not.toContain('## Financial Memory Policy');
+    expect(prompt).not.toContain('## Memory');
   });
 });
 
@@ -200,6 +209,24 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('MUST clearly warn');
   });
 
+  it('injects proxy and anchor-label guards for canonical markov output', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null,"diagnostics":{"trustedAnchors":6,"anchorBypassApplied":false,"calibrationMode":"anchored"}}}}',
+      '### polymarket_forecast(ticker=BTC)',
+      'Forecast return: +0.9%\nGrade: B',
+    ].join('\n');
+    const prompt = buildIterationPrompt(
+      'Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts.',
+      results,
+    );
+    expect(prompt).toContain('Do NOT substitute another asset, proxy ticker, or proxy-history narrative');
+    expect(prompt).toContain('do NOT describe a BTC/BTC-USD run as using GLD, gold, or any commodity-equivalent history');
+    expect(prompt).toContain('if diagnostics.anchorBypassApplied is false or diagnostics.calibrationMode is "anchored"');
+    expect(prompt).toContain('do NOT call the run "model-only", "commodity bypass", or say trusted anchors were "unused"');
+    expect(prompt).toContain('If trusted anchors are present, do NOT imply they were absent or ignored just because a displayed mixing split rounds to 100% Markov / 0% Anchors');
+  });
+
   it('injects mixed-evidence guard when BTC short-horizon Markov and Polymarket disagree', () => {
     const results = [
       '### markov_distribution(ticker=BTC-USD)',
@@ -212,26 +239,101 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('downgrade the narrative confidence');
   });
 
-  it('injects low-confidence selective-gate guard when BTC short-horizon markov confidence is below 0.25', () => {
-    const results = [
-      '### markov_distribution(ticker=BTC-USD)',
-      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.18}}}}',
-    ].join('\n');
-    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
-    expect(prompt).toContain('predictionConfidence is below the 0.25 selective threshold');
-    expect(prompt).toContain('fallback context');
+  it('injects low-confidence selective-gate guard using the BTC runtime threshold', () => {
+    const originalBtcRuntimeDefaults = getForecastLabMarkovRuntimeDefaults('btc');
+
+    try {
+      setForecastLabMarkovRuntimeDefaults('btc', {
+        ...originalBtcRuntimeDefaults,
+        recommendedConfidenceThreshold: 0.2,
+      });
+
+      const results = [
+        '### markov_distribution(ticker=BTC-USD)',
+        '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.18}}}}',
+      ].join('\n');
+      const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
+      expect(prompt).toContain('predictionConfidence is below the 0.20 selective threshold');
+      expect(prompt).toContain('fallback context');
+    } finally {
+      setForecastLabMarkovRuntimeDefaults('btc', originalBtcRuntimeDefaults);
+    }
   });
 
-  it('does not inject mixed-evidence guard when BTC short-horizon markov confidence is below 0.25', () => {
+  it('does not inject mixed-evidence guard when BTC short-horizon markov confidence is below the BTC runtime threshold', () => {
+    const originalBtcRuntimeDefaults = getForecastLabMarkovRuntimeDefaults('btc');
+
+    try {
+      setForecastLabMarkovRuntimeDefaults('btc', {
+        ...originalBtcRuntimeDefaults,
+        recommendedConfidenceThreshold: 0.2,
+      });
+
+      const results = [
+        '### markov_distribution(ticker=BTC-USD)',
+        '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.18}}}}',
+        '### polymarket_forecast(ticker=BTC-USD)',
+        'Forecast return: -0.4%\nGrade: B',
+      ].join('\n');
+      const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
+      expect(prompt).not.toContain('BTC short-horizon signals are mixed');
+      expect(prompt).toContain('predictionConfidence is below the 0.20 selective threshold');
+    } finally {
+      setForecastLabMarkovRuntimeDefaults('btc', originalBtcRuntimeDefaults);
+    }
+  });
+
+  it('injects trajectory-semantics guard when markov_distribution includes a trajectory payload', () => {
     const results = [
       '### markov_distribution(ticker=BTC-USD)',
-      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.18}}}}',
-      '### polymarket_forecast(ticker=BTC-USD)',
-      'Forecast return: -0.4%\nGrade: B',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","confidence":"LOW"},"diagnostics":{"predictionConfidence":0.43,"regimeState":"bull","recommendationProvenance":"override note"}},"trajectory":[{"day":1,"expectedPrice":78000,"regime":"bear"}]}}',
     ].join('\n');
-    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
-    expect(prompt).not.toContain('BTC short-horizon signals are mixed');
-    expect(prompt).toContain('predictionConfidence is below the 0.25 selective threshold');
+    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 7 days', results);
+    expect(prompt).toContain('includes both a terminal canonical forecast and a day-by-day trajectory');
+    expect(prompt).toContain('Do NOT claim an "internal inconsistency" solely because');
+    expect(prompt).toContain('latent HMM backdrop');
+    expect(prompt).toContain('Do NOT relabel predictionConfidence with LOW/MEDIUM/HIGH');
+    expect(prompt).toContain('recommendationProvenance');
+  });
+
+  it('injects regime-action mismatch guidance for latent bull with SELL action signal', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"SELL","confidence":"LOW"},"diagnostics":{"predictionConfidence":0.44,"regimeState":"bull","recommendationProvenance":"converted from HOLD because P(up) is 49.3%"}}}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Give me a BTC forecast for the next 24 hours', results);
+    expect(prompt).toContain('contains a regime/action mismatch');
+    expect(prompt).toContain('latent HMM backdrop');
+    expect(prompt).toContain('weak tilt/lean');
+  });
+
+  it('injects arbiter precedence guidance when forecast_arbitrator returns NO_TRADE', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"SELL","confidence":"LOW"},"diagnostics":{"predictionConfidence":0.44,"regimeState":"bull"}}}}',
+      '### forecast_arbitrator(ticker=BTC-USD)',
+      '{"data":{"result":{"verdict":"NO_TRADE","preferredDirection":"neutral","shouldEnterNow":false}}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Give me a BTC forecast for the next 24 hours with trade setup', results);
+    expect(prompt).toContain('forecast_arbitrator returned NO_TRADE');
+    expect(prompt).toContain('final trading decision');
+    expect(prompt).toContain('subordinate model evidence');
+  });
+
+  it('preserves explicit bucket-count requests when canonical Markov output is present', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"scenarios":{"flat":0.8}}}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt(
+      'Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts.',
+      results,
+    );
+    expect(prompt).toContain('divided into 9 parts');
+    expect(prompt).toContain('Preserve that 9-part bucket granularity');
+    expect(prompt).toContain('Do NOT compress it into fewer buckets');
+    expect(prompt).toContain('density probabilities, that means per-bucket probability mass');
+    expect(prompt).toContain('do NOT substitute it for the requested density table');
   });
 
   it('does not inject mixed-evidence guard for BTC horizons above 14 days', () => {
@@ -285,10 +387,75 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('Frame the final answer in terms of the underlying commodity');
   });
 
+  it('keeps combined GOLD fallback prompts in the combined Markov + Polymarket path across 1d/2d/3d/14d horizons', () => {
+    const results = '### markov_distribution(ticker=GLD)\n{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null}}}';
+    for (const days of [1, 2, 3, 14]) {
+      const prompt = buildIterationPrompt(
+        `Provide a GOLD price forecast based on markov chain and polymarket for the next ${days} day${days === 1 ? '' : 's'}`,
+        results,
+      );
+      expect(prompt).toContain('markov_distribution explicitly abstained');
+      expect(prompt).toContain('combined Markov + polymarket forecast');
+      expect(prompt).toContain('Do not collapse the answer into a Markov-only diagnostics note or a Polymarket-only framing');
+      expect(prompt).toContain('GLD is only the data proxy for Gold');
+    }
+  });
+
+  it('preserves separate Markov and Polymarket evidence blocks for explicit GOLD combined requests', () => {
+    const results = [
+      '### markov_distribution(ticker=GLD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.018},"diagnostics":{"predictionConfidence":0.67}}}}',
+      '### get_market_data(query=GLD current price)',
+      '{"data":{"get_stock_price_GLD":{"ticker":"GLD","price":312.45}}}',
+      '### polymarket_forecast(ticker=GLD)',
+      '{"data":{"forecastReturn":-0.012,"result":"Polymarket Forecast: GLD | Horizon: 30 days | Grade: B+ (78/100)\\nWill gold finish May above $3,250?: 39% YES"}}',
+      '### forecast_arbitrator(ticker=GLD)',
+      '{"data":{"result":{"verdict":"NO_TRADE","preferredDirection":"neutral","shouldEnterNow":false}}}',
+    ].join('\n');
+
+    const prompt = buildIterationPrompt(
+      'Provide a GOLD price forecast based on markov chain and polymarket for the next 30 days with trade direction',
+      results,
+    );
+
+    expect(prompt).toContain('combined GOLD Markov + Polymarket workflow');
+    expect(prompt).toContain('Keep the Markov and Polymarket sections separate');
+    expect(prompt).toContain('Do NOT collapse them into one blended gold forecast');
+    expect(prompt).toContain('forecast_arbitrator verdict comes after those evidence blocks');
+  });
+
   it('does not inject canonical markov guard for non-markov tool output', () => {
     const results = '### get_market_data(query=BTC)\n{"data":{"ticker":"BTC-USD"}}';
     const prompt = buildIterationPrompt('BTC query', results);
     expect(prompt).not.toContain('markov_distribution results are present');
+  });
+
+  it('injects a forecast-lab routing hint when one is provided', () => {
+    const prompt = buildIterationPrompt(
+      'Optimize the BTC forecast tool',
+      '',
+      null,
+      {
+        recommendedProfileId: 'btc-markov-ultra-short-horizon',
+        whyMatched: 'Matched improvement cues: optimize.',
+        mutationAllowed: true,
+        shouldInvokeSkill: true,
+      },
+    );
+    expect(prompt).toContain('Forecast-Lab Routing Hint');
+    expect(prompt).toContain('btc-markov-ultra-short-horizon');
+    expect(prompt).toContain('Matched improvement cues: optimize.');
+    expect(prompt).toContain('Mutation allowed: yes');
+    expect(prompt).toContain('Invoke skill("forecast-lab"): yes');
+    expect(prompt).toContain('bounded forecast-workflow improvement task');
+    expect(prompt).toContain('Call skill("forecast-lab") before ordinary forecast/data tools');
+    expect(prompt).toContain('Do NOT auto-run mutation or any tool');
+  });
+});
+
+describe('injectForecastLabRoutingHint', () => {
+  it('leaves prompts unchanged when no routing hint exists', () => {
+    expect(injectForecastLabRoutingHint('Query: hello', null)).toBe('Query: hello');
   });
 });
 
@@ -307,6 +474,17 @@ describe('buildSystemPrompt tool guidance', () => {
     expect(prompt).toContain('get_fixed_income');
     expect(prompt).toContain('markov_distribution');
     expect(prompt).toContain('trajectory=true');
+  });
+
+  it('requires detailed separate Markov and Polymarket evidence blocks for crypto forecasts', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', null, 'cli');
+    expect(prompt).toContain('do **not** compress them into a single sentence');
+    expect(prompt).toContain('**Markov block**');
+    expect(prompt).toContain('**Polymarket block**');
+    expect(prompt).toContain('quote 2–4 exact market questions with their YES probabilities');
+    expect(prompt).toContain('**Trade decision**');
+    expect(prompt).toContain('Keep terminal vs trajectory semantics separate');
+    expect(prompt).toContain('Do not merge confidence fields');
   });
 
   it('mentions probability_assessment skill for full structured BTC/crypto forecast reports', () => {

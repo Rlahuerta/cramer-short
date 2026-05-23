@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { api } from './api.js';
@@ -7,11 +8,13 @@ import { formatToolResult } from '../types.js';
 const CryptoPriceSnapshotInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The crypto ticker symbol to fetch the price snapshot for. For example, 'BTC-USD' for Bitcoin."
     ),
 });
 
+/** Fetches a current crypto price snapshot for one ticker. */
 export const getCryptoPriceSnapshot = new DynamicStructuredTool({
   name: 'get_crypto_price_snapshot',
   description: `Fetches the most recent price snapshot for a specific cryptocurrency, including the latest price, trading volume, and other open, high, low, and close price data. Ticker format: use 'CRYPTO-USD' for USD prices (e.g., 'BTC-USD') or 'CRYPTO-CRYPTO' for crypto-to-crypto prices (e.g., 'BTC-ETH' for Bitcoin priced in Ethereum).`,
@@ -41,6 +44,7 @@ export const getCryptoPriceSnapshot = new DynamicStructuredTool({
 const CryptoPricesInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The crypto ticker symbol to fetch aggregated prices for. For example, 'BTC-USD' for Bitcoin."
     ),
@@ -52,10 +56,11 @@ const CryptoPricesInputSchema = z.object({
     .number()
     .default(1)
     .describe('Multiplier for the interval. Defaults to 1.'),
-  start_date: z.string().describe('Start date in YYYY-MM-DD format. Required.'),
-  end_date: z.string().describe('End date in YYYY-MM-DD format. Required.'),
+  start_date: z.string().max(32).describe('Start date in YYYY-MM-DD format. Required.'),
+  end_date: z.string().max(32).describe('End date in YYYY-MM-DD format. Required.'),
 });
 
+/** Fetches historical crypto prices for a ticker. */
 export const getCryptoPrices = new DynamicStructuredTool({
   name: 'get_crypto_prices',
   description: `Retrieves historical price data for a cryptocurrency over a specified date range, including open, high, low, close prices, and volume. Ticker format: use 'CRYPTO-USD' for USD prices (e.g., 'BTC-USD') or 'CRYPTO-CRYPTO' for crypto-to-crypto prices (e.g., 'BTC-ETH' for Bitcoin priced in Ethereum).`,
@@ -76,7 +81,7 @@ export const getCryptoPrices = new DynamicStructuredTool({
       return formatToolResult(data.prices || [], [url]);
     } catch {
       const startDate = new Date(input.start_date + 'T00:00:00');
-      const days = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / 86_400_000) + 1);
+      const days = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / MS_PER_DAY) + 1);
       const closes = await fetchBinanceDailyCloses(input.ticker, days);
       if (closes.length === 0) {
         return formatToolResult({ error: `No crypto price history available for ${input.ticker}` });
@@ -89,6 +94,7 @@ export const getCryptoPrices = new DynamicStructuredTool({
   },
 });
 
+/** Lists supported crypto ticker symbols. */
 export const getCryptoTickers = new DynamicStructuredTool({
   name: 'get_available_crypto_tickers',
   description: `Retrieves the list of available cryptocurrency tickers that can be used with the crypto price tools.`,

@@ -29,7 +29,8 @@ export function logError(entry: Omit<ErrorLogEntry, 'timestamp'>): void {
     };
 
     appendFileSync(getLogFile(), JSON.stringify(fullEntry) + '\n', 'utf-8');
-  } catch {
-    // Silently swallow — logging must never crash the app
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[cramer-short] failed to write error log: ${msg}`);
   }
 }

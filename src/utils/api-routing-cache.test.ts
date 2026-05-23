@@ -1,4 +1,13 @@
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, test, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // We test the pure logic of the routing cache by importing the module-level functions.
 // The in-memory singleton is reset between tests by manipulating module state.
@@ -6,7 +15,7 @@ import { describe, test, expect, beforeEach } from 'bun:test';
 // Pure helpers extracted from the module for isolated unit testing
 const TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-function isStale(updatedAt: string, nowMs = Date.now()): boolean {
+function isStale(updatedAt: string, nowMs = FIXED_TEST_NOW_MS): boolean {
   return nowMs - new Date(updatedAt).getTime() > TTL_MS;
 }
 
@@ -33,17 +42,17 @@ describe('api-routing-cache helpers', () => {
 
   describe('isStale', () => {
     test('returns false for entry updated 1 day ago', () => {
-      const updatedAt = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+      const updatedAt = new Date(FIXED_TEST_NOW_MS - 1 * 24 * 60 * 60 * 1000).toISOString();
       expect(isStale(updatedAt)).toBe(false);
     });
 
     test('returns false for entry updated 29 days ago', () => {
-      const updatedAt = new Date(Date.now() - 29 * 24 * 60 * 60 * 1000).toISOString();
+      const updatedAt = new Date(FIXED_TEST_NOW_MS - 29 * 24 * 60 * 60 * 1000).toISOString();
       expect(isStale(updatedAt)).toBe(false);
     });
 
     test('returns true for entry updated 31 days ago', () => {
-      const updatedAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+      const updatedAt = new Date(FIXED_TEST_NOW_MS - 31 * 24 * 60 * 60 * 1000).toISOString();
       expect(isStale(updatedAt)).toBe(true);
     });
 
@@ -53,7 +62,7 @@ describe('api-routing-cache helpers', () => {
     });
 
     test('returns false for entry updated right now', () => {
-      const updatedAt = new Date().toISOString();
+      const updatedAt = new Date(FIXED_TEST_NOW_MS).toISOString();
       expect(isStale(updatedAt)).toBe(false);
     });
   });

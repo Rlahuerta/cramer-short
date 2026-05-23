@@ -56,10 +56,14 @@ yarn-error.log*
 .dexter/*
 .cramer-short/*
 .sisyphus/*
-references/*
+references/**/*.pdf
 
 logs/
+coverage/
 coverage.json
+bun-test-audit.xml
+test-output.txt
+*.log
 cramer-short-export-*.json
 cramer-short-export-*.md
 .cramer-short/exports/
@@ -68,4 +72,8 @@ CODE_REVIEW_REPORT.md
 TEST_COVERAGE_VERIFICATION.md
 *.pile
 /.claude
-fmp-quota.json
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+/.dexter_old

@@ -35,54 +35,104 @@ export type GatewayService = {
   snapshot: () => Record<string, { accountId: string; running: boolean; connected?: boolean }>;
 };
 
+export type GatewayRuntime = {
+  createWhatsAppPlugin: typeof createWhatsAppPlugin;
+  createChannelManager: typeof createChannelManager;
+  loadGatewayConfig: typeof loadGatewayConfig;
+  assertOutboundAllowed: typeof assertOutboundAllowed;
+  sendComposing: typeof sendComposing;
+  sendMessageWhatsApp: typeof sendMessageWhatsApp;
+  resolveRoute: typeof resolveRoute;
+  resolveSessionStorePath: typeof resolveSessionStorePath;
+  upsertSessionMeta: typeof upsertSessionMeta;
+  runAgentForMessage: typeof runAgentForMessage;
+  cleanMarkdownForWhatsApp: typeof cleanMarkdownForWhatsApp;
+  startHeartbeatRunner: typeof startHeartbeatRunner;
+  isBotMentioned: typeof isBotMentioned;
+  recordGroupMessage: typeof recordGroupMessage;
+  getAndClearGroupHistory: typeof getAndClearGroupHistory;
+  formatGroupHistoryContext: typeof formatGroupHistoryContext;
+  noteGroupMember: typeof noteGroupMember;
+  formatGroupMembersList: typeof formatGroupMembersList;
+  getSetting: typeof getSetting;
+  debugLog: (msg: string) => void;
+};
+
+const defaultRuntime: GatewayRuntime = {
+  createWhatsAppPlugin,
+  createChannelManager,
+  loadGatewayConfig,
+  assertOutboundAllowed,
+  sendComposing,
+  sendMessageWhatsApp,
+  resolveRoute,
+  resolveSessionStorePath,
+  upsertSessionMeta,
+  runAgentForMessage,
+  cleanMarkdownForWhatsApp,
+  startHeartbeatRunner,
+  isBotMentioned,
+  recordGroupMessage,
+  getAndClearGroupHistory,
+  formatGroupHistoryContext,
+  noteGroupMember,
+  formatGroupMembersList,
+  getSetting,
+  debugLog,
+};
+
 function elide(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return text.slice(0, maxLen - 3) + '...';
 }
 
-async function handleInbound(cfg: GatewayConfig, inbound: WhatsAppInboundMessage): Promise<void> {
+async function handleInbound(
+  cfg: GatewayConfig,
+  inbound: WhatsAppInboundMessage,
+  runtime: GatewayRuntime,
+): Promise<void> {
   const bodyPreview = elide(inbound.body.replace(/\n/g, ' '), 50);
   const isGroup = inbound.chatType === 'group';
   console.log(`Inbound message ${inbound.from} (${inbound.chatType}, ${inbound.body.length} chars): "${bodyPreview}"`);
-  debugLog(`[gateway] handleInbound from=${inbound.from} isGroup=${isGroup} body="${inbound.body.slice(0, 30)}..."`);
+  runtime.debugLog(`[gateway] handleInbound from=${inbound.from} isGroup=${isGroup} body="${inbound.body.slice(0, 30)}..."`);
 
   // --- Group-specific: track member, check mention gating ---
   if (isGroup) {
-    noteGroupMember(inbound.chatId, inbound.senderId, inbound.senderName);
+    runtime.noteGroupMember(inbound.chatId, inbound.senderId, inbound.senderName);
 
-    const mentioned = isBotMentioned({
+    const mentioned = runtime.isBotMentioned({
       mentionedJids: inbound.mentionedJids,
       selfJid: inbound.selfJid,
       selfLid: inbound.selfLid,
       selfE164: inbound.selfE164,
       body: inbound.body,
     });
-    debugLog(`[gateway] group mention check: mentioned=${mentioned}`);
+    runtime.debugLog(`[gateway] group mention check: mentioned=${mentioned}`);
 
     if (!mentioned) {
       // Buffer the message for future context but don't reply
-      recordGroupMessage(inbound.chatId, {
+      runtime.recordGroupMessage(inbound.chatId, {
         senderName: inbound.senderName ?? inbound.senderId,
         senderId: inbound.senderId,
         body: inbound.body,
         timestamp: inbound.timestamp ?? Date.now(),
       });
-      debugLog(`[gateway] group message buffered (no mention), skipping reply`);
+      runtime.debugLog(`[gateway] group message buffered (no mention), skipping reply`);
       return;
     }
   }
 
   // --- Routing: use chatId for groups (group JID), senderId for DMs ---
   const peerId = isGroup ? inbound.chatId : inbound.senderId;
-  const route = resolveRoute({
+  const route = runtime.resolveRoute({
     cfg,
     channel: 'whatsapp',
     accountId: inbound.accountId,
     peer: { kind: inbound.chatType, id: peerId },
   });
 
-  const storePath = resolveSessionStorePath(route.agentId);
-  upsertSessionMeta({
+  const storePath = runtime.resolveSessionStorePath(route.agentId);
+  runtime.upsertSessionMeta({
     storePath,
     sessionKey: route.sessionKey,
     channel: 'whatsapp',
@@ -101,9 +151,9 @@ async function handleInbound(cfg: GatewayConfig, inbound: WhatsAppInboundMessage
       await inbound.sendComposing();
       typingTimer = setInterval(() => { void inbound.sendComposing(); }, TYPING_INTERVAL_MS);
     } else {
-      await sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId });
+      await runtime.sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId });
       typingTimer = setInterval(() => {
-        void sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId });
+        void runtime.sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId });
       }, TYPING_INTERVAL_MS);
     }
   };
@@ -120,10 +170,10 @@ async function handleInbound(cfg: GatewayConfig, inbound: WhatsAppInboundMessage
     // For groups, use chatId (the group JID); for DMs, use replyToJid
     const outboundTarget = isGroup ? inbound.chatId : inbound.replyToJid;
     try {
-      assertOutboundAllowed({ to: outboundTarget, accountId: inbound.accountId });
+      runtime.assertOutboundAllowed({ to: outboundTarget, accountId: inbound.accountId });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      debugLog(`[gateway] outbound BLOCKED: ${msg}`);
+      runtime.debugLog(`[gateway] outbound BLOCKED: ${msg}`);
       console.log(msg);
       return;
     }
@@ -135,16 +185,16 @@ async function handleInbound(cfg: GatewayConfig, inbound: WhatsAppInboundMessage
     let groupContext: GroupContext | undefined;
 
     if (isGroup) {
-      const history = getAndClearGroupHistory(inbound.chatId);
-      query = formatGroupHistoryContext({
+      const history = runtime.getAndClearGroupHistory(inbound.chatId);
+      query = runtime.formatGroupHistoryContext({
         history,
         currentSenderName: inbound.senderName ?? inbound.senderId,
         currentSenderId: inbound.senderId,
         currentBody: inbound.body,
       });
-      debugLog(`[gateway] group query with ${history.length} history entries`);
+      runtime.debugLog(`[gateway] group query with ${history.length} history entries`);
 
-      const membersList = formatGroupMembersList({
+      const membersList = runtime.formatGroupMembersList({
         groupId: inbound.chatId,
         participants: inbound.groupParticipants,
       });
@@ -156,11 +206,11 @@ async function handleInbound(cfg: GatewayConfig, inbound: WhatsAppInboundMessage
     }
 
     console.log(`Processing message with agent...`);
-    debugLog(`[gateway] running agent for session=${route.sessionKey}`);
+    runtime.debugLog(`[gateway] running agent for session=${route.sessionKey}`);
     const startedAt = Date.now();
-    const model = getSetting('modelId', 'gpt-5.4') as string;
-    const modelProvider = getSetting('provider', 'openai') as string;
-    const answer = await runAgentForMessage({
+    const model = runtime.getSetting('modelId', 'gpt-5.4') as string;
+    const modelProvider = runtime.getSetting('provider', 'openai') as string;
+    const answer = await runtime.runAgentForMessage({
       sessionKey: route.sessionKey,
       query,
       model,
@@ -169,56 +219,59 @@ async function handleInbound(cfg: GatewayConfig, inbound: WhatsAppInboundMessage
       groupContext,
     });
     const durationMs = Date.now() - startedAt;
-    debugLog(`[gateway] agent answer length=${answer.length}`);
+    runtime.debugLog(`[gateway] agent answer length=${answer.length}`);
 
     // Stop typing loop before sending reply
     stopTypingLoop();
 
     if (answer.trim()) {
-      const cleanedAnswer = cleanMarkdownForWhatsApp(answer);
+      const cleanedAnswer = runtime.cleanMarkdownForWhatsApp(answer);
 
       if (isGroup) {
         // For groups, use inbound.reply() directly (bypasses outbound strict E.164 checks)
-        debugLog(`[gateway] sending group reply to ${inbound.chatId}`);
+        runtime.debugLog(`[gateway] sending group reply to ${inbound.chatId}`);
         await inbound.reply(cleanedAnswer);
       } else {
-        debugLog(`[gateway] sending reply to ${inbound.replyToJid}`);
-        await sendMessageWhatsApp({
+        runtime.debugLog(`[gateway] sending reply to ${inbound.replyToJid}`);
+        await runtime.sendMessageWhatsApp({
           to: inbound.replyToJid,
           body: cleanedAnswer,
           accountId: inbound.accountId,
         });
       }
       console.log(`Sent reply (${answer.length} chars, ${durationMs}ms)`);
-      debugLog(`[gateway] reply sent`);
+      runtime.debugLog(`[gateway] reply sent`);
     } else {
       console.log(`Agent returned empty response (${durationMs}ms)`);
-      debugLog(`[gateway] empty answer, not sending`);
+      runtime.debugLog(`[gateway] empty answer, not sending`);
     }
   } catch (err) {
     stopTypingLoop();
     const msg = err instanceof Error ? err.message : String(err);
     console.log(`Error: ${msg}`);
-    debugLog(`[gateway] ERROR: ${msg}`);
+    runtime.debugLog(`[gateway] ERROR: ${msg}`);
   }
 }
 
-export async function startGateway(params: { configPath?: string } = {}): Promise<GatewayService> {
-  const cfg = loadGatewayConfig(params.configPath);
-  const plugin = createWhatsAppPlugin({
-    loadConfig: () => loadGatewayConfig(params.configPath),
+export async function startGateway(
+  params: { configPath?: string; runtime?: Partial<GatewayRuntime> } = {},
+): Promise<GatewayService> {
+  const runtime: GatewayRuntime = { ...defaultRuntime, ...params.runtime };
+  const cfg = runtime.loadGatewayConfig(params.configPath);
+  const plugin = runtime.createWhatsAppPlugin({
+    loadConfig: () => runtime.loadGatewayConfig(params.configPath),
     onMessage: async (inbound) => {
-      const current = loadGatewayConfig(params.configPath);
-      await handleInbound(current, inbound);
+      const current = runtime.loadGatewayConfig(params.configPath);
+      await handleInbound(current, inbound, runtime);
     },
   });
-  const manager = createChannelManager({
+  const manager = runtime.createChannelManager({
     plugin,
-    loadConfig: () => loadGatewayConfig(params.configPath),
+    loadConfig: () => runtime.loadGatewayConfig(params.configPath),
   });
   await manager.startAll();
 
-  const heartbeat = startHeartbeatRunner({ configPath: params.configPath });
+  const heartbeat = runtime.startHeartbeatRunner({ configPath: params.configPath });
 
   return {
     stop: async () => {
@@ -228,4 +281,3 @@ export async function startGateway(params: { configPath?: string } = {}): Promis
     snapshot: () => manager.getSnapshot(),
   };
 }
-

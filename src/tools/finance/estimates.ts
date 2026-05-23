@@ -7,6 +7,7 @@ import { getYahooAnalystTargets } from './yahoo-finance.js';
 const AnalystEstimatesInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The stock ticker symbol to fetch analyst estimates for. For example, 'AAPL' for Apple or 'VWS.CO' for Vestas Wind Systems."
     ),
@@ -16,6 +17,7 @@ const AnalystEstimatesInputSchema = z.object({
     .describe("The period for the estimates, either 'annual' or 'quarterly'."),
 });
 
+/** Fetches analyst estimate data for a public company. */
 export const getAnalystEstimates = new DynamicStructuredTool({
   name: 'get_analyst_estimates',
   description: `Retrieves analyst estimates for a given company ticker, including metrics like estimated EPS and price targets. Covers US and international tickers. Falls back to Yahoo Finance for tickers not covered by the primary data source (e.g. European stocks like VWS.CO, AZN.L).`,
@@ -43,4 +45,3 @@ export const getAnalystEstimates = new DynamicStructuredTool({
     }
   },
 });
-

@@ -1,1397 +1,199 @@
 import { AIMessage } from '@langchain/core/messages';
 import { StructuredToolInterface } from '@langchain/core/tools';
 import { callLlm, streamCallLlm, getLlmCallTimeoutMs } from '../model/llm.js';
-import { getSetting } from '../utils/config.js';
-import { getTools } from '../tools/registry.js';
-import { buildSystemPrompt, buildIterationPrompt, loadSoulDocument } from './prompts.js';
-import { extractTextContent, hasToolCalls, extractReasoningContent } from '../utils/ai-message.js';
+import { getSetting, loadConfig } from '../utils/config.js';
+import { logger } from '../utils/logger.js';
+import { buildToolDescriptions, getTools } from '../tools/registry.js';
+import {
+  buildSystemPrompt,
+  buildIterationPrompt,
+  loadSoulDocument,
+} from './prompts.js';
+import { extractTextContent, hasToolCalls, extractReasoningContent } from '../utils/parsing/ai-message.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
-import { buildHistoryContext } from '../utils/history-context.js';
+import { buildHistoryContext } from '../utils/parsing/history-context.js';
 import { estimateTokens, CONTEXT_THRESHOLD, KEEP_TOOL_USES, getContextThreshold, getKeepToolUses } from '../utils/tokens.js';
 import { formatUserFacingError, isContextOverflowError } from '../utils/errors.js';
-import type { AgentConfig, AgentEvent, AnswerStartEvent, AnswerChunkEvent, ContextClearedEvent, ProgressEvent, TokenUsage } from '../agent/types.js';
+import type { AgentConfig, AgentEvent, AgentMemoryManager, AnswerStartEvent, AnswerChunkEvent, ContextClearedEvent, ProgressEvent, TokenUsage } from '../agent/types.js';
 import { createRunContext, type RunContext } from './run-context.js';
+import {
+  createRunLoopState,
+  type MemoryFlushState,
+  type PeriodicMemoryFlushState,
+  type RunLoopState,
+} from './run-loop-state.js';
+import { buildContextSummaryText } from './context-summary.js';
 import { AgentToolExecutor } from './tool-executor.js';
 import { MemoryManager } from '../memory/index.js';
 import { runMemoryFlush, shouldRunMemoryFlush } from '../memory/flush.js';
 import { injectMemoryContext } from './memory-injection.js';
 import { extractTickers as extractTickersFn } from '../memory/ticker-extractor.js';
 import { injectPolymarketContext } from '../tools/finance/polymarket-injector.js';
-import { detectAssetType, extractSignals as extractSignalsFn } from '../tools/finance/signal-extractor.js';
-import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
+import { extractSignals as extractSignalsFn } from '../tools/finance/signal-extractor.js';
 import { fetchPolymarketMarkets } from '../tools/finance/polymarket.js';
-import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
 import { resolveProvider } from '../providers.js';
-import type { ToolCallRecord } from './scratchpad.js';
+import {
+  forecastLabRouter,
+  type ForecastLabIntentRoute,
+  type ForecastLabRoutingHint,
+} from './forecast-lab-routing.js';
+import { extractForecastLabRunToolAnswer } from '../tools/forecast-lab-run.js';
+import {
+  hasPrematureForecastArbitratorCall,
+  isAcceptedFirstPlanningToolCall,
+  normalizeExplicitGoldCombinedToolCalls,
+} from './planning-tool-calls.js';
+import {
+  buildAbstainingBtcShortHorizonForecastAnswer,
+  buildDistributionWarningPrefix,
+  buildExplicitGoldCombinedForecastAnswer,
+  buildForecastDisagreementPrefix,
+  buildLowConfidenceBtcShortHorizonForecastPrefix,
+  buildSourcesFooter,
+  ensureStructuredDensityTable,
+  stripThinkingTags,
+} from './answer-formatting/index.js';
+import {
+  buildForcedCryptoForecastMarkovArgs,
+  buildForcedFixedIncomeArgs,
+  buildForcedForecastArbiterArgs,
+  buildForcedGoldCombinedForecastArbiterArgs,
+  buildForcedMarkovArgs,
+  buildForcedMarketDataArgs,
+  buildForcedNonCryptoMarketDataArgs,
+  buildForcedNonCryptoPolymarketForecastArgs,
+  buildForcedOnchainArgs,
+  buildForcedPolymarketForecastArgs,
+  buildForcedSocialSentimentArgs,
+  detectBtcShortHorizonDisagreement,
+  detectExplicitSkillRequest,
+  extractCurrentPriceFromMarketDataQuery,
+  extractCurrentPriceFromToolCalls,
+  extractMarkovPredictionConfidenceForQuery,
+  extractMarkovReturnFromToolCalls,
+  extractSentimentScoreFromToolCalls,
+  getBtcSelectiveMarkovConfidenceThreshold,
+  hasAbstainingMarkovDistributionForQuery,
+  hasCompletedMarkovDistributionForQuery,
+  hasCryptoPolymarketForecastCoverage,
+  hasForecastArbitratorForQuery,
+  hasLowConfidenceBtcShortHorizonMarkov,
+  hasMarketDataQuery,
+  hasPolymarketForecastCoverage,
+  hasUsableFixedIncomeResult,
+  hasUsableOnchainResultForCryptoQuery,
+  inferBtcShortHorizonForecastHorizon,
+  inferDistributionHorizon,
+  inferDistributionTicker,
+  inferMarkovQueryHorizon,
+  inferTrajectoryRequest,
+  isBtcShortHorizonForecastQuery,
+  isCryptoForecastQuery,
+  isDistributionQuery,
+  isExplicitGoldCombinedMarkovPolymarketRequest,
+  isExplicitPolymarketForecastRequest,
+  isExplicitTerminalDistributionQuery,
+  isForecastLabImprovementQuery,
+  isForecastLabPlanOnlyQuery,
+  isNonCryptoForecastQuery,
+  shouldForceCryptoForecastTools,
+  shouldForceForecastArbitrator,
+  shouldForceGoldCombinedForecastArbitrator,
+  shouldForceGoldCombinedForecastTools,
+  shouldForceMarkovDistribution,
+  shouldForceNonCryptoForecastFallback,
+  shouldInjectBtcShortHorizonLowConfidencePrompt,
+  shouldInjectBtcShortHorizonMixedEvidencePrompt,
+  shouldRerunPolymarketForecastWithMarkov,
+} from './query-router.js';
+import { hasPolymarketForecastErrorForCoverage } from './query-router/coverage.js';
+
+export {
+  FACT_PATTERNS,
+  buildContextSummaryText,
+  extractKeyFacts,
+  extractTickerMetrics,
+} from './context-summary.js';
+export { isAcceptedFirstPlanningToolCall } from './planning-tool-calls.js';
+
+export {
+  buildAbstainingBtcShortHorizonForecastAnswer,
+  buildAbstainingMarkovAnswer,
+  buildDistributionWarningPrefix,
+  buildExplicitGoldCombinedForecastAnswer,
+  buildForecastDisagreementPrefix,
+  buildLowConfidenceBtcShortHorizonForecastPrefix,
+  buildSourcesFooter,
+  buildUnavailableDistributionAnswer,
+  ensureStructuredDensityTable,
+  shouldPreserveAbstainingBtcShortHorizonForecast,
+  stripThinkingTags,
+} from './answer-formatting/index.js';
+type ForecastLabResetHint = NonNullable<ForecastLabIntentRoute['resetRequest']>;
+type ForecastLabPromotionApprovalHint = NonNullable<ForecastLabIntentRoute['promotionApproval']>;
+type ForecastLabKeepCurrentBestHint = NonNullable<ForecastLabIntentRoute['keepCurrentBestRequest']>;
+type ForecastLabCatalogExtensionHint = NonNullable<ForecastLabIntentRoute['catalogExtensionRequest']>;
+type ForecastLabComparisonHint = NonNullable<ForecastLabIntentRoute['comparisonRequest']>;
+type ForecastLabResultsHint = NonNullable<ForecastLabIntentRoute['resultsRequest']>;
+type ForecastLabMutatorListHint = NonNullable<ForecastLabIntentRoute['mutatorListRequest']>;
+
+export {
+  buildForcedCryptoForecastMarkovArgs,
+  buildForcedFixedIncomeArgs,
+  buildForcedForecastArbiterArgs,
+  buildForcedGoldCombinedForecastArbiterArgs,
+  buildForcedMarkovArgs,
+  buildForcedMarketDataArgs,
+  buildForcedNonCryptoMarketDataArgs,
+  buildForcedNonCryptoPolymarketForecastArgs,
+  buildForcedOnchainArgs,
+  buildForcedPolymarketForecastArgs,
+  buildForcedSocialSentimentArgs,
+  detectExplicitSkillRequest,
+  extractCurrentPriceFromToolCalls,
+  extractMarkovReturnFromToolCalls,
+  extractSentimentScoreFromToolCalls,
+  inferDistributionHorizon,
+  inferDistributionTicker,
+  inferTrajectoryRequest,
+  isCryptoForecastQuery,
+  isExplicitGoldCombinedMarkovPolymarketRequest,
+  isExplicitPolymarketForecastRequest,
+  isExplicitTerminalDistributionQuery,
+  isForecastLabImprovementQuery,
+  isForecastLabPlanOnlyQuery,
+  isNonCryptoForecastQuery,
+  shouldForceCryptoForecastTools,
+  shouldForceForecastArbitrator,
+  shouldForceGoldCombinedForecastArbitrator,
+  shouldForceGoldCombinedForecastTools,
+  shouldForceMarkovDistribution,
+  shouldForceNonCryptoForecastFallback,
+  shouldInjectBtcShortHorizonLowConfidencePrompt,
+  shouldInjectBtcShortHorizonMixedEvidencePrompt,
+  shouldRerunPolymarketForecastWithMarkov,
+} from './query-router.js';
 
 const DEFAULT_MODEL = 'gpt-5.4';
 export const DEFAULT_MAX_ITERATIONS = 25;
-
-/**
- * Remove <think>...</think> blocks that Ollama thinking models sometimes embed
- * directly in response text rather than separating into reasoning_content.
- * Also handles orphan </think> tags (e.g. the model output was: <think>…</think>\nAnswer).
- */
-export function stripThinkingTags(text: string): string {
-  return text
-    .replace(/<think>[\s\S]*?<\/think>/gi, '') // full <think>…</think> blocks
-    .replace(/^[\s\S]*?<\/think>\s*/i, '')      // orphan </think>: strip everything up to and including it
-    .trim();
-}
 const MAX_OVERFLOW_RETRIES = 2;
 /** Flush memory to disk every N iterations regardless of context size. */
 const PERIODIC_FLUSH_INTERVAL = 5;
 
-/**
- * Build a compact Sources footer from a deduplicated list of URLs.
- * Only appended to answers when the model hasn't already cited inline links.
- * Limits to 10 URLs to keep the footer scannable.
- *
- * Social media post URLs (Reddit, X/Twitter, etc.) are excluded — these are
- * inputs to sentiment analysis, not authoritative research citations.
- */
-
-/** Domains excluded from the Sources footer (social media / UGC). */
-const EXCLUDED_SOURCE_DOMAINS = [
-  'reddit.com',
-  'x.com',
-  'twitter.com',
-  'threads.net',
-  'bsky.app',
-  'bluesky.app',
-];
-
-export function buildSourcesFooter(urls: string[]): string {
-  const filtered = urls.filter(u => {
-    try {
-      const host = new URL(u).hostname.replace(/^www\./, '');
-      return !EXCLUDED_SOURCE_DOMAINS.some(d => host === d || host.endsWith(`.${d}`));
-    } catch {
-      return false;
-    }
-  });
-  const unique = [...new Set(filtered)].slice(0, 10);
-  if (unique.length === 0) return '';
-  const lines = unique.map((u, i) => `${i + 1}. ${u}`).join('\n');
-  return `\n\n---\n**Sources**\n${lines}`;
-}
-
-function formatDiagnosticPrice(value: unknown): string | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  return value >= 1000
-    ? `$${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
-    : `$${value.toFixed(2)}`;
-}
-
-function formatDiagnosticNumber(value: unknown, digits = 3): string | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  return value.toFixed(digits);
-}
-
-export function buildAbstainingMarkovAnswer(toolCalls: ToolCallRecord[]): string | null {
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(call.result);
-    } catch {
-      continue;
-    }
-
-    const data = parsed && typeof parsed === 'object' ? (parsed as { data?: unknown }).data : null;
-    if (!data || typeof data !== 'object') continue;
-
-    const payload = data as Record<string, unknown>;
-    if (payload['_tool'] !== 'markov_distribution' || payload['status'] !== 'abstain') continue;
-
-    const canonical = payload['canonical'] && typeof payload['canonical'] === 'object'
-      ? payload['canonical'] as Record<string, unknown>
-      : {};
-    const diagnostics = canonical['diagnostics'] && typeof canonical['diagnostics'] === 'object'
-      ? canonical['diagnostics'] as Record<string, unknown>
-      : {};
-    const abstainReasons = Array.isArray(payload['abstainReasons'])
-      ? payload['abstainReasons'].filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
-      : [];
-
-    const ticker = typeof canonical['ticker'] === 'string' ? canonical['ticker'] : 'This asset';
-    const horizon = typeof canonical['horizon'] === 'number' ? canonical['horizon'] : null;
-    const currentPrice = formatDiagnosticPrice(canonical['currentPrice']);
-    const trustedAnchors = typeof diagnostics['trustedAnchors'] === 'number' ? diagnostics['trustedAnchors'] : null;
-    const totalAnchors = typeof diagnostics['totalAnchors'] === 'number' ? diagnostics['totalAnchors'] : null;
-    const anchorQuality = typeof diagnostics['anchorQuality'] === 'string' ? diagnostics['anchorQuality'] : null;
-    const outOfSampleR2 = formatDiagnosticNumber(diagnostics['outOfSampleR2']);
-    const structuralBreakDetected = diagnostics['structuralBreakDetected'] === true;
-    const structuralBreakDivergence = formatDiagnosticNumber(diagnostics['structuralBreakDivergence']);
-    const predictionConfidence = formatDiagnosticNumber(diagnostics['predictionConfidence'], 2);
-
-    const lines = [
-      `## ${ticker} ${horizon !== null ? `${horizon}-Day ` : ''}Probability Distribution: Model Abstained`,
-      '',
-      'A calibrated probability distribution is not available. `markov_distribution` explicitly abstained, so no replacement scenario probabilities are shown.',
-      '',
-      '## Why it abstained',
-      ...(abstainReasons.length > 0
-        ? abstainReasons.map((reason) => `- ${reason}`)
-        : ['- The tool marked this run as diagnostics-only.']),
-      '',
-      '## Diagnostics',
-      '| Metric | Value |',
-      '|--------|-------|',
-      ...(currentPrice ? [`| Current price | ${currentPrice} |`] : []),
-      `| Trusted anchors | ${trustedAnchors !== null && totalAnchors !== null ? `${trustedAnchors} / ${totalAnchors}` : 'N/A'} |`,
-      `| Anchor quality | ${anchorQuality ?? 'N/A'} |`,
-      `| Out-of-sample R² | ${outOfSampleR2 ?? 'N/A'} |`,
-      `| Structural break | ${structuralBreakDetected ? `Yes${structuralBreakDivergence ? ` (${structuralBreakDivergence})` : ''}` : 'No'} |`,
-      `| Prediction confidence | ${predictionConfidence ?? 'N/A'} |`,
-      '',
-      '## Interpretation',
-      'Use later prediction-market searches only as diagnostics about missing or low-quality anchors. They do not justify a replacement calibrated distribution for this horizon.',
-      '',
-      '## Next best option',
-      '- Wait for horizon-matched terminal threshold markets to list, or',
-      '- Use `polymarket_forecast` for a point estimate with a confidence interval instead of a full distribution.',
-    ];
-
-    return lines.join('\n');
-  }
-
-  return null;
-}
-
-function inferBtcShortHorizonForecastHorizon(query: string): number | null {
-  const ticker = inferDistributionTicker(query);
-  if (ticker !== 'BTC' && ticker !== 'BTC-USD') return null;
-
-  const horizon = inferDistributionHorizon(query);
-  if (horizon !== null) return horizon;
-  if (/\bnext\s+week\b/i.test(query)) return TRADING_DAYS_PER_WEEK;
-
-  return null;
-}
-
-function inferMarkovQueryHorizon(query: string): number | null {
-  return inferDistributionHorizon(query) ?? inferBtcShortHorizonForecastHorizon(query);
-}
-
-function isBtcShortHorizonForecastQuery(query: string): boolean {
-  if (!isCryptoForecastQuery(query)) return false;
-  const horizon = inferBtcShortHorizonForecastHorizon(query);
-  return horizon !== null && horizon <= 14;
-}
-
-export function isExplicitPolymarketForecastRequest(query: string): boolean {
-  const lower = query.toLowerCase();
-  return lower.includes('polymarket_forecast')
-    || /\bpolymarket forecast\b/.test(lower)
-    || /\buse\s+(?:the\s+)?polymarket(?:_forecast| forecast)\b/.test(lower)
-    || /\brun\s+(?:the\s+)?polymarket(?:_forecast| forecast)\b/.test(lower);
-}
-
-export function shouldPreserveAbstainingBtcShortHorizonForecast(
-  query: string,
-  toolCalls: ToolCallRecord[],
-): boolean {
-  if (isExplicitPolymarketForecastRequest(query)) return false;
-  return isBtcShortHorizonForecastQuery(query)
-    && hasAbstainingMarkovDistributionForQuery(query, toolCalls);
-}
-
-export function buildAbstainingBtcShortHorizonForecastAnswer(
-  query: string,
-  toolCalls: ToolCallRecord[],
-): string | null {
-  if (!shouldPreserveAbstainingBtcShortHorizonForecast(query, toolCalls)) return null;
-
-  const diagnostics = buildAbstainingMarkovAnswer(toolCalls);
-  if (!diagnostics) return null;
-
-  return [
-    diagnostics,
-    '',
-    '## Decision guidance',
-    'Treat this horizon as no-trade / no-calibrated-edge unless new horizon-matched terminal threshold markets appear. Any later fallback tools may still be useful for context, but they do not replace the abstained Markov forecast for BTC short horizons.',
-  ].join('\n');
-}
-
-function isDistributionQuery(query: string): boolean {
-  return /probability distribution|price distribution|full distribution|distribution for .*price/i.test(query);
-}
-
-export function isExplicitTerminalDistributionQuery(query: string): boolean {
-  const lower = query.toLowerCase();
-  return isDistributionQuery(query)
-    || lower.includes('markov distribution')
-    || lower.includes('markov chain')
-    || lower.includes('terminal threshold');
-}
-
-export function inferDistributionTicker(query: string): string | null {
-  const resolved = resolveAssetIntent(query, extractTickersFn(query)[0] ?? null);
-  if (resolved.resolvedTicker) {
-    if (resolved.assetClass === 'ticker' && /^[A-Z]{2,5}$/.test(resolved.resolvedTicker)) {
-      const detected = detectAssetType(query);
-      if (detected.type === 'crypto') return `${resolved.resolvedTicker}-USD`;
-    }
-    return resolved.resolvedTicker;
-  }
-
-  const extracted = extractTickersFn(query);
-  if (extracted.length > 0) {
-    const first = extracted[0]!;
-    if (/^[A-Z]{2,5}$/.test(first)) {
-      const detected = detectAssetType(query);
-      if (detected.type === 'crypto') return `${first}-USD`;
-    }
-    return first;
-  }
-
-  const detected = detectAssetType(query);
-  if (detected.type === 'crypto' && detected.ticker) return `${detected.ticker}-USD`;
-  return detected.ticker;
-}
-
-const TRADING_DAYS_PER_WEEK = 5;
-const TRADING_DAYS_PER_MONTH = 21;
-const TRADING_DAYS_PER_QUARTER = TRADING_DAYS_PER_MONTH * 3;
-const QUARTER_END_MONTHS: Record<1 | 2 | 3 | 4, number> = {
-  1: 3,
-  2: 6,
-  3: 9,
-  4: 12,
-};
-
-function startOfUtcDay(date: Date): Date {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-}
-
-function countWeekdaysUntil(targetDate: Date, referenceDate: Date): number | null {
-  const start = startOfUtcDay(referenceDate);
-  const target = startOfUtcDay(targetDate);
-  if (target <= start) return null;
-
-  let count = 0;
-  const cursor = new Date(start);
-  while (cursor < target) {
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-    const weekday = cursor.getUTCDay();
-    if (weekday !== 0 && weekday !== 6) count++;
-  }
-
-  return count > 0 ? count : null;
-}
-
-function inferQuarterEndTradingDays(query: string, referenceDate: Date): number | null {
-  const quarterEndMatch = query.match(/\b(?:by\s+)?end\s+of\s+q([1-4])(?:\s+(\d{4}))?\b/i)
-    ?? query.match(/\bthrough\s+q([1-4])(?:\s+(\d{4}))?\b/i);
-  if (!quarterEndMatch) return null;
-
-  const quarter = parseInt(quarterEndMatch[1]!, 10) as 1 | 2 | 3 | 4;
-  const hasExplicitYear = Boolean(quarterEndMatch[2]);
-  let year = quarterEndMatch[2]
-    ? parseInt(quarterEndMatch[2]!, 10)
-    : referenceDate.getUTCFullYear();
-
-  const buildQuarterEndDate = (targetYear: number) =>
-    new Date(Date.UTC(targetYear, QUARTER_END_MONTHS[quarter], 0));
-
-  const start = startOfUtcDay(referenceDate);
-  let targetDate = buildQuarterEndDate(year);
-  if (!hasExplicitYear && targetDate < start) {
-    year += 1;
-    targetDate = buildQuarterEndDate(year);
-  }
-
-  if (targetDate.getTime() === start.getTime()) return 1;
-  if (targetDate < start) return null;
-
-  return countWeekdaysUntil(targetDate, referenceDate);
-}
-
-export function inferDistributionHorizon(query: string, referenceDate: Date = new Date()): number | null {
-  const lower = query.toLowerCase();
-
-  const tradingDaysMatch = lower.match(/(\d+)\s+trading\s+days?/i);
-  if (tradingDaysMatch) return parseInt(tradingDaysMatch[1]!, 10);
-
-  const dayMatch = lower.match(/(\d+)[-\s]days?\b/i);
-  if (dayMatch) return parseInt(dayMatch[1]!, 10);
-
-  const weekMatch = lower.match(/(\d+)[-\s]weeks?\b/i);
-   if (weekMatch) return parseInt(weekMatch[1]!, 10) * TRADING_DAYS_PER_WEEK;
-
-  const monthMatch = lower.match(/(\d+)[-\s]months?\b/i);
-  if (monthMatch) return parseInt(monthMatch[1]!, 10) * TRADING_DAYS_PER_MONTH;
-
-  const quarterMatch = lower.match(/(\d+)[-\s]quarters?\b/i);
-  if (quarterMatch) return parseInt(quarterMatch[1]!, 10) * TRADING_DAYS_PER_QUARTER;
-
-  if (/\bnext\s+month\b/i.test(lower)) return TRADING_DAYS_PER_MONTH;
-  if (/\bnext\s+quarter\b/i.test(lower)) return TRADING_DAYS_PER_QUARTER;
-
-  const quarterEndTradingDays = inferQuarterEndTradingDays(query, referenceDate);
-  if (quarterEndTradingDays !== null) return quarterEndTradingDays;
-
-  return null;
-}
-
-/**
- * Detect whether the user explicitly requested a day-by-day trajectory
- * (as opposed to a single-horizon snapshot).
- */
-export function inferTrajectoryRequest(query: string): boolean {
-  const lower = query.toLowerCase();
-  return /trajectory|day[- ]by[- ]day|day by day|price path|daily forecast|daily projection/i.test(lower);
-}
-
-export function buildForcedMarkovArgs(query: string): { ticker: string; horizon: number; trajectory?: true; trajectoryDays?: number } | null {
-  const ticker = inferDistributionTicker(query);
-  const horizon = inferDistributionHorizon(query);
-  if (!ticker || !horizon) return null;
-
-  const args: { ticker: string; horizon: number; trajectory?: true; trajectoryDays?: number } = { ticker, horizon };
-  if (inferTrajectoryRequest(query)) {
-    args.trajectory = true;
-    args.trajectoryDays = Math.min(30, horizon);
-  }
-
-  return args;
-}
-
-export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCallRecord[]): boolean {
-  return (isExplicitTerminalDistributionQuery(query) || inferTrajectoryRequest(query))
-    && !toolCalls.some((call) => call.tool === 'markov_distribution');
-}
-
-export function isCryptoForecastQuery(query: string): boolean {
-  if (isExplicitTerminalDistributionQuery(query)) return false;
-
-  if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;
-
-  const detected = detectAssetType(query);
-  if (detected.type !== 'crypto' || !detected.ticker) return false;
-
-  const lower = query.toLowerCase();
-  const hasForecastLanguage = /\bforecast\b|\bpredict(?:ion)?\b|\boutlook\b|\bprice target\b|where .* headed|what will .* trade|how .* move/.test(lower);
-  const hasFutureHorizon = /over the next\s+\d+\s*(?:day|days|week|weeks)\b|next\s+\d+\s*(?:day|days|week|weeks)\b|in\s+\d+\s*(?:day|days|week|weeks)\b/.test(lower);
-
-  return hasForecastLanguage || hasFutureHorizon;
-}
-
-/**
- * Detect non-crypto asset forecast-like queries (stocks, ETFs, commodities).
- * Returns true when the query asks about future price/forecast/outlook for a
- * non-crypto asset — exactly the cases where Markov abstention should trigger
- * a forced get_market_data + polymarket_forecast fallback.
- */
-export function isNonCryptoForecastQuery(query: string): boolean {
-  if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;
-
-  // Exclude crypto — that path has its own dedicated forcing
-  const detected = detectAssetType(query);
-  if (detected.type === 'crypto') return false;
-  if (!detected.ticker) return false;
-
-  const lower = query.toLowerCase();
-  const isHardDistributionQuery = isDistributionQuery(query)
-    || lower.includes('markov distribution')
-    || lower.includes('terminal threshold');
-  if (isHardDistributionQuery) return false;
-
-  const hasForecastLanguage = /\bforecast\b|\bpredict(?:ion)?\b|\boutlook\b|\bprice target\b|where .* headed|what will .* trade|how .* move|price of|will .* (?:beat|hit|reach|drop|rise|fall|exceed|go above|go below)/.test(lower);
-  const hasFutureHorizon = /over the next\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|next\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|in\s+\d+\s*(?:day|days|week|weeks|month|months|quarter|quarters)\b|\bnext\s+month\b|\bnext\s+quarter\b|\b(?:by\s+)?end\s+of\s+q[1-4](?:\s+\d{4})?\b|\bthrough\s+q[1-4](?:\s+\d{4})?\b/.test(lower);
-
-  return hasForecastLanguage || hasFutureHorizon;
-}
-
-type ForcedNonCryptoPolymarketForecastArgs = {
-  ticker: string;
-  horizon_days: number;
-  current_price?: number;
-  markov_return?: number;
-};
-
-type ForecastCoverageArgs = {
-  ticker: string;
-  horizon_days?: number;
-  current_price?: number;
-  sentiment_score?: number;
-  markov_return?: number;
-};
-
-/**
- * Returns true when a non-crypto forecast query has had markov_distribution
- * abstain and is still missing get_market_data and/or
- * polymarket_forecast — the two tools that should be forced as a fallback.
- */
-export function shouldForceNonCryptoForecastFallback(query: string, toolCalls: ToolCallRecord[]): boolean {
-  if (!isNonCryptoForecastQuery(query)) return false;
-
-  // If Markov already produced a non-abstain result, don't force fallback.
-  if (hasSuccessfulMarkovDistributionForQuery(query, toolCalls)) return false;
-
-  // This fallback is only for the post-abstain path. If Markov never ran,
-  // let the normal model/tool flow decide whether to invoke it first.
-  const hasAbstainingMarkov = hasAbstainingMarkovDistributionForQuery(query, toolCalls);
-  if (!hasAbstainingMarkov) return false;
-
-  const marketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
-  const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls);
-  const currentPrice = extractCurrentPriceForNonCryptoQuery(query, toolCalls);
-  const marketDataAttempted = marketDataArgs !== null && hasMarketDataQuery(toolCalls, marketDataArgs.query);
-
-  const needsCurrentPriceFetch = marketDataArgs !== null && currentPrice === null && !marketDataAttempted;
-
-  const needsForecastRun = forecastArgs !== null
-    && !hasPolymarketForecastCoverage(toolCalls, forecastArgs);
-
-  return needsCurrentPriceFetch || needsForecastRun;
-}
-
-function parseToolCallData(call: ToolCallRecord): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(call.result) as { data?: unknown };
-    return parsed?.data && typeof parsed.data === 'object'
-      ? parsed.data as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function hasErrorLikeToolResult(result: string): boolean {
-  return /^Error:/i.test(result) || /"error"\s*:/i.test(result);
-}
-
-function hasNonEmptyParsedToolData(call: ToolCallRecord): boolean {
-  const data = parseToolCallData(call);
-  return data !== null && Object.keys(data).length > 0;
-}
-
-function extractPositiveNumericValue(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-    return value;
-  }
-
-  if (typeof value === 'string' && value.trim().length > 0) {
-    const parsed = Number.parseFloat(value);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
-
-function extractPriceFromPayload(value: unknown): number | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-
-  const directPrice = extractPositiveNumericValue(record['price']);
-  if (directPrice !== null) {
-    return directPrice;
-  }
-
-  const closePrice = extractPositiveNumericValue(record['close']);
-  if (closePrice !== null) {
-    return closePrice;
-  }
-
-  const lastTradePrice = extractPositiveNumericValue(record['lastTradePrice']);
-  if (lastTradePrice !== null) {
-    return lastTradePrice;
-  }
-
-  const snapshot = record['snapshot'];
-  if (snapshot && typeof snapshot === 'object') {
-    const snapshotRecord = snapshot as Record<string, unknown>;
-    const snapshotPrice = extractPositiveNumericValue(snapshotRecord['price'])
-      ?? extractPositiveNumericValue(snapshotRecord['close'])
-      ?? extractPositiveNumericValue(snapshotRecord['lastTradePrice']);
-    if (snapshotPrice !== null) {
-      return snapshotPrice;
-    }
-  }
-
-  return null;
-}
-
-function hasMarketDataQuery(toolCalls: ToolCallRecord[], query: string): boolean {
-  return toolCalls.some((call) => call.tool === 'get_market_data' && call.args['query'] === query);
-}
-
-function extractCurrentPriceFromMarketDataQuery(toolCalls: ToolCallRecord[], query: string): number | null {
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'get_market_data' || call.args['query'] !== query) continue;
-
-    const data = parseToolCallData(call);
-    if (!data) continue;
-
-    const direct = extractPriceFromPayload(data);
-    if (direct !== null) return direct;
-
-    for (const [key, value] of Object.entries(data)) {
-      if (!key.startsWith('get_crypto_price_snapshot_') && !key.startsWith('get_stock_price_')) continue;
-      const extracted = extractPriceFromPayload(value);
-      if (extracted !== null) return extracted;
-    }
-  }
-
-  return null;
-}
-
-function extractCurrentPriceFromAbstainingMarkovQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
-  const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferDistributionHorizon(query);
-
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
-
-    const data = parseToolCallData(call);
-    if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'abstain') continue;
-
-    const canonical = data['canonical'];
-    if (!canonical || typeof canonical !== 'object') continue;
-
-    const currentPrice = extractPositiveNumericValue((canonical as Record<string, unknown>)['currentPrice']);
-    if (currentPrice !== null) {
-      return currentPrice;
-    }
-  }
-
-  return null;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isFinitePositiveNumber(value: unknown): value is number {
-  return isFiniteNumber(value) && value > 0;
-}
-
-function numbersApproximatelyMatch(actual: unknown, expected: number): boolean {
-  if (!isFiniteNumber(actual)) return false;
-  const tolerance = Math.max(1e-6, Math.abs(expected) * 1e-6);
-  return Math.abs(actual - expected) <= tolerance;
-}
-
-export function extractCurrentPriceFromToolCalls(toolCalls: ToolCallRecord[]): number | null {
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'get_market_data') continue;
-
-    const data = parseToolCallData(call);
-    if (!data) continue;
-
-    const direct = extractPriceFromPayload(data);
-    if (direct !== null) return direct;
-
-    for (const [key, value] of Object.entries(data)) {
-      if (!key.startsWith('get_crypto_price_snapshot_') && !key.startsWith('get_stock_price_')) continue;
-      const extracted = extractPriceFromPayload(value);
-      if (extracted !== null) return extracted;
-    }
-  }
-
-  return null;
-}
-
-function extractCurrentPriceForCryptoQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
-  const marketDataArgs = buildForcedMarketDataArgs(query);
-  return marketDataArgs
-    ? extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query)
-    : null;
-}
-
-function extractCurrentPriceForNonCryptoQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
-  const marketDataArgs = buildForcedNonCryptoMarketDataArgs(query);
-  if (!marketDataArgs) return null;
-
-  const marketDataPrice = extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query);
-  if (marketDataPrice !== null) return marketDataPrice;
-
-  if (!hasMarketDataQuery(toolCalls, marketDataArgs.query)) return null;
-
-  return extractCurrentPriceFromAbstainingMarkovQuery(query, toolCalls);
-}
-
-export function extractSentimentScoreFromToolCalls(toolCalls: ToolCallRecord[]): number | null {
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'social_sentiment') continue;
-
-    const data = parseToolCallData(call);
-    const report = data?.['result'];
-    if (typeof report !== 'string') continue;
-
-    const match = report.match(/score\s*([+-]?\d+)\/100/i);
-    if (!match) continue;
-
-    const parsedScore = parseInt(match[1]!, 10) / 100;
-    if (Number.isFinite(parsedScore)) {
-      return Math.max(-1, Math.min(1, parsedScore));
-    }
-  }
-
-  return null;
-}
-
-function extractSentimentScoreForCryptoQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
-  const desired = buildForcedSocialSentimentArgs(query);
-  if (!desired) return null;
-
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'social_sentiment') continue;
-    if (call.args['ticker'] !== desired.ticker) continue;
-
-    const data = parseToolCallData(call);
-    const report = data?.['result'];
-    if (typeof report !== 'string') continue;
-
-    const match = report.match(/score\s*([+-]?\d+)\/100/i);
-    if (!match) continue;
-
-    const parsedScore = parseInt(match[1]!, 10) / 100;
-    if (Number.isFinite(parsedScore)) {
-      return Math.max(-1, Math.min(1, parsedScore));
-    }
-  }
-
-  return null;
-}
-
-export function extractMarkovReturnFromToolCalls(toolCalls: ToolCallRecord[]): number | null {
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-
-    const data = parseToolCallData(call);
-    if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'ok') continue;
-
-    const canonical = data['canonical'];
-    if (!canonical || typeof canonical !== 'object') continue;
-
-    const actionSignal = (canonical as Record<string, unknown>)['actionSignal'];
-    const diagnostics = (canonical as Record<string, unknown>)['diagnostics'];
-    if (!actionSignal || typeof actionSignal !== 'object' || !diagnostics || typeof diagnostics !== 'object') continue;
-
-    const expectedReturn = (actionSignal as Record<string, unknown>)['expectedReturn'];
-    const markovWeight = (diagnostics as Record<string, unknown>)['markovWeight'];
-    if (
-      typeof expectedReturn === 'number' && Number.isFinite(expectedReturn)
-      && typeof markovWeight === 'number' && Number.isFinite(markovWeight)
-    ) {
-      return expectedReturn * markovWeight;
-    }
-  }
-
-  return null;
-}
-
-function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
-  const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferMarkovQueryHorizon(query);
-  const requiresSelectiveBtcGate = isBtcShortHorizonForecastQuery(query);
-
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
-
-    const data = parseToolCallData(call);
-    if (!data || data['_tool'] !== 'markov_distribution') continue;
-
-    if (data['status'] === 'ok') {
-      const canonical = data['canonical'];
-      if (!canonical || typeof canonical !== 'object') continue;
-
-      const actionSignal = (canonical as Record<string, unknown>)['actionSignal'];
-      const diagnostics = (canonical as Record<string, unknown>)['diagnostics'];
-      if (!actionSignal || typeof actionSignal !== 'object' || !diagnostics || typeof diagnostics !== 'object') continue;
-
-      const predictionConfidence = (diagnostics as Record<string, unknown>)['predictionConfidence'];
-      if (
-        requiresSelectiveBtcGate
-        && isFiniteNumber(predictionConfidence)
-        && predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD
-      ) {
-        return null;
-      }
-
-      const expectedReturn = (actionSignal as Record<string, unknown>)['expectedReturn'];
-      const markovWeight = (diagnostics as Record<string, unknown>)['markovWeight'];
-      if (
-        typeof expectedReturn === 'number' && Number.isFinite(expectedReturn)
-        && typeof markovWeight === 'number' && Number.isFinite(markovWeight)
-      ) {
-        return expectedReturn * markovWeight;
-      }
-    }
-  }
-
-  return null;
-}
-
-function extractMarkovPredictionConfidenceForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
-  const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferMarkovQueryHorizon(query);
-
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) continue;
-
-    const data = parseToolCallData(call);
-    if (!data || data['_tool'] !== 'markov_distribution' || data['status'] !== 'ok') continue;
-
-    const canonical = data['canonical'];
-    if (!canonical || typeof canonical !== 'object') continue;
-
-    const diagnostics = (canonical as Record<string, unknown>)['diagnostics'];
-    if (!diagnostics || typeof diagnostics !== 'object') continue;
-
-    const predictionConfidence = (diagnostics as Record<string, unknown>)['predictionConfidence'];
-    if (isFiniteNumber(predictionConfidence)) return predictionConfidence;
-  }
-
-  return null;
-}
-
-function hasLowConfidenceBtcShortHorizonMarkov(query: string, toolCalls: ToolCallRecord[]): boolean {
-  if (!isBtcShortHorizonForecastQuery(query)) return false;
-  const predictionConfidence = extractMarkovPredictionConfidenceForQuery(query, toolCalls);
-  return predictionConfidence !== null && predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD;
-}
-
-export function buildForcedMarketDataArgs(query: string): { query: string } | null {
-  const detected = detectAssetType(query);
-  if (detected.type !== 'crypto' || !detected.ticker) return null;
-
-  return {
-    query: `Current crypto price snapshot for ${detected.ticker}`,
-  };
-}
-
-export function buildForcedNonCryptoMarketDataArgs(query: string): { query: string } | null {
-  if (!isNonCryptoForecastQuery(query)) return null;
-
-  const ticker = inferDistributionTicker(query);
-  if (!ticker) return null;
-
-  return {
-    query: `${ticker} current price`,
-  };
-}
-
-export function buildForcedSocialSentimentArgs(query: string): {
-  ticker: string;
-  include_fear_greed: true;
-  limit: number;
-} | null {
-  const detected = detectAssetType(query);
-  if (detected.type !== 'crypto' || !detected.ticker) return null;
-
-  return {
-    ticker: detected.ticker,
-    include_fear_greed: true,
-    limit: 25,
-  };
-}
-
-export function buildForcedPolymarketForecastArgs(query: string, toolCalls: ToolCallRecord[]): {
-  ticker: string;
-  horizon_days?: number;
-  current_price?: number;
-  sentiment_score?: number;
-  markov_return?: number;
-} | null {
-  if (!isCryptoForecastQuery(query)) return null;
-
-  const detected = detectAssetType(query);
-  if (detected.type !== 'crypto' || !detected.ticker) return null;
-
-  const args: {
-    ticker: string;
-    horizon_days?: number;
-    current_price?: number;
-    sentiment_score?: number;
-    markov_return?: number;
-  } = {
-    ticker: detected.ticker,
-  };
-
-  const horizon = inferDistributionHorizon(query);
-  if (horizon) args.horizon_days = horizon;
-
-  const currentPrice = extractCurrentPriceForCryptoQuery(query, toolCalls);
-  if (currentPrice !== null) args.current_price = currentPrice;
-
-  const sentimentScore = extractSentimentScoreForCryptoQuery(query, toolCalls);
-  if (sentimentScore !== null) args.sentiment_score = sentimentScore;
-
-  const markovReturn = extractMarkovReturnForQuery(query, toolCalls);
-  if (markovReturn !== null) args.markov_return = markovReturn;
-
-  return args;
-}
-
-export function buildForcedNonCryptoPolymarketForecastArgs(
-  query: string,
-  toolCalls: ToolCallRecord[],
-): ForcedNonCryptoPolymarketForecastArgs | null {
-  if (!isNonCryptoForecastQuery(query)) return null;
-
-  const ticker = inferDistributionTicker(query);
-  if (!ticker) return null;
-
-  const args: ForcedNonCryptoPolymarketForecastArgs = {
-    ticker,
-    horizon_days: inferDistributionHorizon(query) ?? 7,
-  };
-
-  const currentPrice = extractCurrentPriceForNonCryptoQuery(query, toolCalls);
-  if (currentPrice !== null) args.current_price = currentPrice;
-
-  const markovReturn = extractMarkovReturnFromToolCalls(toolCalls);
-  if (markovReturn !== null) args.markov_return = markovReturn;
-
-  return args;
-}
-
-function getForecastHorizonArg(args: Record<string, unknown>): number {
-  return isFinitePositiveNumber(args['horizon_days']) ? Math.trunc(args['horizon_days']) : 7;
-}
-
-function getPositiveIntegerArg(args: Record<string, unknown>, key: string): number | null {
-  return isFinitePositiveNumber(args[key]) ? Math.trunc(args[key]) : null;
-}
-
-function matchesTickerAndOptionalHorizon(
-  args: Record<string, unknown>,
-  ticker: string | null,
-  horizonKey: string,
-  horizon: number | null,
-): boolean {
-  if (ticker) {
-    const existingTicker = typeof args['ticker'] === 'string' ? args['ticker'].toUpperCase() : null;
-    if (existingTicker !== ticker.toUpperCase()) return false;
-  }
-
-  if (horizon !== null && getPositiveIntegerArg(args, horizonKey) !== horizon) {
-    return false;
-  }
-
-  return true;
-}
-
-function hasMarkovDistributionStatusForQuery(
-  query: string,
-  toolCalls: ToolCallRecord[],
-  status: 'ok' | 'abstain',
-): boolean {
-  const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferMarkovQueryHorizon(query);
-
-  return toolCalls.some((call) => {
-    if (call.tool !== 'markov_distribution') return false;
-    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon', desiredHorizon)) return false;
-
-    const data = parseToolCallData(call);
-    return data?._tool === 'markov_distribution' && data.status === status;
-  });
-}
-
-function hasSuccessfulMarkovDistributionForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
-  return hasMarkovDistributionStatusForQuery(query, toolCalls, 'ok');
-}
-
-function hasAbstainingMarkovDistributionForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
-  return hasMarkovDistributionStatusForQuery(query, toolCalls, 'abstain');
-}
-
-function hasCompletedMarkovDistributionForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
-  return hasSuccessfulMarkovDistributionForQuery(query, toolCalls)
-    || hasAbstainingMarkovDistributionForQuery(query, toolCalls);
-}
-
-function hasUsableOnchainResultForCryptoQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
-  const desired = buildForcedOnchainArgs(query);
-  if (!desired) return false;
-
-  return toolCalls.some((call) =>
-    call.tool === 'get_onchain_crypto'
-    && call.args['ticker'] === desired.ticker
-    && !hasErrorLikeToolResult(call.result)
-    && hasNonEmptyParsedToolData(call),
-  );
-}
-
-function hasUsableFixedIncomeResult(toolCalls: ToolCallRecord[]): boolean {
-  const desired = buildForcedFixedIncomeArgs();
-  return toolCalls.some((call) =>
-    call.tool === 'get_fixed_income'
-    && JSON.stringify(call.args['series']) === JSON.stringify(desired.series)
-    && !hasErrorLikeToolResult(call.result)
-    && hasNonEmptyParsedToolData(call),
-  );
-}
-
-function hasUsableStructuredToolResult(toolCalls: ToolCallRecord[], toolName: string): boolean {
-  return toolCalls.some((call) =>
-    call.tool === toolName
-    && !hasErrorLikeToolResult(call.result)
-    && hasNonEmptyParsedToolData(call),
-  );
-}
-
-function hasPolymarketForecastCoverage(
-  toolCalls: ToolCallRecord[],
-  desired: ForecastCoverageArgs,
-): boolean {
-  return toolCalls.some((call) => {
-    if (call.tool !== 'polymarket_forecast') return false;
-    if (hasErrorLikeToolResult(call.result)) return false;
-
-    const existingTicker = typeof call.args['ticker'] === 'string'
-      ? call.args['ticker'].toUpperCase()
-      : null;
-    if (existingTicker !== desired.ticker.toUpperCase()) return false;
-
-    if (desired.horizon_days !== undefined && getForecastHorizonArg(call.args) !== desired.horizon_days) return false;
-
-    if (desired.current_price !== undefined && !numbersApproximatelyMatch(call.args['current_price'], desired.current_price)) {
-      return false;
-    }
-
-    if (desired.sentiment_score !== undefined && !numbersApproximatelyMatch(call.args['sentiment_score'], desired.sentiment_score)) {
-      return false;
-    }
-
-    if (desired.markov_return !== undefined && !numbersApproximatelyMatch(call.args['markov_return'], desired.markov_return)) {
-      return false;
-    }
-
-    return true;
-  });
-}
-
-function hasCryptoPolymarketForecastCoverage(query: string, toolCalls: ToolCallRecord[]): boolean {
-  const desired = buildForcedPolymarketForecastArgs(query, toolCalls);
-  return desired !== null && hasPolymarketForecastCoverage(toolCalls, desired);
-}
-
-function hasPolymarketForecastWithMarkovReturn(toolCalls: ToolCallRecord[]): boolean {
-  return toolCalls.some((call) => call.tool === 'polymarket_forecast'
-    && isFiniteNumber(call.args['markov_return']));
-}
-
-export function shouldRerunPolymarketForecastWithMarkov(query: string, toolCalls: ToolCallRecord[]): boolean {
-  if (!isCryptoForecastQuery(query)) return false;
-  if (buildForcedCryptoForecastMarkovArgs(query) === null) return false;
-  if (!toolCalls.some((call) => call.tool === 'polymarket_forecast')) return false;
-  if (extractMarkovReturnForQuery(query, toolCalls) === null) return false;
-  return !hasCryptoPolymarketForecastCoverage(query, toolCalls);
-}
-
-export function buildForcedOnchainArgs(query: string): { ticker: string; metrics: string[] } | null {
-  const detected = detectAssetType(query);
-  if (detected.type !== 'crypto' || !detected.ticker) return null;
-
-  return {
-    ticker: detected.ticker,
-    metrics: ['market', 'sentiment'],
-  };
-}
-
-export function buildForcedFixedIncomeArgs(): { series: string[] } {
-  return {
-    series: ['treasury_yields', 'yield_curve'],
-  };
-}
-
-export function buildForcedCryptoForecastMarkovArgs(query: string): {
-  ticker: string;
-  horizon: number;
-  trajectory: true;
-  trajectoryDays: number;
-} | null {
-  if (!isCryptoForecastQuery(query)) return null;
-
-  const ticker = inferDistributionTicker(query);
-  let horizon = inferDistributionHorizon(query);
-
-  if (!horizon && ticker === 'BTC-USD') {
-    horizon = inferBtcShortHorizonForecastHorizon(query);
-  }
-
-  if (!ticker || !horizon || horizon > 14) return null;
-
-  return {
-    ticker,
-    horizon,
-    trajectory: true,
-    trajectoryDays: Math.min(30, horizon),
-  };
-}
-
-export function shouldForceCryptoForecastTools(query: string, toolCalls: ToolCallRecord[]): boolean {
-  if (!isCryptoForecastQuery(query)) return false;
-
-  const marketDataArgs = buildForcedMarketDataArgs(query);
-  const hasMarketData = marketDataArgs !== null
-    && extractCurrentPriceFromMarketDataQuery(toolCalls, marketDataArgs.query) !== null;
-  const hasSocialSentiment = extractSentimentScoreForCryptoQuery(query, toolCalls) !== null;
-  const hasPolymarketForecast = hasCryptoPolymarketForecastCoverage(query, toolCalls);
-  const hasOnchain = hasUsableOnchainResultForCryptoQuery(query, toolCalls);
-  const hasFixedIncome = hasUsableFixedIncomeResult(toolCalls);
-  const needsMarkov = buildForcedCryptoForecastMarkovArgs(query) !== null
-    && !hasCompletedMarkovDistributionForQuery(query, toolCalls);
-  const needsPolymarketRerun = shouldRerunPolymarketForecastWithMarkov(query, toolCalls);
-
-  return !hasMarketData || !hasSocialSentiment || !hasPolymarketForecast || !hasOnchain || !hasFixedIncome || needsMarkov || needsPolymarketRerun;
-}
-
-function hasSuccessfulMarkovDistribution(toolCalls: ToolCallRecord[]): boolean {
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-    try {
-      const parsed = JSON.parse(call.result) as { data?: { _tool?: string; status?: string } };
-      if (parsed?.data?._tool === 'markov_distribution' && parsed.data.status === 'ok') {
-        return true;
-      }
-    } catch {
-      continue;
-    }
-  }
-  return false;
-}
-
-export function buildUnavailableDistributionAnswer(query: string, toolCalls: ToolCallRecord[]): string | null {
-  if (!isDistributionQuery(query)) return null;
-  if (hasSuccessfulMarkovDistribution(toolCalls)) return null;
-
-  return [
-    '## Probability Distribution Unavailable',
-    '',
-    'A calibrated price-distribution answer is not available for this query. No successful non-abstaining `markov_distribution` result was produced, so I am not emitting substitute distribution buckets or historical-volatility scenario percentages.',
-    '',
-    '## Why this answer stops here',
-    '- A price-distribution request needs horizon-matched terminal threshold anchors or a validated canonical Markov distribution.',
-    '- Neither condition was met in this run, so any bucketed probability table would be speculative rather than grounded.',
-    '',
-    '## Safe next options',
-    '- Wait for terminal threshold markets that match the requested horizon, or',
-    '- Use `polymarket_forecast` for a point estimate with a confidence interval instead of a full distribution.',
-  ].join('\n');
-}
-
-export function buildDistributionWarningPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
-  if (!isDistributionQuery(query)) return null;
-  if (hasSuccessfulMarkovDistribution(toolCalls)) return null;
-
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'markov_distribution') continue;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(call.result);
-    } catch {
-      continue;
-    }
-
-    const data = parsed && typeof parsed === 'object' ? (parsed as { data?: unknown }).data : null;
-    if (!data || typeof data !== 'object') continue;
-
-    const payload = data as Record<string, unknown>;
-    if (payload['_tool'] !== 'markov_distribution' || payload['status'] !== 'abstain') continue;
-
-    const abstainReasons = Array.isArray(payload['abstainReasons'])
-      ? payload['abstainReasons'].filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
-      : [];
-
-    return [
-      '## Warning: no calibrated Markov terminal distribution was available',
-      '',
-      'The Markov distribution workflow abstained for this query. Any fallback analysis below must be treated as non-distribution context unless it comes directly from a validated canonical Markov payload.',
-      ...(abstainReasons.length > 0
-        ? ['', 'Key abstain reasons:', ...abstainReasons.map((reason) => `- ${reason}`)]
-        : []),
-      '',
-      '---',
-      '',
-    ].join('\n');
-  }
-
-  return [
-    '## Warning: no validated Markov distribution was produced',
-    '',
-    'Cramer-Short did not produce a successful non-abstaining `markov_distribution` result for this distribution query. Any answer below should be read as fallback analysis, not a calibrated probability distribution.',
-    '',
-    '---',
-    '',
-  ].join('\n');
-}
-
-function extractPolymarketForecastReturnForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
-  const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferDistributionHorizon(query);
-
-  for (let i = toolCalls.length - 1; i >= 0; i--) {
-    const call = toolCalls[i];
-    if (call.tool !== 'polymarket_forecast') continue;
-    if (!matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon_days', desiredHorizon)) continue;
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(call.result);
-    } catch {
-      continue;
-    }
-
-    const data = parsed && typeof parsed === 'object' ? (parsed as { data?: unknown }).data : null;
-    if (!data || typeof data !== 'object') continue;
-    const payload = data as Record<string, unknown>;
-
-    const directForecastReturn = payload['forecastReturn'];
-    if (typeof directForecastReturn === 'number' && Number.isFinite(directForecastReturn)) {
-      return directForecastReturn;
-    }
-
-    const resultText = payload['result'];
-    if (typeof resultText !== 'string') continue;
-    const match = resultText.match(/(?:forecast return|expected return)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)%/i);
-    if (!match) continue;
-    const parsedPct = Number.parseFloat(match[1]!);
-    if (Number.isFinite(parsedPct)) return parsedPct / 100;
-  }
-
-  return null;
-}
-
-function detectBtcShortHorizonDisagreement(query: string, toolCalls: ToolCallRecord[]): boolean {
-  if (!isCryptoForecastQuery(query)) return false;
-  const ticker = inferDistributionTicker(query);
-  const horizon = inferDistributionHorizon(query);
-  if ((ticker !== 'BTC' && ticker !== 'BTC-USD') || horizon === null || horizon > 14) return false;
-
-  const markovReturn = extractMarkovReturnForQuery(query, toolCalls);
-  const polymarketReturn = extractPolymarketForecastReturnForQuery(query, toolCalls);
-  if (markovReturn === null || polymarketReturn === null) return false;
-
-  return markovReturn > 0.01 && polymarketReturn <= 0;
-}
-
-export function buildForecastDisagreementPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
-  if (!detectBtcShortHorizonDisagreement(query, toolCalls)) return null;
-
-  return [
-    '## Warning: BTC short-horizon signals are mixed',
-    '',
-    'Markov and Polymarket are pointing in different directions for this BTC short-horizon forecast. Read any directional takeaway below as mixed evidence with moderated confidence, not a high-conviction signal.',
-    '',
-    '---',
-    '',
-  ].join('\n');
-}
-
-export function buildLowConfidenceBtcShortHorizonForecastPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
-  if (!hasLowConfidenceBtcShortHorizonMarkov(query, toolCalls)) return null;
-
-  const predictionConfidence = extractMarkovPredictionConfidenceForQuery(query, toolCalls);
-  const confidenceText = predictionConfidence !== null
-    ? predictionConfidence.toFixed(2)
-    : 'N/A';
-
-  return [
-    '## Warning: BTC short-horizon selective Markov gate did not clear',
-    '',
-    `The Markov run completed, but prediction confidence ${confidenceText} is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold. Do not treat the Markov direction here as part of the aggregate selective-accuracy slice or as a validated BTC edge. Read any forecast below as fallback context, not a selective Markov signal.`,
-    '',
-    '---',
-    '',
-  ].join('\n');
-}
-
-export function shouldInjectBtcShortHorizonMixedEvidencePrompt(
-  query: string,
-  fullToolResults: string,
-): boolean {
-  if (shouldInjectBtcShortHorizonLowConfidencePrompt(query, fullToolResults)) return false;
-
-  const ticker = inferDistributionTicker(query);
-  const horizon = inferDistributionHorizon(query);
-  if ((ticker !== 'BTC' && ticker !== 'BTC-USD') || horizon === null || horizon > 14) return false;
-
-  const markovBullish = /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"expectedReturn"\s*:\s*(0\.0*[1-9]\d*|0\.[1-9]\d*|[1-9]\d*(?:\.\d+)?)/.test(fullToolResults);
-  const polymarketFlatOrBearish = /forecast return\s*:\s*-\d+(?:\.\d+)?%/i.test(fullToolResults)
-    || /forecast return\s*:\s*[+]?(?:0|0\.0+)%/i.test(fullToolResults);
-
-  return markovBullish && polymarketFlatOrBearish;
-}
-
-export function shouldInjectBtcShortHorizonLowConfidencePrompt(
-  query: string,
-  fullToolResults: string,
-): boolean {
-  if (!isBtcShortHorizonForecastQuery(query)) return false;
-
-  const match = fullToolResults.match(/"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"predictionConfidence"\s*:\s*([0-9]+(?:\.[0-9]+)?)/);
-  if (!match) return false;
-
-  const predictionConfidence = Number.parseFloat(match[1]!);
-  return Number.isFinite(predictionConfidence) && predictionConfidence < RECOMMENDED_CONFIDENCE_THRESHOLD;
-}
-
-// ============================================================================
-// Context summary helpers (exported for unit tests)
-// ============================================================================
-
-/**
- * Numeric fact patterns extracted from tool results before they are cleared
- * from context. Each pattern captures a distinct type of financial data.
- */
-export const FACT_PATTERNS: ReadonlyArray<RegExp> = [
-  /\$[\d,]+(?:\.\d{1,2})?(?:\s*[BMK](?:illion)?)?/gi,  // prices / market caps
-  /[-+]?\d+(?:\.\d+)?%/g,                                // percentages
-  /\b(?:IC|ICIR|RankIC)\s*[:=]\s*[-+]?\d+\.\d+/gi,     // factor IC values
-  /\bP\/E\s*[:=]?\s*\d+(?:\.\d+)?x?/gi,                 // P/E ratios
-  /\bEV\/EBITDA\s*[:=]?\s*\d+(?:\.\d+)?x?/gi,           // EV/EBITDA
-  /\bP\/[SB]\s*[:=]?\s*\d+(?:\.\d+)?x?/gi,              // P/S, P/B
-  /\b(?:probability|chance|likely)\s+[:=]?\s*\d+(?:\.\d+)?%/gi, // probabilities
-  /\bWACC\s*[:=]\s*\d+(?:\.\d+)?%/gi,                   // WACC
-  /\bROIC?\s*[:=]\s*\d+(?:\.\d+)?%/gi,                  // ROIC
-];
-
-/**
- * Extract up to `maxFacts` unique key numeric facts from a text snippet.
- * Returns them as a compact comma-separated string, or '' when none found.
- */
-export function extractKeyFacts(text: string, maxFacts = 10): string {
-  const seen = new Set<string>();
-  const facts: string[] = [];
-  for (const re of FACT_PATTERNS) {
-    const pattern = new RegExp(re.source, re.flags);
-    for (const m of text.matchAll(pattern)) {
-      const key = m[0].toLowerCase().replace(/\s+/g, ' ').trim();
-      if (!seen.has(key) && facts.length < maxFacts) {
-        seen.add(key);
-        facts.push(m[0].trim());
-      }
-    }
-  }
-  return facts.join(', ');
-}
-
-/** Maps raw JSON field names found in financial tool results to compact labels. */
-const METRIC_KEY_MAP: Readonly<Record<string, string>> = {
-  revenue: 'rev',
-  total_revenue: 'rev',
-  net_income: 'NI',
-  earnings_per_share: 'EPS',
-  eps: 'EPS',
-  pe_ratio: 'PE',
-  price_to_earnings_ratio: 'PE',
-  ev_to_ebitda: 'EV/EBITDA',
-  enterprise_value_over_ebitda: 'EV/EBITDA',
-  market_cap: 'mktcap',
-  market_capitalization: 'mktcap',
-  gross_margin: 'GM%',
-  operating_margin: 'OpM%',
-  price_to_book: 'P/B',
-  return_on_equity: 'ROE%',
-  return_on_assets: 'ROA%',
-  debt_to_equity: 'D/E',
-};
-
-/**
- * Parse key financial metrics from a JSON-like tool result snippet.
- * Returns compact `label=value` strings (up to 6) for ticker table rows.
- */
-export function extractTickerMetrics(text: string): string[] {
-  const metrics: string[] = [];
-  const seen = new Set<string>();
-  const kvPattern = /"([\w_]+)":\s*"?([^",\n\]}{]+)"?/g;
-  for (const m of text.matchAll(kvPattern)) {
-    const label = METRIC_KEY_MAP[m[1]!.toLowerCase()];
-    if (label) {
-      const val = m[2]!.trim().replace(/,$/, '');
-      const entry = `${label}=${val}`;
-      if (!seen.has(entry) && metrics.length < 6) {
-        seen.add(entry);
-        metrics.push(entry);
-      }
-    }
-  }
-  return metrics;
-}
-
-/**
- * Build a merged context summary string from tool results about to be cleared.
- *
- * - Prefixes each line with the tool's ticker/query arg when present so the
- *   LLM retains the ticker→value association (e.g. `get_financials(ticker=NVDA): …`).
- * - Appends a compact ticker→metric table when financial key/value pairs are found.
- * - Snippet length is 400 chars (up from the previous 200) for richer context.
- * - When `existingSummary` is provided the new facts are merged into it instead
- *   of appending a separate entry, preventing 3+ summary blocks stacking up.
- *
- * Returns null when there is nothing to summarise.
- */
-export function buildContextSummaryText(
-  toSummarise: Array<{ toolName: string; args: Record<string, unknown>; snippet: string }>,
-  existingSummary: string | null,
-): string | null {
-  if (toSummarise.length === 0) return null;
-
-  const lines: string[] = [];
-  const tickerRows = new Map<string, string[]>();
-
-  for (const { toolName, args, snippet } of toSummarise) {
-    const ticker = typeof args['ticker'] === 'string' ? args['ticker'].toUpperCase() : null;
-    const queryArg = typeof args['query'] === 'string' ? args['query'] : null;
-
-    const argsStr = Object.entries(args).map(([k, v]) => `${k}=${v}`).join(', ');
-    const condensed = snippet.replace(/\s+/g, ' ').trim().slice(0, 400);
-    const keyFacts = extractKeyFacts(snippet);
-    const factsNote = keyFacts ? ` [KEY FACTS: ${keyFacts}]` : '';
-
-    // Prefix with ticker/query so the LLM knows which asset the data belongs to.
-    const callLabel = ticker
-      ? `${toolName}(ticker=${ticker})`
-      : queryArg
-        ? `${toolName}(query=${queryArg})`
-        : `${toolName}(${argsStr})`;
-    lines.push(`- ${callLabel}: ${condensed}…${factsNote}`);
-
-    if (ticker) {
-      const metrics = extractTickerMetrics(snippet);
-      if (metrics.length > 0 && !tickerRows.has(ticker)) {
-        tickerRows.set(ticker, metrics);
-      }
-    }
-  }
-
-  let newSummary = `The following ${toSummarise.length} earlier tool result(s) were condensed to save context:\n${lines.join('\n')}`;
-
-  if (tickerRows.size > 0) {
-    const tableLines = [...tickerRows.entries()].map(([t, m]) => `${t}: ${m.join(', ')}`);
-    newSummary += `\n\nKey metrics by ticker:\n${tableLines.join('\n')}`;
-  }
-
-  // Merge into the existing summary rather than appending a second block.
-  if (existingSummary) {
-    return `${existingSummary}\n\n---\n${newSummary}`;
-  }
-  return newSummary;
+type ForcedToolExecutionStatus = 'success' | 'denied' | 'error';
+type ForcedToolRouteStatus = ForcedToolExecutionStatus | 'idle';
+
+function getMemoryManagerFactory(config: AgentConfig): () => Promise<AgentMemoryManager> {
+  return config.getMemoryManager ?? (() => MemoryManager.get());
+}
+
+function mergeForcedToolStatus(
+  current: ForcedToolRouteStatus,
+  next: ForcedToolExecutionStatus,
+): ForcedToolRouteStatus {
+  if (next === 'denied') return 'denied';
+  if (next === 'error') return 'error';
+  return current === 'idle' ? 'success' : current;
 }
 
 /**
@@ -1406,6 +208,7 @@ export class Agent {
   private readonly systemPrompt: string;
   private readonly signal?: AbortSignal;
   private readonly memoryEnabled: boolean;
+  private readonly getMemoryManager: () => Promise<AgentMemoryManager>;
   private readonly thinkEnabled: boolean | undefined;
 
   private constructor(
@@ -1421,6 +224,7 @@ export class Agent {
     this.systemPrompt = systemPrompt;
     this.signal = config.signal;
     this.memoryEnabled = config.memoryEnabled ?? true;
+    this.getMemoryManager = getMemoryManagerFactory(config);
     this.thinkEnabled = config.thinkEnabled;
   }
 
@@ -1429,19 +233,28 @@ export class Agent {
    */
   static async create(config: AgentConfig = {}): Promise<Agent> {
     const model = config.model ?? DEFAULT_MODEL;
-    const tools = getTools(model);
-    const soulContent = await loadSoulDocument();
+    const memoryEnabled = config.memoryEnabled ?? true;
+    const registryOptions = {
+      watchlistEntries: config.watchlistEntries,
+      memoryEnabled,
+    };
+    const tools = config.tools ?? getTools(model, registryOptions);
+    const soulContentPromise = loadSoulDocument();
     let memoryFiles: string[] = [];
     let memoryContext: string | null = null;
 
-    if (config.memoryEnabled !== false) {
-      const memoryManager = await MemoryManager.get();
-      memoryFiles = await memoryManager.listFiles();
-      const session = await memoryManager.loadSessionContext();
+    if (memoryEnabled) {
+      const memoryManager = await getMemoryManagerFactory(config)();
+      const [files, session] = await Promise.all([
+        memoryManager.listFiles(),
+        memoryManager.loadSessionContext(),
+      ]);
+      memoryFiles = files;
       if (session.text.trim()) {
         memoryContext = session.text;
       }
     }
+    const soulContent = await soulContentPromise;
 
     const systemPrompt = buildSystemPrompt(
       model,
@@ -1450,6 +263,8 @@ export class Agent {
       config.groupContext,
       memoryFiles,
       memoryContext,
+      config.toolDescriptionsOverride ?? buildToolDescriptions(model, registryOptions),
+      memoryEnabled,
     );
     return new Agent(config, tools, systemPrompt);
   }
@@ -1468,17 +283,66 @@ export class Agent {
     }
 
     const ctx = createRunContext(query);
-    const memoryFlushState = { alreadyFlushed: false };
-    const periodicFlushState = { lastFlushedIteration: 0 };
+    const runState = createRunLoopState();
+    const forecastingConfig = loadConfig().forecasting;
+    const forecastLabIntent = forecastLabRouter.routeIntent(query, {
+      inMemoryHistory,
+      enableAutoRoute: forecastingConfig?.enableForecastLabAutoRoute,
+      enableSkillHint: forecastingConfig?.enableForecastLabSkillHint,
+    });
+    const {
+      routingHint: forecastLabRoutingHint,
+      resetRequest: forecastLabResetRequest,
+      promotionApproval: forecastLabPromotionApproval,
+      keepCurrentBestRequest: forecastLabKeepCurrentBestRequest,
+      catalogExtensionRequest: forecastLabCatalogExtensionRequest,
+      comparisonRequest: forecastLabComparisonRequest,
+      resultsRequest: forecastLabResultsRequest,
+      mutatorListRequest: forecastLabMutatorListRequest,
+    } = forecastLabIntent;
+    if (forecastLabResetRequest) {
+      yield* this.runForecastLabResetFlow(ctx, forecastLabResetRequest);
+      return;
+    }
+    if (forecastLabPromotionApproval) {
+      yield* this.runForecastLabApprovalFlow(ctx, forecastLabPromotionApproval);
+      return;
+    }
+    if (forecastLabKeepCurrentBestRequest) {
+      yield* this.runForecastLabResultsFlow(ctx, query, forecastLabKeepCurrentBestRequest);
+      return;
+    }
+    if (forecastLabCatalogExtensionRequest) {
+      yield* this.runForecastLabCatalogExtensionFlow(ctx, query, forecastLabCatalogExtensionRequest);
+      return;
+    }
+    if (forecastLabResultsRequest) {
+      yield* this.runForecastLabResultsFlow(ctx, query, forecastLabResultsRequest);
+      return;
+    }
+    if (forecastLabMutatorListRequest) {
+      yield* this.runForecastLabMutatorListFlow(ctx, query, forecastLabMutatorListRequest);
+      return;
+    }
+    if (forecastLabComparisonRequest) {
+      yield* this.runForecastLabComparisonFlow(ctx, query, forecastLabComparisonRequest);
+      return;
+    }
+    if (forecastLabRoutingHint?.shouldInvokeSkill) {
+      yield* this.runForecastLabImprovementFlow(ctx, query, forecastLabRoutingHint, isForecastLabPlanOnlyQuery(query));
+      return;
+    }
 
     // Build initial prompt with conversation history context
-    let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory);
+    let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory, forecastLabRoutingHint);
 
     // Auto-inject relevant prior research memories based on tickers mentioned
-    currentPrompt = await injectMemoryContext(query, currentPrompt, {
-      getMemoryManager: () => MemoryManager.get(),
-      extractTickers: (text) => extractTickersFn(text),
-    });
+    if (this.memoryEnabled) {
+      currentPrompt = await injectMemoryContext(query, currentPrompt, {
+        getMemoryManager: this.getMemoryManager,
+        extractTickers: (text) => extractTickersFn(text),
+      });
+    }
 
     // Auto-inject Polymarket prediction market context for detected asset signals
     currentPrompt = await injectPolymarketContext(query, currentPrompt, {
@@ -1486,20 +350,34 @@ export class Agent {
       fetchMarkets: (q, limit) => fetchPolymarketMarkets(q, limit),
     });
 
-    // Track whether sequential_thinking has been used at least once this session
-    let sequentialThinkingUsed = false;
+    const explicitlyRequestedSkill = detectExplicitSkillRequest(query);
+
     // Cap retries for the sequential_thinking compliance reminder to avoid
     // an infinite loop when a model persistently ignores the instruction.
-    let sequentialThinkingRetries = 0;
     const MAX_ST_RETRIES = 3;
     // Hard cap on total sequential_thinking calls so planning never burns all
     // iterations before any research tool runs. Models sometimes loop through
     // 10-15 thoughts on complex queries, leaving no budget for actual research.
-    let sequentialThinkingCallCount = 0;
     const MAX_SEQUENTIAL_THOUGHTS = 6;
 
+    if (explicitlyRequestedSkill) {
+      for await (const event of this.toolExecutor.executeTool(
+        'skill',
+        { skill: explicitlyRequestedSkill },
+        ctx,
+      )) {
+        yield event;
+      }
+
+      const toolResults = ctx.scratchpad.getToolResults().trim();
+      if (toolResults) {
+        currentPrompt = `${currentPrompt}\n\nData retrieved from tool calls:\n${toolResults}`;
+      }
+
+      runState.sequentialThinkingUsed = true;
+    }
+
     // Main agent loop
-    let overflowRetries = 0;
     while (ctx.iteration < this.maxIterations) {
       ctx.iteration++;
       yield { type: 'progress', iteration: ctx.iteration, maxIterations: this.maxIterations } as ProgressEvent;
@@ -1512,13 +390,13 @@ export class Agent {
           const result = await this.callModel(currentPrompt);
           response = result.response;
           usage = result.usage;
-          overflowRetries = 0;
+          runState.overflowRetries = 0;
           break;
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
 
-          if (isContextOverflowError(errorMessage) && overflowRetries < MAX_OVERFLOW_RETRIES) {
-            overflowRetries++;
+          if (isContextOverflowError(errorMessage) && runState.overflowRetries < MAX_OVERFLOW_RETRIES) {
+            runState.overflowRetries++;
             const overflowKeep = Math.max(2, getKeepToolUses() - 2);
             this.injectContextSummaryBeforeClearing(ctx, overflowKeep);
             const clearedCount = ctx.scratchpad.clearOldestToolResults(overflowKeep);
@@ -1528,7 +406,8 @@ export class Agent {
               currentPrompt = buildIterationPrompt(
                 query,
                 ctx.scratchpad.getToolResults(),
-                ctx.scratchpad.formatToolUsageForPrompt()
+                ctx.scratchpad.formatToolUsageForPrompt(),
+                forecastLabRoutingHint,
               );
               continue;
             }
@@ -1573,6 +452,54 @@ export class Agent {
 
       // No tool calls = final answer is in this response
       if (typeof response === 'string' || !hasToolCalls(response)) {
+        if (shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
+          const forcedStatus = yield* this.forceCryptoForecastTools(ctx);
+          if (forcedStatus === 'denied') {
+            yield* this.finishAfterToolDenied(ctx);
+            return;
+          }
+          if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+            currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
+            continue;
+          }
+        }
+
+        if (shouldForceNonCryptoForecastFallback(query, ctx.scratchpad.getToolCallRecords())) {
+          const forcedStatus = yield* this.forceNonCryptoForecastFallback(ctx);
+          if (forcedStatus === 'denied') {
+            yield* this.finishAfterToolDenied(ctx);
+            return;
+          }
+          if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+            currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
+            continue;
+          }
+        }
+
+        if (shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
+          const forcedStatus = yield* this.forceMarkovDistribution(ctx);
+          if (forcedStatus === 'denied') {
+            yield* this.finishAfterToolDenied(ctx);
+            return;
+          }
+          if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+            currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
+            continue;
+          }
+        }
+
+        if (shouldForceGoldCombinedForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
+          const forcedStatus = yield* this.forceGoldCombinedForecastTools(ctx);
+          if (forcedStatus === 'denied') {
+            yield* this.finishAfterToolDenied(ctx);
+            return;
+          }
+          if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+            currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
+            continue;
+          }
+        }
+
         const abstainingBtcForecastAnswer = buildAbstainingBtcShortHorizonForecastAnswer(
           query,
           ctx.scratchpad.getToolCallRecords(),
@@ -1582,43 +509,13 @@ export class Agent {
           return;
         }
 
-        if (shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
-          const forced = yield* this.forceCryptoForecastTools(ctx);
-          if (forced) {
-            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-            currentPrompt = buildIterationPrompt(
-              query,
-              ctx.scratchpad.getToolResults(),
-              ctx.scratchpad.formatToolUsageForPrompt(),
-            );
-            continue;
-          }
-        }
-
-        if (shouldForceNonCryptoForecastFallback(query, ctx.scratchpad.getToolCallRecords())) {
-          const forced = yield* this.forceNonCryptoForecastFallback(ctx);
-          if (forced) {
-            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-            currentPrompt = buildIterationPrompt(
-              query,
-              ctx.scratchpad.getToolResults(),
-              ctx.scratchpad.formatToolUsageForPrompt(),
-            );
-            continue;
-          }
-        }
-
-        if (shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
-          const forced = yield* this.forceMarkovDistribution(ctx);
-          if (forced) {
-            yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-            currentPrompt = buildIterationPrompt(
-              query,
-              ctx.scratchpad.getToolResults(),
-              ctx.scratchpad.formatToolUsageForPrompt(),
-            );
-            continue;
-          }
+        const explicitGoldCombinedAnswer = buildExplicitGoldCombinedForecastAnswer(
+          query,
+          ctx.scratchpad.getToolCallRecords(),
+        );
+        if (explicitGoldCombinedAnswer) {
+          yield* this.handleDirectResponse(explicitGoldCombinedAnswer, ctx, currentPrompt);
+          return;
         }
 
         yield* this.handleDirectResponse(responseText ?? '', ctx, currentPrompt);
@@ -1629,111 +526,151 @@ export class Agent {
       // If the model's first tool call this session is not sequential_thinking,
       // inject a reminder and retry — but only up to MAX_ST_RETRIES times to
       // prevent an infinite loop when a model persistently ignores the reminder.
-      if (!sequentialThinkingUsed) {
+      if (!runState.sequentialThinkingUsed) {
         const firstTool = (response as AIMessage).tool_calls?.[0]?.name;
-        if (firstTool && firstTool !== 'sequential_thinking') {
-          if (sequentialThinkingRetries < MAX_ST_RETRIES) {
-            sequentialThinkingRetries++;
+        if (
+          firstTool
+          && !isAcceptedFirstPlanningToolCall(
+            response as AIMessage,
+            forecastLabRoutingHint,
+            explicitlyRequestedSkill,
+          )
+        ) {
+          if (runState.sequentialThinkingRetries < MAX_ST_RETRIES) {
+            runState.sequentialThinkingRetries++;
             ctx.iteration--; // don't charge this iteration
-            currentPrompt = `${currentPrompt}\n\nIMPORTANT REMINDER: You MUST call sequential_thinking FIRST before calling any other tool. Start with sequential_thinking to plan your approach, then proceed.`;
+            currentPrompt = forecastLabRoutingHint?.shouldInvokeSkill
+              ? `${currentPrompt}\n\nIMPORTANT REMINDER: This routed forecast-lab improvement query must start with skill(\"forecast-lab\") or sequential_thinking. Do NOT start with ordinary forecast/data tools.`
+              : `${currentPrompt}\n\nIMPORTANT REMINDER: You MUST call sequential_thinking FIRST before calling any other tool. Start with sequential_thinking to plan your approach, then proceed.`;
             continue;
           }
           // Retries exhausted — proceed without sequential_thinking rather than
           // looping forever. Mark as satisfied so we stop checking.
-          sequentialThinkingUsed = true;
+          runState.sequentialThinkingUsed = true;
         }
       }
 
       // Mark sequential_thinking as satisfied once it appears in any tool call
-      if (!sequentialThinkingUsed) {
+      if (!runState.sequentialThinkingUsed) {
         const stToolCalls = (response as AIMessage).tool_calls ?? [];
-        if (stToolCalls.some((tc) => tc.name === 'sequential_thinking')) {
-          sequentialThinkingUsed = true;
+        if (
+          stToolCalls.some((tc) => tc.name === 'sequential_thinking')
+          || (
+            forecastLabRoutingHint?.shouldInvokeSkill
+            && stToolCalls.some((tc) => tc.name === 'skill' && tc.args?.skill === 'forecast-lab')
+          )
+        ) {
+          runState.sequentialThinkingUsed = true;
         }
       }
 
-      if (sequentialThinkingUsed && shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())) {
-        const forced = yield* this.forceMarkovDistribution(ctx);
-        if (forced) {
-          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-          currentPrompt = buildIterationPrompt(
-            query,
-            ctx.scratchpad.getToolResults(),
-            ctx.scratchpad.formatToolUsageForPrompt(),
-          );
+      const hasPendingMarkovDistributionCall = (response as AIMessage).tool_calls
+        ?.some((tc) => tc.name === 'markov_distribution') ?? false;
+      if (
+        runState.sequentialThinkingUsed
+        && !hasPendingMarkovDistributionCall
+        && shouldForceMarkovDistribution(query, ctx.scratchpad.getToolCallRecords())
+      ) {
+        const forcedStatus = yield* this.forceMarkovDistribution(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
           continue;
         }
       }
 
-      if (sequentialThinkingUsed && shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
-        const forced = yield* this.forceCryptoForecastTools(ctx);
-        if (forced) {
-          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-          currentPrompt = buildIterationPrompt(
-            query,
-            ctx.scratchpad.getToolResults(),
-            ctx.scratchpad.formatToolUsageForPrompt(),
-          );
+      if (runState.sequentialThinkingUsed && shouldForceGoldCombinedForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
+        const forcedStatus = yield* this.forceGoldCombinedForecastTools(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
           continue;
         }
       }
 
-      if (sequentialThinkingUsed && shouldForceNonCryptoForecastFallback(query, ctx.scratchpad.getToolCallRecords())) {
-        const forced = yield* this.forceNonCryptoForecastFallback(ctx);
-        if (forced) {
-          yield* this.manageContextThreshold(ctx, query, memoryFlushState);
-          currentPrompt = buildIterationPrompt(
-            query,
-            ctx.scratchpad.getToolResults(),
-            ctx.scratchpad.formatToolUsageForPrompt(),
-          );
+      if (runState.sequentialThinkingUsed && shouldForceCryptoForecastTools(query, ctx.scratchpad.getToolCallRecords())) {
+        const forcedStatus = yield* this.forceCryptoForecastTools(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
           continue;
         }
       }
+
+      if (runState.sequentialThinkingUsed && shouldForceNonCryptoForecastFallback(query, ctx.scratchpad.getToolCallRecords())) {
+        const forcedStatus = yield* this.forceNonCryptoForecastFallback(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
+          continue;
+        }
+      }
+
+      normalizeExplicitGoldCombinedToolCalls(
+        response as AIMessage,
+        query,
+        ctx.scratchpad.getToolCallRecords(),
+      );
 
       // Count sequential_thinking calls before executing tools (needed for nudge below).
       const toolCalls = (response as AIMessage).tool_calls ?? [];
+      if (hasPrematureForecastArbitratorCall(response as AIMessage, query, ctx.scratchpad.getToolCallRecords())) {
+        const forcedStatus = yield* this.forceCryptoForecastTools(ctx);
+        if (forcedStatus === 'denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
+        if (this.shouldRebuildAfterForcedTools(forcedStatus, runState)) {
+          currentPrompt = yield* this.rebuildPromptAfterForcedTools(ctx, query, runState.memoryFlush, forecastLabRoutingHint);
+          continue;
+        }
+      }
+
       const stCallsThisIteration = toolCalls.filter((tc) => tc.name === 'sequential_thinking').length;
-      sequentialThinkingCallCount += stCallsThisIteration;
+      runState.sequentialThinkingCallCount += stCallsThisIteration;
 
       // Execute tools and add results to scratchpad (response is AIMessage here)
       for await (const event of this.toolExecutor.executeAll(response, ctx)) {
         yield event;
         if (event.type === 'tool_denied') {
-          const totalTime = Date.now() - ctx.startTime;
-          yield {
-            type: 'done',
-            answer: '',
-            toolCalls: ctx.scratchpad.getToolCallRecords(),
-            iterations: ctx.iteration,
-            totalTime,
-            tokenUsage: ctx.tokenCounter.getUsage(),
-            tokensPerSecond: ctx.tokenCounter.getTokensPerSecond(totalTime),
-          };
+          yield* this.finishAfterToolDenied(ctx);
           return;
         }
       }
-      yield* this.manageContextThreshold(ctx, query, memoryFlushState);
+      yield* this.manageContextThreshold(ctx, query, runState.memoryFlush);
 
       // Periodic auto-save: flush findings to long-term memory every N iterations
       // so a crash doesn't lose all research done so far.
       if (
         this.memoryEnabled &&
-        ctx.iteration - periodicFlushState.lastFlushedIteration >= PERIODIC_FLUSH_INTERVAL
+        ctx.iteration - runState.periodicFlush.lastFlushedIteration >= PERIODIC_FLUSH_INTERVAL
       ) {
-        yield* this.runPeriodicMemoryFlush(ctx, query, periodicFlushState);
+        yield* this.runPeriodicMemoryFlush(ctx, query, runState.periodicFlush);
       }
 
       // Build iteration prompt with full tool results (Anthropic-style)
       currentPrompt = buildIterationPrompt(
         query,
         ctx.scratchpad.getToolResults(),
-        ctx.scratchpad.formatToolUsageForPrompt()
+        ctx.scratchpad.formatToolUsageForPrompt(),
+        forecastLabRoutingHint,
       );
 
       // After the cap is hit, redirect the model to stop planning and start
       // using research tools. Only inject the nudge once (at the boundary).
-      if (stCallsThisIteration > 0 && sequentialThinkingCallCount >= MAX_SEQUENTIAL_THOUGHTS) {
+      if (stCallsThisIteration > 0 && runState.sequentialThinkingCallCount >= MAX_SEQUENTIAL_THOUGHTS) {
         currentPrompt += '\n\n[SYSTEM NOTE: Planning phase complete. You have used the maximum number of sequential_thinking steps allowed. You MUST now proceed directly to research tools (financial_search, web_search, read_filings, etc.) to gather data and answer the question. Do not call sequential_thinking again.]';
       }
     }
@@ -1752,11 +689,21 @@ export class Agent {
       return;
     }
 
+    const explicitGoldCombinedAnswer = buildExplicitGoldCombinedForecastAnswer(
+      query,
+      ctx.scratchpad.getToolCallRecords(),
+    );
+    if (explicitGoldCombinedAnswer) {
+      yield* this.handleDirectResponse(explicitGoldCombinedAnswer, ctx, currentPrompt);
+      return;
+    }
+
     const synthesisPrompt = hasMeaningfulResearch
       ? buildIterationPrompt(
           query,
           toolResults,
           ctx.scratchpad.formatToolUsageForPrompt(),
+          forecastLabRoutingHint,
         ) +
           `\n\n[SYSTEM NOTE: You have reached the maximum number of research steps (${this.maxIterations}). ` +
           `You MUST now write your best-effort final answer using ONLY the data gathered above. ` +
@@ -1765,6 +712,245 @@ export class Agent {
       : query;
 
     yield* this.handleDirectResponse('', ctx, synthesisPrompt);
+  }
+
+  private extractForecastLabAnswer(ctx: RunContext, fallback: string): string {
+    const toolCalls = ctx.scratchpad.getToolCallRecords();
+    for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+      const call = toolCalls[index];
+      if (call.tool !== 'forecast_lab_run') continue;
+      const answer = extractForecastLabRunToolAnswer(call.result);
+      if (answer) {
+        return answer;
+      }
+    }
+
+    return fallback;
+  }
+
+  private async *runForecastLabImprovementFlow(
+    ctx: RunContext,
+    query: string,
+    forecastLabRoutingHint: ForecastLabRoutingHint,
+    planOnly: boolean,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: forecastLabRoutingHint.recommendedProfileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'skill',
+        { skill: 'forecast-lab' },
+        ctx,
+      )) {
+        yield event;
+      }
+
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'guided-improve',
+          query,
+          ...(forecastLabRoutingHint.recommendedProfileId
+            ? { profileId: forecastLabRoutingHint.recommendedProfileId }
+            : {}),
+          ...(forecastLabRoutingHint.requestedMutatorId
+            ? { mutator: forecastLabRoutingHint.requestedMutatorId }
+            : {}),
+          ...(planOnly ? { execute: false } : {}),
+          routingSource: 'auto-routed',
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    const fallback = planOnly
+      ? 'Forecast-lab plan generated.'
+      : 'Forecast-lab guided improvement finished.';
+    yield* this.handleDirectResponse(this.extractForecastLabAnswer(ctx, fallback), ctx);
+  }
+
+  private async *runForecastLabApprovalFlow(
+    ctx: RunContext,
+    approvalHint: ForecastLabPromotionApprovalHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: approvalHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'promote-approved',
+          ...(approvalHint.profileId ? { profileId: approvalHint.profileId } : {}),
+          ...(approvalHint.sourceRunId ? { sourceRunId: approvalHint.sourceRunId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab promotion request finished.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabResetFlow(
+    ctx: RunContext,
+    resetHint: ForecastLabResetHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: resetHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'reset-live',
+          ...(resetHint.profileId ? { profileId: resetHint.profileId } : {}),
+          resetMode: resetHint.mode,
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab reset request finished.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabComparisonFlow(
+    ctx: RunContext,
+    query: string,
+    comparisonHint: ForecastLabComparisonHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: comparisonHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          ...(comparisonHint.profileId ? { profileId: comparisonHint.profileId } : {}),
+          ...(comparisonHint.mutationId ? { mutationId: comparisonHint.mutationId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab comparison finished.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabResultsFlow(
+    ctx: RunContext,
+    query: string,
+    resultsHint: ForecastLabResultsHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: resultsHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          ...(resultsHint.profileId ? { profileId: resultsHint.profileId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab results retrieved.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabMutatorListFlow(
+    ctx: RunContext,
+    query: string,
+    mutatorListHint: ForecastLabMutatorListHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: mutatorListHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'list-mutators',
+          query,
+          ...(mutatorListHint.profileId ? { profileId: mutatorListHint.profileId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab mutator list retrieved.'),
+      ctx,
+    );
+  }
+
+  private async *runForecastLabCatalogExtensionFlow(
+    ctx: RunContext,
+    query: string,
+    catalogExtensionHint: ForecastLabCatalogExtensionHint,
+  ): AsyncGenerator<AgentEvent, void> {
+    ctx.forecastLabGuard = {
+      recommendedProfileId: catalogExtensionHint.profileId ?? null,
+    };
+    try {
+      for await (const event of this.toolExecutor.executeTool(
+        'forecast_lab_run',
+        {
+          action: 'catalog-extension-plan',
+          query,
+          ...(catalogExtensionHint.profileId ? { profileId: catalogExtensionHint.profileId } : {}),
+        },
+        ctx,
+      )) {
+        yield event;
+      }
+    } finally {
+      delete ctx.forecastLabGuard;
+    }
+
+    yield* this.handleDirectResponse(
+      this.extractForecastLabAnswer(ctx, 'Forecast-lab catalog-extension guidance generated.'),
+      ctx,
+    );
   }
 
   /**
@@ -1783,26 +969,90 @@ export class Agent {
     return { response: result.response, usage: result.usage };
   }
 
+  private shouldRebuildAfterForcedTools(
+    forcedStatus: ForcedToolRouteStatus,
+    runState: RunLoopState,
+  ): boolean {
+    if (forcedStatus === 'idle') return false;
+    if (forcedStatus === 'error') {
+      if (runState.forcedToolErrorPromptRebuilt) return false;
+      runState.forcedToolErrorPromptRebuilt = true;
+    }
+    return true;
+  }
+
+  private async *rebuildPromptAfterForcedTools(
+    ctx: RunContext,
+    query: string,
+    memoryFlush: MemoryFlushState,
+    forecastLabRoutingHint: ForecastLabRoutingHint | null,
+  ): AsyncGenerator<AgentEvent, string> {
+    yield* this.manageContextThreshold(ctx, query, memoryFlush);
+    return buildIterationPrompt(
+      query,
+      ctx.scratchpad.getToolResults(),
+      ctx.scratchpad.formatToolUsageForPrompt(),
+      forecastLabRoutingHint,
+    );
+  }
+
+  private async *finishAfterToolDenied(ctx: RunContext): AsyncGenerator<AgentEvent, void> {
+    const totalTime = Date.now() - ctx.startTime;
+    yield {
+      type: 'done',
+      answer: '',
+      toolCalls: ctx.scratchpad.getToolCallRecords(),
+      iterations: ctx.iteration,
+      totalTime,
+      tokenUsage: ctx.tokenCounter.getUsage(),
+      tokensPerSecond: ctx.tokenCounter.getTokensPerSecond(totalTime),
+    };
+  }
+
+  private async runMemoryFlushSafely(
+    params: Parameters<typeof runMemoryFlush>[0],
+  ): Promise<{ flushed: boolean; written: boolean; content?: string }> {
+    try {
+      return await runMemoryFlush(params);
+    } catch (error) {
+      logger.warn('[Agent] memory flush failed', error);
+      return { flushed: false, written: false };
+    }
+  }
+
   private async *forceMarkovDistribution(
     ctx: RunContext,
-  ): AsyncGenerator<AgentEvent, boolean> {
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
     const args = buildForcedMarkovArgs(ctx.query);
-    if (!args) return false;
+    if (!args) return 'idle';
 
-    for await (const event of this.toolExecutor.executeTool('markov_distribution', args, ctx)) {
+    return yield* this.executeForcedTool(ctx, 'markov_distribution', args);
+  }
+
+  private async *executeForcedTool(
+    ctx: RunContext,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): AsyncGenerator<AgentEvent, ForcedToolExecutionStatus> {
+    let status: ForcedToolExecutionStatus = 'success';
+
+    for await (const event of this.toolExecutor.executeTool(toolName, args, ctx)) {
       yield event;
-      if (event.type === 'tool_error' || event.type === 'tool_denied') {
-        return false;
+      if (event.type === 'tool_denied') {
+        return 'denied';
+      }
+      if (event.type === 'tool_error') {
+        status = 'error';
       }
     }
 
-    return true;
+    return status;
   }
 
   private async *forceCryptoForecastTools(
     ctx: RunContext,
-  ): AsyncGenerator<AgentEvent, boolean> {
-    let forcedAny = false;
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
+    let forcedStatus: ForcedToolRouteStatus = 'idle';
 
     const getToolCalls = () => ctx.scratchpad.getToolCallRecords();
 
@@ -1813,114 +1063,118 @@ export class Agent {
     ) {
       const args = marketDataArgs;
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('get_market_data', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'get_market_data', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (extractSentimentScoreFromToolCalls(getToolCalls()) === null) {
       const args = buildForcedSocialSentimentArgs(ctx.query);
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('social_sentiment', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'social_sentiment', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (!hasCompletedMarkovDistributionForQuery(ctx.query, getToolCalls())) {
       const args = buildForcedCryptoForecastMarkovArgs(ctx.query);
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('markov_distribution', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'markov_distribution', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (!hasCryptoPolymarketForecastCoverage(ctx.query, getToolCalls())) {
       const args = buildForcedPolymarketForecastArgs(ctx.query, getToolCalls());
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('polymarket_forecast', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'polymarket_forecast', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (shouldRerunPolymarketForecastWithMarkov(ctx.query, getToolCalls())) {
       const args = buildForcedPolymarketForecastArgs(ctx.query, getToolCalls());
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('polymarket_forecast', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'polymarket_forecast', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (!hasUsableOnchainResultForCryptoQuery(ctx.query, getToolCalls())) {
       const args = buildForcedOnchainArgs(ctx.query);
       if (args) {
-        let ok = true;
-        for await (const event of this.toolExecutor.executeTool('get_onchain_crypto', args, ctx)) {
-          yield event;
-          if (event.type === 'tool_error' || event.type === 'tool_denied') {
-            ok = false;
-            break;
-          }
-        }
-        forcedAny = forcedAny || ok;
+        const status = yield* this.executeForcedTool(ctx, 'get_onchain_crypto', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
       }
     }
 
     if (!hasUsableFixedIncomeResult(getToolCalls())) {
       const args = buildForcedFixedIncomeArgs();
-      let ok = true;
-      for await (const event of this.toolExecutor.executeTool('get_fixed_income', args, ctx)) {
-        yield event;
-        if (event.type === 'tool_error' || event.type === 'tool_denied') {
-          ok = false;
-          break;
-        }
-      }
-      forcedAny = forcedAny || ok;
+      const status = yield* this.executeForcedTool(ctx, 'get_fixed_income', args);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
     }
 
-    return forcedAny;
+    if (shouldForceForecastArbitrator(ctx.query, getToolCalls())) {
+      const args = buildForcedForecastArbiterArgs(ctx.query, getToolCalls());
+      if (args) {
+        const status = yield* this.executeForcedTool(ctx, 'forecast_arbitrator', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
+      }
+    }
+
+    return forcedStatus;
+  }
+
+  /** Force the explicit GOLD combined seam after a usable Markov result exists. */
+  private async *forceGoldCombinedForecastTools(
+    ctx: RunContext,
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
+    let forcedStatus: ForcedToolRouteStatus = 'idle';
+    const getToolCalls = () => ctx.scratchpad.getToolCallRecords();
+
+    const marketDataArgs = buildForcedNonCryptoMarketDataArgs(ctx.query);
+    if (marketDataArgs && !hasMarketDataQuery(getToolCalls(), marketDataArgs.query)) {
+      const status = yield* this.executeForcedTool(ctx, 'get_market_data', marketDataArgs);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
+    }
+
+    const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(ctx.query, getToolCalls());
+    if (
+      forecastArgs
+      && !hasPolymarketForecastCoverage(getToolCalls(), forecastArgs)
+      && !hasPolymarketForecastErrorForCoverage(getToolCalls(), forecastArgs)
+    ) {
+      const status = yield* this.executeForcedTool(ctx, 'polymarket_forecast', forecastArgs);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
+    }
+
+    if (shouldForceGoldCombinedForecastArbitrator(ctx.query, getToolCalls())) {
+      const args = buildForcedGoldCombinedForecastArbiterArgs(ctx.query, getToolCalls());
+      if (args) {
+        const status = yield* this.executeForcedTool(ctx, 'forecast_arbitrator', args);
+        forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+        if (forcedStatus === 'denied') return forcedStatus;
+      }
+    }
+
+    return forcedStatus;
   }
 
   /** Force get_market_data + polymarket_forecast for non-crypto forecast asks after Markov abstains. */
   private async *forceNonCryptoForecastFallback(
     ctx: RunContext,
-  ): AsyncGenerator<AgentEvent, boolean> {
-    let forcedAny = false;
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
+    let forcedStatus: ForcedToolRouteStatus = 'idle';
     const getToolCalls = () => ctx.scratchpad.getToolCallRecords();
 
     const marketDataArgs = buildForcedNonCryptoMarketDataArgs(ctx.query);
@@ -1928,25 +1182,23 @@ export class Agent {
       marketDataArgs
       && !hasMarketDataQuery(getToolCalls(), marketDataArgs.query)
     ) {
-      let ok = true;
-      for await (const event of this.toolExecutor.executeTool('get_market_data', marketDataArgs, ctx)) {
-        yield event;
-        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
-      }
-      forcedAny = forcedAny || ok;
+      const status = yield* this.executeForcedTool(ctx, 'get_market_data', marketDataArgs);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
     }
 
     const forecastArgs = buildForcedNonCryptoPolymarketForecastArgs(ctx.query, getToolCalls());
-    if (forecastArgs && !hasPolymarketForecastCoverage(getToolCalls(), forecastArgs)) {
-      let ok = true;
-      for await (const event of this.toolExecutor.executeTool('polymarket_forecast', forecastArgs, ctx)) {
-        yield event;
-        if (event.type === 'tool_error' || event.type === 'tool_denied') { ok = false; break; }
-      }
-      forcedAny = forcedAny || ok;
+    if (
+      forecastArgs
+      && !hasPolymarketForecastCoverage(getToolCalls(), forecastArgs)
+      && !hasPolymarketForecastErrorForCoverage(getToolCalls(), forecastArgs)
+    ) {
+      const status = yield* this.executeForcedTool(ctx, 'polymarket_forecast', forecastArgs);
+      forcedStatus = mergeForcedToolStatus(forcedStatus, status);
+      if (forcedStatus === 'denied') return forcedStatus;
     }
 
-    return forcedAny;
+    return forcedStatus;
   }
 
   /**
@@ -1977,7 +1229,9 @@ export class Agent {
     const disagreementPrefix = buildForecastDisagreementPrefix(ctx.query, toolCalls);
     const baseText = stripThinkingTags(fallbackText);
     const prefixText = `${warningPrefix ?? ''}${lowConfidencePrefix ?? ''}${disagreementPrefix ?? ''}`;
-    const text = baseText ? `${prefixText}${baseText}` : prefixText;
+    const text = baseText
+      ? ensureStructuredDensityTable(`${prefixText}${baseText}`, ctx.query, toolCalls)
+      : prefixText;
 
     if (text) {
       // We already have the answer from the non-streaming callLlm response.
@@ -2004,7 +1258,8 @@ export class Agent {
           streamedAnswer += chunk;
           yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
         }
-      } catch {
+      } catch (error) {
+        logger.warn('[Agent] final synthesis failed', error);
         // Synthesis timed out or failed — surface the raw tool results so the
         // user has something to work with rather than seeing a blank answer.
         const toolSummary = ctx.scratchpad.getToolResults().trim();
@@ -2057,7 +1312,7 @@ export class Agent {
   private async *manageContextThreshold(
     ctx: RunContext,
     query: string,
-    memoryFlushState: { alreadyFlushed: boolean },
+    memoryFlushState: MemoryFlushState,
   ): AsyncGenerator<ContextClearedEvent | AgentEvent, void> {
     const fullToolResults = ctx.scratchpad.getToolResults();
     const estimatedContextTokens = estimateTokens(this.systemPrompt + ctx.query + fullToolResults);
@@ -2071,13 +1326,13 @@ export class Agent {
         })
       ) {
         yield { type: 'memory_flush', phase: 'start' };
-        const flushResult = await runMemoryFlush({
+        const flushResult = await this.runMemoryFlushSafely({
           model: this.model,
           systemPrompt: this.systemPrompt,
           query,
           toolResults: fullToolResults,
           signal: this.signal,
-        }).catch(() => ({ flushed: false, written: false as const }));
+        });
         memoryFlushState.alreadyFlushed = flushResult.flushed;
         yield {
           type: 'memory_flush',
@@ -2119,17 +1374,17 @@ export class Agent {
   private async *runPeriodicMemoryFlush(
     ctx: RunContext,
     query: string,
-    state: { lastFlushedIteration: number },
+    state: PeriodicMemoryFlushState,
   ): AsyncGenerator<AgentEvent, void> {
     state.lastFlushedIteration = ctx.iteration;
     yield { type: 'memory_flush', phase: 'start' };
-    const flushResult = await runMemoryFlush({
+    const flushResult = await this.runMemoryFlushSafely({
       model: this.model,
       systemPrompt: this.systemPrompt,
       query,
       toolResults: ctx.scratchpad.getToolResults(),
       signal: this.signal,
-    }).catch(() => ({ flushed: false, written: false as const }));
+    });
     yield {
       type: 'memory_flush',
       phase: 'end',
@@ -2142,20 +1397,21 @@ export class Agent {
    */
   private buildInitialPrompt(
     query: string,
-    inMemoryChatHistory?: InMemoryChatHistory
+    inMemoryChatHistory?: InMemoryChatHistory,
+    forecastLabRoutingHint?: ForecastLabRoutingHint | null,
   ): string {
     if (!inMemoryChatHistory?.hasMessages()) {
-      return query;
+      return forecastLabRouter.injectRoutingHint(query, forecastLabRoutingHint);
     }
 
     const recentTurns = inMemoryChatHistory.getRecentTurns();
     if (recentTurns.length === 0) {
-      return query;
+      return forecastLabRouter.injectRoutingHint(query, forecastLabRoutingHint);
     }
 
-    return buildHistoryContext({
+    return forecastLabRouter.injectRoutingHint(buildHistoryContext({
       entries: recentTurns,
       currentMessage: query,
-    });
+    }), forecastLabRoutingHint);
   }
 }

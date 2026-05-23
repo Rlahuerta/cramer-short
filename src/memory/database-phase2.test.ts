@@ -4,12 +4,21 @@
  * #4 — Ticker-aware chunk indexing
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { MemoryDatabase } from './database.js';
 import type { MemoryChunk } from './types.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ============================================================================
 // Helpers
@@ -23,7 +32,7 @@ function makeChunk(overrides: Partial<MemoryChunk> = {}): MemoryChunk {
     startLine: overrides.startLine ?? 1,
     endLine: overrides.endLine ?? 5,
     content: overrides.content ?? 'Test chunk content',
-    contentHash: overrides.contentHash ?? `hash-${Math.random().toString(36).slice(2)}`,
+    contentHash: overrides.contentHash ?? `hash-${nextTestId('chunk')}`,
     source: overrides.source ?? 'memory',
   };
 }
@@ -44,7 +53,7 @@ let dbPath: string;
 let db: MemoryDatabase;
 
 beforeEach(async () => {
-  dbPath = join(tmpdir(), `dexter-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  dbPath = join(tmpdir(), `dexter-test-${nextTestId('path')}.db`);
   db = await MemoryDatabase.create(dbPath);
 });
 
@@ -166,13 +175,13 @@ describe('searchVector — JS fallback (always available)', () => {
 
   it('scores range between 0 and 1', () => {
     for (let i = 0; i < 3; i++) {
-      const vec = Array.from({ length: DIM }, () => Math.random());
+      const vec = Array.from({ length: DIM }, () => deterministicRandom());
       db.upsertChunk({
         chunk: makeChunk({ contentHash: `h-range-${i}` }),
         embedding: vec,
       });
     }
-    const query = Array.from({ length: DIM }, () => Math.random());
+    const query = Array.from({ length: DIM }, () => deterministicRandom());
     const results = db.searchVector(query, 10);
     for (const r of results) {
       expect(r.score).toBeGreaterThanOrEqual(0);
@@ -182,7 +191,7 @@ describe('searchVector — JS fallback (always available)', () => {
 
   it('respects maxResults limit', () => {
     for (let i = 0; i < 5; i++) {
-      const vec = [Math.random(), Math.random(), Math.random(), Math.random()];
+      const vec = [deterministicRandom(), deterministicRandom(), deterministicRandom(), deterministicRandom()];
       db.upsertChunk({
         chunk: makeChunk({ contentHash: `h-limit-${i}` }),
         embedding: vec,
@@ -268,7 +277,7 @@ describe('deleteChunksForFile', () => {
 describe('SQLite WAL journaling', () => {
   it('database opens in WAL mode to prevent corruption on crash', async () => {
     const { unlink } = await import('node:fs/promises');
-    const path = join(tmpdir(), `dexter-wal-${Date.now()}.db`);
+    const path = join(tmpdir(), `dexter-wal-${FIXED_TEST_NOW_MS}.db`);
     try {
       const testDb = await MemoryDatabase.create(path);
       // Access via the private db field — safe in tests

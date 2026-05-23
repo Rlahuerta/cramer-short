@@ -3,15 +3,18 @@ import { z } from 'zod';
 import { api, stripFieldsDeep } from './api.js';
 import { formatToolResult } from '../types.js';
 import { tavilySearch } from '../search/tavily.js';
+import { hasEnv } from '../../utils/env.js';
 
 const REDUNDANT_FINANCIAL_FIELDS = ['accession_number', 'currency', 'period'] as const;
 
 const KeyRatiosInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch key ratios for. For example, 'AAPL' for Apple."),
 });
 
+/** Fetches current key financial ratios for a company. */
 export const getKeyRatios = new DynamicStructuredTool({
   name: 'get_key_ratios',
   description:
@@ -24,7 +27,7 @@ export const getKeyRatios = new DynamicStructuredTool({
       return formatToolResult(data.snapshot || {}, [url]);
     } catch {
       // Primary API failed (402 or network) — fall back to Tavily web search
-      if (process.env.TAVILY_API_KEY) {
+      if (hasEnv('TAVILY_API_KEY')) {
         try {
           return await tavilySearch.invoke({
             query: `${ticker} key financial ratios P/E EV/EBITDA profit margins ROE return on equity 2024 2025`,
@@ -44,6 +47,7 @@ export const getKeyRatios = new DynamicStructuredTool({
 const HistoricalKeyRatiosInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The stock ticker symbol to fetch historical key ratios for. For example, 'AAPL' for Apple."
     ),
@@ -59,30 +63,36 @@ const HistoricalKeyRatiosInputSchema = z.object({
     .describe('The number of past financial statements to retrieve.'),
   report_period: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for key ratios with an exact report period date (YYYY-MM-DD).'),
   report_period_gt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for key ratios with report periods after this date (YYYY-MM-DD).'),
   report_period_gte: z
     .string()
+    .max(32)
     .optional()
     .describe(
       'Filter for key ratios with report periods on or after this date (YYYY-MM-DD).'
     ),
   report_period_lt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for key ratios with report periods before this date (YYYY-MM-DD).'),
   report_period_lte: z
     .string()
+    .max(32)
     .optional()
     .describe(
       'Filter for key ratios with report periods on or before this date (YYYY-MM-DD).'
     ),
 });
 
+/** Fetches historical key financial ratios for a company. */
 export const getHistoricalKeyRatios = new DynamicStructuredTool({
   name: 'get_historical_key_ratios',
   description: `Retrieves historical key ratios for a company, such as P/E ratio, revenue per share, and enterprise value, over a specified period. Useful for trend analysis and historical performance evaluation.`,
@@ -107,7 +117,7 @@ export const getHistoricalKeyRatios = new DynamicStructuredTool({
     } catch {
       // Primary API failed — fall back to Tavily web search
       const ticker = input.ticker.trim().toUpperCase();
-      if (process.env.TAVILY_API_KEY) {
+      if (hasEnv('TAVILY_API_KEY')) {
         try {
           return await tavilySearch.invoke({
             query: `${ticker} historical P/E ratio EV/EBITDA margins valuation trend 2022 2023 2024`,

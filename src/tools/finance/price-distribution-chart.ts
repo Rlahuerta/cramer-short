@@ -230,9 +230,10 @@ const schema = z.object({
     probability: z.number().min(0).max(1).describe('Upper-tail probability P(asset > price)'),
   })).min(2).describe('At least 2 price threshold points'),
   current_price: z.number().optional().describe('Current asset price for marker'),
-  label: z.string().optional().describe('Asset label (e.g. "BTC", "GLD")'),
+  label: z.string().max(128).optional().describe('Asset label (e.g. "BTC", "GLD")'),
 });
 
+/** Renders a price distribution chart for forecast scenarios. */
 export const priceDistributionChartTool = new DynamicStructuredTool({
   name: 'price_distribution_chart',
   description: PRICE_DISTRIBUTION_CHART_DESCRIPTION,

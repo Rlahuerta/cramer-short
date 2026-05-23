@@ -13,17 +13,26 @@
  * No real LLM or PTY is required — all LLM calls are mocked.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
-import { DEFAULT_HISTORY_LIMIT, FULL_ANSWER_TURNS } from '../utils/history-context.js';
+import { DEFAULT_HISTORY_LIMIT, FULL_ANSWER_TURNS } from '../utils/parsing/history-context.js';
 import { SessionController } from '../controllers/session-controller.js';
 import { AgentRunnerController } from '../controllers/agent-runner.js';
 import { formatRelativeTime, createSessionSelector } from '../components/select-list.js';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../controllers/types.js';
 import type { SessionIndexEntry } from '../utils/session-store.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -44,7 +53,7 @@ function makeItems(count: number): HistoryItem[] {
     events: [],
     answer: `Answer ${i}: detailed financial analysis result`,
     status: 'complete' as const,
-    startTime: Date.now() - (count - i) * 1000,
+    startTime: FIXED_TEST_NOW_MS - (count - i) * 1000,
     duration: 1500,
   }));
 }

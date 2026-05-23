@@ -29,7 +29,7 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
-import { YES_BIAS_MULTIPLIER } from '../../utils/ensemble.js';
+import { YES_BIAS_MULTIPLIER } from '../../utils/finance/ensemble.js';
 import { api } from './api.js';
 
 // ---------------------------------------------------------------------------
@@ -449,7 +449,9 @@ async function fetchStockHistory(ticker: string, days = 120): Promise<number[]> 
       start_date: startDate,
       end_date: endDate,
     });
-    const prices: Array<{ close: number }> = (data as any).prices ?? data as any ?? [];
+    const rawData = data as { prices?: Array<{ close: number }> } | Array<{ close: number }>;
+    const prices: Array<{ close: number }> =
+      (Array.isArray(rawData) ? rawData : (rawData.prices ?? [])) as Array<{ close: number }>;
     const result = prices.map(p => p.close).filter(v => typeof v === 'number' && !isNaN(v));
     if (result.length >= 21) return result;
   } catch {
@@ -643,6 +645,12 @@ export function redistributeWeights(
 export async function computeTrumpPressureIndex(): Promise<TrumpPressureResult> {
   const warnings: string[] = [];
   const componentResults = new Map<string, { values: number[]; quality: 'live' | 'stale' | 'unavailable' }>();
+  const warnAndFallback = <T>(label: string, fallback: T) => (err: unknown): T => {
+    const msg = err instanceof Error ? err.message : String(err);
+    warnings.push(`${label} unavailable: ${msg}`);
+    console.warn(`[trump-pressure-index] ${label} unavailable: ${msg}`);
+    return fallback;
+  };
 
   // ── Fetch all data in parallel ────────────────────────────────────────
   const [
@@ -654,13 +662,13 @@ export async function computeTrumpPressureIndex(): Promise<TrumpPressureResult> 
     policyReversal,
     sentimentScore,
   ] = await Promise.all([
-    fetchStockHistory('SPY', 120).catch(() => [] as number[]),
-    fetchStockHistory('UGA', 120).catch(() => [] as number[]),
-    fetchFredHistory('DGS10', 120).catch(() => [] as number[]),
-    fetchFredHistory('T5YIE', 120).catch(() => [] as number[]),
-    fetchApprovalData().catch(() => null),
-    fetchPolicyReversalProb().catch(() => ({ prob: null as number | null, count: 0 })),
-    fetchPolicySentiment().catch(() => null),
+    fetchStockHistory('SPY', 120).catch(warnAndFallback('SPY history', [] as number[])),
+    fetchStockHistory('UGA', 120).catch(warnAndFallback('UGA history', [] as number[])),
+    fetchFredHistory('DGS10', 120).catch(warnAndFallback('DGS10 history', [] as number[])),
+    fetchFredHistory('T5YIE', 120).catch(warnAndFallback('T5YIE history', [] as number[])),
+    fetchApprovalData().catch(warnAndFallback('approval data', null)),
+    fetchPolicyReversalProb().catch(warnAndFallback('policy reversal probability', { prob: null as number | null, count: 0 })),
+    fetchPolicySentiment().catch(warnAndFallback('policy sentiment', null)),
   ]);
 
   // ── Process each component ────────────────────────────────────────────
@@ -962,10 +970,13 @@ Inspired by Deutsche Bank's methodology (Maximilian Uleer), extended with Polyma
 const TrumpPressureInputSchema = z.object({
   query: z
     .string()
+    .max(10_000)
     .optional()
     .describe('Optional context query (e.g. "tariff pressure", "market stress"). Currently unused but reserved for future filtering.'),
 });
-
+/**
+ * Tool entrypoint for computing the current Trump policy pressure index.
+ */
 export const trumpPressureIndexTool = new DynamicStructuredTool({
   name: 'trump_pressure_index',
   description: TRUMP_PRESSURE_DESCRIPTION,

@@ -6,8 +6,9 @@ import { describe, test, expect, beforeEach, spyOn } from 'bun:test';
 // ---------------------------------------------------------------------------
 process.env.FMP_API_KEY = 'test-fmp-key';
 
+const fmpModulePath: string = './fmp.js?fmp-unit';
 const { fmpApi, getFmpIncomeStatements, getFmpBalanceSheets, getFmpCashFlowStatements, FMP_PREMIUM_REQUIRED } =
-  await import('./fmp.js');
+  await import(fmpModulePath) as typeof import('./fmp.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -154,6 +155,22 @@ describe('getFmpIncomeStatements', () => {
 
     expect((result.data as Record<string, unknown>).error).toContain('[FMP API]');
   });
+
+  test('throws when consumed fields are missing from nonempty payload', async () => {
+    mockGet.mockResolvedValueOnce([{}]);
+
+    await expect(
+      getFmpIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 }),
+    ).rejects.toThrow('Invalid income statement data');
+  });
+
+  test('throws when consumed numeric fields are malformed', async () => {
+    mockGet.mockResolvedValueOnce([{ date: '2024-12-31', symbol: 'VWS.CO', revenue: 'not-a-number' }]);
+
+    await expect(
+      getFmpIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 }),
+    ).rejects.toThrow('Invalid income statement data');
+  });
 });
 
 // ===========================================================================
@@ -207,6 +224,22 @@ describe('getFmpBalanceSheets', () => {
     const result = parseResult(raw);
 
     expect((result.data as Record<string, unknown>).error).toBeDefined();
+  });
+
+  test('throws when consumed fields are missing from nonempty payload', async () => {
+    mockGet.mockResolvedValueOnce([{}]);
+
+    await expect(
+      getFmpBalanceSheets.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 }),
+    ).rejects.toThrow('Invalid balance sheet data');
+  });
+
+  test('throws when consumed numeric fields are malformed', async () => {
+    mockGet.mockResolvedValueOnce([{ date: '2024-12-31', symbol: 'VWS.CO', totalAssets: 'not-a-number' }]);
+
+    await expect(
+      getFmpBalanceSheets.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 }),
+    ).rejects.toThrow('Invalid balance sheet data');
   });
 });
 
@@ -262,6 +295,22 @@ describe('getFmpCashFlowStatements', () => {
       '/cash-flow-statement',
       expect.objectContaining({ period: 'quarter', symbol: 'AAPL' }),
     );
+  });
+
+  test('throws when consumed fields are missing from nonempty payload', async () => {
+    mockGet.mockResolvedValueOnce([{}]);
+
+    await expect(
+      getFmpCashFlowStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 }),
+    ).rejects.toThrow('Invalid cash flow statement data');
+  });
+
+  test('throws when consumed numeric fields are malformed', async () => {
+    mockGet.mockResolvedValueOnce([{ date: '2024-12-31', symbol: 'VWS.CO', operatingCashFlow: 'not-a-number' }]);
+
+    await expect(
+      getFmpCashFlowStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 }),
+    ).rejects.toThrow('Invalid cash flow statement data');
   });
 });
 

@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import {
   detectAssetType,
   extractSignals,
@@ -8,6 +9,14 @@ import {
   SIGNAL_KEYWORDS,
 } from './signal-extractor.js';
 import { resolveAssetIntent } from './asset-resolver.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // detectAssetType
@@ -78,6 +87,22 @@ describe('detectAssetType', () => {
 
   it('detects ETH keyword as crypto', () => {
     expect(detectAssetType('ETH 2.0 upgrade').type).toBe('crypto');
+  });
+
+  it('does not mis-detect ETH from the word "whether" in GOLD structural-break prompts', () => {
+    const result = detectAssetType(
+      'Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include whether CI widening was applied.',
+    );
+    expect(result.type).not.toBe('crypto');
+    expect(result.ticker).toBe('GOLD');
+  });
+
+  it('lets an explicit GOLD-only directive override earlier BTC cues', () => {
+    const result = detectAssetType(
+      'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
+    );
+    expect(result.type).toBe('commodity');
+    expect(result.ticker).toBe('GOLD');
   });
 
   it('detects solana as crypto with ticker SOL', () => {
@@ -165,7 +190,7 @@ describe('extractSignals', () => {
   });
 
   it('search phrases do NOT contain year tokens (normalisation strips them)', () => {
-    const year = String(new Date().getFullYear());
+    const year = String(new Date(FIXED_TEST_NOW_MS).getFullYear());
     const signals = extractSignals('NVDA');
     for (const sig of signals) {
       expect(sig.searchPhrase).not.toContain(year);
@@ -257,7 +282,7 @@ describe('extractSignals', () => {
   });
 
   it('no queryVariant contains year tokens', () => {
-    const year = String(new Date().getFullYear());
+    const year = String(new Date(FIXED_TEST_NOW_MS).getFullYear());
     for (const sig of extractSignals('NVDA')) {
       for (const v of sig.queryVariants ?? []) {
         expect(v).not.toContain(year);
@@ -720,6 +745,63 @@ describe('BTC crypto signal enrichment', () => {
     expect(byCategory['btc_price_target']).toBe(0.20);
     expect(byCategory['macro_rates']).toBe(0.15);
     expect(byCategory['macro_growth']).toBe(0.10);
+  });
+});
+
+describe('extractSignals — short-horizon crypto signal map', () => {
+  const shortHorizonCases = [
+    { horizonDays: 1, relativePhrase: 'Bitcoin tomorrow' },
+    { horizonDays: 2, relativePhrase: 'Bitcoin in 2 days' },
+    { horizonDays: 3, relativePhrase: 'Bitcoin in 3 days' },
+  ] as const;
+
+  for (const { horizonDays, relativePhrase } of shortHorizonCases) {
+    it(`prioritizes BTC-centric phrases for ${horizonDays}d crypto requests`, () => {
+      const signals = extractSignals('ETH', {
+        horizonDays,
+        preferShortHorizonCryptoSignals: true,
+      });
+      const phrases = signals.flatMap((signal) => [signal.searchPhrase, ...(signal.queryVariants ?? [])]);
+
+      expect(signals.slice(0, 3).map((signal) => signal.category)).toEqual([
+        'btc_price_target',
+        'btc_price_target',
+        'btc_price_target',
+      ]);
+      expect(signals[0]?.searchPhrase).toBe('Bitcoin above');
+      expect(signals[1]?.searchPhrase).toBe('Bitcoin price');
+      expect(signals[2]?.searchPhrase).toBe(relativePhrase);
+      expect(phrases).toContain('Bitcoin above');
+      expect(phrases).toContain('Bitcoin below');
+      expect(phrases).toContain('Bitcoin price');
+      expect(phrases).toContain(relativePhrase);
+      expect(phrases.some((phrase) => /^Bitcoin (above|below) [A-Z][a-z]{2} \d{1,2}$/.test(phrase))).toBe(true);
+      expect(phrases.some((phrase) => /^Bitcoin [A-Z][a-z]{2} \d{1,2}$/.test(phrase))).toBe(true);
+      expect(signals.reduce((sum, signal) => sum + signal.weight, 0)).toBeCloseTo(1, 5);
+    });
+  }
+
+  it('keeps longer-horizon crypto signals unchanged', () => {
+    const signals = extractSignals('BTC', {
+      horizonDays: 7,
+      preferShortHorizonCryptoSignals: true,
+    });
+
+    expect(signals.map((signal) => signal.category)).toEqual([
+      'regulatory',
+      'etf_product',
+      'btc_price_target',
+      'macro_rates',
+      'macro_growth',
+    ]);
+    expect(signals.map((signal) => signal.weight)).toEqual([0.30, 0.25, 0.20, 0.15, 0.10]);
+  });
+
+  it('keeps non-crypto short-horizon signals unchanged', () => {
+    expect(extractSignals('NVDA', {
+      horizonDays: 2,
+      preferShortHorizonCryptoSignals: true,
+    })).toEqual(extractSignals('NVDA'));
   });
 });
 

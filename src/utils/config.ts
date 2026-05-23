@@ -1,7 +1,10 @@
+import { MS_PER_DAY } from './time.js';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { z } from 'zod';
 import { cramerShortPath } from './paths.js';
+import { ConfigSchema, type Config } from '../schemas/config.js';
+
+export { ConfigSchema, type Config } from '../schemas/config.js';
 
 const SETTINGS_FILE = cramerShortPath('settings.json');
 
@@ -17,26 +20,6 @@ const MODEL_TO_PROVIDER_MAP: Record<string, string> = {
 const DEPRECATED_MODEL_UPGRADES: Record<string, string> = {
   'gpt-5.2': 'gpt-5.4',
 };
-
-export const ConfigSchema = z.object({
-  provider: z.string().optional(),
-  modelId: z.string().optional(),
-  model: z.string().optional(), // legacy
-  memory: z.object({
-    enabled: z.boolean().optional(),
-    embeddingProvider: z.enum(['openai', 'gemini', 'ollama', 'auto']).optional(),
-    embeddingModel: z.string().optional(),
-    maxSessionContextTokens: z.number().optional(),
-  }).optional(),
-  maxIterations: z.number().min(5).max(100).optional(),
-  contextThreshold: z.number().min(10000).max(500000).optional(),
-  keepToolUses: z.number().min(2).max(20).optional(),
-  cacheTtlMs: z.number().min(60000).max(86400000).optional(),
-  parallelToolLimit: z.number().min(0).max(10).optional(),
-  llmCallTimeoutMs: z.number().min(30000).max(600000).optional(),
-}).passthrough(); // allow unknown keys without throwing
-
-export type Config = z.infer<typeof ConfigSchema> & Record<string, unknown>;
 
 /**
  * Validates raw config against the schema.
@@ -82,7 +65,7 @@ const CONFIG_VALIDATION_RULES: Record<string, { min: number; max: number }> = {
   maxIterations:    { min: 5,     max: 100       },
   contextThreshold: { min: 10000, max: 500000    },
   keepToolUses:     { min: 2,     max: 20        },
-  cacheTtlMs:       { min: 60000, max: 86400000  },
+  cacheTtlMs:       { min: 60000, max: MS_PER_DAY  },
   parallelToolLimit:{ min: 0,     max: 10        },
   llmCallTimeoutMs: { min: 30000, max: 600000    },
 };
@@ -124,7 +107,20 @@ export function loadConfig(): Config {
 
   try {
     const content = readFileSync(SETTINGS_FILE, 'utf-8');
-    let config = validateAndSanitizeConfig(JSON.parse(content));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch (parseErr) {
+      const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      console.warn(
+        `[cramer-short] settings.json contains invalid JSON (${msg}). ` +
+          `Falling back to defaults. Fix syntax in ${SETTINGS_FILE} to restore your settings.`,
+      );
+      configCache = { data: {}, loadedAt: now };
+      return {};
+    }
+
+    const config = validateAndSanitizeConfig(parsed);
 
     // Upgrade deprecated model IDs (e.g. gpt-5.2 -> gpt-5.4)
     if (config.modelId && DEPRECATED_MODEL_UPGRADES[config.modelId]) {
@@ -134,7 +130,9 @@ export function loadConfig(): Config {
 
     configCache = { data: config, loadedAt: now };
     return config;
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[cramer-short] failed to read ${SETTINGS_FILE} (${msg}). Using defaults.`);
     configCache = { data: {}, loadedAt: now };
     return {};
   }

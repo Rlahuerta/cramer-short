@@ -5,12 +5,14 @@ import { formatToolResult } from '../types.js';
 import { tavilySearch } from '../search/tavily.js';
 import type { DynamicStructuredTool as DST } from '@langchain/core/tools';
 import type { RobinhoodQuote } from './robinhood-client.js';
+import { hasEnv } from '../../utils/env.js';
 
 type RobinhoodQuoteFn = (ticker: string) => Promise<RobinhoodQuote | null>;
 
 const StockPriceInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch current price for. For example, 'AAPL' for Apple."),
 });
 
@@ -21,6 +23,7 @@ Fetches current stock price snapshots for equities, including open, high, low, c
 export function makeGetStockPrice(
   robinhoodQuote: RobinhoodQuoteFn,
 ): DST {
+  /** Creates the model-aware stock price snapshot tool. */
   return new DynamicStructuredTool({
     name: 'get_stock_price',
     description:
@@ -36,19 +39,19 @@ export function makeGetStockPrice(
         if (quote) {
           const data = {
             symbol: quote.symbol,
-            lastTradePrice: quote.lastTradePrice,
-            bidPrice: quote.bidPrice,
-            askPrice: quote.askPrice,
+            lastTradePrice: quote.last_trade_price,
+            bidPrice: quote.bid_price,
+            askPrice: quote.ask_price,
             volume: quote.volume,
-            adjustedPreviousClose: quote.adjustedPreviousClose,
-            tradingHalted: quote.tradingHalted,
-            previousClose: quote.previousClose,
+            adjustedPreviousClose: quote.adjusted_previous_close,
+            tradingHalted: quote.trading_halted,
+            previousClose: quote.previous_close,
             high52Week: null,
             low52Week: null,
           };
           return formatToolResult(data, [`https://robinhood.com/stocks/${ticker}`]);
         }
-        if (process.env.TAVILY_API_KEY) {
+        if (hasEnv('TAVILY_API_KEY')) {
           try {
             return await tavilySearch.invoke({
               query: `${ticker} stock price today current share price market cap`,
@@ -69,15 +72,17 @@ export function makeGetStockPrice(
 const StockPricesInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch historical prices for. For example, 'AAPL' for Apple."),
   interval: z
     .enum(['day', 'week', 'month', 'year'])
     .default('day')
     .describe("The time interval for price data. Defaults to 'day'."),
-  start_date: z.string().describe('Start date in YYYY-MM-DD format. Required.'),
-  end_date: z.string().describe('End date in YYYY-MM-DD format. Required.'),
+  start_date: z.string().max(32).describe('Start date in YYYY-MM-DD format. Required.'),
+  end_date: z.string().max(32).describe('End date in YYYY-MM-DD format. Required.'),
 });
 
+/** Fetches historical stock prices for a ticker. */
 export const getStockPrices = new DynamicStructuredTool({
   name: 'get_stock_prices',
   description:
@@ -98,6 +103,7 @@ export const getStockPrices = new DynamicStructuredTool({
   },
 });
 
+/** Searches supported stock ticker symbols. */
 export const getStockTickers = new DynamicStructuredTool({
   name: 'get_available_stock_tickers',
   description: 'Retrieves the list of available stock tickers that can be used with the stock price tools.',

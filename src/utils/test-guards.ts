@@ -11,9 +11,8 @@
  *   bun run test:e2e          — E2E tests isolated (real Ollama, sets RUN_E2E=1)
  *   bun run test:all          — all three in sequence (no contamination)
  *
- * Integration tests run automatically when not in CI.
- * E2E tests always require explicit RUN_E2E=1 (set by test:e2e script) because
- * they must run in an isolated process to avoid unit-test mock contamination.
+ * Integration and E2E tests both require explicit opt-in so `bun test`
+ * stays unit-only and live suites run only through the isolated scripts.
  *
  * CI opt-in:
  *   RUN_INTEGRATION=1  — enable integration tests in CI
@@ -23,21 +22,52 @@
  *   SKIP_INTEGRATION=1 — disable integration tests locally
  */
 import { it } from 'bun:test';
-
-const IS_CI = process.env.CI === 'true' || process.env.CI === '1';
+import { getE2EDynamicSkipReason, getE2EPreflightStatus, markE2ESkippedFromError } from './e2e-helpers.js';
+import { getBooleanEnv } from './env.js';
 
 export const RUN_INTEGRATION =
-  process.env.SKIP_INTEGRATION === '1' ? false
-  : process.env.RUN_INTEGRATION === '1' ? true
-  : !IS_CI;
+  getBooleanEnv('SKIP_INTEGRATION') ? false : getBooleanEnv('RUN_INTEGRATION');
 
 // E2E tests always require explicit opt-in to prevent worker contamination:
 // unit test files mock ../model/llm.js which would make E2E use a fake LLM.
 // Use `bun run test:e2e` which sets RUN_E2E=1 and runs only e2e files.
-export const RUN_E2E = process.env.RUN_E2E === '1';
+export const RUN_E2E = getBooleanEnv('RUN_E2E');
+
+const initialE2EPreflight = RUN_E2E ? await getE2EPreflightStatus() : null;
+if (initialE2EPreflight && !initialE2EPreflight.available) {
+  console.warn(
+    `Skipping live E2E for ${initialE2EPreflight.model}: ${initialE2EPreflight.reason ?? 'preflight failed'}`,
+  );
+}
 
 /** Use instead of `it` for tests that hit real external APIs (no LLM). */
 export const integrationIt: typeof it = RUN_INTEGRATION ? it : it.skip;
 
+function createGuardedE2EIt(): typeof it {
+  // Bun's `it` carries helper properties on its callable value; this wrapper
+  // preserves the public test function shape while interposing E2E skip logic.
+  return ((label: string, fn: () => void | Promise<unknown>, options?: Parameters<typeof it>[2]) => {
+    it(label, async () => {
+      const skipReason = getE2EDynamicSkipReason();
+      if (skipReason) {
+        console.warn(skipReason);
+        return;
+      }
+
+      try {
+        await fn();
+      } catch (error) {
+        if (markE2ESkippedFromError(error)) {
+          return;
+        }
+        throw error;
+      }
+    }, options);
+  }) as typeof it;
+}
+
+const guardedE2EIt: typeof it = createGuardedE2EIt();
+
 /** Use instead of `it` for tests that run the full Cramer-Short agent against Ollama. */
-export const e2eIt: typeof it = RUN_E2E ? it : it.skip;
+export const e2eIt: typeof it =
+  RUN_E2E && (initialE2EPreflight?.available ?? false) ? guardedE2EIt : it.skip;

@@ -1,18 +1,27 @@
-import { describe, test, expect, mock, beforeEach, spyOn } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
+
+// Signal that FMP is configured — fallback will only run when the key is set.
+process.env.FMP_API_KEY = 'test-fmp-key';
+
+const realFmpModule = await import('./fmp.js');
+const realYahooFinanceModule = await import('./yahoo-finance.js');
+const realTavilyModule = await import('../search/tavily.js');
 
 // ---------------------------------------------------------------------------
 // Mock ./fmp.js BEFORE importing fundamentals.js so the dynamic import picks
 // up our stubs instead of the real FMP tools.
 // ---------------------------------------------------------------------------
 
+const mockTool = (name: string, invoke: ReturnType<typeof mock>) => ({ invoke, name });
+
 const mockFmpIncomeInvoke = mock(async (_input: unknown): Promise<string> => '{}');
 const mockFmpBalanceInvoke = mock(async (_input: unknown): Promise<string> => '{}');
 const mockFmpCashFlowInvoke = mock(async (_input: unknown): Promise<string> => '{}');
 
 mock.module('./fmp.js', () => ({
-  getFmpIncomeStatements: { invoke: mockFmpIncomeInvoke, name: 'get_fmp_income_statements' },
-  getFmpBalanceSheets: { invoke: mockFmpBalanceInvoke, name: 'get_fmp_balance_sheets' },
-  getFmpCashFlowStatements: { invoke: mockFmpCashFlowInvoke, name: 'get_fmp_cash_flow_statements' },
+  getFmpIncomeStatements: mockTool('get_fmp_income_statements', mockFmpIncomeInvoke),
+  getFmpBalanceSheets: mockTool('get_fmp_balance_sheets', mockFmpBalanceInvoke),
+  getFmpCashFlowStatements: mockTool('get_fmp_cash_flow_statements', mockFmpCashFlowInvoke),
   fmpApi: { get: mock(async () => []) },
   FMP_PREMIUM_REQUIRED: 'FMP_PREMIUM_REQUIRED',
 }));
@@ -22,9 +31,21 @@ mock.module('./fmp.js', () => ({
 // ---------------------------------------------------------------------------
 
 const mockYahooIncomeInvoke = mock(async (_input: unknown): Promise<string> => '{}');
+const mockYahooAnalystTargetsInvoke = mock(async (_input: unknown): Promise<string> => '{}');
+const mockYahooAnalystRecommendationsInvoke = mock(async (_input: unknown): Promise<string> => '{}');
+const mockYahooUpgradeDowngradeHistoryInvoke = mock(async (_input: unknown): Promise<string> => '{}');
 
 mock.module('./yahoo-finance.js', () => ({
-  getYahooIncomeStatements: { invoke: mockYahooIncomeInvoke, name: 'get_yahoo_income_statements' },
+  getYahooIncomeStatements: mockTool('get_yahoo_income_statements', mockYahooIncomeInvoke),
+  getYahooAnalystTargets: mockTool('get_yahoo_analyst_targets', mockYahooAnalystTargetsInvoke),
+  getYahooAnalystRecommendations: mockTool(
+    'get_yahoo_analyst_recommendations',
+    mockYahooAnalystRecommendationsInvoke,
+  ),
+  getYahooUpgradeDowngradeHistory: mockTool(
+    'get_yahoo_upgrade_downgrade_history',
+    mockYahooUpgradeDowngradeHistoryInvoke,
+  ),
 }));
 
 // ---------------------------------------------------------------------------
@@ -37,15 +58,35 @@ const mockTavilyInvoke = mock(
 );
 
 mock.module('../search/tavily.js', () => ({
-  tavilySearch: { invoke: mockTavilyInvoke, name: 'web_search' },
+  tavilySearch: mockTool('web_search', mockTavilyInvoke),
 }));
-
-// Signal that FMP is configured — fallback will only run when the key is set
-process.env.FMP_API_KEY = 'test-fmp-key';
 
 import { api } from './api.js';
 const { getIncomeStatements, getBalanceSheets, getCashFlowStatements } =
   await import('./fundamentals.js');
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let apiGetSpy: ReturnType<typeof spyOn<any, any>> | undefined;
+
+afterEach(() => {
+  apiGetSpy?.mockRestore();
+  apiGetSpy = undefined;
+  mockFmpIncomeInvoke.mockReset();
+  mockFmpBalanceInvoke.mockReset();
+  mockFmpCashFlowInvoke.mockReset();
+  mockYahooIncomeInvoke.mockReset();
+  mockYahooAnalystTargetsInvoke.mockReset();
+  mockYahooAnalystRecommendationsInvoke.mockReset();
+  mockYahooUpgradeDowngradeHistoryInvoke.mockReset();
+  mockTavilyInvoke.mockReset();
+  delete process.env.TAVILY_API_KEY;
+});
+
+afterAll(() => {
+  mock.module('./fmp.js', () => realFmpModule);
+  mock.module('./yahoo-finance.js', () => realYahooFinanceModule);
+  mock.module('../search/tavily.js', () => realTavilyModule);
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,6 +99,36 @@ function parseResult(raw: unknown): { data: unknown; sourceUrls?: string[] } {
 const FD_INCOME_STUB = [{ period: '2024', revenue: 400_000_000_000, netIncome: 93_000_000_000 }];
 const FD_BALANCE_STUB = [{ period: '2024', totalAssets: 350_000_000_000 }];
 const FD_CASHFLOW_STUB = [{ period: '2024', operatingCashFlow: 110_000_000_000 }];
+
+const FD_ENDPOINTS = {
+  income_statements: 'https://api.financialdatasets.ai/financials/income-statements/',
+  balance_sheets: 'https://api.financialdatasets.ai/financials/balance-sheets/',
+  cash_flow_statements: 'https://api.financialdatasets.ai/financials/cash-flow-statements/',
+} as const;
+
+type FdStatementKey = keyof typeof FD_ENDPOINTS;
+
+function mockFdResponse(data: Record<string, unknown>, url = ''): void {
+  apiGetSpy?.mockRestore();
+  apiGetSpy = spyOn(api, 'get').mockResolvedValue({ data, url });
+}
+
+function mockFdStatements(key: FdStatementKey, rows: unknown[], url: string = FD_ENDPOINTS[key]): void {
+  mockFdResponse({ [key]: rows }, url);
+}
+
+function mockFdEmpty(key: FdStatementKey): void {
+  mockFdStatements(key, [], '');
+}
+
+function mockFdFailure(message = '[Financial Datasets API] 404'): void {
+  apiGetSpy?.mockRestore();
+  apiGetSpy = spyOn(api, 'get').mockRejectedValue(new Error(message));
+}
+
+function enableTavily(): void {
+  process.env.TAVILY_API_KEY = 'test-tavily-key';
+}
 
 const fmpIncomeResult = (ticker: string) =>
   JSON.stringify({
@@ -92,15 +163,10 @@ describe('getIncomeStatements — FMP fallback', () => {
     mockYahooIncomeInvoke.mockResolvedValue(
       JSON.stringify({ data: { error: 'No data' }, sourceUrls: [] }),
     );
-    // Isolate from real TAVILY_API_KEY in the environment
-    delete process.env.TAVILY_API_KEY;
   });
 
   test('does NOT call FMP when financialdatasets.ai returns data (non-annual)', async () => {
-    spyOn(api, 'get').mockResolvedValue({
-      data: { income_statements: FD_INCOME_STUB },
-      url: 'https://api.financialdatasets.ai/financials/income-statements/',
-    });
+    mockFdStatements('income_statements', FD_INCOME_STUB);
 
     // period=quarterly skips cross-validation — FMP should not be called
     await getIncomeStatements.invoke({ ticker: 'AAPL', period: 'quarterly', limit: 4 });
@@ -109,10 +175,7 @@ describe('getIncomeStatements — FMP fallback', () => {
   });
 
   test('calls FMP for cross-validation when financialdatasets.ai returns annual data', async () => {
-    spyOn(api, 'get').mockResolvedValue({
-      data: { income_statements: FD_INCOME_STUB },
-      url: 'https://api.financialdatasets.ai/financials/income-statements/',
-    });
+    mockFdStatements('income_statements', FD_INCOME_STUB);
     // FMP returns agreeing data — no warning appended
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpIncomeResult('AAPL'));
 
@@ -123,10 +186,7 @@ describe('getIncomeStatements — FMP fallback', () => {
   });
 
   test('calls FMP when financialdatasets.ai returns empty array', async () => {
-    spyOn(api, 'get').mockResolvedValue({
-      data: { income_statements: [] },
-      url: 'https://api.financialdatasets.ai/financials/income-statements/',
-    });
+    mockFdEmpty('income_statements');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpIncomeResult('VWS.CO'));
 
     await getIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -135,10 +195,7 @@ describe('getIncomeStatements — FMP fallback', () => {
   });
 
   test('calls FMP with correct ticker and period', async () => {
-    spyOn(api, 'get').mockResolvedValue({
-      data: { income_statements: [] },
-      url: 'https://api.financialdatasets.ai/financials/income-statements/',
-    });
+    mockFdEmpty('income_statements');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpIncomeResult('VWS.CO'));
 
     await getIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -149,7 +206,7 @@ describe('getIncomeStatements — FMP fallback', () => {
   });
 
   test('maps period=ttm to annual when calling FMP', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { income_statements: [] }, url: '' });
+    mockFdEmpty('income_statements');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpIncomeResult('AAPL'));
 
     await getIncomeStatements.invoke({ ticker: 'AAPL', period: 'ttm', limit: 1 });
@@ -159,7 +216,7 @@ describe('getIncomeStatements — FMP fallback', () => {
   });
 
   test('calls FMP when financialdatasets.ai throws', async () => {
-    spyOn(api, 'get').mockRejectedValue(new Error('[Financial Datasets API] 404 Not Found'));
+    mockFdFailure('[Financial Datasets API] 404 Not Found');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpIncomeResult('VWS.CO'));
 
     await getIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -168,7 +225,7 @@ describe('getIncomeStatements — FMP fallback', () => {
   });
 
   test('returns FMP data and sourceUrls when FD.ai is empty', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { income_statements: [] }, url: '' });
+    mockFdEmpty('income_statements');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpIncomeResult('VWS.CO'));
 
     const raw = await getIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -179,7 +236,7 @@ describe('getIncomeStatements — FMP fallback', () => {
   });
 
   test('returns error when FMP and Yahoo both return errors', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { income_statements: [] }, url: '' });
+    mockFdEmpty('income_statements');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpErrorResult());
     mockYahooIncomeInvoke.mockResolvedValueOnce(
       JSON.stringify({ data: { error: 'No income data for UNKNOWN' }, sourceUrls: [] }),
@@ -200,14 +257,10 @@ describe('getIncomeStatements — FMP fallback', () => {
 describe('getBalanceSheets — FMP fallback', () => {
   beforeEach(() => {
     mockFmpBalanceInvoke.mockReset();
-    delete process.env.TAVILY_API_KEY;
   });
 
   test('does NOT call FMP when financialdatasets.ai returns data', async () => {
-    spyOn(api, 'get').mockResolvedValue({
-      data: { balance_sheets: FD_BALANCE_STUB },
-      url: 'https://api.financialdatasets.ai/financials/balance-sheets/',
-    });
+    mockFdStatements('balance_sheets', FD_BALANCE_STUB);
 
     await getBalanceSheets.invoke({ ticker: 'AAPL', period: 'annual', limit: 4 });
 
@@ -215,7 +268,7 @@ describe('getBalanceSheets — FMP fallback', () => {
   });
 
   test('calls FMP when financialdatasets.ai returns empty array', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { balance_sheets: [] }, url: '' });
+    mockFdEmpty('balance_sheets');
     mockFmpBalanceInvoke.mockResolvedValueOnce(fmpBalanceResult('VWS.CO'));
 
     await getBalanceSheets.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -224,7 +277,7 @@ describe('getBalanceSheets — FMP fallback', () => {
   });
 
   test('calls FMP when financialdatasets.ai throws', async () => {
-    spyOn(api, 'get').mockRejectedValue(new Error('[Financial Datasets API] 404'));
+    mockFdFailure();
     mockFmpBalanceInvoke.mockResolvedValueOnce(fmpBalanceResult('VWS.CO'));
 
     await getBalanceSheets.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -233,7 +286,7 @@ describe('getBalanceSheets — FMP fallback', () => {
   });
 
   test('returns FMP data when FD.ai is empty', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { balance_sheets: [] }, url: '' });
+    mockFdEmpty('balance_sheets');
     mockFmpBalanceInvoke.mockResolvedValueOnce(fmpBalanceResult('VWS.CO'));
 
     const raw = await getBalanceSheets.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -251,14 +304,10 @@ describe('getBalanceSheets — FMP fallback', () => {
 describe('getCashFlowStatements — FMP fallback', () => {
   beforeEach(() => {
     mockFmpCashFlowInvoke.mockReset();
-    delete process.env.TAVILY_API_KEY;
   });
 
   test('does NOT call FMP when financialdatasets.ai returns data', async () => {
-    spyOn(api, 'get').mockResolvedValue({
-      data: { cash_flow_statements: FD_CASHFLOW_STUB },
-      url: 'https://api.financialdatasets.ai/financials/cash-flow-statements/',
-    });
+    mockFdStatements('cash_flow_statements', FD_CASHFLOW_STUB);
 
     await getCashFlowStatements.invoke({ ticker: 'AAPL', period: 'annual', limit: 4 });
 
@@ -266,7 +315,7 @@ describe('getCashFlowStatements — FMP fallback', () => {
   });
 
   test('calls FMP when financialdatasets.ai returns empty array', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { cash_flow_statements: [] }, url: '' });
+    mockFdEmpty('cash_flow_statements');
     mockFmpCashFlowInvoke.mockResolvedValueOnce(fmpCashFlowResult('VWS.CO'));
 
     await getCashFlowStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -275,7 +324,7 @@ describe('getCashFlowStatements — FMP fallback', () => {
   });
 
   test('calls FMP when financialdatasets.ai throws', async () => {
-    spyOn(api, 'get').mockRejectedValue(new Error('[Financial Datasets API] 404'));
+    mockFdFailure();
     mockFmpCashFlowInvoke.mockResolvedValueOnce(fmpCashFlowResult('VWS.CO'));
 
     await getCashFlowStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -284,7 +333,7 @@ describe('getCashFlowStatements — FMP fallback', () => {
   });
 
   test('returns FMP data when FD.ai is empty', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { cash_flow_statements: [] }, url: '' });
+    mockFdEmpty('cash_flow_statements');
     mockFmpCashFlowInvoke.mockResolvedValueOnce(fmpCashFlowResult('VWS.CO'));
 
     const raw = await getCashFlowStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -329,7 +378,7 @@ describe('getIncomeStatements — Yahoo Finance fallback on FMP premium', () => 
   });
 
   test('calls Yahoo Finance when FMP returns premium error', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { income_statements: [] }, url: '' });
+    mockFdEmpty('income_statements');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpPremiumResult());
     mockYahooIncomeInvoke.mockResolvedValueOnce(yahooIncomeResult('VWS.CO'));
 
@@ -339,7 +388,7 @@ describe('getIncomeStatements — Yahoo Finance fallback on FMP premium', () => 
   });
 
   test('does NOT call Yahoo Finance when FMP succeeds', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { income_statements: [] }, url: '' });
+    mockFdEmpty('income_statements');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpIncomeResult('AAPL'));
 
     await getIncomeStatements.invoke({ ticker: 'AAPL', period: 'annual', limit: 4 });
@@ -348,7 +397,7 @@ describe('getIncomeStatements — Yahoo Finance fallback on FMP premium', () => 
   });
 
   test('returns Yahoo Finance data with yahoo sourceUrls on FMP premium', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { income_statements: [] }, url: '' });
+    mockFdEmpty('income_statements');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpPremiumResult());
     mockYahooIncomeInvoke.mockResolvedValueOnce(yahooIncomeResult('VWS.CO'));
 
@@ -360,18 +409,17 @@ describe('getIncomeStatements — Yahoo Finance fallback on FMP premium', () => 
   });
 
   test('falls through to Tavily when Yahoo also returns error', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { income_statements: [] }, url: '' });
+    mockFdEmpty('income_statements');
     mockFmpIncomeInvoke.mockResolvedValueOnce(fmpPremiumResult());
     mockYahooIncomeInvoke.mockResolvedValueOnce(
       JSON.stringify({ data: { error: 'No income data for VWS.CO' }, sourceUrls: [] }),
     );
-    process.env.TAVILY_API_KEY = 'test-tavily-key';
+    enableTavily();
     mockTavilyInvoke.mockResolvedValueOnce(tavilyResult());
 
     await getIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
 
     expect(mockTavilyInvoke).toHaveBeenCalledTimes(1);
-    delete process.env.TAVILY_API_KEY;
   });
 });
 
@@ -386,21 +434,20 @@ describe('getBalanceSheets — Tavily fallback on FMP premium', () => {
   });
 
   test('calls Tavily when FMP returns premium error and TAVILY_API_KEY is set', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { balance_sheets: [] }, url: '' });
+    mockFdEmpty('balance_sheets');
     mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
-    process.env.TAVILY_API_KEY = 'test-tavily-key';
+    enableTavily();
     mockTavilyInvoke.mockResolvedValueOnce(tavilyResult());
 
     await getBalanceSheets.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
 
     expect(mockTavilyInvoke).toHaveBeenCalledTimes(1);
-    delete process.env.TAVILY_API_KEY;
   });
 
   test('Tavily query includes ticker and balance sheet', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { balance_sheets: [] }, url: '' });
+    mockFdEmpty('balance_sheets');
     mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
-    process.env.TAVILY_API_KEY = 'test-tavily-key';
+    enableTavily();
     mockTavilyInvoke.mockResolvedValueOnce(tavilyResult());
 
     await getBalanceSheets.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -408,13 +455,11 @@ describe('getBalanceSheets — Tavily fallback on FMP premium', () => {
     const [calledInput] = mockTavilyInvoke.mock.calls[0] as [{ query: string }];
     expect(calledInput.query).toContain('VWS.CO');
     expect(calledInput.query.toLowerCase()).toContain('balance');
-    delete process.env.TAVILY_API_KEY;
   });
 
   test('skips Tavily when TAVILY_API_KEY is not set', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { balance_sheets: [] }, url: '' });
+    mockFdEmpty('balance_sheets');
     mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
-    delete process.env.TAVILY_API_KEY;
 
     const raw = await getBalanceSheets.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
     const result = parseResult(raw);
@@ -435,21 +480,20 @@ describe('getCashFlowStatements — Tavily fallback on FMP premium', () => {
   });
 
   test('calls Tavily when FMP returns premium error and TAVILY_API_KEY is set', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { cash_flow_statements: [] }, url: '' });
+    mockFdEmpty('cash_flow_statements');
     mockFmpCashFlowInvoke.mockResolvedValueOnce(fmpPremiumResult());
-    process.env.TAVILY_API_KEY = 'test-tavily-key';
+    enableTavily();
     mockTavilyInvoke.mockResolvedValueOnce(tavilyResult());
 
     await getCashFlowStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
 
     expect(mockTavilyInvoke).toHaveBeenCalledTimes(1);
-    delete process.env.TAVILY_API_KEY;
   });
 
   test('Tavily query includes ticker and cash flow', async () => {
-    spyOn(api, 'get').mockResolvedValue({ data: { cash_flow_statements: [] }, url: '' });
+    mockFdEmpty('cash_flow_statements');
     mockFmpCashFlowInvoke.mockResolvedValueOnce(fmpPremiumResult());
-    process.env.TAVILY_API_KEY = 'test-tavily-key';
+    enableTavily();
     mockTavilyInvoke.mockResolvedValueOnce(tavilyResult());
 
     await getCashFlowStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
@@ -457,6 +501,5 @@ describe('getCashFlowStatements — Tavily fallback on FMP premium', () => {
     const [calledInput] = mockTavilyInvoke.mock.calls[0] as [{ query: string }];
     expect(calledInput.query).toContain('VWS.CO');
     expect(calledInput.query.toLowerCase()).toContain('cash flow');
-    delete process.env.TAVILY_API_KEY;
   });
 });

@@ -10,9 +10,10 @@
 
 import { writeFileSync } from 'fs';
 import { join } from 'path';
+import { getEnv } from '../../../utils/env.js';
 
 const API_BASE = 'https://api.financialdatasets.ai';
-const API_KEY = process.env.FINANCIAL_DATASETS_API_KEY;
+const API_KEY = getEnv('FINANCIAL_DATASETS_API_KEY');
 
 if (!API_KEY) {
   console.error('Error: FINANCIAL_DATASETS_API_KEY env var is required');

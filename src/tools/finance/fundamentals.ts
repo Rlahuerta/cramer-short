@@ -5,13 +5,21 @@ import { formatToolResult } from '../types.js';
 import { getFmpIncomeStatements, getFmpBalanceSheets, getFmpCashFlowStatements, FMP_PREMIUM_REQUIRED } from './fmp.js';
 import { getYahooIncomeStatements } from './yahoo-finance.js';
 import { tavilySearch } from '../search/tavily.js';
-import { crossValidateFinancials, type FinancialRecord } from '../../utils/cross-validate.js';
+import { crossValidateFinancials, type FinancialRecord } from '../../utils/finance/cross-validate.js';
+import { hasEnv } from '../../utils/env.js';
+import { logger } from '../../utils/logger.js';
 
 const REDUNDANT_FINANCIAL_FIELDS = ['accession_number', 'currency', 'period'] as const;
+
+function logFallbackDebug(context: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.debug(`[fundamentals] ${context}`, { error: message });
+}
 
 const FinancialStatementsInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe(
       "The stock ticker symbol to fetch financial statements for. For example, 'AAPL' for Apple."
     ),
@@ -28,20 +36,24 @@ const FinancialStatementsInputSchema = z.object({
     ),
   report_period_gt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for financial statements with report periods after this date (YYYY-MM-DD).'),
   report_period_gte: z
     .string()
+    .max(32)
     .optional()
     .describe(
       'Filter for financial statements with report periods on or after this date (YYYY-MM-DD).'
     ),
   report_period_lt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for financial statements with report periods before this date (YYYY-MM-DD).'),
   report_period_lte: z
     .string()
+    .max(32)
     .optional()
     .describe(
       'Filter for financial statements with report periods on or before this date (YYYY-MM-DD).'
@@ -70,6 +82,18 @@ function fmpPeriod(period: string): 'annual' | 'quarterly' {
 
 type FmpCallResult = { kind: 'ok'; result: string } | { kind: 'premium' } | { kind: 'error' };
 
+interface ToolErrorPayload {
+  error?: unknown;
+}
+
+interface FinancialStatementApiRow {
+  report_period?: string;
+  period?: string;
+  revenue?: number;
+  total_revenue?: number;
+  net_income?: number;
+}
+
 /**
  * Try the FMP fallback tool.  Returns:
  * - `{ kind: 'ok', result }` when FMP returns real data
@@ -82,12 +106,12 @@ async function tryFmp(
   period: string,
   limit: number,
 ): Promise<FmpCallResult> {
-  if (!process.env.FMP_API_KEY) return { kind: 'error' };
+  if (!hasEnv('FMP_API_KEY')) return { kind: 'error' };
   try {
     const raw = await fmpTool.invoke({ ticker, period: fmpPeriod(period), limit });
     const parsed = JSON.parse(raw) as { data: unknown };
     if (!parsed.data) return { kind: 'error' };
-    const error = (parsed.data as Record<string, unknown>)?.error;
+    const error = (parsed.data as ToolErrorPayload).error;
     if (typeof error === 'string' && error.includes(FMP_PREMIUM_REQUIRED)) return { kind: 'premium' };
     if (error) return { kind: 'error' };
     return { kind: 'ok', result: raw };
@@ -101,18 +125,22 @@ async function tryFmp(
  * Returns null if TAVILY_API_KEY is not set or the search fails.
  */
 async function tryTavilySearch(ticker: string, statementType: string): Promise<string | null> {
-  if (!process.env.TAVILY_API_KEY) return null;
+  if (!hasEnv('TAVILY_API_KEY')) return null;
   try {
     const query = `${ticker} ${statementType} annual financial data 2024 2023`;
     const result = await tavilySearch.invoke({ query });
     const parsed = JSON.parse(result) as { data: unknown };
     if (!Array.isArray(parsed.data) || parsed.data.length === 0) return null;
     return result;
-  } catch {
+  } catch (error) {
+    logFallbackDebug(`Tavily fallback failed for ${ticker} ${statementType}`, error);
     return null;
   }
 }
 
+/**
+ * Fetch income statements with Financial Datasets first and international fallbacks.
+ */
 export const getIncomeStatements = new DynamicStructuredTool({
   name: 'get_income_statements',
   description: `Fetches a company's income statements, detailing its revenues, expenses, net income, etc. over a reporting period. Falls back to Financial Modeling Prep for international tickers (e.g. VWS.CO). Useful for evaluating a company's profitability and operational efficiency.`,
@@ -132,25 +160,25 @@ export const getIncomeStatements = new DynamicStructuredTool({
             const fmpResult = await tryFmp(getFmpIncomeStatements, ticker, 'annual', input.limit);
             if (fmpResult.kind === 'ok') {
               const fmpData = JSON.parse(fmpResult.result) as { data?: FinancialRecord[] };
-              const primaryRecords: FinancialRecord[] = (statements as Array<Record<string, unknown>>).map(s => ({
-                year: new Date(s.report_period as string ?? s.period as string ?? '').getFullYear(),
-                totalRevenue: s.revenue as number ?? s.total_revenue as number,
-                netIncome: s.net_income as number,
+              const primaryRecords: FinancialRecord[] = (statements as FinancialStatementApiRow[]).map(s => ({
+                year: new Date(s.report_period ?? s.period ?? '').getFullYear(),
+                totalRevenue: s.revenue ?? s.total_revenue,
+                netIncome: s.net_income,
               }));
               const validation = crossValidateFinancials(primaryRecords, fmpData.data ?? []);
               if (!validation.ok) {
                 return primaryResult + '\n\n' + validation.warnings.join('\n');
               }
             }
-          } catch {
-            // Validation is best-effort — never block primary result
+          } catch (error) {
+            logFallbackDebug(`cross-source validation failed for ${ticker}`, error);
           }
         }
 
         return primaryResult;
       }
-    } catch {
-      // Fall through to FMP
+    } catch (error) {
+      logFallbackDebug(`primary income statements failed for ${ticker}; falling back to FMP`, error);
     }
 
     const fmpResult = await tryFmp(getFmpIncomeStatements, ticker, input.period, input.limit);
@@ -162,7 +190,7 @@ export const getIncomeStatements = new DynamicStructuredTool({
     const yahooHasData =
       yahooParsed.data !== undefined &&
       yahooParsed.data !== null &&
-      !(yahooParsed.data as Record<string, unknown>)?.error;
+      !(yahooParsed.data as ToolErrorPayload).error;
     if (yahooHasData) return yahooRaw;
 
     // Last resort: Tavily web search
@@ -176,6 +204,9 @@ export const getIncomeStatements = new DynamicStructuredTool({
   },
 });
 
+/**
+ * Fetch balance sheets with FMP/Tavily fallback when primary coverage is missing.
+ */
 export const getBalanceSheets = new DynamicStructuredTool({
   name: 'get_balance_sheets',
   description: `Retrieves a company's balance sheets, providing a snapshot of its assets, liabilities, shareholders' equity, etc. at a specific point in time. Falls back to Financial Modeling Prep for international tickers. Useful for assessing a company's financial position.`,
@@ -189,8 +220,8 @@ export const getBalanceSheets = new DynamicStructuredTool({
       if (statements && statements.length > 0) {
         return formatToolResult(stripFieldsDeep(statements, REDUNDANT_FINANCIAL_FIELDS), [url]);
       }
-    } catch {
-      // Fall through to FMP
+    } catch (error) {
+      logFallbackDebug(`primary balance sheets failed for ${ticker}; falling back to FMP`, error);
     }
 
     const fmpResult = await tryFmp(getFmpBalanceSheets, ticker, input.period, input.limit);
@@ -207,6 +238,9 @@ export const getBalanceSheets = new DynamicStructuredTool({
   },
 });
 
+/**
+ * Fetch cash-flow statements and fall back to alternate providers for non-US tickers.
+ */
 export const getCashFlowStatements = new DynamicStructuredTool({
   name: 'get_cash_flow_statements',
   description: `Retrieves a company's cash flow statements, showing how cash is generated and used across operating, investing, and financing activities. Falls back to Financial Modeling Prep for international tickers. Useful for understanding a company's liquidity and solvency.`,
@@ -220,8 +254,8 @@ export const getCashFlowStatements = new DynamicStructuredTool({
       if (statements && statements.length > 0) {
         return formatToolResult(stripFieldsDeep(statements, REDUNDANT_FINANCIAL_FIELDS), [url]);
       }
-    } catch {
-      // Fall through to FMP
+    } catch (error) {
+      logFallbackDebug(`primary cash-flow statements failed for ${ticker}; falling back to FMP`, error);
     }
 
     const fmpResult = await tryFmp(getFmpCashFlowStatements, ticker, input.period, input.limit);
@@ -238,6 +272,9 @@ export const getCashFlowStatements = new DynamicStructuredTool({
   },
 });
 
+/**
+ * Fetch all three core financial statements in one call, preserving provider fallbacks.
+ */
 export const getAllFinancialStatements = new DynamicStructuredTool({
   name: 'get_all_financial_statements',
   description: `Retrieves all three financial statements (income statements, balance sheets, and cash flow statements) for a company in a single API call. This is more efficient than calling each statement type separately when you need all three for comprehensive financial analysis. Falls back to FMP and web search if the primary API is unavailable.`,
@@ -253,8 +290,8 @@ export const getAllFinancialStatements = new DynamicStructuredTool({
           [url],
         );
       }
-    } catch {
-      // Fall through to FMP
+    } catch (error) {
+      logFallbackDebug(`primary combined financial statements failed for ${ticker}; falling back to FMP`, error);
     }
 
     // FMP fallback — try all three statements individually
@@ -264,12 +301,16 @@ export const getAllFinancialStatements = new DynamicStructuredTool({
       tryFmp(getFmpCashFlowStatements, ticker, input.period, input.limit),
     ]);
 
-    const fmpData: Record<string, unknown> = {};
+    const fmpData: {
+      income_statements?: unknown;
+      balance_sheets?: unknown;
+      cash_flow_statements?: unknown;
+    } = {};
     for (const [key, settled] of [
       ['income_statements', incomeResult],
       ['balance_sheets', balanceResult],
       ['cash_flow_statements', cashResult],
-    ] as [string, PromiseSettledResult<FmpCallResult>][]) {
+    ] as [keyof typeof fmpData, PromiseSettledResult<FmpCallResult>][]) {
       if (settled.status === 'fulfilled' && settled.value.kind === 'ok') {
         const parsed = JSON.parse(settled.value.result) as { data: unknown };
         fmpData[key] = parsed.data;
@@ -289,4 +330,3 @@ export const getAllFinancialStatements = new DynamicStructuredTool({
     );
   },
 });
-

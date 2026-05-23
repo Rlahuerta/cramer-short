@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { MemoryDatabase } from './database.js';
 import { FinancialMemoryStore, getTtlMs, isExpired } from './financial-store.js';
 import { EdgeRelations, RoutingResults, Tags } from './financial-tags.js';
@@ -6,12 +7,20 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
+
 let dbPath: string;
 let db: MemoryDatabase;
 let store: FinancialMemoryStore;
 
 beforeEach(async () => {
-  dbPath = join(tmpdir(), `dexter-test-${Date.now()}.sqlite`);
+  dbPath = join(tmpdir(), `dexter-test-${FIXED_TEST_NOW_MS}.sqlite`);
   db = await MemoryDatabase.create(dbPath);
   store = new FinancialMemoryStore(db);
 });
@@ -82,7 +91,7 @@ describe('MemoryDatabase financial schema', () => {
 
   it('loadRecentInsights returns rows ordered by updated_at desc', async () => {
     db.upsertInsight({ ticker: 'A', tags: '[]', content: 'first', contentHash: 'h1' });
-    await new Promise((r) => setTimeout(r, 2));
+    setSystemTime(new Date(FIXED_TEST_NOW_MS + 2));
     db.upsertInsight({ ticker: 'B', tags: '[]', content: 'second', contentHash: 'h2' });
     const rows = db.loadRecentInsights(10);
     expect(rows[0]?.ticker).toBe('B');
@@ -174,34 +183,34 @@ describe('getTtlMs / isExpired', () => {
   it('analysis:consensus expires after 7 days', () => {
     const sevenDaysMs = 7 * 24 * 3600 * 1000;
     expect(getTtlMs(['analysis:consensus'])).toBe(sevenDaysMs);
-    const eightDaysAgo = Date.now() - 8 * 24 * 3600 * 1000;
+    const eightDaysAgo = FIXED_TEST_NOW_MS - 8 * 24 * 3600 * 1000;
     expect(isExpired({ tags: ['analysis:consensus'], updatedAt: eightDaysAgo })).toBe(true);
-    const sixDaysAgo = Date.now() - 6 * 24 * 3600 * 1000;
+    const sixDaysAgo = FIXED_TEST_NOW_MS - 6 * 24 * 3600 * 1000;
     expect(isExpired({ tags: ['analysis:consensus'], updatedAt: sixDaysAgo })).toBe(false);
   });
 
   it('analysis:valuation expires after 90 days', () => {
-    const ninetyOneDaysAgo = Date.now() - 91 * 24 * 3600 * 1000;
+    const ninetyOneDaysAgo = FIXED_TEST_NOW_MS - 91 * 24 * 3600 * 1000;
     expect(isExpired({ tags: ['analysis:valuation'], updatedAt: ninetyOneDaysAgo })).toBe(true);
-    const eightNineDaysAgo = Date.now() - 89 * 24 * 3600 * 1000;
+    const eightNineDaysAgo = FIXED_TEST_NOW_MS - 89 * 24 * 3600 * 1000;
     expect(isExpired({ tags: ['analysis:valuation'], updatedAt: eightNineDaysAgo })).toBe(false);
   });
 
   it('analysis:thesis and analysis:risk expire after 90 days', () => {
-    const ninetyOneDaysAgo = Date.now() - 91 * 24 * 3600 * 1000;
+    const ninetyOneDaysAgo = FIXED_TEST_NOW_MS - 91 * 24 * 3600 * 1000;
     expect(isExpired({ tags: ['analysis:thesis'], updatedAt: ninetyOneDaysAgo })).toBe(true);
     expect(isExpired({ tags: ['analysis:risk'], updatedAt: ninetyOneDaysAgo })).toBe(true);
   });
 
   it('untagged entries expire after 60 days', () => {
-    const sixtyOneDaysAgo = Date.now() - 61 * 24 * 3600 * 1000;
+    const sixtyOneDaysAgo = FIXED_TEST_NOW_MS - 61 * 24 * 3600 * 1000;
     expect(isExpired({ tags: [], updatedAt: sixtyOneDaysAgo })).toBe(true);
-    const fiftyNineDaysAgo = Date.now() - 59 * 24 * 3600 * 1000;
+    const fiftyNineDaysAgo = FIXED_TEST_NOW_MS - 59 * 24 * 3600 * 1000;
     expect(isExpired({ tags: [], updatedAt: fiftyNineDaysAgo })).toBe(false);
   });
 
   it('uses createdAt as fallback when updatedAt is absent', () => {
-    const ninetyOneDaysAgo = Date.now() - 61 * 24 * 3600 * 1000;
+    const ninetyOneDaysAgo = FIXED_TEST_NOW_MS - 61 * 24 * 3600 * 1000;
     expect(isExpired({ tags: [], createdAt: ninetyOneDaysAgo })).toBe(true);
   });
 });
@@ -212,7 +221,7 @@ describe('recallByTicker TTL filtering', () => {
   let store2: FinancialMemoryStore;
 
   beforeEach(async () => {
-    dbPath2 = join(tmpdir(), `dexter-ttl-test-${Date.now()}.sqlite`);
+    dbPath2 = join(tmpdir(), `dexter-ttl-test-${FIXED_TEST_NOW_MS}.sqlite`);
     db2 = await MemoryDatabase.create(dbPath2);
     store2 = new FinancialMemoryStore(db2);
   });
@@ -226,7 +235,7 @@ describe('recallByTicker TTL filtering', () => {
     const id = await store2.storeInsight({ ticker: 'AAPL', content: 'old insight', tags: [] });
     // Backdate the entry to 70 days ago (> 60-day default TTL)
     db2['db'].query('UPDATE financial_insights SET updated_at = ? WHERE id = ?').run(
-      Date.now() - 70 * 24 * 3600 * 1000,
+      FIXED_TEST_NOW_MS - 70 * 24 * 3600 * 1000,
       id,
     );
     const results = store2.recallByTicker('AAPL');
@@ -246,7 +255,7 @@ describe('recallByTicker TTL filtering', () => {
       tags: [Tags.routing(RoutingResults.FMP_PREMIUM)],
     });
     db2['db'].query('UPDATE financial_insights SET updated_at = ? WHERE id = ?').run(
-      Date.now() - 365 * 24 * 3600 * 1000, // 1 year old
+      FIXED_TEST_NOW_MS - 365 * 24 * 3600 * 1000, // 1 year old
       id,
     );
     const results = store2.recallByTicker('VWS.CO');
@@ -260,7 +269,7 @@ describe('recallByTicker TTL filtering', () => {
       tags: ['analysis:consensus'],
     });
     db2['db'].query('UPDATE financial_insights SET updated_at = ? WHERE id = ?').run(
-      Date.now() - 8 * 24 * 3600 * 1000, // 8 days old
+      FIXED_TEST_NOW_MS - 8 * 24 * 3600 * 1000, // 8 days old
       id,
     );
     expect(store2.recallByTicker('MSFT')).toHaveLength(0);
@@ -269,7 +278,7 @@ describe('recallByTicker TTL filtering', () => {
   it('search() also filters expired entries', async () => {
     const id = await store2.storeInsight({ ticker: 'TSLA', content: 'Tesla old note', tags: [] });
     db2['db'].query('UPDATE financial_insights SET updated_at = ? WHERE id = ?').run(
-      Date.now() - 70 * 24 * 3600 * 1000,
+      FIXED_TEST_NOW_MS - 70 * 24 * 3600 * 1000,
       id,
     );
     const results = store2.search('Tesla old note');

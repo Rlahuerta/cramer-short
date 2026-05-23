@@ -7,10 +7,15 @@
  * - `maxIterations` reflects the configured maximum
  * - Iterates do not exceed maxIterations
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import type { BaseMessage } from '@langchain/core/messages';
+import { AIMessage } from '@langchain/core/messages';
+import { _setModelFactory } from '../model/llm.js';
 
 // ---------------------------------------------------------------------------
 // Isolation: each test gets its own tmp dir for Scratchpad persistence
@@ -19,7 +24,7 @@ let tmpDir: string;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `agent-progress-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `agent-progress-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);
@@ -31,43 +36,33 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Mock all LLM providers (so Agent can be instantiated without API keys)
+// Scoped model factory DI — avoids permanent mock.module contamination that
+// breaks E2E/integration tests when llm.js has already been cached.
 // ---------------------------------------------------------------------------
-mock.module('@langchain/openai', () => ({
-  ChatOpenAI: class {
-    constructor() {}
-    async invoke() { return { content: 'done', tool_calls: [] }; }
-    bindTools() { return this; }
-  },
-  OpenAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/anthropic', () => ({
-  ChatAnthropic: class {
-    constructor() {}
-    async invoke() { return { content: 'done', tool_calls: [] }; }
-    bindTools() { return this; }
-  },
-}));
-mock.module('@langchain/google-genai', () => ({
-  ChatGoogleGenerativeAI: class {
-    constructor() {}
-    async invoke() { return { content: 'done', tool_calls: [] }; }
-    bindTools() { return this; }
-  },
-  GoogleGenerativeAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/ollama', () => ({
-  ChatOllama: class {
-    constructor() {}
-    async invoke() { return { content: 'done', tool_calls: [] }; }
-    bindTools() { return this; }
-  },
-  OllamaEmbeddings: class { constructor() {} },
-}));
+
+class SpyChatModel extends BaseChatModel {
+  constructor() { super({}); }
+  _llmType(): string { return 'spy-progress'; }
+  async _generate(_messages: BaseMessage[], _options: any, _runManager?: any) {
+    return { generations: [{ message: new AIMessage({ content: 'done', additional_kwargs: {} }), text: 'done' }] };
+  }
+  bindTools() { return this as any; }
+}
+
+beforeAll(() => { _setModelFactory(() => new SpyChatModel()); });
+afterAll(() => { _setModelFactory(null); });
 
 const { Agent } = await import('./agent.js');
 
 import type { ProgressEvent, AgentEvent } from './types.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

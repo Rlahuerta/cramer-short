@@ -21,7 +21,14 @@ function debugLog(msg: string) {
   appendFileSync(LOG_PATH, `${new Date().toISOString()} ${msg}\n`);
 }
 
-function extractMentionedJids(message: WAMessage): string[] {
+function getSocketUserLid(user: unknown): string | null {
+  if (!user || typeof user !== 'object' || !('lid' in user)) {
+    return null;
+  }
+  return typeof user.lid === 'string' ? user.lid : null;
+}
+
+export function extractMentionedJids(message: WAMessage): string[] {
   const rawMsg = message.message;
   if (!rawMsg) return [];
 
@@ -39,7 +46,7 @@ function extractMentionedJids(message: WAMessage): string[] {
   return Array.isArray(jids) ? jids.filter((j): j is string => typeof j === 'string') : [];
 }
 
-function extractText(message: WAMessage): string {
+export function extractText(message: WAMessage): string {
   const rawMsg = message.message;
   if (!rawMsg) {
     debugLog(`[extractText] no message content`);
@@ -88,14 +95,14 @@ function extractText(message: WAMessage): string {
   return '';
 }
 
-function toPhoneFromJid(jid: string): string {
+export function toPhoneFromJid(jid: string): string {
   const base = jid.split('@')[0] ?? '';
   const match = base.match(/^(\d+)(?::\d+)?$/);
   const digits = match?.[1] ?? base.replace(/\D/g, '');
   return digits ? `+${digits}` : '';
 }
 
-function jidToE164(jid?: string | null): string | null {
+export function jidToE164(jid?: string | null): string | null {
   if (!jid) {
     return null;
   }
@@ -127,7 +134,7 @@ export async function monitorWebInbox(params: {
   console.log('[whatsapp] Connected');
   const connectedAtMs = Date.now();
   const selfJid = sock.user?.id;
-  const selfLid = (sock.user as unknown as Record<string, unknown>)?.lid as string | undefined ?? null;
+  const selfLid = getSocketUserLid(sock.user);
   const selfFromSock = jidToE164(selfJid);
   const selfFromCreds = readSelfId(params.authDir).e164;
   const selfE164 = selfFromSock ?? selfFromCreds;
@@ -323,4 +330,3 @@ export async function monitorWebInbox(params: {
     },
   };
 }
-

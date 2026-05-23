@@ -22,15 +22,20 @@ import {
   bucketByValidationMetric,
   bucketByVolatility,
   calibratedPUpDirectionalAccuracy,
+  centralIntervalCoverage,
   ciCoverage,
   computeFailureDecomposition,
+  crps,
   directionalAccuracy,
   computeRCCurve,
   expectedReturnCorrelation,
+  forecastAccuracyCoherenceScore,
   generateReport,
   gofPassRate,
   maxReliabilityDeviation,
   meanEdge,
+  mixtureCrps,
+  murphyWinklerDecomposition,
   mulberry32,
   optimizeThresholds,
   bootstrapDirectionalCI,
@@ -40,13 +45,18 @@ import {
   pUpDirectionalAccuracy,
   rawPUpDirectionalAccuracy,
   reliabilityBins,
+  scaledCrps,
   selectiveDirectionalAccuracy,
   selectivePUpAccuracy,
   selectiveRawPUpAccuracy,
   sharpness,
+  tailReliabilityBins,
+  tailWeightedCrps,
+  tailWeightedMixtureCrps,
   type BacktestStep,
   type BootstrapCI,
   type DecisionSource,
+  type MultiHorizonBacktestSeries,
   type ProbabilitySource,
   type ProvenanceSummary,
   DEFAULT_PUP_BANDS,
@@ -195,6 +205,29 @@ describe('ciCoverage', () => {
 
   it('returns 0 for empty input', () => {
     expect(ciCoverage([])).toBe(0);
+  });
+});
+
+describe('centralIntervalCoverage', () => {
+  it('prefers explicit literal central intervals over the conservative helper interval', () => {
+    const steps = [
+      makeStep({
+        ciLower: 90,
+        ciUpper: 110,
+        central90CiLower: 95,
+        central90CiUpper: 105,
+        central95CiLower: 93,
+        central95CiUpper: 107,
+        central99CiLower: 91,
+        central99CiUpper: 109,
+        realizedPrice: 92,
+      }),
+    ];
+
+    expect(ciCoverage(steps)).toBe(1);
+    expect(centralIntervalCoverage(steps, 0.9)).toBe(0);
+    expect(centralIntervalCoverage(steps, 0.95)).toBe(0);
+    expect(centralIntervalCoverage(steps, 0.99)).toBe(1);
   });
 });
 
@@ -369,6 +402,7 @@ describe('computeFailureDecomposition', () => {
       'hmmConverged',
       'ensembleConsensus',
       'pUpBand',
+      'entropyCiScale',
     ]);
 
     const regimeRows = report.slices[0].rows.map(row => ({ label: row.label, count: row.count, fraction: row.fraction }));
@@ -390,7 +424,7 @@ describe('computeFailureDecomposition', () => {
     const report = computeFailureDecomposition([]);
 
     expect(report.totalSteps).toBe(0);
-    expect(report.slices).toHaveLength(14);
+    expect(report.slices).toHaveLength(15);
     expect(report.slices[0].rows).toEqual([]);
     expect(report.slices[1].rows.map(row => row.count)).toEqual([0, 0, 0]);
     expect(report.slices[4].rows.map(row => row.count)).toEqual([0, 0, 0, 0, 0]);
@@ -455,6 +489,351 @@ describe('sharpness', () => {
 });
 
 // ---------------------------------------------------------------------------
+// CRPS / scaled CRPS
+// ---------------------------------------------------------------------------
+
+describe('crps', () => {
+  it('rewards an accurate sharp interval over a far wide interval', () => {
+    const accurate = [
+      makeStep({
+        predictedReturn: 0,
+        actualReturn: 0,
+        ciLower: 98,
+        ciUpper: 102,
+        realizedPrice: 100,
+      }),
+    ];
+    const farWide = [
+      makeStep({
+        predictedReturn: 0.2,
+        actualReturn: 0,
+        ciLower: 80,
+        ciUpper: 120,
+        realizedPrice: 100,
+      }),
+    ];
+
+    expect(crps(accurate)).toBeLessThan(crps(farWide));
+  });
+
+  it('returns finite scaled scores for zero-width or invalid intervals', () => {
+    const score = scaledCrps([
+      makeStep({
+        predictedReturn: 0,
+        actualReturn: 0,
+        ciLower: 100,
+        ciUpper: 100,
+        realizedPrice: 100,
+      }),
+    ]);
+
+    expect(Number.isFinite(score)).toBe(true);
+    expect(score).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(crps([])).toBe(0);
+    expect(scaledCrps([])).toBe(0);
+  });
+});
+
+describe('mixtureCrps', () => {
+  it('scores a realization near the forecast median better than a tail miss', () => {
+    const centered = makeStep({
+      realizedPrice: 100,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+    const tailMiss = makeStep({
+      realizedPrice: 118,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+
+    expect(mixtureCrps([centered])).toBeLessThan(mixtureCrps([tailMiss]));
+  });
+
+  it('falls back to the normal-approximation CRPS when no distribution is stored', () => {
+    const steps = [
+      makeStep({ realizedPrice: 100 }),
+      makeStep({ realizedPrice: 112, actualReturn: 0.12 }),
+    ];
+
+    expect(mixtureCrps(steps)).toBeCloseTo(crps(steps), 10);
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(mixtureCrps([])).toBe(0);
+  });
+});
+
+describe('tailWeightedCrps', () => {
+  it('up-weights tail misses relative to ordinary CRPS', () => {
+    const calm = makeStep({
+      predictedReturn: 0,
+      actualReturn: 0,
+      ciLower: 95,
+      ciUpper: 105,
+      realizedPrice: 100,
+    });
+    const tail = makeStep({
+      predictedReturn: 0,
+      actualReturn: 0.3,
+      ciLower: 95,
+      ciUpper: 105,
+      realizedPrice: 130,
+    });
+
+    const steps = [calm, tail];
+
+    expect(tailWeightedCrps(steps)).toBeGreaterThan(crps(steps));
+    expect(tailWeightedCrps([tail])).toBeGreaterThan(tailWeightedCrps([calm]));
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(tailWeightedCrps([])).toBe(0);
+  });
+});
+
+describe('tailWeightedMixtureCrps', () => {
+  it('up-weights mixture tail misses relative to ordinary mixture CRPS', () => {
+    const centered = makeStep({
+      realizedPrice: 100,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+    const tailMiss = makeStep({
+      realizedPrice: 118,
+      actualReturn: 0.18,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+
+    const steps = [centered, tailMiss];
+
+    expect(tailWeightedMixtureCrps(steps)).toBeGreaterThan(mixtureCrps(steps));
+    expect(tailWeightedMixtureCrps([tailMiss])).toBeGreaterThan(
+      tailWeightedMixtureCrps([centered]),
+    );
+  });
+
+  it('uses the stored forecast distribution for tail weighting before the helper interval', () => {
+    const centered = makeStep({
+      ciLower: 50,
+      ciUpper: 150,
+      realizedPrice: 100,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+    const tailMiss = makeStep({
+      ciLower: 50,
+      ciUpper: 150,
+      realizedPrice: 118,
+      actualReturn: 0.18,
+      forecastDistribution: [
+        { price: 90, probability: 0.98 },
+        { price: 95, probability: 0.80 },
+        { price: 100, probability: 0.50 },
+        { price: 105, probability: 0.20 },
+        { price: 110, probability: 0.02 },
+      ],
+    });
+
+    const steps = [centered, tailMiss];
+
+    expect(tailWeightedMixtureCrps(steps)).toBeGreaterThan(mixtureCrps(steps));
+  });
+
+  it('falls back to literal central intervals before the conservative helper interval', () => {
+    const centered = makeStep({
+      ciLower: 50,
+      ciUpper: 150,
+      central90CiLower: 95,
+      central90CiUpper: 105,
+      realizedPrice: 100,
+    });
+    const tailMiss = makeStep({
+      ciLower: 50,
+      ciUpper: 150,
+      central90CiLower: 95,
+      central90CiUpper: 105,
+      realizedPrice: 112,
+      actualReturn: 0.12,
+    });
+
+    const steps = [centered, tailMiss];
+
+    expect(tailWeightedMixtureCrps(steps)).toBeGreaterThan(mixtureCrps(steps));
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(tailWeightedMixtureCrps([])).toBe(0);
+  });
+});
+
+describe('forecastAccuracyCoherenceScore', () => {
+  it('rewards stable overlapping forecasts over unstable ones', () => {
+    const stable: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 2, predictedReturn: 0.02, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+      {
+        horizon: 2,
+        steps: [makeStep({ t: 1, predictedReturn: 0.02, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+      {
+        horizon: 3,
+        steps: [makeStep({ t: 0, predictedReturn: 0.02, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+    ];
+    const unstable: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 2, predictedReturn: 0.02, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+      {
+        horizon: 2,
+        steps: [makeStep({ t: 1, predictedReturn: 0.10, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+      {
+        horizon: 3,
+        steps: [makeStep({ t: 0, predictedReturn: -0.06, actualReturn: 0.02, realizedPrice: 102 })],
+      },
+    ];
+
+    expect(forecastAccuracyCoherenceScore(stable)).toBeLessThan(
+      forecastAccuracyCoherenceScore(unstable),
+    );
+  });
+
+  it('falls back to normalized accuracy when horizons do not overlap', () => {
+    const series: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 0, predictedReturn: 0.1, actualReturn: 0, realizedPrice: 100 })],
+      },
+      {
+        horizon: 2,
+        steps: [makeStep({ t: 5, predictedReturn: -0.1, actualReturn: 0, realizedPrice: 200 })],
+      },
+    ];
+
+    expect(forecastAccuracyCoherenceScore(series)).toBeCloseTo(0.01, 10);
+  });
+
+  it('treats equal upside and downside return misses symmetrically', () => {
+    const upside: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 0, predictedReturn: 0.1, actualReturn: 0, realizedPrice: 100 })],
+      },
+    ];
+    const downside: MultiHorizonBacktestSeries[] = [
+      {
+        horizon: 1,
+        steps: [makeStep({ t: 0, predictedReturn: -0.1, actualReturn: 0, realizedPrice: 100 })],
+      },
+    ];
+
+    expect(forecastAccuracyCoherenceScore(upside)).toBeCloseTo(
+      forecastAccuracyCoherenceScore(downside),
+      10,
+    );
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(forecastAccuracyCoherenceScore([])).toBe(0);
+  });
+});
+
+describe('tailReliabilityBins', () => {
+  it('summarizes the four extreme probability buckets', () => {
+    const bins = tailReliabilityBins([
+      makeStep({ predictedProb: 0.02, actualBinary: 0 }),
+      makeStep({ predictedProb: 0.08, actualBinary: 1 }),
+      makeStep({ predictedProb: 0.92, actualBinary: 1 }),
+      makeStep({ predictedProb: 0.97, actualBinary: 0 }),
+      makeStep({ predictedProb: 0.5, actualBinary: 1 }),
+    ]);
+
+    expect(bins).toHaveLength(4);
+    expect(bins[0].count).toBe(1);
+    expect(bins[1].count).toBe(1);
+    expect(bins[2].count).toBe(1);
+    expect(bins[3].count).toBe(1);
+    expect(bins[2].actualFrequency).toBe(1);
+    expect(bins[3].actualFrequency).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Murphy-Winkler interval score decomposition
+// ---------------------------------------------------------------------------
+
+describe('murphyWinklerDecomposition', () => {
+  it('equals interval width when the realization is covered', () => {
+    const decomposition = murphyWinklerDecomposition([
+      makeStep({ ciLower: 90, ciUpper: 110, realizedPrice: 100 }),
+    ]);
+
+    expect(decomposition.meanWidth).toBeCloseTo(20);
+    expect(decomposition.lowerMissPenalty).toBeCloseTo(0);
+    expect(decomposition.upperMissPenalty).toBeCloseTo(0);
+    expect(decomposition.totalScore).toBeCloseTo(20);
+    expect(decomposition.coverage).toBeCloseTo(1);
+  });
+
+  it('adds lower and upper miss penalties for uncovered realizations', () => {
+    const decomposition = murphyWinklerDecomposition([
+      makeStep({ ciLower: 90, ciUpper: 110, realizedPrice: 80 }),
+      makeStep({ ciLower: 90, ciUpper: 110, realizedPrice: 120 }),
+    ]);
+
+    expect(decomposition.meanWidth).toBeCloseTo(20);
+    expect(decomposition.lowerMissPenalty).toBeCloseTo(100);
+    expect(decomposition.upperMissPenalty).toBeCloseTo(100);
+    expect(decomposition.totalScore).toBeCloseTo(220);
+    expect(decomposition.coverage).toBeCloseTo(0);
+  });
+
+  it('returns zeros for empty input', () => {
+    expect(murphyWinklerDecomposition([])).toEqual({
+      meanWidth: 0,
+      lowerMissPenalty: 0,
+      upperMissPenalty: 0,
+      totalScore: 0,
+      coverage: 0,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // gofPassRate
 // ---------------------------------------------------------------------------
 
@@ -491,13 +870,25 @@ describe('generateReport', () => {
     expect(report.totalSteps).toBe(2);
     expect(typeof report.brierScore).toBe('number');
     expect(typeof report.ciCoverage).toBe('number');
+    expect(typeof report.conservativeCiCoverage).toBe('number');
+    expect(typeof report.central90CiCoverage).toBe('number');
+    expect(typeof report.central95CiCoverage).toBe('number');
+    expect(typeof report.central99CiCoverage).toBe('number');
     expect(typeof report.directionalAccuracy).toBe('number');
     expect(typeof report.expectedReturnCorrelation).toBe('number');
     expect(typeof report.sharpness).toBe('number');
+    expect(typeof report.crps).toBe('number');
+    expect(typeof report.mixtureCrps).toBe('number');
+    expect(typeof report.scaledCrps).toBe('number');
+    expect(typeof report.tailWeightedCrps).toBe('number');
+    expect(typeof report.tailWeightedMixtureCrps).toBe('number');
+    expect(typeof report.murphyWinklerScore).toBe('number');
+    expect(report.murphyWinklerDecomposition).toBeDefined();
     expect(report.reliabilityBins).toHaveLength(10);
+    expect(report.tailReliabilityBins).toHaveLength(4);
     expect(typeof report.balancedDirectionalAccuracy).toBe('number');
     expect(typeof report.meanEdge).toBe('number');
-    expect(report.failureDecomposition?.slices).toHaveLength(14);
+    expect(report.failureDecomposition?.slices).toHaveLength(15);
   });
 
   it('aggregates provenanceSummary from steps', () => {
@@ -1100,7 +1491,7 @@ describe('bucketByEnsembleConsensus', () => {
 });
 
 describe('computeFailureDecomposition PR3A slices', () => {
-  it('includes structuralBreak, divergence, new move/trend slices, hmmConverged, ensembleConsensus, pUpBand slices', () => {
+  it('includes structuralBreak, divergence, new move/trend slices, hmmConverged, ensembleConsensus, pUpBand, entropy slices', () => {
     const report = computeFailureDecomposition([
       makeStep({
         structuralBreakDetected: false,
@@ -1121,11 +1512,12 @@ describe('computeFailureDecomposition PR3A slices', () => {
     expect(keys).toContain('hmmConverged');
     expect(keys).toContain('ensembleConsensus');
     expect(keys).toContain('pUpBand');
+    expect(keys).toContain('entropyCiScale');
   });
 
-  it('has 14 slices total after Phase 2A additions', () => {
+  it('has 15 slices total after R5 entropy additions', () => {
     const report = computeFailureDecomposition([]);
-    expect(report.slices).toHaveLength(14);
+    expect(report.slices).toHaveLength(15);
   });
 });
 

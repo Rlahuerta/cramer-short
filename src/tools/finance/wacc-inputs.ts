@@ -7,7 +7,9 @@ import {
   computeWaccBreakdown,
   estimateBetaFromSector,
   type WaccInputs,
-} from '../../utils/wacc.js';
+} from '../../utils/finance/wacc.js';
+import { hasEnv } from '../../utils/env.js';
+import { logger } from '../../utils/logger.js';
 
 export const WACC_INPUTS_DESCRIPTION = `
 Fetches the data needed for a CAPM-based WACC calculation and returns the computed result.
@@ -39,6 +41,7 @@ Fetches the data needed for a CAPM-based WACC calculation and returns the comput
 const WaccInputsSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("Stock ticker symbol, e.g. 'AAPL'."),
   cost_of_debt: z
     .number()
@@ -71,6 +74,11 @@ const WaccInputsSchema = z.object({
     .describe('D/E ratio override. Omit to auto-read from the financial metrics snapshot.'),
 });
 
+function logWaccFallback(context: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.debug(`[wacc_inputs] ${context}`, { error: message });
+}
+
 /** Try to read beta from the Financial Datasets snapshot response. */
 function extractBetaFromSnapshot(snapshot: Record<string, unknown>): number | null {
   const raw = snapshot['beta'];
@@ -93,6 +101,9 @@ function extractSectorFromSnapshot(snapshot: Record<string, unknown>): string | 
   return typeof s === 'string' && s.length > 0 ? s : null;
 }
 
+/**
+ * Resolve WACC model inputs such as beta, tax rate, debt/equity, and cost of debt.
+ */
 export const waccInputsTool = new DynamicStructuredTool({
   name: 'wacc_inputs',
   description: WACC_INPUTS_DESCRIPTION,
@@ -107,15 +118,15 @@ export const waccInputsTool = new DynamicStructuredTool({
       const { data, url } = await api.get('/financial-metrics/snapshot/', { ticker });
       sourceUrls.push(url);
       snapshot = (data.snapshot as Record<string, unknown>) ?? {};
-    } catch {
-      // Continue with empty snapshot — we have fallbacks
+    } catch (error) {
+      logWaccFallback(`snapshot unavailable for ${ticker}; using fallbacks`, error);
     }
 
     // ── 2. Resolve beta ──────────────────────────────────────────────────────
     let beta = extractBetaFromSnapshot(snapshot);
     let betaSource = 'Financial Datasets snapshot';
 
-    if (beta === null && process.env.FMP_API_KEY) {
+    if (beta === null && hasEnv('FMP_API_KEY')) {
       try {
         const profile = await fmpApi.get<Array<{ beta?: number; sector?: string }>>('/profile', {
           symbol: ticker,
@@ -129,8 +140,8 @@ export const waccInputsTool = new DynamicStructuredTool({
             snapshot['sector'] = profile[0].sector;
           }
         }
-      } catch {
-        // FMP unavailable — fall through to sector estimate
+      } catch (error) {
+        logWaccFallback(`FMP profile unavailable for ${ticker}; using sector estimate`, error);
       }
     }
 

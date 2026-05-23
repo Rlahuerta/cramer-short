@@ -19,8 +19,8 @@ import { describe, expect } from 'bun:test';
 import { e2eIt } from '@/utils/test-guards.js';
 import { streamCallLlm } from '@/model/llm.js';
 
-const THINKING_MODEL = 'ollama:nemotron-3-super:cloud';
-const PLAIN_MODEL = 'ollama:deepseek-v3.2:cloud';
+const THINKING_MODEL = 'ollama:kimi-k2.6:cloud';
+const PLAIN_MODEL = 'ollama:kimi-k2.6:cloud';
 
 // ---------------------------------------------------------------------------
 // Basic streaming

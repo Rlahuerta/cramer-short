@@ -8,14 +8,26 @@
  * File system isolation: we chdir() into a tmpdir before each test and
  * restore afterwards — this keeps scratchpad files out of the project tree.
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
+
+const actualPaths = await import('../utils/paths.js');
+
 // Keep paths relative so chdir isolation works. Override any absolute-path
 // mock that parallel worker (agent.test.ts) might have registered.
 mock.module('../utils/paths.js', () => ({
+  ...actualPaths,
   cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
   getCramerShortDir: mock(() => '.dexter'),
 }));
@@ -30,7 +42,7 @@ let tmpDir: string;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `scratchpad-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `scratchpad-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);

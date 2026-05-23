@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { normalizeE164 } from './utils.js';
 import { cramerShortPath } from '../utils/paths.js';
+import { getEnv } from '../utils/env.js';
 
 const DEFAULT_GATEWAY_PATH = cramerShortPath('gateway.json');
 const DmPolicySchema = z.enum(['pairing', 'allowlist', 'open', 'disabled']);
@@ -133,7 +134,7 @@ export type WhatsAppAccountConfig = {
 };
 
 export function getGatewayConfigPath(overridePath?: string): string {
-  return overridePath ?? process.env.DEXTER_GATEWAY_CONFIG ?? DEFAULT_GATEWAY_PATH;
+  return overridePath ?? getEnv('DEXTER_GATEWAY_CONFIG') ?? DEFAULT_GATEWAY_PATH;
 }
 
 export function loadGatewayConfig(overridePath?: string): GatewayConfig {
@@ -218,4 +219,3 @@ export function resolveWhatsAppAccount(
     sendReadReceipts: account.sendReadReceipts ?? true,
   };
 }
-

@@ -17,12 +17,26 @@
  * 4. Thinking text is truncated to 500 chars so verbose models (e.g. Qwen)
  *    that embed raw JSON in their reasoning text don't flood the terminal.
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
 import { Scratchpad } from './scratchpad.js';
+import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
+import { _setModelFactory } from '../model/llm.js';
+import { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { AIMessage, AIMessageChunk, type BaseMessage } from '@langchain/core/messages';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Mutable mock state — reset before each test.
@@ -70,107 +84,63 @@ const ST_TOOL_CALL = {
 };
 
 // ---------------------------------------------------------------------------
-// Mock callLlm + streamCallLlm at the module boundary.
-// Mocking at this level (rather than @langchain/openai) avoids the providerMap
-// cache-poisoning issue and gives precise control over call tracking.
+// Scoped model factory DI — avoids permanent mock.module contamination that
+// poisons E2E/integration tests sharing the same Bun worker.
 // ---------------------------------------------------------------------------
-mock.module('../model/llm.js', () => ({
-  DEFAULT_MODEL: 'gpt-5.4',
-  getLlmCallTimeoutMs: () => 120000,
-  callLlm: async () => {
-    // Drain the per-call response queue first (used by multi-iteration tests).
-    if (mockState.callLlmQueue.length > 0) {
-      const next = mockState.callLlmQueue.shift()!;
+class SpyChatModel extends BaseChatModel {
+  constructor(private state: typeof mockState) { super({}); }
+
+  _llmType(): string { return 'spy'; }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async _generate(messages: BaseMessage[], options: any, _runManager?: any) {
+    if (this.state.callLlmQueue.length > 0) {
+      const next = this.state.callLlmQueue.shift()!;
       return {
-        response: { content: next.content, tool_calls: next.toolCalls, additional_kwargs: {} },
-        usage: undefined,
+        generations: [{
+          message: new AIMessage({ content: next.content, tool_calls: next.toolCalls, additional_kwargs: {} }),
+          text: next.content,
+        }],
       };
     }
-    if (mockState.invokeReturnsToolCalls) {
+    if (this.state.invokeReturnsToolCalls) {
       return {
-        response: {
-          content: mockState.invokeThinkingText,
-          tool_calls: [ST_TOOL_CALL],
-          additional_kwargs: {},
-        },
-        usage: undefined,
+        generations: [{
+          message: new AIMessage({ content: this.state.invokeThinkingText, tool_calls: [ST_TOOL_CALL], additional_kwargs: {} }),
+          text: '',
+        }],
       };
     }
     return {
-      response: {
-        content: mockState.invokeContent,
-        tool_calls: [],
-        additional_kwargs: {},
-      },
-      usage: undefined,
+      generations: [{
+        message: new AIMessage({ content: this.state.invokeContent, additional_kwargs: {} }),
+        text: this.state.invokeContent,
+      }],
     };
-  },
-  streamCallLlm: async function* (_prompt: string, opts: { signal?: AbortSignal } = {}) {
-    mockState.streamCallCount++;
-    if (mockState.streamShouldThrow) {
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async *_streamIterator(input: any, options?: any) {
+    this.state.streamCallCount++;
+    if (this.state.streamShouldThrow) {
       throw new Error('LLM stream timed out');
     }
-    for (const chunk of mockState.streamChunks) {
-      if (opts.signal?.aborted) {
-        throw new DOMException('The operation was aborted.', 'AbortError');
-      }
-      yield chunk;
+    for (const chunk of this.state.streamChunks) {
+      yield new AIMessageChunk({ content: chunk });
     }
-  },
-  resolveProvider: (model: string) => ({ id: 'openai', displayName: model }),
-  formatUserFacingError: (msg: string) => msg,
-  isContextOverflowError: () => false,
-}));
+  }
 
-// Mock memory to avoid SQLite initialization.
-mock.module('../memory/index.js', () => ({
-  MemoryManager: {
-    get: async () => ({
-      listFiles: async () => [],
-      loadSessionContext: async () => ({ text: '' }),
-      saveAnswer: async () => {},
-    }),
-  },
-}));
+  bindTools(_tools: any[]): any { return this; }
+  withStructuredOutput(_schema: any, _opts?: any): any { return this; }
+}
 
-mock.module('../tools/registry.js', () => {
-  const sequentialThinkingTool = {
-    name: 'sequential_thinking',
-    invoke: async () => JSON.stringify({ ok: true }),
-  };
-
-  const markovDistributionTool = {
-    name: 'markov_distribution',
-    invoke: async () => JSON.stringify({
-      data: {
-        _tool: 'markov_distribution',
-        status: 'abstain',
-        abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
-        canonical: {
-          ticker: 'BTC-USD',
-          horizon: 14,
-          diagnostics: {
-            trustedAnchors: 0,
-            totalAnchors: 5,
-            anchorQuality: 'none',
-          },
-        },
-        forecastHint: {
-          usage: 'forecast_only',
-          markovReturn: 0.0103,
-        },
-      },
-    }),
-  };
-
-  return {
-    getTools: () => [sequentialThinkingTool, markovDistributionTool],
-    buildToolDescriptions: () => 'mock tool descriptions',
-  };
+beforeAll(() => { _setModelFactory((_name, _opts, _thinkOverride) => new SpyChatModel(mockState)); });
+afterAll(() => {
+  _setModelFactory(null);
 });
 
 // ---------------------------------------------------------------------------
-// Dynamic import AFTER mocks are registered.
+// Dynamic import after model-factory DI is registered.
 // ---------------------------------------------------------------------------
 const {
   Agent,
@@ -179,7 +149,51 @@ const {
   buildDistributionWarningPrefix,
   buildForecastDisagreementPrefix,
   buildLowConfidenceBtcShortHorizonForecastPrefix,
+  ensureStructuredDensityTable,
 } = await import('./agent.js');
+
+const sequentialThinkingTool = {
+  name: 'sequential_thinking',
+  invoke: async () => JSON.stringify({ ok: true }),
+} satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+const markovDistributionTool = {
+  name: 'markov_distribution',
+  invoke: async () => JSON.stringify({
+    data: {
+      _tool: 'markov_distribution',
+      status: 'abstain',
+      abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
+      canonical: {
+        ticker: 'BTC-USD',
+        horizon: 14,
+        diagnostics: {
+          trustedAnchors: 0,
+          totalAnchors: 5,
+          anchorQuality: 'none',
+        },
+      },
+      forecastHint: {
+        usage: 'forecast_only',
+        markovReturn: 0.0103,
+      },
+    },
+  }),
+} satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+const RESPONSE_TEST_TOOLS = [
+  sequentialThinkingTool,
+  markovDistributionTool,
+] as unknown as StructuredToolInterface[];
+
+function createResponseTestAgent(maxIterations: number) {
+  return Agent.create({
+    model: 'gpt-5.4',
+    maxIterations,
+    memoryEnabled: false,
+    tools: RESPONSE_TEST_TOOLS,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Test environment helpers
@@ -197,7 +211,7 @@ beforeEach(() => {
   mockState.streamShouldThrow = false;
   mockState.callLlmQueue = [];
 
-  tmpDir = join(tmpdir(), `agent-resp-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `agent-resp-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);
@@ -207,8 +221,16 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  process.chdir(originalCwd);
-  rmSync(tmpDir, { recursive: true, force: true });
+  const cleanupCwd = originalCwd === tmpDir || originalCwd.startsWith(`${tmpDir}/`)
+    ? dirname(tmpDir)
+    : originalCwd;
+  process.chdir(cleanupCwd);
+  try {
+    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EBUSY') throw error;
+  }
+  if (process.cwd() !== cleanupCwd) process.chdir(cleanupCwd);
   if (!prevOpenAiKey) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = prevOpenAiKey;
 });
@@ -229,7 +251,7 @@ describe('Agent — no redundant stream call for direct answers', () => {
   });
 
   it('streamCallLlm is never invoked when the model returns a text answer', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3, memoryEnabled: false });
+    const agent = await createResponseTestAgent(3);
     await collectEvents(agent.run('test query'));
     expect(mockState.streamCallCount).toBe(0);
   });
@@ -238,7 +260,7 @@ describe('Agent — no redundant stream call for direct answers', () => {
     mockState.invokeContent = 'Unique answer from invoke';
     mockState.streamChunks = ['Should not appear in answer'];
 
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3, memoryEnabled: false });
+    const agent = await createResponseTestAgent(3);
     const events = await collectEvents(agent.run('test query'));
     const done = events.find((e) => e.type === 'done') as DoneEvent | undefined;
 
@@ -249,7 +271,7 @@ describe('Agent — no redundant stream call for direct answers', () => {
   it('answer_chunk events concatenate to the callLlm response text', async () => {
     mockState.invokeContent = 'Short answer';
 
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3, memoryEnabled: false });
+    const agent = await createResponseTestAgent(3);
     const events = await collectEvents(agent.run('test query'));
 
     const chunks = events.filter((e) => e.type === 'answer_chunk') as AnswerChunkEvent[];
@@ -263,10 +285,10 @@ describe('Agent — no redundant stream call for direct answers', () => {
   it('done event is emitted without waiting for a second LLM call', async () => {
     // If streamCallLlm were called (the old bug), it would be a second async op.
     // With the fix we get immediate fake-streaming — done arrives right away.
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3, memoryEnabled: false });
-    const start = Date.now();
+    const agent = await createResponseTestAgent(3);
+    const start = FIXED_TEST_NOW_MS;
     await collectEvents(agent.run('test query'));
-    const elapsed = Date.now() - start;
+    const elapsed = FIXED_TEST_NOW_MS - start;
 
     // Should complete in well under 1 second (no real LLM calls, no second trip).
     expect(elapsed).toBeLessThan(1000);
@@ -285,14 +307,14 @@ describe('Agent — streamCallLlm used for max-iterations synthesis', () => {
   });
 
   it('streamCallLlm is called when max iterations is hit (synthesis path)', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     await collectEvents(agent.run('test query'));
     expect(mockState.streamCallCount).toBeGreaterThanOrEqual(1);
   });
 
   it('done.answer contains synthesis output when max iterations is hit', async () => {
     mockState.streamChunks = ['synthesis output for max iterations'];
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     const events = await collectEvents(agent.run('test query'));
     const done = events.find((e) => e.type === 'done') as DoneEvent | undefined;
     expect(done?.answer).toContain('synthesis output for max iterations');
@@ -316,7 +338,7 @@ describe('Agent — streamCallLlm used for max-iterations synthesis', () => {
     mockState.streamChunks = ['this synthesis output should be bypassed'];
     mockState.streamShouldThrow = true;
 
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 1, memoryEnabled: false });
+    const agent = await createResponseTestAgent(1);
     const events = await collectEvents(agent.run('Provide a BTC forecast for the next 14 days'));
     const done = events.find((e) => e.type === 'done') as DoneEvent | undefined;
 
@@ -393,20 +415,20 @@ describe('Agent — synthesis timeout graceful fallback', () => {
   });
 
   it('done event is always emitted even when streamCallLlm throws', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     const events = await collectEvents(agent.run('test query'));
     const doneEvents = events.filter((e) => e.type === 'done');
     expect(doneEvents.length).toBe(1);
   });
 
   it('done event is the last event emitted after synthesis failure', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     const events = await collectEvents(agent.run('test query'));
     expect(events.at(-1)?.type).toBe('done');
   });
 
   it('answer_start is emitted before done even when synthesis fails', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 2, memoryEnabled: false });
+    const agent = await createResponseTestAgent(2);
     const events = await collectEvents(agent.run('test query'));
 
     const startIdx = events.findIndex((e) => e.type === 'answer_start');
@@ -755,7 +777,7 @@ describe('buildLowConfidenceBtcShortHorizonForecastPrefix', () => {
     );
 
     expect(prefix).toContain('BTC short-horizon selective Markov gate did not clear');
-    expect(prefix).toContain('0.25 selective threshold');
+    expect(prefix).toContain(`${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold`);
     expect(prefix).toContain('fallback context');
   });
 
@@ -785,6 +807,172 @@ describe('buildLowConfidenceBtcShortHorizonForecastPrefix', () => {
   });
 });
 
+describe('ensureStructuredDensityTable', () => {
+  const canonicalDistribution = [
+    { price: 78000, probability: 0.99, lowerBound: 76000, upperBound: 80000, source: 'markov' as const },
+    { price: 80000, probability: 0.88, lowerBound: 78000, upperBound: 82000, source: 'markov' as const },
+    { price: 82000, probability: 0.61, lowerBound: 80000, upperBound: 84000, source: 'markov' as const },
+    { price: 84000, probability: 0.28, lowerBound: 82000, upperBound: 86000, source: 'markov' as const },
+    { price: 86000, probability: 0.08, lowerBound: 84000, upperBound: 88000, source: 'markov' as const },
+    { price: 88000, probability: 0.01, lowerBound: 86000, upperBound: 90000, source: 'markov' as const },
+  ];
+
+  function buildDensityScratchpad() {
+    const scratchpad = new Scratchpad('btc structured density test');
+    scratchpad.addToolResult(
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 1 },
+      JSON.stringify({
+        data: {
+          _tool: 'markov_distribution',
+          status: 'ok',
+          distribution: canonicalDistribution,
+          canonical: {
+            ticker: 'BTC-USD',
+            horizon: 1,
+          },
+        },
+      }),
+    );
+    return scratchpad;
+  }
+
+  function parseDensityBucketRows(answer: string): Array<{
+    bucket: number;
+    range: string;
+    probability: number;
+    lower: number | null;
+    upper: number | null;
+  }> {
+    return answer
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^\|\s*\d+\s*\|/.test(line))
+      .map((line) => {
+        const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
+        const bucket = Number(cells[0]);
+        const range = cells[1] ?? '';
+        const probability = Number((cells[2]?.match(/([\d.]+)%/) ?? [])[1]);
+        const prices = [...range.matchAll(/\$([0-9][0-9,]*(?:\.\d+)?)/g)]
+          .map((match) => Number(match[1]!.replace(/,/g, '')));
+
+        if (range.startsWith('<')) {
+          return {
+            bucket,
+            range,
+            probability,
+            lower: null,
+            upper: prices[0] ?? null,
+          };
+        }
+
+        if (range.startsWith('>')) {
+          return {
+            bucket,
+            range,
+            probability,
+            lower: prices[0] ?? null,
+            upper: null,
+          };
+        }
+
+        return {
+          bucket,
+          range,
+          probability,
+          lower: prices[0] ?? null,
+          upper: prices[1] ?? null,
+        };
+      })
+      .filter((row) => Number.isFinite(row.bucket) && Number.isFinite(row.probability));
+  }
+
+  it('replaces non-parseable density prose/table with a canonical bucket table', () => {
+    const scratchpad = buildDensityScratchpad();
+
+    const answer = ensureStructuredDensityTable(
+      [
+        '## BTC 24-Hour Forecast',
+        '',
+        '## 9-Part Density Probability Table',
+        '',
+        '| Price Range | Probability |',
+        '|-------------|-------------|',
+        '| $80K–$82K | 20.0% |',
+      ].join('\n'),
+      'Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts.',
+      scratchpad.getToolCallRecords(),
+    );
+
+    expect(answer).toContain('Canonical scenario breakdown (P(bucket) = probability mass in each price range)');
+    expect(answer).toContain('| Bucket | Price Range | P(bucket) |');
+    const rows = parseDensityBucketRows(answer);
+    expect(rows).toHaveLength(9);
+
+    const firstBucket = rows[0]!;
+    const lastBucket = rows[8]!;
+
+    expect(firstBucket.bucket).toBe(1);
+    expect(firstBucket.upper).not.toBeNull();
+    expect(firstBucket.upper).toBeGreaterThan(canonicalDistribution[0]!.price);
+    expect(firstBucket.upper).toBeLessThan(canonicalDistribution[1]!.price);
+    expect(firstBucket.probability).toBeGreaterThan(4);
+
+    expect(lastBucket.bucket).toBe(9);
+    expect(lastBucket.lower).not.toBeNull();
+    expect(lastBucket.lower).toBeGreaterThan(canonicalDistribution[4]!.price);
+    expect(lastBucket.lower).toBeLessThan(canonicalDistribution[5]!.price);
+    expect(lastBucket.probability).toBeGreaterThan(4);
+  });
+
+  it('uses a midpoint split for 2-bucket requests instead of collapsing to an edge bucket', () => {
+    const answer = ensureStructuredDensityTable(
+      '## BTC 24-Hour Forecast',
+      'Provide the Markov BTC forecast for 24 hours with density probabilities divided into 2 parts.',
+      buildDensityScratchpad().getToolCallRecords(),
+    );
+
+    const rows = parseDensityBucketRows(answer);
+    expect(rows).toHaveLength(2);
+
+    const firstBucket = rows[0]!;
+    const secondBucket = rows[1]!;
+
+    expect(firstBucket.upper).not.toBeNull();
+    expect(secondBucket.lower).not.toBeNull();
+    expect(firstBucket.upper).toBeGreaterThan(canonicalDistribution[1]!.price);
+    expect(firstBucket.upper).toBeLessThan(canonicalDistribution[4]!.price);
+    expect(secondBucket.lower).toBe(firstBucket.upper);
+    expect(firstBucket.probability).toBeGreaterThan(20);
+    expect(secondBucket.probability).toBeGreaterThan(20);
+    expect(Math.abs(firstBucket.probability - secondBucket.probability)).toBeLessThan(20);
+  });
+
+  it('leaves already-structured density tables unchanged', () => {
+    const structuredAnswer = [
+      '## 9-Part Density Probability Table',
+      '',
+      'Canonical scenario breakdown (P(bucket) = probability mass in each price range):',
+      '',
+      '| Bucket | Price Range | P(bucket) |',
+      '|--------|-------------|-----------|',
+      '| 1 | < $78K | 1.00% |',
+      '| 2 | $78K–$80K | 4.00% |',
+      '| 3 | $80K–$82K | 15.00% |',
+      '| 4 | $82K–$84K | 30.00% |',
+      '| 5 | $84K–$86K | 25.00% |',
+    ].join('\n');
+
+    expect(
+      ensureStructuredDensityTable(
+        structuredAnswer,
+        'Provide the Polymarket and Markov BTC forecast for 24 hours, also providing the density probabilities for the price range divided into 9 parts.',
+        [],
+      ),
+    ).toBe(structuredAnswer);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 4. Thinking text truncation (prevents raw JSON from flooding the terminal)
 // ---------------------------------------------------------------------------
@@ -806,7 +994,7 @@ describe('Agent — thinking text truncation', () => {
   });
 
   it('thinking event message is at most 501 chars (500 + ellipsis)', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 5, memoryEnabled: false });
+    const agent = await createResponseTestAgent(5);
     const events = await collectEvents(agent.run('test query'));
 
     const thinkingEvents = events.filter((e) => e.type === 'thinking');
@@ -819,7 +1007,7 @@ describe('Agent — thinking text truncation', () => {
   });
 
   it('truncated thinking ends with ellipsis when source text exceeds 500 chars', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 5, memoryEnabled: false });
+    const agent = await createResponseTestAgent(5);
     const events = await collectEvents(agent.run('test query'));
 
     const thinkEvt = events.find((e) => e.type === 'thinking') as

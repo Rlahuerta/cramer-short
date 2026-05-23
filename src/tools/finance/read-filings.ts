@@ -4,7 +4,7 @@ import { AIMessage, ToolCall } from '@langchain/core/messages';
 import { z } from 'zod';
 import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
-import { getCurrentDate } from '../../agent/prompts.js';
+import { getCurrentDate } from '../../utils/date.js';
 import { getFilings, get10KFilingItems, get10QFilingItems, get8KFilingItems, getFilingItemTypes, type FilingItemTypes } from './filings.js';
 
 /**
@@ -49,6 +49,7 @@ const FilingTypeSchema = z.enum(['10-K', '10-Q', '8-K']);
 const FilingPlanSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe('Stock ticker symbol (e.g. AAPL, TSLA, MSFT)'),
   filing_types: z
     .array(FilingTypeSchema)
@@ -152,7 +153,7 @@ Call the appropriate filing items tool(s) now.`;
 }
 
 const ReadFilingsInputSchema = z.object({
-  query: z.string().describe('Natural language query about SEC filing content to read'),
+  query: z.string().max(10_000).describe('Natural language query about SEC filing content to read'),
 });
 
 /**
@@ -160,6 +161,7 @@ const ReadFilingsInputSchema = z.object({
  * Two-LLM-call workflow: structured output planning, then tool-calling item selection.
  */
 export function createReadFilings(model: string): DynamicStructuredTool {
+  /** Creates the filing reader tool for extracting filing sections. */
   return new DynamicStructuredTool({
     name: 'read_filings',
     description: `Intelligent tool for reading SEC filing content. Takes a natural language query and retrieves full text from 10-K, 10-Q, or 8-K filings. Use for:

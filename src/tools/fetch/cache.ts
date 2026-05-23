@@ -66,6 +66,9 @@ export function withTimeout(signal: AbortSignal | undefined, timeoutMs: number):
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (typeof timer === "object" && "unref" in timer && typeof timer.unref === "function") {
+    timer.unref();
+  }
   if (signal) {
     signal.addEventListener(
       "abort",

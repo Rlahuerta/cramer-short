@@ -1,4 +1,6 @@
 /**
+ * Mirrors `research/models/hmm.py`.
+ *
  * Gaussian Hidden Markov Model (HMM) for financial regime detection.
  *
  * Replaces threshold-based observable Markov chains with probabilistic
@@ -28,6 +30,25 @@ export interface HMMParams {
   means: number[];
   /** Emission standard deviations σ[i] for each state (Gaussian) */
   stds: number[];
+  /** Optional Student-t predictive emissions used only when explicitly enabled */
+  studentTEmissions?: StudentTEmission[];
+}
+
+export interface StudentTEmission {
+  /** Predictive location parameter */
+  location: number;
+  /** Predictive Student-t scale parameter */
+  scale: number;
+  /** Predictive Student-t degrees of freedom */
+  degreesOfFreedom: number;
+  /** Effective weighted sample size for this state's posterior */
+  effectiveSampleSize: number;
+}
+
+export interface StudentTPriorHyperparameters {
+  priorKappa: number;
+  priorAlpha: number;
+  priorBeta: number;
 }
 
 export interface HMMFitResult {
@@ -60,6 +81,189 @@ function gaussianPdf(x: number, mean: number, std: number): number {
   if (std < 1e-10) return x === mean ? 1e10 : 1e-300;
   const z = (x - mean) / std;
   return Math.exp(-0.5 * z * z) / (std * Math.sqrt(2 * Math.PI));
+}
+
+function logGamma(x: number): number {
+  const g = 7;
+  const coef = [
+    0.99999999999980993,
+    676.5203681218851, -1259.1392167224028, 771.32342877765313,
+    -176.61502916214059, 12.507343278686905, -0.13857109526572012,
+    9.9843695780195716e-6, 1.5056327351493116e-7,
+  ];
+  if (x < 0.5) {
+    return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
+  }
+  let shifted = x - 1;
+  let acc = coef[0];
+  for (let i = 1; i < g + 2; i++) {
+    acc += coef[i] / (shifted + i);
+  }
+  const t = shifted + g + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (shifted + 0.5) * Math.log(t) - t + Math.log(acc);
+}
+
+function studentTPdf(
+  x: number,
+  location: number,
+  scale: number,
+  degreesOfFreedom: number,
+): number {
+  if (!Number.isFinite(scale) || scale <= 1e-10) {
+    return x === location ? 1e10 : 1e-300;
+  }
+  const nu = Math.max(degreesOfFreedom, 2.000001);
+  const z = (x - location) / scale;
+  const logNorm =
+    logGamma((nu + 1) / 2)
+    - logGamma(nu / 2)
+    - 0.5 * Math.log(nu * Math.PI)
+    - Math.log(scale);
+  return Math.max(
+    Math.exp(logNorm - ((nu + 1) / 2) * Math.log1p((z * z) / nu)),
+    1e-300,
+  );
+}
+
+function emissionPdf(params: HMMParams, stateIdx: number, observation: number): number {
+  const studentT = params.studentTEmissions?.[stateIdx];
+  if (studentT) {
+    return studentTPdf(
+      observation,
+      studentT.location,
+      studentT.scale,
+      studentT.degreesOfFreedom,
+    );
+  }
+  return gaussianPdf(observation, params.means[stateIdx], params.stds[stateIdx]);
+}
+
+function computePosteriorStateProbabilities(
+  observations: number[],
+  params: HMMParams,
+): number[][] {
+  const { alpha, scales } = forward(observations, params);
+  const beta = backward(observations, params, scales);
+  const T = observations.length;
+  const gamma: number[][] = Array.from({ length: T }, () => Array(params.nStates).fill(0));
+  for (let t = 0; t < T; t++) {
+    let sum = 0;
+    for (let i = 0; i < params.nStates; i++) {
+      gamma[t][i] = alpha[t][i] * beta[t][i];
+      sum += gamma[t][i];
+    }
+    if (sum < 1e-300) sum = 1e-300;
+    for (let i = 0; i < params.nStates; i++) gamma[t][i] /= sum;
+  }
+  return gamma;
+}
+
+export function attachStudentTPredictiveEmissions(
+  observations: number[],
+  params: HMMParams,
+): HMMParams {
+  if (observations.length === 0) return params;
+
+  const gamma = computePosteriorStateProbabilities(observations, params);
+  const studentTEmissions: StudentTEmission[] = [];
+  const predictiveMeans: number[] = [];
+  const predictiveStds: number[] = [];
+
+  for (let stateIdx = 0; stateIdx < params.nStates; stateIdx++) {
+    let nEff = 0;
+    let weightedSum = 0;
+    for (let t = 0; t < observations.length; t++) {
+      const w = gamma[t][stateIdx];
+      nEff += w;
+      weightedSum += w * observations[t];
+    }
+
+    const priorMean = params.means[stateIdx];
+    const priorStd = Math.max(params.stds[stateIdx], 1e-6);
+    const {
+      priorKappa,
+      priorAlpha,
+      priorBeta,
+    } = resolveStudentTPriorHyperparameters(observations, priorStd, nEff);
+
+    let location = priorMean;
+    let scale = priorStd * Math.sqrt((priorKappa) / (priorKappa + 1));
+    let degreesOfFreedom = 2 * priorAlpha;
+
+    if (nEff > 0) {
+      const weightedMean = weightedSum / nEff;
+      let weightedSs = 0;
+      for (let t = 0; t < observations.length; t++) {
+        weightedSs += gamma[t][stateIdx] * (observations[t] - weightedMean) ** 2;
+      }
+
+      const kappaN = priorKappa + nEff;
+      const alphaN = priorAlpha + nEff / 2;
+      const correction = (priorKappa * nEff / kappaN) * (weightedMean - priorMean) ** 2;
+      const betaN = priorBeta + 0.5 * weightedSs + 0.5 * correction;
+
+      location = (priorKappa * priorMean + weightedSum) / kappaN;
+      scale = Math.sqrt(Math.max(betaN * (kappaN + 1) / (alphaN * kappaN), 1e-12));
+      degreesOfFreedom = 2 * alphaN;
+    }
+
+    const predictiveStd = degreesOfFreedom > 2
+      ? scale * Math.sqrt(degreesOfFreedom / (degreesOfFreedom - 2))
+      : priorStd;
+
+    studentTEmissions.push({
+      location,
+      scale,
+      degreesOfFreedom,
+      effectiveSampleSize: nEff,
+    });
+    predictiveMeans.push(location);
+    predictiveStds.push(Math.max(predictiveStd, 1e-6));
+  }
+
+  return {
+    ...params,
+    means: predictiveMeans,
+    stds: predictiveStds,
+    studentTEmissions,
+  };
+}
+
+export function resolveStudentTPriorHyperparameters(
+  observations: number[],
+  priorStd: number,
+  effectiveSampleSize: number,
+): StudentTPriorHyperparameters {
+  const clippedStd = Math.max(priorStd, 1e-6);
+  const sampleMean = observations.reduce((sum, value) => sum + value, 0) / observations.length;
+  const sampleVariance = observations.reduce(
+    (sum, value) => sum + (value - sampleMean) ** 2,
+    0,
+  ) / Math.max(observations.length, 1);
+  let excessKurtosis = 0;
+  if (observations.length >= 4 && sampleVariance > 1e-12) {
+    const fourthMoment = observations.reduce(
+      (sum, value) => sum + (value - sampleMean) ** 4,
+      0,
+    ) / observations.length;
+    excessKurtosis = Math.max(0, (fourthMoment / (sampleVariance ** 2)) - 3);
+  }
+
+  const sparsePriorBoost = effectiveSampleSize < 5
+    ? ((5 - effectiveSampleSize) / 5) * 0.24
+    : 0;
+  const priorKappa = 0.01 + sparsePriorBoost;
+  const priorAlpha = Math.max(2.0, Math.min(4.0, 2 + (4 / (1 + excessKurtosis))));
+  const priorBeta = Math.max(
+    (clippedStd ** 2) * priorAlpha * priorKappa / (priorKappa + 1),
+    1e-8,
+  );
+
+  return {
+    priorKappa,
+    priorAlpha,
+    priorBeta,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -113,14 +317,14 @@ export function forward(obs: number[], params: HMMParams): {
   scales: number[];
   logLikelihood: number;
 } {
-  const { nStates, pi, A, means, stds } = params;
+  const { nStates, pi, A } = params;
   const T = obs.length;
   const alpha: number[][] = Array.from({ length: T }, () => Array(nStates).fill(0));
   const scales: number[] = Array(T).fill(0);
 
   // t = 0
   for (let i = 0; i < nStates; i++) {
-    alpha[0][i] = pi[i] * gaussianPdf(obs[0], means[i], stds[i]);
+    alpha[0][i] = pi[i] * emissionPdf(params, i, obs[0]);
   }
   scales[0] = alpha[0].reduce((s, v) => s + v, 0);
   if (scales[0] < 1e-300) scales[0] = 1e-300;
@@ -133,7 +337,7 @@ export function forward(obs: number[], params: HMMParams): {
       for (let i = 0; i < nStates; i++) {
         sum += alpha[t - 1][i] * A[i][j];
       }
-      alpha[t][j] = sum * gaussianPdf(obs[t], means[j], stds[j]);
+      alpha[t][j] = sum * emissionPdf(params, j, obs[t]);
     }
     scales[t] = alpha[t].reduce((s, v) => s + v, 0);
     if (scales[t] < 1e-300) scales[t] = 1e-300;
@@ -149,7 +353,7 @@ export function forward(obs: number[], params: HMMParams): {
 // ---------------------------------------------------------------------------
 
 export function backward(obs: number[], params: HMMParams, scales: number[]): number[][] {
-  const { nStates, A, means, stds } = params;
+  const { nStates, A } = params;
   const T = obs.length;
   const beta: number[][] = Array.from({ length: T }, () => Array(nStates).fill(0));
 
@@ -161,7 +365,7 @@ export function backward(obs: number[], params: HMMParams, scales: number[]): nu
     for (let i = 0; i < nStates; i++) {
       let sum = 0;
       for (let j = 0; j < nStates; j++) {
-        sum += A[i][j] * gaussianPdf(obs[t + 1], means[j], stds[j]) * beta[t + 1][j];
+        sum += A[i][j] * emissionPdf(params, j, obs[t + 1]) * beta[t + 1][j];
       }
       beta[t][i] = sum / scales[t + 1];
     }
@@ -189,7 +393,10 @@ export function baumWelch(
   }
 
   let params = initializeHMM(observations, nStates);
-  let prevLL = -Infinity;
+  // Seed prevLL with the initial-parameter log-likelihood so iteration 1 can
+  // converge immediately when the initialisation is already at a fixed point.
+  const { logLikelihood: initialLL } = forward(observations, params);
+  let prevLL = initialLL;
   let iterations = 0;
   let converged = false;
 
@@ -230,7 +437,7 @@ export function baumWelch(
           xi[t][i][j] =
             alpha[t][i] *
             params.A[i][j] *
-            gaussianPdf(observations[t + 1], params.means[j], params.stds[j]) *
+            emissionPdf(params, j, observations[t + 1]) *
             beta[t + 1][j];
           sum += xi[t][i][j];
         }
@@ -305,7 +512,7 @@ export function baumWelch(
 // ---------------------------------------------------------------------------
 
 export function viterbi(obs: number[], params: HMMParams): number[] {
-  const { nStates, pi, A, means, stds } = params;
+  const { nStates, pi, A } = params;
   const T = obs.length;
 
   // Use log probabilities for numerical stability
@@ -314,7 +521,7 @@ export function viterbi(obs: number[], params: HMMParams): number[] {
 
   // t = 0
   for (let i = 0; i < nStates; i++) {
-    delta[0][i] = Math.log(Math.max(pi[i], 1e-300)) + Math.log(Math.max(gaussianPdf(obs[0], means[i], stds[i]), 1e-300));
+    delta[0][i] = Math.log(Math.max(pi[i], 1e-300)) + Math.log(Math.max(emissionPdf(params, i, obs[0]), 1e-300));
   }
 
   // t = 1..T-1
@@ -329,7 +536,7 @@ export function viterbi(obs: number[], params: HMMParams): number[] {
           bestIdx = i;
         }
       }
-      delta[t][j] = bestVal + Math.log(Math.max(gaussianPdf(obs[t], means[j], stds[j]), 1e-300));
+      delta[t][j] = bestVal + Math.log(Math.max(emissionPdf(params, j, obs[t]), 1e-300));
       psi[t][j] = bestIdx;
     }
   }
@@ -362,21 +569,8 @@ export function predict(
   const { nStates, A, means, stds } = params;
 
   // Forward pass to get current state posteriors
-  const { alpha, scales } = forward(observations, params);
-  const beta = backward(observations, params, scales);
   const T = observations.length;
-
-  // Compute gamma (posterior state probabilities)
-  const gamma: number[][] = Array.from({ length: T }, () => Array(nStates).fill(0));
-  for (let t = 0; t < T; t++) {
-    let sum = 0;
-    for (let i = 0; i < nStates; i++) {
-      gamma[t][i] = alpha[t][i] * beta[t][i];
-      sum += gamma[t][i];
-    }
-    if (sum < 1e-300) sum = 1e-300;
-    for (let i = 0; i < nStates; i++) gamma[t][i] /= sum;
-  }
+  const gamma = computePosteriorStateProbabilities(observations, params);
 
   const currentStateProbabilities = gamma[T - 1];
 
@@ -417,7 +611,7 @@ export function predict(
 // Matrix power (reused for n-step transition forecast)
 // ---------------------------------------------------------------------------
 
-function matPow(M: number[][], n: number): number[][] {
+export function matPow(M: number[][], n: number): number[][] {
   const size = M.length;
   let result: number[][] = Array.from({ length: size }, (_, i) =>
     Array.from({ length: size }, (_, j) => (i === j ? 1 : 0)),

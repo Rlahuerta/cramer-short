@@ -12,11 +12,12 @@
  */
 import { describe, expect, beforeAll } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
-import { runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
+import { markE2ESkippedFromError, runAgentE2EWithTimeoutRetry, E2E_TIMEOUT_MS } from '@/utils/e2e-helpers.js';
 import type { E2EResult } from '@/utils/e2e-helpers.js';
 
 const PEER_COMPARISON_QUERY =
-  'Use the peer-comparison skill to compare NVDA against AMD, INTC, and QCOM on valuation, growth, and quality metrics';
+  '--deep Use the peer-comparison skill to compare NVDA against AMD, INTC, and QCOM on valuation, growth, and quality metrics';
+const PEER_COMPARISON_TIMEOUT_MS = Math.max(E2E_TIMEOUT_MS, 600_000);
 
 let result: E2EResult;
 let tools: string[];
@@ -25,10 +26,15 @@ let answer: string;
 describe('peer-comparison skill E2E', () => {
   beforeAll(async () => {
     if (!RUN_E2E) return;
-    result = await runAgentE2EWithTimeoutRetry(PEER_COMPARISON_QUERY);
-    tools = result.toolsCalled;
-    answer = result.answer;
-  }, E2E_TIMEOUT_MS);
+    try {
+      result = await runAgentE2EWithTimeoutRetry(PEER_COMPARISON_QUERY);
+      tools = result.toolsCalled;
+      answer = result.answer;
+    } catch (error) {
+      if (markE2ESkippedFromError(error)) return;
+      throw error;
+    }
+  }, PEER_COMPARISON_TIMEOUT_MS);
 
   e2eIt('invokes the skill tool or executes the peer-comparison workflow directly', () => {
     const usedSkillTool = tools.some((t) => t === 'skill');

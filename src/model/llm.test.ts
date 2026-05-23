@@ -1,31 +1,13 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, test, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 
-// ---------------------------------------------------------------------------
-// Mock @langchain/ollama so we can inspect constructor args without Ollama running
-// ---------------------------------------------------------------------------
-const mockChatOllamaInstances: Array<{ model: string; think?: boolean }> = [];
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
 
-mock.module('@langchain/ollama', () => ({
-  ChatOllama: class MockChatOllama {
-    constructor(args: { model: string; think?: boolean }) {
-      mockChatOllamaInstances.push({ model: args.model, think: args.think });
-    }
-  },
-  OllamaEmbeddings: class { constructor() {} },
-}));
-
-// Stub the other providers so getChatModel doesn't throw for missing API keys
-mock.module('@langchain/openai', () => ({
-  ChatOpenAI: class { constructor() {} },
-  OpenAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/anthropic', () => ({
-  ChatAnthropic: class { constructor() {} },
-}));
-mock.module('@langchain/google-genai', () => ({
-  ChatGoogleGenerativeAI: class { constructor() {} },
-  GoogleGenerativeAIEmbeddings: class { constructor() {} },
-}));
+afterEach(() => {
+  setSystemTime();
+});
 
 const actualConfig = await import('@/utils/config.js');
 
@@ -36,11 +18,19 @@ mock.module('@/utils/config.js', () => ({
   getSetting: mockGetSetting,
 }));
 
-const { isThinkingModel, getChatModel, getLlmCallTimeoutMs, DEFAULT_LLM_CALL_TIMEOUT_MS } = await import('./llm.js');
+const {
+  isThinkingModel,
+  getChatModel,
+  callLlm,
+  getLlmCallTimeoutMs,
+  DEFAULT_LLM_CALL_TIMEOUT_MS,
+  streamCallLlm,
+  _setModelFactory,
+} = await import('./llm.js');
 
 beforeEach(() => {
-  mockChatOllamaInstances.length = 0;
   mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
+  _setModelFactory(null);
 });
 
 // ===========================================================================
@@ -90,23 +80,40 @@ describe('isThinkingModel', () => {
 
 describe('getChatModel — Ollama think flag', () => {
   test('passes think:true for qwen3 model', () => {
-    getChatModel('ollama:qwen3:4b');
-    expect(mockChatOllamaInstances[0]?.think).toBe(true);
+    const model = getChatModel('ollama:qwen3:4b') as { think?: boolean };
+    expect(model.think).toBe(true);
   });
 
   test('passes think:true for deepseek-r1 model', () => {
-    getChatModel('ollama:deepseek-r1:8b');
-    expect(mockChatOllamaInstances[0]?.think).toBe(true);
+    const model = getChatModel('ollama:deepseek-r1:8b') as { think?: boolean };
+    expect(model.think).toBe(true);
   });
 
   test('does NOT pass think:true for llama3', () => {
-    getChatModel('ollama:llama3.1:8b');
-    expect(mockChatOllamaInstances[0]?.think).toBeUndefined();
+    const model = getChatModel('ollama:llama3.1:8b') as { think?: boolean };
+    expect(model.think).toBeUndefined();
   });
 
   test('strips ollama: prefix before passing model to ChatOllama', () => {
-    getChatModel('ollama:qwen3:4b');
-    expect(mockChatOllamaInstances[0]?.model).toBe('qwen3:4b');
+    const model = getChatModel('ollama:qwen3:4b') as { model?: string };
+    expect(model.model).toBe('qwen3:4b');
+  });
+});
+
+describe('callLlm compatibility fallbacks', () => {
+  test('uses call() when invoke() is unavailable', async () => {
+    const call = mock(async () => ({ content: 'CALL_OK' }));
+    _setModelFactory((() => ({ call })) as any);
+
+    const { response } = await callLlm('Reply with CALL_OK.', {
+      model: 'ollama:llama3.1:8b',
+      systemPrompt: 'Return the requested token.',
+      thinkOverride: false,
+      timeoutMs: 30_000,
+    });
+
+    expect(response).toBe('CALL_OK');
+    expect(call).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -117,7 +124,7 @@ describe('getLlmCallTimeoutMs', () => {
     mockGetSetting.mockImplementation((key: string, defaultValue: unknown) =>
       key === 'llmCallTimeoutMs' ? 300_000 : defaultValue,
     );
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     expect(freshGetter()).toBe(300_000);
     if (original !== undefined) process.env.LLM_CALL_TIMEOUT_MS = original;
   });
@@ -126,7 +133,7 @@ describe('getLlmCallTimeoutMs', () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     delete process.env.LLM_CALL_TIMEOUT_MS;
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     if (original !== undefined) process.env.LLM_CALL_TIMEOUT_MS = original;
   });
@@ -137,7 +144,7 @@ describe('getLlmCallTimeoutMs', () => {
     mockGetSetting.mockImplementation((key: string) =>
       key === 'llmCallTimeoutMs' ? 300_000 : undefined,
     );
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     expect(freshGetter()).toBe(300_000);
     delete process.env.LLM_CALL_TIMEOUT_MS;
     if (original !== undefined) process.env.LLM_CALL_TIMEOUT_MS = original;
@@ -147,7 +154,7 @@ describe('getLlmCallTimeoutMs', () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '180000';
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     expect(freshGetter()).toBe(180000);
     delete process.env.LLM_CALL_TIMEOUT_MS;
     if (original !== undefined) process.env.LLM_CALL_TIMEOUT_MS = original;
@@ -156,7 +163,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('falls back to default when env value is NaN (non-numeric string)', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = 'not-a-number';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -166,7 +173,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('falls back to default when env value is empty string', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -176,7 +183,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('falls back to default when env value is too small (< 30000)', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '1000';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -186,7 +193,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('falls back to default when env value is too large (> 600000)', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '9999999';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -196,7 +203,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('uses valid env value within range', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '180000';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(180000);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -206,7 +213,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('rejects malformed env value with unit suffix (e.g., "180000ms")', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '180000ms';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -216,7 +223,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('rejects malformed env value with arbitrary suffix (e.g., "300000 seconds")', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = '300000 seconds';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -226,7 +233,7 @@ describe('getLlmCallTimeoutMs', () => {
   test('rejects malformed env value with leading garbage (e.g., "timeout:120000")', async () => {
     const original = process.env.LLM_CALL_TIMEOUT_MS;
     process.env.LLM_CALL_TIMEOUT_MS = 'timeout:120000';
-    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + Date.now());
+    const { getLlmCallTimeoutMs: freshGetter } = await import('./llm.js?' + nextTestId('module'));
     mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
     expect(freshGetter()).toBe(DEFAULT_LLM_CALL_TIMEOUT_MS);
     delete process.env.LLM_CALL_TIMEOUT_MS;
@@ -313,5 +320,28 @@ describe('streamCallLlm — word-boundary buffering', () => {
   test('mixed whitespace: last boundary wins', async () => {
     const result = await collectBuffered(['a b\tc ']);
     expect(result.join('')).toBe('a b\tc ');
+  });
+});
+
+describe('streamCallLlm', () => {
+  test('creates the chat model with streaming enabled', async () => {
+    const factory = mock((_name: string, opts: { streaming: boolean }) => ({
+      stream: async function* () {
+        yield { content: 'STREAM_OK' };
+      },
+    }));
+    _setModelFactory(factory as any);
+
+    const chunks: string[] = [];
+    for await (const chunk of streamCallLlm('Reply with exactly: STREAM_OK', {
+      model: 'ollama:llama3.1:8b',
+      thinkOverride: false,
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(factory.mock.calls[0]?.[1]).toMatchObject({ streaming: true });
+    expect(chunks.join('')).toBe('STREAM_OK');
   });
 });

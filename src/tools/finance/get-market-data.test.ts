@@ -1,5 +1,9 @@
-import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach, afterAll } from 'bun:test';
 import { AIMessage } from '@langchain/core/messages';
+
+// Capture real modules before mocking so afterAll can restore
+const realLlm = await import('../../model/llm.js');
+const realDate = await import('../../utils/date.js');
 
 const mockCallLlm = mock(async () => ({
   response: new AIMessage({ content: '', tool_calls: [] }),
@@ -7,16 +11,18 @@ const mockCallLlm = mock(async () => ({
 }));
 
 mock.module('../../model/llm.js', () => ({
+  ...realLlm,
   callLlm: mockCallLlm,
-  DEFAULT_MODEL: 'gpt-5.4',
-  getChatModel: mock(() => ({})),
 }));
 
-mock.module('../../agent/prompts.js', () => ({
+mock.module('../../utils/date.js', () => ({
   getCurrentDate: () => '2024-01-15',
-  buildSystemPrompt: () => 'Mock system prompt',
-  SYSTEM_PROMPT_CACHE_TTL: 60000,
 }));
+
+afterAll(() => {
+  mock.module('../../model/llm.js', () => realLlm);
+  mock.module('../../utils/date.js', () => realDate);
+});
 
 const { createGetMarketData } = await import('./get-market-data.js');
 const { api } = await import('./api.js');

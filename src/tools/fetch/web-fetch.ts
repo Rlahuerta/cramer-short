@@ -396,16 +396,10 @@ async function runWebFetch(params: {
         url: finalUrl,
         extractMode: params.extractMode,
       });
-      if (readable?.text) {
+      if (readable) {
         text = readable.text;
         title = readable.title;
-        extractor = "readability";
-      } else {
-        // Fallback to htmlToMarkdown (OpenClaw falls to Firecrawl here)
-        const rendered = htmlToMarkdown(body);
-        text = params.extractMode === "text" ? markdownToText(rendered.text) : rendered.text;
-        title = rendered.title;
-        extractor = "htmlToMarkdown";
+        extractor = readable.extractor;
       }
     } else if (contentType.includes("application/json")) {
       try {
@@ -444,12 +438,13 @@ async function runWebFetch(params: {
 // Tool definition (adapted for Cramer-Short's LangChain + Zod framework)
 // ============================================================================
 
+/** Fetches and extracts readable content from web URLs. */
 export const webFetchTool = new DynamicStructuredTool({
   name: 'web_fetch',
   description:
     'Fetch and extract readable content from a URL (HTML → markdown/text). Use for lightweight page access without browser automation.',
   schema: z.object({
-    url: z.string().describe('HTTP or HTTPS URL to fetch.'),
+    url: z.string().max(4096).describe('HTTP or HTTPS URL to fetch.'),
     extractMode: z
       .enum(['markdown', 'text'])
       .optional()

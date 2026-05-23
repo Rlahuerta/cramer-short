@@ -51,7 +51,7 @@ export function createProgressChannel(): ProgressChannel {
     if (pendingResolve && buffer.length === 0) {
       const resolve = pendingResolve;
       pendingResolve = null;
-      resolve({ value: undefined as unknown as string, done: true });
+      resolve({ value: undefined, done: true });
     }
   };
 
@@ -64,7 +64,7 @@ export function createProgressChannel(): ProgressChannel {
 
       // Nothing buffered and channel is closed -- we're done
       if (closed) {
-        return Promise.resolve({ value: undefined as unknown as string, done: true });
+        return Promise.resolve({ value: undefined, done: true });
       }
 
       // Nothing buffered, channel still open -- wait for next emit or close

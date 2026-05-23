@@ -4,9 +4,10 @@ import { AIMessage, ToolCall } from '@langchain/core/messages';
 import { z } from 'zod';
 import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
-import { getCurrentDate } from '../../agent/prompts.js';
+import { getCurrentDate } from '../../utils/date.js';
 import { tavilySearch } from '../search/tavily.js';
 import { getPreferredApi, setPreferredApi } from '../../utils/api-routing-cache.js';
+import { hasEnv } from '../../utils/env.js';
 
 /**
  * Rich description for the get_financials tool.
@@ -185,7 +186,7 @@ Call the appropriate tool(s) now.`;
 
 // Input schema for the get_financials tool
 const GetFinancialsInputSchema = z.object({
-  query: z.string().describe('Natural language query about financial data'),
+  query: z.string().max(10_000).describe('Natural language query about financial data'),
 });
 
 /**
@@ -193,6 +194,7 @@ const GetFinancialsInputSchema = z.object({
  * Uses native LLM tool calling for routing queries to finance tools.
  */
 export function createGetFinancials(model: string): DynamicStructuredTool {
+  /** Creates the model-aware financial statement retrieval tool. */
   return new DynamicStructuredTool({
     name: 'get_financials',
     description: `Intelligent meta-tool for retrieving company financial data. Takes a natural language query and automatically routes to appropriate financial data tools. Use for:
@@ -317,7 +319,7 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
 
       // When ALL API sub-tools failed, automatically try a web search before giving up.
       // This prevents the agent from having to explicitly call web_search on 402 errors.
-      if (successfulResults.length === 0 && failedResults.length > 0 && process.env.TAVILY_API_KEY) {
+      if (successfulResults.length === 0 && failedResults.length > 0 && hasEnv('TAVILY_API_KEY')) {
         try {
           const ticker = extractTicker(input.query);
           const searchQuery = ticker

@@ -4,11 +4,34 @@
  * Uses the same @langchain/* mock pattern as agent-features.test.ts to avoid
  * Bun module-registry contamination (never mocks llm.js directly).
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { AgentEvent, DoneEvent } from './types.js';
+import type { AgentConfig, AgentEvent, AgentMemoryManager, DoneEvent } from './types.js';
+import { _setModelFactory } from '../model/llm.js';
+import { MemoryManager } from '../memory/index.js';
+import {
+  BaseChatModel,
+  type BaseChatModelCallOptions,
+  type BindToolsInput,
+} from '@langchain/core/language_models/chat_models';
+import type { BaseLanguageModelInput } from '@langchain/core/language_models/base';
+import { AIMessage, AIMessageChunk, type BaseMessage, type ToolCall } from '@langchain/core/messages';
+import type { CallbackManagerForLLMRun } from '@langchain/core/callbacks/manager';
+import type { ChatResult } from '@langchain/core/outputs';
+import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
+import { z } from 'zod';
+import type { ToolCallRecord } from './scratchpad.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Filesystem isolation
@@ -16,9 +39,56 @@ import type { AgentEvent, DoneEvent } from './types.js';
 let tmpDir: string;
 let originalCwd: string;
 let prevOpenAiKey: string | undefined;
+const deferredTmpDirCleanup = new Set<string>();
+
+function isBusyFsError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EBUSY';
+}
+
+function cleanupTmpDir(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true });
+    deferredTmpDirCleanup.delete(path);
+  } catch (error) {
+    if (!isBusyFsError(error)) {
+      throw error;
+    }
+    deferredTmpDirCleanup.add(path);
+  }
+}
+
+function hasStopWatching(value: unknown): value is { stopWatching: () => void } {
+  return typeof value === 'object'
+    && value !== null
+    && 'stopWatching' in value
+    && typeof value.stopWatching === 'function';
+}
+
+function hasClose(value: unknown): value is { close: () => void } {
+  return typeof value === 'object'
+    && value !== null
+    && 'close' in value
+    && typeof value.close === 'function';
+}
+
+function resetMemoryManagerSingleton(): void {
+  const instance: unknown = Reflect.get(MemoryManager, 'instance');
+  if (typeof instance === 'object' && instance !== null) {
+    const indexer: unknown = Object.getOwnPropertyDescriptor(instance, 'indexer')?.value;
+    if (hasStopWatching(indexer)) {
+      indexer.stopWatching();
+    }
+
+    const db: unknown = Object.getOwnPropertyDescriptor(instance, 'db')?.value;
+    if (hasClose(db)) {
+      db.close();
+    }
+  }
+  Reflect.set(MemoryManager, 'instance', null);
+}
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `agent-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpDir = join(tmpdir(), `agent-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
   process.chdir(tmpDir);
@@ -27,10 +97,17 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetMemoryManagerSingleton();
   process.chdir(originalCwd);
-  rmSync(tmpDir, { recursive: true, force: true });
+  cleanupTmpDir(tmpDir);
   if (!prevOpenAiKey) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = prevOpenAiKey;
+});
+
+afterAll(() => {
+  for (const path of deferredTmpDirCleanup) {
+    cleanupTmpDir(path);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -38,12 +115,145 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 const mockState = {
   invokeContent: 'Direct answer',
-  invokeToolCalls: [] as any[],
+  invokeToolCalls: [] as ToolCall[],
   invokeThrows: false,
   invokeThrowMessage: 'LLM API error',
   streamChunks: ['streaming answer'] as string[],
   streamThrows: false,
   callCount: 0,
+};
+
+const forecastLabMockState = {
+  calls: [] as Array<Record<string, unknown>>,
+  guidedImproveResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'guided-improve',
+      status: 'ok',
+      execute: true,
+      profileId: 'btc-markov-ultra-short-horizon',
+      runId: 'btc-markov-ultra-short-horizon.keep-1',
+      decision: 'keep',
+      reason: 'candidate passed the fixed gates',
+      artifactsPath: '.cramer-short/experiments/runs/btc-markov-ultra-short-horizon.keep-1',
+      promotionReady: true,
+      promotionStatus: 'approval-required',
+      sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      answer: 'Guided keep. Approval required before promotion. Reply "approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1" to continue.',
+    },
+  }),
+  planResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'guided-improve',
+      status: 'ok',
+      execute: false,
+      profileId: 'btc-markov-ultra-short-horizon',
+      promotionReady: false,
+      answer: 'Forecast-lab bounded plan for btc-markov-ultra-short-horizon. Baseline harness first. Candidate compare. Artifacts stay under .cramer-short/experiments.',
+    },
+  }),
+  promotionResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'promote-approved',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      runId: 'forecast-lab-promo-1',
+      sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      decision: 'keep',
+      reason: 'promotion verification passed',
+      artifactsPath: '.cramer-short/experiments/runs/forecast-lab-promo-1',
+      activationArtifactsPath: '.cramer-short/experiments/runs/forecast-lab-promo-1',
+      activeStatePath: '.cramer-short/experiments/active-promotions/btc-markov-ultra-short-horizon.json',
+      answer: 'Promotion completed for btc-markov-ultra-short-horizon from kept run btc-markov-ultra-short-horizon.keep-1. Promoted parameters are now live for normal forecasts.',
+    },
+  }),
+  compareResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'compare-best-vs-shipped',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      decision: 'keep',
+      reason: 'candidate passed the fixed gates',
+      artifactsPath: '.cramer-short/experiments/runs/btc-markov-ultra-short-horizon.keep-1',
+      liveStatus: 'ready-to-promote',
+      promotionCommand: 'Approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1.',
+      answer: 'Forecast-lab comparison for btc-markov-ultra-short-horizon. Regular forecasts: not live yet. Reply "Approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1." to activate this kept run for ordinary forecast queries.',
+    },
+  }),
+  listMutatorsResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'list-mutators',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      profiles: [
+        {
+          profileId: 'btc-markov-ultra-short-horizon',
+          targetSubsystem: 'markov-distribution',
+          mutationMode: 'structured',
+          currentCatalogIds: [
+            'markov-shorter-reactive-window',
+            'markov-faster-decay-reaction',
+            'markov-lower-confidence-trend-penalty',
+          ],
+          allowedOperatorIds: ['search-replace'],
+        },
+      ],
+      dryRunProfiles: ['btc-arbiter-replay', 'polymarket-selection-sanity'],
+      frameworkOperatorIds: ['replace-range', 'search-replace', 'insert-block'],
+      answer: 'Forecast-lab shipped mutator ids for btc-markov-ultra-short-horizon. Shipped candidate catalog ids: markov-shorter-reactive-window, markov-faster-decay-reaction, markov-lower-confidence-trend-penalty.',
+    },
+  }),
+  catalogExtensionResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'catalog-extension-plan',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      targetSubsystem: 'markov-distribution',
+      allowedGlobs: [
+        'src/tools/finance/markov-distribution.ts',
+        'src/tools/finance/conformal.ts',
+        'src/tools/finance/regime-calibrator.ts',
+      ],
+      mutationMode: 'structured',
+      allowedMutatorIds: ['search-replace'],
+      currentCatalogIds: [
+        'markov-shorter-reactive-window',
+        'markov-faster-decay-reaction',
+        'markov-lower-confidence-trend-penalty',
+      ],
+      catalogFiles: [
+        'src/experiments/forecast-lab/mutators/markov-parameters.ts',
+        'src/experiments/forecast-lab/profiles.ts',
+      ],
+      validationFiles: [
+        'src/experiments/forecast-lab/mutators/markov-parameters.test.ts',
+        'src/experiments/forecast-lab/profiles.test.ts',
+        'src/tools/finance/markov-distribution.test.ts',
+        'src/tools/finance/backtest/walk-forward-r5.test.ts',
+      ],
+      operatorMutatorIds: ['replace-range', 'search-replace', 'insert-block'],
+      answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. This is a bounded code-change plan. It is not a safe runtime mutation request, so I did not inspect experiment artifacts or try to rerun the lineage directly. Catalog files to open directly next: src/experiments/forecast-lab/mutators/markov-parameters.ts, src/experiments/forecast-lab/profiles.ts. Validation files to open directly next: src/experiments/forecast-lab/mutators/markov-parameters.test.ts, src/experiments/forecast-lab/profiles.test.ts, src/tools/finance/markov-distribution.test.ts, src/tools/finance/backtest/walk-forward-r5.test.ts. After the new mutator is implemented and allowed for btc-markov-ultra-short-horizon, rerun the lineage with forecast_lab_run(action="guided-improve", profileId="btc-markov-ultra-short-horizon").',
+    },
+  }),
+  resetResult: JSON.stringify({
+    data: {
+      _tool: 'forecast_lab_run',
+      action: 'reset-live',
+      status: 'ok',
+      profileId: 'btc-markov-ultra-short-horizon',
+      resetMode: 'defaults',
+      runId: 'forecast-lab-reset-1',
+      artifactsPath: '.cramer-short/experiments/runs/forecast-lab-reset-1',
+      resetArtifactPath: '.cramer-short/experiments/runs/forecast-lab-reset-1/reset.json',
+      answer: 'Forecast-lab reset completed for btc-markov-ultra-short-horizon. Mode: shipped defaults.',
+    },
+  }),
 };
 
 /** Sequential thinking call stub (satisfies the ST-first enforcement). */
@@ -55,56 +265,57 @@ const ST_TOOL_CALL = {
 };
 
 // ---------------------------------------------------------------------------
-// Mock llm.js at the module boundary (same pattern as agent-response.test.ts).
-//
-// Mocking @langchain/* packages is insufficient because agent.ts calls callLlm()
-// from model/llm.js, not the LangChain classes directly. agent-response.test.ts
-// (which runs first in the same Bun worker) already sets mock.module('../model/llm.js')
-// with its own mockState closure, so we must override it here to use THIS file's
-// mockState. The @langchain/* mocks below are kept for completeness but are unused.
+// Scoped model factory DI — avoids permanent mock.module contamination that
+// poisons E2E/integration tests sharing the same Bun worker.
 // ---------------------------------------------------------------------------
-mock.module('../model/llm.js', () => ({
-  DEFAULT_MODEL: 'gpt-5.4',
-  getLlmCallTimeoutMs: () => 120000,
-  callLlm: async () => {
-    mockState.callCount++;
-    if (mockState.invokeThrows) throw new Error(mockState.invokeThrowMessage);
-    if (mockState.invokeToolCalls.length > 0) {
+class SpyChatModel extends BaseChatModel {
+  constructor(private state: typeof mockState) { super({}); }
+
+  _llmType(): string { return 'spy'; }
+
+  async _generate(
+    _messages: BaseMessage[],
+    _options: this['ParsedCallOptions'],
+    _runManager?: CallbackManagerForLLMRun,
+  ): Promise<ChatResult> {
+    this.state.callCount++;
+    if (this.state.invokeThrows) throw new Error(this.state.invokeThrowMessage);
+    if (this.state.invokeToolCalls.length > 0) {
       return {
-        response: { content: '', tool_calls: mockState.invokeToolCalls, additional_kwargs: {} },
-        usage: undefined,
+        generations: [{
+          message: new AIMessage({ content: '', tool_calls: this.state.invokeToolCalls, additional_kwargs: {} }),
+          text: '',
+        }],
       };
     }
     return {
-      response: { content: mockState.invokeContent, tool_calls: [], additional_kwargs: {} },
-      usage: undefined,
+      generations: [{
+        message: new AIMessage({ content: this.state.invokeContent, additional_kwargs: {} }),
+        text: this.state.invokeContent,
+      }],
     };
-  },
-  streamCallLlm: async function* (_prompt: string) {
-    if (mockState.streamThrows) throw new Error('stream timeout');
-    for (const chunk of mockState.streamChunks) yield chunk;
-  },
-  resolveProvider: (model: string) => ({ id: 'openai', displayName: model }),
-  formatUserFacingError: (msg: string) => msg,
-  isContextOverflowError: () => false,
-}));
-mock.module('@langchain/openai', () => ({
-  ChatOpenAI: class { constructor() {} bindTools() { return this; } },
-  OpenAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/anthropic', () => ({
-  ChatAnthropic: class { constructor() {} bindTools() { return this; } },
-}));
-mock.module('@langchain/google-genai', () => ({
-  ChatGoogleGenerativeAI: class { constructor() {} bindTools() { return this; } },
-  GoogleGenerativeAIEmbeddings: class { constructor() {} },
-}));
-mock.module('@langchain/ollama', () => ({
-  ChatOllama: class { constructor() {} bindTools() { return this; } },
-  OllamaEmbeddings: class { constructor() {} },
-}));
+  }
+
+  async *_streamIterator(
+    _input: BaseLanguageModelInput,
+    _options?: BaseChatModelCallOptions,
+  ): AsyncGenerator<AIMessageChunk> {
+    if (this.state.streamThrows) throw new Error('stream timeout');
+    for (const chunk of this.state.streamChunks) {
+      yield new AIMessageChunk({ content: chunk });
+    }
+  }
+
+  bindTools(_tools: BindToolsInput[]): this { return this; }
+}
+
+beforeAll(() => { _setModelFactory((_name, _opts, _thinkOverride) => new SpyChatModel(mockState)); });
+afterAll(() => {
+  _setModelFactory(null);
+});
 
 const { Agent } = await import('./agent.js');
+const { AgentToolExecutor } = await import('./tool-executor.js');
 const {
   inferDistributionTicker,
   inferDistributionHorizon,
@@ -123,17 +334,44 @@ const {
   buildForcedMarketDataArgs,
   buildForcedSocialSentimentArgs,
    buildForcedPolymarketForecastArgs,
-    extractMarkovReturnFromToolCalls,
-    buildLowConfidenceBtcShortHorizonForecastPrefix,
-    shouldInjectBtcShortHorizonMixedEvidencePrompt,
-    shouldInjectBtcShortHorizonLowConfidencePrompt,
+     extractMarkovReturnFromToolCalls,
+     buildForecastDisagreementPrefix,
+     buildLowConfidenceBtcShortHorizonForecastPrefix,
+     shouldInjectBtcShortHorizonMixedEvidencePrompt,
+     shouldInjectBtcShortHorizonLowConfidencePrompt,
     shouldRerunPolymarketForecastWithMarkov,
+    buildForcedForecastArbiterArgs,
+    shouldForceForecastArbitrator,
   buildForcedOnchainArgs,
-  buildForcedFixedIncomeArgs,
+    buildForcedFixedIncomeArgs,
   buildForcedCryptoForecastMarkovArgs,
-  shouldForceCryptoForecastTools,
-  shouldPreserveAbstainingBtcShortHorizonForecast,
-} = await import('./agent.js');
+   shouldForceCryptoForecastTools,
+   shouldPreserveAbstainingBtcShortHorizonForecast,
+   buildForcedGoldCombinedForecastArbiterArgs,
+   buildExplicitGoldCombinedForecastAnswer,
+   isForecastLabImprovementQuery,
+   isAcceptedFirstPlanningToolCall,
+   detectExplicitSkillRequest,
+   isForecastLabPlanOnlyQuery,
+ } = await import('./agent.js');
+  const {
+    detectForecastLabPromotionApproval,
+    detectForecastLabResetRequest,
+    detectForecastLabComparisonRequest,
+    detectForecastLabResultsRequest,
+    detectForecastLabMutatorListRequest,
+    detectForecastLabKeepCurrentBestRequest,
+    detectForecastLabCatalogExtensionRequest,
+    getForecastLabRoutingHint,
+  } = await import('../experiments/forecast-lab/query-router.js');
+const { createForecastArbitratorTool } = await import('../tools/finance/forecast-arbitrator.js');
+const { InMemoryChatHistory } = await import('../utils/in-memory-chat-history.js');
+const {
+  getForecastLabMarkovRuntimeDefaults,
+  setForecastLabMarkovRuntimeDefaults,
+} = await import('../tools/finance/markov-distribution.js');
+type AgentInstance = Awaited<ReturnType<typeof Agent.create>>;
+type RequestToolApproval = NonNullable<AgentConfig['requestToolApproval']>;
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -142,6 +380,93 @@ async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEven
   const events: AgentEvent[] = [];
   for await (const e of gen) events.push(e);
   return events;
+}
+
+function getAgentToolNames(agent: AgentInstance): string[] {
+  const tools = Object.getOwnPropertyDescriptor(agent, 'tools')?.value;
+  if (!Array.isArray(tools)) {
+    throw new Error('Agent instance did not expose a tools array for this test fixture');
+  }
+
+  return tools.map((tool) => {
+    if (!tool || typeof tool !== 'object') {
+      throw new Error('Agent tools fixture contained a non-object tool');
+    }
+    const name = Reflect.get(tool, 'name');
+    if (typeof name !== 'string') {
+      throw new Error('Agent tools fixture contained a tool without a string name');
+    }
+    return name;
+  });
+}
+
+function getMutableAgentToolMap(agent: AgentInstance): Map<string, StructuredToolInterface> {
+  const value: unknown = Object.getOwnPropertyDescriptor(agent, 'toolMap')?.value;
+  if (!(value instanceof Map)) {
+    throw new Error('Agent instance did not expose a toolMap for this test fixture');
+  }
+  return value as Map<string, StructuredToolInterface>;
+}
+
+function replaceAgentToolExecutor(agent: AgentInstance, toolMap: Map<string, StructuredToolInterface>): void {
+  Object.defineProperty(agent, 'toolExecutor', {
+    value: new AgentToolExecutor(toolMap),
+    configurable: true,
+  });
+}
+
+function createJsonFixtureTool(
+  name: string,
+  invoke: (input: Record<string, unknown>) => Promise<string> | string,
+): StructuredToolInterface {
+  return new DynamicStructuredTool({
+    name,
+    description: `${name} test fixture`,
+    schema: z.record(z.string(), z.unknown()),
+    func: async (input: Record<string, unknown>) => invoke(input),
+  });
+}
+
+function installFixtureTools(
+  agent: AgentInstance,
+  tools: Array<{
+    name: string;
+    invoke: (input: Record<string, unknown>) => Promise<string> | string;
+  }>,
+): void {
+  const toolMap = getMutableAgentToolMap(agent);
+  for (const tool of tools) {
+    toolMap.set(tool.name, createJsonFixtureTool(tool.name, tool.invoke));
+  }
+  replaceAgentToolExecutor(agent, toolMap);
+}
+
+function installForecastLabTool(agent: AgentInstance): void {
+  installFixtureTools(agent, [{
+    name: 'forecast_lab_run',
+    invoke: async (input: Record<string, unknown>) => {
+      forecastLabMockState.calls.push(input);
+      if (input.action === 'compare-best-vs-shipped') {
+        return forecastLabMockState.compareResult;
+      }
+      if (input.action === 'list-mutators') {
+        return forecastLabMockState.listMutatorsResult;
+      }
+      if (input.action === 'catalog-extension-plan') {
+        return forecastLabMockState.catalogExtensionResult;
+      }
+      if (input.action === 'promote-approved') {
+        return forecastLabMockState.promotionResult;
+      }
+      if (input.action === 'reset-live') {
+        return forecastLabMockState.resetResult;
+      }
+      if (input.execute === false) {
+        return forecastLabMockState.planResult;
+      }
+      return forecastLabMockState.guidedImproveResult;
+    },
+  }]);
 }
 
 // ---------------------------------------------------------------------------
@@ -157,28 +482,57 @@ describe('Agent', () => {
     mockState.streamChunks = ['streaming answer'];
     mockState.streamThrows = false;
     mockState.callCount = 0;
+    forecastLabMockState.calls = [];
   });
 
   describe('Agent.create', () => {
     it('creates an Agent instance', async () => {
-      const agent = await Agent.create({});
+    const agent = await Agent.create({ memoryEnabled: false });
       expect(agent).toBeDefined();
       expect(typeof agent.run).toBe('function');
     });
 
     it('creates an Agent with custom model', async () => {
-      const agent = await Agent.create({ model: 'claude-sonnet-4-20250514' });
+    const agent = await Agent.create({ model: 'claude-sonnet-4-20250514', memoryEnabled: false });
       expect(agent).toBeDefined();
     });
 
     it('creates an Agent with custom maxIterations', async () => {
-      const agent = await Agent.create({ maxIterations: 5 });
+    const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
       expect(agent).toBeDefined();
     });
 
     it('creates an Agent with memoryEnabled: false', async () => {
       const agent = await Agent.create({ memoryEnabled: false });
       expect(agent).toBeDefined();
+      const toolNames = getAgentToolNames(agent);
+      expect(toolNames).not.toEqual(expect.arrayContaining([
+        'memory_search',
+        'memory_get',
+        'memory_update',
+        'recall_financial_context',
+        'store_financial_insight',
+      ]));
+    });
+
+    it('uses injected memory manager for startup memory context', async () => {
+      const listFiles = mock(async () => ['notes/aapl.md']);
+      const loadSessionContext = mock(async () => ({
+        text: 'Injected startup context',
+        filesLoaded: ['notes/aapl.md'],
+        tokenEstimate: 3,
+      }));
+      const search = mock(async () => []);
+      const memoryManager: AgentMemoryManager = { listFiles, loadSessionContext, search };
+      const getMemoryManager = mock(async () => memoryManager);
+
+      const agent = await Agent.create({ getMemoryManager, maxIterations: 3 });
+
+      expect(agent).toBeDefined();
+      expect(getMemoryManager).toHaveBeenCalledTimes(1);
+      expect(listFiles).toHaveBeenCalledTimes(1);
+      expect(loadSessionContext).toHaveBeenCalledTimes(1);
+      expect(search).not.toHaveBeenCalled();
     });
   });
 
@@ -194,6 +548,50 @@ describe('Agent', () => {
       expect(done!.answer).toContain('Direct answer to query');
     });
 
+    it('uses injected memory manager factory for run memory injection', async () => {
+      const listFiles = mock(async () => []);
+      const loadSessionContext = mock(async () => ({ text: '', filesLoaded: [], tokenEstimate: 0 }));
+      const search = mock(async (query: string) => (query === 'AAPL' ? [{
+        snippet: 'Injected AAPL research context',
+        path: 'notes/aapl.md',
+        startLine: 1,
+        endLine: 1,
+        score: 0.9,
+        source: 'keyword' as const,
+      }] : []));
+      const memoryManager: AgentMemoryManager = { listFiles, loadSessionContext, search };
+      const getMemoryManager = mock(async () => memoryManager);
+
+      const agent = await Agent.create({ getMemoryManager, maxIterations: 3 });
+      expect(getMemoryManager).toHaveBeenCalledTimes(1);
+      expect(search).not.toHaveBeenCalled();
+
+      const events = await collectEvents(agent.run('Summarize AAPL risks'));
+      const done = events.find(e => e.type === 'done') as DoneEvent | undefined;
+
+      expect(done).toBeDefined();
+      expect(done!.answer).toContain('Direct answer');
+      expect(getMemoryManager).toHaveBeenCalledTimes(2);
+      expect(search).toHaveBeenCalledWith('AAPL', { maxResults: 3 });
+      expect(search).toHaveBeenCalledWith('Summarize AAPL risks', { maxResults: 3 });
+    });
+
+    it('skips memory startup during run when memoryEnabled is false', async () => {
+      const getMemoryManager = mock(async (): Promise<AgentMemoryManager> => ({
+        listFiles: async () => [],
+        loadSessionContext: async () => ({ text: '', filesLoaded: [], tokenEstimate: 0 }),
+        search: async () => [],
+      }));
+
+      const agent = await Agent.create({ maxIterations: 3, memoryEnabled: false, getMemoryManager });
+      const events = await collectEvents(agent.run('What time is it?'));
+      const done = events.find(e => e.type === 'done') as DoneEvent | undefined;
+
+      expect(done).toBeDefined();
+      expect(done!.answer).toContain('Direct answer');
+      expect(getMemoryManager).not.toHaveBeenCalled();
+    }, 10_000);
+
     it('done event includes iterations and totalTime', async () => {
       const agent = await Agent.create({ maxIterations: 3 });
       const events = await collectEvents(agent.run('simple question'));
@@ -203,6 +601,460 @@ describe('Agent', () => {
       expect(typeof done!.totalTime).toBe('number');
       expect(done!.iterations).toBeGreaterThanOrEqual(1);
       expect(done!.totalTime).toBeGreaterThanOrEqual(0);
+    });
+
+    it('preloads an explicitly requested runtime skill before the first model turn', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      const events = await collectEvents(
+        agent.run('Use the portfolio_risk skill to analyse risk for AAPL and MSFT'),
+      );
+
+      const toolStart = events.find(e => e.type === 'tool_start');
+      const done = events.find(e => e.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStart).toBeDefined();
+      expect(toolStart?.type).toBe('tool_start');
+      if (toolStart?.type === 'tool_start') {
+        expect(toolStart.tool).toBe('skill');
+      }
+      expect(done).toBeDefined();
+      expect(done!.answer).toContain('Direct answer');
+    });
+
+    it('auto-runs the bounded forecast-lab improvement flow for routed execution queries', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('Improve the BTC 1d/2d/3d Markov forecast workflow.'),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['skill', 'forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'guided-improve',
+          query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+          profileId: 'btc-markov-ultra-short-horizon',
+          routingSource: 'auto-routed',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Approval required before promotion');
+    });
+
+    it('passes explicit mutator ids through the routed forecast-lab improvement flow', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('Improve the BTC 1d/2d/3d Markov forecast workflow using mutator markov-faster-decay-reaction.'),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['skill', 'forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'guided-improve',
+          query: 'Improve the BTC 1d/2d/3d Markov forecast workflow using mutator markov-faster-decay-reaction.',
+          profileId: 'btc-markov-ultra-short-horizon',
+          mutator: 'markov-faster-decay-reaction',
+          routingSource: 'auto-routed',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Approval required before promotion');
+    });
+
+    it('uses the bounded forecast-lab plan path when the routed query forbids execution', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('Optimize the BTC 1d/2d/3d Markov forecast workflow. Do not edit files, run shell commands, or write artifacts; explain the exact experiment plan you would follow.'),
+      );
+
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'guided-improve',
+          query: 'Optimize the BTC 1d/2d/3d Markov forecast workflow. Do not edit files, run shell commands, or write artifacts; explain the exact experiment plan you would follow.',
+          profileId: 'btc-markov-ultra-short-horizon',
+          execute: false,
+          routingSource: 'auto-routed',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('bounded plan');
+      expect(done?.answer).toContain('.cramer-short/experiments');
+    });
+
+    it('runs bounded promotion on explicit approval prompts without another model turn', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished. Approval required before promotion. Reply "approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1" to continue.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('Yes, approve forecast-lab promotion for that kept run.', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'promote-approved',
+          profileId: 'btc-markov-ultra-short-horizon',
+          sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Promotion completed');
+      expect(done?.answer).toContain('now live for normal forecasts');
+    });
+
+    it('runs bounded reset on explicit reset prompts without another model turn', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Approve the BTC ultra-short-horizon promotion.',
+        answer: 'Promotion completed for btc-markov-ultra-short-horizon from kept run btc-markov-ultra-short-horizon.keep-1. Promoted parameters are now live for normal forecasts. Active baseline: .cramer-short/experiments/active-promotions/btc-markov-ultra-short-horizon.json',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('Reset the forecast-lab active baseline for btc-markov-ultra-short-horizon back to shipped defaults.', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'reset-live',
+          profileId: 'btc-markov-ultra-short-horizon',
+          resetMode: 'defaults',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('reset completed');
+      expect(done?.answer).toContain('shipped defaults');
+    });
+
+    it('routes current-best vs shipped-baseline questions into the bounded forecast-lab comparison flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished for btc-markov-ultra-short-horizon. Approval required before promotion.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('Is the current best better than the shipped default baseline?', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query: 'Is the current best better than the shipped default baseline?',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('not live yet');
+      expect(done?.answer).toContain('Approve forecast-lab promotion');
+    });
+
+    it('routes named mutator-vs-active comparison prompts into the bounded forecast-lab comparison flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Name it something like: markov-entropy-adaptive-anchor-weighting.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const query = 'I need to compare the markov-entropy-adaptive-anchor-weighting with the active one, I need to see the accurace numbers';
+      const events = await collectEvents(agent.run(query, history));
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          profileId: 'btc-markov-ultra-short-horizon',
+          mutationId: 'markov-entropy-adaptive-anchor-weighting',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+    });
+
+    it('routes history-based live-vs-new-mutator prompts into the bounded forecast-lab comparison flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Name it something like: markov-entropy-adaptive-anchor-weighting.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const query = 'I need to compare the live one with the new mutate one that I created and it is not promoted';
+      const events = await collectEvents(agent.run(query, history));
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          profileId: 'btc-markov-ultra-short-horizon',
+          mutationId: 'markov-entropy-adaptive-anchor-weighting',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+    });
+
+    it('routes bare named mutator-vs-active comparison prompts into the bounded forecast-lab comparison flow', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const query = 'I need to compare the markov-entropy-adaptive-anchor-weighting with the active one, I need to see the accurace numbers';
+      const events = await collectEvents(agent.run(query));
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query,
+          mutationId: 'markov-entropy-adaptive-anchor-weighting',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+    });
+
+    it('routes forecast-lab results prompts into the bounded comparison flow instead of guided improvement', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow'),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query: 'provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Approve forecast-lab promotion');
+    });
+
+    it('routes mutator-list prompts into the bounded forecast-lab catalog flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished for btc-markov-ultra-short-horizon. Approval required before promotion.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const query = 'List the mutate availible';
+      const events = await collectEvents(agent.run(query, history));
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'list-mutators',
+          query,
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('shipped mutator ids');
+      expect(done?.answer).toContain('markov-shorter-reactive-window');
+    });
+
+    it('routes keep-the-current-best follow-ups into the bounded results flow instead of file edits', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow',
+        answer: 'Forecast-lab comparison for btc-markov-ultra-short-horizon. Current best is not live yet. Reply "Approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1." to activate it.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('keep the current best candidate', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'compare-best-vs-shipped',
+          query: 'keep the current best candidate',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('Approve forecast-lab promotion');
+    });
+
+    it('routes catalog-extension prompts into the bounded forecast-lab plan flow instead of generic exploration', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Use the forecast-lab skill to explain what to do when no shipped structured mutator remains applicable after replaying the kept parent lineage for btc-markov-ultra-short-horizon.',
+        answer: 'No shipped structured mutator remains applicable after replaying the kept parent lineage for profile "btc-markov-ultra-short-horizon". Next actions: keep the current best candidate, add a new shipped structured mutator, or intentionally reset the forecast-lab lineage outside the CLI.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('design a new shipped mutator outside the existing catalog and re-run the lineage', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'catalog-extension-plan',
+          query: 'design a new shipped mutator outside the existing catalog and re-run the lineage',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('bounded code-change plan');
+      expect(done?.answer).toContain('did not inspect experiment artifacts');
+    });
+
+    it('routes detailed shipped-mutator implementation briefs into the bounded forecast-lab plan flow', async () => {
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const query = [
+        'Target anchor trust weighting.',
+        'Add a new shipped structured mutator for btc-markov-ultra-short-horizon that makes the Markov/anchor blend more adaptive under high posterior entropy using the existing soft-regime weighting controls in src/tools/finance/markov-distribution.ts.',
+        'Mutator goal:',
+        '- reduce retained HMM weight when the regime posterior is ambiguous,',
+        '- widen CI slightly more under entropy,',
+        '- lower confidence more under entropy,',
+        '- keep the change bounded to the existing soft-regime weighting parameters.',
+        'Suggested starting values:',
+        '- softRegimeConfidenceFloor: 0.65 -> 0.55',
+        '- softRegimeConfidenceEntropyWeight: 0.35 -> 0.50',
+        '- softRegimeCiEntropyWeight: 0.35 -> 0.50',
+        '- softRegimeHmmWeightFloor: 0.50 -> 0.35',
+        '- softRegimeHmmWeightEntropyWeight: 0.40 -> 0.60',
+        'Name it something like:',
+        'markov-entropy-adaptive-anchor-weighting',
+        'Keep it bounded, add the shipped mutator to the catalog, and validate it with the existing BTC ultra-short-horizon walk-forward gate.',
+      ].join('\n');
+
+      const events = await collectEvents(agent.run(query));
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'catalog-extension-plan',
+          query,
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('src/experiments/forecast-lab/mutators/markov-parameters.ts');
+      expect(forecastLabMockState.calls[0]).toMatchObject({
+        query: expect.stringContaining('markov-entropy-adaptive-anchor-weighting'),
+      });
+    });
+
+    it('routes implement-and-run requests for non-shipped mutators into the bounded catalog-extension flow', async () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent);
+      const events = await collectEvents(
+        agent.run('implement and run the markov-entropy-adaptive-anchor-weighting', history),
+      );
+
+      const toolStarts = events.filter((event) => event.type === 'tool_start');
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+      expect(forecastLabMockState.calls).toEqual([
+        {
+          action: 'catalog-extension-plan',
+          query: 'implement and run the markov-entropy-adaptive-anchor-weighting',
+          profileId: 'btc-markov-ultra-short-horizon',
+        },
+      ]);
+      expect(mockState.callCount).toBe(0);
+      expect(done?.answer).toContain('bounded code-change plan');
+      expect(done?.answer).toContain('did not inspect experiment artifacts');
+    });
+
+    it('keeps catalog-extension follow-ups working for shipped and GOLD-prefixed requested mutator ids', async () => {
+      for (const requestedMutatorId of [
+        'markov-entropy-adaptive-anchor-weighting',
+        'gold-markov-entropy-adaptive-anchor-weighting',
+      ]) {
+        forecastLabMockState.calls = [];
+        const history = new InMemoryChatHistory();
+        history.seedMessage({
+          query: 'Add a new shipped structured mutator.',
+          answer: `Requested mutator id: ${requestedMutatorId}.`,
+          summary: null,
+        });
+        const agent = await Agent.create({ maxIterations: 3 });
+        installForecastLabTool(agent);
+        const events = await collectEvents(
+          agent.run(`implement and run the ${requestedMutatorId}`, history),
+        );
+        const toolStarts = events.filter((event) => event.type === 'tool_start');
+        const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+        expect(toolStarts.map((event) => (event as { tool: string }).tool)).toEqual(['forecast_lab_run']);
+        expect(forecastLabMockState.calls).toEqual([
+          {
+            action: 'catalog-extension-plan',
+            query: `implement and run the ${requestedMutatorId}`,
+          },
+        ]);
+        expect(done?.answer).toContain('bounded code-change plan');
+      }
     });
 
     it('yields done with error message when LLM throws', async () => {
@@ -219,12 +1071,531 @@ describe('Agent', () => {
       // Set ST tool call first (satisfies ST-first enforcement), then clear for answer
       mockState.invokeToolCalls = [ST_TOOL_CALL];
 
-      const requestToolApproval = mock(async () => 'allow' as const);
-      const agent = await Agent.create({ maxIterations: 10, requestToolApproval: requestToolApproval as any });
+      const requestToolApproval: RequestToolApproval = mock(async () => 'allow-once' as const);
+      const agent = await Agent.create({ maxIterations: 10, requestToolApproval });
 
       const events = await collectEvents(agent.run('search something'));
+      mockState.invokeToolCalls = [];
       const done = events.find(e => e.type === 'done');
       expect(done).toBeDefined();
+    });
+
+    it('forces the explicit GOLD combined workflow in Markov → market data → Polymarket → arbiter order', async () => {
+      const requestToolApproval: RequestToolApproval = mock(async () => 'allow-once' as const);
+      const agent = await Agent.create({ maxIterations: 10, requestToolApproval, memoryEnabled: false });
+
+      installFixtureTools(agent, [
+        {
+          name: 'markov_distribution',
+          invoke: async () => JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                ticker: 'GLD',
+                currentPrice: 312.45,
+                scenarios: {
+                  expectedReturn: 0.018,
+                  pUp: 0.63,
+                  buckets: [{ label: 'Up >3%', probability: 0.28 }],
+                },
+                actionSignal: {
+                  recommendation: 'BUY',
+                  expectedReturn: 0.018,
+                },
+                diagnostics: {
+                  markovWeight: 0.82,
+                  predictionConfidence: 0.67,
+                },
+              },
+            },
+          }),
+        },
+        {
+          name: 'get_market_data',
+          invoke: async () => JSON.stringify({
+            data: {
+              get_stock_price_GLD: {
+                ticker: 'GLD',
+                price: 312.45,
+              },
+            },
+          }),
+        },
+        {
+          name: 'polymarket_forecast',
+          invoke: async () => JSON.stringify({
+            data: {
+              forecastReturn: -0.012,
+              result: 'Polymarket Forecast: GLD | Horizon: 30 days | Grade: B+ (78/100)\nWill gold finish May above $3,250?: 39% YES',
+            },
+          }),
+        },
+        {
+          name: 'forecast_arbitrator',
+          invoke: async () => JSON.stringify({
+            data: {
+              result: {
+                verdict: 'NO_TRADE',
+                preferredDirection: 'neutral',
+                shouldEnterNow: false,
+              },
+            },
+          }),
+        },
+      ]);
+
+      mockState.invokeToolCalls = [];
+      mockState.invokeThrows = false;
+      const events = await collectEvents(
+        agent.run('Provide a GOLD price forecast based on markov chain and polymarket for the next 30 days with trade direction'),
+      );
+
+      const toolStarts = events
+        .filter((event) => event.type === 'tool_start')
+        .map((event) => (event as { tool: string }).tool)
+        .filter((tool) => ['markov_distribution', 'get_market_data', 'polymarket_forecast', 'forecast_arbitrator'].includes(tool));
+
+      expect(toolStarts).toEqual([
+        'markov_distribution',
+        'get_market_data',
+        'polymarket_forecast',
+        'forecast_arbitrator',
+      ]);
+    });
+
+    it('stops the run when a forced tool is denied', async () => {
+      const agent = await Agent.create({ maxIterations: 3, memoryEnabled: false });
+      const deniedCalls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+      const deniedExecutor = {
+        async *executeTool(toolName: string, args: Record<string, unknown>): AsyncGenerator<AgentEvent, void> {
+          deniedCalls.push({ tool: toolName, args });
+          yield { type: 'tool_denied', tool: toolName, args };
+        },
+        async *executeAll(): AsyncGenerator<AgentEvent, void> {},
+      };
+      Object.defineProperty(agent, 'toolExecutor', {
+        value: deniedExecutor,
+        configurable: true,
+      });
+
+      const events = await collectEvents(agent.run('Provide a BTC forecast for the next 7 days'));
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(deniedCalls[0]?.tool).toBe('get_market_data');
+      expect(events.some((event) => event.type === 'tool_denied')).toBe(true);
+      expect(done).toBeDefined();
+      expect(done?.answer).toBe('');
+      expect(mockState.callCount).toBe(1);
+    });
+
+    it('rebuilds the prompt after a forced tool error instead of using the pre-forcing answer', async () => {
+      mockState.invokeContent = 'Final answer after forced error';
+      mockState.streamChunks = ['Final answer after forced error'];
+      const agent = await Agent.create({ maxIterations: 3, memoryEnabled: false });
+      installFixtureTools(agent, [{
+        name: 'markov_distribution',
+        invoke: async () => {
+          throw new Error('markov failed');
+        },
+      }]);
+
+      const events = await collectEvents(
+        agent.run('What is the probability distribution for BTC-USD in 7 trading days?'),
+      );
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+      const toolError = events.find((event) => event.type === 'tool_error');
+      const markovRecord = done?.toolCalls.find((record) => record.tool === 'markov_distribution');
+
+      expect(toolError).toMatchObject({
+        type: 'tool_error',
+        tool: 'markov_distribution',
+        error: 'markov failed',
+      });
+      expect(markovRecord).toMatchObject({
+        tool: 'markov_distribution',
+        result: 'Error: markov failed',
+      });
+      expect(mockState.callCount).toBe(2);
+      expect(done?.answer).toContain('Final answer after forced error');
+    });
+
+    it('does not repeatedly re-force a failed crypto enrichment tool after rebuilding once', async () => {
+      mockState.invokeContent = 'Final answer after forced crypto error';
+      mockState.streamChunks = ['Final answer after forced crypto error'];
+      const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
+      const toolInvocations = new Map<string, number>();
+      const count = (toolName: string): void => {
+        toolInvocations.set(toolName, (toolInvocations.get(toolName) ?? 0) + 1);
+      };
+
+      installFixtureTools(agent, [
+        {
+          name: 'get_market_data',
+          invoke: async () => {
+            count('get_market_data');
+            throw new Error('market data unavailable');
+          },
+        },
+        {
+          name: 'social_sentiment',
+          invoke: async () => {
+            count('social_sentiment');
+            return JSON.stringify({ data: { result: '## Overall: Bullish (score +42/100)' } });
+          },
+        },
+        {
+          name: 'markov_distribution',
+          invoke: async () => {
+            count('markov_distribution');
+            return JSON.stringify({
+              data: {
+                _tool: 'markov_distribution',
+                status: 'ok',
+                canonical: {
+                  actionSignal: { expectedReturn: 0.02 },
+                  diagnostics: { markovWeight: 0.6, predictionConfidence: 0.6 },
+                },
+              },
+            });
+          },
+        },
+        {
+          name: 'polymarket_forecast',
+          invoke: async () => {
+            count('polymarket_forecast');
+            return JSON.stringify({ data: { forecast: 74250 } });
+          },
+        },
+        {
+          name: 'get_onchain_crypto',
+          invoke: async () => {
+            count('get_onchain_crypto');
+            return JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1_200_000 } } });
+          },
+        },
+        {
+          name: 'get_fixed_income',
+          invoke: async () => {
+            count('get_fixed_income');
+            return JSON.stringify({ data: { treasury_yields: [{ tenor: '10Y', yield: 4.2 }] } });
+          },
+        },
+      ]);
+
+      const events = await collectEvents(agent.run('Provide a BTC forecast for the next 7 days'));
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+      const marketErrors = events.filter((event) =>
+        event.type === 'tool_error' && event.tool === 'get_market_data'
+      );
+
+      expect(marketErrors).toHaveLength(1);
+      expect(toolInvocations.get('get_market_data')).toBe(1);
+      expect(mockState.callCount).toBe(2);
+      expect(done?.answer).toContain('Final answer after forced crypto error');
+    });
+
+    it('does not repeatedly re-force a failed non-crypto polymarket_forecast after rebuilding once', async () => {
+      mockState.invokeContent = 'Final answer after forced non-crypto forecast error';
+      mockState.streamChunks = ['Final answer after forced non-crypto forecast error'];
+      mockState.invokeToolCalls = [
+        ST_TOOL_CALL,
+        {
+          id: 'markov-nvda',
+          name: 'markov_distribution',
+          args: { ticker: 'NVDA', horizon: 7 },
+          type: 'tool_call' as const,
+        },
+      ];
+      const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
+      const toolInvocations = new Map<string, number>();
+      const count = (toolName: string): void => {
+        toolInvocations.set(toolName, (toolInvocations.get(toolName) ?? 0) + 1);
+      };
+
+      installFixtureTools(agent, [
+        {
+          name: 'markov_distribution',
+          invoke: async () => {
+            count('markov_distribution');
+            mockState.invokeToolCalls = [];
+            return JSON.stringify({
+              data: {
+                _tool: 'markov_distribution',
+                status: 'abstain',
+              },
+            });
+          },
+        },
+        {
+          name: 'get_market_data',
+          invoke: async () => {
+            count('get_market_data');
+            return JSON.stringify({
+              data: {
+                get_stock_price_NVDA: {
+                  ticker: 'NVDA',
+                  price: 921.13,
+                },
+              },
+            });
+          },
+        },
+        {
+          name: 'polymarket_forecast',
+          invoke: async () => {
+            count('polymarket_forecast');
+            throw new Error('polymarket forecast unavailable');
+          },
+        },
+      ]);
+
+      const events = await collectEvents(agent.run('Provide an NVDA forecast for the next 7 days'));
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+      const forecastErrors = events.filter((event) =>
+        event.type === 'tool_error' && event.tool === 'polymarket_forecast'
+      );
+
+      expect(forecastErrors).toHaveLength(1);
+      expect(toolInvocations.get('markov_distribution')).toBe(1);
+      expect(toolInvocations.get('get_market_data')).toBe(1);
+      expect(toolInvocations.get('polymarket_forecast')).toBe(1);
+      expect(mockState.callCount).toBe(3);
+      expect(done?.answer).toContain('Final answer after forced non-crypto forecast error');
+    });
+
+    it('rewrites explicit GOLD combined tool calls to GLD and drops crypto-only calls before execution', async () => {
+      mockState.invokeToolCalls = [
+        ST_TOOL_CALL,
+        {
+          id: 'market1',
+          name: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for ETH' },
+          type: 'tool_call' as const,
+        },
+        {
+          id: 'sent1',
+          name: 'social_sentiment',
+          args: { ticker: 'ETH', include_fear_greed: true, limit: 25 },
+          type: 'tool_call' as const,
+        },
+        {
+          id: 'markov1',
+          name: 'markov_distribution',
+          args: { ticker: 'GOLD', horizon: 1, trajectory: true, trajectoryDays: 1 },
+          type: 'tool_call' as const,
+        },
+        {
+          id: 'poly1',
+          name: 'polymarket_forecast',
+          args: { ticker: 'GOLD', horizon_days: 1 },
+          type: 'tool_call' as const,
+        },
+        {
+          id: 'chain1',
+          name: 'get_onchain_crypto',
+          args: { ticker: 'ETH', metrics: 'market,sentiment' },
+          type: 'tool_call' as const,
+        },
+      ];
+
+      const agent = await Agent.create({ maxIterations: 1, memoryEnabled: false });
+      installFixtureTools(agent, [
+        { name: 'get_market_data', invoke: async () => JSON.stringify({ data: { ok: true } }) },
+        { name: 'markov_distribution', invoke: async () => JSON.stringify({ data: { ok: true } }) },
+        { name: 'polymarket_forecast', invoke: async () => JSON.stringify({ data: { ok: true } }) },
+        { name: 'social_sentiment', invoke: async () => JSON.stringify({ data: { ok: true } }) },
+        { name: 'get_onchain_crypto', invoke: async () => JSON.stringify({ data: { ok: true } }) },
+      ]);
+
+      const query = 'Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.';
+      const events = await collectEvents(agent.run(query));
+
+      const relevantStarts = events
+        .filter((event) => event.type === 'tool_start')
+        .filter((event) => ['get_market_data', 'social_sentiment', 'markov_distribution', 'polymarket_forecast', 'get_onchain_crypto'].includes((event as { tool: string }).tool)) as Array<{ type: 'tool_start'; tool: string; args: Record<string, unknown> }>;
+
+      expect(relevantStarts.map((event) => event.tool)).toEqual([
+        'get_market_data',
+        'markov_distribution',
+        'polymarket_forecast',
+      ]);
+      expect(relevantStarts[0]?.args).toEqual({ query: 'GLD current price' });
+      expect(relevantStarts[1]?.args).toEqual({ ticker: 'GLD', horizon: 1 });
+      expect(relevantStarts[2]?.args).toEqual({ ticker: 'GLD', horizon_days: 1 });
+    });
+
+    it('builds schema-safe GOLD arbitrator args from 48h structural-break abstain evidence', async () => {
+      const query = 'Provide the Polymarket and Markov GOLD forecast for 48 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.';
+      const toolCalls: ToolCallRecord[] = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'GLD current price' },
+          result: JSON.stringify({
+            data: {
+              get_stock_price_GLD: {
+                ticker: 'GLD',
+                price: 430.6973,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'GLD', horizon: 2, currentPrice: 430.7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              abstainReasons: [
+                'Prediction-market anchor coverage is low, so calibrated scenario buckets would be overly model-driven.',
+              ],
+              canonical: {
+                ticker: 'GLD',
+                currentPrice: 430.6973,
+                horizon: 2,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 3,
+                  anchorQuality: 'low',
+                  predictionConfidence: 0.34,
+                  structuralBreakDetected: true,
+                  structuralBreakDivergence: 0.287,
+                  ciWidened: true,
+                },
+              },
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'GLD', horizon_days: 2, current_price: 430.6973 },
+          result: JSON.stringify({
+            data: {
+              result: 'Polymarket Forecast: Gold (GLD) | Horizon: 2 days | Grade: B+ (78/100)\nWill gold finish Friday above $432?: 41% YES',
+            },
+          }),
+        },
+      ];
+
+      const args = buildForcedGoldCombinedForecastArbiterArgs(query, toolCalls);
+
+      expect(args).toEqual({
+        ticker: 'GLD',
+        horizon_days: 2,
+        current_price: 430.6973,
+        markov: {
+          confidence: 0.34,
+          structural_break: true,
+          trusted_anchors: 0,
+          total_anchors: 3,
+          anchor_quality: 'low',
+          summary: 'Markov abstained: Prediction-market anchor coverage is low, so calibrated scenario buckets would be overly model-driven. Structural break detected, divergence 0.287, CI widening applied',
+        },
+        polymarket: {
+          quality_score: 78,
+          markets: [{ question: 'Will gold finish Friday above $432?', probability: 0.41 }],
+          summary: 'Polymarket Forecast: Gold (GLD) | Horizon: 2 days | Grade: B+ (78/100)\nWill gold finish Friday above $432?: 41% YES',
+        },
+      });
+
+      const tool = createForecastArbitratorTool({ recordReplayBundleCapture: () => {} });
+      await expect(tool.invoke(args!)).resolves.toContain('"result"');
+    });
+
+    it('builds a direct GOLD combined answer once GLD markov, polymarket, and arbitrator evidence exist', () => {
+      const query = 'Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic.';
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'GLD', horizon: 1 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                scenarios: {
+                  expectedReturn: 0.001709832670192603,
+                  pUp: 0.531,
+                  buckets: [
+                    { label: 'Flat +/-3%', probability: 0.9630837390805755 },
+                  ],
+                },
+                actionSignal: { confidence: 'MEDIUM' },
+                diagnostics: {
+                  predictionConfidence: 0.18704244425448344,
+                  structuralBreakDetected: true,
+                  trustedAnchors: 0,
+                  totalAnchors: 0,
+                  anchorQuality: 'none',
+                  conformal: {
+                    applied: true,
+                    mode: 'break',
+                  },
+                },
+              },
+              distribution: [
+                { price: 353.838, probability: 0.95 },
+                { price: 478.722, probability: 0.05 },
+              ],
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'GLD', horizon_days: 1, current_price: 416.28 },
+          result: JSON.stringify({
+            data: {
+              forecastReturn: -0.0025,
+              result: 'Polymarket Forecast: Gold (GLD) | Horizon: 1 days | Grade: B (77/100)\nWill Gold (XAUUSD) hit $4,400 LOW in May?: 39% YES',
+            },
+          }),
+        },
+        {
+          tool: 'forecast_arbitrator',
+          args: { ticker: 'GLD', horizon_days: 1 },
+          result: JSON.stringify({
+            data: {
+              result: {
+                ticker: 'GLD',
+                horizonDays: 1,
+                currentPrice: 416.28,
+                leverage: 1,
+                verdict: 'NO_TRADE',
+                preferredDirection: 'neutral',
+                confidence: 'low',
+                shouldEnterNow: false,
+                disagreement: {
+                  summary: 'Markov is mildly bullish while Polymarket is slightly bearish.',
+                },
+                leverageAssessment: {
+                  warning: 'Reduce size until anchor quality improves.',
+                },
+                policy: {
+                  level: 'context-only',
+                  tradeEligible: false,
+                  reasons: ['Structural break detected.'],
+                },
+              },
+            },
+          }),
+        },
+      ];
+
+      const answer = buildExplicitGoldCombinedForecastAnswer(query, toolCalls);
+
+      expect(answer).toContain('GOLD (GLD) 24h combined forecast');
+      expect(answer).toContain('Markov');
+      expect(answer).toContain('Polymarket');
+      expect(answer).toContain('NO_TRADE');
+      expect(answer).toContain('Structural Break Diagnostic');
+      expect(answer).not.toMatch(/\b(bitcoin|btc|crypto)\b/i);
+    });
+
+    it('does not build a direct GOLD combined answer for non-GOLD combined prompts', () => {
+      const query = 'Provide the Polymarket and Markov BTC forecast for 24 hours.';
+
+      expect(buildExplicitGoldCombinedForecastAnswer(query, [])).toBeNull();
     });
 
     it('done event includes toolCalls array', async () => {
@@ -303,6 +1674,56 @@ describe('Agent', () => {
         ].join('\n');
         expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 7 days', results)).toBe(false);
       });
+
+      it('uses the BTC runtime confidence threshold for selective gating', () => {
+        const query = 'Provide a BTC forecast for the next 14 days';
+        const toolCalls = [
+          {
+            tool: 'markov_distribution',
+            args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+            result: JSON.stringify({
+              data: {
+                _tool: 'markov_distribution',
+                status: 'ok',
+                canonical: {
+                  ticker: 'BTC-USD',
+                  horizon: 14,
+                  actionSignal: { expectedReturn: 0.032 },
+                  diagnostics: {
+                    markovWeight: 0.6,
+                    predictionConfidence: 0.19,
+                  },
+                },
+              },
+            }),
+          },
+          {
+            tool: 'polymarket_forecast',
+            args: { ticker: 'BTC-USD', horizon_days: 14 },
+            result: JSON.stringify({
+              data: {
+                forecastReturn: -0.004,
+              },
+            }),
+          },
+        ];
+
+        const originalBtcRuntimeDefaults = getForecastLabMarkovRuntimeDefaults('btc');
+        try {
+          expect(buildLowConfidenceBtcShortHorizonForecastPrefix(query, toolCalls)).not.toBeNull();
+          expect(buildForecastDisagreementPrefix(query, toolCalls)).toBeNull();
+
+          setForecastLabMarkovRuntimeDefaults('btc', {
+            ...originalBtcRuntimeDefaults,
+            recommendedConfidenceThreshold: 0.15,
+          });
+
+          expect(buildLowConfidenceBtcShortHorizonForecastPrefix(query, toolCalls)).toBeNull();
+          expect(buildForecastDisagreementPrefix(query, toolCalls)).not.toBeNull();
+        } finally {
+          setForecastLabMarkovRuntimeDefaults('btc', originalBtcRuntimeDefaults);
+        }
+      });
     });
 
     it('infers month and quarter horizons for non-crypto forecast phrasing', () => {
@@ -310,6 +1731,17 @@ describe('Agent', () => {
       expect(inferDistributionHorizon('Will GLD rally next quarter?')).toBe(63);
       expect(inferDistributionHorizon('Where will oil prices be in 2 months?')).toBe(42);
       expect(inferDistributionHorizon('QQQ outlook in 2 quarters')).toBe(126);
+    });
+
+    it('infers hourly short horizons for crypto forecast phrasing', () => {
+      expect(inferDistributionHorizon('BTC forecast over the next 24 hours')).toBe(1);
+      expect(inferDistributionHorizon('BTC forecast over the next 48h')).toBe(2);
+      expect(buildForcedCryptoForecastMarkovArgs('Give me a BTC markov forecast over the next 24 hours')).toEqual({
+        ticker: 'BTC-USD',
+        horizon: 1,
+        trajectory: true,
+        trajectoryDays: 1,
+      });
     });
 
     it('infers quarter-end horizons relative to a provided reference date', () => {
@@ -346,6 +1778,26 @@ describe('Agent', () => {
       expect(buildForcedMarkovArgs('Provide a SILVER forecast based on markov chain for the next 30 days')).toEqual({
         ticker: 'SLV',
         horizon: 30,
+      });
+    });
+
+    it('routes the exact GOLD markov + polymarket prompt through the commodity proxy path across 1d/2d/3d/14d horizons', () => {
+      for (const days of [1, 2, 3, 14]) {
+        const query = `Provide a GOLD price forecast based on markov chain and polymarket for the next ${days} day${days === 1 ? '' : 's'}`;
+        expect(inferDistributionTicker(query)).toBe('GLD');
+        expect(buildForcedMarkovArgs(query)).toEqual({
+          ticker: 'GLD',
+          horizon: days,
+        });
+      }
+    });
+
+    it('routes the exact GOLD 24h structural-break prompt through the commodity proxy path', () => {
+      const query = 'Provide the Polymarket and Markov GOLD forecast for 24 hours. If Markov detects a structural break, include a separate Structural Break Diagnostic explaining what triggered it, the divergence score, whether CI widening was applied, how it downgrades confidence, and how I should adjust leverage, entry, and stop placement as a result.';
+      expect(inferDistributionTicker(query)).toBe('GLD');
+      expect(buildForcedMarkovArgs(query)).toEqual({
+        ticker: 'GLD',
+        horizon: 1,
       });
     });
 
@@ -435,10 +1887,226 @@ describe('Agent', () => {
     it('detects crypto forecast queries without matching explicit distribution requests', () => {
       expect(isCryptoForecastQuery('Provide a BTC forecast for the next 7 days')).toBe(true);
       expect(isCryptoForecastQuery('What will ETH trade at next week?')).toBe(true);
+      expect(isCryptoForecastQuery('Improve the BTC short-horizon forecast workflow.')).toBe(false);
       expect(isCryptoForecastQuery('Use the probability_assessment skill for BTC price movement in the next 30 days')).toBe(false);
       expect(isCryptoForecastQuery('What is the market cap of BTC?')).toBe(false);
       expect(isCryptoForecastQuery('What is the probability distribution for BTC-USD in 7 days?')).toBe(false);
       expect(isCryptoForecastQuery('Provide an AAPL forecast for the next 7 days')).toBe(false);
+      expect(
+        isCryptoForecastQuery(
+          'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
+        ),
+      ).toBe(false);
+    });
+
+    it('classifies routed forecast-lab workflow asks as improvement queries', () => {
+      expect(isForecastLabImprovementQuery('Improve the BTC short-horizon forecast workflow.')).toBe(true);
+      expect(isForecastLabImprovementQuery('Give me a BTC forecast for the next 7 days.')).toBe(false);
+    });
+
+    it('detects plan-only forecast-lab prompts that should not execute the runner', () => {
+      expect(
+        isForecastLabPlanOnlyQuery(
+          'Optimize the BTC 1d/2d/3d workflow. Do not edit files, run shell commands, or write artifacts; explain the exact experiment plan you would follow.',
+        ),
+      ).toBe(true);
+      expect(isForecastLabPlanOnlyQuery('Improve the BTC 1d/2d/3d workflow and run the bounded experiment.')).toBe(false);
+    });
+
+    it('detects explicit forecast-lab promotion approvals from history context', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished. Approval required before promotion. Reply "approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1" to continue.',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabPromotionApproval('Yes, approve forecast-lab promotion for that kept run.', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      });
+      expect(
+        detectForecastLabPromotionApproval(
+          'Use the forecast-lab skill to explain the full BTC ultra-short-horizon lifecycle after a kept candidate: approval-required promotion, activation for ordinary forecasts, and how to reset to shipped defaults or the last-known-good baseline if the promoted parameters mislead. Do not edit files, run shell commands, or write artifacts.',
+          history,
+        ),
+      ).toBeNull();
+      expect(detectForecastLabPromotionApproval('How do I promote these improvements?', history)).toBeNull();
+      expect(detectForecastLabPromotionApproval('What is BTC doing next week?', history)).toBeNull();
+    });
+
+    it('detects explicit forecast-lab reset requests from history context', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Approve the BTC ultra-short-horizon promotion.',
+        answer: 'Promotion completed for btc-markov-ultra-short-horizon from kept run btc-markov-ultra-short-horizon.keep-1. Promoted parameters are now live for normal forecasts. Active baseline: .cramer-short/experiments/active-promotions/btc-markov-ultra-short-horizon.json',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabResetRequest(
+          'Please reset the forecast-lab baseline for btc-markov-ultra-short-horizon to shipped defaults.',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mode: 'defaults',
+      });
+      expect(
+        detectForecastLabResetRequest(
+          'Restore the forecast-lab baseline for btc-markov-ultra-short-horizon to the last known good activation.',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mode: 'last-known-good',
+      });
+      expect(detectForecastLabResetRequest('Reset BTC to defaults.', history)).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mode: 'defaults',
+      });
+      expect(detectForecastLabResetRequest('Reset BTC to defaults.')).toBeNull();
+    });
+
+    it('detects current-best vs shipped-baseline comparison requests from history context', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished for btc-markov-ultra-short-horizon. Approval required before promotion.',
+        summary: null,
+      });
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Name it something like: markov-entropy-adaptive-anchor-weighting.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabComparisonRequest('Is the current best better than the shipped default baseline?', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(
+        detectForecastLabComparisonRequest(
+          'I need to compare the markov-entropy-adaptive-anchor-weighting with the active one, I need to see the accurace numbers',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mutationId: 'markov-entropy-adaptive-anchor-weighting',
+      });
+      expect(
+        detectForecastLabComparisonRequest(
+          'I need to compare the live one with the new mutate one that I created and it is not promoted',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        mutationId: 'markov-entropy-adaptive-anchor-weighting',
+      });
+      expect(
+        detectForecastLabComparisonRequest(
+          'I need to compare the markov-entropy-adaptive-anchor-weighting with the active one, I need to see the accurace numbers',
+        ),
+      ).toEqual({
+        mutationId: 'markov-entropy-adaptive-anchor-weighting',
+      });
+      expect(detectForecastLabComparisonRequest('Is BTC going up next week?', history)).toBeNull();
+    });
+
+    it('detects forecast-lab results requests and resolves the routed profile', () => {
+      expect(
+        detectForecastLabResultsRequest('provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow'),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(detectForecastLabResultsRequest('show me BTC results for next week')).toBeNull();
+    });
+
+    it('detects mutator-list requests and reuses forecast-lab profile context when available', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished for btc-markov-ultra-short-horizon. Approval required before promotion.',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabMutatorListRequest('List the mutator ids for btc-markov-ultra-short-horizon.', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(
+        detectForecastLabMutatorListRequest('List the mutate availible', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(detectForecastLabMutatorListRequest('List the mutate availible')).toEqual({});
+      expect(detectForecastLabMutatorListRequest('List the plugins for my toy parser')).toBeNull();
+    });
+
+    it('detects keep-the-current-best follow-ups only in forecast-lab context', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'provide the results of the Optimize the BTC 1d/2d/3d Markov forecast workflow',
+        answer: 'Forecast-lab comparison for btc-markov-ultra-short-horizon. Current best is not live yet.',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabKeepCurrentBestRequest('keep the current best candidate', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(detectForecastLabKeepCurrentBestRequest('keep the current best candidate')).toBeNull();
+    });
+
+    it('detects catalog-extension requests and reuses forecast-lab profile context when available', () => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Use the forecast-lab skill to explain what to do when no shipped structured mutator remains applicable after replaying the kept parent lineage for btc-markov-ultra-short-horizon.',
+        answer: 'No shipped structured mutator remains applicable after replaying the kept parent lineage for profile "btc-markov-ultra-short-horizon".',
+        summary: null,
+      });
+
+      expect(
+        detectForecastLabCatalogExtensionRequest(
+          'design a new shipped mutator outside the existing catalog and re-run the lineage',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(
+        detectForecastLabCatalogExtensionRequest('design a new shipped mutator outside the existing catalog and re-run the lineage'),
+      ).toEqual({});
+      expect(
+        detectForecastLabCatalogExtensionRequest(
+          [
+            'Target anchor trust weighting.',
+            'Add a new shipped structured mutator for btc-markov-ultra-short-horizon that makes the Markov/anchor blend more adaptive under high posterior entropy using the existing soft-regime weighting controls in src/tools/finance/markov-distribution.ts.',
+            'Keep it bounded, add the shipped mutator to the catalog, and validate it with the existing BTC ultra-short-horizon walk-forward gate.',
+          ].join('\n'),
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      history.seedMessage({
+        query: 'Target anchor trust weighting. Add a new shipped structured mutator for btc-markov-ultra-short-horizon.',
+        answer: 'Forecast-lab catalog-extension plan for btc-markov-ultra-short-horizon. Requested mutator id: markov-entropy-adaptive-anchor-weighting.',
+        summary: null,
+      });
+      expect(
+        detectForecastLabCatalogExtensionRequest(
+          'implement and run the markov-entropy-adaptive-anchor-weighting',
+          history,
+        ),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+      });
+      expect(detectForecastLabCatalogExtensionRequest('design a new mutator for my toy parser')).toBeNull();
     });
 
     it('builds forced crypto enrichment args for BTC forecasts', () => {
@@ -470,6 +2138,11 @@ describe('Agent', () => {
 
       expect(buildForcedCryptoForecastMarkovArgs('Provide a BTC forecast for the next 30 days')).toBeNull();
       expect(buildForcedOnchainArgs('Provide a crypto forecast for the next 7 days')).toBeNull();
+      expect(
+        buildForcedMarketDataArgs(
+          'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
+        ),
+      ).toBeNull();
     });
 
     it('buildForcedCryptoForecastMarkovArgs uses BTC-only next week fallback of 5 trading days', () => {
@@ -691,6 +2364,299 @@ describe('Agent', () => {
         current_price: 73300,
         sentiment_score: 0.42,
       });
+    });
+
+    it('builds forecast arbitrator args after Markov and Polymarket evidence for leveraged trade asks', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: {
+                ticker: 'BTC',
+                price: 76029.21,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 1, trajectory: true, trajectoryDays: 1 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                scenarios: {
+                  expectedReturn: 0.006,
+                  pUp: 0.55,
+                  buckets: [
+                    { label: 'Down >5%', probability: 0.021 },
+                    { label: 'Flat +/-3%', probability: 0.828 },
+                    { label: 'Up >5%', probability: 0.06 },
+                  ],
+                },
+                actionSignal: { expectedReturn: 0.006, confidence: 'MEDIUM' },
+                diagnostics: {
+                  markovWeight: 0.68,
+                  predictionConfidence: 0.274,
+                  structuralBreakDetected: true,
+                },
+              },
+              distribution: [
+                { price: 72095, probability: 0.95 },
+                { price: 78116, probability: 0.05 },
+              ],
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'BTC', horizon_days: 1, current_price: 76029.21, markov_return: 0.00408 },
+          result: JSON.stringify({
+            data: {
+              forecastReturn: -0.0121,
+              result: 'Polymarket Forecast: BTC | Horizon: 1 days | Grade: A (83/100)\nWill Bitcoin dip to $75,000 in April?: 100% YES',
+            },
+          }),
+        },
+        {
+          tool: 'get_onchain_crypto',
+          args: { ticker: 'BTC', metrics: ['market', 'sentiment'] },
+          result: JSON.stringify({ data: { result: 'No whale transactions detected.' } }),
+        },
+      ];
+
+      const query = 'Give me a Polymarket and markov price forecast for BTC over the next 24 hours with entry and stop for 10x leveraged position direction';
+      expect(shouldForceForecastArbitrator(query, toolCalls)).toBe(true);
+      expect(buildForcedForecastArbiterArgs(query, toolCalls)).toEqual({
+        ticker: 'BTC',
+        horizon_days: 1,
+        current_price: 76029.21,
+        leverage: 10,
+        markov: {
+          forecast_return: 0.00408,
+          p_up: 0.55,
+          confidence: 0.274,
+          structural_break: true,
+          flat_probability: 0.828,
+          ci_low: 72095,
+          ci_high: 78116,
+          summary: 'Markov action signal confidence MEDIUM',
+        },
+        polymarket: {
+          forecast_return: -0.0121,
+          quality_score: 83,
+          markets: [
+            { question: 'Will Bitcoin dip to $75,000 in April?', probability: 1 },
+          ],
+          summary: 'Polymarket Forecast: BTC | Horizon: 1 days | Grade: A (83/100)\nWill Bitcoin dip to $75,000 in April?: 100% YES',
+        },
+        whale: {
+          direction: 'neutral',
+          confidence: 0.35,
+          summary: 'On-chain/whale tool completed; treat as neutral unless the final synthesis has a stronger confirmed whale signal.',
+        },
+      });
+    });
+
+    it('still forces forecast arbitrator for leveraged trade asks when Markov abstains', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: { ticker: 'BTC', price: 75504.42 },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 1, trajectory: true, trajectoryDays: 1 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              abstainReasons: ['prediction confidence below selective threshold'],
+              forecastHint: {
+                markovReturn: 0.003,
+                confidenceScore: 0.18,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'BTC', horizon_days: 1, current_price: 75504.42 },
+          result: JSON.stringify({
+            data: {
+              forecastReturn: -0.0121,
+              result: 'Polymarket Forecast: BTC | Horizon: 1 days | Grade: A (83/100)\nWill Bitcoin dip to $75,000 in April?: 100% YES',
+            },
+          }),
+        },
+      ];
+
+      const query = 'Give me a BTC forecast over the next 24 hours with entry and stop for a 10x leveraged position direction';
+      const args = buildForcedForecastArbiterArgs(query, toolCalls);
+      expect(shouldForceForecastArbitrator(query, toolCalls)).toBe(true);
+      expect(args?.markov?.summary).toContain('Markov abstained');
+      expect(args?.polymarket?.forecast_return).toBe(-0.0121);
+      expect(args?.leverage).toBe(10);
+    });
+
+    it('preserves the stable Markov arbiter fields even when upstream diagnostics include future conformal details', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for BTC' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_BTC: {
+                ticker: 'BTC',
+                price: 76000,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                scenarios: {
+                  expectedReturn: 0.012,
+                  pUp: 0.61,
+                  buckets: [
+                    { label: 'Flat +/-3%', probability: 0.74 },
+                  ],
+                },
+                diagnostics: {
+                  predictionConfidence: 0.58,
+                  structuralBreakDetected: true,
+                  conformal: {
+                    applied: true,
+                    radius: 0.088,
+                    coverageEstimate: 0.61,
+                    mode: 'break',
+                  },
+                },
+              },
+              distribution: [
+                { price: 71500, probability: 0.95 },
+                { price: 79000, probability: 0.05 },
+              ],
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'BTC', horizon_days: 7, current_price: 76000, markov_return: 0.012 },
+          result: JSON.stringify({
+            data: {
+              forecastReturn: -0.009,
+              result: 'Polymarket Forecast: BTC | Horizon: 7 days | Grade: A- (81/100)\nWill BTC finish below $75,000 on May 7?: 59% YES',
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedForecastArbiterArgs(
+        'Give me a Polymarket and markov price forecast for BTC over the next 7 days with position direction',
+        toolCalls,
+      )).toMatchObject({
+        ticker: 'BTC',
+        horizon_days: 7,
+        current_price: 76000,
+        markov: {
+          forecast_return: 0.012,
+          p_up: 0.61,
+          confidence: 0.58,
+          structural_break: true,
+          flat_probability: 0.74,
+          ci_low: 71500,
+          ci_high: 79000,
+        },
+      });
+    });
+
+    it('builds mixed-evidence forecast arbitrator args without collapsing Markov and Polymarket inputs', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'ok',
+              canonical: {
+                scenarios: {
+                  expectedReturn: 0.032,
+                },
+                actionSignal: {
+                  recommendation: 'BUY',
+                  expectedReturn: 0.032,
+                },
+                diagnostics: {
+                  predictionConfidence: 0.62,
+                  markovWeight: 1,
+                },
+              },
+            },
+          }),
+        },
+        {
+          tool: 'polymarket_forecast',
+          args: { ticker: 'BTC', horizon_days: 7 },
+          result: JSON.stringify({
+            data: {
+              forecastReturn: -0.004,
+              result: 'Polymarket Forecast: BTC | Horizon: 7 days | Grade: B\nWill BTC finish below $75,000 on May 7?: 58% YES',
+            },
+          }),
+        },
+      ];
+
+      const prefix = buildForecastDisagreementPrefix(
+        'Give me a Polymarket and markov price forecast for BTC over the next 7 days',
+        toolCalls,
+      );
+
+      expect(shouldForceForecastArbitrator(
+        'Give me a Polymarket and markov price forecast for BTC over the next 7 days',
+        toolCalls,
+      )).toBe(true);
+      expect(buildForcedForecastArbiterArgs(
+        'Give me a Polymarket and markov price forecast for BTC over the next 7 days',
+        toolCalls,
+      )).toMatchObject({
+        ticker: 'BTC',
+        horizon_days: 7,
+        markov: {
+          forecast_return: 0.032,
+          confidence: 0.62,
+        },
+        polymarket: {
+          forecast_return: -0.004,
+          markets: [
+            {
+              question: 'Will BTC finish below $75,000 on May 7?',
+              probability: 0.58,
+            },
+          ],
+        },
+        whale: {
+          direction: 'neutral',
+          confidence: 0.35,
+          summary: 'No confirmed whale/on-chain signal available.',
+        },
+      });
+      expect(prefix).toContain('signals are mixed');
     });
 
     it('builds stable non-crypto forced args from resolved asset identity and explicit market-data query', () => {
@@ -992,6 +2958,18 @@ describe('Agent', () => {
       expect(shouldForceCryptoForecastTools(
         'Provide a BTC forecast for the next 7 days',
         [
+          { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: 'Error: rate limit' },
+          { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
+          { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, sentiment_score: 0.42 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
+          { tool: 'get_onchain_crypto', args: { ticker: 'BTC', metrics: ['market', 'sentiment'] }, result: JSON.stringify({ data: { ticker: 'BTC', metrics: { activeAddresses: 1200000 } } }) },
+          { tool: 'get_fixed_income', args: { series: ['treasury_yields', 'yield_curve'] }, result: JSON.stringify({ data: { treasury_yields: [] } }) },
+          { tool: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok', canonical: { actionSignal: {}, diagnostics: {} } } }) },
+        ],
+      )).toBe(false);
+
+      expect(shouldForceCryptoForecastTools(
+        'Provide a BTC forecast for the next 7 days',
+        [
           { tool: 'get_market_data', args: { query: 'Current crypto price snapshot for BTC' }, result: JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { price: 73300 } } }) },
           { tool: 'social_sentiment', args: { ticker: 'BTC', include_fear_greed: true, limit: 25 }, result: JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }) },
           { tool: 'polymarket_forecast', args: { ticker: 'BTC', horizon_days: 7, current_price: 73300, sentiment_score: 0.35 }, result: JSON.stringify({ data: { forecast: 74250 } }) },
@@ -1027,6 +3005,56 @@ describe('Agent', () => {
         'What is the probability distribution for BTC-USD in 7 days?',
         [],
       )).toBe(false);
+
+      expect(shouldForceCryptoForecastTools(
+        'Improve the BTC short-horizon forecast workflow.',
+        [],
+      )).toBe(false);
+    });
+
+    it('does not force markov or non-crypto forecast fallbacks for workflow-improvement queries', () => {
+      expect(shouldForceMarkovDistribution(
+        'Improve the BTC markov short-horizon forecast workflow.',
+        [],
+      )).toBe(false);
+
+      expect(shouldForceNonCryptoForecastFallback(
+        'Improve the NVDA short-horizon forecast workflow.',
+        [],
+      )).toBe(false);
+    });
+
+    it('accepts forecast-lab skill as the first planning tool for routed improvement queries', () => {
+      const hint = getForecastLabRoutingHint('Improve the BTC short-horizon forecast workflow.');
+      const response = new AIMessage({
+        content: '',
+        tool_calls: [
+          { id: 'skill-1', name: 'skill', args: { skill: 'forecast-lab' }, type: 'tool_call' as const },
+        ],
+        additional_kwargs: {},
+      });
+
+      expect(isAcceptedFirstPlanningToolCall(response, hint)).toBe(true);
+      expect(isAcceptedFirstPlanningToolCall(response, null)).toBe(false);
+    });
+
+    it('detects explicit skill requests by exact runtime skill name', () => {
+      expect(detectExplicitSkillRequest('Use the portfolio_risk skill to analyse AAPL risk')).toBe('portfolio_risk');
+      expect(detectExplicitSkillRequest('Use the peer-comparison skill for semis')).toBe('peer-comparison');
+      expect(detectExplicitSkillRequest('Use the DCF skill to value Apple')).toBeNull();
+    });
+
+    it('accepts an explicitly requested skill as the first planning tool', () => {
+      const response = new AIMessage({
+        content: '',
+        tool_calls: [
+          { id: 'skill-1', name: 'skill', args: { skill: 'portfolio_risk' }, type: 'tool_call' as const },
+        ],
+        additional_kwargs: {},
+      });
+
+      expect(isAcceptedFirstPlanningToolCall(response, null, 'portfolio_risk')).toBe(true);
+      expect(isAcceptedFirstPlanningToolCall(response, null, 'peer-comparison')).toBe(false);
     });
 
     it('preserves BTC short-horizon abstention once markov_distribution has abstained', () => {
@@ -1195,6 +3223,74 @@ describe('Agent', () => {
       )).toBe(false);
     });
 
+    it('does not preserve BTC short-horizon abstention for explicit combined Polymarket + Markov forecast prompts', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 14,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 5,
+                  anchorQuality: 'none',
+                },
+              },
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Give me a Polymarket and markov price forecast for BTC over the next 14 days',
+        toolCalls,
+      )).toBe(false);
+    });
+
+    it('does not preserve BTC short-horizon abstention once arbitrator evidence exists', () => {
+      const toolCalls = [
+        {
+          tool: 'markov_distribution',
+          args: { ticker: 'BTC-USD', horizon: 14, trajectory: true, trajectoryDays: 14 },
+          result: JSON.stringify({
+            data: {
+              _tool: 'markov_distribution',
+              status: 'abstain',
+              canonical: {
+                ticker: 'BTC-USD',
+                horizon: 14,
+                diagnostics: {
+                  trustedAnchors: 0,
+                  totalAnchors: 5,
+                  anchorQuality: 'none',
+                },
+              },
+            },
+          }),
+        },
+        {
+          tool: 'forecast_arbitrator',
+          args: { ticker: 'BTC', horizon_days: 14, current_price: 76135, leverage: 10 },
+          result: JSON.stringify({
+            data: {
+              verdict: 'NO_TRADE',
+              confidence: 'low',
+            },
+          }),
+        },
+      ];
+
+      expect(shouldPreserveAbstainingBtcShortHorizonForecast(
+        'Give me a Polymarket and markov price forecast for BTC over the next 14 days and provide the position direction',
+        toolCalls,
+      )).toBe(false);
+    });
+
     describe('isNonCryptoForecastQuery', () => {
       it('matches stock forecast queries', () => {
         expect(isNonCryptoForecastQuery('Provide an NVDA forecast for the next 7 days')).toBe(true);
@@ -1207,6 +3303,11 @@ describe('Agent', () => {
         expect(isNonCryptoForecastQuery('Gold forecast for the next 30 days')).toBe(true);
         expect(isNonCryptoForecastQuery('Will silver hit $30 by end of Q2?')).toBe(true);
         expect(isNonCryptoForecastQuery('Where will oil prices be in 2 weeks')).toBe(true);
+        expect(
+          isNonCryptoForecastQuery(
+            'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
+          ),
+        ).toBe(true);
       });
 
       it('matches ETF forecast queries', () => {
@@ -1238,6 +3339,7 @@ describe('Agent', () => {
       it('detects explicit polymarket_forecast requests by name', () => {
         expect(isExplicitPolymarketForecastRequest('Use polymarket_forecast for BTC over the next 2 days')).toBe(true);
         expect(isExplicitPolymarketForecastRequest('Run the polymarket forecast for NVDA next week')).toBe(true);
+        expect(isExplicitPolymarketForecastRequest('Give me a Polymarket and markov price forecast for BTC over the next 14 days')).toBe(true);
         expect(isExplicitPolymarketForecastRequest('Provide a BTC forecast for the next 7 days')).toBe(false);
       });
     });
@@ -1297,6 +3399,17 @@ describe('Agent', () => {
             { tool: 'markov_distribution', args: { ticker: 'NVDA', horizon: 7 }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
           ],
         )).toBe(true);
+      });
+
+      it('keeps combined GOLD requests on the non-crypto fallback path after Markov abstains across 1d/2d/3d/14d horizons', () => {
+        for (const days of [1, 2, 3, 14]) {
+          expect(shouldForceNonCryptoForecastFallback(
+            `Provide a GOLD price forecast based on markov chain and polymarket for the next ${days} day${days === 1 ? '' : 's'}`,
+            [
+              { tool: 'markov_distribution', args: { ticker: 'GLD', horizon: days }, result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }) },
+            ],
+          )).toBe(true);
+        }
       });
 
       it('returns true when forecast rerun is needed to add current_price after market data landed later', () => {
@@ -1415,7 +3528,7 @@ describe('Agent', () => {
         )).toBe(false);
       });
 
-      it('returns true when a matching polymarket_forecast call only recorded an error result', () => {
+      it('returns false when a matching polymarket_forecast call only recorded an error result', () => {
         expect(shouldForceNonCryptoForecastFallback(
           'Provide an NVDA forecast for the next 7 days',
           [
@@ -1436,7 +3549,7 @@ describe('Agent', () => {
             { tool: 'get_market_data', args: { query: 'NVDA current price' }, result: JSON.stringify({ data: { get_stock_price_NVDA: { price: 921.13 } } }) },
             { tool: 'polymarket_forecast', args: { ticker: 'NVDA', horizon_days: 7, current_price: 921.13, markov_return: 0.009 }, result: 'Error: upstream failed' },
           ],
-        )).toBe(true);
+        )).toBe(false);
       });
 
       it('returns true when a prior forecast used the wrong current_price value', () => {

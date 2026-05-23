@@ -1,21 +1,6 @@
-import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, spyOn, beforeEach, afterEach } from 'bun:test';
 
-// Module-level mock state for WatchlistController
-let mockWatchlistEntries: Array<{ ticker: string }> = [];
-let mockWatchlistShouldThrow = false;
-
-mock.module('../../controllers/watchlist-controller.js', () => ({
-  WatchlistController: class {
-    list() {
-      if (mockWatchlistShouldThrow) {
-        throw new Error('Watchlist read failed');
-      }
-      return mockWatchlistEntries;
-    }
-  },
-}));
-
-const { portfolioRiskTool } = await import('./portfolio-risk.js');
+const { createPortfolioRiskTool, portfolioRiskTool } = await import('./portfolio-risk.js');
 const { api } = await import('./api.js');
 
 /** Generate N monotonically increasing close prices */
@@ -27,8 +12,6 @@ let apiSpy: ReturnType<typeof spyOn<typeof api, 'get'>>;
 let originalApiKey: string | undefined;
 
 beforeEach(() => {
-  mockWatchlistEntries = [];
-  mockWatchlistShouldThrow = false;
   originalApiKey = process.env.FINANCIAL_DATASETS_API_KEY;
   process.env.FINANCIAL_DATASETS_API_KEY = 'test-key';
   apiSpy = spyOn(api, 'get').mockResolvedValue({
@@ -62,27 +45,38 @@ describe('portfolioRiskTool', () => {
     expect(parsed.data.error).toBeUndefined();
   });
 
-  test('reads tickers from watchlist when none provided', async () => {
-    mockWatchlistEntries = [{ ticker: 'AAPL' }, { ticker: 'TSLA' }];
-    const result = await portfolioRiskTool.invoke({});
+  test('uses watchlist entries supplied by caller when tickers are omitted', async () => {
+    const result = await portfolioRiskTool.invoke({
+      watchlist_entries: [
+        { ticker: 'AAPL', addedAt: '2026-01-01' },
+        { ticker: 'TSLA', shares: 2, costBasis: 200, addedAt: '2026-01-01' },
+      ],
+    });
     const parsed = JSON.parse(result);
     expect(parsed.data).toBeDefined();
     expect(parsed.data.error).toBeUndefined();
+    expect(apiSpy).toHaveBeenCalledTimes(2);
   });
 
-  test('returns error when no tickers provided and watchlist is empty', async () => {
-    mockWatchlistEntries = [];
+  test('uses controller-supplied watchlist entries when args omit tickers', async () => {
+    const injectedTool = createPortfolioRiskTool({
+      watchlistEntries: [
+        { ticker: 'AAPL', addedAt: '2026-01-01' },
+        { ticker: 'MSFT', addedAt: '2026-01-01' },
+      ],
+    });
+
+    const result = await injectedTool.invoke({});
+    const parsed = JSON.parse(result);
+    expect(parsed.data.error).toBeUndefined();
+    expect(apiSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('returns error when neither tickers nor watchlist entries are provided', async () => {
     const result = await portfolioRiskTool.invoke({});
     const parsed = JSON.parse(result);
     expect(parsed.data.error).toBeDefined();
-  });
-
-  test('gracefully handles watchlist read failure and falls through to empty list', async () => {
-    mockWatchlistShouldThrow = true;
-    const result = await portfolioRiskTool.invoke({});
-    const parsed = JSON.parse(result);
-    // Falls through to empty-list error (watchlist unreadable = treated as empty)
-    expect(parsed.data.error).toBeDefined();
+    expect(parsed.data.error).toContain('No tickers provided');
   });
 
   test('returns warning for ticker with insufficient price history', async () => {

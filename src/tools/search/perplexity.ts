@@ -1,7 +1,8 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
-import { logger } from '@/utils';
+import { getEnv } from '../../utils/env.js';
+import { logger } from '../../utils/logger.js';
 
 const PERPLEXITY_API_URL = 'https://api.perplexity.ai/chat/completions';
 const SONAR_MODEL = 'sonar';
@@ -22,7 +23,7 @@ interface PerplexityCompletionResponse {
 }
 
 async function callPerplexity(query: string): Promise<PerplexityCompletionResponse> {
-  const apiKey = process.env.PERPLEXITY_API_KEY;
+  const apiKey = getEnv('PERPLEXITY_API_KEY');
   if (!apiKey) {
     throw new Error('[Perplexity API] PERPLEXITY_API_KEY is not set');
   }
@@ -48,12 +49,13 @@ async function callPerplexity(query: string): Promise<PerplexityCompletionRespon
   return response.json() as Promise<PerplexityCompletionResponse>;
 }
 
+/** Searches the web through Perplexity. */
 export const perplexitySearch = new DynamicStructuredTool({
   name: 'web_search',
   description:
     'Search the web for current information on any topic. Returns a grounded, citation-backed answer with source URLs.',
   schema: z.object({
-    query: z.string().describe('The search query to look up on the web'),
+    query: z.string().max(10_000).describe('The search query to look up on the web'),
   }),
   func: async (input) => {
     try {

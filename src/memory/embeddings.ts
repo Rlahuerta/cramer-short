@@ -2,6 +2,7 @@ import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
 import { OllamaEmbeddings } from '@langchain/ollama';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import type { EmbeddingProviderId, MemoryEmbeddingClient } from './types.js';
+import { getEnv, getEnvOrDefault, hasEnv } from '../utils/env.js';
 
 const DEFAULT_OPENAI_MODEL = 'text-embedding-3-small';
 const DEFAULT_GEMINI_MODEL = 'gemini-embedding-001';
@@ -10,11 +11,16 @@ const EMBEDDING_BATCH_SIZE = 64;
 
 type ResolvedProvider = Exclude<EmbeddingProviderId, 'auto' | 'none'>;
 
+type EmbeddingsClientSurface = {
+  embedDocuments?: (texts: string[]) => Promise<number[][]>;
+  embedQuery?: (text: string) => Promise<number[]>;
+};
+
 function resolveProvider(preferred: EmbeddingProviderId): ResolvedProvider | null {
-  if (preferred === 'openai' && process.env.OPENAI_API_KEY) {
+  if (preferred === 'openai' && hasEnv('OPENAI_API_KEY')) {
     return 'openai';
   }
-  if (preferred === 'gemini' && process.env.GOOGLE_API_KEY) {
+  if (preferred === 'gemini' && hasEnv('GOOGLE_API_KEY')) {
     return 'gemini';
   }
   if (preferred === 'ollama') {
@@ -22,13 +28,13 @@ function resolveProvider(preferred: EmbeddingProviderId): ResolvedProvider | nul
   }
 
   if (preferred === 'auto') {
-    if (process.env.OPENAI_API_KEY) {
+    if (hasEnv('OPENAI_API_KEY')) {
       return 'openai';
     }
-    if (process.env.GOOGLE_API_KEY) {
+    if (hasEnv('GOOGLE_API_KEY')) {
       return 'gemini';
     }
-    if (process.env.OLLAMA_BASE_URL) {
+    if (hasEnv('OLLAMA_BASE_URL')) {
       return 'ollama';
     }
   }
@@ -49,6 +55,19 @@ async function embedInBatches(
   return vectors;
 }
 
+async function embedBatchWithClient(
+  embeddings: EmbeddingsClientSurface,
+  batch: string[],
+): Promise<number[][]> {
+  if (typeof embeddings.embedDocuments === 'function') {
+    return embeddings.embedDocuments(batch);
+  }
+  if (typeof embeddings.embedQuery === 'function') {
+    return Promise.all(batch.map((text) => embeddings.embedQuery!(text)));
+  }
+  throw new Error('Embeddings client does not expose embedDocuments() or embedQuery().');
+}
+
 export function createEmbeddingClient(params: {
   provider: EmbeddingProviderId;
   model?: string;
@@ -61,41 +80,41 @@ export function createEmbeddingClient(params: {
   if (resolved === 'openai') {
     const model = params.model || DEFAULT_OPENAI_MODEL;
     const embeddings = new OpenAIEmbeddings({
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey: getEnv('OPENAI_API_KEY'),
       model,
     });
     return {
       provider: 'openai',
       model,
       embed: async (texts: string[]) =>
-        embedInBatches(texts, async (batch) => embeddings.embedDocuments(batch)),
+        embedInBatches(texts, async (batch) => embedBatchWithClient(embeddings, batch)),
     };
   }
 
   if (resolved === 'gemini') {
     const model = params.model || DEFAULT_GEMINI_MODEL;
     const embeddings = new GoogleGenerativeAIEmbeddings({
-      apiKey: process.env.GOOGLE_API_KEY,
+      apiKey: getEnv('GOOGLE_API_KEY'),
       model,
     });
     return {
       provider: 'gemini',
       model,
       embed: async (texts: string[]) =>
-        embedInBatches(texts, async (batch) => embeddings.embedDocuments(batch)),
+        embedInBatches(texts, async (batch) => embedBatchWithClient(embeddings, batch)),
     };
   }
 
   const model = params.model || DEFAULT_OLLAMA_MODEL;
   const embeddings = new OllamaEmbeddings({
-    baseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
+    baseUrl: getEnvOrDefault('OLLAMA_BASE_URL', 'http://127.0.0.1:11434'),
     model,
   });
   return {
     provider: 'ollama',
     model,
     embed: async (texts: string[]) =>
-      embedInBatches(texts, async (batch) => embeddings.embedDocuments(batch)),
+      embedInBatches(texts, async (batch) => embedBatchWithClient(embeddings, batch)),
   };
 }
 

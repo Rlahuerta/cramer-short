@@ -1,6 +1,8 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
+import { getEnv } from '../../utils/env.js';
 
 const X_API_BASE = 'https://api.x.com/2';
 const RATE_DELAY_MS = 350; // Delay between pagination requests to reduce rate-limit risk
@@ -34,8 +36,13 @@ interface RawXResponse {
   errors?: unknown[];
 }
 
+interface RawXUserResponse {
+  data?: Record<string, unknown>;
+  errors?: unknown[];
+}
+
 function getBearerToken(): string {
-  const token = process.env.X_BEARER_TOKEN;
+  const token = getEnv('X_BEARER_TOKEN');
   if (!token) throw new Error('X_BEARER_TOKEN is not set');
   return token;
 }
@@ -44,7 +51,7 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function xApiGet(url: string): Promise<RawXResponse> {
+async function xApiGet<T = RawXResponse>(url: string): Promise<T> {
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${getBearerToken()}` },
   });
@@ -62,7 +69,7 @@ async function xApiGet(url: string): Promise<RawXResponse> {
     throw new Error(`X API ${res.status}: ${body.slice(0, 300)}`);
   }
 
-  return res.json() as Promise<RawXResponse>;
+  return res.json() as Promise<T>;
 }
 
 function parseTweets(raw: RawXResponse): XTweet[] {
@@ -109,7 +116,7 @@ function parseSince(since: string): string | null {
     const ms =
       unit === 'm' ? num * 60_000 :
       unit === 'h' ? num * 3_600_000 :
-      num * 86_400_000;
+      num * MS_PER_DAY;
     return new Date(Date.now() - ms).toISOString();
   }
   if (since.includes('T') || /^\d{4}-/.test(since)) {
@@ -171,8 +178,8 @@ async function getProfile(
   const userUrl =
     `${X_API_BASE}/users/by/username/${username}` +
     `?user.fields=public_metrics,description,created_at`;
-  const userData = await xApiGet(userUrl as unknown as string);
-  const user = (userData as unknown as { data: Record<string, unknown> }).data;
+  const userData = await xApiGet<RawXUserResponse>(userUrl);
+  const user = userData.data;
   if (!user) throw new Error(`User @${username} not found`);
 
   await sleep(RATE_DELAY_MS);
@@ -201,6 +208,7 @@ const schema = z.object({
     ),
   query: z
     .string()
+    .max(10_000)
     .optional()
     .describe(
       'For search: the search query (supports X operators like from:, -is:retweet, OR, etc.). ' +
@@ -208,6 +216,7 @@ const schema = z.object({
     ),
   username: z
     .string()
+    .max(128)
     .optional()
     .describe('For profile: the X/Twitter username (without @)'),
   sort: z
@@ -217,6 +226,7 @@ const schema = z.object({
     .describe('Sort order for results (default: likes)'),
   since: z
     .string()
+    .max(64)
     .optional()
     .describe('Time filter: "1h", "3h", "12h", "1d", "7d" or ISO 8601 timestamp'),
   min_likes: z
@@ -242,6 +252,9 @@ const schema = z.object({
     .describe('Number of pages to fetch for search (1 page ≈ 100 tweets, default: 1)'),
 });
 
+/**
+ * Search X/Twitter via the official API for recent tweets, profiles, or threads.
+ */
 export const xSearchTool = new DynamicStructuredTool({
   name: 'x_search',
   description:

@@ -3,10 +3,19 @@
  * Uses the injectable _getManager parameter to avoid module-level mock contamination.
  */
 
-import { mock, describe, it, expect, beforeEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { mock, describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 // Import from auto-store-core.ts — deliberately separate from auto-store.ts so that
 // mock.module('../memory/auto-store.js', stubs) in controller tests never contaminates here.
 import { seedWatchlistEntriesCore as seedWatchlistEntries, autoStoreFromRunCore as autoStoreFromRun } from './auto-store-core.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // Shared mock setup
@@ -185,7 +194,7 @@ describe('autoStoreFromRun — storage', () => {
   });
 
   it('skips tickers that already have a recent record', async () => {
-    const recentTime = Date.now() - 60 * 60 * 1000;
+    const recentTime = FIXED_TEST_NOW_MS - 60 * 60 * 1000;
     mockRecallByTicker.mockImplementation(() => [{ updatedAt: recentTime }]);
     await autoStoreFromRun(
       'AAPL price check',
@@ -197,7 +206,7 @@ describe('autoStoreFromRun — storage', () => {
   });
 
   it('stores when existing record is older than 24 hours', async () => {
-    const oldTime = Date.now() - 25 * 60 * 60 * 1000;
+    const oldTime = FIXED_TEST_NOW_MS - 25 * 60 * 60 * 1000;
     mockRecallByTicker.mockImplementation(() => [{ updatedAt: oldTime }]);
     await autoStoreFromRun(
       'AAPL deep dive',

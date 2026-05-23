@@ -112,6 +112,26 @@ Add to crontab (`crontab -e`) to run every weekday at 7 AM:
 
 ---
 
+## 🏷 Replay Label Pipeline
+
+The repo now has a dedicated replay-label operations flow for forecast-arbitrator replay data:
+
+- `bun start replay-label run` stages labeled replay bundles plus machine-readable reports
+- `bun start replay-label promote` explicitly promotes reviewed staged artifacts into the labeled cache
+- `bun start replay-label readiness` produces a read-only `eligible`/`hold` decision from the benchmark artifact
+- `kind: "replay_label"` schedule jobs let you run the same flow headlessly from `~/.cramer-short/schedules.json`
+
+This workflow is intentionally conservative:
+
+- raw replay capture is not rewritten in place,
+- promotion is explicit,
+- readiness does not auto-enable fusion,
+- and schedule-managed paths stay under `~/.cramer-short` or `<cwd>/.cramer-short`.
+
+See **`docs/replay-label-guide.md`** for the full implementation map, artifact flow, examples, and operator workflow.
+
+---
+
 ## 🔗 Full-Analysis Meta-Skill
 
 A flagship meta-skill that chains four skills into one comprehensive report:
@@ -180,7 +200,7 @@ conclusions rather than confidently summarising a 30%-loaded page.
 ## 🔢 Configurable Max Iterations
 
 Default max iterations raised from 15 → **25** for better multi-skill workflow
-coverage. For deep compound queries, use the `--deep` flag (50 iterations):
+coverage. For deep compound queries, use the `--deep` flag (40 iterations):
 
 ```
 bun start --deep
@@ -686,7 +706,7 @@ Supports BTC, ETH, SOL, BNB, XRP, ADA, DOGE, AVAX, MATIC, LINK, and any CoinGeck
 
 ---
 
-## 📈 Markov Price Distribution (Feature 21)
+## 📈 Markov Price Distribution (Feature 26)
 
 Generate a **full probability distribution** for any stock, ETF, or crypto at a specified horizon (1–90 trading days), combining Polymarket real-money odds with historical Markov regime transitions.
 
@@ -746,63 +766,6 @@ The model is grounded in peer-reviewed research:
 - Welton & Ades (2005, *Med Decis Making*): Dirichlet priors for transition matrices
 - Reichenbach & Walther (2025): YES-bias in Polymarket (124M trades)
 - Davidovic & McCleary (2025, *JRFM*): Sentiment alpha calibration
-
----
-
-## 📈 Markov Price Distribution (Feature 21)
-
-Generate a **full probability distribution** for any stock, ETF, or crypto price at a user-specified horizon — combining real-money Polymarket crowd odds with a Markov regime model trained on 60–90 days of historical prices.
-
-```
-What is the probability distribution for NVDA in 30 trading days?
-```
-
-```
-Use the probability_assessment skill. Show me a Markov-enhanced price distribution for BTC over 21 days with 90% confidence intervals.
-```
-
-```
---deep What's the probability that SPY exceeds $600 in 45 days? Use Polymarket + Markov analysis.
-```
-
-**How it works:**
-
-| Step | What happens |
-|------|-------------|
-| Regime classification | Each historical day is labelled: `bull`, `bear`, `sideways`, `high_vol_bull`, `high_vol_bear` |
-| Transition matrix | 5×5 matrix estimated from daily state transitions (Dirichlet α=0.1 smoothing) |
-| n-step projection | Matrix exponentiation to the forecast horizon |
-| Log-normal survival | `P(price > X) = 1 − Φ((ln(X/S₀) − μₙ) / σₙ)` |
-| Polymarket blending | Bias-corrected Polymarket anchors (×0.95 YES-discount) blended via mixing-time weight |
-| Monte Carlo CI | 1 000 walks → 5th/95th percentile = 90% confidence band |
-
-**Reliability features (Tier 1):**
-
-| Feature | Behaviour |
-|---------|-----------|
-| Sparse state guard | States with <5 observations flagged in metadata; transitions prior-dominated |
-| Structural break detection | Frobenius divergence between first/second half windows; CI widened ×1.5 on break; falls back to default matrix |
-| Cross-platform validation | Optional Kalshi anchors averaged with Polymarket; divergence >5pp emits a warning |
-
-**Output example:**
-```
-📊 Markov Distribution: NVDA | Horizon: 21d
-Current: $875.40 | Regime: bull
-Mixing weight: 67% Markov / 33% Anchors
-⚠️ Sparse states (<5 obs): high_vol_bear
-
-Price         P(>price)    90% CI                 Source
-────────────────────────────────────────────────────────────
-$   860.36    58.1%   [51.9%–64.0%]   polymarket
-$   873.29    48.2%   [41.6%–54.5%]   blend
-$   886.40    38.4%   [31.8%–44.7%]   markov
-```
-
-**Academic grounding:** Nguyen (2018, IJFS) 4-state HMM; Mettle et al. (2014) Markov methodology; Reichenbach & Walther (2025) YES-bias correction; Davidovic & McCleary (2025) sentiment α=0.07; Welton & Ades (2005) Dirichlet priors.
-
-**No additional API keys required.** Uses `get_market_data` (existing) for historical prices. Polymarket anchors come from `polymarket_search` (existing). Kalshi anchors are optional and passed directly.
-
-**Tool name:** `markov_distribution` — registered in the tool registry and automatically available to the agent.
 
 ---
 

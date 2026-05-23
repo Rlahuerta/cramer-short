@@ -9,6 +9,10 @@ export interface PolymarketSnapshotRecord {
   volume24h: number;
   endDate: string;
   capturedAt: string;
+  /** P2c — optional best bid (YES side), [0, 1]. */
+  bid?: number;
+  /** P2c — optional best ask (YES side), [0, 1]. */
+  ask?: number;
 }
 
 export const DEFAULT_POLYMARKET_SNAPSHOTS_PATH = cramerShortPath('polymarket-snapshots.jsonl');
@@ -44,6 +48,13 @@ export function parseSnapshotLine(rawLine: string): PolymarketSnapshotRecord | n
     if (endDate !== '' && !Number.isFinite(Date.parse(endDate))) return null;
     if (typeof capturedAt !== 'string' || !Number.isFinite(Date.parse(capturedAt))) return null;
 
+    // P2c — optional bid/ask fields. Out-of-range values are silently dropped
+    // (we keep the record but omit the field) so legacy snapshots stay valid.
+    const bidRaw = parsed['bid'];
+    const askRaw = parsed['ask'];
+    const bid = isFiniteNumber(bidRaw) && bidRaw >= 0 && bidRaw <= 1 ? bidRaw : undefined;
+    const ask = isFiniteNumber(askRaw) && askRaw >= 0 && askRaw <= 1 ? askRaw : undefined;
+
     return {
       marketId,
       question,
@@ -51,6 +62,8 @@ export function parseSnapshotLine(rawLine: string): PolymarketSnapshotRecord | n
       volume24h,
       endDate,
       capturedAt,
+      ...(bid !== undefined ? { bid } : {}),
+      ...(ask !== undefined ? { ask } : {}),
     };
   } catch {
     return null;
@@ -142,10 +155,21 @@ export function createSnapshotRecord(
     probability: number;
     volume24h: number;
     endDate?: string | null;
+    bid?: number;
+    ask?: number;
   },
   capturedAt: string = new Date().toISOString(),
 ): PolymarketSnapshotRecord | null {
   if (!market.marketId) return null;
+
+  const bid =
+    typeof market.bid === 'number' && Number.isFinite(market.bid) && market.bid >= 0 && market.bid <= 1
+      ? market.bid
+      : undefined;
+  const ask =
+    typeof market.ask === 'number' && Number.isFinite(market.ask) && market.ask >= 0 && market.ask <= 1
+      ? market.ask
+      : undefined;
 
   return {
     marketId: market.marketId,
@@ -154,5 +178,56 @@ export function createSnapshotRecord(
     volume24h: market.volume24h,
     endDate: market.endDate ?? '',
     capturedAt,
+    ...(bid !== undefined ? { bid } : {}),
+    ...(ask !== undefined ? { ask } : {}),
   };
+}
+
+/**
+ * P2c — Build an in-memory index `marketId → sorted records (oldest→newest)`.
+ *
+ * Replaces the previous O(n·markets) linear scan in `findSnapshotInWindow`
+ * with O(log n) lookups when callers materialise the index once.
+ *
+ * Records with unparseable `capturedAt` are skipped.
+ */
+export function buildSnapshotIndex(
+  records: PolymarketSnapshotRecord[],
+): Map<string, PolymarketSnapshotRecord[]> {
+  const index = new Map<string, PolymarketSnapshotRecord[]>();
+  for (const r of records) {
+    const ms = Date.parse(r.capturedAt);
+    if (!Number.isFinite(ms)) continue;
+    const list = index.get(r.marketId);
+    if (list) list.push(r);
+    else index.set(r.marketId, [r]);
+  }
+  for (const list of index.values()) {
+    list.sort((a, b) => Date.parse(a.capturedAt) - Date.parse(b.capturedAt));
+  }
+  return index;
+}
+
+/**
+ * P2c — Keep only the `n` most-recent snapshots per `marketId`.
+ *
+ * Used to compact `polymarket-snapshots.jsonl` so the file does not grow
+ * unboundedly. Default `n = 3` (sufficient for 6h + 24h + 48h window probes).
+ *
+ * Records with unparseable timestamps are dropped. Output is unsorted across
+ * marketIds (callers can sort if they need a stable on-disk format).
+ */
+export function pruneSnapshots(
+  records: PolymarketSnapshotRecord[],
+  n: number = 3,
+): PolymarketSnapshotRecord[] {
+  if (records.length === 0 || n <= 0) return [];
+  const index = buildSnapshotIndex(records);
+  const out: PolymarketSnapshotRecord[] = [];
+  for (const list of index.values()) {
+    // list is already sorted oldest→newest; take the last `n`.
+    const start = Math.max(0, list.length - n);
+    for (let i = start; i < list.length; i++) out.push(list[i]);
+  }
+  return out;
 }

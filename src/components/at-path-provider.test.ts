@@ -1,8 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { extractAtPrefix, getAtFileSuggestions, AtPathAutocompleteProvider } from './at-path-provider.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 // ---------------------------------------------------------------------------
 // extractAtPrefix
@@ -45,7 +54,7 @@ describe('getAtFileSuggestions', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-test-${Date.now()}`);
+    tmpDir = join(tmpdir(), `dexter-test-${FIXED_TEST_NOW_MS}`);
     mkdirSync(tmpDir, { recursive: true });
     mkdirSync(join(tmpDir, 'src'));
     mkdirSync(join(tmpDir, 'docs'));
@@ -125,7 +134,7 @@ describe('AtPathAutocompleteProvider', () => {
   let provider: AtPathAutocompleteProvider;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-test-${Date.now()}`);
+    tmpDir = join(tmpdir(), `dexter-test-${FIXED_TEST_NOW_MS}`);
     mkdirSync(tmpDir, { recursive: true });
     mkdirSync(join(tmpDir, 'src'));
     writeFileSync(join(tmpDir, 'README.md'), '');

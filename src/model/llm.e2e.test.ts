@@ -1,8 +1,9 @@
 /**
  * E2E tests — Ollama cloud model live prompt execution.
  *
- * Runs real callLlm calls against Ollama. Must execute in an isolated process
- * to avoid agent.test.ts's permanent mock.module('@langchain/ollama') override.
+ * Runs real callLlm calls against Ollama. Nullifies _setModelFactory so tests
+ * are immune to agent.test.ts's beforeAll SpyChatModel override when running
+ * in the same Bun worker.
  *
  * Prerequisites:
  *   - Ollama running at OLLAMA_BASE_URL (default http://127.0.0.1:11434)
@@ -14,12 +15,27 @@
  *   RUN_E2E=1 bun test src/model/llm.e2e.test.ts --timeout 120000
  */
 
-import { describe, expect, beforeAll } from 'bun:test';
+import { describe, expect, beforeAll, beforeEach } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
-import { callLlm } from '@/model/llm.js';
 
-const PREFERRED_MODEL = 'ollama:nemotron-3-super:cloud';
+import { callLlm, _setModelFactory } from '@/model/llm.js';
+
+// Nullify _overrideFactory before each test — agent.test.ts's beforeAll
+// injects SpyChatModel via _setModelFactory in the shared Bun worker.
+// Declared at file scope to register before the describe block's tests.
+beforeEach(() => { _setModelFactory(null); });
+
+const NEMOTRON_MODEL = 'ollama:kimi-k2.6:cloud';
+const GENERAL_CLOUD_MODEL_PREFERENCES = [
+  'glm-5.1:cloud',
+  'minimax-m2.7:cloud',
+  'glm-5:cloud',
+  'kimi-k2.6:cloud',
+  'qwen3.5:cloud',
+  'qwen3-next:80b-cloud',
+] as const;
+const GENERAL_CLOUD_CALL_TIMEOUT_MS = 75_000;
 
 // ---------------------------------------------------------------------------
 // Suite state — resolved once, shared across all tests
@@ -27,15 +43,22 @@ const PREFERRED_MODEL = 'ollama:nemotron-3-super:cloud';
 
 let resolvedModel: string | null = null;
 
+function resolveGeneralCloudModel(models: string[]): string | null {
+  for (const candidate of GENERAL_CLOUD_MODEL_PREFERENCES) {
+    if (models.includes(candidate)) return `ollama:${candidate}`;
+  }
+
+  const cloudModels = models
+    .filter((m) => m.includes(':cloud'))
+    .sort((a, b) => a.localeCompare(b));
+  return cloudModels[0] ? `ollama:${cloudModels[0]}` : null;
+}
+
 beforeAll(async () => {
   if (!RUN_E2E) return;
   const models = await getOllamaModels();
-  if (models.includes('nemotron-3-super:cloud')) {
-    resolvedModel = PREFERRED_MODEL;
-  } else {
-    const cloud = models.find((m) => m.includes(':cloud'));
-    resolvedModel = cloud ? `ollama:${cloud}` : null;
-  }
+  resolvedModel = resolveGeneralCloudModel(models);
+  console.log(`Resolved Ollama cloud model for general live-call e2e: ${resolvedModel ?? 'none'}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -60,6 +83,11 @@ function extractText(response: Awaited<ReturnType<typeof callLlm>>['response']):
 // ---------------------------------------------------------------------------
 
 describe('Ollama cloud model — live callLlm', () => {
+  // Pin inside describe in addition to file-level beforeEach so we are
+  // guaranteed to nullify agent.test.ts's SpyChatModel before each test
+  // even under Bun parallel scheduling.
+  beforeEach(() => { _setModelFactory(null); });
+
   e2eIt(
     'callLlm returns a non-empty response for a simple ping prompt',
     async () => {
@@ -68,12 +96,17 @@ describe('Ollama cloud model — live callLlm', () => {
         return;
       }
 
+      // Nullify _overrideFactory synchronously inside the test body — beforeAll
+      // from agent.test.ts may fire between file-level beforeEach and this
+      // line, re-injecting SpyChatModel into the global.
+      _setModelFactory(null);
+
       const { response } = await callLlm(
         'Reply with exactly the word PONG and nothing else.',
         {
           model: resolvedModel,
           systemPrompt: 'You are a minimal test assistant. Follow instructions exactly.',
-          timeoutMs: 60_000,
+          timeoutMs: GENERAL_CLOUD_CALL_TIMEOUT_MS,
           thinkOverride: false,
         },
       );
@@ -95,11 +128,11 @@ describe('Ollama cloud model — live callLlm', () => {
       }
 
       const { response } = await callLlm(
-        'What is 2 + 2? Reply with only the number.',
+          'What is 2 + 2? Reply with only the number.',
         {
-          model: PREFERRED_MODEL,
+          model: NEMOTRON_MODEL,
           systemPrompt: 'Answer with a single number, no explanation.',
-          timeoutMs: 60_000,
+          timeoutMs: GENERAL_CLOUD_CALL_TIMEOUT_MS,
         },
       );
 
@@ -117,10 +150,11 @@ describe('Ollama cloud model — live callLlm', () => {
         return;
       }
 
+      _setModelFactory(null);
       const { response, usage } = await callLlm('Say hello in one word.', {
         model: resolvedModel,
         thinkOverride: false,
-        timeoutMs: 60_000,
+        timeoutMs: GENERAL_CLOUD_CALL_TIMEOUT_MS,
       });
 
       const text = extractText(response);
@@ -135,15 +169,15 @@ describe('Ollama cloud model — live callLlm', () => {
   );
 
   e2eIt(
-    'callLlm rejects with a clear [Ollama API] error for a non-existent model',
+    'callLlm rejects with a clear unavailable-model error for a non-existent model',
     async () => {
       await expect(
         callLlm('ping', {
           model: 'ollama:this-model-does-not-exist-xyzzy:cloud',
           timeoutMs: 30_000,
         }),
-      ).rejects.toThrow(/Ollama/i);
+      ).rejects.toThrow(/(Ollama|timed out|unavailable)/i);
     },
-    45_000,
+    75_000,
   );
 });

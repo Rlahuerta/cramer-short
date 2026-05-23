@@ -83,16 +83,35 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running = false;
+  const abortController = new AbortController();
   const suppressionState: SuppressionState = {
     lastMessageText: null,
     lastMessageAt: null,
   };
 
+  function createAbortError(message: string = 'Heartbeat runner aborted'): Error {
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
+  }
+
+  function isAbortError(error: unknown): boolean {
+    return error instanceof Error && error.name === 'AbortError';
+  }
+
+  function throwIfAborted(signal: AbortSignal): void {
+    if (signal.aborted) {
+      throw createAbortError();
+    }
+  }
+
   async function tick(): Promise<void> {
-    if (stopped || running) return;
+    const signal = abortController.signal;
+    if (stopped || running || signal.aborted) return;
     running = true;
 
     try {
+      throwIfAborted(signal);
       const cfg = loadGatewayConfig(params.configPath);
       const heartbeatCfg = cfg.gateway.heartbeat;
 
@@ -125,7 +144,7 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
       }
 
       // Build heartbeat query
-      const query = await buildHeartbeatQuery();
+      const query = await buildHeartbeatQuery(signal);
       if (query === null) {
         debugLog('[heartbeat] HEARTBEAT.md exists but is empty, skipping');
         return;
@@ -143,8 +162,10 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
         maxIterations: heartbeatCfg.maxIterations,
         isHeartbeat: true,
         channel: 'whatsapp',
+        signal,
       });
       debugLog(`[heartbeat] agent answer length=${answer.length}`);
+      throwIfAborted(signal);
 
       // Evaluate suppression
       const result = evaluateSuppression(answer, suppressionState);
@@ -156,6 +177,7 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
           to: session.lastTo,
           body: cleaned,
           accountId: session.lastAccountId,
+          signal,
         });
         debugLog(`[heartbeat] sent message to ${session.lastTo}`);
 
@@ -164,20 +186,32 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
         suppressionState.lastMessageAt = Date.now();
       }
     } catch (err) {
+      if (isAbortError(err)) {
+        debugLog('[heartbeat] aborted');
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       debugLog(`[heartbeat] ERROR: ${msg}`);
     } finally {
       running = false;
-      scheduleNext();
+      if (!signal.aborted) {
+        scheduleNext();
+      }
     }
   }
 
   function scheduleNext(): void {
-    if (stopped) return;
+    if (stopped || abortController.signal.aborted) return;
 
     // Re-read config for interval (may have changed)
-    const cfg = loadGatewayConfig(params.configPath);
-    const intervalMs = (cfg.gateway.heartbeat?.intervalMinutes ?? 30) * 60 * 1000;
+    let intervalMs = 30 * 60 * 1000;
+    try {
+      const cfg = loadGatewayConfig(params.configPath);
+      intervalMs = (cfg.gateway.heartbeat?.intervalMinutes ?? 30) * 60 * 1000;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      debugLog(`[heartbeat] failed to reload config for next interval: ${message}`);
+    }
 
     timer = setTimeout(() => void tick(), intervalMs);
     timer.unref(); // Don't block shutdown
@@ -190,6 +224,7 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
   return {
     stop() {
       stopped = true;
+      abortController.abort();
       if (timer) {
         clearTimeout(timer);
         timer = undefined;

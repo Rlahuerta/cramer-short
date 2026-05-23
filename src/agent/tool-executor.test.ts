@@ -8,16 +8,24 @@
  * - Uncacheable tools (browser, skill, write_file, etc.) are never cached.
  * - Cache key is stable regardless of arg key ordering.
  */
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+
+const actualPaths = await import('../utils/paths.js');
 
 // Keep paths relative so chdir isolation works. Override any absolute-path
 // mock that parallel worker (agent.test.ts) might have registered.
 mock.module('../utils/paths.js', () => ({
+  ...actualPaths,
   cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
   getCramerShortDir: mock(() => '.dexter'),
+}));
+
+mock.module('../utils/cross-session-cache.js', () => ({
+  loadCacheFromDisk: async () => new Map<string, string>(),
+  saveCacheToDisk: () => {},
 }));
 
 const { AgentToolExecutor } = await import('./tool-executor.js');
@@ -28,6 +36,14 @@ import { AIMessage } from '@langchain/core/messages';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
+
 // ---------------------------------------------------------------------------
 // Isolation: each test gets its own tmp dir so Scratchpad JSONL files don't
 // accumulate in the project tree.
@@ -36,9 +52,9 @@ let tmpDir: string;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `tool-exec-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
+  tmpDir = join(originalCwd, '.cramer-short', 'test-runs', `tool-exec-test-${nextTestId('path')}`);
+  mkdirSync(tmpDir, { recursive: true });
   process.chdir(tmpDir);
 });
 
@@ -262,6 +278,100 @@ describe('AgentToolExecutor — uncacheable tools bypass cache', () => {
   });
 });
 
+describe('AgentToolExecutor — forecast-lab edit guard', () => {
+  it('blocks direct edit_file calls before forecast-lab skill runs for routed improvement queries', async () => {
+    const fakeTool = makeFakeTool('edit_file', 'edited');
+    const executor = new AgentToolExecutor(
+      new Map([['edit_file', fakeTool]]),
+      undefined,
+      async () => 'allow-once' as const,
+      new Set(['edit_file']),
+    );
+    const ctx = makeCtx();
+    ctx.forecastLabGuard = { recommendedProfileId: 'btc-markov-ultra-short-horizon' };
+
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{
+        id: 'c1',
+        name: 'edit_file',
+        args: { path: 'src/tools/finance/conformal.ts', old_string: 'before', new_string: 'after' },
+        type: 'tool_call' as const,
+      }],
+    });
+
+    const events = await drainEvents(executor.executeAll(msg, ctx));
+
+    expect(fakeTool.invocationCount).toBe(0);
+    expect(events.some((e) => e.type === 'tool_start')).toBe(false);
+    const error = events.find((e) => e.type === 'tool_error');
+    expect(error).toBeDefined();
+    expect((error as { error: string }).error).toContain('.cramer-short/experiments');
+  });
+
+  it('still blocks direct source edits even after forecast-lab skill already ran', async () => {
+    const fakeTool = makeFakeTool('edit_file', 'edited');
+    const executor = new AgentToolExecutor(
+      new Map([['edit_file', fakeTool]]),
+      undefined,
+      async () => 'allow-once' as const,
+      new Set(['edit_file']),
+    );
+    const ctx = makeCtx();
+    ctx.forecastLabGuard = { recommendedProfileId: 'btc-markov-ultra-short-horizon' };
+    ctx.scratchpad.addToolResult('skill', { skill: 'forecast-lab' }, 'ok');
+
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{
+        id: 'c1',
+        name: 'edit_file',
+        args: { path: 'src/tools/finance/conformal.ts', old_string: 'before', new_string: 'after' },
+        type: 'tool_call' as const,
+      }],
+    });
+
+    const events = await drainEvents(executor.executeAll(msg, ctx));
+
+    expect(fakeTool.invocationCount).toBe(0);
+    expect(events.some((e) => e.type === 'tool_start')).toBe(false);
+    const error = events.find((e) => e.type === 'tool_error');
+    expect(error).toBeDefined();
+    expect((error as { error: string }).error).toContain('.cramer-short/experiments');
+  });
+
+  it('allows writes inside .cramer-short/experiments for routed improvement queries', async () => {
+    const fakeTool = makeFakeTool('write_file', 'written');
+    const executor = new AgentToolExecutor(
+      new Map([['write_file', fakeTool]]),
+      undefined,
+      async () => 'allow-once' as const,
+      new Set(['write_file']),
+    );
+    const ctx = makeCtx();
+    ctx.forecastLabGuard = { recommendedProfileId: 'btc-markov-ultra-short-horizon' };
+
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{
+        id: 'c1',
+        name: 'write_file',
+        args: {
+          path: '.cramer-short/experiments/runs/test-run/notes.txt',
+          content: 'artifact',
+        },
+        type: 'tool_call' as const,
+      }],
+    });
+
+    const events = await drainEvents(executor.executeAll(msg, ctx));
+
+    expect(fakeTool.invocationCount).toBe(1);
+    expect(events.some((e) => e.type === 'tool_start')).toBe(true);
+    expect(events.some((e) => e.type === 'tool_end')).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // tool_start still fires on cache hit
 // ---------------------------------------------------------------------------
@@ -304,6 +414,89 @@ describe('AgentToolExecutor — parallel request deduplication (pendingRequests)
     expect(ends).toHaveLength(2);
     expect(ends[0].result).toBe('{"price":150}');
     expect(ends[1].result).toBe('{"price":150}');
+  });
+
+  it('does not evict active pending requests when the pending registry is full', async () => {
+    let invocationCount = 0;
+    const resolvers: Array<() => void> = [];
+    const slowTool = {
+      name: 'financial_search',
+      invoke: async (args: { query?: string }) => {
+        invocationCount++;
+        await new Promise<void>((resolve) => resolvers.push(resolve));
+        return `result-${args.query}`;
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+
+    const executor = new AgentToolExecutor(
+      new Map([['financial_search', slowTool]]),
+      undefined,
+      undefined,
+      undefined,
+      { pendingRequestsMaxSize: 1 },
+    );
+    const ctx = makeCtx();
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [
+        { id: 'c1', name: 'financial_search', args: { query: 'q0' }, type: 'tool_call' as const },
+        { id: 'c2', name: 'financial_search', args: { query: 'q1' }, type: 'tool_call' as const },
+        { id: 'c3', name: 'financial_search', args: { query: 'q0' }, type: 'tool_call' as const },
+      ],
+    });
+
+    const eventsPromise = drainEvents(executor.executeAll(msg, ctx));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(invocationCount).toBe(2);
+
+    for (const resolve of resolvers) resolve();
+    const events = await eventsPromise;
+    const ends = events.filter((e) => e.type === 'tool_end') as ToolEndEvent[];
+    expect(ends).toHaveLength(3);
+  });
+
+  it('intentionally leaves new unique requests untracked when the pending registry is full', async () => {
+    const invokedQueries: string[] = [];
+    const resolvers: Array<() => void> = [];
+    const slowTool = {
+      name: 'financial_search',
+      invoke: async (args: { query?: string }) => {
+        invokedQueries.push(args.query ?? '');
+        await new Promise<void>((resolve) => resolvers.push(resolve));
+        return `result-${args.query}`;
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+
+    const executor = new AgentToolExecutor(
+      new Map([['financial_search', slowTool]]),
+      undefined,
+      undefined,
+      undefined,
+      { pendingRequestsMaxSize: 1 },
+    );
+    const ctx = makeCtx();
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [
+        { id: 'c1', name: 'financial_search', args: { query: 'tracked-q0' }, type: 'tool_call' as const },
+        { id: 'c2', name: 'financial_search', args: { query: 'untracked-q1' }, type: 'tool_call' as const },
+        { id: 'c3', name: 'financial_search', args: { query: 'untracked-q1' }, type: 'tool_call' as const },
+      ],
+    });
+
+    const eventsPromise = drainEvents(executor.executeAll(msg, ctx));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(invokedQueries).toEqual(['tracked-q0', 'untracked-q1', 'untracked-q1']);
+
+    for (const resolve of resolvers) resolve();
+    const events = await eventsPromise;
+    const ends = events.filter((e) => e.type === 'tool_end') as ToolEndEvent[];
+    expect(ends).toHaveLength(3);
   });
 
   it('two parallel calls with different args each fire the tool', async () => {
@@ -430,5 +623,54 @@ describe('AgentToolExecutor — parallel request deduplication (pendingRequests)
     expect(records).toHaveLength(1);
     expect(records[0]?.tool).toBe('markov_distribution');
     expect(records[0]?.result).toContain('Received tool input did not match expected schema');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requestCache bounded eviction
+// ---------------------------------------------------------------------------
+describe('AgentToolExecutor — requestCache bounded eviction', () => {
+  it('keeps requestCache bounded and evicts the least recently used entry', async () => {
+    const tools = new Map<string, import('@langchain/core/tools').StructuredToolInterface>();
+    let invokeCount = 0;
+    const fakeTool = {
+      name: 'financial_search',
+      invoke: async (args: { query?: string }) => {
+        invokeCount++;
+        return `res-${args.query}-${invokeCount}`;
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+    tools.set('financial_search', fakeTool);
+
+    const requestCacheMaxSize = 3;
+    const executor = new AgentToolExecutor(tools, undefined, undefined, undefined, { requestCacheMaxSize });
+    const ctx = makeCtx();
+
+    const run = async (i: number) => {
+      const msg = new AIMessage({
+        content: '',
+        tool_calls: [{ id: `c${i}`, name: 'financial_search', args: { query: `q${i}` }, type: 'tool_call' as const }],
+      });
+      return drainEvents(executor.executeAll(msg, ctx));
+    };
+
+    for (let i = 0; i < requestCacheMaxSize; i++) {
+      await run(i);
+    }
+    expect(invokeCount).toBe(requestCacheMaxSize);
+
+    await run(0); // cache hit; refreshes q0 so q1 becomes least-recently-used
+    expect(invokeCount).toBe(requestCacheMaxSize);
+
+    await run(requestCacheMaxSize); // over capacity; evicts q1
+    expect(invokeCount).toBe(requestCacheMaxSize + 1);
+
+    await run(0); // still cached due recency refresh
+    expect(invokeCount).toBe(requestCacheMaxSize + 1);
+
+    await run(1); // q1 was evicted, so the tool runs again
+    expect(invokeCount).toBe(requestCacheMaxSize + 2);
   });
 });

@@ -3,7 +3,7 @@ import type { RunnableConfig } from '@langchain/core/runnables';
 import { z } from 'zod';
 import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
-import { getCurrentDate } from '../../agent/prompts.js';
+import { getCurrentDate } from '../../utils/date.js';
 import { api } from './api.js';
 
 /**
@@ -51,11 +51,11 @@ async function getScreenerFilters(): Promise<Record<string, unknown>> {
 
 const ScreenerFilterSchema = z.object({
   filters: z.array(z.object({
-    field: z.string().describe('Exact metric field name from the available metrics list'),
+    field: z.string().max(256).describe('Exact metric field name from the available metrics list'),
     operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq', 'between']).describe('Comparison operator'),
-    value: z.union([z.number(), z.string(), z.array(z.number()), z.array(z.string())]).describe('Numeric threshold, string for company fields (sector/industry), or [min, max] array for "between" operator'),
+    value: z.union([z.number(), z.string().max(256), z.array(z.number()), z.array(z.string().max(256))]).describe('Numeric threshold, string for company fields (sector/industry), or [min, max] array for "between" operator'),
   })).describe('Array of screening filters to apply'),
-  currency: z.string().default('USD').describe('Currency code (e.g., "USD")'),
+  currency: z.string().max(16).default('USD').describe('Currency code (e.g., "USD")'),
   limit: z.number().default(5).describe('Maximum number of results to return'),
 });
 
@@ -97,7 +97,7 @@ Return only the structured output fields.`;
 }
 
 const ScreenStocksInputSchema = z.object({
-  query: z.string().describe('Natural language query describing stock screening criteria'),
+  query: z.string().max(10_000).describe('Natural language query describing stock screening criteria'),
 });
 
 /**
@@ -105,6 +105,7 @@ const ScreenStocksInputSchema = z.object({
  * Single LLM call: structured output translates natural language → screener filters.
  */
 export function createScreenStocks(model: string): DynamicStructuredTool {
+  /** Creates the model-aware stock screening tool. */
   return new DynamicStructuredTool({
     name: 'stock_screener',
     description: `Screens for stocks matching financial criteria. Takes a natural language query and returns matching tickers with metric values. Use for:

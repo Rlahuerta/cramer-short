@@ -13,10 +13,13 @@ import type {
 import { logError } from '../utils/error-logger.js';
 import { classifyError } from '../utils/errors.js';
 import type { DisplayEvent } from '../agent/types.js';
-import type { HistoryItem, HistoryItemStatus, WorkingState } from '../types.js';
+import type { HistoryItem, HistoryItemStatus, WorkingState } from '../controllers/types.js';
 import { autoStoreFromRun } from '../memory/auto-store.js';
 
 type ChangeListener = () => void;
+type CreateAgentFn = typeof Agent.create;
+type AutoStoreFromRunFn = typeof autoStoreFromRun;
+type EventObserver = (event: AgentEvent) => void | Promise<void>;
 
 export interface RunQueryResult {
   answer: string;
@@ -30,6 +33,9 @@ export class AgentRunnerController {
   private agentConfig: AgentConfig;
   private readonly inMemoryChatHistory: InMemoryChatHistory;
   private readonly onChange?: ChangeListener;
+  private readonly createAgent: CreateAgentFn;
+  private readonly autoStoreFromRun: AutoStoreFromRunFn;
+  private readonly onEvent?: EventObserver;
   private abortController: AbortController | null = null;
   private approvalResolve: ((decision: ApprovalDecision) => void) | null = null;
   private sessionApprovedTools = new Set<string>();
@@ -70,10 +76,18 @@ export class AgentRunnerController {
     agentConfig: AgentConfig,
     inMemoryChatHistory: InMemoryChatHistory,
     onChange?: ChangeListener,
+    options: {
+      createAgent?: CreateAgentFn;
+      autoStoreFromRun?: AutoStoreFromRunFn;
+      onEvent?: EventObserver;
+    } = {},
   ) {
     this.agentConfig = agentConfig;
     this.inMemoryChatHistory = inMemoryChatHistory;
     this.onChange = onChange;
+    this.createAgent = options.createAgent ?? Agent.create;
+    this.autoStoreFromRun = options.autoStoreFromRun ?? autoStoreFromRun;
+    this.onEvent = options.onEvent;
   }
 
   /**
@@ -91,6 +105,14 @@ export class AgentRunnerController {
    */
   setModel(model: string, provider: string): void {
     this.agentConfig = { ...this.agentConfig, model, modelProvider: provider };
+  }
+
+  setRunOptions(options: Pick<AgentConfig, 'maxIterations' | 'channel' | 'groupContext'>): void {
+    this.agentConfig = { ...this.agentConfig, ...options };
+  }
+
+  setWatchlistEntries(entries: NonNullable<AgentConfig['watchlistEntries']>): void {
+    this.agentConfig = { ...this.agentConfig, watchlistEntries: entries };
   }
 
   get history(): HistoryItem[] {
@@ -189,7 +211,7 @@ export class AgentRunnerController {
       // that pressing Escape during the (potentially slow) memory-indexer sync
       // inside Agent.create() still returns immediately.
       const agent = await this.makeCancellable(
-        Agent.create({
+        this.createAgent({
           ...this.agentConfig,
           signal: this.abortController?.signal,
           requestToolApproval: this.requestToolApproval,
@@ -215,7 +237,7 @@ export class AgentRunnerController {
       // Auto-persist financial context when the LLM didn't call
       // store_financial_insight itself. Fire-and-forget — never block the UI.
       if (doneEvent) {
-        void autoStoreFromRun(query, doneEvent.answer, doneEvent.toolCalls);
+        void this.autoStoreFromRun(query, doneEvent.answer, doneEvent.toolCalls);
       }
 
       if (finalAnswer) {
@@ -249,6 +271,8 @@ export class AgentRunnerController {
   };
 
   private async handleEvent(event: AgentEvent) {
+    await this.onEvent?.(event);
+
     switch (event.type) {
       case 'progress': {
         // Propagate iteration counter into the current working state so the
@@ -375,7 +399,10 @@ export class AgentRunnerController {
       case 'done': {
         const done = event as DoneEvent;
         if (done.answer) {
-          await this.inMemoryChatHistory.saveAnswer(done.answer).catch(() => {});
+          await this.inMemoryChatHistory.saveAnswer(done.answer).catch((err) => {
+            // Answer persistence error - log but don't block UI
+            console.warn('[agent-runner] Failed to save answer to history:', err);
+          });
         }
         this.updateLastItem((last) => ({
           ...last,

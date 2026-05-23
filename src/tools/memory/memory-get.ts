@@ -18,11 +18,12 @@ Read specific memory file content from persistent memory storage.
 `.trim();
 
 const memoryGetSchema = z.object({
-  path: z.string().describe('Memory file path (e.g., MEMORY.md or 2026-03-08.md).'),
+  path: z.string().max(256).describe('Memory file path (e.g., MEMORY.md or 2026-03-08.md).'),
   from: z.number().optional().describe('1-indexed line offset.'),
   lines: z.number().optional().describe('Maximum number of lines to read.'),
 });
 
+/** Reads project memory files by name. */
 export const memoryGetTool = new DynamicStructuredTool({
   name: 'memory_get',
   description:

@@ -10,7 +10,8 @@ import { Runnable } from '@langchain/core/runnables';
 import { z } from 'zod';
 import { getDefaultSystemPrompt } from '@/agent/prompts';
 import type { TokenUsage } from '@/agent/types';
-import { logger } from '@/utils';
+import { logger } from '../utils/logger.js';
+import { getEnv, hasEnv } from '../utils/env.js';
 import { getSetting } from '@/utils/config.js';
 import { classifyError, isNonRetryableError } from '@/utils/errors';
 import { resolveProvider, getProviderById } from '@/providers';
@@ -19,7 +20,7 @@ export const DEFAULT_PROVIDER = 'openai';
 export const DEFAULT_MODEL = 'gpt-5.4';
 
 /** Ollama model name patterns that support extended thinking via `think: true`. */
-const THINKING_MODEL_PATTERNS = [/qwen3/, /deepseek-r1/, /qwq/, /nemotron/];
+const THINKING_MODEL_PATTERNS = [/qwen3/, /deepseek-r1/, /deepseek-v4/, /qwq/, /nemotron/, /gemma4/, /kimi-k2\.6/];
 
 /**
  * Returns true when the given model name is an Ollama thinking-capable model
@@ -61,6 +62,34 @@ async function withRetry<T>(fn: () => Promise<T>, provider: string, maxAttempts 
   throw new Error('Unreachable');
 }
 
+async function invokeRunnable(
+  runnable: Runnable<unknown, unknown>,
+  input: unknown,
+  options: { signal: AbortSignal },
+): Promise<unknown> {
+  const runnableWithFallback = runnable as {
+    invoke?: (value: unknown, opts?: { signal: AbortSignal }) => Promise<unknown>;
+    call?: (value: unknown, opts?: { signal: AbortSignal }) => Promise<unknown>;
+  };
+
+  if (typeof runnableWithFallback.invoke === 'function') {
+    return runnableWithFallback.invoke(input, options);
+  }
+  if (typeof runnableWithFallback.call === 'function') {
+    return runnableWithFallback.call(input, options);
+  }
+
+  const runnableName =
+    typeof runnable === 'object' &&
+    runnable !== null &&
+    'constructor' in runnable &&
+    typeof runnable.constructor === 'function' &&
+    runnable.constructor.name
+      ? runnable.constructor.name
+      : 'unknown runnable';
+  throw new Error(`LangChain runnable ${runnableName} does not expose invoke() or call().`);
+}
+
 /**
  * Race an LLM call against a hard wall-clock timeout.
  * Default: 120 s (configurable via llmCallTimeoutMs setting or
@@ -87,7 +116,7 @@ export function resolveLlmCallTimeoutMs(): LlmTimeoutResolution {
   }
 
   // Check env second
-  const envRaw = process.env.LLM_CALL_TIMEOUT_MS;
+  const envRaw = getEnv('LLM_CALL_TIMEOUT_MS');
   if (envRaw !== undefined && envRaw !== '') {
     const envTimeout = Number(envRaw);
     if (Number.isFinite(envTimeout) && envTimeout >= 30000 && envTimeout <= 600000) {
@@ -103,14 +132,18 @@ export function getLlmCallTimeoutMs(): number {
   return resolveLlmCallTimeoutMs().value;
 }
 
-async function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>, timeoutMs: number): Promise<T> {
+async function withTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  timeoutLabel = 'LLM call',
+): Promise<T> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
     return await fn(ac.signal);
   } catch (e) {
     if (ac.signal.aborted) {
-      throw new Error(`LLM call timed out after ${timeoutMs / 1000}s. The model may be slow or unavailable.`);
+      throw new Error(`${timeoutLabel} timed out after ${timeoutMs / 1000}s. The model may be slow or unavailable.`);
     }
     throw e;
   } finally {
@@ -126,7 +159,7 @@ interface ModelOpts {
 type ModelFactory = (name: string, opts: ModelOpts, thinkOverride?: boolean) => BaseChatModel;
 
 function getApiKey(envVar: string): string {
-  const apiKey = process.env[envVar];
+  const apiKey = getEnv(envVar);
   if (!apiKey) {
     throw new Error(`[LLM] ${envVar} not found in environment variables`);
   }
@@ -190,7 +223,7 @@ const MODEL_FACTORIES: Record<string, ModelFactory> = {
       model: name.replace(/^ollama:/i, ''),
       ...opts,
       ...(useThink ? { think: true } : {}),
-      ...(process.env.OLLAMA_BASE_URL ? { baseUrl: process.env.OLLAMA_BASE_URL } : {}),
+      ...(hasEnv('OLLAMA_BASE_URL') ? { baseUrl: getEnv('OLLAMA_BASE_URL') } : {}),
     });
   },
 };
@@ -204,7 +237,7 @@ const DEFAULT_FACTORY: ModelFactory = (name, opts) =>
 
 let _overrideFactory: ModelFactory | null = null;
 
-/** For tests only — inject a custom model factory to intercept LLM calls. */
+/** @internal Test-only: inject a custom model factory to intercept LLM calls. */
 export function _setModelFactory(factory: ModelFactory | null): void {
   _overrideFactory = factory;
 }
@@ -314,15 +347,15 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
 
     if (provider.id === 'anthropic') {
       const messages = buildAnthropicMessages(finalSystemPrompt, prompt);
-      return withRetry(() => runnable.invoke(messages, invokeOpts), provider.displayName);
+      return withRetry(() => invokeRunnable(runnable, messages, invokeOpts), provider.displayName);
     } else {
       // Build messages directly (same pattern as streamCallLlm) to avoid
       // ChatPromptTemplate parsing `{...}` in system prompt or user content
       // as input variables (e.g. JSON in skill tool results).
       const messages = [new SystemMessage(finalSystemPrompt), new HumanMessage(prompt)];
-      return withRetry(() => runnable.invoke(messages, invokeOpts), provider.displayName);
+      return withRetry(() => invokeRunnable(runnable, messages, invokeOpts), provider.displayName);
     }
-  }, timeoutMs ?? getLlmCallTimeoutMs());
+  }, timeoutMs ?? getLlmCallTimeoutMs(), `${provider.displayName} call (${model})`);
   const usage = extractUsage(result);
 
   // If no outputSchema and no tools, extract content from AIMessage
@@ -355,8 +388,8 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
 /**
  * Stateful filter that strips <think>…</think> blocks from a character stream.
  * Yields only the non-thinking content as chunks arrive.
+ * @internal Test-only export: production uses this internally; tests cover stream filtering edge cases.
  */
-/** Exported for testing — not part of the public API. */
 export class StreamingThinkFilter {
   private buf = '';
   private thinking = false;
@@ -418,7 +451,7 @@ export async function* streamCallLlm(
 ): AsyncGenerator<string> {
   const { model = DEFAULT_MODEL, systemPrompt, signal, thinkOverride } = options;
   const finalSystemPrompt = systemPrompt ?? getDefaultSystemPrompt();
-  const llm = getChatModel(model, false, thinkOverride);
+  const llm = getChatModel(model, true, thinkOverride);
   const provider = resolveProvider(model);
 
   const messages =

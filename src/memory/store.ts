@@ -1,8 +1,10 @@
-import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join, normalize, relative } from 'node:path';
+import { MS_PER_DAY } from '../utils/time.js';
+import { mkdir, readdir, readFile, rename } from 'node:fs/promises';
+import { join, normalize, relative } from 'node:path';
 import type { DreamMeta, MemoryReadOptions, MemoryReadResult, MemorySessionContext } from './types.js';
 import { estimateTokens } from '../utils/tokens.js';
 import { getCramerShortDir } from '../utils/paths.js';
+import { atomicWriteFile } from '../utils/atomic-write.js';
 
 const MEMORY_DIRNAME = 'memory';
 const LONG_TERM_FILE = 'MEMORY.md';
@@ -53,8 +55,7 @@ export class MemoryStore {
 
   async writeMemoryFile(path: string, content: string): Promise<void> {
     const resolved = this.resolveMemoryPath(path);
-    await mkdir(dirname(resolved), { recursive: true });
-    await writeFile(resolved, content, 'utf-8');
+    await atomicWriteFile(resolved, content);
   }
 
   async appendMemoryFile(path: string, content: string): Promise<void> {
@@ -116,7 +117,7 @@ export class MemoryStore {
       LONG_TERM_FILE,
       FINANCE_FILE,
       formatDailyFileName(),
-      formatDailyFileName(new Date(Date.now() - 86_400_000)),
+      formatDailyFileName(new Date(Date.now() - MS_PER_DAY)),
     ];
 
     let tokenEstimate = 0;
@@ -161,7 +162,7 @@ export class MemoryStore {
   async writeDreamMeta(meta: DreamMeta): Promise<void> {
     await this.ensureDirectoryExists();
     const filePath = join(this.getMemoryDir(), DREAM_META_FILE);
-    await writeFile(filePath, JSON.stringify(meta, null, 2), 'utf-8');
+    await atomicWriteFile(filePath, JSON.stringify(meta, null, 2));
   }
 
   /** Returns sorted list of YYYY-MM-DD.md filenames (excludes MEMORY.md, FINANCE.md, etc.). */

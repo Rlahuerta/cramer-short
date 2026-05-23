@@ -11,7 +11,7 @@ function formatToolLabel(tool: string): string {
 }
 
 export class ApprovalPromptComponent extends Container {
-  readonly selector: any;
+  readonly selector: ReturnType<typeof createApprovalSelector>;
   onSelect?: (decision: ApprovalDecision) => void;
 
   constructor(tool: string, args: Record<string, unknown>) {

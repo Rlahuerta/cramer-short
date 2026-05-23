@@ -36,6 +36,7 @@ export const TICKER_STOP_WORDS = new Set([
   // Common financial abbreviations (not tickers)
   'AI', 'API', 'ATH', 'ATL',
   'CAPEX',
+  'CI',
   'DCF', 'DPS',
   'EBITDA', 'EPS', 'ETF', 'EV',
   'FASB', 'FCF', 'FED', 'FDA',

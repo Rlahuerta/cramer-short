@@ -79,9 +79,10 @@ function formatContractTable(contracts: ParsedContract[], label: string): string
 }
 
 const OptionsInputSchema = z.object({
-  ticker: z.string().describe("Stock ticker symbol, e.g. 'AAPL'"),
+  ticker: z.string().max(128).describe("Stock ticker symbol, e.g. 'AAPL'"),
   expiry: z
     .string()
+    .max(32)
     .optional()
     .describe('Optional expiry date in YYYY-MM-DD format. Omit for nearest expiry.'),
   type: z
@@ -89,7 +90,9 @@ const OptionsInputSchema = z.object({
     .default('all')
     .describe('Which contracts to return'),
 });
-
+/**
+ * Yahoo Finance options-chain tool for calls/puts by ticker and optional expiry.
+ */
 export const getOptionsChainTool = new DynamicStructuredTool({
   name: 'get_options_chain',
   description: OPTIONS_CHAIN_DESCRIPTION,
@@ -128,7 +131,21 @@ export const getOptionsChainTool = new DynamicStructuredTool({
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const optionChain = (json as any)?.optionChain?.result?.[0];
+    const optionChain = (
+      json as {
+        optionChain?: {
+          result?: Array<{
+            expirationDates?: number[];
+            quote?: { regularMarketPrice?: number };
+            options?: Array<{
+              expirationDate?: number;
+              calls?: YahooContract[];
+              puts?: YahooContract[];
+            }>;
+          }>;
+        };
+      }
+    )?.optionChain?.result?.[0];
     if (!optionChain) {
       return formatToolResult(
         {

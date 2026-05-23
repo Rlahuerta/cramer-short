@@ -1,5 +1,10 @@
-import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach, afterAll } from 'bun:test';
 import { AIMessage } from '@langchain/core/messages';
+
+// Capture real modules before mocking so afterAll can restore
+const realLlm = await import('../../model/llm.js');
+const realDate = await import('../../utils/date.js');
+const realFilings = await import('./filings.js');
 
 const mockCallLlm = mock(async () => ({
   response: { ticker: 'AAPL', filing_types: ['10-K'], limit: 10 } as any,
@@ -25,15 +30,12 @@ const mockGetFilingItemTypes = mock(async () => ({
 }));
 
 mock.module('../../model/llm.js', () => ({
+  ...realLlm,
   callLlm: mockCallLlm,
-  DEFAULT_MODEL: 'gpt-5.4',
-  getChatModel: mock(() => ({})),
 }));
 
-mock.module('../../agent/prompts.js', () => ({
+mock.module('../../utils/date.js', () => ({
   getCurrentDate: () => '2024-01-15',
-  buildSystemPrompt: () => 'Mock system prompt',
-  SYSTEM_PROMPT_CACHE_TTL: 60000,
 }));
 
 mock.module('./filings.js', () => ({
@@ -43,6 +45,12 @@ mock.module('./filings.js', () => ({
   get8KFilingItems: { invoke: mock(async () => JSON.stringify({ data: [], sourceUrls: [] })) },
   getFilingItemTypes: mockGetFilingItemTypes,
 }));
+
+afterAll(() => {
+  mock.module('../../model/llm.js', () => realLlm);
+  mock.module('../../utils/date.js', () => realDate);
+  mock.module('./filings.js', () => realFilings);
+});
 
 const { createReadFilings } = await import('./read-filings.js');
 

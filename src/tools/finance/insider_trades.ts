@@ -8,6 +8,7 @@ const REDUNDANT_INSIDER_FIELDS = ['issuer'] as const;
 const InsiderTradesInputSchema = z.object({
   ticker: z
     .string()
+    .max(128)
     .describe("The stock ticker symbol to fetch insider trades for. For example, 'AAPL' for Apple."),
   limit: z
     .number()
@@ -15,26 +16,32 @@ const InsiderTradesInputSchema = z.object({
     .describe('Maximum number of insider trades to return (default: 10, max: 1000). Increase this for longer historical windows when needed.'),
   filing_date: z
     .string()
+    .max(32)
     .optional()
     .describe('Exact filing date to filter by (YYYY-MM-DD).'),
   filing_date_gte: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for trades with filing date greater than or equal to this date (YYYY-MM-DD).'),
   filing_date_lte: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for trades with filing date less than or equal to this date (YYYY-MM-DD).'),
   filing_date_gt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for trades with filing date greater than this date (YYYY-MM-DD).'),
   filing_date_lt: z
     .string()
+    .max(32)
     .optional()
     .describe('Filter for trades with filing date less than this date (YYYY-MM-DD).'),
 });
 
+/** Fetches recent insider trade disclosures for a company. */
 export const getInsiderTrades = new DynamicStructuredTool({
   name: 'get_insider_trades',
   description: `Retrieves insider trading transactions for a given company ticker. Insider trades include purchases and sales of company stock by executives, directors, and other insiders. This data is sourced from SEC Form 4 filings. Use filing_date filters to narrow down results by date range.`,

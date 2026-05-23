@@ -4,30 +4,36 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getChannelProfile } from './channels.js';
-import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
-import { isExplicitPolymarketForecastRequest, shouldInjectBtcShortHorizonLowConfidencePrompt, shouldInjectBtcShortHorizonMixedEvidencePrompt } from './agent.js';
+import {
+  getBtcSelectiveMarkovConfidenceThreshold,
+  isExplicitCombinedMarkovPolymarketRequest,
+  isExplicitGoldCombinedMarkovPolymarketRequest,
+  isExplicitPolymarketForecastRequest,
+  shouldInjectBtcShortHorizonLowConfidencePrompt,
+  shouldInjectBtcShortHorizonMixedEvidencePrompt,
+} from './query-router.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
 import { cramerShortPath } from '../utils/paths.js';
+import { getCurrentDate } from '../utils/date.js';
+import {
+  injectForecastLabRoutingHint,
+  type ForecastLabRoutingHint,
+} from '../experiments/forecast-lab/query-router.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+function getErrorCode(error: unknown): string | undefined {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' ? code : undefined;
+  }
+  return undefined;
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/**
- * Returns the current date formatted for prompts.
- */
-export function getCurrentDate(): string {
-  const options: Intl.DateTimeFormatOptions = {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  };
-  return new Date().toLocaleDateString('en-US', options);
-}
 
 /**
  * Load SOUL.md content from user override or bundled file.
@@ -36,15 +42,21 @@ export async function loadSoulDocument(): Promise<string | null> {
   const userSoulPath = cramerShortPath('SOUL.md');
   try {
     return await readFile(userSoulPath, 'utf-8');
-  } catch {
-    // Continue to bundled fallback when user override is missing/unreadable.
+  } catch (error) {
+    if (getErrorCode(error) !== 'ENOENT') {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[cramer-short] unable to read user SOUL.md override: ${message}`);
+    }
   }
 
   const bundledSoulPath = join(__dirname, '../../SOUL.md');
   try {
     return await readFile(bundledSoulPath, 'utf-8');
-  } catch {
-    // SOUL.md is optional; keep prompt behavior unchanged when absent.
+  } catch (error) {
+    if (getErrorCode(error) !== 'ENOENT') {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[cramer-short] unable to read bundled SOUL.md: ${message}`);
+    }
   }
 
   return null;
@@ -80,6 +92,31 @@ When presenting price targets, fair values, or forecasts, always include:
 3. **Key assumption**: the single variable most likely to change the outcome
 
 Example: *"Fair value ~\$145 (confidence: high — FMP FY2024 actuals). Key risk: if operating margin reverts below 20%, fair value drops to ~\$120."*
+
+### Crypto Forecast Reporting Standard
+When the answer uses **both** \`markov_distribution\` and \`polymarket_forecast\` for BTC or any crypto forecast, do **not** compress them into a single sentence. Present them as separate, clearly labeled evidence blocks before any trade setup:
+
+1. **Markov block** — state the horizon, regime, expected return or expected price, **P(up)**, prediction confidence, CI range, structural-break status, dominant scenario bucket, and the main Markov warning if one exists.
+2. **Polymarket block** — state the horizon, forecast return or forecast price, CI range if available, quality grade/score, and **quote 2–4 exact market questions with their YES probabilities** when those questions are driving the signal.
+3. **Semantics** — if Polymarket evidence is barrier/touch/path-dependent while Markov is terminal-horizon, say that explicitly so the user understands how both can be true at once.
+4. **Agreement / disagreement** — explicitly say whether the models agree, partially agree, or diverge, and what the disagreement means for conviction.
+5. **Whales / on-chain / macro** — summarize whether whale activity, on-chain flows, sentiment, and rates confirm or weaken the directional case.
+6. **Trade setup comes last** — only after the evidence blocks, translate the forecast into entry / target / stop / no-trade guidance. If leverage is requested, show asset move vs position P&L and explain the main liquidation or stop-out risk.
+7. **Keep terminal vs trajectory semantics separate** — the Markov headline should come from the terminal canonical block (scenarios, diagnostics, actionSignal). If a trajectory is present, present it as a path detail, not as a replacement for the terminal expected return / P(up).
+8. **Do not invent internal contradictions** — a difference between diagnostics.regimeState and the last trajectory regime, or between terminal expected return and day-7 trajectory drift, is not automatically a bug. Only call it a contradiction if the canonical payload explicitly says an override or warning caused it.
+9. **Do not merge confidence fields** — predictionConfidence and actionSignal.confidence are different metrics. Do not write labels like "Prediction confidence 0.43 — LOW" unless the Markov tool explicitly gives a qualitative label for prediction confidence.
+10. **Explain regime/action mismatches explicitly** — if diagnostics.regimeState points one way (for example, bull) but actionSignal.recommendation points the other way (for example, SELL), say in plain English that the latent regime is the recent HMM backdrop while the action signal is the next-horizon terminal tilt after scenario/threshold logic. Do not leave this as an unexplained "bull but SELL" pair.
+11. **Weak tilt is not the trade decision** — if actionSignal.confidence is LOW, recommendationProvenance says the signal was converted from HOLD, or the dominant bucket is flat/range-bound, describe BUY/SELL as a weak bullish/bearish tilt or lean rather than a direct trade command. If forecast_arbitrator returns NO_TRADE or a conditional verdict, that arbiter verdict is the actual trade decision and the weaker Markov tilt is only supporting evidence.
+
+For CLI answers, prefer short labeled subsections or a compact table over dense prose. The user should be able to separately inspect **Markov**, **Polymarket**, **Whales/On-chain**, and **Trade decision** without hunting through paragraphs.
+
+### Forecast Arbitration for Divergent Trade Setups
+When the user asks for trade direction, entry, target, stop, leverage, or position sizing from mixed forecast evidence:
+1. Preserve the raw model outputs first: Markov, Polymarket/prediction markets, on-chain/whale, macro, and sentiment should remain visible enough for the user to judge independently.
+2. If Markov and Polymarket disagree, or if Polymarket evidence is a touch/barrier question while Markov is a terminal horizon forecast, call \`forecast_arbitrator\` before giving a final trade direction.
+3. Do not force LONG or SHORT solely because one model has a higher point forecast. The arbiter may return \`NO_TRADE\`, \`CONDITIONAL_LONG\`, or \`CONDITIONAL_SHORT\`; treat that as the primary recommendation.
+4. For leveraged setups, explicitly translate asset move into position P&L and downgrade conviction when model disagreement, low Markov confidence, structural breaks, flat-dominant scenarios, or neutral whale data are present.
+5. If the arbiter returns a conditional setup, present the trigger and invalidation as the actionable answer, while still showing the underlying Markov and Polymarket numbers.
 
 ### Peer & Comparable Analysis
 When assessing any stock's valuation, **always** fetch at least 2–3 direct competitors or sector peers and compare them side-by-side. Do not rely on absolute multiples alone.
@@ -361,8 +398,10 @@ export function buildSystemPrompt(
   groupContext?: GroupContext,
   memoryFiles?: string[],
   memoryContext?: string | null,
+  toolDescriptionsOverride?: string,
+  memoryEnabled = true,
 ): string {
-  const toolDescriptions = buildToolDescriptions(model);
+  const toolDescriptions = toolDescriptionsOverride ?? buildToolDescriptions(model, { memoryEnabled });
   const profile = getChannelProfile(channel);
 
   const behaviorBullets = profile.behavior.map(b => `- ${b}`).join('\n');
@@ -370,6 +409,26 @@ export function buildSystemPrompt(
 
   const tablesSection = profile.tables
     ? `\n## Tables (for comparative/tabular data)\n\n${profile.tables}`
+    : '';
+
+  const financialMemoryPolicySection = memoryEnabled
+    ? `## Financial Memory Policy
+
+At startup, your memory context already includes FINANCE.md (ticker routing cache, company profiles)
+and recent financial insights from previous sessions. Use this before reaching for tools.
+
+1. **Before calling get_financials or get_market_data for any ticker**, call recall_financial_context
+   to check for cached routing and prior analysis. If routing says fmp-premium, skip FMP entirely.
+2. **If routing says web-fallback or fmp-premium**, go directly to web_search — do not waste a call
+   on FMP or Yahoo first.
+3. **After completing analysis**, call store_financial_insight to persist your findings:
+   - The routing result that worked (so future sessions skip failed sources)
+   - Key thesis, metrics, or conclusions
+   - Any red flags or analyst consensus discovered`
+    : '';
+
+  const memorySection = memoryEnabled && (((memoryFiles?.length ?? 0) > 0) || !!memoryContext)
+    ? buildMemorySection(memoryFiles ?? [], memoryContext)
     : '';
 
   return `You are Cramer-Short, a ${profile.label} assistant with access to research tools.
@@ -405,19 +464,7 @@ ${toolDescriptions}
 - For factual questions about entities (companies, people, organizations), use tools to verify current state
 - Only respond directly for: conceptual definitions, stable historical facts, or conversational queries
 
-## Financial Memory Policy
-
-At startup, your memory context already includes FINANCE.md (ticker routing cache, company profiles)
-and recent financial insights from previous sessions. Use this before reaching for tools.
-
-1. **Before calling get_financials or get_market_data for any ticker**, call recall_financial_context
-   to check for cached routing and prior analysis. If routing says fmp-premium, skip FMP entirely.
-2. **If routing says web-fallback or fmp-premium**, go directly to web_search — do not waste a call
-   on FMP or Yahoo first.
-3. **After completing analysis**, call store_financial_insight to persist your findings:
-   - The routing result that worked (so future sessions skip failed sources)
-   - Key thesis, metrics, or conclusions
-   - Any red flags or analyst consensus discovered
+${financialMemoryPolicySection}
 
 ## Financial Data Fallback Policy
 
@@ -433,7 +480,7 @@ ${buildFinancialStandardsSection()}
 
 ${buildSkillsSection()}
 
-${(memoryFiles && memoryFiles.length > 0) || memoryContext ? buildMemorySection(memoryFiles ?? [], memoryContext) : ''}
+${memorySection}
 
 ## Heartbeat
 
@@ -462,6 +509,8 @@ ${formatBullets}${tablesSection}${groupContext ? '\n\n' + buildGroupSection(grou
 // User Prompts
 // ============================================================================
 
+export { injectForecastLabRoutingHint };
+
 /**
  * Build user prompt for agent iteration with full tool results.
  * Anthropic-style: full results in context for accurate decision-making.
@@ -474,7 +523,8 @@ ${formatBullets}${tablesSection}${groupContext ? '\n\n' + buildGroupSection(grou
 export function buildIterationPrompt(
   originalQuery: string,
   fullToolResults: string,
-  toolUsageStatus?: string | null
+  toolUsageStatus?: string | null,
+  forecastLabRoutingHint?: ForecastLabRoutingHint | null,
 ): string {
   let prompt = `Query: ${originalQuery}`;
 
@@ -510,7 +560,16 @@ IMPORTANT: One or more data tools returned an error or empty result. Per your Fi
   if (hasCanonicalMarkovOutput) {
     prompt += `
 
-IMPORTANT: markov_distribution results are present. Treat the canonical Markov payload as authoritative. Use the reported scenario bucket probabilities and diagnostics verbatim. Do NOT recompute, sum, or infer scenario probabilities from raw Polymarket titles, threshold questions, or price_distribution_chart output — those are inputs/visual aids, not the canonical distribution.`;
+IMPORTANT: markov_distribution results are present. Treat the canonical Markov payload as authoritative. Use the reported scenario bucket probabilities and diagnostics verbatim. Do NOT recompute, sum, or infer scenario probabilities from raw Polymarket titles, threshold questions, or price_distribution_chart output — those are inputs/visual aids, not the canonical distribution.
+
+IMPORTANT: Do NOT substitute another asset, proxy ticker, or proxy-history narrative unless the canonical Markov payload explicitly says that proxy was used. For example, do NOT describe a BTC/BTC-USD run as using GLD, gold, or any commodity-equivalent history unless the diagnostics explicitly name that proxy. Likewise, if diagnostics.anchorBypassApplied is false or diagnostics.calibrationMode is "anchored", do NOT call the run "model-only", "commodity bypass", or say trusted anchors were "unused". If trusted anchors are present, do NOT imply they were absent or ignored just because a displayed mixing split rounds to 100% Markov / 0% Anchors.`;
+  }
+
+  const requestedBucketMatch = originalQuery.match(/\b(\d+)\s*(?:parts|buckets|bins|segments)\b/i);
+  if (hasCanonicalMarkovOutput && requestedBucketMatch) {
+    prompt += `
+
+IMPORTANT: The user explicitly requested the probability range be divided into ${requestedBucketMatch[1]} parts. Preserve that ${requestedBucketMatch[1]}-part bucket granularity in the final answer when presenting the canonical Markov distribution. Do NOT compress it into fewer buckets or replace it with a coarser summary. When the user asks for density probabilities, that means per-bucket probability mass (for example, P(bucket) or P(in bucket)), not just survival probabilities like P(price > level). If you also show a survival-style view, label it separately and do NOT substitute it for the requested density table.`;
   }
 
   if (shouldInjectBtcShortHorizonMixedEvidencePrompt(originalQuery, fullToolResults)) {
@@ -522,7 +581,40 @@ IMPORTANT: BTC short-horizon signals are mixed. markov_distribution is bullish, 
   if (shouldInjectBtcShortHorizonLowConfidencePrompt(originalQuery, fullToolResults)) {
     prompt += `
 
-IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, but its predictionConfidence is below the ${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold. You MUST NOT present that Markov direction as part of the selective Markov accuracy slice or as a validated BTC directional edge. If you mention it at all, frame it as low-confidence fallback context and make clear that the selective gate did not clear.`;
+IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, but its predictionConfidence is below the ${getBtcSelectiveMarkovConfidenceThreshold().toFixed(2)} selective threshold. You MUST NOT present that Markov direction as part of the selective Markov accuracy slice or as a validated BTC directional edge. If you mention it at all, frame it as low-confidence fallback context and make clear that the selective gate did not clear.`;
+  }
+
+  const hasMarkovTrajectoryOutput =
+    /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"trajectory"\s*:\s*\[/.test(fullToolResults);
+  if (hasMarkovTrajectoryOutput) {
+    prompt += `
+
+IMPORTANT: This markov_distribution result includes both a terminal canonical forecast and a day-by-day trajectory. Keep them separate. The Markov headline must use the canonical terminal fields (scenario probabilities, expected return/price, P(up), diagnostics, and actionSignal). The trajectory is path context only. Do NOT claim an "internal inconsistency" solely because the trajectory's last-day regime or drift differs from diagnostics.regimeState or the terminal expected return. Treat diagnostics.regimeState as the latent HMM backdrop, not as a synonym for actionSignal.recommendation; if you mention it to the user, label it as a latent regime/backdrop rather than the trade side. Do NOT relabel predictionConfidence with LOW/MEDIUM/HIGH unless that label appears explicitly in the Markov payload. If diagnostics.recommendationProvenance is present, use it as the explanation for any recommendation override instead of inventing a new reason.`;
+  }
+
+  const hasMarkovRegimeActionMismatch =
+    /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"actionSignal"\s*:\s*\{[\s\S]*?"recommendation"\s*:\s*"SELL"[\s\S]*?"diagnostics"\s*:\s*\{[\s\S]*?"regimeState"\s*:\s*"bull"/.test(fullToolResults)
+    || /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"actionSignal"\s*:\s*\{[\s\S]*?"recommendation"\s*:\s*"BUY"[\s\S]*?"diagnostics"\s*:\s*\{[\s\S]*?"regimeState"\s*:\s*"bear"/.test(fullToolResults);
+  if (hasMarkovRegimeActionMismatch) {
+    prompt += `
+
+IMPORTANT: The canonical Markov payload contains a regime/action mismatch. You MUST explain this in plain English: diagnostics.regimeState is the recent latent HMM backdrop, while actionSignal.recommendation is the next-horizon terminal tilt after scenario and threshold logic. Do NOT leave the user with an unexplained "bull but SELL" or "bear but BUY" pairing. If actionSignal.confidence is LOW or recommendationProvenance shows a HOLD→BUY/SELL conversion, phrase the Markov action signal as a weak tilt/lean, not as the final trade instruction.`;
+  }
+
+  const hasForecastArbiterNoTrade =
+    /"result"\s*:\s*\{[\s\S]*?"verdict"\s*:\s*"NO_TRADE"/.test(fullToolResults);
+  if (hasForecastArbiterNoTrade) {
+    prompt += `
+
+IMPORTANT: forecast_arbitrator returned NO_TRADE. That is the final trading decision. You may still show the raw Markov actionSignal inside the Markov evidence block, but frame it as subordinate model evidence (for example, a weak bearish tilt inside a no-trade setup), not as the action the user should take.`;
+  }
+
+  const explicitGoldCombinedForecast = isExplicitGoldCombinedMarkovPolymarketRequest(originalQuery);
+  const hasPolymarketForecastOutput = /\bpolymarket_forecast\b/.test(fullToolResults);
+  if (explicitGoldCombinedForecast && hasCanonicalMarkovOutput && hasPolymarketForecastOutput) {
+    prompt += `
+
+IMPORTANT: This is an explicit combined GOLD Markov + Polymarket workflow. Keep the Markov and Polymarket sections separate. Present a Markov block first using only the Markov payload, then a Polymarket block using only the Polymarket payload and quoted market questions/probabilities. Do NOT collapse them into one blended gold forecast. If forecast_arbitrator is present, the forecast_arbitrator verdict comes after those evidence blocks as the trade/action layer, not as a replacement for the underlying evidence.`;
   }
 
   const hasAbstainingMarkovOutput =
@@ -530,6 +622,7 @@ IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, 
     && /"status"\s*:\s*"abstain"/.test(fullToolResults);
   if (hasAbstainingMarkovOutput) {
     const assetIntent = resolveAssetIntent(originalQuery, null);
+    const explicitCombinedForecast = isExplicitCombinedMarkovPolymarketRequest(originalQuery);
     const explicitPolymarketForecast = isExplicitPolymarketForecastRequest(originalQuery);
     const btcShortHorizonForecast = /\b(?:btc|bitcoin)\b/i.test(originalQuery)
       && /\b(?:7|14)\s*(?:day|days)\b/i.test(originalQuery)
@@ -547,6 +640,8 @@ IMPORTANT: ${assetIntent.resolvedTicker} is only the data proxy for ${assetInten
 
 IMPORTANT: markov_distribution explicitly abstained. Its diagnostics are authoritative, but no calibrated scenario distribution is available.${btcShortHorizonForecast
       ? ' For BTC short-horizon forecast queries (7-day or 14-day), you MUST preserve the abstention in the final answer. You MUST NOT provide a point forecast, confidence interval, forecast grade, or bull/base/bear scenario probabilities after this abstention. Give a concise diagnostics-led no-trade / insufficient-edge answer instead.'
+      : explicitCombinedForecast
+        ? ' The user explicitly requested a combined Markov + polymarket forecast. You MUST preserve the abstain warning, and you MUST still use polymarket_forecast as the lead fallback answer path for a point forecast / confidence interval if its output is available. Do not collapse the answer into a Markov-only diagnostics note or a Polymarket-only framing; keep both the Markov abstention context and the requested combined structure.'
       : explicitPolymarketForecast
         ? ' The user explicitly requested polymarket_forecast. You MUST preserve the abstain warning, and you MUST still use polymarket_forecast as the lead fallback answer path for a point forecast / confidence interval if its output is available. Do not let the Markov abstention replace the requested polymarket_forecast-led answer framing.'
         : ' You may explain the abstain reasons and discuss market-quality limitations, and you MAY provide fallback analysis such as a point forecast or confidence interval if another tool explicitly supports it.'} However, you MUST clearly warn that no calibrated Markov terminal distribution was available, and you MUST NOT create, correct, extrapolate, interpolate, renormalize, or manually synthesize replacement scenario buckets or probability percentages from later polymarket_search results. Numeric scenario distributions are only allowed when copied directly from a non-abstaining canonical Markov payload.
@@ -558,5 +653,5 @@ For non-crypto forecast queries with a specific asset target (stocks, ETFs, comm
 
 Continue working toward answering the query. When you have gathered sufficient data to answer, write your complete answer directly and do not call more tools. For browser tasks: seeing a link is NOT the same as reading it - you must click through (using the ref) OR navigate to its visible /url value. NEVER guess at URLs - use ONLY URLs visible in snapshots.`;
 
-  return prompt;
+  return injectForecastLabRoutingHint(prompt, forecastLabRoutingHint);
 }

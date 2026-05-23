@@ -10,12 +10,13 @@
  *   history      — full HistoryItem[] for terminal scrollback display
  */
 
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { getCramerShortDir } from './paths.js';
-import type { HistoryItem } from '../types.js';
+import type { HistoryItem } from '../shared/history-types.js';
+import { atomicWriteFile } from './atomic-write.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -94,9 +95,7 @@ async function readIndex(baseDir: string): Promise<SessionIndex> {
 
 async function writeIndex(index: SessionIndex, baseDir: string): Promise<void> {
   const path = indexPath(baseDir);
-  const tmp = `${path}.${randomBytes(3).toString('hex')}.tmp`;
-  await writeFile(tmp, JSON.stringify(index, null, 2), 'utf-8');
-  await rename(tmp, path);
+  await atomicWriteFile(path, JSON.stringify(index, null, 2));
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -148,12 +147,8 @@ export async function createSession(
     history: [],
   };
 
-  // Atomic write: use a per-call unique tmp suffix to prevent concurrent saves
-  // from clobbering each other's tmp file.
   const filePath = sessionFilePath(id, baseDir);
-  const tmp = `${filePath}.${randomBytes(3).toString('hex')}.tmp`;
-  await writeFile(tmp, JSON.stringify(session), 'utf-8');
-  await rename(tmp, filePath);
+  await atomicWriteFile(filePath, JSON.stringify(session));
 
   // Update index
   const index = await readIndex(baseDir);
@@ -181,9 +176,7 @@ export async function saveSession(
   await ensureSessionsDir(baseDir);
 
   const filePath = sessionFilePath(session.id, baseDir);
-  const tmp = `${filePath}.${randomBytes(3).toString('hex')}.tmp`;
-  await writeFile(tmp, JSON.stringify(session), 'utf-8');
-  await rename(tmp, filePath);
+  await atomicWriteFile(filePath, JSON.stringify(session));
 
   const index = await readIndex(baseDir);
   const idx = index.sessions.findIndex((s) => s.id === session.id);

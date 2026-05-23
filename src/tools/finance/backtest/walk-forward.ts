@@ -11,7 +11,18 @@ import {
   type MarkovDistributionResult,
   type BreakFallbackCandidate,
   type DivergencePenaltySchedule,
+  type PredictionConfidenceMode,
 } from '../markov-distribution.js';
+import {
+  AdaptiveConformalPID,
+  ScoreAggregatedConformal,
+  type AdaptiveConformalRecordDiagnostics,
+} from '../conformal.js';
+import {
+  resolveForecastLabRuntimeAssetScopeForTicker,
+  withForecastLabRuntimeAssetScope,
+} from '../forecast-lab-runtime-defaults.js';
+import type { RegimePlattFits } from '../regime-calibrator.js';
 import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
 
 // ---------------------------------------------------------------------------
@@ -74,6 +85,74 @@ export interface WalkForwardConfig {
   btcReturnThresholdMultiplier?: number;
   /** Phase C experimental: BTC-only override for structural break divergence threshold */
   btcBreakDivergenceThreshold?: number;
+  /** W3R2 experimental: enable ADWIN-based historical-price trim */
+  enableAdwinTrim?: boolean;
+  /** W3R2 experimental: ADWIN delta (false-positive rate). Default 0.05 in MD. */
+  adwinDelta?: number;
+  /** W3R2 experimental: enable Hawkes-based jump intensity amplification */
+  enableHawkesIntensity?: boolean;
+  /** W3R2 experimental: sigma threshold for Hawkes jump detection. Default 3.0. */
+  hawkesSigmaThreshold?: number;
+  /** R4 Idea 3: pre-fitted regime-conditional Platt overlay. Default undefined ⇒ no overlay. */
+  regimePlattFits?: RegimePlattFits;
+  /** R4 Idea 4: enable GARCH(1,1) per-day vol scalars in trajectory MC. Default false ⇒ byte-identical. */
+  enableGarchVol?: boolean;
+  /** R5 Idea #5 — soft-blend GARCH scalars toward 1.0 past this horizon (in days). */
+  garchHorizonCap?: number;
+  /** R5 Idea #5 — regime-conditional ceiling for the GARCH scalar. */
+  garchRegimeCeiling?: { calm: number; turbulent: number };
+  /** R5 Idea #14 — enable transition-entropy CI width modulation. */
+  enableEntropyCiModulation?: boolean;
+  /** R5 Idea #14 — rolling history size for entropy z-score state. Default 60. */
+  entropyWindowSize?: number;
+  /** R5 Idea #14 — CI-scale sensitivity to entropy z-score. Default 0.15. */
+  entropyKappa?: number;
+  /** R5 Idea #11 — enable longshot/favorite shrinkage in RND anchor integration. */
+  enableLongshotShrinkage?: boolean;
+  /** R6 — enable adaptive conformal calibration in walk-forward CI evaluation. */
+  enableAdaptiveConformal?: boolean;
+  /** R6 — target conformal miscoverage α. Default 0.1. */
+  conformalAlpha?: number;
+  /** R6 — break-mode sensitivity / learning-rate multiplier. */
+  conformalBreakSensitivity?: number;
+  /** R6 — base adaptive conformal learning rate. */
+  conformalFastLearningRate?: number;
+  /** R6 — number of steps to keep break mode active after a trigger. */
+  conformalCooloffWindow?: number;
+  /** R6 — reset adaptive conformal state when a structural-break short-window rerun restarts the forecaster. Default true. */
+  conformalResetOnStructuralBreak?: boolean;
+  /** Phase 3 experimental: replace break-time interval merging with score-level conformal aggregation. */
+  enableConformalScoreAggregation?: boolean;
+  /** Phase 3 experimental: minimum calibration samples before score aggregation activates. */
+  conformalScoreMinSamples?: number;
+  /** Phase 3 experimental: rolling calibration window for score aggregation. */
+  conformalScoreCalibrationWindow?: number;
+  /** Item 1 — confidence-score ablation mode. */
+  predictionConfidenceMode?: PredictionConfidenceMode;
+  /** Item 2 — use HMM posterior uncertainty to widen CI / damp confidence. */
+  enableSoftRegimeWeighting?: boolean;
+  /** Item 2 — minimum confidence multiplier under maximum posterior entropy. Default 0.65. */
+  softRegimeConfidenceFloor?: number;
+  /** Item 2 — entropy weight used to damp confidence. Default 0.35. */
+  softRegimeConfidenceEntropyWeight?: number;
+  /** Item 2 — entropy weight used to widen CI. Default 0.35. */
+  softRegimeCiEntropyWeight?: number;
+  /** Item 2 — minimum retained HMM drift/vol blend weight under high entropy. Default 0.5. */
+  softRegimeHmmWeightFloor?: number;
+  /** Item 2 — entropy weight used to reduce HMM blend weight. Default 0.4. */
+  softRegimeHmmWeightEntropyWeight?: number;
+  /** Phase 2 experimental: replace Gaussian HMM forecast emissions with Student-t predictive emissions. */
+  enableStudentTEmission?: boolean;
+  /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
+  enableKswinTrim?: boolean;
+  /** KSWIN significance level. Default 0.005. */
+  kswinAlpha?: number;
+  /** R4 Idea 2: enable cross-asset Lasso bias on trajectory drift. Default false. */
+  enableCrossAssetBias?: boolean;
+  /** Peer-ticker → daily-return series, time-aligned with the target. */
+  crossAssetReturns?: Record<string, number[]>;
+  /** Lasso L1 strength. Default 0.005. */
+  crossAssetLassoLambda?: number;
 }
 
 export interface WalkForwardResult {
@@ -104,9 +183,74 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     stride = 5,
   } = config;
 
+  const runtimeAssetScope = resolveForecastLabRuntimeAssetScopeForTicker(ticker);
+
+  return withForecastLabRuntimeAssetScope(runtimeAssetScope, async () => {
+
   const steps: BacktestStep[] = [];
   const errors: Array<{ t: number; error: string }> = [];
   const maxT = prices.length - horizon - 1;
+  const entropyHistory: number[] = [];
+  const entropyWindowSize = Math.max(5, config.entropyWindowSize ?? 60);
+  let adaptiveConformal: AdaptiveConformalPID | undefined;
+  let scoreAggregatedConformal: ScoreAggregatedConformal | undefined;
+  let conformalBreakEpisodeActive = false;
+
+  const baseDistributionConfig = {
+    ticker,
+    horizon,
+    polymarketMarkets: [] as [],
+    cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
+    cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
+    rawDirectionHybrid: config.rawDirectionHybrid,
+    pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
+    cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
+    cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
+    cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
+    pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
+    pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
+    matureBullCalibration: config.matureBullCalibration,
+    startStateMixture: config.startStateMixture,
+    sidewaysSplit: config.sidewaysSplit,
+    transitionDecayOverride: config.transitionDecayOverride,
+    trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
+    breakFallbackCandidate: config.breakFallbackCandidate,
+    divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,
+    divergencePenaltySchedule: config.divergencePenaltySchedule,
+    regimeSpecificSigma: config.regimeSpecificSigma,
+    regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
+    btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
+    btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
+    enableAdwinTrim: config.enableAdwinTrim,
+    adwinDelta: config.adwinDelta,
+    enableHawkesIntensity: config.enableHawkesIntensity,
+    hawkesSigmaThreshold: config.hawkesSigmaThreshold,
+    regimePlattFits: config.regimePlattFits,
+    enableGarchVol: config.enableGarchVol,
+    garchHorizonCap: config.garchHorizonCap,
+    garchRegimeCeiling: config.garchRegimeCeiling,
+    enableEntropyCiModulation: config.enableEntropyCiModulation,
+    entropyKappa: config.entropyKappa,
+    enableLongshotShrinkage: config.enableLongshotShrinkage,
+    enableAdaptiveConformal: config.enableAdaptiveConformal,
+    conformalAlpha: config.conformalAlpha,
+    conformalBreakSensitivity: config.conformalBreakSensitivity,
+    conformalFastLearningRate: config.conformalFastLearningRate,
+    conformalCooloffWindow: config.conformalCooloffWindow,
+    predictionConfidenceMode: config.predictionConfidenceMode,
+    enableSoftRegimeWeighting: config.enableSoftRegimeWeighting,
+    softRegimeConfidenceFloor: config.softRegimeConfidenceFloor,
+    softRegimeConfidenceEntropyWeight: config.softRegimeConfidenceEntropyWeight,
+    softRegimeCiEntropyWeight: config.softRegimeCiEntropyWeight,
+    softRegimeHmmWeightFloor: config.softRegimeHmmWeightFloor,
+    softRegimeHmmWeightEntropyWeight: config.softRegimeHmmWeightEntropyWeight,
+    enableStudentTEmission: config.enableStudentTEmission,
+    enableKswinTrim: config.enableKswinTrim,
+    kswinAlpha: config.kswinAlpha,
+    enableCrossAssetBias: config.enableCrossAssetBias,
+    crossAssetReturns: config.crossAssetReturns,
+    crossAssetLassoLambda: config.crossAssetLassoLambda,
+  };
 
   for (let t = warmup; t <= maxT; t += stride) {
     const histPrices = prices.slice(0, t + 1);
@@ -116,32 +260,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
 
     try {
       let result: MarkovDistributionResult = await computeMarkovDistribution({
-        ticker,
-        horizon,
+        ...baseDistributionConfig,
         currentPrice,
         historicalPrices: histPrices,
-        polymarketMarkets: [],  // pure Markov, no anchors
-        cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
-        cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
-        rawDirectionHybrid: config.rawDirectionHybrid,
-        pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
-        cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
-        cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
-        cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
-        pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
-        pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
-        matureBullCalibration: config.matureBullCalibration,
-        startStateMixture: config.startStateMixture,
-        sidewaysSplit: config.sidewaysSplit,
-        transitionDecayOverride: config.transitionDecayOverride,
-        trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
-        breakFallbackCandidate: config.breakFallbackCandidate,
-        divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,
-        divergencePenaltySchedule: config.divergencePenaltySchedule,
-        regimeSpecificSigma: config.regimeSpecificSigma,
-        regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
-        btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
-        btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
+        transitionEntropyHistory: entropyHistory,
       });
 
       const originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
@@ -153,32 +275,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         if (histPrices.length > shortWindowSize) {
           structuralBreakRerunTriggered = true;
           result = await computeMarkovDistribution({
-            ticker,
-            horizon,
+            ...baseDistributionConfig,
             currentPrice,
             historicalPrices: histPrices.slice(-shortWindowSize),
-            polymarketMarkets: [],
-            cryptoShortHorizonConditionalWeight: config.cryptoShortHorizonConditionalWeight,
-            cryptoShortHorizonRawDecisionAblation: config.cryptoShortHorizonRawDecisionAblation,
-            rawDirectionHybrid: config.rawDirectionHybrid,
-            pr3fCryptoShortHorizonDisagreementPrior: config.pr3fCryptoShortHorizonDisagreementPrior,
-            cryptoShortHorizonKappaMultiplier: config.cryptoShortHorizonKappaMultiplier,
-            cryptoShortHorizonPUpFloor: config.cryptoShortHorizonPUpFloor,
-            cryptoShortHorizonBearMarginMultiplier: config.cryptoShortHorizonBearMarginMultiplier,
-            pr3gCryptoShortHorizonRecencyWeighting: config.pr3gCryptoShortHorizonRecencyWeighting,
-            pr3gCryptoShortHorizonDecay: config.pr3gCryptoShortHorizonDecay,
-            matureBullCalibration: config.matureBullCalibration,
-            startStateMixture: config.startStateMixture,
-            sidewaysSplit: config.sidewaysSplit,
-            transitionDecayOverride: config.transitionDecayOverride,
-            trendPenaltyOnlyBreakConfidence: config.trendPenaltyOnlyBreakConfidence,
-            breakFallbackCandidate: config.breakFallbackCandidate,
-            divergenceWeightedBreakConfidence: config.divergenceWeightedBreakConfidence,
-            divergencePenaltySchedule: config.divergencePenaltySchedule,
-            regimeSpecificSigma: config.regimeSpecificSigma,
-            regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
-            btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
-            btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
+            transitionEntropyHistory: entropyHistory,
           });
         }
       }
@@ -190,7 +290,103 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
       // The raw distribution has wider spread and better sign discriminability.
       const rawPredictedProb = interpolateSurvival(result.rawDistribution, currentPrice);
 
-      const { ciLower, ciUpper } = extractCI(result.distribution, currentPrice);
+      const central90Interval = extractCentralCI(result.distribution, currentPrice, 0.10);
+      const central95Interval = extractCentralCI(result.distribution, currentPrice, 0.05);
+      const central99Interval = extractCentralCI(result.distribution, currentPrice, 0.01);
+      let { ciLower, ciUpper } = extractCI(result.distribution, currentPrice);
+      let conformalApplied: boolean | undefined;
+      let conformalRadius: number | undefined;
+      let conformalCoverageEstimate: number | undefined;
+      let conformalSampleCount: number | undefined;
+      let conformalMode: 'normal' | 'break' | undefined;
+      let conformalResetTriggered: boolean | undefined;
+      let conformalScoreAggregationApplied: boolean | undefined;
+      let conformalScoreAggregationRadius: number | undefined;
+      let conformalScoreAggregationMultiplier: number | undefined;
+      let conformalScoreAggregationSampleCount: number | undefined;
+      const recentRealizedVol = computeRecentRealizedVol(histPrices);
+
+      const originalConformalBreakSignal = structuralBreakRerunTriggered
+        || (originalStructuralBreakDetected && (recentRealizedVol ?? 0) >= 0.02);
+
+      if (config.enableAdaptiveConformal === true) {
+        const forecastCenter = currentPrice * (1 + result.actionSignal.expectedReturn);
+        if (!adaptiveConformal) {
+          adaptiveConformal = new AdaptiveConformalPID({
+            enabled: true,
+            alpha: config.conformalAlpha,
+            initialRadius: currentPrice * 0.005,
+            learningRate: config.conformalFastLearningRate,
+            breakLearningRateMultiplier: config.conformalBreakSensitivity,
+            cooloffWindow: config.conformalCooloffWindow,
+          });
+        }
+        if (!scoreAggregatedConformal && config.enableConformalScoreAggregation === true) {
+          scoreAggregatedConformal = new ScoreAggregatedConformal({
+            alpha: config.conformalAlpha,
+            minSamples: config.conformalScoreMinSamples,
+            calibrationWindow: config.conformalScoreCalibrationWindow,
+          });
+        }
+
+        const enteringBreakRerunEpisode = structuralBreakRerunTriggered && !conformalBreakEpisodeActive;
+        if (enteringBreakRerunEpisode && (config.conformalResetOnStructuralBreak ?? true)) {
+          adaptiveConformal.reset({ radius: adaptiveConformal.currentRadius() });
+          scoreAggregatedConformal?.reset();
+          conformalResetTriggered = true;
+        }
+        conformalBreakEpisodeActive = structuralBreakRerunTriggered;
+
+        const adaptiveDiagnostics: AdaptiveConformalRecordDiagnostics = {
+          structuralBreak: structuralBreakRerunTriggered
+            ? originalConformalBreakSignal
+            : result.metadata.structuralBreakDetected && (recentRealizedVol ?? 0) >= 0.02,
+          realizedVol: recentRealizedVol,
+        };
+        const adaptiveInterval = adaptiveConformal.wrap(forecastCenter, adaptiveDiagnostics);
+        const adaptiveMode = adaptiveConformal.currentMode();
+        const adaptiveRadius = adaptiveInterval.high - forecastCenter;
+        const projectedModelRadius = Math.max(ciUpper - forecastCenter, forecastCenter - ciLower, 0);
+        const scoreAggregatedInterval = adaptiveMode === 'break'
+          ? scoreAggregatedConformal?.wrap(forecastCenter, [projectedModelRadius, adaptiveRadius])
+          : undefined;
+        if (adaptiveMode === 'break') {
+          const midpoint = (ciLower + ciUpper) / 2;
+          const halfWidth = (ciUpper - ciLower) / 2;
+          const widenedHalfWidth = Math.max(
+            halfWidth * (1 + ((config.conformalBreakSensitivity ?? 1.5) * 0.35)),
+            adaptiveRadius,
+          );
+          const mergedLower = Math.min(ciLower, adaptiveInterval.low, midpoint - widenedHalfWidth);
+          const mergedUpper = Math.max(ciUpper, adaptiveInterval.high, midpoint + widenedHalfWidth);
+          if (scoreAggregatedInterval?.applied === true) {
+            const intersectedLower = Math.max(mergedLower, scoreAggregatedInterval.low);
+            const intersectedUpper = Math.min(mergedUpper, scoreAggregatedInterval.high);
+            if (intersectedLower < intersectedUpper) {
+              ciLower = intersectedLower;
+              ciUpper = intersectedUpper;
+              conformalScoreAggregationApplied = (intersectedUpper - intersectedLower) + 1e-9
+                < (mergedUpper - mergedLower);
+              conformalScoreAggregationRadius = (intersectedUpper - intersectedLower) / 2;
+              conformalScoreAggregationMultiplier = scoreAggregatedInterval.multiplier ?? undefined;
+            } else {
+              ciLower = mergedLower;
+              ciUpper = mergedUpper;
+            }
+          } else {
+            ciLower = mergedLower;
+            ciUpper = mergedUpper;
+          }
+        }
+        adaptiveConformal.record(forecastCenter, realizedPrice, adaptiveDiagnostics);
+        scoreAggregatedConformal?.record(forecastCenter, realizedPrice, [projectedModelRadius, adaptiveRadius]);
+        conformalApplied = true;
+        conformalRadius = adaptiveRadius;
+        conformalCoverageEstimate = adaptiveConformal.empiricalCoverage();
+        conformalSampleCount = adaptiveConformal.sampleCount();
+        conformalMode = adaptiveMode;
+        conformalScoreAggregationSampleCount = scoreAggregatedConformal?.sampleCount();
+      }
 
       let decisionSource: DecisionSource = 'default';
       if (result.metadata.pr3fDisagreementBlendActive) {
@@ -216,6 +412,16 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         actualReturn,
         ciLower,
         ciUpper,
+        central90CiLower: central90Interval.ciLower,
+        central90CiUpper: central90Interval.ciUpper,
+        central95CiLower: central95Interval.ciLower,
+        central95CiUpper: central95Interval.ciUpper,
+        central99CiLower: central99Interval.ciLower,
+        central99CiUpper: central99Interval.ciUpper,
+        forecastDistribution: result.distribution.map(point => ({
+          price: point.price,
+          probability: point.probability,
+        })),
         realizedPrice,
         recommendation: result.actionSignal.recommendation,
         gofPasses: result.metadata.goodnessOfFit?.passes ?? null,
@@ -244,13 +450,40 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         breakFallbackCandidateId: result.metadata.breakFallbackCandidateId,
         breakFallbackMode: result.metadata.breakFallbackMode,
         regimeSpecificSigmaActive: result.metadata.regimeSpecificSigmaActive,
+        garchVolApplied: result.metadata.garchVolApplied,
+        transitionEntropy: result.metadata.transitionEntropy,
+        transitionEntropyNorm: result.metadata.transitionEntropyNorm,
+        transitionEntropyZ: result.metadata.transitionEntropyZ,
+        entropyCiScale: result.metadata.entropyCiScale,
+        entropyCiModulationApplied: result.metadata.entropyCiModulationApplied,
+        conformalApplied,
+        conformalRadius,
+        conformalCoverageEstimate,
+        conformalSampleCount,
+        conformalMode,
+        conformalResetTriggered,
+        conformalScoreAggregationApplied,
+        conformalScoreAggregationRadius,
+        conformalScoreAggregationMultiplier,
+        conformalScoreAggregationSampleCount,
+        softRegimeWeightingApplied: result.metadata.softRegime ? true : undefined,
+        softRegimePosteriorEntropy: result.metadata.softRegime?.posteriorEntropy,
+        softRegimeForecastEntropy: result.metadata.softRegime?.forecastEntropy,
+        softRegimeCiScale: result.metadata.softRegime?.ciScale,
+        softRegimeConfidenceMultiplier: result.metadata.softRegime?.confidenceMultiplier,
       });
+      const entropyNorm = result.metadata.transitionEntropyNorm;
+      if (typeof entropyNorm === 'number' && Number.isFinite(entropyNorm)) {
+        entropyHistory.push(entropyNorm);
+        if (entropyHistory.length > entropyWindowSize) entropyHistory.shift();
+      }
     } catch (err) {
       errors.push({ t, error: String(err) });
     }
   }
 
   return { ticker, horizon, steps, errors };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -294,15 +527,28 @@ function extractCI(
   dist: MarkovDistributionResult['distribution'],
   currentPrice: number,
 ): { ciLower: number; ciUpper: number } {
+  return extractSurvivalInterval(dist, currentPrice, 0.995, 0.005);
+}
+
+function extractCentralCI(
+  dist: MarkovDistributionResult['distribution'],
+  currentPrice: number,
+  alpha: number,
+): { ciLower: number; ciUpper: number } {
+  const tailProbability = alpha / 2;
+  return extractSurvivalInterval(dist, currentPrice, 1 - tailProbability, tailProbability);
+}
+
+function extractSurvivalInterval(
+  dist: MarkovDistributionResult['distribution'],
+  currentPrice: number,
+  lowerThreshold: number,
+  upperThreshold: number,
+): { ciLower: number; ciUpper: number } {
   if (dist.length === 0) return { ciLower: currentPrice * 0.9, ciUpper: currentPrice * 1.1 };
 
   let ciLower = dist[0].price;
   let ciUpper = dist[dist.length - 1].price;
-
-  // Use conservative survival thresholds — tuned empirically for coverage rather
-  // than interpreted as literal 5th/95th percentiles.
-  const lowerThreshold = 0.995;
-  const upperThreshold = 0.005;
 
   for (let i = 0; i < dist.length - 1; i++) {
     if (dist[i].probability >= lowerThreshold && dist[i + 1].probability < lowerThreshold) {
@@ -316,4 +562,20 @@ function extractCI(
   }
 
   return { ciLower, ciUpper };
+}
+
+function computeRecentRealizedVol(prices: readonly number[], lookback = 20): number | undefined {
+  if (prices.length < 3) return undefined;
+  const start = Math.max(1, prices.length - lookback);
+  const returns: number[] = [];
+  for (let i = start; i < prices.length; i++) {
+    const prev = prices[i - 1];
+    const next = prices[i];
+    if (!(prev > 0) || !(next > 0)) continue;
+    returns.push(Math.log(next / prev));
+  }
+  if (returns.length < 2) return undefined;
+  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const variance = returns.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / returns.length;
+  return Math.sqrt(Math.max(variance, 0));
 }

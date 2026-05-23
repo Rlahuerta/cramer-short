@@ -60,8 +60,9 @@ export class MemoryIndexer {
           if (name !== 'chat_history.json') return;
           this.scheduleDebouncedSync();
         });
-      } catch {
-        // Messages directory may not exist yet; session sync will still run on next search.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[memory-indexer] session watcher disabled: ${msg}`);
       }
     }
   }
@@ -72,7 +73,10 @@ export class MemoryIndexer {
       clearTimeout(this.watchTimer);
     }
     this.watchTimer = setTimeout(() => {
-      void this.sync().catch(() => {});
+      void this.sync().catch((err) => {
+        // Debounced sync errors are logged but non-fatal
+        console.warn('[memory-indexer] debounced sync failed:', err);
+      });
     }, this.options.watchDebounceMs);
   }
 

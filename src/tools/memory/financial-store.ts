@@ -19,22 +19,23 @@ Stored insights are automatically loaded at the start of every future session.
 `.trim();
 
 const schema = z.object({
-  ticker: z.string().describe('Ticker symbol, e.g. VWS.CO, AAPL'),
-  content: z.string().describe('The insight to store — markdown text, analysis summary, thesis, or routing note'),
-  tags: z.array(z.string()).optional().describe(
+  ticker: z.string().max(128).describe('Ticker symbol, e.g. VWS.CO, AAPL'),
+  content: z.string().max(100_000).describe('The insight to store — markdown text, analysis summary, thesis, or routing note'),
+  tags: z.array(z.string().max(128)).optional().describe(
     'Classification tags: routing:fmp-premium, routing:web-fallback, analysis:thesis, analysis:risk, analysis:valuation, sector:energy, exchange:CPH, etc.',
   ),
   routing: z.enum(['fmp-ok', 'fmp-premium', 'yahoo-ok', 'web-fallback']).optional().describe(
     'Which data source works for this ticker',
   ),
-  exchange: z.string().optional().describe('Exchange MIC code, e.g. CPH, XNAS'),
-  sector: z.string().optional().describe('Industry sector, e.g. energy, technology'),
-  namespace: z.string().optional().describe(
+  exchange: z.string().max(32).optional().describe('Exchange MIC code, e.g. CPH, XNAS'),
+  sector: z.string().max(128).optional().describe('Industry sector, e.g. energy, technology'),
+  namespace: z.string().max(128).optional().describe(
     'Optional namespace to scope this insight (e.g. "dcf", "short-thesis", "peer-comparison"). ' +
     'Prevents cross-contamination between different analysis workflows. Leave blank for global storage.',
   ),
 });
 
+/** Stores a durable financial insight in memory. */
 export const storeFinancialInsightTool = new DynamicStructuredTool({
   name: 'store_financial_insight',
   description: STORE_FINANCIAL_INSIGHT_DESCRIPTION,

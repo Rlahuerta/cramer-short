@@ -14,12 +14,13 @@ function getTavilyClient(): TavilySearch {
   return tavilyClient;
 }
 
+/** Searches the web through Tavily. */
 export const tavilySearch = new DynamicStructuredTool({
   name: 'web_search',
   description:
     'Search the web for current information on any topic. Returns relevant search results with URLs and content snippets.',
   schema: z.object({
-    query: z.string().describe('The search query to look up on the web'),
+    query: z.string().max(10_000).describe('The search query to look up on the web'),
   }),
   func: async (input) => {
     try {

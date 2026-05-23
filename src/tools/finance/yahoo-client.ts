@@ -5,6 +5,7 @@
  * preflight request to fc.yahoo.com and /v1/test/getcrumb. The crumb is cached
  * for CRUMB_TTL_MS and refreshed automatically on 401/403 responses.
  */
+import { z } from 'zod';
 
 const QUERY_HOST = 'https://query1.finance.yahoo.com';
 const CRUMB_URL = `${QUERY_HOST}/v1/test/getcrumb`;
@@ -23,7 +24,7 @@ interface CrumbCache {
 
 let crumbCache: CrumbCache | null = null;
 
-/** Exported for testing — resets the in-memory crumb cache. */
+/** @internal Test-only: resets the in-memory crumb cache. */
 export function _clearCrumbCache(): void {
   crumbCache = null;
 }
@@ -63,8 +64,94 @@ async function getCrumb(): Promise<CrumbCache> {
   return crumbCache;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type QuoteSummaryResult = Record<string, any>;
+const YahooNullableNumberSchema = z.number().nullable();
+const YahooNullableStringSchema = z.string().nullable();
+
+const YahooFinancialDataSchema = z.object({
+  targetHighPrice: YahooNullableNumberSchema,
+  targetLowPrice: YahooNullableNumberSchema,
+  targetMeanPrice: YahooNullableNumberSchema,
+  targetMedianPrice: YahooNullableNumberSchema,
+  recommendationMean: YahooNullableNumberSchema,
+  recommendationKey: YahooNullableStringSchema,
+  numberOfAnalystOpinions: YahooNullableNumberSchema,
+}).passthrough();
+
+const YahooIncomeStatementRecordSchema = z.object({
+  endDate: z.union([z.string(), z.number(), z.date()]).nullable(),
+  totalRevenue: YahooNullableNumberSchema,
+  grossProfit: YahooNullableNumberSchema,
+  operatingIncome: YahooNullableNumberSchema,
+  netIncome: YahooNullableNumberSchema,
+  ebit: YahooNullableNumberSchema,
+}).passthrough();
+
+const YahooRecommendationTrendRecordSchema = z.object({
+  period: YahooNullableStringSchema,
+  strongBuy: YahooNullableNumberSchema,
+  buy: YahooNullableNumberSchema,
+  hold: YahooNullableNumberSchema,
+  sell: YahooNullableNumberSchema,
+  strongSell: YahooNullableNumberSchema,
+}).passthrough();
+
+const YahooUpgradeDowngradeRecordSchema = z.object({
+  epochGradeDate: z.union([z.string(), z.number()]).nullable(),
+  firm: YahooNullableStringSchema,
+  toGrade: YahooNullableStringSchema,
+  fromGrade: YahooNullableStringSchema,
+  action: YahooNullableStringSchema,
+}).passthrough();
+
+const YahooRecommendationTrendSchema = z.object({
+  trend: z.array(YahooRecommendationTrendRecordSchema).min(1),
+}).passthrough();
+
+const YahooUpgradeDowngradeHistorySchema = z.object({
+  history: z.array(YahooUpgradeDowngradeRecordSchema).min(1),
+}).passthrough();
+
+const YahooIncomeStatementHistorySchema = z.object({
+  incomeStatementHistory: z.array(YahooIncomeStatementRecordSchema).min(1),
+}).passthrough();
+
+const YahooQuoteSummaryResultSchema = z.object({
+  financialData: YahooFinancialDataSchema.optional(),
+  recommendationTrend: YahooRecommendationTrendSchema.optional(),
+  upgradeDowngradeHistory: YahooUpgradeDowngradeHistorySchema.optional(),
+  incomeStatementHistory: YahooIncomeStatementHistorySchema.optional(),
+}).passthrough();
+
+const YahooQuoteSummaryEnvelopeSchema = z.object({
+  quoteSummary: z.object({
+    result: z.array(z.unknown()).nullable().optional(),
+    error: z.object({
+      message: z.string().optional(),
+    }).passthrough().nullable().optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
+type QuoteSummaryResult = z.infer<typeof YahooQuoteSummaryResultSchema>;
+
+function parseQuoteSummaryResultForModules(raw: unknown, modules: string[]): QuoteSummaryResult {
+  const requested = new Set(modules);
+  const schema = z.object({
+    financialData: requested.has('financialData')
+      ? YahooFinancialDataSchema
+      : YahooFinancialDataSchema.optional(),
+    recommendationTrend: requested.has('recommendationTrend')
+      ? YahooRecommendationTrendSchema
+      : YahooRecommendationTrendSchema.optional(),
+    upgradeDowngradeHistory: requested.has('upgradeDowngradeHistory')
+      ? YahooUpgradeDowngradeHistorySchema
+      : YahooUpgradeDowngradeHistorySchema.optional(),
+    incomeStatementHistory: requested.has('incomeStatementHistory')
+      ? YahooIncomeStatementHistorySchema
+      : YahooIncomeStatementHistorySchema.optional(),
+  }).passthrough();
+
+  return schema.parse(raw);
+}
 
 /**
  * Fetches Yahoo Finance quoteSummary for the given ticker and modules.
@@ -103,13 +190,11 @@ export async function quoteSummary(
     throw new Error(`Yahoo Finance quoteSummary failed for ${ticker}: ${res.status}`);
   }
 
-  const json = await res.json() as {
-    quoteSummary?: { result?: QuoteSummaryResult[] | null; error?: { message?: string } | null };
-  };
+  const json = YahooQuoteSummaryEnvelopeSchema.parse(await res.json());
 
   const qs = json.quoteSummary;
   if (qs?.error) throw new Error(qs.error.message ?? 'Yahoo Finance error');
   if (!qs?.result?.[0]) throw new Error(`No data returned for ${ticker}`);
 
-  return qs.result[0];
+  return parseQuoteSummaryResultForModules(qs.result[0], opts.modules);
 }

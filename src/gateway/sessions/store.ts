@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { getEnv } from '../../utils/env.js';
 import { cramerShortPath } from '../../utils/paths.js';
 
 export type SessionEntry = {
@@ -15,7 +16,7 @@ export type SessionEntry = {
 export type SessionStore = Record<string, SessionEntry>;
 
 export function resolveSessionStorePath(agentId: string): string {
-  const base = process.env.CRAMER_SHORT_SESSIONS_DIR ?? cramerShortPath('sessions');
+  const base = getEnv('CRAMER_SHORT_SESSIONS_DIR') ?? cramerShortPath('sessions');
   return join(base, agentId, 'sessions.json');
 }
 
@@ -62,4 +63,3 @@ export function upsertSessionMeta(params: {
   saveSessionStore(params.storePath, store);
   return next;
 }
-

@@ -17,6 +17,10 @@ import type {
 } from './types.js';
 import { getSetting } from '../utils/config.js';
 
+export { MemoryStore } from './store.js';
+export { runDream, incrementDreamSessionCount, shouldRunDream } from './dream.js';
+export { seedWatchlistEntries } from './auto-store.js';
+
 const DEFAULT_CONFIG: MemoryRuntimeConfig = {
   enabled: true,
   embeddingProvider: 'auto',

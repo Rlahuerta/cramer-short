@@ -10,7 +10,16 @@
  * Pure functions are exported from social-sentiment.ts specifically to enable
  * these isolated tests without mocking I/O.
  */
-import { describe, expect, it } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, expect, it, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   scoreSentiment,
   aggregateStats,
@@ -28,11 +37,11 @@ function makePost(overrides: Partial<SentimentPost> & { text: string }): Sentime
   const { sentiment, score: sentimentScore } = scoreSentiment(overrides.text);
   return {
     source: 'reddit',
-    id: `id-${Math.random()}`,
+    id: `${nextTestId('post')}`,
     author: 'u/test',
     score: 100,
     url: 'https://reddit.com/r/test/comments/1',
-    created_at: new Date().toISOString(),
+    created_at: new Date(FIXED_TEST_NOW_MS).toISOString(),
     sentiment,
     sentimentScore,
     ...overrides,
@@ -215,13 +224,13 @@ const BULL_POST = {
   id: 'b1', title: 'AAPL strong buy calls bullish rally breakout',
   selftext: 'buy the dip loading accumulate', author: 'bulltrader',
   ups: 500, upvote_ratio: 0.92,
-  permalink: '/r/wallstreetbets/comments/b1/bull/', created_utc: Math.floor(Date.now() / 1000) - 3600,
+  permalink: '/r/wallstreetbets/comments/b1/bull/', created_utc: Math.floor(FIXED_TEST_NOW_MS / 1000) - 3600,
 };
 const BEAR_POST = {
   id: 'br1', title: 'AAPL crash sell puts dump bearish decline',
   selftext: 'weak earnings miss avoid exit', author: 'beartrader',
   ups: 200, upvote_ratio: 0.75,
-  permalink: '/r/wallstreetbets/comments/br1/bear/', created_utc: Math.floor(Date.now() / 1000) - 7200,
+  permalink: '/r/wallstreetbets/comments/br1/bear/', created_utc: Math.floor(FIXED_TEST_NOW_MS / 1000) - 7200,
 };
 
 function mockFetchReddit(bullCount: number, bearCount: number) {

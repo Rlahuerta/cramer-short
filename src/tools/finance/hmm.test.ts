@@ -1,7 +1,16 @@
 /**
  * Tests for Gaussian Hidden Markov Model implementation.
  */
-import { describe, it, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   initializeHMM,
   forward,
@@ -9,6 +18,8 @@ import {
   baumWelch,
   viterbi,
   predict,
+  attachStudentTPredictiveEmissions,
+  resolveStudentTPriorHyperparameters,
   type HMMParams,
 } from './hmm.js';
 
@@ -102,7 +113,7 @@ describe('initializeHMM', () => {
   });
 
   it('means are sorted ascending (bear < bull)', () => {
-    const obs = Array.from({ length: 200 }, (_, i) => (i < 100 ? -0.02 : 0.02) + Math.random() * 0.001);
+    const obs = Array.from({ length: 200 }, (_, i) => (i < 100 ? -0.02 : 0.02) + deterministicRandom() * 0.001);
     const params = initializeHMM(obs, 3);
 
     for (let i = 1; i < params.nStates; i++) {
@@ -111,14 +122,14 @@ describe('initializeHMM', () => {
   });
 
   it('pi sums to 1', () => {
-    const obs = Array.from({ length: 50 }, () => Math.random() * 0.04 - 0.02);
+    const obs = Array.from({ length: 50 }, () => deterministicRandom() * 0.04 - 0.02);
     const params = initializeHMM(obs, 3);
     const sum = params.pi.reduce((s, v) => s + v, 0);
     expect(sum).toBeCloseTo(1, 10);
   });
 
   it('each row of A sums to 1', () => {
-    const obs = Array.from({ length: 50 }, () => Math.random() * 0.04 - 0.02);
+    const obs = Array.from({ length: 50 }, () => deterministicRandom() * 0.04 - 0.02);
     const params = initializeHMM(obs, 3);
     for (const row of params.A) {
       const sum = row.reduce((s, v) => s + v, 0);
@@ -318,6 +329,59 @@ describe('predict', () => {
     const obs = Array(100).fill(-0.02);
     const result = predict(obs, THREE_STATE_PARAMS, 10);
     expect(result.expectedReturn).toBeLessThan(0);
+  });
+});
+
+describe('attachStudentTPredictiveEmissions', () => {
+  it('strengthens the prior mean weight for sparse states and relaxes it for dense states', () => {
+    const calmObs = [-0.01, 0.02, -0.015, 0.01, -0.005, 0.012, -0.008, 0.009];
+    const sparse = resolveStudentTPriorHyperparameters(calmObs, 1, 1.5);
+    const dense = resolveStudentTPriorHyperparameters(calmObs, 1, 20);
+
+    expect(sparse.priorKappa).toBeGreaterThan(dense.priorKappa);
+    expect(sparse.priorAlpha).toBeGreaterThan(2);
+    expect(dense.priorKappa).toBeCloseTo(0.01, 12);
+  });
+
+  it('keeps heavier-tail priors for more kurtotic series than for calm series', () => {
+    const calmObs = [-0.01, 0.02, -0.015, 0.01, -0.005, 0.012, -0.008, 0.009];
+    const turbulentObs = [-0.02, 0.018, -0.015, 0.02, 0.01, -0.01, 0.012, -0.008, 0.85, -0.72];
+    const calm = resolveStudentTPriorHyperparameters(calmObs, 1, 4);
+    const turbulent = resolveStudentTPriorHyperparameters(turbulentObs, 1, 4);
+
+    expect(calm.priorAlpha).toBeGreaterThan(turbulent.priorAlpha);
+    expect(turbulent.priorAlpha).toBeGreaterThanOrEqual(2);
+  });
+
+  it('produces finite Student-t predictive parameters for every state', () => {
+    const obs = generateFromHMM(THREE_STATE_PARAMS, 200, 777);
+    const augmented = attachStudentTPredictiveEmissions(obs, THREE_STATE_PARAMS);
+
+    expect(augmented.studentTEmissions).toHaveLength(THREE_STATE_PARAMS.nStates);
+    for (const emission of augmented.studentTEmissions ?? []) {
+      expect(Number.isFinite(emission.location)).toBe(true);
+      expect(Number.isFinite(emission.scale)).toBe(true);
+      expect(emission.scale).toBeGreaterThan(0);
+      expect(emission.degreesOfFreedom).toBeGreaterThan(2);
+      expect(emission.effectiveSampleSize).toBeGreaterThan(0);
+    }
+  });
+
+  it('assigns more density to an outlier than the Gaussian baseline on the same fitted state', () => {
+    const baseParams: HMMParams = {
+      nStates: 1,
+      pi: [1],
+      A: [[1]],
+      means: [0],
+      stds: [1],
+    };
+    const obs = Array.from({ length: 30 }, (_, i) => [-1.1, -0.8, -0.4, 0, 0.2, 0.5, 0.9][i % 7]).concat(6);
+    const augmented = attachStudentTPredictiveEmissions(obs, baseParams);
+
+    expect(augmented.studentTEmissions?.[0].degreesOfFreedom).toBeGreaterThan(4);
+    expect(forward([6], augmented).logLikelihood).toBeGreaterThan(
+      forward([6], baseParams).logLikelihood,
+    );
   });
 });
 

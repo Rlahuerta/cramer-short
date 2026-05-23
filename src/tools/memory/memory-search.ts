@@ -20,9 +20,10 @@ Semantic search over persistent memory and past conversation transcripts.
 `.trim();
 
 const memorySearchSchema = z.object({
-  query: z.string().describe('Natural language query for memory recall.'),
+  query: z.string().max(10_000).describe('Natural language query for memory recall.'),
 });
 
+/** Searches indexed project memory content. */
 export const memorySearchTool = new DynamicStructuredTool({
   name: 'memory_search',
   description:

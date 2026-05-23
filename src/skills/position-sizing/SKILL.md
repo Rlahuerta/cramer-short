@@ -39,7 +39,8 @@ Use this skill when the user asks about position sizing, portfolio allocation, o
 Call `portfolio_risk` to understand current portfolio risk characteristics:
 
 ```
-portfolio_risk({ tickers: [...] })  // user's watchlist or specified tickers
+portfolio_risk({ tickers: [...] })  // specified tickers
+portfolio_risk({ watchlist_entries: [...] })  // user's watchlist entries from context
 ```
 
 **Extract:**

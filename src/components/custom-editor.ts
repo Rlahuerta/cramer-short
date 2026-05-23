@@ -1,5 +1,10 @@
 import { Editor, Key, matchesKey } from '@mariozechner/pi-tui';
 
+function getCancelAutocomplete(editor: Editor): (() => void) | undefined {
+  const candidate = Reflect.get(editor, 'cancelAutocomplete');
+  return typeof candidate === 'function' ? candidate.bind(editor) : undefined;
+}
+
 export class CustomEditor extends Editor {
   onEscape?: () => void;
   onCtrlC?: () => void;
@@ -24,7 +29,7 @@ export class CustomEditor extends Editor {
    * (called from onSubmit after submit) ensures a clean slate.
    */
   setText(text: string): void {
-    (this as unknown as { cancelAutocomplete: () => void }).cancelAutocomplete?.();
+    getCancelAutocomplete(this)?.();
     super.setText(text);
   }
 }

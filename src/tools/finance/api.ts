@@ -1,7 +1,9 @@
+import { z } from 'zod';
 import { readCache, writeCache, describeRequest } from '../../utils/cache.js';
+import { getEnv } from '../../utils/env.js';
 import { logger } from '../../utils/logger.js';
 import { withRetry, isRateLimitError } from '../../utils/retry.js';
-import { trackFmpCall, getQuotaWarning } from '../../utils/fmp-quota.js';
+import { trackFmpCall, getQuotaWarning } from '../../utils/finance/fmp-quota.js';
 
 const BASE_URL = 'https://api.financialdatasets.ai';
 
@@ -14,6 +16,56 @@ export const FINANCIAL_DATASETS_PREMIUM = 'FINANCIAL_DATASETS_PREMIUM_REQUIRED';
 export interface ApiResponse {
   data: Record<string, unknown>;
   url: string;
+}
+
+const FinancialDatasetsPriceSchema = z.object({
+  close: z.number(),
+}).passthrough();
+
+const FinancialDatasetsPricesPayloadSchema = z.union([
+  z.array(FinancialDatasetsPriceSchema),
+  z.object({
+    prices: z.array(FinancialDatasetsPriceSchema),
+  }).passthrough(),
+]);
+
+export type FinancialDatasetsPrice = z.infer<typeof FinancialDatasetsPriceSchema>;
+
+export class FinancialDatasetsPayloadValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FinancialDatasetsPayloadValidationError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class FinancialDatasetsHttpError extends Error {
+  readonly status: number;
+  readonly statusText: string;
+  readonly body?: string;
+
+  constructor(status: number, statusText: string, body?: string) {
+    const detail = `${status} ${statusText}`;
+    const bodyDetail = body?.trim()
+      ? ` — ${body.trim().replace(/\s+/g, ' ').slice(0, 500)}`
+      : '';
+    super(`[Financial Datasets API] request failed: ${detail}${bodyDetail}`);
+    this.name = 'FinancialDatasetsHttpError';
+    this.status = status;
+    this.statusText = statusText;
+    this.body = body;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export function parseFinancialDatasetsPricesPayload(data: unknown): FinancialDatasetsPrice[] {
+  const parsed = FinancialDatasetsPricesPayloadSchema.safeParse(data);
+  if (!parsed.success) {
+    throw new FinancialDatasetsPayloadValidationError(
+      `Malformed Financial Datasets prices payload: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`,
+    );
+  }
+  return Array.isArray(parsed.data) ? parsed.data : parsed.data.prices;
 }
 
 /**
@@ -49,7 +101,7 @@ export function stripFieldsDeep(value: unknown, fields: readonly string[]): unkn
 }
 
 function getApiKey(): string {
-  const key = process.env.FINANCIAL_DATASETS_API_KEY || '';
+  const key = getEnv('FINANCIAL_DATASETS_API_KEY') || '';
   if (!key) {
     throw new Error(
       '[Financial Datasets API] FINANCIAL_DATASETS_API_KEY is not set. ' +
@@ -102,14 +154,17 @@ async function executeRequest(
 
   if (!response.ok) {
     const detail = `${response.status} ${response.statusText}`;
-    logger.error(`[Financial Datasets API] error: ${label} — ${detail}`);
+    const body = typeof (response as Response & { text?: () => Promise<string> }).text === 'function'
+      ? await response.text().catch(() => '')
+      : '';
+    logger.error(`[Financial Datasets API] error: ${label} — ${detail}${body ? ` — ${body}` : ''}`);
     if (response.status === 402) {
       throw new Error(
         `${FINANCIAL_DATASETS_PREMIUM}: This endpoint requires a paid Financial Datasets plan. ` +
           'Upgrade at https://financialdatasets.ai or use web_search as a fallback.',
       );
     }
-    throw new Error(`[Financial Datasets API] request failed: ${detail}`);
+    throw new FinancialDatasetsHttpError(response.status, response.statusText, body);
   }
 
   const data = await response.json().catch(() => {

@@ -5,13 +5,22 @@
  *  - #9  Search explanation field populated on results
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { MemoryDatabase } from './database.js';
 import { hybridSearch } from './search.js';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 
 function h(s: string): string {
   return createHash('sha256').update(s).digest('hex');
@@ -26,7 +35,7 @@ describe('searchKeyword — BM25 normalised scoring', () => {
   let tmpPath: string;
 
   beforeEach(async () => {
-    tmpPath = join(tmpdir(), `dexter-bm25-test-${Date.now()}.sqlite`);
+    tmpPath = join(tmpdir(), `dexter-bm25-test-${FIXED_TEST_NOW_MS}.sqlite`);
     db = await MemoryDatabase.create(tmpPath);
 
     const chunks = [
@@ -98,7 +107,7 @@ describe('searchKeyword — financial synonym expansion', () => {
   let tmpPath: string;
 
   beforeEach(async () => {
-    tmpPath = join(tmpdir(), `dexter-syn-test-${Date.now()}.sqlite`);
+    tmpPath = join(tmpdir(), `dexter-syn-test-${FIXED_TEST_NOW_MS}.sqlite`);
     db = await MemoryDatabase.create(tmpPath);
 
     const chunks = [
@@ -147,7 +156,7 @@ describe('hybridSearch — explanation field', () => {
   let tmpPath: string;
 
   beforeEach(async () => {
-    tmpPath = join(tmpdir(), `dexter-explain-test-${Date.now()}.sqlite`);
+    tmpPath = join(tmpdir(), `dexter-explain-test-${FIXED_TEST_NOW_MS}.sqlite`);
     db = await MemoryDatabase.create(tmpPath);
 
     const content = 'NVDA GPU sales revenue record earnings growth semiconductor';

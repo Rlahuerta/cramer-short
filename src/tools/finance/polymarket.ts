@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
@@ -8,6 +9,15 @@ import {
   createSnapshotRecord,
   type PolymarketSnapshotRecord,
 } from './polymarket-snapshots.js';
+import {
+  computeMaxHourlyJump,
+  computeMaxHourlyLogitJump,
+  computePriceVelocityPpH,
+  computePriceVelocityLogitPerHour,
+  fetchClobPriceHistory,
+  fetchClobSpread,
+} from './polymarket-clob.js';
+import { hasEnv } from '../../utils/env.js';
 
 // ---------------------------------------------------------------------------
 // Description (injected into system prompt)
@@ -68,6 +78,7 @@ interface PolymarketMarket {
   question: string;
   outcomes: string;
   outcomePrices: string;
+  clobTokenIds?: string | string[];
   endDateIso?: string;
   /** Gamma API returns ISO date string for market creation time. */
   createdAt?: string;
@@ -76,6 +87,7 @@ interface PolymarketMarket {
   liquidityNum?: number;
   active: boolean;
   closed: boolean;
+  enableOrderBook?: boolean;
   description?: string;
 }
 
@@ -89,6 +101,7 @@ interface PolymarketEvent {
 
 interface FormattedMarket {
   marketId: string;
+  assetId?: string;
   question: string;
   probabilities: Record<string, string>;
   endDate: string | null;
@@ -96,6 +109,9 @@ interface FormattedMarket {
   liquidity: string;
   /** Days since the market was created (undefined if createdAt missing from API). */
   ageDays: number | undefined;
+  active: boolean;
+  closed: boolean;
+  enableOrderBook?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +174,7 @@ interface CacheEntry<T> {
 export interface FetchPolymarketMarketsOptions {
   snapshotFilePath?: string;
   capturedAt?: string;
+  enrichMicrostructure?: boolean;
 }
 
 const searchCache = new Map<string, CacheEntry<FormattedMarket[]>>();
@@ -213,7 +230,7 @@ function computeAgeDays(createdAt: string | undefined): number | undefined {
   if (!createdAt) return undefined;
   const ms = Date.now() - new Date(createdAt).getTime();
   if (isNaN(ms) || ms < 0) return undefined;
-  return Math.floor(ms / 86_400_000);
+  return Math.floor(ms / MS_PER_DAY);
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +331,7 @@ export function scoreAnchorMarketRelevance(
   if (horizonDays != null && endDate) {
     const endMs = Date.parse(endDate);
     if (Number.isFinite(endMs)) {
-      const daysUntilResolution = Math.abs((endMs - Date.now()) / 86_400_000 - horizonDays);
+      const daysUntilResolution = Math.abs((endMs - Date.now()) / MS_PER_DAY - horizonDays);
       score += Math.max(0, 4 - Math.min(4, daysUntilResolution));
     }
   }
@@ -392,15 +409,22 @@ export function inferTagSlugs(query: string): string[] {
 // Core fetch helpers
 // ---------------------------------------------------------------------------
 
-function parseJsonField<T>(raw: string | T): T {
-  if (typeof raw === 'string') {
-    try {
-      return JSON.parse(raw) as T;
-    } catch {
-      return [] as unknown as T;
-    }
-  }
-  return raw;
+function parseStringArrayField(raw: string | readonly string[] | undefined): string[] {
+  const parsed = typeof raw === 'string'
+    ? (() => {
+        try {
+          return JSON.parse(raw) as unknown;
+        } catch {
+          return [];
+        }
+      })()
+    : raw;
+
+  return Array.isArray(parsed)
+    ? parsed
+        .filter((item): item is string | number => typeof item === 'string' || typeof item === 'number')
+        .map((item) => String(item))
+    : [];
 }
 
 function formatVolume(n: number | undefined): string {
@@ -411,8 +435,9 @@ function formatVolume(n: number | undefined): string {
 }
 
 function formatMarket(m: PolymarketMarket): FormattedMarket | null {
-  const outcomes = parseJsonField<string[]>(m.outcomes);
-  const prices = parseJsonField<string[]>(m.outcomePrices);
+  const outcomes = parseStringArrayField(m.outcomes);
+  const prices = parseStringArrayField(m.outcomePrices);
+  const clobTokenIds = parseStringArrayField(m.clobTokenIds);
   if (!outcomes.length || !prices.length) return null;
 
   const probabilities: Record<string, string> = {};
@@ -423,12 +448,16 @@ function formatMarket(m: PolymarketMarket): FormattedMarket | null {
 
   return {
     marketId: m.conditionId ?? m.id,
+    assetId: clobTokenIds.find((tokenId) => typeof tokenId === 'string' && tokenId.trim().length > 0),
     question: m.question,
     probabilities,
     endDate: m.endDateIso ?? null,
     volume24h: formatVolume(m.volume24hr),
     liquidity: formatVolume(m.liquidityNum),
     ageDays: computeAgeDays(m.createdAt),
+    active: m.active,
+    closed: m.closed,
+    enableOrderBook: m.enableOrderBook,
   };
 }
 
@@ -617,7 +646,7 @@ function formatResults(markets: FormattedMarket[], query: string, warnings: stri
   return lines.join('\n').trim();
 }
 
-const anchorTrace = process.env.DEBUG_ANCHORS
+const anchorTrace = hasEnv('DEBUG_ANCHORS')
   ? (...args: unknown[]) => console.error('[ANCHOR_TRACE]', ...args)
   : (..._args: unknown[]) => {};
 
@@ -769,7 +798,12 @@ async function searchEventsForAnchors(
 export async function fetchPolymarketAnchorMarketsWithQueries(
   queries: string[],
   limit: number,
-  options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+  options: {
+    ticker: string;
+    horizonDays?: number;
+    endDateFilter?: { end_date_min: string; end_date_max: string };
+    enrichMicrostructure?: boolean;
+  },
 ): Promise<PolymarketMarketResult[]> {
   const dedupedQueries = Array.from(new Set(queries.filter(Boolean)));
   const seen = new Set<string>();
@@ -798,13 +832,17 @@ export async function fetchPolymarketAnchorMarketsWithQueries(
     }
   });
 
-  return scored
+  const selected = scored
     .sort((a, b) => {
       if (a.score !== b.score) return b.score - a.score;
       return b.market.volume24h - a.market.volume24h;
     })
     .slice(0, limit)
     .map(({ market }) => market);
+
+  return options.enrichMicrostructure
+    ? enrichStructuredMarketsMicrostructure(selected)
+    : selected;
 }
 
 // ---------------------------------------------------------------------------
@@ -814,6 +852,7 @@ export async function fetchPolymarketAnchorMarketsWithQueries(
 /** Structured Polymarket market result — numeric values, suitable for the injector. */
 export interface PolymarketMarketResult {
   marketId?: string;
+  assetId?: string;
   question: string;
   /** YES probability [0, 1] */
   probability: number;
@@ -822,17 +861,65 @@ export interface PolymarketMarketResult {
   /** Days since market was created (undefined if unavailable from API). */
   ageDays: number | undefined;
   endDate?: string | null;
+  active?: boolean;
+  closed?: boolean;
+  enableOrderBook?: boolean;
+  bidAskSpread?: number;
+  priceVelocityPpH?: number;
+  priceVelocityLogitPerHour?: number;
+  maxHourlyJump?: number;
+  maxHourlyLogitJump?: number;
 }
 
 function toStructuredMarketResult(m: FormattedMarket): PolymarketMarketResult {
   return {
     marketId: m.marketId,
+    assetId: m.assetId,
     question: m.question,
     probability: parseYesProbability(m.probabilities),
     volume24h: parseVolumeStr(m.volume24h),
     ageDays: m.ageDays,
     endDate: m.endDate,
+    active: m.active,
+    closed: m.closed,
+    enableOrderBook: m.enableOrderBook,
   };
+}
+
+async function enrichStructuredMarketMicrostructure(
+  market: PolymarketMarketResult,
+): Promise<PolymarketMarketResult> {
+  const tokenId = typeof market.assetId === 'string' && market.assetId.trim().length > 0
+    ? market.assetId
+    : undefined;
+  if (!tokenId) return market;
+
+  const [bidAskSpread, history] = await Promise.all([
+    market.enableOrderBook === false ? Promise.resolve(null) : fetchClobSpread(tokenId),
+    fetchClobPriceHistory(tokenId, '1h'),
+  ]);
+
+  if (bidAskSpread === null && history.length < 2) return market;
+
+  return {
+    ...market,
+    ...(bidAskSpread !== null ? { bidAskSpread } : {}),
+    ...(history.length >= 2
+      ? {
+          priceVelocityPpH: computePriceVelocityPpH(history),
+          priceVelocityLogitPerHour: computePriceVelocityLogitPerHour(history),
+          maxHourlyJump: computeMaxHourlyJump(history),
+          maxHourlyLogitJump: computeMaxHourlyLogitJump(history),
+        }
+      : {}),
+  };
+}
+
+async function enrichStructuredMarketsMicrostructure(
+  markets: PolymarketMarketResult[],
+): Promise<PolymarketMarketResult[]> {
+  const enriched = await Promise.allSettled(markets.map(enrichStructuredMarketMicrostructure));
+  return enriched.map((result, index) => result.status === 'fulfilled' ? result.value : markets[index]!);
 }
 
 function parseYesProbability(probs: Record<string, string>): number {
@@ -850,6 +937,112 @@ function parseVolumeStr(s: string): number {
 }
 
 /**
+ * Idea 2 — Curate Polymarket markets suitable for use as jump-diffusion
+ * event sources.  A market qualifies when it satisfies all of:
+ *
+ *   1. Resolves before `horizonDate` (settlement falls inside the forecast).
+ *   2. 24h volume ≥ `minVolume24h` (default $5,000) — proxy for liquidity.
+ *   3. Age ≥ `minAgeDays` (default 2) — filters brand-new low-info markets.
+ *   4. Probability strictly in (0, 1) — degenerate quotes give no information.
+ *
+ * The returned shape is intentionally minimal so callers can pair it with
+ * `buildJumpEventSpec()` without leaking Polymarket-specific fields into
+ * the trajectory module.
+ *
+ * Probabilities returned here are still in the **Q-measure** — apply the
+ * Q→P transformation before computing the daily hazard rate.
+ */
+export interface JumpEventMarket {
+  /** Polymarket market id or question slug (used as JumpEventSpec.id). */
+  id: string;
+  /** Q-measure YES probability in (0, 1). */
+  probability: number;
+  /** Days from today to settlement (≥ 1). */
+  daysToSettlement: number;
+  /** Original question text — handy for provenance/debug logs. */
+  question: string;
+  /** P2a — heuristic direction inferred from question wording. */
+  jumpDirection: JumpDirection;
+}
+
+/** P2a — Direction of the implied jump if the YES outcome materialises. */
+export type JumpDirection = 'up' | 'down' | 'unknown';
+
+/**
+ * Heuristic classifier — returns the *most likely* asset-price direction
+ * if the prediction-market YES outcome resolves true.
+ *
+ * Polymarket questions about war, sanctions, recession, defaults,
+ * crashes, etc. are downside catalysts. Questions about rate cuts,
+ * trade deals, regulatory approvals, breakthroughs are upside catalysts.
+ *
+ * Keyword lists are intentionally short and high-precision; ambiguous
+ * questions return 'unknown' so the MC engine falls back to the
+ * direction-neutral prior.
+ */
+const _DOWN_KEYWORDS = [
+  'crash', 'attack', 'war', 'invasion', 'recession', 'default',
+  'collapse', 'bankrupt', 'fail', 'drop', 'sanction', 'plunge',
+  'tariff', 'shutdown', 'crisis', 'sell-off', 'selloff', 'meltdown',
+];
+const _UP_KEYWORDS = [
+  'rate cut', 'cut rates', 'reach', 'hit', 'breakthrough', 'approve',
+  'approved', 'rally', 'surge', 'deal', 'agreement', 'signed',
+  'announce', 'launch', 'merger', 'acquisition',
+];
+
+export function classifyJumpDirection(question: string): JumpDirection {
+  const q = question.toLowerCase();
+  const hasDown = _DOWN_KEYWORDS.some((kw) => q.includes(kw));
+  const hasUp = _UP_KEYWORDS.some((kw) => q.includes(kw));
+  if (hasDown && !hasUp) return 'down';
+  if (hasUp && !hasDown) return 'up';
+  return 'unknown';
+}
+
+export interface ExtractJumpEventOptions {
+  /** End-of-forecast horizon date.  Markets resolving after this are dropped. */
+  horizonDate: Date;
+  /** Optional liquidity floor (USD).  Default 5,000. */
+  minVolume24h?: number;
+  /** Minimum market age in days.  Default 2. */
+  minAgeDays?: number;
+  /** Reference "now" — defaults to `new Date()`. */
+  now?: Date;
+}
+
+export function extractJumpEventMarkets(
+  markets: readonly PolymarketMarketResult[],
+  options: ExtractJumpEventOptions,
+): JumpEventMarket[] {
+  const minVol = options.minVolume24h ?? 5_000;
+  const minAge = options.minAgeDays ?? 2;
+  const now = options.now ?? new Date();
+  const horizonMs = options.horizonDate.getTime();
+  const out: JumpEventMarket[] = [];
+  for (const m of markets) {
+    if (m.probability <= 0 || m.probability >= 1) continue;
+    if (m.volume24h < minVol) continue;
+    if (m.ageDays === undefined || m.ageDays < minAge) continue;
+    if (!m.endDate) continue;
+    const endMs = Date.parse(m.endDate);
+    if (!Number.isFinite(endMs) || endMs > horizonMs) continue;
+    // P1c — drop markets settling in <24h (too noisy, often whale-driven).
+    const rawDaysToSettle = (endMs - now.getTime()) / MS_PER_DAY;
+    if (rawDaysToSettle < 1) continue;
+    const daysToSettlement = Math.max(1, Math.ceil(rawDaysToSettle));
+    out.push({
+      id: m.marketId ?? m.question,
+      probability: m.probability,
+      daysToSettlement,
+      question: m.question,
+      jumpDirection: classifyJumpDirection(m.question),
+    });
+  }
+  return out;
+}
+
+/**
  * Fetches Polymarket markets for `query` and returns structured numeric results.
  * Used by `polymarket-injector` for pre-query context injection.
  * Uses tag-based search exclusively — the Gamma API keyword param is non-functional.
@@ -861,9 +1054,12 @@ export async function fetchPolymarketMarkets(
 ): Promise<PolymarketMarketResult[]> {
   const markets = await searchEvents(query, limit);
   const structured = markets.map(toStructuredMarketResult);
+  const enriched = options.enrichMicrostructure
+    ? await enrichStructuredMarketsMicrostructure(structured)
+    : structured;
 
   if (options.snapshotFilePath) {
-    const snapshotRecords = structured
+    const snapshotRecords = enriched
       .map((market) => createSnapshotRecord(market, options.capturedAt))
       .filter((record): record is PolymarketSnapshotRecord => record !== null);
 
@@ -875,13 +1071,18 @@ export async function fetchPolymarketMarkets(
     }
   }
 
-  return structured;
+  return enriched;
 }
 
 export async function fetchPolymarketAnchorMarkets(
   query: string,
   limit: number,
-  options: { ticker: string; horizonDays?: number; endDateFilter?: { end_date_min: string; end_date_max: string } },
+  options: {
+    ticker: string;
+    horizonDays?: number;
+    endDateFilter?: { end_date_min: string; end_date_max: string };
+    enrichMicrostructure?: boolean;
+  },
 ): Promise<PolymarketMarketResult[]> {
   return fetchPolymarketAnchorMarketsWithQueries([query], limit, options);
 }
@@ -890,11 +1091,12 @@ export async function fetchPolymarketAnchorMarkets(
 // Tool
 // ---------------------------------------------------------------------------
 
+/** Searches and analyzes Polymarket prediction markets. */
 export const polymarketTool = new DynamicStructuredTool({
   name: 'polymarket_search',
   description: 'Search Polymarket prediction markets for crowd-sourced probability estimates on macro, geopolitical, and financial events.',
   schema: z.object({
-    query: z.string().describe(
+    query: z.string().max(10_000).describe(
       'Natural language search query, e.g. "Fed rate cut 2026", "US recession", "tariffs", "OPEC oil production"',
     ),
     limit: z.number().optional().default(8).describe(

@@ -1,10 +1,19 @@
-import { describe, test, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, test, expect, beforeEach, afterEach, afterAll, mock, setSystemTime } from 'bun:test';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
+
 // Unique temp dir per worker run — prevents parallel worker contamination of the real .cramer-short/cache
-const TEST_CACHE_DIR = join(tmpdir(), `dexter-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+const TEST_CACHE_DIR = join(tmpdir(), `dexter-cache-test-${nextTestId('path')}`);
 
 // Mock paths.js BEFORE cache.ts loads so the module-level CACHE_DIR = cramerShortPath('cache') resolves to our temp dir
 mock.module('./paths.js', () => ({
@@ -18,7 +27,7 @@ mock.module('./paths.js', () => ({
 // is mocked above. Without the ?t= suffix, Bun returns a previously-cached
 // cache.ts instance (loaded by filings.test.ts → api.ts → cache.ts) that
 // already resolved CACHE_DIR against the real .cramer-short directory.
-const { buildCacheKey, readCache, writeCache } = await import(`./cache.js?t=${Date.now()}`) as typeof import('./cache.js');
+const { buildCacheKey, readCache, writeCache } = await import(`./cache.js?t=${nextTestId('module')}`) as typeof import('./cache.js');
 
 // ---------------------------------------------------------------------------
 // buildCacheKey

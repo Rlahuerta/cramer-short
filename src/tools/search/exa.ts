@@ -3,31 +3,43 @@ import { ExaSearchResults } from '@langchain/exa';
 import Exa from 'exa-js';
 import { z } from 'zod';
 import { formatToolResult, parseSearchResults } from '../types.js';
-import { logger } from '@/utils';
+import { getEnv } from '../../utils/env.js';
+import { logger } from '../../utils/logger.js';
 
 // Lazily initialized to avoid errors when API key is not set
 let exaTool: { invoke: (query: string) => Promise<unknown> } | null = null;
+type ExaSearchResultsOptions = ConstructorParameters<typeof ExaSearchResults>[0];
+
+function createLangChainExaClient(apiKey: string): ExaSearchResultsOptions['client'] {
+  // exa-js@2.x (root) vs exa-js@1.x (inside @langchain/exa) have
+  // incompatible private fields but are compatible at runtime.
+  const compatibleClient: unknown = new Exa(apiKey);
+  return compatibleClient as ExaSearchResultsOptions['client'];
+}
 
 function getExaTool(): { invoke: (query: string) => Promise<unknown> } {
   if (!exaTool) {
-    const client = new Exa(process.env.EXASEARCH_API_KEY);
-    // exa-js@2.x (root) vs exa-js@1.x (inside @langchain/exa) have
-    // incompatible private fields but are compatible at runtime.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const apiKey = getEnv('EXASEARCH_API_KEY')?.trim();
+    if (!apiKey) {
+      throw new Error('EXASEARCH_API_KEY is required to use Exa search');
+    }
     exaTool = new ExaSearchResults({
-      client: client as any,
+      client: createLangChainExaClient(apiKey),
       searchArgs: { numResults: 5, highlights: true },
     });
   }
   return exaTool!;
 }
 
+/**
+ * LangChain web-search tool backed by Exa when EXASEARCH_API_KEY is configured.
+ */
 export const exaSearch = new DynamicStructuredTool({
   name: 'web_search',
   description:
     'Search the web for current information on any topic. Returns relevant search results with URLs and content snippets.',
   schema: z.object({
-    query: z.string().describe('The search query to look up on the web'),
+    query: z.string().max(10_000).describe('The search query to look up on the web'),
   }),
   func: async (input) => {
     try {

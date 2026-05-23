@@ -1,10 +1,9 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock, spyOn } from 'bun:test';
 import {
   htmlToMarkdown,
   markdownToText,
   truncateText,
   extractReadableContent,
-  type ExtractMode,
 } from './web-fetch-utils.js';
 
 // ---------------------------------------------------------------------------
@@ -143,29 +142,134 @@ describe('extractReadableContent', () => {
   it('returns text from simple HTML via htmlToMarkdown fallback', async () => {
     const html = '<p>This is the content</p>';
     const result = await extractReadableContent({ html, url: 'https://example.com', extractMode: 'markdown' });
-    expect(result).not.toBeNull();
-    expect(result!.text).toContain('content');
+    expect(result.text).toContain('content');
+    expect(result.extractor).toBe('htmlToMarkdown');
   });
 
   it('returns plain text when extractMode is "text"', async () => {
-    const html = '<h1>Title</h1><p>Body paragraph</p>';
+    const html = '<p>Title Body paragraph</p>';
     const result = await extractReadableContent({ html, url: 'https://example.com', extractMode: 'text' });
-    expect(result).not.toBeNull();
-    expect(result!.text).toContain('Title');
-    expect(result!.text).toContain('Body');
+    expect(result.text).toContain('Title');
+    expect(result.text).toContain('Body');
   });
 
-  it('returns null-safe result for empty HTML', async () => {
+  it('returns fallback result for empty HTML', async () => {
     const result = await extractReadableContent({ html: '', url: 'https://example.com', extractMode: 'markdown' });
-    // Can be null or have empty text - either is acceptable
-    if (result !== null) {
-      expect(typeof result.text).toBe('string');
-    }
+    expect(typeof result.text).toBe('string');
+    expect(result.extractor).toBe('htmlToMarkdown');
   });
 
   it('handles HTML with title in extractMode markdown', async () => {
     const html = '<title>Page Title</title><p>Content here</p>';
-    const result = await extractReadableContent({ html, url: 'https://example.com', extractMode: 'markdown' });
-    expect(result).not.toBeNull();
+    const parseMock = mock(() => ({
+      content: '<article><h1>Page Title</h1><p>Content here</p></article>',
+      title: 'Page Title',
+      textContent: 'Page Title Content here',
+    }));
+    const parseHTMLMock = mock((_html: string) => ({ document: {} }));
+    const loadDeps = mock(async () => ({
+      Readability: class {
+        parse = parseMock;
+      },
+      parseHTML: (input: string) => parseHTMLMock(input),
+    }));
+    const result = await extractReadableContent({
+      html,
+      url: 'https://example.com',
+      extractMode: 'markdown',
+      loadDeps,
+    });
+    expect(result.title).toBe('Page Title');
+    expect(result.extractor).toBe('readability');
+    expect(loadDeps).toHaveBeenCalled();
+    expect(parseHTMLMock).toHaveBeenCalled();
+    expect(parseMock).toHaveBeenCalled();
+  });
+
+  it('fast-paths simple HTML fragments before readability imports', async () => {
+    const parseMock = mock(() => null);
+    const parseHTMLMock = mock((_html: string) => ({ document: {} }));
+    const loadDeps = mock(async () => ({
+      Readability: class {
+        parse = parseMock;
+      },
+      parseHTML: (html: string) => parseHTMLMock(html),
+    }));
+
+    const result = await extractReadableContent({
+      html: '<p>Fast fallback</p>',
+      url: 'https://example.com',
+      extractMode: 'markdown',
+      loadDeps,
+    });
+
+    expect(result.text).toContain('Fast fallback');
+    expect(result.extractor).toBe('htmlToMarkdown');
+    expect(loadDeps).not.toHaveBeenCalled();
+    expect(parseHTMLMock).not.toHaveBeenCalled();
+    expect(parseMock).not.toHaveBeenCalled();
+  });
+
+  it('logs readability errors before using htmlToMarkdown fallback', async () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    const loadDeps = mock(async () => {
+      throw new Error('readability unavailable');
+    });
+
+    try {
+      const result = await extractReadableContent({
+        html: '<article><p>Fallback body</p></article>',
+        url: 'https://example.com',
+        extractMode: 'markdown',
+        loadDeps,
+      });
+
+      expect(result.text).toContain('Fallback body');
+      expect(result.extractor).toBe('htmlToMarkdown');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('readability extraction failed'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rethrows non-Error readability failures instead of falling back silently', async () => {
+    const loadDeps = mock(async () => {
+      throw 'non-error failure';
+    });
+
+    await expect(extractReadableContent({
+      html: '<article><p>Body</p></article>',
+      url: 'https://example.com',
+      extractMode: 'markdown',
+      loadDeps,
+    })).rejects.toBe('non-error failure');
+  });
+
+  it('keeps short article-like html on the readability path', async () => {
+    const parseMock = mock(() => ({
+      content: '<article><h1>Readable title</h1><p>Readable body</p></article>',
+      title: 'Readable title',
+      textContent: 'Readable title Readable body',
+    }));
+    const parseHTMLMock = mock((_html: string) => ({ document: {} }));
+    const loadDeps = mock(async () => ({
+      Readability: class {
+        parse = parseMock;
+      },
+      parseHTML: (html: string) => parseHTMLMock(html),
+    }));
+
+    const result = await extractReadableContent({
+      html: '<article><h1>Readable title</h1><p>Readable body</p></article>',
+      url: 'https://example.com',
+      extractMode: 'markdown',
+      loadDeps,
+    });
+
+    expect(result.text).toContain('Readable body');
+    expect(result.extractor).toBe('readability');
+    expect(loadDeps).toHaveBeenCalled();
+    expect(parseHTMLMock).toHaveBeenCalled();
+    expect(parseMock).toHaveBeenCalled();
   });
 });

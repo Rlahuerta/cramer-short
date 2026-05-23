@@ -5,9 +5,18 @@
  * directional accuracy and risk-adjusted returns vs. unfiltered signals.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+});
+
+afterEach(() => {
+  setSystemTime();
+});
 import {
   computeMarkovDistribution,
   type MarkovDistributionResult,
@@ -105,7 +114,7 @@ export async function runSwingTradeBacktest(
       for (const horizon of horizons) {
         const historicalPrices = prices.slice(startIdx - 60, startIdx);
         const currentPrice = prices[startIdx]!;
-        const entryDate = new Date(Date.now() - (prices.length - startIdx) * 24 * 60 * 60 * 1000)
+        const entryDate = new Date(FIXED_TEST_NOW_MS - (prices.length - startIdx) * 24 * 60 * 60 * 1000)
           .toISOString()
           .slice(0, 10);
 
@@ -128,7 +137,7 @@ export async function runSwingTradeBacktest(
         if (exitIdx >= prices.length) continue;
 
         const exitPrice = prices[exitIdx]!;
-        const exitDate = new Date(Date.now() - (prices.length - exitIdx) * 24 * 60 * 60 * 1000)
+        const exitDate = new Date(FIXED_TEST_NOW_MS - (prices.length - exitIdx) * 24 * 60 * 60 * 1000)
           .toISOString()
           .slice(0, 10);
 

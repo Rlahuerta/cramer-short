@@ -1,3 +1,4 @@
+import { MS_PER_DAY } from '../../../utils/time.js';
 import { type WalkForwardConfig, type WalkForwardResult, walkForward } from './walk-forward.js';
 import { computeMarkovDistribution, getAssetProfile, type MarkovDistributionResult } from '../markov-distribution.js';
 import type { BacktestStep, DecisionSource, ProbabilitySource } from './metrics.js';
@@ -73,7 +74,7 @@ function isReplayMarketAlignedToHorizon(
   if (!market.endDate) return true;
   const endMs = Date.parse(market.endDate);
   if (!Number.isFinite(endMs)) return true;
-  const daysUntilResolution = (endMs - referenceTimeMs) / 86_400_000;
+  const daysUntilResolution = (endMs - referenceTimeMs) / MS_PER_DAY;
   return Math.abs(daysUntilResolution - horizonDays) <= Math.max(2, horizonDays * 0.5);
 }
 
@@ -200,11 +201,21 @@ export async function walkForwardWithReplay(
         regimeSpecificSigmaThreshold: config.regimeSpecificSigmaThreshold,
         btcReturnThresholdMultiplier: config.btcReturnThresholdMultiplier,
         btcBreakDivergenceThreshold: config.btcBreakDivergenceThreshold,
+        enableSoftRegimeWeighting: config.enableSoftRegimeWeighting,
+        softRegimeConfidenceFloor: config.softRegimeConfidenceFloor,
+        softRegimeConfidenceEntropyWeight: config.softRegimeConfidenceEntropyWeight,
+        softRegimeCiEntropyWeight: config.softRegimeCiEntropyWeight,
+        softRegimeHmmWeightFloor: config.softRegimeHmmWeightFloor,
+        softRegimeHmmWeightEntropyWeight: config.softRegimeHmmWeightEntropyWeight,
+        enableStudentTEmission: config.enableStudentTEmission,
       });
 
       const predictedProb = interpolateSurvival(result.distribution, currentPrice);
       const rawPredictedProb = interpolateSurvival(result.rawDistribution, currentPrice);
       const { ciLower, ciUpper } = extractCI(result.distribution, currentPrice);
+      const central90Interval = extractCentralCI(result.distribution, currentPrice, 0.10);
+      const central95Interval = extractCentralCI(result.distribution, currentPrice, 0.05);
+      const central99Interval = extractCentralCI(result.distribution, currentPrice, 0.01);
 
       const replayAnchorActive = result.metadata.anchorCoverage.trustedAnchors > 0;
       let decisionSource: DecisionSource = replayAnchorActive ? 'replay-anchor' : 'default';
@@ -239,6 +250,16 @@ export async function walkForwardWithReplay(
         actualReturn,
         ciLower,
         ciUpper,
+        central90CiLower: central90Interval.ciLower,
+        central90CiUpper: central90Interval.ciUpper,
+        central95CiLower: central95Interval.ciLower,
+        central95CiUpper: central95Interval.ciUpper,
+        central99CiLower: central99Interval.ciLower,
+        central99CiUpper: central99Interval.ciUpper,
+        forecastDistribution: result.distribution.map(point => ({
+          price: point.price,
+          probability: point.probability,
+        })),
         realizedPrice,
         recommendation: result.actionSignal.recommendation,
         gofPasses: result.metadata.goodnessOfFit?.passes ?? null,
@@ -287,11 +308,27 @@ function interpolateSurvival(dist: MarkovDistributionResult['distribution'], tar
 }
 
 function extractCI(dist: MarkovDistributionResult['distribution'], currentPrice: number): { ciLower: number; ciUpper: number } {
+  return extractSurvivalInterval(dist, currentPrice, 0.995, 0.005);
+}
+
+function extractCentralCI(
+  dist: MarkovDistributionResult['distribution'],
+  currentPrice: number,
+  alpha: number,
+): { ciLower: number; ciUpper: number } {
+  const tailProbability = alpha / 2;
+  return extractSurvivalInterval(dist, currentPrice, 1 - tailProbability, tailProbability);
+}
+
+function extractSurvivalInterval(
+  dist: MarkovDistributionResult['distribution'],
+  currentPrice: number,
+  lowerThreshold: number,
+  upperThreshold: number,
+): { ciLower: number; ciUpper: number } {
   if (dist.length === 0) return { ciLower: currentPrice * 0.9, ciUpper: currentPrice * 1.1 };
   let ciLower = dist[0].price;
   let ciUpper = dist[dist.length - 1].price;
-  const lowerThreshold = 0.995;
-  const upperThreshold = 0.005;
   for (let i = 0; i < dist.length - 1; i++) {
     if (dist[i].probability >= lowerThreshold && dist[i + 1].probability < lowerThreshold) {
       const frac = (lowerThreshold - dist[i + 1].probability) / (dist[i].probability - dist[i + 1].probability);
