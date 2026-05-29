@@ -95,7 +95,8 @@ from research.backtest.metrics import (
     murphy_winkler_decomposition,
     scaled_crps,
 )
-from research.backtest.walk_forward import BacktestStep, WalkForwardResult, walk_forward
+from research.backtest._config import BacktestStep, WalkForwardResult
+from research.backtest.walk_forward import walk_forward
 
 # ---------------------------------------------------------------------------
 # TS-style directional accuracy (reproduces TypeScript metrics.ts)

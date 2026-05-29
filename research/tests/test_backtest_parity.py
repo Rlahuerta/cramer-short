@@ -5,11 +5,8 @@ import math
 import numpy as np
 import pytest
 
-from research.backtest.walk_forward import (
-    BacktestStep,
-    WalkForwardResult,
-    walk_forward,
-)
+from research.backtest._config import BacktestStep, WalkForwardResult
+from research.backtest.walk_forward import walk_forward
 
 
 # ---------------------------------------------------------------------------
