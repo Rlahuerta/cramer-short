@@ -1,10 +1,9 @@
 """Backtest metrics: Brier score, directional accuracy, CI coverage, bootstrap CIs."""
 
 from __future__ import annotations
-
-import math
 from typing import TYPE_CHECKING, TypedDict
 
+import math
 import numpy as np
 
 if TYPE_CHECKING:

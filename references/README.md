@@ -1,6 +1,6 @@
 # Research References
 
-This directory contains **60 PDFs** organized by topic. Topic-level Markdown distillations summarize the local PDFs and have been verified against local PDF text extraction; use this README as the consolidated index.
+This directory contains **60 PDFs** organized by topic. Topic-level Markdown distillations summarize the local PDFs and have been verified against local PDF text extraction. For a distilled title/abstract/keyword lookup across all papers, see [index.md](index.md).
 
 One distillation, `prediction-markets/DISTILLATION-polymarket-forecasting.md`, covers both `prediction-markets/` and `polymarket/`. Known organization caveat: `sequence-models/chung2015.pdf` is about stock-selection/trading strategies despite the folder name, and `sequence-models/DISTILLATION.md` documents that mismatch.
 

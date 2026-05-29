@@ -15,9 +15,7 @@ accuracy minus `slack` (default 0.02).
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
-
 from research.backtest.walk_forward import BacktestStep
 
 
@@ -62,10 +60,13 @@ def compute_coin_flip_baseline(steps: list[BacktestStep]) -> BaselineMetricBlock
     """Baseline: always predict P(up)=0.5 (strict random null)."""
     if not steps:
         return BaselineMetricBlock(n=0, brier_score=1.0, directional_accuracy=0.0)
+
     synthetic = [_synth(s, 0.5) for s in steps]
     outcomes = [1.0 if s.realised_return > 0 else 0.0 for s in synthetic]
+
     bs = sum((s.predicted_prob - o) ** 2 for s, o in zip(synthetic, outcomes)) / len(synthetic)
     da = sum(1 for s in synthetic if s.direction_correct) / len(synthetic)
+
     return BaselineMetricBlock(n=len(steps), brier_score=bs, directional_accuracy=da)
 
 
@@ -78,8 +79,10 @@ def compute_last_period_baseline(steps: list[BacktestStep]) -> BaselineMetricBlo
     """
     if not steps:
         return BaselineMetricBlock(n=0, brier_score=1.0, directional_accuracy=0.0)
+
     synthetic: list[BacktestStep] = []
     prev_return = 0.0
+
     for i, step in enumerate(steps):
         if i == 0:
             synth_step = _synth(step, 0.5)
@@ -88,7 +91,9 @@ def compute_last_period_baseline(steps: list[BacktestStep]) -> BaselineMetricBlo
             synth_step = _synth(step, prob)
         prev_return = step.realised_return
         synthetic.append(synth_step)
+
     outcomes = [1.0 if s.realised_return > 0 else 0.0 for s in synthetic]
+
     bs = sum((s.predicted_prob - o) ** 2 for s, o in zip(synthetic, outcomes)) / len(synthetic)
     da = sum(1 for s in synthetic if s.direction_correct) / len(synthetic)
     return BaselineMetricBlock(n=len(steps), brier_score=bs, directional_accuracy=da)
