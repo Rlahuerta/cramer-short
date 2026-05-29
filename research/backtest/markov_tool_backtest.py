@@ -84,23 +84,61 @@ if __package__ in {None, ""}:
 import numpy as np
 import pandas as pd
 
+from research.data.prices import fetch_historical_prices
+from research.models.markov import get_gold_short_horizon_live_policy
 from research.backtest.metrics import (
     brier_score,
     calibration_table,
     ci_coverage,
     crps,
-    directional_accuracy,
     mean_absolute_error,
     murphy_winkler_decomposition,
     scaled_crps,
 )
 from research.backtest.walk_forward import BacktestStep, WalkForwardResult, walk_forward
-from research.data.prices import fetch_historical_prices
-from research.models.markov import get_gold_short_horizon_live_policy
 
+# ---------------------------------------------------------------------------
+# TS-style directional accuracy (reproduces TypeScript metrics.ts)
+# ---------------------------------------------------------------------------
 
+TS_HOLD_THRESHOLD = 0.03
 DEFAULT_HORIZONS = "1,7,14,30"
 DEFAULT_SOURCES = "financial_datasets,binance,yahoo"
+
+def _ts_action_thresholds(horizon: int) -> tuple[float, float]:
+    """Return (buy_threshold, sell_threshold) matching TS computeActionSignal fallback."""
+    if horizon <= 7:
+        return 0.003, 0.002
+    if horizon <= 30:
+        return 0.005, 0.003
+    return 0.008, 0.005
+
+
+def ts_directional_accuracy(steps: list[BacktestStep], horizon: int) -> float:
+    """Reproduce TypeScript directionalAccuracy with recommendation + HOLD zone.
+
+    Mirrors ``metrics.ts::directionalAccuracy`` with the recommendation derivation
+    from ``markov-distribution.ts::computeActionSignal`` fallback thresholds:
+    - BUY   = predicted_return >  buy_threshold (horizon-dependent, 0.3 %–0.8 %)
+    - SELL  = predicted_return < -sell_threshold (horizon-dependent, 0.2 %–0.5 %)
+    - HOLD  = otherwise
+    Scoring:
+    - BUY  correct → actualReturn > 0
+    - SELL correct → actualReturn < 0
+    - HOLD correct → |actualReturn| < 0.03
+    """
+    if not steps:
+        return 0.0
+    buy_thr, sell_thr = _ts_action_thresholds(horizon)
+    correct = 0
+    for s in steps:
+        if s.predicted_return > buy_thr:
+            correct += 1 if s.realised_return > 0 else 0
+        elif s.predicted_return < -sell_thr:
+            correct += 1 if s.realised_return < 0 else 0
+        else:  # HOLD
+            correct += 1 if abs(s.realised_return) < TS_HOLD_THRESHOLD else 0
+    return correct / len(steps)
 
 
 def parse_horizons(raw: str) -> list[int]:
@@ -137,7 +175,7 @@ def parse_garch_regime_ceiling(raw: str | None) -> tuple[float, float] | None:
     low, high = (float(pieces[0]), float(pieces[1]))
     if low <= 0 or high <= 0:
         raise argparse.ArgumentTypeError("GARCH regime ceilings must be positive")
-    return (low, high)
+    return low, high
 
 
 def positive_int(value: str) -> int:
@@ -250,13 +288,12 @@ def effective_walk_forward_options(
     }
 
 
-def summarize_steps(steps: list[BacktestStep]) -> dict[str, Any]:
-    """Aggregate walk-forward predictions into probability and interval metrics."""
+def summarize_steps(steps: list[BacktestStep], horizon: int) -> dict[str, Any]:
     murphy_winkler = murphy_winkler_decomposition(steps)
     return {
         "steps": len(steps),
         "brier_score": brier_score(steps),
-        "directional_accuracy": directional_accuracy(steps),
+        "directional_accuracy": ts_directional_accuracy(steps, horizon),
         "ci_coverage": ci_coverage(steps),
         "mean_absolute_error": mean_absolute_error(steps),
         "crps": crps(steps),
@@ -302,7 +339,7 @@ def run_horizon(
         np.random.seed(args.seed + horizon)
     options = effective_walk_forward_options(args, horizon)
     result = walk_forward(prices, **options)
-    metrics = summarize_steps(result.steps)
+    metrics = summarize_steps(result.steps, horizon)
     return result, metrics, options
 
 

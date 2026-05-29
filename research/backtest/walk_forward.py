@@ -151,9 +151,7 @@ def walk_forward(
             )
             return result
 
-        returns = [
-            (prices[i] - prices[i - 1]) / prices[i - 1] for i in range(1, len(prices))
-        ]
+        returns = [(prices[i] - prices[i - 1]) / prices[i - 1] for i in range(1, len(prices))]
 
         def _compute_window_forecast(window_prices: list[float]) -> dict[str, object]:
             active_returns = np.array(
@@ -298,28 +296,30 @@ def walk_forward(
                 entropy = forecast_payload["entropy"]
                 entropy_z: float | None = None
                 entropy_ci_scale = 1.0
+
                 if enable_entropy_ci_modulation:
                     entropy_z = entropy_tracker.z_score(entropy.entropy_norm)
                     if entropy_z is not None:
                         entropy_ci_scale = entropy_z_to_ci_scale(entropy_z, entropy_kappa)
+
                 p_up = float(forecast_payload["p_up"])
                 predicted_return = float(forecast_payload["predicted_return"])
                 ci_lower = float(forecast_payload["ci_lower"])
                 ci_upper = float(forecast_payload["ci_upper"])
+
                 if bool(break_result["detected"]):
                     center = (ci_lower + ci_upper) / 2.0
                     half_width = (ci_upper - ci_lower) / 2.0 * 1.5
                     ci_lower = center - half_width
                     ci_upper = center + half_width
+
                 if entropy_ci_scale != 1.0:
                     center = (ci_lower + ci_upper) / 2.0
                     half_width = (ci_upper - ci_lower) / 2.0
                     ci_lower = center - half_width * entropy_ci_scale
                     ci_upper = center + half_width * entropy_ci_scale
 
-                direction_correct = (p_up > 0.5 and realised_return > 0) or (
-                    p_up <= 0.5 and realised_return <= 0
-                )
+                direction_correct = (p_up > 0.5 and realised_return > 0) or (p_up <= 0.5 and realised_return <= 0)
                 in_ci = ci_lower <= realised_price <= ci_upper
 
                 result.steps.append(
