@@ -1,4 +1,45 @@
-"""Forecasting models for the research package."""
+"""Forecasting engines for the Cramer-Short research package.
+
+Models are grouped by domain:
+
+**Markov core** (``markov/``)
+    3-state regime classification, transition matrix estimation, structural
+    break detection, horizon forecasting, probability calibration, action
+    signal generation.  Mirrors ``src/tools/finance/markov-distribution/``.
+
+**Trajectory & scenarios** (``trajectory.py``)
+    Monte Carlo day-by-day price paths with Student-t innovations,
+    survival interpolation, and scenario probability bucketing.
+    Mirrors ``src/tools/finance/markov-distribution.ts``.
+
+**Ensemble blending** (``ensemble.py``)
+    Polymarket weighted ensemble: market quality scoring, YES-bias
+    correction, variance/CI computation.  Mirrors ``src/utils/ensemble.ts``.
+
+**Hidden Markov Models** (``hmm.py``)
+    Gaussian HMM via hmmlearn: Baum-Welch, Viterbi, volatility HMM,
+    Student-t volatility scaling.
+
+**Volatility** (``garch.py``, ``garch_scales.py``, ``vol_regime.py``)
+    GARCH(1,1) fitting and horizon-aware scaling; VIX-based regime
+    classifier.
+
+**Calibration & corrections** (``conformal.py``, ``soft_regime.py``,
+``calibration_offsets.py``, ``brier_replay_calibrator.py``)
+    Online conformal PID, soft-regime blending, Polymarket recalibration,
+    Brier replay calibration.
+
+**Signal extraction** (``rnd.py``, ``jump_diffusion.py``,
+``logit_jump_diffusion.py``, ``hawkes.py``, ``convergence_time.py``,
+``transition_entropy.py``, ``adwin.py``, ``longshot_shrinkage.py``,
+``beta_hmm.py``, ``crypto_native_peers.py``)
+    Risk-neutral density from Polymarket strikes, Merton jump diffusion,
+    Hawkes self-exciting intensity, convergence-time signals, entropy CI
+    modulation, ADWIN drift detection, longshot shrinkage, Beta-HMM.
+
+**Policy & trust** (``forecast_policy.py``)
+    Forecast trust-policy logic: when to trust/reject model predictions.
+"""
 
 from research.models.markov import (
     BtcShortHorizonLivePolicy,

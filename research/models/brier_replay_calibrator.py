@@ -1,4 +1,13 @@
-"""Replay-only Brier calibrator for sequential probability forecasts."""
+"""Replay-only Brier calibrator for sequential probability forecasts.
+
+Maintains a running Brier score from a historical sequence of forecasts
+and outcomes.  Applies Platt-style recalibration: fits a logistic mapping
+from raw model probabilities to outcome frequencies so that forecasts
+become better calibrated over time.
+
+This is a replay/lab module — it feeds on already-realised outcomes
+and is not suitable for real-time usage.
+"""
 
 from __future__ import annotations
 
