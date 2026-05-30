@@ -7,12 +7,12 @@ Models are grouped by domain:
     break detection, horizon forecasting, probability calibration, action
     signal generation.  Mirrors ``src/tools/finance/markov-distribution/``.
 
-**Trajectory & scenarios** (``trajectory.py``)
+**Trajectory & scenarios** (``trajectory/``)
     Monte Carlo day-by-day price paths with Student-t innovations,
     survival interpolation, and scenario probability bucketing.
     Mirrors ``src/tools/finance/markov-distribution.ts``.
 
-**Ensemble blending** (``ensemble.py``)
+**Ensemble blending** (``ensemble/``)
     Polymarket weighted ensemble: market quality scoring, YES-bias
     correction, variance/CI computation.  Mirrors ``src/utils/ensemble.ts``.
 
