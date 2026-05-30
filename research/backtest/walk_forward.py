@@ -1,13 +1,30 @@
-"""Walk-forward backtest harness.
+"""Walk-forward backtest harness for the Markov regime forecast tool.
 
-Slides a window over historical prices, estimates the Markov model at each
-step, records predictions vs realised outcomes, and aggregates results.
+Slides a rolling window across historical price data, generates a Markov
+forecast at each position, and scores every prediction against the known
+realised outcome.
+
+Architecture
+------------
+The module delegates heavy computation to two sub-modules and one shared
+config layer so the orchestrator stays focused on window-sliding and step
+recording:
+
+    research/backtest/walk_forward.py       ← this file (orchestrator)
+    research/backtest/_config.py            → BacktestStep, WalkForwardResult
+    research/backtest/_window_forecaster.py → per-window Markov → trajectory
+    research/backtest/_ci_transformer.py    → break widening, entropy modulation
+
+Optional features activated by boolean flags include HMM blending
+(``use_hmm``), GARCH volatility scaling (``enable_garch_vol``), and
+transition-entropy CI modulation (``enable_entropy_ci_modulation``).
+
+This module is a Python mirror of the TypeScript engine at
+``src/tools/finance/backtest/walk-forward.ts``.  The two implementations
+produce comparable results on the same price fixtures.
 """
 
 from __future__ import annotations
-
-# import math
-# import numpy as np
 
 from research.backtest._config import BacktestStep, WalkForwardResult
 from research.backtest._window_forecaster import compute_window_forecast
@@ -47,26 +64,92 @@ def walk_forward(
     Parameters
     ----------
     prices : list[float]
-        Historical close prices (oldest first).
+        Historical close prices, oldest first.
     horizon : int
-        Forecast horizon in days.
+        Forecast horizon in trading days (default 7).
     warmup : int
-        Minimum history for regime estimation.
+        Minimum history in days before the first prediction (default 120).
     stride : int
-        Days between consecutive test windows.
+        Days between consecutive test windows (default 10).
+    ticker : str or None
+        Ticker label used for live-policy selection and runtime defaults.
     return_threshold_multiplier : float
-        Adaptive threshold multiplier for regime classification.
+        Multiplier on median absolute return for regime classification
+        (default 0.5).
     decay_rate : float
-        Exponential decay for transition matrix weighting.
+        Exponential decay weight for transition matrix counts
+        (default 0.97).
+    break_divergence_threshold : float
+        Frobenius-divergence threshold for structural-break detection
+        (default 0.05).
+    btc_break_divergence_threshold : float or None
+        BTC-specific override for the break detection threshold.  When
+        provided, it takes precedence over ``break_divergence_threshold``
+        and any live-policy default.
+    post_break_short_window : bool or None
+        When True (and a break is detected), rerun the forecast on a
+        shorter recent window.  When None, inherits from the live policy.
+    post_break_window_size : int or None
+        Window size in days for the post-break rerun.  When None,
+        inherits from the live policy (defaults to 60).
+    use_live_btc_short_horizon_policy : bool
+        Apply mirrored BTC short-horizon parameter defaults that override
+        warmup, break thresholds, and rerun settings (default False).
     use_hmm : bool
-        Whether to blend HMM predictions into the forecast.
+        Blend a 3-state Gaussian HMM (Baum-Welch) into the trajectory
+        drift and volatility (default False).
     asset_profile : str
-        Asset profile key (etf, equity, crypto, commodity) for HMM weight tuning.
+        HMM weight profile: ``"etf"``, ``"equity"``, ``"crypto"``, or
+        ``"commodity"`` (default ``"crypto"``).
+    enable_garch_vol : bool
+        Apply GARCH(1,1) volatility scaling in the trajectory Monte Carlo
+        (default False).
+    garch_horizon_cap : int or None
+        Beyond this day count the GARCH scalar soft-blends toward 1.0
+        (default None — no cap).
+    garch_regime_ceiling : tuple[float, float] or None
+        ``(calm_ceiling, turbulent_ceiling)`` caps for the GARCH scalar.
+        None means the static 3.0 cap is used.
+    enable_entropy_ci_modulation : bool
+        Scale confidence intervals by a rolling z-score of the transition
+        entropy (default False).
+    entropy_window_size : int
+        Rolling history size for the entropy z-score tracker (default 60).
+    entropy_kappa : float
+        Sensitivity of CI width to the entropy z-score (default 0.15).
 
     Returns
     -------
     WalkForwardResult
-        Steps and any errors encountered.
+        Collected ``BacktestStep`` records and any errors encountered.
+
+    Notes
+    -----
+    The pipeline inside the loop has four phases:
+
+    1. **Forecast** — ``_window_forecaster.compute_window_forecast`` runs
+       the full Markov pipeline (regime, transition, trajectory).
+    2. **Break rerun** — if a structural break is detected and
+       ``post_break_short_window`` is active, the forecast is rerun on a
+       shorter recent window.
+    3. **CI transformation** — if a break was detected, the CI is
+       widened 1.5×.  If entropy modulation is enabled, the CI half-width
+       is scaled by the entropy-derived factor.
+    4. **Scoring** — the forecast is compared against the realised
+       outcome and recorded as a ``BacktestStep``.
+
+    Error handling
+    --------------
+    Each window step is wrapped in try/except.  Unhandled exceptions are
+    appended to ``WalkForwardResult.errors`` with the failing step index.
+    The loop continues to the next window — a single bad step does not
+    abort the full backtest.
+
+    Examples
+    --------
+    >>> result = walk_forward(prices, horizon=7, warmup=120, stride=10)
+    >>> assert len(result.errors) == 0
+    >>> print(f"{len(result.steps)} steps, Brier={brier_score(result.steps):.3f}")
     """
     runtime_asset_scope = resolve_forecast_lab_runtime_asset_scope_for_ticker(ticker or "")
 
@@ -202,7 +285,34 @@ def _resolve_effective_config(
     warmup: int,
     btc_live_policy: object | None,
 ) -> dict:
-    """Merge explicit args with live-policy defaults into effective backtest config."""
+    """Resolve effective backtest parameters from explicit args and live policy.
+
+    Parameters follow a precedence chain: explicit argument > live-policy
+    default > hard-coded fallback.
+
+    Parameters
+    ----------
+    btc_break_divergence_threshold : float or None
+        Explicit BTC break-threshold override.
+    break_divergence_threshold : float
+        Default break threshold when no override is active.
+    post_break_short_window : bool or None
+        Explicit toggle for post-break short-window reruns.
+    post_break_window_size : int or None
+        Explicit short-window size.
+    warmup : int
+        Default warmup window length.
+    btc_live_policy : object or None
+        BTC live-policy dataclass with ``history_days``,
+        ``break_divergence_threshold``, ``rerun_on_break``, and
+        ``rerun_window_days`` attributes; ``None`` when the flag is off.
+
+    Returns
+    -------
+    dict
+        Keys: ``warmup``, ``break_divergence``, ``post_break_short_window``,
+        ``post_break_window_size``.
+    """
     effective_warmup = btc_live_policy.history_days if btc_live_policy else warmup
     effective_break_divergence = (
         btc_break_divergence_threshold
