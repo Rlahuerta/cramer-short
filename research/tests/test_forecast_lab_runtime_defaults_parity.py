@@ -101,8 +101,9 @@ def test_python_markov_conformal_and_regime_defaults_match_ts_promotions():
 def test_walk_forward_uses_sol_scoped_markov_defaults(monkeypatch):
     captured: dict[str, float | int | None] = {}
 
-    real_estimate_transition_matrix = walk_forward_module.estimate_transition_matrix
-    real_detect_structural_break = walk_forward_module.detect_structural_break
+    window_forecaster_module = importlib.import_module("research.backtest._window_forecaster")
+    real_estimate_transition_matrix = window_forecaster_module.estimate_transition_matrix
+    real_detect_structural_break = window_forecaster_module.detect_structural_break
     sol_defaults = resolve_forecast_lab_markov_parameter_defaults("sol")
 
     def wrapped_estimate_transition_matrix(
@@ -146,12 +147,12 @@ def test_walk_forward_uses_sol_scoped_markov_defaults(monkeypatch):
         )
 
     monkeypatch.setattr(
-        walk_forward_module,
+        window_forecaster_module,
         "estimate_transition_matrix",
         wrapped_estimate_transition_matrix,
     )
     monkeypatch.setattr(
-        walk_forward_module,
+        window_forecaster_module,
         "detect_structural_break",
         wrapped_detect_structural_break,
     )
