@@ -161,6 +161,7 @@ def walk_forward(
             if use_live_btc_short_horizon_policy
             else None
         )
+        
         effective = _resolve_effective_config(
             btc_break_divergence_threshold=btc_break_divergence_threshold,
             break_divergence_threshold=break_divergence_threshold,
@@ -171,21 +172,19 @@ def walk_forward(
         )
 
         if len(prices) < effective["warmup"] + horizon + 10:
-            result.errors.append(
-                f"Insufficient data: {len(prices)} prices, "
-                f"need {effective['warmup'] + horizon + 10}"
-            )
+            msg_err = f"Insufficient data: {len(prices)} prices, need {effective['warmup'] + horizon + 10}"
+            result.errors.append(msg_err)
             return result
 
-        for start in range(effective["warmup"], len(prices) - horizon, stride):
+        for start_i in range(effective["warmup"], len(prices) - horizon, stride):
             try:
-                current_price = prices[start]
-                realised_price = prices[start + horizon]
-                realised_return = (realised_price - current_price) / current_price
-                window_prices = prices[start - effective["warmup"] : start + 1]
+                current_price_i = prices[start_i]
+                realised_price_i = prices[start_i + horizon]
+                realised_return_i = (realised_price_i - current_price_i) / current_price_i
+                window_prices_i = prices[start_i - effective["warmup"] : start_i + 1]
 
-                wf = compute_window_forecast(
-                    window_prices,
+                wf_i = compute_window_forecast(
+                    window_prices_i,
                     horizon=horizon,
                     return_threshold_multiplier=return_threshold_multiplier,
                     decay_rate=decay_rate,
@@ -197,18 +196,18 @@ def walk_forward(
                     garch_ceiling=garch_regime_ceiling,
                 )
 
-                original_structural_break_detected = bool(wf["original_break_result"]["detected"])
-                original_structural_break_divergence = float(wf["original_break_result"]["divergence"])
+                original_structural_break_detected = bool(wf_i["original_break_result"]["detected"])
+                original_structural_break_divergence = float(wf_i["original_break_result"]["divergence"])
                 structural_break_rerun_triggered = False
 
                 if (
                     effective["post_break_short_window"]
                     and original_structural_break_detected
-                    and len(window_prices) > max(30, effective["post_break_window_size"])
+                    and len(window_prices_i) > max(30, effective["post_break_window_size"])
                 ):
                     structural_break_rerun_triggered = True
-                    wf = compute_window_forecast(
-                        window_prices[-max(30, effective["post_break_window_size"]):],
+                    wf_i = compute_window_forecast(
+                        window_prices_i[-max(30, effective["post_break_window_size"]):],
                         horizon=horizon,
                         return_threshold_multiplier=return_threshold_multiplier,
                         decay_rate=decay_rate,
@@ -219,10 +218,10 @@ def walk_forward(
                         garch_horizon=garch_horizon_cap,
                         garch_ceiling=garch_regime_ceiling,
                     )
-                    wf["break_rerun_triggered"] = True
+                    wf_i["break_rerun_triggered"] = True
 
-                break_result = wf["break_result"]
-                entropy = wf["entropy"]
+                break_result = wf_i["break_result"]
+                entropy = wf_i["entropy"]
                 entropy_z = None
                 entropy_ci_scale = 1.0
 
@@ -231,10 +230,10 @@ def walk_forward(
                     if entropy_z is not None:
                         entropy_ci_scale = entropy_z_to_ci_scale(entropy_z, entropy_kappa)
 
-                p_up = float(wf["p_up"])
-                predicted_return = float(wf["predicted_return"])
-                ci_lower = float(wf["ci_lower"])
-                ci_upper = float(wf["ci_upper"])
+                p_up = float(wf_i["p_up"])
+                predicted_return = float(wf_i["predicted_return"])
+                ci_lower = float(wf_i["ci_lower"])
+                ci_upper = float(wf_i["ci_upper"])
 
                 if bool(break_result["detected"]):
                     ci_lower, ci_upper = widen_for_structural_break(ci_lower, ci_upper)
@@ -242,23 +241,22 @@ def walk_forward(
                 ci_lower, ci_upper = modulate_ci_by_entropy(ci_lower, ci_upper, entropy_ci_scale)
 
                 direction_correct = (
-                    (p_up > 0.5 and realised_return > 0)
-                    or (p_up <= 0.5 and realised_return <= 0)
+                    (p_up > 0.5 and realised_return_i > 0) or (p_up <= 0.5 and realised_return_i <= 0)
                 )
-                in_ci = ci_lower <= realised_price <= ci_upper
+                in_ci = ci_lower <= realised_price_i <= ci_upper
 
                 result.steps.append(
                     BacktestStep(
-                        start_idx=start,
+                        start_idx=start_i,
                         predicted_prob=float(p_up),
                         predicted_return=float(predicted_return),
                         ci_lower=float(ci_lower),
                         ci_upper=float(ci_upper),
-                        realised_return=float(realised_return),
-                        realised_price=float(realised_price),
+                        realised_return=float(realised_return_i),
+                        realised_price=float(realised_price_i),
                         direction_correct=bool(direction_correct),
                         in_ci=bool(in_ci),
-                        garch_vol_applied=bool(wf["garch_vol_applied"]),
+                        garch_vol_applied=bool(wf_i["garch_vol_applied"]),
                         transition_entropy=float(entropy.entropy_nats),
                         transition_entropy_norm=float(entropy.entropy_norm),
                         transition_entropy_z=None if entropy_z is None else float(entropy_z),
@@ -271,8 +269,9 @@ def walk_forward(
                     )
                 )
                 entropy_tracker.push(entropy.entropy_norm)
+
             except Exception as e:
-                result.errors.append(f"Step {start}: {e}")
+                result.errors.append(f"Step {start_i}: {e}")
 
         return result
 

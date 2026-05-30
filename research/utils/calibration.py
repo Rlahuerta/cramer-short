@@ -1,6 +1,11 @@
-"""Calibration utilities.
+"""Calibration utilities — YES-bias correction and probability calibration.
 
-YES-bias correction and other probability calibration helpers.
+Polymarket probabilities systematically overestimate the true probability
+of events (the "YES bias"), especially for long-duration markets.  This
+module applies a multiplicative correction factor and an expiry-date boost
+to bring Polymarket-implied probabilities closer to empirical frequencies.
+
+References: Reichenbach & Walther (2025), Polymarket calibration analysis.
 """
 
 from __future__ import annotations

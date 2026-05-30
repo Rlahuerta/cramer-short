@@ -1,4 +1,19 @@
-"""Visualization helpers for forecast distributions and trajectories."""
+"""Visualization helpers for forecast distributions and trajectories.
+
+Public API
+----------
+``plot_survival_curve(distribution, current_price, ...)``
+    Render a survival curve showing P(price > X) for each price level.
+    Includes vertical markers for the current price and CI bounds.
+
+``plot_trajectory(trajectory, ...)``
+    Plot the expected price path over the forecast horizon with shaded
+    confidence bands (p5–p95).
+
+``plot_regime_sequence(regimes, ...)``
+    Display the regime classification sequence over a historical window
+    with color-coded bull/bear/sideways bands.
+"""
 
 from __future__ import annotations
 

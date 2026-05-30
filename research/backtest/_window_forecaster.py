@@ -55,11 +55,13 @@ def compute_window_forecast(
         active_returns, return_threshold_multiplier=return_threshold_multiplier
     )
     P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
+
     break_result = detect_structural_break(
         regimes,
         divergence_threshold=break_divergence_threshold,
         decay_rate=decay_rate,
     )
+
     current_regime = regimes[-1] if regimes else "sideways"
     forecast = compute_markov_forecast(P, current_regime, horizon)
 
@@ -78,6 +80,7 @@ def compute_window_forecast(
             regime_stats[state] = RegimeStats(mean_return=0.0, std_return=0.01)
 
     up_rates: dict[str, float] = {}
+
     for state in ["bull", "bear", "sideways"]:
         mask = [r == state for r in regimes]
         if any(mask):
@@ -99,6 +102,7 @@ def compute_window_forecast(
             max_iterations=50,
             tolerance=1e-3,
         )
+
         if hmm_result.converged:
             hmm_pred = predict(
                 active_returns, hmm_result.params, forecast_horizon=horizon
@@ -128,6 +132,7 @@ def compute_window_forecast(
 
     garch_scales: list[float] | None = None
     garch_vol_applied = False
+
     if enable_garch_vol:
         log_returns = [
             math.log(window_prices[i] / window_prices[i - 1])

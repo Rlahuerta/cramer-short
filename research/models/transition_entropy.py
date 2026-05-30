@@ -76,10 +76,13 @@ def approximate_stationary(P: Sequence[Sequence[float]]) -> list[float]:
 def compute_transition_entropy(P: Sequence[Sequence[float]]) -> TransitionEntropyResult:
     """Compute stationary-weighted Shannon entropy of transition matrix P."""
     K = len(P)
+
     if K == 0:
         return TransitionEntropyResult(entropy_nats=0.0, entropy_norm=0.0, K=0)
+
     pi = approximate_stationary(P)
     H = 0.0
+
     for i in range(K):
         row = P[i]
         row_h = 0.0
@@ -90,6 +93,7 @@ def compute_transition_entropy(P: Sequence[Sequence[float]]) -> TransitionEntrop
         H += pi[i] * row_h
     Hmax = math.log(max(2, K))
     norm = H / Hmax if Hmax > 0 else 0.0
+
     return TransitionEntropyResult(
         entropy_nats=H,
         entropy_norm=max(0.0, min(1.0, norm)),

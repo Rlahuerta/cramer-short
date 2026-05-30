@@ -264,6 +264,7 @@ def effective_walk_forward_options(
         if args.live_policy
         else None
     )
+
     if gold_policy is not None:
         warmup = gold_policy.history_days
         break_threshold = gold_policy.break_divergence_threshold
@@ -336,11 +337,14 @@ def run_horizon(
     horizon: int,
 ) -> tuple[WalkForwardResult, dict[str, Any], dict[str, Any]]:
     """Run one horizon with a fixed seed so stochastic trajectory CIs are reproducible."""
+
     if args.seed is not None:
         np.random.seed(args.seed + horizon)
+
     options = effective_walk_forward_options(args, horizon)
     result = walk_forward(prices, **options)
     metrics = summarize_steps(result.steps, horizon)
+
     return result, metrics, options
 
 
@@ -563,16 +567,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     prices, price_source = load_prices(args)
     horizon_rows: list[dict[str, Any]] = []
 
-    for horizon in args.horizons:
-        result, metrics, options = run_horizon(prices, args, horizon)
+    for horizon_i in args.horizons:
+        result_i, metrics_i, options_i = run_horizon(prices, args, horizon_i)
         horizon_rows.append(
             {
-                "horizon": horizon,
-                "metrics": metrics,
-                "errors": result.errors,
-                "effective_options": options,
+                "horizon": horizon_i,
+                "metrics": metrics_i,
+                "errors": result_i.errors,
+                "effective_options": options_i,
                 "sample_rows": [
-                    step_to_json(step) for step in result.steps[: args.sample_rows]
+                    step_to_json(step_k) for step_k in result_i.steps[: args.sample_rows]
                 ],
             }
         )

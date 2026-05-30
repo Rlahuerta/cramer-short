@@ -1,4 +1,12 @@
-"""Forecast-lab asset-scoped runtime defaults.
+"""Forecast-Lab asset-scoped runtime defaults — multi-tier parameter resolution.
+
+Allows per-asset overrides of forecast model parameters through a scoped
+resolution chain: asset-specific defaults → promoted defaults → universal
+defaults.  When a forecast is requested for BTC, the BTC-specific defaults
+take priority; for Solana, the Solana-specific defaults, etc.
+
+Tickers are resolved via the ``ForecastLabAssetScope`` type: ``"btc"``,
+``"sol"``, ``"hype"``, ``"gold"``, or ``"default"``.
 
 Python mirror of ``src/tools/finance/forecast-lab-runtime-defaults.ts``.
 """
