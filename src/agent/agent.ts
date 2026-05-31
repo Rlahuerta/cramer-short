@@ -59,6 +59,7 @@ import {
   buildForcedForecastArbiterArgs,
   buildForcedGoldCombinedForecastArbiterArgs,
   buildForcedMarkovArgs,
+  buildNextForcedMarkovArgs,
   buildForcedMarketDataArgs,
   buildForcedNonCryptoMarketDataArgs,
   buildForcedNonCryptoPolymarketForecastArgs,
@@ -1023,7 +1024,8 @@ export class Agent {
   private async *forceMarkovDistribution(
     ctx: RunContext,
   ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
-    const args = buildForcedMarkovArgs(ctx.query);
+    const args = buildNextForcedMarkovArgs(ctx.query, ctx.scratchpad.getToolCallRecords())
+      ?? buildForcedMarkovArgs(ctx.query);
     if (!args) return 'idle';
 
     return yield* this.executeForcedTool(ctx, 'markov_distribution', args);

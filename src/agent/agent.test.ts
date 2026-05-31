@@ -1892,6 +1892,7 @@ describe('Agent', () => {
       expect(isCryptoForecastQuery('What is the market cap of BTC?')).toBe(false);
       expect(isCryptoForecastQuery('What is the probability distribution for BTC-USD in 7 days?')).toBe(false);
       expect(isCryptoForecastQuery('Provide an AAPL forecast for the next 7 days')).toBe(false);
+      expect(isCryptoForecastQuery('SOLUSD 24h forecast. SOLUSD only.')).toBe(true);
       expect(
         isCryptoForecastQuery(
           'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
@@ -2313,6 +2314,45 @@ describe('Agent', () => {
         horizon_days: 7,
         current_price: 73300,
         sentiment_score: 0.42,
+      });
+    });
+
+    it('uses Fear & Greed as the crypto sentiment score when no social posts are available', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for SOL' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_SOL: {
+                ticker: 'SOL',
+                price: 81.72,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'social_sentiment',
+          args: { ticker: 'SOL', include_fear_greed: true, limit: 25 },
+          result: JSON.stringify({
+            data: {
+              result: [
+                '📊 **Social Sentiment: SOL**',
+                '_No Reddit/X posts found in the past 7 days._',
+                '',
+                '## Crypto Fear & Greed Index',
+                '███░░░░░░░ **26/100** — Fear',
+              ].join('\n'),
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedPolymarketForecastArgs('SOLUSD 24h forecast. SOLUSD only.', toolCalls)).toEqual({
+        ticker: 'SOL',
+        horizon_days: 1,
+        current_price: 81.72,
+        sentiment_score: -0.48,
       });
     });
 

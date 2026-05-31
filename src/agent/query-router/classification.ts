@@ -33,6 +33,7 @@ export function isExplicitTerminalDistributionQuery(query: string): boolean {
   const lower = query.toLowerCase();
   return isDistributionQuery(query)
     || lower.includes('markov distribution')
+    || lower.includes('markov_distribution')
     || lower.includes('markov chain')
     || lower.includes('terminal threshold');
 }

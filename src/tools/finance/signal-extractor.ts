@@ -9,6 +9,7 @@
 
 import { MS_PER_DAY } from '../../utils/time.js';
 import {
+  extractCryptoQuotePairTickers,
   extractExclusiveAssetOverride,
   resolveAssetIntent,
   resolveTickerSearchIdentity,
@@ -323,6 +324,12 @@ export function detectAssetType(query: string): { type: AssetType; ticker: strin
 
     const type: AssetType = SECTOR_MAP[normalizedExclusiveTicker] ?? 'tech_general';
     return { type, ticker: normalizedExclusiveTicker };
+  }
+
+  const cryptoQuotePairs = extractCryptoQuotePairTickers(query);
+  if (cryptoQuotePairs.length > 0) {
+    const root = cryptoQuotePairs[0]!.replace(/(?:USDT|USDC|USD)$/, '');
+    return { type: 'crypto', ticker: root };
   }
 
   // 0. Barrick Gold / gold-miner disambiguation (must precede commodity gold match)

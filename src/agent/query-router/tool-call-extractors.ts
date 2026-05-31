@@ -126,17 +126,33 @@ export function extractSentimentScoreFromToolCalls(toolCalls: ToolCallRecord[]):
     const report = data?.['result'];
     if (typeof report !== 'string') continue;
 
-    const match = report.match(/score\s*([+-]?\d+)\/100/i);
-    if (!match) continue;
+    const score = extractSentimentScoreFromReport(report);
+    if (score !== null) return score;
+  }
 
-    const parsedScore = parseInt(match[1]!, 10) / 100;
+  return null;
+}
+
+function extractSentimentScoreFromReport(report: string): number | null {
+  const scoreMatch = report.match(/score\s*([+-]?\d+)\/100/i);
+  if (scoreMatch) {
+    const parsedScore = parseInt(scoreMatch[1]!, 10) / 100;
     if (Number.isFinite(parsedScore)) {
       return Math.max(-1, Math.min(1, parsedScore));
     }
   }
 
+  const fearGreedMatch = report.match(/Crypto Fear & Greed Index[\s\S]*?\*\*(\d{1,3})\/100\*\*/i);
+  if (fearGreedMatch) {
+    const value = parseInt(fearGreedMatch[1]!, 10);
+    if (Number.isFinite(value)) {
+      return Math.max(-1, Math.min(1, (value - 50) / 50));
+    }
+  }
+
   return null;
 }
+
 export function extractSentimentScoreForCryptoQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
   const desired = buildForcedSocialSentimentArgs(query);
   if (!desired) return null;
@@ -150,13 +166,8 @@ export function extractSentimentScoreForCryptoQuery(query: string, toolCalls: To
     const report = data?.['result'];
     if (typeof report !== 'string') continue;
 
-    const match = report.match(/score\s*([+-]?\d+)\/100/i);
-    if (!match) continue;
-
-    const parsedScore = parseInt(match[1]!, 10) / 100;
-    if (Number.isFinite(parsedScore)) {
-      return Math.max(-1, Math.min(1, parsedScore));
-    }
+    const score = extractSentimentScoreFromReport(report);
+    if (score !== null) return score;
   }
 
   return null;

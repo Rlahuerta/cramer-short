@@ -26,6 +26,11 @@ const GOLD_PROXY_TICKERS = new Set(['GLD', 'IAU', 'SGOL', 'XAUUSD']);
 const SILVER_PROXY_TICKERS = new Set(['SLV', 'SIVR', 'XAGUSD', 'SILVER']);
 const OIL_PROXY_TICKERS = new Set(['USO', 'BNO', 'OIL', 'WTICOUSD', 'CRUDE']);
 const EXCLUSIVE_ASSET_ONLY_RE = /\b([A-Z]{2,5}(?:-USD)?|bitcoin|ethereum|solana|gold|silver|oil|crude)\s+only\b/gi;
+const CRYPTO_QUOTE_PAIR_RE = /\b([A-Z][A-Z0-9]{1,9}(?:USDT|USDC|USD))\b/g;
+const CRYPTO_QUOTE_ROOTS = new Set([
+  'ADA', 'AVAX', 'BCH', 'BNB', 'BTC', 'DOGE', 'DOT', 'ETH', 'HYPE', 'LINK',
+  'LTC', 'MATIC', 'PEPE', 'SOL', 'SUI', 'TRX', 'XRP',
+]);
 
 function normalizeExplicitTicker(explicitTicker?: string | null): string | null {
   const value = explicitTicker?.trim().toUpperCase();
@@ -62,6 +67,22 @@ export function extractExclusiveAssetOverride(query: string): string | null {
   }
 
   return lastMatch?.ticker ?? null;
+}
+
+export function extractCryptoQuotePairTickers(query: string): string[] {
+  const found = new Set<string>();
+
+  for (const match of query.matchAll(CRYPTO_QUOTE_PAIR_RE)) {
+    const token = match[1]?.toUpperCase();
+    if (!token) continue;
+
+    const root = token.replace(/(?:USDT|USDC|USD)$/, '');
+    if (CRYPTO_QUOTE_ROOTS.has(root)) {
+      found.add(token);
+    }
+  }
+
+  return Array.from(found);
 }
 
 export function resolveTickerSearchIdentity(ticker: string): ResolvedTickerSearchIdentity {

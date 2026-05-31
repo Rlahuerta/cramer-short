@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { ToolCallRecord } from './scratchpad.js';
 import * as queryRouter from './query-router.js';
 import {
+  buildNextForcedMarkovArgs,
   extractCurrentPriceFromToolCalls,
   hasPolymarketForecastCoverage,
   hasSuccessfulMarkovDistributionForQuery,
@@ -21,12 +22,14 @@ describe('query-router modular barrel', () => {
       'buildForcedForecastArbiterArgs',
       'buildForcedGoldCombinedForecastArbiterArgs',
       'buildForcedMarketDataArgs',
+      'buildForcedMarkovArgCandidates',
       'buildForcedMarkovArgs',
       'buildForcedNonCryptoMarketDataArgs',
       'buildForcedNonCryptoPolymarketForecastArgs',
       'buildForcedOnchainArgs',
       'buildForcedPolymarketForecastArgs',
       'buildForcedSocialSentimentArgs',
+      'buildNextForcedMarkovArgs',
       'detectBtcShortHorizonDisagreement',
       'detectExplicitSkillRequest',
       'extractCurrentPriceFromMarketDataQuery',
@@ -96,6 +99,49 @@ describe('query-router modular barrel', () => {
     expect(hasSuccessfulMarkovDistributionForQuery(query, toolCalls)).toBe(true);
     expect(shouldForceMarkovDistribution(query, toolCalls)).toBe(false);
     expect(shouldForceMarkovDistribution(query, [])).toBe(true);
+  });
+
+  it('prefers explicit crypto quote pairs over excluded substitution tickers', () => {
+    const query = [
+      'Give me an ordinary Markov forecast for SOLUSD and HYPEUSDT over the next 1 to 3 days.',
+      'Do not use any skill and do not use forecast_lab_run.',
+      'Use markov_distribution once for SOLUSD and once for HYPEUSDT.',
+      'Briefly compare the two assets and avoid BTC or GOLD substitutions.',
+    ].join(' ');
+
+    expect(queryRouter.inferDistributionTicker(query)).toBe('SOLUSD');
+    expect(queryRouter.isCryptoForecastQuery(query)).toBe(false);
+    expect(queryRouter.buildForcedMarkovArgCandidates(query)).toEqual([
+      { ticker: 'SOLUSD', horizon: 3 },
+      { ticker: 'HYPEUSDT', horizon: 3 },
+    ]);
+    expect(buildNextForcedMarkovArgs(query, [])).toEqual({ ticker: 'SOLUSD', horizon: 3 });
+  });
+
+  it('keeps forcing explicit multi-asset Markov calls until each requested quote pair completes', () => {
+    const query = [
+      'Use markov_distribution once for SOLUSD and once for HYPEUSDT over the next 3 days.',
+      'Avoid BTC or GOLD substitutions.',
+    ].join(' ');
+    const solDone: ToolCallRecord[] = [
+      {
+        tool: 'markov_distribution',
+        args: { ticker: 'SOLUSD', horizon: 3 },
+        result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'ok' } }),
+      },
+    ];
+
+    expect(shouldForceMarkovDistribution(query, [])).toBe(true);
+    expect(buildNextForcedMarkovArgs(query, solDone)).toEqual({ ticker: 'HYPEUSDT', horizon: 3 });
+    expect(shouldForceMarkovDistribution(query, solDone)).toBe(true);
+    expect(shouldForceMarkovDistribution(query, [
+      ...solDone,
+      {
+        tool: 'markov_distribution',
+        args: { ticker: 'HYPEUSDT', horizon: 3 },
+        result: JSON.stringify({ data: { _tool: 'markov_distribution', status: 'abstain' } }),
+      },
+    ])).toBe(false);
   });
 
   it('forces Markov for explicit GOLD Polymarket + Markov forecast prompts', () => {

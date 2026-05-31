@@ -140,8 +140,9 @@ function isE2EAuthOrBillingError(message: string): boolean {
     || /invalid[_ ]?api[_ ]?key|incorrect api key|no api key found|api key is missing|authentication failed/i.test(message)
     || /\b(?:401|403)\s+(?:unauthorized|forbidden)\b/i.test(message)
     || /\b(?:http|status|code|response)\s*[:=]?\s*(?:401|403)\b/i.test(message)
-    || /\b(?:unauthorized|forbidden|access denied)\b[^\n]{0,120}\b(?:api|provider|llm|model|ollama|openai|anthropic|gemini|claude|gpt)\b/i.test(message)
-    || /\b(?:api|provider|llm|model|ollama|openai|anthropic|gemini|claude|gpt)\b[^\n]{0,120}\b(?:unauthorized|forbidden|access denied)\b/i.test(message);
+    || /\b(?:unauthorized|access denied)\b[^\n]{0,120}\b(?:api|provider|llm|model|ollama|openai|anthropic|gemini|claude|gpt)\b/i.test(message)
+    || /\b(?:api|provider|llm|model|ollama|openai|anthropic|gemini|claude|gpt)\b[^\n]{0,120}\b(?:unauthorized|access denied)\b/i.test(message)
+    || /\b(?:api|provider|ollama|openai|anthropic|gemini|claude|gpt)\b[^\n]{0,120}\bforbidden\b/i.test(message);
 }
 
 function isE2EModelUnavailableError(message: string): boolean {
