@@ -127,3 +127,165 @@ def detect_structural_break(
         "first_half_matrix": first_matrix,
         "second_half_matrix": second_matrix,
     }
+
+
+def stationary_distribution(
+    P: np.ndarray,
+    max_iterations: int = 1000,
+    tolerance: float = 1e-10,
+) -> np.ndarray:
+    """Compute the stationary distribution of an ergodic Markov chain.
+
+    Uses repeated application of the transition matrix (power iteration).
+    For any row-stochastic P, πP = π when the chain is ergodic.
+
+    Parameters
+    ----------
+    P : np.ndarray
+        Square, row-stochastic transition matrix.
+    max_iterations : int
+        Maximum power-iteration steps.
+    tolerance : float
+        L1-convergence threshold for π.
+
+    Returns
+    -------
+    np.ndarray
+        1D probability vector summing to 1.
+
+    Raises
+    ------
+    ValueError
+        If the chain does not converge within ``max_iterations``.
+    """
+    n = P.shape[0]
+    pi = np.full(n, 1.0 / n, dtype=float)
+
+    for _ in range(max_iterations):
+        next_pi = pi @ P
+        if np.sum(np.abs(next_pi - pi)) < tolerance:
+            return next_pi
+        pi = next_pi
+
+    raise ValueError(
+        f"Stationary distribution did not converge in {max_iterations} iterations"
+    )
+
+
+def second_largest_eigenvalue(
+    P: np.ndarray,
+    iterations: int = 100,
+) -> float:
+    """Compute the second-largest absolute eigenvalue via power iteration + deflation.
+
+    ρ determines mixing time: ``exp(-ρ * n)`` is how quickly the chain
+    forgets its initial state.  Small ρ → fast mixing; Markov signal
+    decays quickly.
+
+    Mirrors ``src/tools/finance/markov-distribution/transition.ts``.
+
+    Parameters
+    ----------
+    P : np.ndarray
+        Square, row-stochastic transition matrix.
+    iterations : int
+        Power-iteration rounds for each eigenvector.
+
+    Returns
+    -------
+    float
+        Value in ``[0, 1]``.
+    """
+    n = P.shape[0]
+
+    # --- First eigenvector (stationary distribution) via power iteration ---
+    v = np.full(n, 1.0 / n, dtype=float)
+    for _ in range(iterations):
+        nxt = v @ P
+        norm = float(np.sum(nxt))
+        v = nxt / norm if norm > 1e-12 else v
+
+    # L2-normalise v for correct orthogonal projection in deflation
+    v_l2 = float(np.linalg.norm(v))
+    v_unit = v if v_l2 < 1e-12 else v / v_l2
+
+    # --- Deflate: remove first eigenvector, find second via power iteration ---
+    # Start with a basis vector and project out the first eigenvector so w ⟂ v
+    w = np.zeros(n, dtype=float)
+    w[0] = 1.0
+    dot = float(np.dot(w, v_unit))
+    w = w - dot * v_unit
+    w_norm = float(np.linalg.norm(w))
+    if w_norm < 1e-12:
+        # v_unit was exactly e_0, try e_1
+        w = np.zeros(n, dtype=float)
+        w[1] = 1.0
+        dot = float(np.dot(w, v_unit))
+        w = w - dot * v_unit
+        w_norm = float(np.linalg.norm(w))
+    w = w / w_norm if w_norm > 1e-12 else w
+
+    for _ in range(iterations):
+        nxt = w @ P
+        dot = float(np.dot(nxt, v_unit))
+        deflated = nxt - dot * v_unit
+        norm = float(np.linalg.norm(deflated))
+        if norm < 1e-10:
+            return 0.0
+        w = deflated / norm
+
+    Pw = w @ P
+    lambda2 = float(np.dot(w, Pw))
+    return min(1.0, max(0.0, abs(lambda2)))
+
+
+def is_irreducible(P: np.ndarray, tol: float = 1e-12) -> bool:
+    """Check whether a transition matrix is irreducible (strongly connected).
+
+    Uses repeated squaring: a chain is irreducible iff there exists some
+    power ``P^m`` with no zero entries.  For an n-state chain, if
+    ``P^(2^(ceil(log2(n))))`` has all positive entries, the chain is
+    irreducible (Chapman-Kolmogorov).
+
+    Parameters
+    ----------
+    P : np.ndarray
+        Square, row-stochastic transition matrix.
+    tol : float
+        Threshold below which an entry is considered zero.
+
+    Returns
+    -------
+    bool
+        True if every state can reach every other state.
+    """
+    n = P.shape[0]
+    m = int(np.ceil(np.log2(max(n, 2))))
+    P_m = np.linalg.matrix_power(P, 2 ** m)
+    return bool(np.all(P_m > tol))
+
+
+def mixing_time_scale(
+    P: np.ndarray,
+    horizon: int = 30,
+) -> float:
+    """Return the mixing-time scale factor ``exp(-ρ * horizon)``.
+
+    A value near 0 means the chain has essentially forgotten its initial
+    state after ``horizon`` steps; a value near 1 means the initial state
+    still heavily influences the forecast.
+
+    Parameters
+    ----------
+    P : np.ndarray
+        Square, row-stochastic transition matrix.
+    horizon : int
+        Forecast horizon in days.
+
+    Returns
+    -------
+    float
+        Mixing weight in ``[0, 1]``.
+    """
+    rho = second_largest_eigenvalue(P)
+    return math.exp(-rho * horizon)

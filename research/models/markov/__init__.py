@@ -67,12 +67,17 @@ from research.models.markov.policies import (
 from research.models.markov.regime import (
     classify_regime,
     classify_regime_series,
+    compute_regime_up_rates,
     estimate_regime_stats,
 )
 from research.models.markov.transition import (
     _default_matrix,
     detect_structural_break,
     estimate_transition_matrix,
+    stationary_distribution,
+    second_largest_eigenvalue,
+    is_irreducible,
+    mixing_time_scale,
 )
 from research.models.markov.validation import (
     compute_r2_os,
@@ -118,10 +123,15 @@ __all__ = [
     # regime
     "classify_regime",
     "classify_regime_series",
+    "compute_regime_up_rates",
     "estimate_regime_stats",
     # transition
     "estimate_transition_matrix",
     "detect_structural_break",
+    "stationary_distribution",
+    "second_largest_eigenvalue",
+    "is_irreducible",
+    "mixing_time_scale",
     # forecast
     "compute_markov_forecast",
     # entropy
