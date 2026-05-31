@@ -13,6 +13,7 @@ import numpy as np
 
 from research.models.markov import (
     classify_regime_series,
+    compute_regime_up_rates,
     detect_structural_break,
     estimate_transition_matrix,
     compute_markov_forecast,
@@ -51,6 +52,7 @@ def compute_window_forecast(
         [(window_prices[i] - window_prices[i - 1]) / window_prices[i - 1]
          for i in range(1, len(window_prices))]
     )
+    log_returns = np.log(1.0 + active_returns)
     regimes = classify_regime_series(
         active_returns, return_threshold_multiplier=return_threshold_multiplier
     )
@@ -79,15 +81,47 @@ def compute_window_forecast(
         else:
             regime_stats[state] = RegimeStats(mean_return=0.0, std_return=0.01)
 
-    up_rates: dict[str, float] = {}
+    up_rates = compute_regime_up_rates(
+        regimes,
+        log_returns,
+        horizon=horizon,
+        decay_rate=decay_rate,
+    )
 
+    p_up = sum(
+        forecast[state] * up_rates[state]
+        for state in ["bull", "bear", "sideways"]
+    )
+    regimes = classify_regime_series(
+        active_returns, return_threshold_multiplier=return_threshold_multiplier
+    )
+    P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
+
+    break_result = detect_structural_break(
+        regimes,
+        divergence_threshold=break_divergence_threshold,
+        decay_rate=decay_rate,
+    )
+
+    current_regime = regimes[-1] if regimes else "sideways"
+    forecast = compute_markov_forecast(P, current_regime, horizon)
+
+    regime_stats: dict[str, RegimeStats] = {}
     for state in ["bull", "bear", "sideways"]:
         mask = [r == state for r in regimes]
         if any(mask):
             state_returns = active_returns[mask]
-            up_rates[state] = float(np.mean(state_returns > 0))
+            regime_stats[state] = RegimeStats(
+                mean_return=float(np.mean(state_returns)),
+                std_return=float(np.std(state_returns, ddof=1))
+                if len(state_returns) > 1
+                else 0.01,
+            )
         else:
-            up_rates[state] = 0.5
+            regime_stats[state] = RegimeStats(mean_return=0.0, std_return=0.01)
+
+    log_returns = np.log(1.0 + active_returns)
+    up_rates = compute_regime_up_rates(regimes, log_returns, horizon, decay_rate=decay_rate)
 
     p_up = sum(
         forecast[state] * up_rates[state]

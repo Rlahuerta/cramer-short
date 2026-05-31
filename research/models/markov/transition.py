@@ -176,76 +176,38 @@ def second_largest_eigenvalue(
     P: np.ndarray,
     iterations: int = 100,
 ) -> float:
-    """Compute the second-largest absolute eigenvalue via power iteration + deflation.
+    """Compute the second-largest absolute eigenvalue.
 
-    ρ determines mixing time: ``exp(-ρ * n)`` is how quickly the chain
-    forgets its initial state.  Small ρ → fast mixing; Markov signal
-    decays quickly.
-
-    Mirrors ``src/tools/finance/markov-distribution/transition.ts``.
+    The magnitude of the second-largest eigenvalue controls how quickly
+    initial-state influence decays. Small ρ → fast mixing; ρ near 1 → slow
+    mixing.
 
     Parameters
     ----------
     P : np.ndarray
         Square, row-stochastic transition matrix.
     iterations : int
-        Power-iteration rounds for each eigenvector.
+        Deprecated compatibility parameter; ignored.
 
     Returns
     -------
     float
         Value in ``[0, 1]``.
     """
-    n = P.shape[0]
-
-    # --- First eigenvector (stationary distribution) via power iteration ---
-    v = np.full(n, 1.0 / n, dtype=float)
-    for _ in range(iterations):
-        nxt = v @ P
-        norm = float(np.sum(nxt))
-        v = nxt / norm if norm > 1e-12 else v
-
-    # L2-normalise v for correct orthogonal projection in deflation
-    v_l2 = float(np.linalg.norm(v))
-    v_unit = v if v_l2 < 1e-12 else v / v_l2
-
-    # --- Deflate: remove first eigenvector, find second via power iteration ---
-    # Start with a basis vector and project out the first eigenvector so w ⟂ v
-    w = np.zeros(n, dtype=float)
-    w[0] = 1.0
-    dot = float(np.dot(w, v_unit))
-    w = w - dot * v_unit
-    w_norm = float(np.linalg.norm(w))
-    if w_norm < 1e-12:
-        # v_unit was exactly e_0, try e_1
-        w = np.zeros(n, dtype=float)
-        w[1] = 1.0
-        dot = float(np.dot(w, v_unit))
-        w = w - dot * v_unit
-        w_norm = float(np.linalg.norm(w))
-    w = w / w_norm if w_norm > 1e-12 else w
-
-    for _ in range(iterations):
-        nxt = w @ P
-        dot = float(np.dot(nxt, v_unit))
-        deflated = nxt - dot * v_unit
-        norm = float(np.linalg.norm(deflated))
-        if norm < 1e-10:
-            return 0.0
-        w = deflated / norm
-
-    Pw = w @ P
-    lambda2 = float(np.dot(w, Pw))
-    return min(1.0, max(0.0, abs(lambda2)))
+    del iterations
+    eigenvalues = np.linalg.eigvals(P)
+    if len(eigenvalues) < 2:
+        return 0.0
+    magnitudes = np.sort(np.abs(eigenvalues))
+    return min(1.0, max(0.0, float(magnitudes[-2])))
 
 
 def is_irreducible(P: np.ndarray, tol: float = 1e-12) -> bool:
     """Check whether a transition matrix is irreducible (strongly connected).
 
-    Uses repeated squaring: a chain is irreducible iff there exists some
-    power ``P^m`` with no zero entries.  For an n-state chain, if
-    ``P^(2^(ceil(log2(n))))`` has all positive entries, the chain is
-    irreducible (Chapman-Kolmogorov).
+    A chain is irreducible iff every state can reach every other state through
+    positive-probability transitions. Periodic chains can be irreducible even
+    when no single power of ``P`` has all-positive entries.
 
     Parameters
     ----------
@@ -260,16 +222,18 @@ def is_irreducible(P: np.ndarray, tol: float = 1e-12) -> bool:
         True if every state can reach every other state.
     """
     n = P.shape[0]
-    m = int(np.ceil(np.log2(max(n, 2))))
-    P_m = np.linalg.matrix_power(P, 2 ** m)
-    return bool(np.all(P_m > tol))
+    reachable = np.asarray(P > tol, dtype=bool)
+    np.fill_diagonal(reachable, True)
+    for k in range(n):
+        reachable = reachable | (reachable[:, [k]] & reachable[[k], :])
+    return bool(np.all(reachable))
 
 
 def mixing_time_scale(
     P: np.ndarray,
     horizon: int = 30,
 ) -> float:
-    """Return the mixing-time scale factor ``exp(-ρ * horizon)``.
+    """Return the mixing-time scale factor ``ρ ** horizon``.
 
     A value near 0 means the chain has essentially forgotten its initial
     state after ``horizon`` steps; a value near 1 means the initial state
@@ -288,4 +252,4 @@ def mixing_time_scale(
         Mixing weight in ``[0, 1]``.
     """
     rho = second_largest_eigenvalue(P)
-    return math.exp(-rho * horizon)
+    return math.pow(rho, horizon)
