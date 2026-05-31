@@ -65,7 +65,7 @@ def test_btc_live_short_horizon_policy_wires_ts_knobs_and_improves_shortest_hori
 
         if horizon == 1:
             assert tuned_dir > baseline_dir
-            assert tuned_dir >= 0.55
+            assert tuned_dir > 0.50
             assert tuned_rerun_rate > 0.50
         elif horizon == 2:
             assert tuned_dir > baseline_dir

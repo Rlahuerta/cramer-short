@@ -115,6 +115,26 @@ def test_estimate_transition_matrix_self_persistence():
     assert m[bull_idx][bull_idx] > 0.8
 
 
+def test_estimate_transition_matrix_decay_weights_match_hand_count():
+    states = ["bull", "bear", "bull", "sideways"]
+    alpha = 0.1
+    decay_rate = 0.5
+    m = estimate_transition_matrix(
+        states,
+        alpha=alpha,
+        min_observations=0,
+        decay_rate=decay_rate,
+    )
+
+    expected_counts = np.full((NUM_STATES, NUM_STATES), alpha, dtype=float)
+    expected_counts[STATE_INDEX["bull"]][STATE_INDEX["bear"]] += decay_rate**2
+    expected_counts[STATE_INDEX["bear"]][STATE_INDEX["bull"]] += decay_rate
+    expected_counts[STATE_INDEX["bull"]][STATE_INDEX["sideways"]] += 1.0
+    expected = expected_counts / expected_counts.sum(axis=1, keepdims=True)
+
+    np.testing.assert_allclose(m, expected, atol=1e-12)
+
+
 # ---------------------------------------------------------------------------
 # detect_structural_break
 # ---------------------------------------------------------------------------
@@ -229,6 +249,25 @@ def test_compute_markov_forecast_from_each_state():
         forecast = compute_markov_forecast(P, state, 1)
         idx = STATE_INDEX[state]
         assert forecast[state] == pytest.approx(P[idx][idx], abs=1e-10)
+
+
+def test_compute_markov_forecast_horizon_zero_returns_current_state():
+    P = np.array([[0.5, 0.3, 0.2], [0.2, 0.6, 0.2], [0.2, 0.3, 0.5]])
+    forecast = compute_markov_forecast(P, "bear", 0)
+    assert forecast == pytest.approx({"bull": 0.0, "bear": 1.0, "sideways": 0.0}, abs=1e-12)
+
+
+def test_compute_markov_forecast_matches_matrix_power_for_soft_start():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    start = {"bull": 0.25, "bear": 0.5, "sideways": 0.25}
+    forecast = compute_markov_forecast(P, "bull", 3, start_mixture=start)
+
+    start_vector = np.array([start["bull"], start["bear"], start["sideways"]])
+    expected = start_vector @ np.linalg.matrix_power(P, 3)
+
+    assert forecast["bull"] == pytest.approx(expected[0], abs=1e-12)
+    assert forecast["bear"] == pytest.approx(expected[1], abs=1e-12)
+    assert forecast["sideways"] == pytest.approx(expected[2], abs=1e-12)
 
 
 def test_compute_markov_forecast_supports_soft_start_mixture():
@@ -1044,12 +1083,30 @@ class TestSecondLargestEigenvalue:
         rho = second_largest_eigenvalue(P)
         assert 0.0 <= rho <= 1.0
 
+    def test_matches_numpy_oracle_for_cyclic_chain(self):
+        """Cyclic chains can have complex eigenvalues; use magnitude, not a
+        single real Rayleigh quotient."""
+        from research.models.markov.transition import second_largest_eigenvalue
+        P = np.array([[0.1, 0.9, 0.0],
+                      [0.0, 0.1, 0.9],
+                      [0.9, 0.0, 0.1]], dtype=float)
+        expected = sorted(abs(np.linalg.eigvals(P)))[-2]
+        rho = second_largest_eigenvalue(P)
+        assert rho == pytest.approx(expected, abs=1e-10)
+
 
 class TestIsIrreducible:
     def test_default_matrix_is_irreducible(self):
         """The default matrix has no zero entries, so it is irreducible."""
         from research.models.markov.transition import _default_matrix, is_irreducible
         P = _default_matrix()
+        assert is_irreducible(P) is True
+
+    def test_periodic_flip_chain_is_irreducible(self):
+        """Strong connectivity is independent of periodicity."""
+        from research.models.markov.transition import is_irreducible
+        P = np.array([[0.0, 1.0],
+                      [1.0, 0.0]], dtype=float)
         assert is_irreducible(P) is True
 
     def test_absorbing_state_is_reducible(self):
@@ -1079,3 +1136,11 @@ class TestMixingTimeScale:
         short = mixing_time_scale(P, horizon=1)
         long = mixing_time_scale(P, horizon=100)
         assert short > long
+
+    def test_slow_mixing_chain_retains_more_initial_weight(self):
+        """A nearly absorbing chain should retain more initial-state influence
+        than a chain that mixes in one step."""
+        from research.models.markov.transition import _default_matrix, mixing_time_scale
+        slow = _default_matrix(diagonal=0.99)
+        fast = np.full((3, 3), 1.0 / 3.0, dtype=float)
+        assert mixing_time_scale(slow, horizon=10) > mixing_time_scale(fast, horizon=10)
