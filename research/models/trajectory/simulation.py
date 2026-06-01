@@ -33,6 +33,7 @@ def compute_trajectory(
     hmm_override: dict[str, float] | None = None,
     jump_spec: list[JumpEventSpec] | None = None,
     garch_scales: list[float] | None = None,
+    uncertainty_ci_scale: float = 1.0,
 ) -> list[TrajectoryPoint]:
     initial_idx = STATE_INDEX[initial_state]
     trajectory: list[TrajectoryPoint] = []
@@ -133,6 +134,18 @@ def compute_trajectory(
         upper_bound = float(prices_sorted[p95_idx])
 
         expected_price = current_price * math.exp(mu_n)
+
+        # Apply uncertainty CI scale from the original asymmetric bounds around
+        # expected_price. Re-centering total width can shrink one side of a
+        # skewed lognormal interval even when the caller requested widening.
+        if abs(uncertainty_ci_scale - 1.0) > 1e-9:
+            scaled_lower = expected_price - (expected_price - lower_bound) * uncertainty_ci_scale
+            scaled_upper = expected_price + (upper_bound - expected_price) * uncertainty_ci_scale
+            if uncertainty_ci_scale >= 1.0:
+                scaled_lower = min(lower_bound, scaled_lower)
+                scaled_upper = max(upper_bound, scaled_upper)
+            lower_bound = max(0.01, scaled_lower)
+            upper_bound = scaled_upper
 
         p_up = student_t_survival(current_price, current_price, mu_n, sigma_n, nu)
 
