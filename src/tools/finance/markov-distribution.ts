@@ -426,7 +426,7 @@ export interface PredictionConfidenceBreakdown {
     baseRateAlignment: number;
     nearZeroR2Bonus: number;
     anchorSupport: number;
-  };
+  }
   multipliers: {
     structuralBreak: number;
     assetType: number;
@@ -452,6 +452,20 @@ export interface SoftRegimeDiagnostics {
   currentRegimeMixture?: Record<RegimeState, number>;
   forecastRegimeMixture?: Record<RegimeState, number>;
   transitionBlendWeight?: number;
+}
+
+function isRecoverableHmmOverlayError(error: unknown): error is Error {
+  if (!(error instanceof Error)) return false;
+  return /\b(hmm|hidden markov|baum[- ]?welch|transition matrix|covariance)\b/i
+    .test(error.message);
+}
+
+const RECOVERABLE_HMM_FAILURE_LOG_LIKELIHOOD = 0;
+
+function sanitizeHmmLogLikelihood(logLikelihood: number): number {
+  return Number.isFinite(logLikelihood)
+    ? logLikelihood
+    : RECOVERABLE_HMM_FAILURE_LOG_LIKELIHOOD;
 }
 
 export interface AnchorTrustEvaluationInput {
@@ -675,6 +689,7 @@ export interface MarkovDistributionResult {
       volRegimeConverged?: boolean;
       emissionFamily?: 'gaussian' | 'student-t-predictive';
       studentTDegreesOfFreedom?: number[];
+      failureReason?: string;
     } | null;
     /** Ensemble signal metadata */
     ensemble: { consensus: number; adjustment: number };
@@ -1922,7 +1937,7 @@ export function mergeAnchorsWithCrossPlatformValidation(
         source: 'averaged',
         // Upgrade to high trust if either source qualifies
         trustScore: poly.trustScore === 'high' || (kalshi.volume ?? 0) > 0 ? 'high' : 'low',
-      };
+      }
     }
   }
 
@@ -2492,6 +2507,20 @@ function zScoreAgainstHistory(history: readonly number[] | undefined, value: num
   const std = Math.sqrt(sse / history.length);
   if (!(std > 1e-9)) return 0;
   return (value - mean) / std;
+}
+
+export function combineUncertaintyCiScale(params: {
+  structuralScale?: number;
+  entropyScale?: number;
+  softRegimeScale?: number;
+}): number {
+  const sanitize = (value: number | undefined): number =>
+    value !== undefined && Number.isFinite(value) && value > 0 ? value : 1.0;
+  const structuralScale = sanitize(params.structuralScale);
+  const entropyScale = sanitize(params.entropyScale);
+  const softRegimeScale = sanitize(params.softRegimeScale);
+  const combined = structuralScale * entropyScale * softRegimeScale;
+  return Math.max(1.0, structuralScale, combined);
 }
 
 function computeNormalizedEntropy(probabilities: readonly number[]): number {
@@ -3502,6 +3531,7 @@ export async function computeMarkovDistribution(params: {
   // Fit a Gaussian HMM on daily returns when we have enough data.
   // Also fit a volatility HMM on rolling vol for an independent vol-regime signal.
   let hmmOverride: { drift: number; vol: number; weight: number } | undefined;
+  let hmmOverlayApplied = false;
   let hmmMeta: {
     converged: boolean;
     iterations: number;
@@ -3510,6 +3540,7 @@ export async function computeMarkovDistribution(params: {
     volRegimeConverged?: boolean;
     emissionFamily?: 'gaussian' | 'student-t-predictive';
     studentTDegreesOfFreedom?: number[];
+    failureReason?: string;
   } | undefined;
   let softRegimeMeta: SoftRegimeDiagnostics | undefined;
   let softCurrentRegimeMixture: Record<RegimeState, number> | undefined;
@@ -3520,130 +3551,171 @@ export async function computeMarkovDistribution(params: {
     try {
       // Primary: return HMM (directional signal)
       const hmmResult = baumWelch(returns, 3, 50, 1e-3);
-      const hmmParams = enableStudentTEmission === true
-        ? attachStudentTPredictiveEmissions(returns, hmmResult.params)
-        : hmmResult.params;
-      const hmmForecast = hmmPredict(returns, hmmParams, horizon);
-      const posteriorEntropy = computeNormalizedEntropy(hmmForecast.currentStateProbabilities);
-      const forecastEntropy = computeNormalizedEntropy(hmmForecast.forecastProbabilities);
-      const effectivePosteriorEntropy = Math.max(posteriorEntropy, forecastEntropy);
-      const dominantStateProbability = Math.max(...hmmForecast.currentStateProbabilities);
-      const softRegimeConfidenceFloor = Math.max(
-        0,
-        Math.min(1, params.softRegimeConfidenceFloor ?? 0.65),
-      );
-      const softRegimeConfidenceEntropyWeight = Math.max(
-        0,
-        params.softRegimeConfidenceEntropyWeight ?? 0.35,
-      );
-      const softRegimeCiEntropyWeight = Math.max(0, params.softRegimeCiEntropyWeight ?? 0.35);
-      const softRegimeHmmWeightFloor = Math.max(
-        0,
-        Math.min(1, params.softRegimeHmmWeightFloor ?? 0.5),
-      );
-      const softRegimeHmmWeightEntropyWeight = Math.max(
-        0,
-        params.softRegimeHmmWeightEntropyWeight ?? 0.4,
-      );
-      const softRegimeConfidenceMultiplier = Math.max(
-        softRegimeConfidenceFloor,
-        1 - effectivePosteriorEntropy * softRegimeConfidenceEntropyWeight,
-      );
-      const softRegimeCiScale = 1 + effectivePosteriorEntropy * softRegimeCiEntropyWeight;
-      const mappedCurrentRegimeMixture = mapHmmProbabilitiesToRegimeMixture(
-        hmmForecast.currentStateProbabilities,
-        hmmParams.means,
-      );
-      const mappedForecastRegimeMixture = mapHmmProbabilitiesToRegimeMixture(
-        hmmForecast.forecastProbabilities,
-        hmmParams.means,
-      );
-      softTransitionBlendWeight = effectivePosteriorEntropy;
-      softCurrentRegimeMixture = mappedCurrentRegimeMixture ?? undefined;
-      softForecastRegimeMixture = mappedForecastRegimeMixture ?? undefined;
+      if (!hmmResult.converged) {
+        hmmMeta = {
+          converged: false,
+          iterations: hmmResult.iterations,
+          states: hmmResult.params.nStates,
+          logLikelihood: sanitizeHmmLogLikelihood(hmmResult.logLikelihood),
+          emissionFamily: enableStudentTEmission === true ? 'student-t-predictive' : 'gaussian',
+        };
+      } else {
+        const hmmParams = enableStudentTEmission === true
+          ? attachStudentTPredictiveEmissions(returns, hmmResult.params)
+          : hmmResult.params;
+        const hmmForecast = hmmPredict(returns, hmmParams, horizon);
+        const posteriorEntropy = computeNormalizedEntropy(hmmForecast.currentStateProbabilities);
+        const forecastEntropy = computeNormalizedEntropy(hmmForecast.forecastProbabilities);
+        const effectivePosteriorEntropy = Math.max(posteriorEntropy, forecastEntropy);
+        const dominantStateProbability = Math.max(...hmmForecast.currentStateProbabilities);
+        const softRegimeConfidenceFloor = Math.max(
+          0,
+          Math.min(1, params.softRegimeConfidenceFloor ?? 0.65),
+        );
+        const softRegimeConfidenceEntropyWeight = Math.max(
+          0,
+          params.softRegimeConfidenceEntropyWeight ?? 0.35,
+        );
+        const softRegimeCiEntropyWeight = Math.max(0, params.softRegimeCiEntropyWeight ?? 0.35);
+        const softRegimeHmmWeightFloor = Math.max(
+          0,
+          Math.min(1, params.softRegimeHmmWeightFloor ?? 0.5),
+        );
+        const softRegimeHmmWeightEntropyWeight = Math.max(
+          0,
+          params.softRegimeHmmWeightEntropyWeight ?? 0.4,
+        );
+        const softRegimeConfidenceMultiplier = Math.max(
+          softRegimeConfidenceFloor,
+          1 - effectivePosteriorEntropy * softRegimeConfidenceEntropyWeight,
+        );
+        const softRegimeCiScale = 1 + effectivePosteriorEntropy * softRegimeCiEntropyWeight;
+        const mappedCurrentRegimeMixture = mapHmmProbabilitiesToRegimeMixture(
+          hmmForecast.currentStateProbabilities,
+          hmmParams.means,
+        );
+        const mappedForecastRegimeMixture = mapHmmProbabilitiesToRegimeMixture(
+          hmmForecast.forecastProbabilities,
+          hmmParams.means,
+        );
+        // Secondary: volatility regime HMM (Idea C — orthogonal vol signal)
+        // 5-day rolling realized volatility as independent feature
+        const rollingVol: number[] = [];
+        const VOL_WINDOW = 5;
+        for (let i = VOL_WINDOW; i < returns.length; i++) {
+          const window = returns.slice(i - VOL_WINDOW, i);
+          const mean = window.reduce((s, v) => s + v, 0) / VOL_WINDOW;
+          const variance = window.reduce((s, v) => s + (v - mean) ** 2, 0) / VOL_WINDOW;
+          rollingVol.push(Math.sqrt(variance));
+        }
 
-      // Secondary: volatility regime HMM (Idea C — orthogonal vol signal)
-      // 5-day rolling realized volatility as independent feature
-      const rollingVol: number[] = [];
-      const VOL_WINDOW = 5;
-      for (let i = VOL_WINDOW; i < returns.length; i++) {
-        const window = returns.slice(i - VOL_WINDOW, i);
-        const mean = window.reduce((s, v) => s + v, 0) / VOL_WINDOW;
-        const variance = window.reduce((s, v) => s + (v - mean) ** 2, 0) / VOL_WINDOW;
-        rollingVol.push(Math.sqrt(variance));
-      }
+        let volRegimeConverged = false;
+        let volScaleFactor = 1.0;
+        let volScaleUsable = true;
+        if (rollingVol.length >= HMM_MIN_OBS) {
+          try {
+            const volHmm = baumWelch(rollingVol, 2, 30, 1e-3);
+            if (volHmm.converged) {
+              volRegimeConverged = true;
+              const volForecast = hmmPredict(rollingVol, volHmm.params, Math.min(horizon, 20));
+              const avgVol = rollingVol.reduce((s, v) => s + v, 0) / rollingVol.length;
+              // On a volatility-observation HMM, expectedReturn is the forecast volatility level.
+              const forecastVolLevel = volForecast.expectedReturn;
+              if (
+                Number.isFinite(avgVol) &&
+                avgVol > 0 &&
+                Number.isFinite(forecastVolLevel) &&
+                forecastVolLevel >= 0
+              ) {
+                volScaleFactor = Math.max(0.5, Math.min(2.0, forecastVolLevel / avgVol));
+              } else {
+                volScaleUsable = false;
+              }
+            }
+          } catch (error) {
+            if (!isRecoverableHmmOverlayError(error)) throw error;
+            // Optional vol HMM failed explicitly — use neutral factor.
+          }
+        }
 
-      let volRegimeConverged = false;
-      let volScaleFactor = 1.0; // neutral default
-      if (rollingVol.length >= HMM_MIN_OBS) {
-        try {
-          const volHmm = baumWelch(rollingVol, 2, 30, 1e-3);
-          if (volHmm.converged) {
-            volRegimeConverged = true;
-            const volForecast = hmmPredict(rollingVol, volHmm.params, Math.min(horizon, 20));
-            // Current vol regime: high-vol state → widen uncertainty, low-vol → narrow it
-            const avgVol = rollingVol.reduce((s, v) => s + v, 0) / rollingVol.length;
-            if (avgVol > 0) {
-              // Scale factor: >1 means currently in high-vol regime, <1 means low-vol
-              volScaleFactor = volForecast.expectedReturn / avgVol;
-              volScaleFactor = Math.max(0.5, Math.min(2.0, volScaleFactor)); // clamp
+        hmmMeta = {
+          converged: hmmResult.converged,
+          iterations: hmmResult.iterations,
+          states: hmmResult.params.nStates,
+          logLikelihood: sanitizeHmmLogLikelihood(hmmResult.logLikelihood),
+          volRegimeConverged,
+          emissionFamily: enableStudentTEmission === true ? 'student-t-predictive' : 'gaussian',
+          studentTDegreesOfFreedom: hmmParams.studentTEmissions?.map(
+            (emission) => emission.degreesOfFreedom,
+          ),
+        };
+        if (
+          hmmResult.converged &&
+          Number.isFinite(hmmForecast.expectedReturn) &&
+          Number.isFinite(hmmForecast.expectedVolatility) &&
+          volScaleUsable
+        ) {
+          // Weight HMM based on data length, scaled by asset profile
+          const baseHmmWeight = returns.length >= 120 ? 0.5 : 0.25;
+          const hmmWeight = Math.min(0.7, baseHmmWeight * assetProfile.hmmWeightMultiplier);
+          const adjustedHmmWeight = params.enableSoftRegimeWeighting === true
+            ? hmmWeight * Math.max(
+                softRegimeHmmWeightFloor,
+                1 - effectivePosteriorEntropy * softRegimeHmmWeightEntropyWeight,
+              )
+            : hmmWeight;
+          const hmmDrift = hmmForecast.expectedReturn;
+          const hmmVol = hmmForecast.expectedVolatility * volScaleFactor;
+          // HMM predict returns per-step emission values (daily drift/vol)
+          if (
+            Number.isFinite(hmmDrift) &&
+            Number.isFinite(hmmVol) &&
+            Number.isFinite(adjustedHmmWeight) &&
+            adjustedHmmWeight >= 0 &&
+            adjustedHmmWeight <= 1
+          ) {
+            hmmOverride = {
+              drift: hmmDrift,
+              vol: hmmVol,
+              weight: adjustedHmmWeight,
+            };
+            hmmOverlayApplied = true;
+            softTransitionBlendWeight = effectivePosteriorEntropy;
+            softCurrentRegimeMixture = mappedCurrentRegimeMixture ?? undefined;
+            softForecastRegimeMixture = mappedForecastRegimeMixture ?? undefined;
+            if (params.enableSoftRegimeWeighting === true) {
+              softRegimeMeta = {
+                posteriorEntropy,
+                forecastEntropy,
+                ciScale: softRegimeCiScale,
+                confidenceMultiplier: softRegimeConfidenceMultiplier,
+                confidenceFloor: softRegimeConfidenceFloor,
+                confidenceEntropyWeight: softRegimeConfidenceEntropyWeight,
+                ciEntropyWeight: softRegimeCiEntropyWeight,
+                hmmWeightFloor: softRegimeHmmWeightFloor,
+                hmmWeightEntropyWeight: softRegimeHmmWeightEntropyWeight,
+                dominantStateProbability,
+                currentStateProbabilities: [...hmmForecast.currentStateProbabilities],
+                forecastProbabilities: [...hmmForecast.forecastProbabilities],
+                ...(softCurrentRegimeMixture ? { currentRegimeMixture: softCurrentRegimeMixture } : {}),
+                ...(softForecastRegimeMixture ? { forecastRegimeMixture: softForecastRegimeMixture } : {}),
+                transitionBlendWeight: softTransitionBlendWeight,
+              };
             }
           }
-        } catch (error) {
-          if (!(error instanceof Error)) throw error;
-          // Vol HMM failed — use neutral factor
         }
       }
-
-      hmmMeta = {
-        converged: hmmResult.converged,
-        iterations: hmmResult.iterations,
-        states: hmmResult.params.nStates,
-        logLikelihood: hmmResult.logLikelihood,
-        volRegimeConverged,
-        emissionFamily: enableStudentTEmission === true ? 'student-t-predictive' : 'gaussian',
-        studentTDegreesOfFreedom: hmmParams.studentTEmissions?.map(
-          (emission) => emission.degreesOfFreedom,
-        ),
-      };
-      if (params.enableSoftRegimeWeighting === true) {
-        softRegimeMeta = {
-          posteriorEntropy,
-          forecastEntropy,
-          ciScale: softRegimeCiScale,
-          confidenceMultiplier: softRegimeConfidenceMultiplier,
-          confidenceFloor: softRegimeConfidenceFloor,
-          confidenceEntropyWeight: softRegimeConfidenceEntropyWeight,
-          ciEntropyWeight: softRegimeCiEntropyWeight,
-          hmmWeightFloor: softRegimeHmmWeightFloor,
-          hmmWeightEntropyWeight: softRegimeHmmWeightEntropyWeight,
-          dominantStateProbability,
-          currentStateProbabilities: [...hmmForecast.currentStateProbabilities],
-          forecastProbabilities: [...hmmForecast.forecastProbabilities],
-          ...(softCurrentRegimeMixture ? { currentRegimeMixture: softCurrentRegimeMixture } : {}),
-          ...(softForecastRegimeMixture ? { forecastRegimeMixture: softForecastRegimeMixture } : {}),
-          transitionBlendWeight: softTransitionBlendWeight,
-        };
-      }
-      if (hmmResult.converged && Number.isFinite(hmmForecast.expectedReturn)) {
-        // Weight HMM based on data length, scaled by asset profile
-        const baseHmmWeight = returns.length >= 120 ? 0.5 : 0.25;
-        const hmmWeight = Math.min(0.7, baseHmmWeight * assetProfile.hmmWeightMultiplier);
-        const adjustedHmmWeight = params.enableSoftRegimeWeighting === true
-          ? hmmWeight * Math.max(
-              softRegimeHmmWeightFloor,
-              1 - effectivePosteriorEntropy * softRegimeHmmWeightEntropyWeight,
-            )
-          : hmmWeight;
-        hmmOverride = {
-          drift: hmmForecast.expectedReturn,
-          vol: hmmForecast.expectedVolatility * volScaleFactor,
-          weight: adjustedHmmWeight,
-        };
-      }
+      // Non-converged HMM or non-finite forecast: skip override, proceed with base Markov
     } catch (error) {
-      if (!(error instanceof Error)) throw error;
-      // HMM fitting can fail on degenerate data — fall back to observable Markov
+      if (!isRecoverableHmmOverlayError(error)) throw error;
+      hmmMeta = {
+        converged: false,
+        iterations: 0,
+        states: 3,
+        logLikelihood: RECOVERABLE_HMM_FAILURE_LOG_LIKELIHOOD,
+        failureReason: error.message,
+      };
+      // Optional HMM overlay failed explicitly — keep observable Markov forecast.
     }
   }
 
@@ -3830,7 +3902,7 @@ export async function computeMarkovDistribution(params: {
   }
 
   const softBaseMixture = mixture ?? oneHotRegimeMixture(currentRegime);
-  const softBlendedMixture = params.enableSoftRegimeWeighting === true && !rndMixture && softCurrentRegimeMixture
+  const softBlendedMixture = params.enableSoftRegimeWeighting === true && hmmOverlayApplied && !rndMixture && softCurrentRegimeMixture
     ? blendRegimeMixtures(softBaseMixture, softCurrentRegimeMixture, softTransitionBlendWeight)
     : undefined;
   const effectiveMixture = rndMixture ?? softBlendedMixture ?? mixture;
@@ -3841,7 +3913,7 @@ export async function computeMarkovDistribution(params: {
     currentRegime,
     effectiveMixture,
   );
-  const forecastAdjustedStateWeights = params.enableSoftRegimeWeighting === true && softForecastRegimeMixture
+  const forecastAdjustedStateWeights = params.enableSoftRegimeWeighting === true && hmmOverlayApplied && softForecastRegimeMixture
     ? blendStateWeightVectors(
         baseForecastStateWeights,
         regimeMixtureToArray(softForecastRegimeMixture),
@@ -3858,7 +3930,25 @@ export async function computeMarkovDistribution(params: {
   const softRegimeCiScale = params.enableSoftRegimeWeighting === true
     ? (softRegimeMeta?.ciScale ?? 1.0)
     : 1.0;
-  const effectiveCiWidthMultiplier = ciWidthMultiplier * entropyCiScale * softRegimeCiScale;
+  const effectiveCiWidthMultiplier = combineUncertaintyCiScale({
+    structuralScale: ciWidthMultiplier,
+    entropyScale: entropyCiScale,
+    softRegimeScale: softRegimeCiScale,
+  });
+
+  // Phase 4 — derive combined uncertainty CI scale from structural break
+  // divergence and transition entropy z-score. This scale will be passed
+  // directly into computeTrajectory to widen CIs at source, matching Python logic.
+  let structuralTrajectoryScale = 1.0;
+  if (breakResult.detected) {
+    // Structural break contributes monotonic widening based on divergence.
+    // Formula: clamp(1 + divergence * 2.5, 1.0, 1.5) maps threshold 0.05 → 1.125, 0.20 → 1.5.
+    structuralTrajectoryScale = Math.max(1.0, Math.min(1.5, 1.0 + breakResult.divergence * 2.5));
+  }
+  const uncertaintyTrajectoryScale = combineUncertaintyCiScale({
+    structuralScale: structuralTrajectoryScale,
+    entropyScale: entropyCiScale,
+  });
 
   let garchScalesForDistribution: number[] | undefined;
   let garchVolApplied = false;
@@ -3959,7 +4049,7 @@ export async function computeMarkovDistribution(params: {
   const distribution = calibrateProbabilities(rawDistribution, {
     ensembleConsensus: ensemble.consensus,
     historicalDays: returns.length,
-    hmmConverged: hmmMeta?.converged ?? false,
+    hmmConverged: hmmOverlayApplied,
     baseRate: calibrationCenter,
     kappaMultiplier: activeKappaMultiplier,
     currentRegime,
@@ -4042,7 +4132,7 @@ export async function computeMarkovDistribution(params: {
   const confidenceBreakdown = computePredictionConfidenceBreakdown({
     pUp: rawPUp,
     ensembleConsensus: ensemble.consensus,
-    hmmConverged: hmmMeta?.converged ?? false,
+    hmmConverged: hmmOverlayApplied,
     regimeRunLength,
     structuralBreak: breakResult.detected,
     assetType: assetProfile.type,
@@ -4063,7 +4153,7 @@ export async function computeMarkovDistribution(params: {
     structuralBreakDivergence: breakResult.divergence,
     divergencePenaltySchedule,
     confidenceMode: params.predictionConfidenceMode ?? 'rebalanced',
-    posteriorEntropy: params.enableSoftRegimeWeighting === true
+    posteriorEntropy: params.enableSoftRegimeWeighting === true && hmmOverlayApplied
       ? softRegimeMeta
         ? Math.max(softRegimeMeta.posteriorEntropy, softRegimeMeta.forecastEntropy)
         : undefined
@@ -4181,6 +4271,7 @@ export async function computeMarkovDistribution(params: {
       trajectoryDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
       recentDailyVol, effectiveMixture, activeJumpSpec,
       garchScalesForTraj,
+      uncertaintyTrajectoryScale,
     );
 
     // Align trajectory P(Up) with the calibrated CDF at the final day.

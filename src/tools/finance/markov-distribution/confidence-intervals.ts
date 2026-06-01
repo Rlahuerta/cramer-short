@@ -433,6 +433,14 @@ export function computeTrajectory(
    * arithmetic, no extra RNG draws).
    */
   garchScales?: readonly number[],
+  /**
+   * Phase 4 — shared structural-break/entropy uncertainty CI scale.
+   * Multiplies CI half-width around expectedPrice. 1.0 = baseline (no
+   * widening), >1.0 = widen (structural break or high transition entropy),
+   * <1.0 = tighten (deterministic transitions). Default 1.0 preserves
+   * existing behavior.
+   */
+  uncertaintyCiScale = 1.0,
 ): TrajectoryPoint[] {
   const initialIdx = STATE_INDEX[initialState];
   const trajectory: TrajectoryPoint[] = [];
@@ -570,13 +578,27 @@ export function computeTrajectory(
     prices.sort((a, b) => a - b);
     const p5Idx = Math.max(0, Math.floor(nSamples * 0.05) - 1);
     const p95Idx = Math.min(nSamples - 1, Math.ceil(nSamples * 0.95));
-    const lowerBound = prices[p5Idx];
-    const upperBound = prices[p95Idx];
+    let lowerBound = prices[p5Idx];
+    let upperBound = prices[p95Idx];
 
     // Keep trajectory expectedPrice on the mean path even when an empirical-vol
     // floor widens the MC interval. Otherwise the trajectory can silently switch
     // from mean to median semantics and contradict the terminal expected price.
     const expectedPrice = analyticalExpected;
+
+    // Apply uncertainty CI scale from the original asymmetric bounds around
+    // expectedPrice. Re-centering total width can shrink one side of a skewed
+    // lognormal interval even when the caller requested widening.
+    if (uncertaintyCiScale !== 1.0) {
+      let scaledLower = expectedPrice - (expectedPrice - lowerBound) * uncertaintyCiScale;
+      let scaledUpper = expectedPrice + (upperBound - expectedPrice) * uncertaintyCiScale;
+      if (uncertaintyCiScale >= 1.0) {
+        scaledLower = Math.min(lowerBound, scaledLower);
+        scaledUpper = Math.max(upperBound, scaledUpper);
+      }
+      lowerBound = Math.max(0.01, scaledLower);
+      upperBound = scaledUpper;
+    }
 
     // P(up) from Student-t survival at currentPrice
     const pUp = studentTSurvival(currentPrice, currentPrice, mu_n, sigma_n, nu);

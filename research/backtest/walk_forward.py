@@ -13,7 +13,7 @@ recording:
     research/backtest/walk_forward.py       ← this file (orchestrator)
     research/backtest/_config.py            → BacktestStep, WalkForwardResult
     research/backtest/_window_forecaster.py → per-window Markov → trajectory
-    research/backtest/_ci_transformer.py    → break widening, entropy modulation
+        (including structural-break and entropy CI scaling)
 
 Optional features activated by boolean flags include HMM blending
 (``use_hmm``), GARCH volatility scaling (``enable_garch_vol``), and
@@ -28,9 +28,8 @@ from __future__ import annotations
 
 from research.backtest._config import BacktestStep, WalkForwardResult
 from research.backtest._window_forecaster import compute_window_forecast
-from research.backtest._ci_transformer import modulate_ci_by_entropy, widen_for_structural_break
 from research.models.markov import get_btc_short_horizon_live_policy
-from research.models.transition_entropy import (EntropyZScoreTracker, entropy_z_to_ci_scale,)
+from research.models.transition_entropy import EntropyZScoreTracker, entropy_z_to_ci_scale
 from research.utils.forecast_lab_runtime_defaults import (
     forecast_lab_runtime_asset_scope,
     resolve_forecast_lab_runtime_asset_scope_for_ticker,
@@ -132,9 +131,9 @@ def walk_forward(
     2. **Break rerun** — if a structural break is detected and
        ``post_break_short_window`` is active, the forecast is rerun on a
        shorter recent window.
-    3. **CI transformation** — if a break was detected, the CI is
-       widened 1.5×.  If entropy modulation is enabled, the CI half-width
-       is scaled by the entropy-derived factor.
+    3. **Shared uncertainty scaling** — structural-break and entropy-driven
+       CI widening is computed inside ``compute_window_forecast`` and applied
+       once inside the shared trajectory engine.
     4. **Scoring** — the forecast is compared against the realised
        outcome and recorded as a ``BacktestStep``.
 
@@ -194,6 +193,8 @@ def walk_forward(
                     enable_garch_vol=enable_garch_vol,
                     garch_horizon=garch_horizon_cap,
                     garch_ceiling=garch_regime_ceiling,
+                    entropy_tracker=entropy_tracker if enable_entropy_ci_modulation else None,
+                    entropy_kappa=entropy_kappa,
                 )
 
                 original_structural_break_detected = bool(wf_i["original_break_result"]["detected"])
@@ -217,6 +218,8 @@ def walk_forward(
                         enable_garch_vol=enable_garch_vol,
                         garch_horizon=garch_horizon_cap,
                         garch_ceiling=garch_regime_ceiling,
+                        entropy_tracker=entropy_tracker if enable_entropy_ci_modulation else None,
+                        entropy_kappa=entropy_kappa,
                     )
                     wf_i["break_rerun_triggered"] = True
 
@@ -225,33 +228,26 @@ def walk_forward(
                 entropy_z = None
                 entropy_ci_scale = 1.0
 
+                # Phase 4 — structural-break/entropy scale now applied inside compute_trajectory.
+                # Extract metadata from the same pre-push tracker state used by compute_window_forecast.
                 if enable_entropy_ci_modulation:
-                    entropy_z = entropy_tracker.z_score(entropy.entropy_norm)
-                    if entropy_z is not None:
-                        entropy_ci_scale = entropy_z_to_ci_scale(entropy_z, entropy_kappa)
-
-                p_up = float(wf_i["p_up"])
-                predicted_return = float(wf_i["predicted_return"])
-                ci_lower = float(wf_i["ci_lower"])
-                ci_upper = float(wf_i["ci_upper"])
-
-                if bool(break_result["detected"]):
-                    ci_lower, ci_upper = widen_for_structural_break(ci_lower, ci_upper)
-
-                ci_lower, ci_upper = modulate_ci_by_entropy(ci_lower, ci_upper, entropy_ci_scale)
+                    if entropy_tracker.size() >= 5:
+                        entropy_z = entropy_tracker.z_score(entropy.entropy_norm)
+                        if entropy_z is not None:
+                            entropy_ci_scale = entropy_z_to_ci_scale(entropy_z, entropy_kappa)
 
                 direction_correct = (
-                    (p_up > 0.5 and realised_return_i > 0) or (p_up <= 0.5 and realised_return_i <= 0)
+                    (wf_i["p_up"] > 0.5 and realised_return_i > 0) or (wf_i["p_up"] <= 0.5 and realised_return_i <= 0)
                 )
-                in_ci = ci_lower <= realised_price_i <= ci_upper
+                in_ci = wf_i["ci_lower"] <= realised_price_i <= wf_i["ci_upper"]
 
                 result.steps.append(
                     BacktestStep(
                         start_idx=start_i,
-                        predicted_prob=float(p_up),
-                        predicted_return=float(predicted_return),
-                        ci_lower=float(ci_lower),
-                        ci_upper=float(ci_upper),
+                        predicted_prob=float(wf_i["p_up"]),
+                        predicted_return=float(wf_i["predicted_return"]),
+                        ci_lower=float(wf_i["ci_lower"]),
+                        ci_upper=float(wf_i["ci_upper"]),
                         realised_return=float(realised_return_i),
                         realised_price=float(realised_price_i),
                         direction_correct=bool(direction_correct),
@@ -261,7 +257,7 @@ def walk_forward(
                         transition_entropy_norm=float(entropy.entropy_norm),
                         transition_entropy_z=None if entropy_z is None else float(entropy_z),
                         entropy_ci_scale=float(entropy_ci_scale),
-                        entropy_ci_modulation_applied=bool(abs(entropy_ci_scale - 1.0) > 1e-12),
+                        entropy_ci_modulation_applied=enable_entropy_ci_modulation and entropy_tracker.size() >= 5,
                         structural_break_detected=bool(break_result["detected"]),
                         structural_break_rerun_triggered=bool(structural_break_rerun_triggered),
                         original_structural_break_detected=bool(original_structural_break_detected),

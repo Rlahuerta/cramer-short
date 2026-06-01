@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import { classifyRegimeState } from './regime.js';
 import { buildDefaultMatrix } from './transition.js';
 import { computeHorizonDriftVol, computeMixingWeight, computeStartStateMixture, computeTrajectory, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
-import { computeMarkovDistribution } from '../markov-distribution.js';
+import { combineUncertaintyCiScale, computeMarkovDistribution } from '../markov-distribution.js';
 import type { MarkovDistributionPoint, RegimeState } from './core.js';
 
 function seedRng(seed: number): () => number {
@@ -317,6 +317,124 @@ describe('computeTrajectory', () => {
     const noHmmFinal = trajNoHmm[6].expectedPrice;
     const hmmFinal = trajHmm[6].expectedPrice;
     expect(hmmFinal).toBeGreaterThan(noHmmFinal);
+  });
+
+  it('treats HMM override drift as a per-day quantity', () => {
+    const flatStats = {
+      bull: { meanReturn: 0, stdReturn: 0.001 },
+      bear: { meanReturn: 0, stdReturn: 0.001 },
+      sideways: { meanReturn: 0, stdReturn: 0.001 },
+    };
+    const identityP = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+    const traj = computeTrajectory(
+      100,
+      3,
+      identityP,
+      flatStats,
+      'bull',
+      0,
+      { drift: 0.01, vol: 0.001, weight: 1 },
+      200,
+    );
+
+    expect(traj[2].expectedPrice).toBe(Math.round(100 * Math.exp(0.03) * 100) / 100);
+  });
+
+  it(
+    'shared structural-break/entropy uncertainty scale widens computeTrajectory CIs monotonically',
+    () => {
+      randomSpy?.mockRestore();
+      randomSpy = spyOn(Math, 'random').mockImplementation(seedRng(54321));
+      const baseline = computeTrajectory(100, 5, P, regimeStats, 'bull', 0, undefined, 500);
+
+      randomSpy?.mockRestore();
+      randomSpy = spyOn(Math, 'random').mockImplementation(seedRng(54321));
+      // uncertainty_ci_scale is the 14th positional parameter
+      const widened = computeTrajectory(
+        100,
+        5,
+        P,
+        regimeStats,
+        'bull',
+        0,
+        undefined,
+        500,
+        5,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        1.5,
+      );
+
+      for (const [index, base] of baseline.entries()) {
+        const wide = widened[index];
+        expect(wide.expectedPrice).toBe(base.expectedPrice);
+        expect(wide.pUp).toBe(base.pUp);
+        expect(wide.lowerBound).toBeLessThanOrEqual(base.lowerBound);
+        expect(wide.upperBound).toBeGreaterThanOrEqual(base.upperBound);
+        expect(wide.upperBound - wide.lowerBound).toBeGreaterThanOrEqual(base.upperBound - base.lowerBound);
+      }
+      expect(widened[4].upperBound - widened[4].lowerBound)
+        .toBeGreaterThan(baseline[4].upperBound - baseline[4].lowerBound);
+    },
+  );
+
+  it('uncertainty widening contains skewed asymmetric baseline intervals', () => {
+    const identityP = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+    const skewedStats = {
+      bull: { meanReturn: 0.08, stdReturn: 0.20 },
+      bear: { meanReturn: -0.01, stdReturn: 0.02 },
+      sideways: { meanReturn: 0, stdReturn: 0.01 },
+    };
+
+    randomSpy?.mockRestore();
+    randomSpy = spyOn(Math, 'random').mockImplementation(seedRng(202405));
+    const baseline = computeTrajectory(100, 3, identityP, skewedStats, 'bull', 0, undefined, 2000);
+
+    randomSpy?.mockRestore();
+    randomSpy = spyOn(Math, 'random').mockImplementation(seedRng(202405));
+    const widened = computeTrajectory(
+      100,
+      3,
+      identityP,
+      skewedStats,
+      'bull',
+      0,
+      undefined,
+      2000,
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1.4,
+    );
+
+    for (const [index, base] of baseline.entries()) {
+      const wide = widened[index];
+      expect(wide.expectedPrice).toBe(base.expectedPrice);
+      expect(wide.pUp).toBe(base.pUp);
+      expect(wide.lowerBound).toBeLessThanOrEqual(base.lowerBound);
+      expect(wide.upperBound).toBeGreaterThanOrEqual(base.upperBound);
+    }
+  });
+
+  it('keeps combined structural-break uncertainty scale at or above the structural floor', () => {
+    expect(combineUncertaintyCiScale({ structuralScale: 1.5, entropyScale: 0.7 }))
+      .toBeCloseTo(1.5, 10);
+    expect(combineUncertaintyCiScale({ structuralScale: 1.0, entropyScale: 0.7 }))
+      .toBeCloseTo(1.0, 10);
+    expect(combineUncertaintyCiScale({ structuralScale: 1.25, entropyScale: 1.2 }))
+      .toBeCloseTo(1.5, 10);
   });
 
   it('keeps expectedPrice mean-based when empiricalDailyVol widens the interval', () => {

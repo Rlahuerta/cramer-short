@@ -138,6 +138,11 @@ def test_walk_forward_entropy_records_metadata_and_modulates_ci():
     assert all(s.transition_entropy_norm is not None for s in result.steps)
     assert any(s.transition_entropy_z is not None for s in result.steps)
     assert any(s.entropy_ci_scale is not None and abs(s.entropy_ci_scale - 1.0) > 1e-6 for s in result.steps)
+    first_z_idx = next(
+        i for i, step in enumerate(result.steps) if step.transition_entropy_z is not None
+    )
+    assert first_z_idx >= 5
+    assert not any(step.entropy_ci_modulation_applied for step in result.steps[:5])
 
 
 # ---------------------------------------------------------------------------

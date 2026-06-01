@@ -264,6 +264,85 @@ def test_compute_trajectory_keeps_analytical_mean_under_empirical_vol_floor():
     assert trajectory[0].expected_price == pytest.approx(round(100.0 * math.exp(0.01), 2))
 
 
+def test_compute_trajectory_treats_hmm_override_drift_as_per_day_quantity():
+    P = np.eye(3)
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.0, std_return=0.001),
+        "bear": RegimeStats(mean_return=0.0, std_return=0.001),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.001),
+    }
+    trajectory = compute_trajectory(
+        100.0,
+        3,
+        P,
+        regime_stats,
+        "bull",
+        hmm_override={"drift": 0.01, "vol": 0.001, "weight": 1.0},
+        n_samples=200,
+    )
+
+    assert trajectory[-1].expected_price == pytest.approx(round(100.0 * math.exp(0.03), 2))
+
+
+def test_compute_trajectory_uncertainty_scale_widens_ci_monotonically():
+    """Uncertainty CI scale widens intervals around expected_price while
+    keeping expected_price unchanged. Used by callers to propagate
+    structural-break and/or transition-entropy uncertainty."""
+    P, regime_stats = _make_fixture()
+    np.random.seed(12345)
+    baseline = compute_trajectory(100, 5, P, regime_stats, "bull", n_samples=500)
+    np.random.seed(12345)
+    widened = compute_trajectory(
+        100,
+        5,
+        P,
+        regime_stats,
+        "bull",
+        n_samples=500,
+        uncertainty_ci_scale=1.5,
+    )
+
+    for base, wide in zip(baseline, widened, strict=True):
+        assert wide.expected_price == pytest.approx(base.expected_price)
+        assert wide.p_up == pytest.approx(base.p_up)
+        assert wide.lower_bound <= base.lower_bound
+        assert wide.upper_bound >= base.upper_bound
+        base_width = base.upper_bound - base.lower_bound
+        wide_width = wide.upper_bound - wide.lower_bound
+        assert wide_width >= base_width
+    assert widened[-1].upper_bound - widened[-1].lower_bound > (
+        baseline[-1].upper_bound - baseline[-1].lower_bound
+    )
+
+
+def test_compute_trajectory_uncertainty_scale_contains_skewed_baseline_ci():
+    P = np.eye(3)
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.08, std_return=0.20),
+        "bear": RegimeStats(mean_return=-0.01, std_return=0.02),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.01),
+    }
+
+    np.random.seed(202405)
+    baseline = compute_trajectory(100, 3, P, regime_stats, "bull", n_samples=2000)
+    np.random.seed(202405)
+    widened = compute_trajectory(
+        100,
+        3,
+        P,
+        regime_stats,
+        "bull",
+        n_samples=2000,
+        uncertainty_ci_scale=1.4,
+    )
+
+    for base, wide in zip(baseline, widened, strict=True):
+        assert wide.expected_price == pytest.approx(base.expected_price)
+        assert wide.p_up == pytest.approx(base.p_up)
+        assert wide.lower_bound <= base.lower_bound
+        assert wide.upper_bound >= base.upper_bound
+
+
 def test_compute_horizon_drift_vol_supports_regime_specific_sigma_and_garch():
     P = np.eye(3)
     regime_stats = {
