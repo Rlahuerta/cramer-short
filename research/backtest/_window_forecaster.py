@@ -1,7 +1,19 @@
-"""Per-window Markov forecaster: regime → transition → trajectory → forecast.
+"""Per-window Markov forecaster: regime -> transition -> trajectory -> forecast.
 
-Takes a price window and model parameters, returns the forecast payload
-with p_up, predicted_return, CI bounds, entropy, and break metadata.
+This module owns the single-window forecasting stage used by the
+walk-forward harness.  It treats recent price returns as observations of a
+finite-state Markov process, classifies each return into a bull/bear/sideways
+regime, estimates an exponentially weighted transition matrix, and projects
+that matrix over the requested horizon.  The projected state probabilities are
+combined with empirical regime up-rates for ``p_up`` and with regime-conditioned
+return moments for the Monte Carlo price trajectory and confidence interval.
+
+The Markov-probability literature review under ``references/markov-probability``
+motivates three design cautions reflected here: transition matrices are
+estimates rather than exact probabilities, latent-state models such as HMMs
+should be treated as optional noisy-emission overlays, and nonstationarity or
+structural breaks must be surfaced as diagnostics rather than hidden behind a
+single point forecast.
 """
 
 from __future__ import annotations
@@ -25,6 +37,18 @@ from research.models.trajectory import RegimeStats, compute_trajectory
 
 
 class WindowForecast(TypedDict):
+    """Forecast payload emitted for one rolling backtest window.
+
+    Fields carry both the tradable forecast outputs and the diagnostics needed
+    by the orchestrator.  ``p_up`` is the horizon probability of a positive
+    return, ``predicted_return`` is the horizon expected return from the
+    simulated trajectory, and ``ci_lower``/``ci_upper`` are price-level bounds.
+    ``entropy`` summarizes transition-matrix uncertainty, while
+    ``break_result`` and ``original_break_result`` preserve structural-break
+    metadata for any downstream confidence-interval widening or short-window
+    rerun.
+    """
+
     p_up: float
     predicted_return: float
     ci_lower: float
@@ -48,14 +72,63 @@ def compute_window_forecast(
     garch_horizon: int | None,
     garch_ceiling: tuple[float, float] | None,
 ) -> WindowForecast:
+    """Compute one horizon forecast from a rolling price window.
+
+    Parameters
+    ----------
+    window_prices : list[float]
+        Ordered price history for the current backtest window.  The final
+        element is the forecast origin price used to convert trajectory output
+        into ``predicted_return``.
+    horizon : int
+        Number of future bars/days to project the Markov state distribution and
+        price trajectory.
+    return_threshold_multiplier : float
+        Multiplier passed to regime classification.  It controls how large a
+        return must be, relative to the rolling return scale, before it is
+        labeled bull or bear rather than sideways.
+    decay_rate : float
+        Exponential decay factor for transition counts and empirical up-rates.
+        Values closer to 1.0 preserve more long-window history; lower values
+        emphasize the most recent regime transitions.
+    break_divergence_threshold : float
+        Divergence threshold for detecting a structural break between recent
+        and longer-window transition behavior.
+    use_hmm : bool
+        When True, fit a 3-state Gaussian HMM with Baum-Welch and blend its
+        drift/volatility forecast into the trajectory if the fit converges.
+    asset_profile : str
+        Asset profile key used to scale the optional HMM overlay weight.
+    enable_garch_vol : bool
+        When True, apply GARCH-derived volatility scaling to the Monte Carlo
+        trajectory.
+    garch_horizon : int or None
+        Optional cap after which GARCH scaling soft-blends back toward 1.0.
+    garch_ceiling : tuple[float, float] or None
+        Optional calm/turbulent ceiling pair for GARCH volatility scaling.
+
+    Returns
+    -------
+    WindowForecast
+        Horizon probability, expected return, price confidence interval, and
+        diagnostics for transition entropy and structural breaks.
+
+    Notes
+    -----
+    The forecast uses a finite-state Markov abstraction: once returns are
+    classified into regimes, the current regime and estimated transition matrix
+    drive the n-step state distribution.  The returned confidence interval is a
+    simulation product, not a posterior credible interval over the transition
+    matrix itself; callers should use the entropy and structural-break metadata
+    when interpreting forecast reliability.
+    """
     active_returns = np.array(
         [(window_prices[i] - window_prices[i - 1]) / window_prices[i - 1]
          for i in range(1, len(window_prices))]
     )
+
     log_returns = np.log(1.0 + active_returns)
-    regimes = classify_regime_series(
-        active_returns, return_threshold_multiplier=return_threshold_multiplier
-    )
+    regimes = classify_regime_series(active_returns, return_threshold_multiplier=return_threshold_multiplier)
     P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
 
     break_result = detect_structural_break(
@@ -88,13 +161,8 @@ def compute_window_forecast(
         decay_rate=decay_rate,
     )
 
-    p_up = sum(
-        forecast[state] * up_rates[state]
-        for state in ["bull", "bear", "sideways"]
-    )
-    regimes = classify_regime_series(
-        active_returns, return_threshold_multiplier=return_threshold_multiplier
-    )
+    p_up = sum(forecast[state] * up_rates[state] for state in ["bull", "bear", "sideways"])
+    regimes = classify_regime_series(active_returns, return_threshold_multiplier=return_threshold_multiplier)
     P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
 
     break_result = detect_structural_break(
