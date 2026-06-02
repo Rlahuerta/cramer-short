@@ -67,6 +67,7 @@ from research.models.markov.policies import (
 from research.models.markov.regime import (
     classify_regime,
     classify_regime_series,
+    compute_regime_expected_returns,
     compute_regime_up_rates,
     estimate_regime_stats,
 )
@@ -123,6 +124,7 @@ __all__ = [
     # regime
     "classify_regime",
     "classify_regime_series",
+    "compute_regime_expected_returns",
     "compute_regime_up_rates",
     "estimate_regime_stats",
     # transition

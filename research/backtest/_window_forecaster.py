@@ -30,6 +30,7 @@ from research.models.markov import (
     STATE_INDEX,
     classify_regime_series,
     compute_markov_forecast,
+    compute_regime_expected_returns,
     compute_regime_up_rates,
     detect_structural_break,
     estimate_regime_stats,
@@ -498,6 +499,24 @@ def compute_window_forecast(
             for state in ["bull", "bear", "sideways"]
         )
         p_up = float(empirical_p_up)
+
+    # When empirical up-rates are active, replace the trajectory-based
+    # predicted_return with the empirical expected cumulative return per
+    # regime, blended via the same Markov forecast weights. This makes
+    # predicted_return consistent with p_up instead of relying on noisy
+    # per-regime mean estimates from the trajectory simulation.
+    if use_empirical_up_rates and len(regimes) >= horizon:
+        regime_expected = compute_regime_expected_returns(
+            regimes, log_returns, horizon, decay_rate=decay_rate,
+        )
+        forecast = compute_markov_forecast(
+            P, current_regime, horizon, start_mixture=gmm_mixture,
+        )
+        empirical_log_return = sum(
+            forecast[state] * regime_expected[state]
+            for state in ["bull", "bear", "sideways"]
+        )
+        predicted_return = float(math.expm1(empirical_log_return))
 
     return {
         "p_up": float(p_up),

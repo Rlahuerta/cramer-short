@@ -181,7 +181,13 @@ def test_walk_forward_hmm_vs_base_same_count():
 
 
 def test_walk_forward_hmm_different_predictions():
-    """HMM variant should produce different predictions than base."""
+    """HMM variant should produce different p_up or CI bounds than base.
+
+    With empirical up-rates enabled (default), predicted_return comes from
+    empirical expected returns rather than the trajectory, so HMM does not
+    affect predicted_return. It still affects CI bounds through the
+    trajectory's volatility blending.
+    """
     rng = np.random.default_rng(202)
     returns = rng.normal(0.0, 0.02, 250)
     prices = [100.0]
@@ -191,8 +197,9 @@ def test_walk_forward_hmm_different_predictions():
     result_base = walk_forward(prices, horizon=7, warmup=120, stride=20, use_hmm=False)
     result_hmm = walk_forward(prices, horizon=7, warmup=120, stride=20, use_hmm=True)
 
-    diffs = [abs(b.predicted_return - h.predicted_return) for b, h in zip(result_base.steps, result_hmm.steps)]
-    assert any(d > 1e-6 for d in diffs), "HMM predictions are identical to base"
+    # HMM should still affect CI bounds via trajectory volatility blending
+    ci_diffs = [abs(b.ci_upper - h.ci_upper) for b, h in zip(result_base.steps, result_hmm.steps)]
+    assert any(d > 1e-6 for d in ci_diffs), "HMM CI bounds are identical to base"
 
 
 def test_walk_forward_with_asset_profile():

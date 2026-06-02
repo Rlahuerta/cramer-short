@@ -152,6 +152,66 @@ def compute_regime_up_rates(
         )
         for state in REGIME_STATES
     }
+
+
+def compute_regime_expected_returns(
+    regime_seq: list[RegimeState],
+    log_returns: np.ndarray | list[float],
+    horizon: int,
+    decay_rate: float | None = None,
+) -> dict[RegimeState, float]:
+    """Compute the empirical mean cumulative log return per regime.
+
+    For each day where ``regime_seq[i]`` corresponds to ``log_returns[i]``,
+    look forward ``horizon`` days and record the cumulative log return.
+    Returns the exponentially weighted mean per regime — the empirical
+    expected cumulative log return given the regime at time i.
+
+    Parameters
+    ----------
+    regime_seq : list[RegimeState]
+        Sequence of regime states (oldest first).
+    log_returns : np.ndarray or list[float]
+        Log returns, same length as ``regime_seq``.
+    horizon : int
+        Number of days to look ahead.
+    decay_rate : float or None
+        Exponential decay factor for recency weighting.
+
+    Returns
+    -------
+    dict[RegimeState, float]
+        Mapping from each regime state to the mean cumulative log return.
+        States with no observations return 0.0 (no expected drift).
+    """
+    log_ret = np.asarray(log_returns, dtype=float)
+    max_start = min(len(regime_seq), len(log_ret)) - horizon
+
+    accum: dict[RegimeState, dict[str, float]] = {
+        "bull": {"sum_weighted": 0.0, "total": 0.0},
+        "bear": {"sum_weighted": 0.0, "total": 0.0},
+        "sideways": {"sum_weighted": 0.0, "total": 0.0},
+    }
+
+    for i in range(max(0, max_start)):
+        regime = regime_seq[i]
+        cum_log_return = float(np.sum(log_ret[i + 1 : i + 1 + horizon]))
+        weight = (
+            math.pow(decay_rate, max_start - 1 - i)
+            if decay_rate is not None
+            else 1.0
+        )
+        accum[regime]["total"] += weight
+        accum[regime]["sum_weighted"] += weight * cum_log_return
+
+    return {
+        state: (
+            accum[state]["sum_weighted"] / accum[state]["total"]
+            if accum[state]["total"] > 0
+            else 0.0
+        )
+        for state in REGIME_STATES
+    }
 def estimate_regime_stats(
     returns: np.ndarray,
     states: list[RegimeState],
