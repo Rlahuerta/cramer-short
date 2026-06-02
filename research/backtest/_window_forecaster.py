@@ -26,6 +26,8 @@ from typing import TypedDict
 import numpy as np
 
 from research.models.markov import (
+    NUM_STATES,
+    STATE_INDEX,
     classify_regime_series,
     compute_markov_forecast,
     compute_regime_up_rates,
@@ -44,6 +46,96 @@ HMM_OPTIONAL_ERROR_PATTERN = re.compile(
     r"\b(hmm|hidden markov|baum[- ]?welch|transition matrix|covariance)\b",
     re.IGNORECASE,
 )
+
+# Multi-horizon ensemble: compute p_up at each horizon and blend.
+# Short horizons capture momentum; long horizons capture regime persistence.
+HORIZON_ENSEMBLE = [1, 3, 7, 14, 30]
+HORIZON_WEIGHTS = [0.10, 0.15, 0.30, 0.25, 0.20]
+
+# Adaptive weight profiles for CUSUM-adaptive horizon blending.
+# When regime is stable, bias toward long horizons (persistence).
+# When regime is changing, bias toward short horizons (responsiveness).
+STABLE_WEIGHTS = [0.05, 0.10, 0.25, 0.30, 0.30]
+UNSTABLE_WEIGHTS = [0.25, 0.30, 0.25, 0.15, 0.05]
+
+
+def _compute_adaptive_weights(
+    regimes: list[str],
+    lookback: int = 20,
+) -> list[float]:
+    """Compute adaptive horizon weights based on regime stability.
+
+    Measures how often the regime changed in the recent past. Stable
+    regimes get more long-horizon weight (persistence); unstable regimes
+    get more short-horizon weight (responsiveness to potential change).
+    """
+    n = min(lookback, len(regimes) - 1)
+    if n < 2:
+        return list(HORIZON_WEIGHTS)
+
+    same_count = sum(
+        1 for i in range(len(regimes) - 1, len(regimes) - 1 - n, -1)
+        if regimes[i] == regimes[i - 1]
+    )
+    stability = max(0.0, min(1.0, same_count / n))
+
+    blended = [
+        stability * s + (1.0 - stability) * u
+        for s, u in zip(STABLE_WEIGHTS, UNSTABLE_WEIGHTS)
+    ]
+    total = sum(blended)
+    return [w / total for w in blended]
+
+
+def _compute_gmm_start_mixture(
+    log_returns: np.ndarray,
+) -> dict[str, float] | None:
+    """Fit a 3-component GMM on multi-feature data and return soft regime
+    probabilities for the most recent observation.
+
+    Features: z-scored return, 5-day momentum (vol-scaled), and the ratio
+    of short-term to long-term volatility. Using multiple features instead
+    of a single return threshold captures more of the market's state.
+
+    Returns None if there is insufficient data (< 20 obs) or if the GMM
+    does not converge.
+    """
+    from sklearn.mixture import GaussianMixture
+
+    n = len(log_returns)
+    if n < 20:
+        return None
+
+    ret = log_returns[-1]
+    vol_5d = float(np.std(log_returns[-5:])) if n >= 5 else float(np.std(log_returns))
+    vol_20d = float(np.std(log_returns[-20:]))
+    momentum_5d = float(np.sum(log_returns[-5:])) if n >= 5 else ret * 5
+
+    vol_floor = max(vol_20d, 1e-8)
+    features = np.column_stack([
+        log_returns / vol_floor,
+        np.concatenate([np.full(n - 5, np.nan), np.full(5, momentum_5d / (vol_floor * np.sqrt(5)))]),
+        np.concatenate([np.full(n - 5, np.nan), np.full(5, vol_5d / vol_floor if vol_floor > 1e-10 else 1.0)]),
+    ])
+    valid = np.all(np.isfinite(features), axis=1)
+    if valid.sum() < 10:
+        return None
+
+    try:
+        gmm = GaussianMixture(n_components=3, covariance_type="full",
+                              max_iter=50, n_init=3, random_state=0)
+        gmm.fit(features[valid])
+    except (ValueError, FloatingPointError):
+        return None
+
+    # Map GMM components to regimes based on the first feature (return)
+    # Component with highest mean return → bull, lowest → bear, middle → sideways
+    ret_means = gmm.means_[:, 0]
+    order = np.argsort(ret_means)
+    mapping = {order[0]: "bear", order[1]: "sideways", order[2]: "bull"}
+
+    posterior = gmm.predict_proba(features[valid][-1:])[0]
+    return {mapping[k]: float(posterior[k]) for k in range(3)}
 
 
 class WindowForecast(TypedDict):
@@ -219,6 +311,26 @@ def compute_window_forecast(
     # Estimate transition matrix once
     P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
 
+    # Apply semi-Markov dwell-time adjustment: the longer the market has
+    # been in the current regime, the more persistent it becomes. This
+    # captures the empirical pattern that bull markets lasting months are
+    # more likely to continue than a single random up day.
+    dwell_time = 1
+    for i in range(len(regimes) - 1, 0, -1):
+        if regimes[i] == regimes[i - 1]:
+            dwell_time += 1
+        else:
+            break
+    if dwell_time > 1:
+        dampen = math.exp(-0.05 * dwell_time)
+        idx = STATE_INDEX[current_regime]
+        for j in range(NUM_STATES):
+            if j != idx:
+                P[idx, j] *= dampen
+        row_sum = float(np.sum(P[idx]))
+        if row_sum > 0:
+            P[idx] /= row_sum
+
     # Detect structural break once
     break_result = detect_structural_break(
         regimes,
@@ -352,14 +464,35 @@ def compute_window_forecast(
     # Use trajectory's p_up directly for probability coherence
     p_up = horizon_point.p_up
 
-    # When empirical up-rates are requested, blend with trajectory p_up
-    # using the n-step Markov forecast weights. This mirrors the TS
-    # computeRegimeUpRates pipeline.
-    if use_empirical_up_rates and len(regimes) >= horizon:
+    # When empirical up-rates are requested, compute p_up as an ensemble
+    # across multiple horizons, optionally using a GMM soft-start-mixture
+    # to smooth the regime forecast at the origin.
+    if use_empirical_up_rates and len(regimes) >= max(HORIZON_ENSEMBLE):
+        gmm_mixture = _compute_gmm_start_mixture(log_returns)
+        adaptive_weights = _compute_adaptive_weights(regimes)
+        p_up_ensemble = 0.0
+        for h, w in zip(HORIZON_ENSEMBLE, adaptive_weights):
+            regime_up_rates = compute_regime_up_rates(
+                regimes, log_returns, h, decay_rate=decay_rate,
+            )
+            forecast = compute_markov_forecast(
+                P, current_regime, h, start_mixture=gmm_mixture,
+            )
+            p_up_h = sum(
+                forecast[state] * regime_up_rates[state]
+                for state in ["bull", "bear", "sideways"]
+            )
+            p_up_ensemble += w * p_up_h
+        p_up = float(p_up_ensemble)
+    elif use_empirical_up_rates:
+        # Fallback: not enough data for ensemble, use original horizon
+        gmm_mixture = _compute_gmm_start_mixture(log_returns)
         regime_up_rates = compute_regime_up_rates(
             regimes, log_returns, horizon, decay_rate=decay_rate,
         )
-        forecast = compute_markov_forecast(P, current_regime, horizon)
+        forecast = compute_markov_forecast(
+            P, current_regime, horizon, start_mixture=gmm_mixture,
+        )
         empirical_p_up = sum(
             forecast[state] * regime_up_rates[state]
             for state in ["bull", "bear", "sideways"]
