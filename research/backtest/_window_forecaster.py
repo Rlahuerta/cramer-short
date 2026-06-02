@@ -147,7 +147,7 @@ def compute_window_forecast(
     garch_ceiling: tuple[float, float] | None,
     entropy_tracker: EntropyZScoreTracker | None = None,
     entropy_kappa: float = 0.15,
-    use_empirical_up_rates: bool = False,
+    use_empirical_up_rates: bool = True,
 ) -> WindowForecast:
     """Compute one horizon forecast from a rolling price window.
 

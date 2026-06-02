@@ -74,6 +74,7 @@ def test_window_forecast_passes_log_return_regime_stats_to_trajectory(
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
+        use_empirical_up_rates=False,
     )
 
     stats = captured["regime_stats"]
@@ -114,6 +115,7 @@ def test_window_forecast_applies_positive_vol_floor_for_sparse_regimes(
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
+        use_empirical_up_rates=False,
     )
 
     stats = captured["regime_stats"]
@@ -159,6 +161,7 @@ def test_hmm_non_convergence_preserves_base_markov_forecast(monkeypatch: pytest.
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
+        use_empirical_up_rates=False,
     )
 
     assert captured["hmm_override"] is None
@@ -205,6 +208,7 @@ def test_hmm_fit_error_preserves_base_markov_forecast(
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
+        use_empirical_up_rates=False,
     )
 
     assert captured["hmm_override"] is None
@@ -287,6 +291,7 @@ def test_hmm_overlay_error_preserves_base_markov_forecast(
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
+        use_empirical_up_rates=False,
     )
 
     assert captured["hmm_override"] is None
@@ -383,6 +388,7 @@ def test_invalid_hmm_overlay_components_preserve_base_markov_forecast(
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
+        use_empirical_up_rates=False,
     )
 
     assert captured["hmm_override"] is None
@@ -419,6 +425,7 @@ def test_window_forecast_p_up_matches_final_trajectory_without_calibration(
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
+        use_empirical_up_rates=False,
     )
 
     assert result["p_up"] == pytest.approx(0.82)
@@ -454,6 +461,7 @@ def test_hmm_disabled_does_not_attempt_hmm_or_change_base_forecast(
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
+        use_empirical_up_rates=False,
     )
 
     assert captured["hmm_override"] is None
@@ -510,6 +518,7 @@ def test_window_forecast_passes_hmm_daily_emission_payload_as_per_day_override(
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
+        use_empirical_up_rates=False,
     )
 
     override = captured["hmm_override"]

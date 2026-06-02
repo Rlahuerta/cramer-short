@@ -57,6 +57,7 @@ def walk_forward(
     enable_entropy_ci_modulation: bool = False,
     entropy_window_size: int = 60,
     entropy_kappa: float = 0.15,
+    use_empirical_up_rates: bool = True,
 ) -> WalkForwardResult:
     """Run a walk-forward backtest on a price series.
 
@@ -195,6 +196,7 @@ def walk_forward(
                     garch_ceiling=garch_regime_ceiling,
                     entropy_tracker=entropy_tracker if enable_entropy_ci_modulation else None,
                     entropy_kappa=entropy_kappa,
+                    use_empirical_up_rates=use_empirical_up_rates,
                 )
 
                 original_structural_break_detected = bool(wf_i["original_break_result"]["detected"])
@@ -220,6 +222,7 @@ def walk_forward(
                         garch_ceiling=garch_regime_ceiling,
                         entropy_tracker=entropy_tracker if enable_entropy_ci_modulation else None,
                         entropy_kappa=entropy_kappa,
+                        use_empirical_up_rates=use_empirical_up_rates,
                     )
                     wf_i["break_rerun_triggered"] = True
 

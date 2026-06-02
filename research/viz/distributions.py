@@ -47,11 +47,13 @@ def plot_survival_curve(
     -------
     plt.Figure
         Matplotlib figure.
-    """
-    prices = sorted([float(k) for k in distribution.keys()])
-    probs = [distribution[str(p)] for p in prices]
 
-    fig, ax = plt.subplots(figsize=figsize)
+    Notes
+    -----
+    Edge cases: an empty DataFrame or missing ``"day"``/``"expected"``/``"lower"``/
+    ``"upper"`` columns raise a ``KeyError``. NaN values in the CI columns produce
+    gaps in the shaded ribbon.
+    """
     ax.plot(prices, probs, marker="o", markersize=3, linewidth=2)
     ax.axvline(current_price, color="red", linestyle="--", label=f"Current: ${current_price:,.2f}")
     ax.set_xlabel("Price")

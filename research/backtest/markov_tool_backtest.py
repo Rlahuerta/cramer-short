@@ -115,6 +115,18 @@ def _ts_action_thresholds(horizon: int) -> tuple[float, float]:
     return 0.008, 0.005
 
 
+def native_direction_accuracy(steps: list[BacktestStep]) -> float:
+    """Directional accuracy using the native p_up > 0.5 rule (mirrors walk_forward direction_correct).
+
+    This is the simpler binary classifier: predict up when p_up > 0.5, down otherwise.
+    Unlike ts_directional_accuracy, this metric directly reflects the p_up value computed
+    by the forecaster (empirical up-rates or trajectory survival, depending on configuration).
+    """
+    if not steps:
+        return 0.0
+    return sum(1 for s in steps if s.direction_correct) / len(steps)
+
+
 def ts_directional_accuracy(steps: list[BacktestStep], horizon: int) -> float:
     """Reproduce TypeScript directionalAccuracy with recommendation + HOLD zone.
 
@@ -287,6 +299,7 @@ def effective_walk_forward_options(
         "enable_entropy_ci_modulation": args.enable_entropy_ci_modulation,
         "entropy_window_size": args.entropy_window_size,
         "entropy_kappa": args.entropy_kappa,
+        "use_empirical_up_rates": args.use_empirical_up_rates,
     }
 
 
@@ -296,6 +309,7 @@ def summarize_steps(steps: list[BacktestStep], horizon: int) -> dict[str, Any]:
         "steps": len(steps),
         "brier_score": brier_score(steps),
         "directional_accuracy": ts_directional_accuracy(steps, horizon),
+        "native_direction_accuracy": native_direction_accuracy(steps),
         "ci_coverage": ci_coverage(steps),
         "mean_absolute_error": mean_absolute_error(steps),
         "crps": crps(steps),
@@ -369,8 +383,8 @@ def format_report(
         f"Markov tool reproduction backtest for {ticker}",
         f"Prices: {price_count} closes from {price_source}",
         "",
-        "horizon  steps  dir_acc  brier     coverage  mae       crps      s_crps   breaks  errors",
-        "-------  -----  -------  --------  --------  --------  --------  -------  ------  ------",
+        "horizon  steps  dir_acc  nat_acc  brier     coverage  mae       crps      s_crps   breaks  errors",
+        "-------  -----  -------  -------  --------  --------  --------  --------  -------  ------  ------",
     ]
 
     for row in rows:
@@ -379,6 +393,7 @@ def format_report(
             f"{row['horizon']:>7}  "
             f"{metrics['steps']:>5}  "
             f"{format_percent(metrics['directional_accuracy']):>7}  "
+            f"{format_percent(metrics['native_direction_accuracy']):>7}  "
             f"{format_float(metrics['brier_score'])}  "
             f"{format_percent(metrics['ci_coverage']):>8}  "
             f"{format_float(metrics['mean_absolute_error'])}  "
@@ -526,6 +541,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.15,
         help="Entropy-to-CI scale sensitivity.",
+    )
+    parser.add_argument(
+        "--no-empirical-up-rates",
+        action="store_false",
+        dest="use_empirical_up_rates",
+        default=True,
+        help="Disable empirical regime up-rates (use trajectory-based p_up instead).",
     )
     return parser
 
