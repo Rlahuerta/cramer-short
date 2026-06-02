@@ -17,6 +17,29 @@ def compute_ensemble(
     pm_avg_quality: float,
     others: OtherSignals,
 ) -> dict:
+    """Blend Polymarket signal with auxiliary sources using quality-scaled weights.
+
+    Combines up to five signal sources — Polymarket, sentiment, fundamentals,
+    options skew, and Markov forecast — into a single expected return. The
+    Polymarket weight is scaled by the average market quality (0.40 × quality).
+    Only sources with valid (non-NaN) data are included; weights are normalized
+    to sum to 1. If all weights are zero, falls back to equal weighting.
+
+    Parameters
+    ----------
+    pm_signal : float
+        Quality-weighted average conditional return from Polymarket markets.
+    pm_avg_quality : float
+        Average market quality score across all Polymarket inputs.
+    others : OtherSignals
+        Auxiliary signals with per-source data and horizon days.
+
+    Returns
+    -------
+    dict
+        ``forecast_return`` (float) — blended expected return.
+        ``weights`` (dict[str, float]) — normalized weight per source.
+    """
     w_pm_eff = 0.40 * pm_avg_quality
 
     available: dict[str, dict[str, float]] = {}

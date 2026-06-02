@@ -22,6 +22,31 @@ def run_ensemble(
     markets: list[MarketInput],
     others: OtherSignals,
 ) -> EnsembleResult:
+    """Run the full ensemble forecast pipeline: PM signal → blend → variance → CI → scoring.
+
+    Orchestrates the five-stage ensemble pipeline:
+    1. Aggregate Polymarket signals with quality weighting (``compute_polymarket_signal``)
+    2. Blend PM signal with auxiliary sources — sentiment, fundamentals, options, Markov
+    3. Compute quality-weighted variance and confidence intervals
+    4. Apply a horizon-aware sigma floor (10% annualized sqrt scaling)
+    5. Score forecast quality as a 0–100 composite with A/B/C/D grade
+
+    Parameters
+    ----------
+    current_price : float
+        Current asset price used as the base for CI and forecast price computation.
+    markets : list[MarketInput]
+        Polymarket markets providing event probabilities and microstructure metadata.
+    others : OtherSignals
+        Auxiliary signals including sentiment, fundamental return, options skew,
+        Markov forecast return, and forecast horizon in days.
+
+    Returns
+    -------
+    EnsembleResult
+        Forecast return, price, 95% CI bounds, sigma, quality score/grade,
+        PM signal and weights, and structural warnings.
+    """
     pm = compute_polymarket_signal(markets)
     pm_signal = pm["signal"]
     avg_quality = pm["avg_quality"]

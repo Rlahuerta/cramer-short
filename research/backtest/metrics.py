@@ -152,7 +152,11 @@ def calibration_table(steps: list[BacktestStep], bins: int = 5) -> list[dict]:
     for i in range(bins):
         lo = bin_edges[i]
         hi = bin_edges[i + 1]
-        subset = [s for s in steps if lo <= s.predicted_prob < hi]
+        is_last = i == bins - 1
+        if is_last:
+            subset = [s for s in steps if lo <= s.predicted_prob <= hi]
+        else:
+            subset = [s for s in steps if lo <= s.predicted_prob < hi]
         if subset:
             observed = float(np.mean([1.0 if s.realised_return > 0 else 0.0 for s in subset]))
             results.append(

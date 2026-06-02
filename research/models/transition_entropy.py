@@ -127,7 +127,7 @@ class EntropyZScoreTracker:
             return None
         mean = sum(self._buf) / len(self._buf)
         sse = sum((v - mean) ** 2 for v in self._buf)
-        std = math.sqrt(sse / len(self._buf))
+        std = math.sqrt(sse / (len(self._buf) - 1))  # sample std (N-1)
         if not (std > 1e-9):
             return 0.0
         return (value - mean) / std

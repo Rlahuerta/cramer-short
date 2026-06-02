@@ -34,7 +34,15 @@ def _normalize_state_weight_vector(weights: np.ndarray | list[float]) -> np.ndar
 
 
 def compute_mixing_weight(second_eigenvalue: float, horizon: int) -> float:
-    return math.exp(-float(second_eigenvalue) * float(horizon))
+    """Compute the mixing-time weight ρ^horizon where ρ = |λ₂|.
+
+    The exponential-decay formulation exp(-ρ·h) is numerically unstable for
+    negative eigenvalues (which can occur in oscillatory Markov chains),
+    where it grows unbounded instead of decaying.  Using the power formulation
+    guarantees the result stays in [0, 1] for any valid second eigenvalue.
+    """
+    rho = max(1e-15, float(abs(second_eigenvalue)))
+    return math.pow(rho, horizon)
 
 
 def compute_horizon_drift_vol(
@@ -102,7 +110,9 @@ def compute_horizon_drift_vol(
         for day in range(horizon):
             scale = garch_scales[day] if day < len(garch_scales) else 1.0
             variance_scale += scale * scale if math.isfinite(scale) and scale > 0 else 1.0
-        sigma_n = sigma_eff * math.sqrt(variance_scale)
+        # Scale the already-blended sigma_n (which may include HMM contribution)
+        # rather than replacing it with the pre-blend sigma_eff.
+        sigma_n *= math.sqrt(variance_scale / horizon) if horizon > 0 else 1.0
 
     return {
         "mu_n": mu_n,

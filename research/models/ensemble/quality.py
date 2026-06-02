@@ -40,6 +40,21 @@ def _base_liquidity_quality(volume24h_usd: float) -> float:
 
 
 def depth_decay_haircut(days_to_expiry: float | None) -> float:
+    """Multiply quality by a depth-decay factor based on days to expiry.
+
+    Markets far from resolution carry less near-term signal. The haircut is
+    1.0 for markets ≥ 30 days out and decays smoothly to 0.5 at expiry.
+
+    Parameters
+    ----------
+    days_to_expiry : float or None
+        Days until the market resolves. None or non-finite → no haircut (1.0).
+
+    Returns
+    -------
+    float
+        Multiplicative quality factor in [0.5, 1.0].
+    """
     if days_to_expiry is None or not math.isfinite(days_to_expiry):
         return 1.0
     if days_to_expiry >= 30:
@@ -49,6 +64,19 @@ def depth_decay_haircut(days_to_expiry: float | None) -> float:
 
 
 def tier_spread_benchmark(tier: str | None) -> float:
+    """Return the benchmark spread for a market signal tier.
+
+    Parameters
+    ----------
+    tier : str or None
+        Market tier: ``"electoral"`` (0.07), ``"macro"`` (0.10), or
+        ``"geopolitical"`` / unknown (0.14).
+
+    Returns
+    -------
+    float
+        Benchmark spread fraction for the tier.
+    """
     return TIER_SPREAD_BENCHMARKS.get(tier or "geopolitical", 0.14)
 
 
@@ -58,6 +86,29 @@ def longshot_microstructure_score(
     bid_ask_spread: float | None,
     signal_tier: str | None,
 ) -> float:
+    """Score microstructure quality for extreme-probability (longshot) markets.
+
+    Very low or very high probability markets are especially sensitive to thin
+    liquidity and wide spreads. This composite score combines spread tightness
+    (60%), market age (25%), and volume (15%). When spread data is missing,
+    falls back to age + volume only.
+
+    Parameters
+    ----------
+    age_days : int or None
+        Market age in days (defaults to 21 if None).
+    volume24h_usd : float
+        24-hour trading volume in USD.
+    bid_ask_spread : float or None
+        Current bid-ask spread as a fraction of price.
+    signal_tier : str or None
+        Market tier used to look up the benchmark spread.
+
+    Returns
+    -------
+    float
+        Microstructure quality score in [0, 1].
+    """
     w_age = min(1.0, (age_days or 21) / 21)
     vol_quality = _base_liquidity_quality(volume24h_usd)
     if bid_ask_spread is not None and math.isfinite(bid_ask_spread):
@@ -68,6 +119,39 @@ def longshot_microstructure_score(
 
 
 def compute_market_quality(m: MarketInput) -> float:
+    """Compute a composite market quality score in [0, 1].
+
+    Combines ten multiplicative adjustment factors into a single quality metric
+    used to weight Polymarket signals in ensemble blending. Higher values
+    indicate more reliable market-implied probabilities.
+
+    Parameters
+    ----------
+    m : MarketInput
+        Market metadata including probability, volume, spread, age, tier,
+        and microstructure signals.
+
+    Returns
+    -------
+    float
+        Quality score clamped to [0.0, 1.0].
+
+    Notes
+    -----
+    Adjustments applied multiplicatively in order:
+    1. Age weight — maturity bonus (0 at creation, 1 after 21 days)
+    2. Liquidity — log-scaled volume capped at 1.0, with expiry depth decay
+    3. Tier tau — electoral (0.55), macro (0.90), geopolitical/other (0.75)
+    4. Whale penalty — 50% discount when ``price_spike_detected``
+    5. Transitory penalty — 30% discount when ``transitory_move`` (without spike)
+    6. Stable-path bonus — 10% boost when stable and no flags active
+    7. Expiry boost — multiplicative factor from ``compute_expiry_boost``
+    8. Horizon gap penalty — up to 50% discount for anchor/forecast mismatch
+    9. Spread thinness — amplified by illiquidity (thinness × 0.40)
+    10. Logit velocity/jump — 20%/30% discount for rapid price movement
+    11. Ambiguous semantics — 40% discount for unclear resolution criteria
+    12. Longshot microstructure — up to 45% penalty for extreme probabilities
+    """
     w_age = min(1.0, (m.age_days or 21) / 21)
     w_liq_raw = _base_liquidity_quality(m.volume24h_usd)
     w_liq = w_liq_raw * depth_decay_haircut(m.days_to_expiry)

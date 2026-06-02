@@ -20,10 +20,48 @@ from research.models.ensemble.types import MarketInput
 
 
 def compute_conditional_return(p_adjusted: float, delta_yes: float, delta_no: float) -> float:
+    """Compute the expected conditional return from a binary market.
+
+    Uses the YES-bias-adjusted probability to weight the YES and NO deltas
+    (price moves if the event resolves YES or NO).
+
+    Parameters
+    ----------
+    p_adjusted : float
+        YES-bias-adjusted probability in [0, 1].
+    delta_yes : float
+        Expected price return if the event resolves YES.
+    delta_no : float
+        Expected price return if the event resolves NO.
+
+    Returns
+    -------
+    float
+        Expected conditional return.
+    """
     return p_adjusted * delta_yes + (1 - p_adjusted) * delta_no
 
 
 def compute_polymarket_signal(markets: list[MarketInput]) -> dict:
+    """Aggregate a quality-weighted signal across multiple Polymarket markets.
+
+    For each market, applies YES-bias correction, computes the conditional
+    return, and weights by the composite market quality score. Generates
+    structural warnings for high bias, whale activity, transitory moves,
+    ambiguous semantics, and longshot microstructure issues.
+
+    Parameters
+    ----------
+    markets : list[MarketInput]
+        Polymarket markets with probabilities, deltas, and metadata.
+
+    Returns
+    -------
+    dict
+        ``signal`` (float) — quality-weighted average conditional return.
+        ``avg_quality`` (float) — mean market quality score.
+        ``warnings`` (list[str]) — structural warning messages.
+    """
     if not markets:
         return {
             "signal": 0.0,

@@ -17,6 +17,33 @@ def compute_quality_score(
     signals_with_data: int,
     whale_count: int,
 ) -> float:
+    """Compute a 0–100 composite quality score for the ensemble forecast.
+
+    Five weighted components:
+    - s1 (30 pts): market count (saturates at 5)
+    - s2 (25 pts): average market quality
+    - s3 (20 pts): sigma penalty (higher uncertainty → lower score)
+    - s4 (15 pts): auxiliary signal coverage (out of 4 possible)
+    - s5 (10 pts): whale ratio penalty
+
+    Parameters
+    ----------
+    markets : list[MarketInput]
+        Polymarket markets used for the ensemble.
+    avg_quality : float
+        Average quality score across markets.
+    sigma : float
+        Forecast standard deviation.
+    signals_with_data : int
+        Number of auxiliary signal sources with valid data (0–4).
+    whale_count : int
+        Number of markets with detected price spikes.
+
+    Returns
+    -------
+    float
+        Rounded score in [0, 100].
+    """
     s1 = 30 * min(len(markets), 5) / 5
     s2 = 25 * avg_quality
     s3 = 20 * max(0, 1 - sigma / 0.20)
@@ -26,6 +53,20 @@ def compute_quality_score(
 
 
 def score_to_grade(score: float) -> str:
+    """Map a 0–100 quality score to a letter grade.
+
+    Thresholds: A (≥80), B (≥60), C (≥40), D (<40).
+
+    Parameters
+    ----------
+    score : float
+        Quality score in [0, 100].
+
+    Returns
+    -------
+    str
+        Letter grade: ``"A"``, ``"B"``, ``"C"``, or ``"D"``.
+    """
     if score >= 80:
         return "A"
     if score >= 60:

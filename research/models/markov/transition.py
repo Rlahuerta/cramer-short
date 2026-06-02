@@ -67,7 +67,15 @@ def estimate_transition_matrix(
     # Normalize rows
     row_sums = counts.sum(axis=1, keepdims=True)
     row_sums[row_sums == 0] = 1.0  # avoid div by zero
-    return counts / row_sums
+    result = counts / row_sums
+
+    # Post-estimation validation: ensure result is a valid stochastic matrix.
+    if not np.allclose(result.sum(axis=1), 1.0, atol=1e-10):
+        raise ValueError("Transition matrix rows must sum to 1")
+    if np.any(result < -1e-12):
+        raise ValueError("Transition matrix entries must be nonnegative")
+
+    return result
 
 
 def _default_matrix(diagonal: float = 0.6) -> np.ndarray:
@@ -174,27 +182,8 @@ def stationary_distribution(
 
 def second_largest_eigenvalue(
     P: np.ndarray,
-    iterations: int = 100,
 ) -> float:
-    """Compute the second-largest absolute eigenvalue.
-
-    The magnitude of the second-largest eigenvalue controls how quickly
-    initial-state influence decays. Small ρ → fast mixing; ρ near 1 → slow
-    mixing.
-
-    Parameters
-    ----------
-    P : np.ndarray
-        Square, row-stochastic transition matrix.
-    iterations : int
-        Deprecated compatibility parameter; ignored.
-
-    Returns
-    -------
-    float
-        Value in ``[0, 1]``.
-    """
-    del iterations
+    """Compute the second-largest absolute eigenvalue."""
     eigenvalues = np.linalg.eigvals(P)
     if len(eigenvalues) < 2:
         return 0.0

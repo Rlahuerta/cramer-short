@@ -21,6 +21,30 @@ def compute_variance(
     sent_weight: float,
     sent_signal: float | None,
 ) -> float:
+    """Compute the ensemble forecast standard deviation (sigma, not variance).
+
+    The result is the quality-weighted standard deviation of the ensemble
+    forecast, combining market-level binomial variance from Polymarket
+    probabilities with an additional sentiment variance term. A 1.2× scaling
+    factor is applied for conservatism.
+
+    Parameters
+    ----------
+    markets : list[MarketInput]
+        Polymarket markets used to compute quality weights and binomial variance.
+    pm_weight : float
+        Normalized Polymarket weight in the ensemble blend.
+    sent_weight : float
+        Normalized sentiment weight in the ensemble blend.
+    sent_signal : float or None
+        Raw sentiment score; contributes to the variance term when provided.
+
+    Returns
+    -------
+    float
+        Forecast standard deviation (sigma). Returns 0.05 if no markets are
+        provided (default uncertainty floor).
+    """
     if not markets:
         return 0.05
 
@@ -41,6 +65,24 @@ def compute_variance(
 
 
 def compute_ci(forecast_price: float, sigma: float) -> dict:
+    """Compute a 95% confidence interval around the forecast price.
+
+    Uses ±1.96 sigma for the normal-approximation 95% CI, expressed as
+    multiplicative factors on the forecast price.
+
+    Parameters
+    ----------
+    forecast_price : float
+        Expected price at the forecast horizon.
+    sigma : float
+        Forecast standard deviation (as a fraction of price).
+
+    Returns
+    -------
+    dict
+        ``low`` (float) — lower 95% CI bound.
+        ``high`` (float) — upper 95% CI bound.
+    """
     return {
         "low": forecast_price * (1 - 1.96 * sigma),
         "high": forecast_price * (1 + 1.96 * sigma),

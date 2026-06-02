@@ -94,6 +94,9 @@ def compute_trajectory(
 
     has_jumps = bool(jump_spec)
     if has_jumps:
+        # Merton jump-diffusion compensator: ensures the drift-adjusted process
+        # has expected return μ dt (risk-neutral). Note: expected_price reflects
+        # the mean, which exceeds the median for positively skewed jump distributions.
         compensator = jump_drift_compensator(jump_spec)
         daily_drifts -= compensator
 
@@ -126,26 +129,30 @@ def compute_trajectory(
         prices = current_price * np.exp(paths[:, day_idx])
         prices_sorted = np.sort(prices)
 
-        p5_idx = max(0, int(n_samples * 0.05) - 1)
+        p5_idx = max(0, int(n_samples * 0.05))
         p50_idx = int(n_samples * 0.5)
-        p95_idx = min(n_samples - 1, int(np.ceil(n_samples * 0.95)))
+        p95_idx = min(n_samples - 1, int(np.ceil(n_samples * 0.95)) - 1)
 
         lower_bound = float(prices_sorted[p5_idx])
         upper_bound = float(prices_sorted[p95_idx])
 
         expected_price = current_price * math.exp(mu_n)
 
-        # Apply uncertainty CI scale from the original asymmetric bounds around
-        # expected_price. Re-centering total width can shrink one side of a
-        # skewed lognormal interval even when the caller requested widening.
+        # Apply uncertainty CI scale by symmetrically widening around the
+        # empirical CI midpoint. Scaling from expected_price can shrink one
+        # side of a skewed lognormal interval even when widening is requested.
         if abs(uncertainty_ci_scale - 1.0) > 1e-9:
-            scaled_lower = expected_price - (expected_price - lower_bound) * uncertainty_ci_scale
-            scaled_upper = expected_price + (upper_bound - expected_price) * uncertainty_ci_scale
-            if uncertainty_ci_scale >= 1.0:
-                scaled_lower = min(lower_bound, scaled_lower)
-                scaled_upper = max(upper_bound, scaled_upper)
-            lower_bound = max(0.01, scaled_lower)
-            upper_bound = scaled_upper
+            ci_mid = (lower_bound + upper_bound) / 2.0
+            half_width = (upper_bound - lower_bound) / 2.0
+            scaled_half = half_width * uncertainty_ci_scale
+            lower_bound = max(0.01, ci_mid - scaled_half)
+            upper_bound = ci_mid + scaled_half
+
+        # Enforce monotonically widening CIs: prevent the CI from narrowing
+        # as the forecast horizon extends, which can happen due to sampling noise.
+        if trajectory:
+            lower_bound = min(lower_bound, trajectory[-1].lower_bound)
+            upper_bound = max(upper_bound, trajectory[-1].upper_bound)
 
         p_up = student_t_survival(current_price, current_price, mu_n, sigma_n, nu)
 

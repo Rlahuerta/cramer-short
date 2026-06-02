@@ -27,10 +27,11 @@ import numpy as np
 
 from research.models.markov import (
     classify_regime_series,
-    detect_structural_break,
-    estimate_transition_matrix,
     compute_markov_forecast,
+    compute_regime_up_rates,
+    detect_structural_break,
     estimate_regime_stats,
+    estimate_transition_matrix,
 )
 from research.models.garch_scales import GarchClampOptions, compute_garch_scales
 from research.models.hmm import ASSET_PROFILES, baum_welch, fit_volatility_hmm, predict
@@ -146,6 +147,7 @@ def compute_window_forecast(
     garch_ceiling: tuple[float, float] | None,
     entropy_tracker: EntropyZScoreTracker | None = None,
     entropy_kappa: float = 0.15,
+    use_empirical_up_rates: bool = False,
 ) -> WindowForecast:
     """Compute one horizon forecast from a rolling price window.
 
@@ -238,7 +240,7 @@ def compute_window_forecast(
         hmm_status = "not_attempted"
         try:
             hmm_result = baum_welch(
-                active_returns,
+                log_returns,
                 n_states=3,
                 max_iterations=50,
                 tolerance=1e-3,
@@ -250,14 +252,21 @@ def compute_window_forecast(
 
         else:
             hmm_status = "non_converged"
+            if not hmm_result.converged:
+                import warnings
+                warnings.warn(
+                    f"HMM did not converge in {hmm_result.iterations if hasattr(hmm_result, 'iterations') else 'unknown'} iterations. "
+                    "Falling back to pure Markov forecast without HMM overlay.",
+                    RuntimeWarning,
+                )
 
             if hmm_result.converged:
                 try:
                     hmm_pred = predict(
-                        active_returns, hmm_result.params, forecast_horizon=horizon
+                        log_returns, hmm_result.params, forecast_horizon=horizon
                     )
                     vol_scale = fit_volatility_hmm(
-                        active_returns, vol_window=5, n_states=2
+                        log_returns, vol_window=5, n_states=2
                     )
                 except HMM_OPTIONAL_ERRORS as exc:
                     if not _is_recoverable_hmm_overlay_error(exc):
@@ -342,6 +351,20 @@ def compute_window_forecast(
 
     # Use trajectory's p_up directly for probability coherence
     p_up = horizon_point.p_up
+
+    # When empirical up-rates are requested, blend with trajectory p_up
+    # using the n-step Markov forecast weights. This mirrors the TS
+    # computeRegimeUpRates pipeline.
+    if use_empirical_up_rates and len(regimes) >= horizon:
+        regime_up_rates = compute_regime_up_rates(
+            regimes, log_returns, horizon, decay_rate=decay_rate,
+        )
+        forecast = compute_markov_forecast(P, current_regime, horizon)
+        empirical_p_up = sum(
+            forecast[state] * regime_up_rates[state]
+            for state in ["bull", "bear", "sideways"]
+        )
+        p_up = float(empirical_p_up)
 
     return {
         "p_up": float(p_up),
