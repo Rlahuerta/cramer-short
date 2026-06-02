@@ -43,7 +43,7 @@ def walk_forward(
     stride: int = 10,
     ticker: str | None = None,
     return_threshold_multiplier: float = 0.5,
-    decay_rate: float = 0.97,
+    decay_rate: float = 0.99,
     break_divergence_threshold: float = 0.05,
     btc_break_divergence_threshold: float | None = None,
     post_break_short_window: bool | None = None,
@@ -58,6 +58,7 @@ def walk_forward(
     entropy_window_size: int = 60,
     entropy_kappa: float = 0.15,
     use_empirical_up_rates: bool = True,
+    abstention_threshold: float = 0.0,
 ) -> WalkForwardResult:
     """Run a walk-forward backtest on a price series.
 
@@ -239,6 +240,9 @@ def walk_forward(
                         if entropy_z is not None:
                             entropy_ci_scale = entropy_z_to_ci_scale(entropy_z, entropy_kappa)
 
+                decisiveness = abs(wf_i["p_up"] - 0.5) * 2
+                abstained = abstention_threshold > 0 and decisiveness < abstention_threshold
+
                 direction_correct = (
                     (wf_i["p_up"] > 0.5 and realised_return_i > 0) or (wf_i["p_up"] <= 0.5 and realised_return_i <= 0)
                 )
@@ -255,6 +259,7 @@ def walk_forward(
                         realised_price=float(realised_price_i),
                         direction_correct=bool(direction_correct),
                         in_ci=bool(in_ci),
+                        abstained=bool(abstained),
                         garch_vol_applied=bool(wf_i["garch_vol_applied"]),
                         transition_entropy=float(entropy.entropy_nats),
                         transition_entropy_norm=float(entropy.entropy_norm),

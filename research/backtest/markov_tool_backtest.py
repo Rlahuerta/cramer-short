@@ -115,16 +115,22 @@ def _ts_action_thresholds(horizon: int) -> tuple[float, float]:
     return 0.008, 0.005
 
 
-def native_direction_accuracy(steps: list[BacktestStep]) -> float:
-    """Directional accuracy using the native p_up > 0.5 rule (mirrors walk_forward direction_correct).
+def native_direction_accuracy(steps: list[BacktestStep]) -> dict[str, float]:
+    """Directional accuracy using the native p_up > 0.5 rule.
 
-    This is the simpler binary classifier: predict up when p_up > 0.5, down otherwise.
-    Unlike ts_directional_accuracy, this metric directly reflects the p_up value computed
-    by the forecaster (empirical up-rates or trajectory survival, depending on configuration).
+    When abstention is active, only non-abstained steps are scored.
+    Returns dict with ``accuracy`` (on covered steps), ``coverage``
+    (fraction of steps with a prediction), and ``combined``
+    (accuracy × coverage — the effective hit rate).
     """
     if not steps:
-        return 0.0
-    return sum(1 for s in steps if s.direction_correct) / len(steps)
+        return {"accuracy": 0.0, "coverage": 0.0, "combined": 0.0}
+    predicted = [s for s in steps if not s.abstained]
+    coverage = len(predicted) / len(steps)
+    if not predicted:
+        return {"accuracy": 0.0, "coverage": coverage, "combined": 0.0}
+    accuracy = sum(1 for s in predicted if s.direction_correct) / len(predicted)
+    return {"accuracy": accuracy, "coverage": coverage, "combined": accuracy * coverage}
 
 
 def ts_directional_accuracy(steps: list[BacktestStep], horizon: int) -> float:
@@ -300,6 +306,7 @@ def effective_walk_forward_options(
         "entropy_window_size": args.entropy_window_size,
         "entropy_kappa": args.entropy_kappa,
         "use_empirical_up_rates": args.use_empirical_up_rates,
+        "abstention_threshold": args.abstention_threshold,
     }
 
 
@@ -309,7 +316,7 @@ def summarize_steps(steps: list[BacktestStep], horizon: int) -> dict[str, Any]:
         "steps": len(steps),
         "brier_score": brier_score(steps),
         "directional_accuracy": ts_directional_accuracy(steps, horizon),
-        "native_direction_accuracy": native_direction_accuracy(steps),
+                "native_direction_accuracy": native_direction_accuracy(steps),
         "ci_coverage": ci_coverage(steps),
         "mean_absolute_error": mean_absolute_error(steps),
         "crps": crps(steps),
@@ -383,8 +390,8 @@ def format_report(
         f"Markov tool reproduction backtest for {ticker}",
         f"Prices: {price_count} closes from {price_source}",
         "",
-        "horizon  steps  dir_acc  nat_acc  brier     coverage  mae       crps      s_crps   breaks  errors",
-        "-------  -----  -------  -------  --------  --------  --------  --------  -------  ------  ------",
+        "horizon  steps  dir_acc  nat_acc  cov%      brier     coverage  mae       crps      s_crps   breaks  errors",
+        "-------  -----  -------  -------  -----  --------  --------  --------  --------  -------  ------  ------",
     ]
 
     for row in rows:
@@ -393,7 +400,8 @@ def format_report(
             f"{row['horizon']:>7}  "
             f"{metrics['steps']:>5}  "
             f"{format_percent(metrics['directional_accuracy']):>7}  "
-            f"{format_percent(metrics['native_direction_accuracy']):>7}  "
+            f"{format_percent(metrics['native_direction_accuracy']['accuracy']):>7}  "
+            f"{format_percent(metrics['native_direction_accuracy']['coverage']):>5}  "
             f"{format_float(metrics['brier_score'])}  "
             f"{format_percent(metrics['ci_coverage']):>8}  "
             f"{format_float(metrics['mean_absolute_error'])}  "
@@ -477,7 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--decay-rate",
         type=float,
-        default=0.97,
+        default=0.99,
         help="Exponential transition-count decay rate.",
     )
     parser.add_argument(
@@ -548,6 +556,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="use_empirical_up_rates",
         default=True,
         help="Disable empirical regime up-rates (use trajectory-based p_up instead).",
+    )
+    parser.add_argument(
+        "--abstention-threshold",
+        type=float,
+        default=0.0,
+        help="Only predict when |p_up - 0.5| * 2 >= threshold (0.0 = always predict).",
     )
     return parser
 

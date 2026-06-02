@@ -14,6 +14,7 @@ class BacktestStep:
     realised_price: float
     direction_correct: bool
     in_ci: bool
+    abstained: bool = False
     garch_vol_applied: bool | None = None
     transition_entropy: float | None = None
     transition_entropy_norm: float | None = None
