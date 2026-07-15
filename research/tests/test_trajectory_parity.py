@@ -141,6 +141,20 @@ def test_compute_trajectory_p_up_in_range():
         assert 0 <= pt.p_up <= 1
 
 
+def test_compute_trajectory_seed_makes_ci_reproducible():
+    P, regime_stats = _make_fixture()
+    first = compute_trajectory(100, 10, P, regime_stats, "bull", n_samples=1000, random_state=42)
+    second = compute_trajectory(100, 10, P, regime_stats, "bull", n_samples=1000, random_state=42)
+    different = compute_trajectory(100, 10, P, regime_stats, "bull", n_samples=1000, random_state=43)
+
+    first_ci = [(pt.lower_bound, pt.expected_price, pt.upper_bound) for pt in first]
+    second_ci = [(pt.lower_bound, pt.expected_price, pt.upper_bound) for pt in second]
+    different_ci = [(pt.lower_bound, pt.expected_price, pt.upper_bound) for pt in different]
+
+    assert second_ci == first_ci
+    assert different_ci != first_ci
+
+
 def test_compute_trajectory_cumulative_return_format():
     P, regime_stats = _make_fixture()
     traj = compute_trajectory(100, 7, P, regime_stats, "bull", n_samples=500)

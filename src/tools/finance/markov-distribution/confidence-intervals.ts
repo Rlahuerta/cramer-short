@@ -19,6 +19,17 @@ import {
   type JumpEventSpec,
 } from '../jump-diffusion.js';
 
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /**
  * Standard normal CDF Φ(x) via Abramowitz & Stegun erf approximation (eq 7.1.26).
  * The A&S formula computes erf(t) which equals Φ(t√2)*2−1, so we
@@ -441,6 +452,7 @@ export function computeTrajectory(
    * existing behavior.
    */
   uncertaintyCiScale = 1.0,
+  randomState?: number,
 ): TrajectoryPoint[] {
   const initialIdx = STATE_INDEX[initialState];
   const trajectory: TrajectoryPoint[] = [];
@@ -526,13 +538,15 @@ export function computeTrajectory(
     }
   }
 
+  const seededRandom = randomState === undefined ? undefined : mulberry32(randomState);
+
   // Run shared Monte Carlo with per-day mixture drift/vol
   const paths: number[][] = [];
   for (let s = 0; s < nSamples; s++) {
     const path = new Array(days);
     let cumLogReturn = 0;
     for (let d = 0; d < days; d++) {
-      const u = Math.random();
+      const u = seededRandom === undefined ? Math.random() : seededRandom();
       const z = inverseStudentTCDF(u, nu);
       const scaledVol = nu > 2 ? dailyVols[d] * Math.sqrt((nu - 2) / nu) : dailyVols[d];
       cumLogReturn += dailyDrifts[d] + z * scaledVol;
@@ -541,11 +555,11 @@ export function computeTrajectory(
       // default-off path stays bit-for-bit identical to the legacy run.
       if (hasJumps) {
         for (const e of jumpSpec!) {
-          if (Math.random() < e.dailyIntensity) {
+          if ((seededRandom === undefined ? Math.random() : seededRandom()) < e.dailyIntensity) {
             // Box-Muller via two uniforms — keeps the dependency surface
             // identical to the diffusion draw above (no extra libs).
-            const u1 = Math.max(1e-12, Math.random());
-            const u2 = Math.random();
+            const u1 = Math.max(1e-12, seededRandom === undefined ? Math.random() : seededRandom());
+            const u2 = seededRandom === undefined ? Math.random() : seededRandom();
             const zJ = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
             cumLogReturn += e.meanLogJump + zJ * e.stdLogJump;
           }

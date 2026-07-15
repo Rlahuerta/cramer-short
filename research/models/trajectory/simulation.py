@@ -34,6 +34,7 @@ def compute_trajectory(
     jump_spec: list[JumpEventSpec] | None = None,
     garch_scales: list[float] | None = None,
     uncertainty_ci_scale: float = 1.0,
+    random_state: int | None = None,
 ) -> list[TrajectoryPoint]:
     initial_idx = STATE_INDEX[initial_state]
     trajectory: list[TrajectoryPoint] = []
@@ -101,23 +102,43 @@ def compute_trajectory(
         daily_drifts -= compensator
 
     paths = np.zeros((n_samples, days))
-    for s in range(n_samples):
-        cum_log_return = 0.0
-        for d in range(days):
-            u = np.random.random()
-            z = student_t_ppf(u, nu)
-            scaled_vol = daily_vols[d] * math.sqrt((nu - 2) / nu) if nu > 2 else daily_vols[d]
-            cum_log_return += daily_drifts[d] + z * scaled_vol
+    if random_state is None:
+        for s in range(n_samples):
+            cum_log_return = 0.0
+            for d in range(days):
+                u = np.random.random()
+                z = student_t_ppf(u, nu)
+                scaled_vol = daily_vols[d] * math.sqrt((nu - 2) / nu) if nu > 2 else daily_vols[d]
+                cum_log_return += daily_drifts[d] + z * scaled_vol
 
-            if has_jumps:
-                for e in jump_spec:
-                    if np.random.random() < e.daily_intensity:
-                        u1 = max(1e-12, np.random.random())
-                        u2 = np.random.random()
-                        z_j = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
-                        cum_log_return += e.mean_log_jump + z_j * e.std_log_jump
+                if has_jumps:
+                    for e in jump_spec:
+                        if np.random.random() < e.daily_intensity:
+                            u1 = max(1e-12, np.random.random())
+                            u2 = np.random.random()
+                            z_j = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+                            cum_log_return += e.mean_log_jump + z_j * e.std_log_jump
 
-            paths[s, d] = cum_log_return
+                paths[s, d] = cum_log_return
+    else:
+        rng = np.random.default_rng(random_state)
+        for s in range(n_samples):
+            cum_log_return = 0.0
+            for d in range(days):
+                u = rng.random()
+                z = student_t_ppf(u, nu)
+                scaled_vol = daily_vols[d] * math.sqrt((nu - 2) / nu) if nu > 2 else daily_vols[d]
+                cum_log_return += daily_drifts[d] + z * scaled_vol
+
+                if has_jumps:
+                    for e in jump_spec:
+                        if rng.random() < e.daily_intensity:
+                            u1 = max(1e-12, rng.random())
+                            u2 = rng.random()
+                            z_j = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+                            cum_log_return += e.mean_log_jump + z_j * e.std_log_jump
+
+                paths[s, d] = cum_log_return
 
     for d in range(1, days + 1):
         day_idx = d - 1

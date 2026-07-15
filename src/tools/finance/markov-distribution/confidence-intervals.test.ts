@@ -445,6 +445,69 @@ describe('computeTrajectory', () => {
     expect(widened[13].upperBound - widened[13].lowerBound)
       .toBeGreaterThan(baseline[13].upperBound - baseline[13].lowerBound);
   });
+
+  it('seeded randomState makes computeTrajectory CIs reproducible', () => {
+    randomSpy?.mockRestore();
+    const first = computeTrajectory(
+      100,
+      10,
+      P,
+      regimeStats,
+      'bull',
+      0,
+      undefined,
+      1000,
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1.0,
+      42,
+    );
+    const second = computeTrajectory(
+      100,
+      10,
+      P,
+      regimeStats,
+      'bull',
+      0,
+      undefined,
+      1000,
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1.0,
+      42,
+    );
+    const different = computeTrajectory(
+      100,
+      10,
+      P,
+      regimeStats,
+      'bull',
+      0,
+      undefined,
+      1000,
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1.0,
+      43,
+    );
+
+    const ciTriples = (trajectory: typeof first) => trajectory.map(({ lowerBound, expectedPrice, upperBound }) => [
+      lowerBound,
+      expectedPrice,
+      upperBound,
+    ]);
+    expect(ciTriples(second)).toEqual(ciTriples(first));
+    expect(ciTriples(different)).not.toEqual(ciTriples(first));
+  });
 });
 describe('winsorize', () => {
   it('clamps outliers beyond 3 standard deviations', () => {
