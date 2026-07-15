@@ -98,6 +98,40 @@ def estimate_transition_matrix(
     return result
 
 
+def estimate_conditional_transition_matrices(
+    regime_sequence: list[RegimeState],
+    environment_sequence: list[str],
+    alpha: float | None = None,
+    decay_rate: float | None = None,
+) -> dict[str, np.ndarray]:
+    """Estimate per-environment transition matrices (AH-HMM)."""
+    if len(regime_sequence) != len(environment_sequence):
+        raise ValueError("Length mismatch")
+
+    pooled = (
+        estimate_transition_matrix(regime_sequence, alpha=alpha, decay_rate=decay_rate)
+        if len(regime_sequence) >= 2
+        else _default_matrix()
+    )
+    defaults = resolve_forecast_lab_markov_parameter_defaults()
+    sparse_observation_count = max(2, int(defaults["transitionMinObservations"]))
+
+    pairs_by_env: dict[str, list[RegimeState]] = {env: [] for env in environment_sequence}
+    for i in range(len(regime_sequence) - 1):
+        env = environment_sequence[i]
+        pairs_by_env.setdefault(env, []).append(regime_sequence[i])
+        pairs_by_env[env].append(regime_sequence[i + 1])
+
+    matrices: dict[str, np.ndarray] = {}
+    for env, env_regimes in pairs_by_env.items():
+        matrices[env] = (
+            pooled
+            if len(env_regimes) < sparse_observation_count
+            else estimate_transition_matrix(env_regimes, alpha=alpha, decay_rate=decay_rate)
+        )
+    return matrices
+
+
 def _default_matrix(diagonal: float = 0.6) -> np.ndarray:
     """Identity-like default matrix with correct row sums."""
     off_diag = (1.0 - diagonal) / (NUM_STATES - 1)

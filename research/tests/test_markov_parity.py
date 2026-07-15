@@ -16,6 +16,7 @@ from research.models.markov import (
     STATE_INDEX,
     compute_regime_up_rates,
 )
+from research.models.markov.transition import estimate_conditional_transition_matrices
 from research.models.soft_regime import one_hot_regime_mixture
 
 
@@ -181,6 +182,37 @@ def test_estimate_transition_matrix_stickiness_uses_base_prior_below_threshold()
     )
 
     assert m[bull_idx][bear_idx] == pytest.approx(expected_bull_to_bear, abs=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# estimate_conditional_transition_matrices
+# ---------------------------------------------------------------------------
+
+def test_conditional_transition_matrices_raise_on_length_mismatch():
+    with pytest.raises(ValueError, match="Length mismatch"):
+        estimate_conditional_transition_matrices(["bull", "bear"], ["low_volume"], alpha=0.1, decay_rate=1.0)
+
+
+def test_conditional_transition_matrices_sparse_environment_falls_back_to_pooled_matrix():
+    states = ["bull", "bear"] * 20
+    environments = ["thin"] + ["pooled"] * (len(states) - 1)
+
+    matrices = estimate_conditional_transition_matrices(states, environments, alpha=0.1, decay_rate=1.0)
+    pooled = estimate_transition_matrix(states, alpha=0.1, decay_rate=1.0)
+
+    np.testing.assert_allclose(matrices["thin"], pooled, atol=1e-12)
+
+
+def test_conditional_transition_matrices_distinct_environments_with_enough_data_are_distinct():
+    states = ["bull"] * 20 + ["bear"] * 20
+    environments = ["low_uncertainty"] * 20 + ["high_uncertainty"] * 20
+
+    matrices = estimate_conditional_transition_matrices(states, environments, alpha=0.1, decay_rate=1.0)
+
+    assert matrices.keys() == {"low_uncertainty", "high_uncertainty"}
+    assert matrices["low_uncertainty"][STATE_INDEX["bull"]][STATE_INDEX["bull"]] > 0.8
+    assert matrices["high_uncertainty"][STATE_INDEX["bear"]][STATE_INDEX["bear"]] > 0.8
+    assert not np.allclose(matrices["low_uncertainty"], matrices["high_uncertainty"], atol=1e-12)
 
 
 # ---------------------------------------------------------------------------

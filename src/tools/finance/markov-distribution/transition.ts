@@ -82,6 +82,41 @@ export function estimateTransitionMatrix(
   return result;
 }
 
+export function estimateConditionalTransitionMatrices(
+  regimeSequence: RegimeState[],
+  environmentSequence: string[],
+  alpha?: number,
+  decayRate?: number,
+): Record<string, TransitionMatrix> {
+  if (regimeSequence.length !== environmentSequence.length) {
+    throw new Error('Length mismatch');
+  }
+
+  const pooled = regimeSequence.length >= 2
+    ? estimateTransitionMatrix(regimeSequence, alpha, undefined, decayRate)
+    : buildDefaultMatrix();
+  const defaults = resolveForecastLabMarkovParameterDefaults();
+  const sparseObservationCount = Math.max(2, Math.trunc(defaults.transitionMinObservations));
+
+  const pairsByEnv: Record<string, RegimeState[]> = {};
+  for (const env of environmentSequence) {
+    pairsByEnv[env] = [];
+  }
+  for (let i = 0; i < regimeSequence.length - 1; i++) {
+    const env = environmentSequence[i];
+    pairsByEnv[env] ??= [];
+    pairsByEnv[env].push(regimeSequence[i], regimeSequence[i + 1]);
+  }
+
+  const matrices: Record<string, TransitionMatrix> = {};
+  for (const [env, envRegimes] of Object.entries(pairsByEnv)) {
+    matrices[env] = envRegimes.length < sparseObservationCount
+      ? pooled
+      : estimateTransitionMatrix(envRegimes, alpha, undefined, decayRate);
+  }
+  return matrices;
+}
+
 /** Identity-like default matrix with correct row sums. */
 export function buildDefaultMatrix(): TransitionMatrix {
   const diagonal = 0.6;

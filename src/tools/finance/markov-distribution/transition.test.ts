@@ -4,6 +4,7 @@ import { classifyRegimeState } from './regime.js';
 import {
   adjustTransitionMatrix,
   buildDefaultMatrix,
+  estimateConditionalTransitionMatrices,
   estimateTransitionMatrix,
   isIrreducible,
   matMul,
@@ -129,6 +130,39 @@ describe('estimateTransitionMatrix', () => {
       + (1.0 - lambda) * def[bullIdx][bearIdx];
 
     expect(m[bullIdx][bearIdx]).toBeCloseTo(expectedBullToBear, 12);
+  });
+});
+describe('estimateConditionalTransitionMatrices', () => {
+  it('conditional matrices raise on length mismatch', () => {
+    expect(() => estimateConditionalTransitionMatrices(['bull', 'bear'], ['low_volume'], 0.1, 1.0))
+      .toThrow(/Length mismatch/);
+  });
+
+  it('conditional matrices use pooled matrix for sparse environments', () => {
+    const states = repeatStates(['bull', 'bear'], 40);
+    const environments = ['thin', ...Array(states.length - 1).fill('pooled')];
+
+    const matrices = estimateConditionalTransitionMatrices(states, environments, 0.1, 1.0);
+    const pooled = estimateTransitionMatrix(states, 0.1, undefined, 1.0);
+
+    for (let i = 0; i < NUM_STATES; i++) {
+      for (let j = 0; j < NUM_STATES; j++) {
+        expect(matrices.thin[i][j]).toBeCloseTo(pooled[i][j], 12);
+      }
+    }
+  });
+
+  it('conditional matrices are distinct for environments with enough data', () => {
+    const states = [...repeatStates(['bull'], 20), ...repeatStates(['bear'], 20)];
+    const environments = [...Array(20).fill('low_uncertainty'), ...Array(20).fill('high_uncertainty')];
+
+    const matrices = estimateConditionalTransitionMatrices(states, environments, 0.1, 1.0);
+
+    expect(Object.keys(matrices).sort()).toEqual(['high_uncertainty', 'low_uncertainty']);
+    expect(matrices.low_uncertainty[STATE_INDEX['bull']][STATE_INDEX['bull']]).toBeGreaterThan(0.8);
+    expect(matrices.high_uncertainty[STATE_INDEX['bear']][STATE_INDEX['bear']]).toBeGreaterThan(0.8);
+    expect(matrices.low_uncertainty[STATE_INDEX['bull']][STATE_INDEX['bull']])
+      .not.toBeCloseTo(matrices.high_uncertainty[STATE_INDEX['bull']][STATE_INDEX['bull']], 12);
   });
 });
 describe('adjustTransitionMatrix', () => {
