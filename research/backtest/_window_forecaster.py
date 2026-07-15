@@ -38,6 +38,8 @@ from research.models.markov import (
 )
 from research.models.garch_scales import GarchClampOptions, compute_garch_scales
 from research.models.hmm import ASSET_PROFILES, baum_welch, fit_volatility_hmm, predict
+from research.models.markov.transition import estimate_conditional_transition_matrices
+from research.models.meta_regime import MetaRegimeDetector
 from research.models.transition_entropy import compute_transition_entropy
 from research.models.trajectory import RegimeStats, compute_trajectory
 from research.models.transition_entropy import EntropyZScoreTracker, entropy_z_to_ci_scale
@@ -241,6 +243,10 @@ def compute_window_forecast(
     entropy_tracker: EntropyZScoreTracker | None = None,
     entropy_kappa: float = 0.15,
     use_empirical_up_rates: bool = True,
+    random_state: int | None = None,
+    use_meta_regime: bool = False,
+    use_conditional_transitions: bool = False,
+    use_path_integrated_drift: bool = False,
 ) -> WindowForecast:
     """Compute one horizon forecast from a rolling price window.
 
@@ -310,7 +316,20 @@ def compute_window_forecast(
     current_regime = regimes[-1] if regimes else "sideways"
 
     # Estimate transition matrix once
-    P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
+    if use_meta_regime and use_conditional_transitions:
+        meta_fit = MetaRegimeDetector().fit(active_returns)
+        conditional_matrices = estimate_conditional_transition_matrices(
+            regimes,
+            meta_fit["environment_sequence"],
+            decay_rate=decay_rate,
+        )
+        current_environment = meta_fit["current_environment"]
+        if current_environment is not None:
+            P = conditional_matrices[current_environment]
+        else:
+            P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
+    else:
+        P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
 
     # Apply semi-Markov dwell-time adjustment: the longer the market has
     # been in the current regime, the more persistent it becomes. This
@@ -457,6 +476,7 @@ def compute_window_forecast(
         n_samples=500,
         garch_scales=garch_scales,
         uncertainty_ci_scale=uncertainty_ci_scale,
+        random_state=random_state,
     )
     horizon_point = traj[-1]
 
