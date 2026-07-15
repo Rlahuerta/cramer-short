@@ -1,8 +1,14 @@
+import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from research.backtest.metrics import brier_score, ci_coverage, directional_accuracy
 from research.backtest.walk_forward import walk_forward
+
+walk_forward_module = importlib.import_module("research.backtest.walk_forward")
 
 
 def _load_btc_fixture_prices() -> list[float]:
@@ -14,6 +20,55 @@ def _load_btc_fixture_prices() -> list[float]:
 
 def _format_pct(value: float) -> str:
     return f"{value * 100:.1f}%"
+
+
+@pytest.mark.parametrize(
+    ("explicit_use_empirical_up_rates", "expected_use_empirical_up_rates"),
+    [
+        (None, False),
+        (True, True),
+        (False, False),
+    ],
+    ids=["live-policy-default", "explicit-true", "explicit-false"],
+)
+def test_walk_forward_live_btc_policy_uses_trajectory_p_up_by_default_but_preserves_explicit_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    explicit_use_empirical_up_rates: bool | None,
+    expected_use_empirical_up_rates: bool,
+):
+    prices = [100.0 + i for i in range(270)]
+    observed_use_empirical_up_rates: list[bool] = []
+
+    def fake_compute_window_forecast(window_prices, **kwargs):
+        observed_use_empirical_up_rates.append(kwargs["use_empirical_up_rates"])
+        current_price = float(window_prices[-1])
+        return {
+            "p_up": 0.55,
+            "predicted_return": 0.01,
+            "ci_lower": current_price * 0.95,
+            "ci_upper": current_price * 1.05,
+            "garch_vol_applied": False,
+            "entropy": SimpleNamespace(entropy_nats=0.0, entropy_norm=0.0),
+            "break_result": {"detected": False, "divergence": 0.0},
+            "original_break_result": {"detected": False, "divergence": 0.0},
+        }
+
+    monkeypatch.setattr(walk_forward_module, "compute_window_forecast", fake_compute_window_forecast)
+
+    kwargs = {
+        "ticker": "BTC-USD",
+        "horizon": 1,
+        "warmup": 120,
+        "stride": 20,
+        "use_live_btc_short_horizon_policy": True,
+    }
+    if explicit_use_empirical_up_rates is not None:
+        kwargs["use_empirical_up_rates"] = explicit_use_empirical_up_rates
+
+    result = walk_forward(prices, **kwargs)
+
+    assert not result.errors
+    assert observed_use_empirical_up_rates == [expected_use_empirical_up_rates]
 
 
 def test_btc_live_short_horizon_policy_wires_ts_knobs_and_improves_shortest_horizons():

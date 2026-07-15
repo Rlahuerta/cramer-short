@@ -28,7 +28,10 @@ from __future__ import annotations
 
 from research.backtest._config import BacktestStep, WalkForwardResult
 from research.backtest._window_forecaster import compute_window_forecast
-from research.models.markov import get_btc_short_horizon_live_policy
+from research.models.markov import (
+    get_btc_short_horizon_live_policy,
+    resolve_forecast_lab_markov_parameter_defaults,
+)
 from research.models.transition_entropy import EntropyZScoreTracker, entropy_z_to_ci_scale
 from research.utils.forecast_lab_runtime_defaults import (
     forecast_lab_runtime_asset_scope,
@@ -43,7 +46,7 @@ def walk_forward(
     stride: int = 10,
     ticker: str | None = None,
     return_threshold_multiplier: float = 0.5,
-    decay_rate: float = 0.99,
+    decay_rate: float | None = None,
     break_divergence_threshold: float = 0.05,
     btc_break_divergence_threshold: float | None = None,
     post_break_short_window: bool | None = None,
@@ -57,7 +60,7 @@ def walk_forward(
     enable_entropy_ci_modulation: bool = False,
     entropy_window_size: int = 60,
     entropy_kappa: float = 0.15,
-    use_empirical_up_rates: bool = True,
+    use_empirical_up_rates: bool | None = None,
     abstention_threshold: float = 0.0,
     random_state: int | None = None,
     use_meta_regime: bool = False,
@@ -81,9 +84,10 @@ def walk_forward(
     return_threshold_multiplier : float
         Multiplier on median absolute return for regime classification
         (default 0.5).
-    decay_rate : float
-        Exponential decay weight for transition matrix counts
-        (default 0.97).
+    decay_rate : float or None
+        Exponential decay weight for transition matrix counts. When None,
+        resolves the asset-scoped Markov runtime default transition decay
+        inside the active runtime scope.
     break_divergence_threshold : float
         Frobenius-divergence threshold for structural-break detection
         (default 0.05).
@@ -122,6 +126,12 @@ def walk_forward(
         Rolling history size for the entropy z-score tracker (default 60).
     entropy_kappa : float
         Sensitivity of CI width to the entropy z-score (default 0.15).
+    use_empirical_up_rates : bool or None
+        When True, derive ``p_up`` from empirical regime up-rates. When False,
+        use the trajectory/distribution-style ``p_up`` from the shared Monte
+        Carlo path. ``None`` keeps the legacy default (True) except on
+        BTC live-policy runs, where the tuned path defaults to False so Python
+        mirrors the TypeScript live-policy scorer.
 
     Returns
     -------
@@ -166,7 +176,12 @@ def walk_forward(
             if use_live_btc_short_horizon_policy
             else None
         )
-        
+        effective_decay_rate = float(
+            decay_rate
+            if decay_rate is not None
+            else resolve_forecast_lab_markov_parameter_defaults()["transitionDecay"]
+        )
+
         effective = _resolve_effective_config(
             btc_break_divergence_threshold=btc_break_divergence_threshold,
             break_divergence_threshold=break_divergence_threshold,
@@ -174,6 +189,10 @@ def walk_forward(
             post_break_window_size=post_break_window_size,
             warmup=warmup,
             btc_live_policy=btc_live_policy,
+        )
+        effective_use_empirical_up_rates = _resolve_effective_use_empirical_up_rates(
+            use_live_btc_short_horizon_policy=use_live_btc_short_horizon_policy,
+            use_empirical_up_rates=use_empirical_up_rates,
         )
 
         if len(prices) < effective["warmup"] + horizon + 10:
@@ -192,7 +211,7 @@ def walk_forward(
                     window_prices_i,
                     horizon=horizon,
                     return_threshold_multiplier=return_threshold_multiplier,
-                    decay_rate=decay_rate,
+                    decay_rate=effective_decay_rate,
                     break_divergence_threshold=effective["break_divergence"],
                     use_hmm=use_hmm,
                     asset_profile=asset_profile,
@@ -201,7 +220,7 @@ def walk_forward(
                     garch_ceiling=garch_regime_ceiling,
                     entropy_tracker=entropy_tracker if enable_entropy_ci_modulation else None,
                     entropy_kappa=entropy_kappa,
-                    use_empirical_up_rates=use_empirical_up_rates,
+                    use_empirical_up_rates=effective_use_empirical_up_rates,
                     random_state=random_state,
                     use_meta_regime=use_meta_regime,
                     use_conditional_transitions=use_conditional_transitions,
@@ -222,7 +241,7 @@ def walk_forward(
                         window_prices_i[-max(30, effective["post_break_window_size"]):],
                         horizon=horizon,
                         return_threshold_multiplier=return_threshold_multiplier,
-                        decay_rate=decay_rate,
+                        decay_rate=effective_decay_rate,
                         break_divergence_threshold=effective["break_divergence"],
                         use_hmm=use_hmm,
                         asset_profile=asset_profile,
@@ -231,7 +250,7 @@ def walk_forward(
                         garch_ceiling=garch_regime_ceiling,
                         entropy_tracker=entropy_tracker if enable_entropy_ci_modulation else None,
                         entropy_kappa=entropy_kappa,
-                        use_empirical_up_rates=use_empirical_up_rates,
+                        use_empirical_up_rates=effective_use_empirical_up_rates,
                         random_state=random_state,
                         use_meta_regime=use_meta_regime,
                         use_conditional_transitions=use_conditional_transitions,
@@ -290,6 +309,21 @@ def walk_forward(
                 result.errors.append(f"Step {start_i}: {e}")
 
         return result
+
+
+def _resolve_effective_use_empirical_up_rates(
+    use_live_btc_short_horizon_policy: bool,
+    use_empirical_up_rates: bool | None,
+) -> bool:
+    """Resolve the p_up source with BTC live-policy parity defaults.
+
+    Explicit caller values always win. When the caller leaves the option unset,
+    the default remains empirical up-rates on the regular path, but flips to
+    trajectory/distribution-style ``p_up`` on BTC live-policy runs to mirror TS.
+    """
+    if use_empirical_up_rates is not None:
+        return use_empirical_up_rates
+    return not use_live_btc_short_horizon_policy
 
 
 def _resolve_effective_config(

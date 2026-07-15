@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
 
 from research.backtest.walk_forward import walk_forward
 from research.models.conformal import (
@@ -179,6 +180,65 @@ def test_walk_forward_uses_sol_scoped_markov_defaults(monkeypatch):
         captured["resolved_structural_break_min_length"]
         == sol_defaults["structuralBreakMinLength"]
     )
+
+
+def test_walk_forward_uses_runtime_scoped_decay_rate_for_break_reruns(
+    monkeypatch,
+):
+    captured_decay_rates: list[float] = []
+    captured_window_lengths: list[int] = []
+    btc_defaults = resolve_forecast_lab_markov_parameter_defaults("btc")
+    entropy = SimpleNamespace(entropy_nats=0.0, entropy_norm=0.0)
+
+    def fake_compute_window_forecast(
+        window_prices,
+        *,
+        decay_rate,
+        **_kwargs,
+    ):
+        captured_decay_rates.append(decay_rate)
+        captured_window_lengths.append(len(window_prices))
+        first_call = len(captured_decay_rates) == 1
+        return {
+            "p_up": 0.6,
+            "predicted_return": 0.01,
+            "ci_lower": window_prices[-1] * 0.99,
+            "ci_upper": window_prices[-1] * 1.01,
+            "garch_vol_applied": False,
+            "entropy": entropy,
+            "break_result": {"detected": False, "divergence": 0.0},
+            "break_rerun_triggered": False,
+            "original_break_result": {
+                "detected": first_call,
+                "divergence": 0.2 if first_call else 0.0,
+            },
+            "hmm_status": "off",
+        }
+
+    monkeypatch.setattr(
+        walk_forward_module,
+        "compute_window_forecast",
+        fake_compute_window_forecast,
+    )
+
+    result = walk_forward(
+        _make_prices(131),
+        ticker="BTC-USD",
+        horizon=1,
+        warmup=120,
+        stride=40,
+        post_break_short_window=True,
+        post_break_window_size=60,
+    )
+
+    assert not result.errors
+    assert len(result.steps) == 1
+    assert result.steps[0].structural_break_rerun_triggered is True
+    assert captured_window_lengths == [121, 60]
+    assert captured_decay_rates == [
+        btc_defaults["transitionDecay"],
+        btc_defaults["transitionDecay"],
+    ]
 
 
 def test_walk_forward_sol_and_hype_runtime_scopes_produce_steps():

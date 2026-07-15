@@ -40,7 +40,7 @@ class BacktestConfig:
     stride: int = 10
     ticker: str | None = None
     return_threshold_multiplier: float = 0.5
-    decay_rate: float = 0.97
+    decay_rate: float | None = None
     break_divergence_threshold: float = 0.05
     btc_break_divergence_threshold: float | None = None
     post_break_short_window: bool | None = None
