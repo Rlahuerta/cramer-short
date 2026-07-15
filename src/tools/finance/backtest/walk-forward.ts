@@ -153,6 +153,14 @@ export interface WalkForwardConfig {
   crossAssetReturns?: Record<string, number[]>;
   /** Lasso L1 strength. Default 0.005. */
   crossAssetLassoLambda?: number;
+  /** Optional seed for trajectory Monte Carlo. Default undefined preserves legacy Math.random behavior. */
+  randomState?: number;
+  /** Experimental: derive uncertainty environments from returns. Default false. */
+  useMetaRegime?: boolean;
+  /** Experimental: select transition matrix conditional on current meta-regime. Default false. */
+  useConditionalTransitions?: boolean;
+  /** Experimental placeholder for path-integrated drift. Default false. */
+  usePathIntegratedDrift?: boolean;
 }
 
 export interface WalkForwardResult {
@@ -250,6 +258,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     enableCrossAssetBias: config.enableCrossAssetBias,
     crossAssetReturns: config.crossAssetReturns,
     crossAssetLassoLambda: config.crossAssetLassoLambda,
+    randomState: config.randomState,
+    useMetaRegime: config.useMetaRegime,
+    useConditionalTransitions: config.useConditionalTransitions,
+    usePathIntegratedDrift: config.usePathIntegratedDrift,
   };
 
   for (let t = warmup; t <= maxT; t += stride) {

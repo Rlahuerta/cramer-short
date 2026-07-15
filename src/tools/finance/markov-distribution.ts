@@ -144,12 +144,14 @@ import type { EnsembleSignal, MomentumSignal } from './markov-distribution/regim
 import {
   adjustTransitionMatrix,
   buildDefaultMatrix,
+  estimateConditionalTransitionMatrices,
   estimateTransitionMatrix,
   matMul,
   matPow,
   normalizeRows,
   secondLargestEigenvalue,
 } from './markov-distribution/transition.js';
+import { MetaRegimeDetector } from './markov-distribution/meta-regime.js';
 import {
   computeHorizonDriftVol,
   computeMixingWeight,
@@ -3104,6 +3106,14 @@ export async function computeMarkovDistribution(params: {
   trajectory?: boolean;
   /** Number of days for trajectory (default: horizon, max 30) */
   trajectoryDays?: number;
+  /** Optional seed for trajectory Monte Carlo. Default undefined preserves Math.random behavior. */
+  randomState?: number;
+  /** Experimental: derive uncertainty environments from returns. Default false. */
+  useMetaRegime?: boolean;
+  /** Experimental: select transition matrix conditional on current meta-regime. Default false. */
+  useConditionalTransitions?: boolean;
+  /** Experimental placeholder for path-integrated drift. Default false. */
+  usePathIntegratedDrift?: boolean;
   /**
    * Idea 2 — Polymarket-informed jump-diffusion.  When true and `jumpEvents`
    * is non-empty, the trajectory MC adds Bernoulli(λ_e·Δt) Merton jumps with
@@ -3259,6 +3269,7 @@ export async function computeMarkovDistribution(params: {
     kalshiAnchors,
     trajectory,
     trajectoryDays,
+    randomState,
     cryptoShortHorizonConditionalWeight,
     sidewaysSplit,
     cryptoShortHorizonKappaMultiplier,
@@ -3426,7 +3437,21 @@ export async function computeMarkovDistribution(params: {
       P = buildDefaultMatrix();
     }
   } else {
-    P = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+    if (params.useMetaRegime === true && params.useConditionalTransitions === true) {
+      // Conditional transitions only override the non-break estimated-matrix path.
+      const metaRegime = new MetaRegimeDetector().fit(returns);
+      const conditionalMatrices = estimateConditionalTransitionMatrices(
+        regimeSeq,
+        metaRegime.environment_sequence,
+        undefined,
+        effectiveTransitionDecay,
+      );
+      P = metaRegime.current_environment
+        ? conditionalMatrices[metaRegime.current_environment] ?? estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay)
+        : estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+    } else {
+      P = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+    }
   }
 
   // --- Goodness-of-fit test (before sentiment adjustment, which is intentional) ---
@@ -4272,6 +4297,7 @@ export async function computeMarkovDistribution(params: {
       recentDailyVol, effectiveMixture, activeJumpSpec,
       garchScalesForTraj,
       uncertaintyTrajectoryScale,
+      randomState,
     );
 
     // Align trajectory P(Up) with the calibrated CDF at the final day.
