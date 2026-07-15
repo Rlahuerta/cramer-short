@@ -16,6 +16,7 @@ import {
   forward,
   backward,
   baumWelch,
+  selectNumStates,
   viterbi,
   predict,
   attachStudentTPredictiveEmissions,
@@ -234,6 +235,43 @@ describe('baumWelch', () => {
     const result = baumWelch(obs, 2);
     expect(result.converged).toBe(false);
     expect(result.params.nStates).toBe(2);
+  });
+});
+
+describe('selectNumStates', () => {
+  it('selectNumStates falls back with a warning when observations are insufficient', () => {
+    const result = selectNumStates([0.01, -0.01, 0.02], 5, 'bic', 50);
+
+    expect(result.selected_states).toBe(3);
+    expect(result.bic_values).toBeNull();
+    expect(result.aic_values).toBeNull();
+    expect(result.criterion_used).toBe('bic');
+    expect(result.warning).toContain('Only 3 observations');
+  });
+
+  it('selectNumStates computes comparable BIC AIC and HQC values', () => {
+    const obs = generateFromHMM(TWO_STATE_PARAMS, 500, 919);
+    const result = selectNumStates(obs, 3, 'hqc', 20);
+
+    expect(result.warning).toBeUndefined();
+    expect(result.selected_states).toBeGreaterThanOrEqual(2);
+    expect(result.selected_states).toBeLessThanOrEqual(3);
+    expect(result.bic_values).toHaveLength(2);
+    expect(result.aic_values).toHaveLength(2);
+    expect(result.hqc_values).toHaveLength(2);
+    expect(result.criterion_used).toBe('hqc');
+
+    const hqcBestIndex = result.hqc_values!.indexOf(Math.min(...result.hqc_values!));
+    expect(result.selected_states).toBe(hqcBestIndex + 2);
+
+    for (let k = 2; k <= 3; k++) {
+      const nParams = k * k + 2 * k - 1;
+      const idx = k - 2;
+      expect(result.bic_values![idx] - result.aic_values![idx]).toBeCloseTo(
+        nParams * (Math.log(obs.length) - 2),
+        8,
+      );
+    }
   });
 });
 

@@ -58,6 +58,15 @@ export interface HMMFitResult {
   converged: boolean;
 }
 
+export interface HMMStateSelectionResult {
+  selected_states: number;
+  bic_values: number[] | null;
+  aic_values: number[] | null;
+  hqc_values?: number[] | null;
+  criterion_used: string;
+  warning?: string;
+}
+
 export interface HMMPrediction {
   /** Most likely current state (Viterbi) */
   currentState: number;
@@ -505,6 +514,81 @@ export function baumWelch(
   }
 
   return { params, logLikelihood: prevLL, iterations, converged };
+}
+
+export function selectNumStates(
+  returns: number[],
+  maxStates = 5,
+  criterion: 'bic' | 'aic' | 'hqc' | string = 'bic',
+  minObservationsPerState = 50,
+): HMMStateSelectionResult {
+  const n = returns.length;
+  if (n < minObservationsPerState * 2) {
+    const fallback = Math.max(2, Math.min(3, maxStates));
+    return {
+      selected_states: fallback,
+      bic_values: null,
+      aic_values: null,
+      criterion_used: criterion,
+      warning: `Only ${n} observations, need >= ${minObservationsPerState * 2}`,
+    };
+  }
+
+  const bicValues: number[] = [];
+  const aicValues: number[] = [];
+  const hqcValues: number[] = [];
+  const validKs: number[] = [];
+
+  for (let k = 2; k <= maxStates; k++) {
+    const nParams = k * k + 2 * k - 1;
+
+    try {
+      const result = baumWelch(returns, k, 100, 1e-4);
+      if (!result.converged) continue;
+
+      const logLik = result.logLikelihood;
+      const bic = -2 * logLik + nParams * Math.log(n);
+      const aic = -2 * logLik + 2 * nParams;
+      const hqc = -2 * logLik + 2 * nParams * Math.log(Math.log(Math.max(n, 3)));
+
+      bicValues.push(bic);
+      aicValues.push(aic);
+      hqcValues.push(hqc);
+      validKs.push(k);
+    } catch {
+      continue;
+    }
+  }
+
+  if (validKs.length === 0) {
+    const fallback = Math.max(2, Math.min(3, maxStates));
+    return {
+      selected_states: fallback,
+      bic_values: null,
+      aic_values: null,
+      hqc_values: null,
+      criterion_used: criterion,
+      warning: 'No models converged',
+    };
+  }
+
+  const values = criterion === 'aic'
+    ? aicValues
+    : criterion === 'hqc'
+      ? hqcValues
+      : bicValues;
+  let bestIdx = 0;
+  for (let i = 1; i < values.length; i++) {
+    if (values[i] < values[bestIdx]) bestIdx = i;
+  }
+
+  return {
+    selected_states: validKs[bestIdx],
+    bic_values: bicValues,
+    aic_values: aicValues,
+    hqc_values: hqcValues,
+    criterion_used: criterion,
+  };
 }
 
 // ---------------------------------------------------------------------------
