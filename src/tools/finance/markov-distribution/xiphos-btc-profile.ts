@@ -112,3 +112,38 @@ export const XIPHOS_BTC_MARKOV_PROFILE_6H: XiphosMarkovProfile = {
 
 /** The BTC profile cramer-short uses (the optimizer-precise 1-day profile). */
 export const XIPHOS_BTC_MARKOV_PROFILE: XiphosMarkovProfile = XIPHOS_BTC_MARKOV_PROFILE_1D;
+
+/**
+ * The xiphos BTC forecast levers to apply in the live Markov tool for BTC.
+ *
+ * Only the levers whose benefit is verified by the walk-forward backtest are
+ * applied (transition decay, regime-classification threshold, GARCH vol scaling,
+ * entropy CI modulation, meta-regime conditioning). Deliberately excluded:
+ * - `studentTNu` / `trajectoryNSamples`: the backtest improvement was obtained
+ *   WITHOUT changing these, and `nu` conflicts with cramer-short's crypto
+ *   asset-class profile (nu=3, fatter tails) — so they are left as-is.
+ * - `breakDivergenceThreshold`: cramer-short's per-horizon BTC live policy is
+ *   kept (it is more granular than xiphos's single value).
+ * - `warmup` / `randomState`: backtest-only concerns.
+ */
+export function xiphosBtcLiveParams(profile: XiphosMarkovProfile = XIPHOS_BTC_MARKOV_PROFILE): {
+  readonly transitionDecayOverride: number;
+  readonly btcReturnThresholdMultiplier: number;
+  readonly enableGarchVol: boolean;
+  readonly garchHorizonCap: number;
+  readonly garchRegimeCeiling: { readonly calm: number; readonly turbulent: number };
+  readonly enableEntropyCiModulation: boolean;
+  readonly useMetaRegime: boolean;
+  readonly useConditionalTransitions: boolean;
+} {
+  return {
+    transitionDecayOverride: profile.decayRate,
+    btcReturnThresholdMultiplier: profile.returnThresholdMultiplier,
+    enableGarchVol: profile.enableGarchVol,
+    garchHorizonCap: profile.garchHorizonCap,
+    garchRegimeCeiling: { calm: profile.garchCalmCeiling, turbulent: profile.garchTurbulentCeiling },
+    enableEntropyCiModulation: profile.enableEntropyCiModulation,
+    useMetaRegime: profile.useMetaRegime,
+    useConditionalTransitions: profile.useMetaRegime,
+  };
+}

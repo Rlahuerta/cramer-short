@@ -152,6 +152,7 @@ import {
   secondLargestEigenvalue,
 } from './markov-distribution/transition.js';
 import { MetaRegimeDetector } from './markov-distribution/meta-regime.js';
+import { xiphosBtcLiveParams } from './markov-distribution/xiphos-btc-profile.js';
 import {
   computeHorizonDriftVol,
   computeMixingWeight,
@@ -4756,6 +4757,11 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       : await fetchCandidatePolymarketAnchors(input.ticker, input.horizon);
 
     const baseComputeParams = {
+      // BTC uses the xiphos-tuned forecast levers (verified by the walk-forward
+      // benchmark). Spread first so explicit fields below still take precedence.
+      ...(resolveForecastLabRuntimeAssetScopeForTicker(input.ticker) === 'btc'
+        ? xiphosBtcLiveParams()
+        : {}),
       ticker:            input.ticker,
       horizon:           input.horizon,
       currentPrice:      price,

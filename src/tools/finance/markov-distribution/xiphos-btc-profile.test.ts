@@ -3,6 +3,7 @@ import {
   XIPHOS_BTC_MARKOV_PROFILE,
   XIPHOS_BTC_MARKOV_PROFILE_1D,
   XIPHOS_BTC_MARKOV_PROFILE_6H,
+  xiphosBtcLiveParams,
 } from './xiphos-btc-profile.js';
 
 describe('XIPHOS_BTC_MARKOV_PROFILE', () => {
@@ -49,6 +50,31 @@ describe('XIPHOS_BTC_MARKOV_PROFILE', () => {
       expect(p.volumeThresholdMultiplier).toBeGreaterThan(1);
       expect(p.enableGarchVol).toBe(true);
       expect(p.useMetaRegime).toBe(true);
+    }
+  });
+});
+
+describe('xiphosBtcLiveParams', () => {
+  it('applies the verified forecast levers for the live BTC tool', () => {
+    expect(xiphosBtcLiveParams()).toEqual({
+      transitionDecayOverride: 0.9494,
+      btcReturnThresholdMultiplier: 0.6771,
+      enableGarchVol: true,
+      garchHorizonCap: 19,
+      garchRegimeCeiling: { calm: 1.3603, turbulent: 3.097 },
+      enableEntropyCiModulation: true,
+      useMetaRegime: true,
+      useConditionalTransitions: true,
+    });
+  });
+
+  it('excludes levers that are deliberately not applied live', () => {
+    const keys = Object.keys(xiphosBtcLiveParams());
+    // nu/nSamples conflict with the crypto asset profile and were not part of the
+    // verified backtest gain; break-divergence keeps the per-horizon live policy;
+    // warmup/randomState are backtest-only.
+    for (const excluded of ['studentTNu', 'trajectoryNSamples', 'breakDivergenceThreshold', 'warmup', 'randomState']) {
+      expect(keys).not.toContain(excluded);
     }
   });
 });
