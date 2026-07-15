@@ -76,6 +76,28 @@ def _compute_terminal_state_weights(
     return weights
 
 
+def compute_path_integrated_drift(
+    horizon: int,
+    P: np.ndarray,
+    regime_stats: dict[RegimeState, dict[str, float]],
+    initial_state: RegimeState,
+    start_mixture: dict[RegimeState, float] | None = None,
+) -> float:
+    """Compute cumulative drift by summing each day's regime-weighted drift."""
+    if horizon < 0:
+        raise ValueError(f"horizon must be non-negative, got {horizon}")
+
+    total = 0.0
+    for d in range(1, horizon + 1):
+        weights = _compute_terminal_state_weights(d, P, initial_state, start_mixture)
+        total += sum(
+            weights[i] * regime_stats[state]["meanReturn"]
+            for i, state in enumerate(REGIME_STATES)
+        )
+
+    return float(total)
+
+
 def _compute_horizon_drift_vol(
     horizon: int,
     P: np.ndarray,

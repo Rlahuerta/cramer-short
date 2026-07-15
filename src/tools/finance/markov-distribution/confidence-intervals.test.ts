@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import { classifyRegimeState } from './regime.js';
 import { buildDefaultMatrix } from './transition.js';
-import { computeHorizonDriftVol, computeMixingWeight, computeStartStateMixture, computeTrajectory, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
+import { computeHorizonDriftVol, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
 import { combineUncertaintyCiScale, computeMarkovDistribution } from '../markov-distribution.js';
 import type { MarkovDistributionPoint, RegimeState } from './core.js';
 
@@ -715,7 +715,6 @@ describe('computeHorizonDriftVol — regime-specific sigma', () => {
     // With flag on but threshold=0.99 (not exceeded), should still use mixture sigma
     expect(mixture.sigma_n).toBeCloseTo(regimeMode.sigma_n, 10);
   });
-
   it('uses dominant regime sigma when threshold is exceeded and flag is on', () => {
     // With a near-identity matrix, after 1 step from bull, weights ≈ [0.6, 0.2, 0.2]
     // max weight = 0.6, which exceeds threshold 0.55 but not 0.70
@@ -758,5 +757,55 @@ describe('computeHorizonDriftVol — regime-specific sigma', () => {
     const mixture = computeHorizonDriftVol(100, P, bullDominantStats, 'bull', 0);
     const regimeMode = computeHorizonDriftVol(100, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.55);
     expect(regimeMode.sigma_n).toBeCloseTo(mixture.sigma_n, 10);
+  });
+});
+
+describe('computePathIntegratedDrift', () => {
+  const P = [
+    [0.7, 0.2, 0.1],
+    [0.1, 0.8, 0.1],
+    [0.25, 0.25, 0.5],
+  ];
+  const regimeStats = {
+    bull: { meanReturn: 0.02, stdReturn: 0.01 },
+    bear: { meanReturn: -0.01, stdReturn: 0.015 },
+    sideways: { meanReturn: 0.004, stdReturn: 0.005 },
+  };
+
+  it('path integrated drift rejects negative horizons', () => {
+    expect(() => computePathIntegratedDrift(-1, P, regimeStats, 'bull')).toThrow('horizon must be non-negative');
+  });
+
+  it('path integrated drift returns zero at horizon zero', () => {
+    expect(computePathIntegratedDrift(0, P, regimeStats, 'bull')).toBe(0);
+  });
+
+  it('path integrated drift at H=1 matches single-step terminal drift', () => {
+    const result = computePathIntegratedDrift(1, P, regimeStats, 'bull');
+    const expected = 0.7 * 0.02 + 0.2 * -0.01 + 0.1 * 0.004;
+
+    expect(result).toBeCloseTo(expected, 12);
+  });
+
+  it('path integrated drift differs from terminal snapshot for H>1 on a non-degenerate chain', () => {
+    const result = computePathIntegratedDrift(3, P, regimeStats, 'bull');
+    const expected = 0.0124 + 0.00801 + 0.005444;
+    const terminalSnapshot = 3 * 0.005444;
+
+    expect(result).toBeCloseTo(expected, 12);
+    expect(result).not.toBeCloseTo(terminalSnapshot, 6);
+  });
+
+  it('path integrated drift supports soft start mixtures', () => {
+    const result = computePathIntegratedDrift(
+      2,
+      P,
+      regimeStats,
+      'bull',
+      { bull: 0.25, bear: 0.5, sideways: 0.25 },
+    );
+    const expected = 0.001425 + 0.001595;
+
+    expect(result).toBeCloseTo(expected, 12);
   });
 });

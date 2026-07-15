@@ -332,6 +332,29 @@ export function computeTerminalStateWeights(
   return normalizeStateWeightVector(weights);
 }
 
+export function computePathIntegratedDrift(
+  horizon: number,
+  P: TransitionMatrix,
+  regimeStats: Record<RegimeState, RegimeStats>,
+  initialState: RegimeState,
+  startMixture?: Record<RegimeState, number>,
+): number {
+  if (horizon < 0) {
+    throw new Error(`horizon must be non-negative, got ${horizon}`);
+  }
+
+  let total = 0;
+  for (let d = 1; d <= horizon; d++) {
+    const weights = computeTerminalStateWeights(d, P, initialState, startMixture);
+    total += REGIME_STATES.reduce(
+      (sum, state, i) => sum + weights[i] * regimeStats[state].meanReturn,
+      0,
+    );
+  }
+
+  return total;
+}
+
 /**
  * Compute the effective n-step drift and volatility from the Markov chain.
  * Extracted so both interpolateDistribution and calibration logic can reuse it.

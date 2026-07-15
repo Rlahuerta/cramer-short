@@ -17,6 +17,7 @@ from research.models.markov import (
     compute_regime_up_rates,
 )
 from research.models.markov.transition import estimate_conditional_transition_matrices
+from research.models.markov.forecast import compute_path_integrated_drift
 from research.models.soft_regime import one_hot_regime_mixture
 
 
@@ -376,6 +377,81 @@ def test_compute_markov_forecast_supports_soft_forecast_blend():
     )
     assert sum(blended.values()) == pytest.approx(1.0, abs=1e-10)
     assert blended["sideways"] > base["sideways"]
+
+
+# ---------------------------------------------------------------------------
+# compute_path_integrated_drift
+# ---------------------------------------------------------------------------
+
+def test_compute_path_integrated_drift_rejects_negative_horizon():
+    P = np.eye(NUM_STATES)
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    with pytest.raises(ValueError, match="horizon must be non-negative"):
+        compute_path_integrated_drift(-1, P, regime_stats, "bull")
+
+
+def test_compute_path_integrated_drift_zero_horizon_returns_zero():
+    P = np.eye(NUM_STATES)
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    assert compute_path_integrated_drift(0, P, regime_stats, "bull") == 0.0
+
+
+def test_compute_path_integrated_drift_horizon_one_matches_single_step_terminal_drift():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    result = compute_path_integrated_drift(1, P, regime_stats, "bull")
+    expected = 0.7 * 0.02 + 0.2 * -0.01 + 0.1 * 0.004
+
+    assert result == pytest.approx(expected, abs=1e-12)
+
+
+def test_compute_path_integrated_drift_differs_from_terminal_snapshot_for_non_degenerate_chain():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    result = compute_path_integrated_drift(3, P, regime_stats, "bull")
+    means = np.array([regime_stats[state]["meanReturn"] for state in ("bull", "bear", "sideways")])
+    expected = sum(float(np.array([1.0, 0.0, 0.0]) @ np.linalg.matrix_power(P, d) @ means) for d in range(1, 4))
+    terminal_snapshot = 3 * float(np.array([1.0, 0.0, 0.0]) @ np.linalg.matrix_power(P, 3) @ means)
+
+    assert result == pytest.approx(expected, abs=1e-12)
+    assert result != pytest.approx(terminal_snapshot, abs=1e-6)
+
+
+def test_compute_path_integrated_drift_supports_soft_start_mixture():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+    start = {"bull": 0.25, "bear": 0.5, "sideways": 0.25}
+
+    result = compute_path_integrated_drift(2, P, regime_stats, "bull", start)
+    means = np.array([regime_stats[state]["meanReturn"] for state in ("bull", "bear", "sideways")])
+    start_vector = np.array([start["bull"], start["bear"], start["sideways"]])
+    expected = sum(float(start_vector @ np.linalg.matrix_power(P, d) @ means) for d in range(1, 3))
+
+    assert result == pytest.approx(expected, abs=1e-12)
 
 
 # ---------------------------------------------------------------------------
