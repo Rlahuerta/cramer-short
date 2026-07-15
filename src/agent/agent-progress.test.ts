@@ -74,12 +74,16 @@ async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEven
   return events;
 }
 
+function createProgressTestAgent(maxIterations: number) {
+  return Agent.create({ model: 'gpt-5.4', maxIterations, memoryEnabled: false });
+}
+
 // ---------------------------------------------------------------------------
 // ProgressEvent tests
 // ---------------------------------------------------------------------------
 describe('Agent — ProgressEvent emission', () => {
   it('emits a progress event at the start of each iteration', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3 });
+    const agent = await createProgressTestAgent(3);
     const events = await collectEvents(agent.run('What is 1 + 1?'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];
@@ -87,7 +91,7 @@ describe('Agent — ProgressEvent emission', () => {
   });
 
   it('progress event contains the current iteration number starting at 1', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3 });
+    const agent = await createProgressTestAgent(3);
     const events = await collectEvents(agent.run('Simple test query'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];
@@ -95,7 +99,7 @@ describe('Agent — ProgressEvent emission', () => {
   });
 
   it('progress event iteration increments each loop', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 5 });
+    const agent = await createProgressTestAgent(5);
     const events = await collectEvents(agent.run('Query that may need multiple iterations'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];
@@ -106,7 +110,7 @@ describe('Agent — ProgressEvent emission', () => {
 
   it('progress event contains maxIterations from config', async () => {
     const maxIterations = 7;
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations });
+    const agent = await createProgressTestAgent(maxIterations);
     const events = await collectEvents(agent.run('Test query'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];
@@ -116,7 +120,7 @@ describe('Agent — ProgressEvent emission', () => {
 
   it('does not emit more progress events than maxIterations', async () => {
     const maxIterations = 4;
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations });
+    const agent = await createProgressTestAgent(maxIterations);
     const events = await collectEvents(agent.run('Test bounded query'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];
