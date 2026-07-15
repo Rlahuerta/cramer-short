@@ -4,7 +4,7 @@ Auto-generated from codebase audit. Lists every TypeScript module in `src/`
 with a known or intended Python mirror in `research/`, its parity-test status,
 and known divergences.
 
-**Last updated**: 2026-05-15
+**Last updated**: 2026-07-15
 **Convention**: A TS file is "mirrored" when it carries a `Mirrors research/...`
 JSDoc tag AND its math is verified against the Python implementation.
 
@@ -36,9 +36,11 @@ JSDoc tag AND its math is verified against the Python implementation.
 | `src/tools/finance/garch-scales.ts` | `research/models/garch_scales.py` | 🟡 | — | `test_garch_scales_parity.py` |
 | `src/tools/finance/calibration-offsets.ts` | `research/models/calibration_offsets.py` | 🟡 | — | `test_calibration_offsets_parity.py` |
 | `src/tools/finance/transition-entropy.ts` | `research/models/transition_entropy.py` | 🟡 | — | `test_transition_entropy_parity.py` |
-| `src/tools/finance/markov-distribution/regime.ts` | `research/models/markov.py` | 🟡 | — | `test_markov_parity.py` |
-| `src/tools/finance/markov-distribution/transition.ts` | `research/models/markov.py` | 🟡 | — | `test_markov_parity.py` |
-| `src/tools/finance/markov-distribution/confidence-intervals.ts` | `research/models/markov.py` + `research/models/trajectory.py` | 🟡 | Distribution interpolation, scenario aliases, trajectory semantics, and regime-specific sigma are mirrored; TS still carries a wider production surface. | `test_markov_parity.py` + `test_trajectory_parity.py` |
+| `src/tools/finance/markov-distribution/regime.ts` | `research/models/markov/regime.py` | 🟡 | — | `test_markov_parity.py` |
+| `src/tools/finance/markov-distribution/transition.ts` | `research/models/markov/transition.py` | 🟡 | — | `test_markov_parity.py` |
+| `src/tools/finance/markov-distribution/volume-regime.ts` | `research/models/markov/volume_regime.py` | 🟡 | — | `test_volume_regime.py` |
+| `src/tools/finance/markov-distribution/meta-regime.ts` | `research/models/meta_regime.py` | 🟡 | — | `test_meta_regime.py` |
+| `src/tools/finance/markov-distribution/confidence-intervals.ts` | `research/models/markov/forecast.py` + `research/models/trajectory/` | 🟡 | Distribution interpolation, scenario aliases, trajectory semantics, and regime-specific sigma are mirrored; TS still carries a wider production surface. | `test_markov_parity.py` + `test_trajectory_parity.py` |
 | `src/utils/finance/ensemble.ts` | `research/models/ensemble.py` | 🟡 | — | `test_ensemble_parity.py` + `test_ensemble_p1_parity.py` |
 | `src/utils/finance/vol-regime.ts` | `research/models/vol_regime.py` | 🟡 | — | `test_vol_regime_parity.py` |
 | `src/utils/finance/adwin.ts` | `research/models/adwin.py` | 🟡 | — | `test_adwin_parity.py` |
@@ -48,7 +50,30 @@ JSDoc tag AND its math is verified against the Python implementation.
 | TS File | Python File | Divergence |
 |---------|-------------|------------|
 | `src/utils/finance/garch.ts` | `research/models/garch.py` | 🔸 TS uses fixed-prior moment-matching shortcut; Python uses full MLE (golden-section). TS header explicitly says "not a mirror — for full MLE see garch.py". |
-| `src/tools/finance/markov-distribution.ts` | `research/models/markov.py` | 🔸 Core Markov calibration, confidence, action-signal, context-only canonical, BTC short-horizon confidence caps, BTC 14d bearish-break sell gate, and weighted anchor trust are now mirrored in Python. The remaining gap is the broader TS production/tooling surface (full tool wrapper, arbitrator integration, and richer backtest/metrics controls). |
+| `src/tools/finance/markov-distribution.ts` | `research/models/markov/` | 🔸 Core Markov calibration, confidence, action-signal, context-only canonical, BTC short-horizon confidence caps, BTC 14d bearish-break sell gate, and weighted anchor trust are now mirrored in Python. The remaining gap is the broader TS production/tooling surface (full tool wrapper, arbitrator integration, and richer backtest/metrics controls). |
+
+### Markov Upgrade Additions (2026-07)
+
+Ported from `xiphos/markov/` into both languages; each is covered by tests in TS and Python.
+Two features (`garch_scales`, `soft_regime`) were already at parity; two (F13 longshot shrinkage,
+F14 jump diffusion) already existed in both. Sobol sensitivity is Python-only by design.
+
+| Feature | TS location | Python location | Tests (TS / Python) |
+|---------|-------------|-----------------|---------------------|
+| Stickiness penalty + Bayesian row shrinkage (opt-in) | `markov-distribution/transition.ts` `estimateTransitionMatrix` | `markov/transition.py` | `transition.test.ts` / `test_markov_parity.py` |
+| Exact stationary distribution + reducibility guard | `transition.ts` `stationaryDistribution`, `isIrreducible` | `markov/transition.py` `stationary_distribution`, `is_irreducible` | `transition.test.ts` / `test_markov_parity.py` |
+| Conditional (per-environment) transition matrices | `transition.ts` `estimateConditionalTransitionMatrices` | `markov/transition.py` `estimate_conditional_transition_matrices` | `transition.test.ts` / `test_markov_parity.py` |
+| Volume regime detection | `markov-distribution/volume-regime.ts` | `markov/volume_regime.py` | `volume-regime.test.ts` / `test_volume_regime.py` |
+| Meta-regime detection | `markov-distribution/meta-regime.ts` | `meta_regime.py` | `meta-regime.test.ts` / `test_meta_regime.py` |
+| HMM BIC/AIC/HQC state selection | `hmm.ts` `selectNumStates` | `hmm.py` `select_num_states` | `hmm.test.ts` / `test_hmm_parity.py` |
+| Path-integrated drift | `confidence-intervals.ts` `computePathIntegratedDrift` | `markov/forecast.py` `compute_path_integrated_drift` | `confidence-intervals.test.ts` / `test_markov_parity.py` |
+| Seedable Monte Carlo | `confidence-intervals.ts` `computeTrajectory(randomState)` | `trajectory/simulation.py` `compute_trajectory(random_state)` | `confidence-intervals.test.ts` / `test_trajectory_parity.py` |
+| Sobol sensitivity (Python-only) | — | `sensitivity.py` | — / `test_sensitivity.py` |
+| Walk-forward flags: `useMetaRegime`, `useConditionalTransitions`, `randomState` (all default-off) | `backtest/walk-forward.ts` + `markov-distribution.ts` | `backtest/walk_forward.py` + `backtest/_window_forecaster.py` | `walk-forward-markov-features.test.ts` / `test_walk_forward_features.py` |
+| No-look-ahead regression lock | `markov-distribution/no-lookahead.test.ts` | `test_no_lookahead.py` | test-only |
+
+Note: `research/models/vol_regime.py` (VIX-based volatility regime, `test_vol_regime_parity.py`) is a
+separate concept from the new `research/models/markov/volume_regime.py` (trading-volume regime).
 
 ## Utils & Runtime Layer
 
