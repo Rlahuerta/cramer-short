@@ -6,6 +6,10 @@ describe('classifyVolumeRegime', () => {
     expect(classifyVolumeRegime([])).toEqual([]);
   });
 
+  it('returns [] for empty input even with an invalid lookback (parity with Python/xiphos)', () => {
+    expect(classifyVolumeRegime([], 1)).toEqual([]);
+  });
+
   it('defaults to normal when there is not enough lookback history', () => {
     expect(classifyVolumeRegime([100, 200, 50], 3)).toEqual(['normal', 'normal', 'normal']);
   });

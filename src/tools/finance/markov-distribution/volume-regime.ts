@@ -23,12 +23,13 @@ export function classifyVolumeRegime(
   if (thresholdMultiplier <= 0) {
     throw new RangeError(`threshold_multiplier must be positive, got ${thresholdMultiplier}`);
   }
-  if (lookback < 2) {
-    throw new RangeError(`lookback must be >= 2, got ${lookback}`);
-  }
 
   const n = volumes.length;
   if (n === 0) return [];
+
+  if (lookback < 2) {
+    throw new RangeError(`lookback must be >= 2, got ${lookback}`);
+  }
 
   const result: VolumeRegime[] = Array(n).fill('normal');
   if (n <= lookback) return result;
