@@ -135,6 +135,54 @@ def test_estimate_transition_matrix_decay_weights_match_hand_count():
     np.testing.assert_allclose(m, expected, atol=1e-12)
 
 
+def test_estimate_transition_matrix_stickiness_shrinkage_opt_in():
+    states = ["bull"] * 60
+    m = estimate_transition_matrix(
+        states,
+        alpha=0.1,
+        min_observations=0,
+        decay_rate=1.0,
+        stickiness_shrinkage=True,
+    )
+    default = _default_matrix()
+    bull_idx = STATE_INDEX["bull"]
+    raw_bull_count = len(states) - 1
+    unsmoothed_bull_diag = (raw_bull_count + 0.1) / (raw_bull_count + NUM_STATES * 0.1)
+    stickiness = ((unsmoothed_bull_diag - 0.8) / (1.0 - 0.8)) ** 2
+    prior_strength = 10.0 * (1.0 + 9.0 * stickiness)
+    lambda_i = raw_bull_count / (raw_bull_count + prior_strength)
+    expected_bull_diag = lambda_i * unsmoothed_bull_diag + (1.0 - lambda_i) * default[bull_idx][bull_idx]
+
+    assert m[bull_idx][bull_idx] == pytest.approx(expected_bull_diag, abs=1e-12)
+    assert m[bull_idx][bull_idx] < unsmoothed_bull_diag
+    assert m[STATE_INDEX["bear"]][STATE_INDEX["bear"]] == pytest.approx(
+        default[STATE_INDEX["bear"]][STATE_INDEX["bear"]],
+        abs=1e-12,
+    )
+
+
+def test_estimate_transition_matrix_stickiness_uses_base_prior_below_threshold():
+    states = ["bull", "bear"] * 30
+    m = estimate_transition_matrix(
+        states,
+        alpha=0.1,
+        min_observations=0,
+        decay_rate=1.0,
+        stickiness_shrinkage=True,
+    )
+    default = _default_matrix()
+    bull_idx = STATE_INDEX["bull"]
+    bear_idx = STATE_INDEX["bear"]
+    raw_bull_count = 30
+    unsmoothed_bull_to_bear = (raw_bull_count + 0.1) / (raw_bull_count + NUM_STATES * 0.1)
+    lambda_i = raw_bull_count / (raw_bull_count + 10.0)
+    expected_bull_to_bear = (
+        lambda_i * unsmoothed_bull_to_bear + (1.0 - lambda_i) * default[bull_idx][bear_idx]
+    )
+
+    assert m[bull_idx][bear_idx] == pytest.approx(expected_bull_to_bear, abs=1e-12)
+
+
 # ---------------------------------------------------------------------------
 # detect_structural_break
 # ---------------------------------------------------------------------------

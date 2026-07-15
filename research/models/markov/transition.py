@@ -20,6 +20,7 @@ def estimate_transition_matrix(
     alpha: float | None = None,
     min_observations: int | None = None,
     decay_rate: float | None = None,
+    stickiness_shrinkage: bool = False,
 ) -> np.ndarray:
     """Estimate transition matrix with Dirichlet smoothing and exponential decay.
 
@@ -33,6 +34,8 @@ def estimate_transition_matrix(
         Minimum observations before estimating (returns default matrix otherwise).
     decay_rate : float
         Exponential decay: recent transitions weighted more.
+    stickiness_shrinkage : bool
+        If True, apply the xiphos continuous stickiness penalty and row-wise Bayesian shrinkage.
 
     Returns
     -------
@@ -74,6 +77,23 @@ def estimate_transition_matrix(
         raise ValueError("Transition matrix rows must sum to 1")
     if np.any(result < -1e-12):
         raise ValueError("Transition matrix entries must be nonnegative")
+
+    if stickiness_shrinkage:
+        max_diag = float(np.max(np.diag(result)))
+        d_start = 0.8
+        s = float(np.square(max(0.0, (max_diag - d_start) / (1.0 - d_start))))
+        raw_row_sums = counts.sum(axis=1) - NUM_STATES * effective_alpha
+        raw_row_sums = np.maximum(0.0, raw_row_sums)
+        prior_strength = 10.0 * (1.0 + 9.0 * s)
+        default = _default_matrix()
+        for i in range(NUM_STATES):
+            lambda_i = raw_row_sums[i] / (raw_row_sums[i] + prior_strength)
+            result[i] = lambda_i * result[i] + (1.0 - lambda_i) * default[i]
+
+        if not np.allclose(result.sum(axis=1), 1.0, atol=1e-10):
+            raise ValueError("Transition matrix rows must sum to 1")
+        if np.any(result < -1e-12):
+            raise ValueError("Transition matrix entries must be nonnegative")
 
     return result
 

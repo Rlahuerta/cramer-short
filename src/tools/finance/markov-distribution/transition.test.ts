@@ -85,6 +85,41 @@ describe('estimateTransitionMatrix', () => {
     // bull→bull should be > 0.8 (59 bull→bull transitions out of 59 total + 5×4 prior cells)
     expect(m[bullIdx][bullIdx]).toBeGreaterThan(0.8);
   });
+
+  it('stickiness shrinkage opt-in shrinks sticky rows toward the default matrix', () => {
+    const states = repeatStates(['bull'], 60);
+    const m = estimateTransitionMatrix(states, 0.1, 0, 1.0, true);
+    const def = buildDefaultMatrix();
+    const bullIdx = STATE_INDEX['bull'];
+    const rawBullCount = states.length - 1;
+    const unsmoothedBullDiag = (rawBullCount + 0.1) / (rawBullCount + NUM_STATES * 0.1);
+    const stickiness = ((unsmoothedBullDiag - 0.8) / (1.0 - 0.8)) ** 2;
+    const priorStrength = 10.0 * (1.0 + 9.0 * stickiness);
+    const lambda = rawBullCount / (rawBullCount + priorStrength);
+    const expectedBullDiag = lambda * unsmoothedBullDiag + (1.0 - lambda) * def[bullIdx][bullIdx];
+
+    expect(m[bullIdx][bullIdx]).toBeCloseTo(expectedBullDiag, 12);
+    expect(m[bullIdx][bullIdx]).toBeLessThan(unsmoothedBullDiag);
+    expect(m[STATE_INDEX['bear']][STATE_INDEX['bear']]).toBeCloseTo(
+      def[STATE_INDEX['bear']][STATE_INDEX['bear']],
+      12,
+    );
+  });
+
+  it('stickiness shrinkage uses base prior strength below the diagonal threshold', () => {
+    const states = repeatStates(['bull', 'bear'], 60);
+    const m = estimateTransitionMatrix(states, 0.1, 0, 1.0, true);
+    const def = buildDefaultMatrix();
+    const bullIdx = STATE_INDEX['bull'];
+    const bearIdx = STATE_INDEX['bear'];
+    const rawBullCount = 30;
+    const unsmoothedBullToBear = (rawBullCount + 0.1) / (rawBullCount + NUM_STATES * 0.1);
+    const lambda = rawBullCount / (rawBullCount + 10.0);
+    const expectedBullToBear = lambda * unsmoothedBullToBear
+      + (1.0 - lambda) * def[bullIdx][bearIdx];
+
+    expect(m[bullIdx][bearIdx]).toBeCloseTo(expectedBullToBear, 12);
+  });
 });
 describe('adjustTransitionMatrix', () => {
   const baseMatrix = buildDefaultMatrix();

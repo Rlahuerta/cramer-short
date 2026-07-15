@@ -30,6 +30,7 @@ export function estimateTransitionMatrix(
   alpha?: number,     // Dirichlet smoothing constant (auto-tuned if omitted)
   minObservations = resolveForecastLabMarkovParameterDefaults().transitionMinObservations,
   decayRate = resolveForecastLabMarkovParameterDefaults().transitionDecay,   // Exponential decay: recent transitions weighted more (1.0 = no decay)
+  stickinessShrinkage = false,
 ): TransitionMatrix {
   if (states.length < minObservations) {
     return buildDefaultMatrix();
@@ -53,7 +54,32 @@ export function estimateTransitionMatrix(
     counts[from][to] += Math.pow(decayRate, age);
   }
 
-  return normalizeRows(counts);
+  const result = normalizeRows(counts);
+
+  if (stickinessShrinkage) {
+    const maxDiag = Math.max(...result.map((row, i) => row[i]));
+    const dStart = 0.8;
+    const s = Math.max(0, (maxDiag - dStart) / (1.0 - dStart)) ** 2;
+    const priorStrength = 10.0 * (1.0 + 9.0 * s);
+    const def = buildDefaultMatrix();
+
+    for (let i = 0; i < NUM_STATES; i++) {
+      const rawRowSum = Math.max(
+        0,
+        counts[i].reduce((sum, v) => sum + v, 0) - NUM_STATES * effectiveAlpha,
+      );
+      const lambda = rawRowSum / (rawRowSum + priorStrength);
+      result[i] = result[i].map((v, j) => lambda * v + (1.0 - lambda) * def[i][j]);
+    }
+  }
+
+  for (const row of result) {
+    const sum = row.reduce((acc, v) => acc + v, 0);
+    if (Math.abs(sum - 1.0) > 1e-10) throw new Error('Transition matrix rows must sum to 1');
+    if (row.some(v => v < -1e-12)) throw new Error('Transition matrix entries must be nonnegative');
+  }
+
+  return result;
 }
 
 /** Identity-like default matrix with correct row sums. */
