@@ -186,6 +186,15 @@ def stationary_distribution(
     ValueError
         If the chain does not converge within ``max_iterations``.
     """
+    if P.ndim != 2 or P.shape[0] != P.shape[1]:
+        raise ValueError("Transition matrix must be square")
+    if not np.allclose(P.sum(axis=1), 1.0, atol=1e-10):
+        raise ValueError("Transition matrix rows must sum to 1")
+    if np.any(P < -1e-12):
+        raise ValueError("Transition matrix entries must be nonnegative")
+    if not is_irreducible(P):
+        raise ValueError("Transition matrix must be irreducible")
+
     n = P.shape[0]
     pi = np.full(n, 1.0 / n, dtype=float)
 

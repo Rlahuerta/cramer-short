@@ -152,9 +152,10 @@ export function adjustTransitionMatrix(
 
 /** Matrix multiplication A × B. */
 export function matMul(A: number[][], B: number[][]): number[][] {
-  const n = A.length;
-  return Array.from({ length: n }, (_, i) =>
-    Array.from({ length: n }, (_, j) =>
+  const rows = A.length;
+  const cols = B[0]?.length ?? 0;
+  return Array.from({ length: rows }, (_, i) =>
+    Array.from({ length: cols }, (_, j) =>
       A[i].reduce((s, _, k) => s + A[i][k] * B[k][j], 0),
     ),
   );
@@ -171,6 +172,58 @@ export function matPow(P: TransitionMatrix, n: number): TransitionMatrix {
     return matMul(half, half);
   }
   return matMul(P, matPow(P, n - 1));
+}
+
+function validateTransitionMatrix(P: number[][]): void {
+  const n = P.length;
+  if (n === 0 || P.some(row => row.length !== n)) {
+    throw new Error('Transition matrix must be square');
+  }
+  for (const row of P) {
+    const sum = row.reduce((acc, v) => acc + v, 0);
+    if (Math.abs(sum - 1.0) > 1e-10) throw new Error('Transition matrix rows must sum to 1');
+    if (row.some(v => v < -1e-12)) throw new Error('Transition matrix entries must be nonnegative');
+  }
+}
+
+export function isIrreducible(P: TransitionMatrix, tol = 1e-12): boolean {
+  const n = P.length;
+  if (n === 0 || P.some(row => row.length !== n)) {
+    throw new Error('Transition matrix must be square');
+  }
+
+  const reachable = P.map((row, i) => row.map((v, j) => i === j || v > tol));
+  for (let k = 0; k < n; k++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        reachable[i][j] = reachable[i][j] || (reachable[i][k] && reachable[k][j]);
+      }
+    }
+  }
+  return reachable.every(row => row.every(Boolean));
+}
+
+export function stationaryDistribution(
+  P: TransitionMatrix,
+  maxIterations = 1000,
+  tolerance = 1e-10,
+): number[] {
+  validateTransitionMatrix(P);
+  if (!isIrreducible(P)) {
+    throw new Error('Transition matrix must be irreducible');
+  }
+
+  const n = P.length;
+  let pi = Array(n).fill(1 / n);
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    const nextPi = matMul([pi], P)[0];
+    const delta = nextPi.reduce((sum, v, i) => sum + Math.abs(v - pi[i]), 0);
+    if (delta < tolerance) return nextPi;
+    pi = nextPi;
+  }
+
+  throw new Error(`Stationary distribution did not converge in ${maxIterations} iterations`);
 }
 
 /**

@@ -1,7 +1,17 @@
 import { describe, it, expect } from 'bun:test';
 import { NUM_STATES, STATE_INDEX } from './core.js';
 import { classifyRegimeState } from './regime.js';
-import { adjustTransitionMatrix, buildDefaultMatrix, estimateTransitionMatrix, matMul, matPow, normalizeRows, secondLargestEigenvalue } from './transition.js';
+import {
+  adjustTransitionMatrix,
+  buildDefaultMatrix,
+  estimateTransitionMatrix,
+  isIrreducible,
+  matMul,
+  matPow,
+  normalizeRows,
+  secondLargestEigenvalue,
+  stationaryDistribution,
+} from './transition.js';
 
 function rowSums(m: number[][]): number[] {
   return m.map(row => row.reduce((s, v) => s + v, 0));
@@ -203,6 +213,54 @@ describe('secondLargestEigenvalue', () => {
     );
     const rho = secondLargestEigenvalue(uniform);
     expect(rho).toBeLessThan(0.1);
+  });
+});
+describe('stationaryDistribution', () => {
+  function vectorMatMul(v: number[], P: number[][]): number[] {
+    return P[0].map((_, j) => v.reduce((sum, x, i) => sum + x * P[i][j], 0));
+  }
+
+  it('stationary distribution converges for a primitive 3×3 chain', () => {
+    const P = [
+      [0.7, 0.2, 0.1],
+      [0.1, 0.8, 0.1],
+      [0.2, 0.3, 0.5],
+    ];
+    const pi = stationaryDistribution(P);
+    const piP = vectorMatMul(pi, P);
+
+    for (let i = 0; i < pi.length; i++) {
+      expect(piP[i]).toBeCloseTo(pi[i], 10);
+    }
+  });
+
+  it('sums stationary distribution probabilities to 1', () => {
+    const pi = stationaryDistribution(buildDefaultMatrix());
+    expect(pi.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12);
+  });
+
+  it('raises for a reducible matrix', () => {
+    expect(() => stationaryDistribution([
+      [0.9, 0.1, 0],
+      [0.1, 0.9, 0],
+      [0, 0, 1],
+    ])).toThrow(/irreducible/);
+  });
+});
+describe('isIrreducible', () => {
+  it('returns true for strongly connected chains', () => {
+    expect(isIrreducible([
+      [0, 1],
+      [1, 0],
+    ])).toBe(true);
+  });
+
+  it('returns false when one state cannot reach the others', () => {
+    expect(isIrreducible([
+      [0.9, 0.1, 0],
+      [0.1, 0.9, 0],
+      [0, 0, 1],
+    ])).toBe(false);
   });
 });
 describe('matPow', () => {

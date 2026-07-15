@@ -1103,6 +1103,15 @@ class TestStationaryDistribution:
         # πP should equal π
         assert pi @ P == pytest.approx(pi, abs=1e-8)
 
+    def test_reducible_matrix_raises(self):
+        """Stationary distribution requires an irreducible transition matrix."""
+        from research.models.markov.transition import stationary_distribution
+        P = np.array([[0.9, 0.1, 0.0],
+                      [0.1, 0.9, 0.0],
+                      [0.0, 0.0, 1.0]], dtype=float)
+        with pytest.raises(ValueError, match="irreducible"):
+            stationary_distribution(P)
+
 
 class TestSecondLargestEigenvalue:
     def test_default_matrix_value(self):
