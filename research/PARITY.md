@@ -40,6 +40,7 @@ JSDoc tag AND its math is verified against the Python implementation.
 | `src/tools/finance/markov-distribution/transition.ts` | `research/models/markov/transition.py` | 🟡 | — | `test_markov_parity.py` |
 | `src/tools/finance/markov-distribution/volume-regime.ts` | `research/models/markov/volume_regime.py` | 🟡 | — | `test_volume_regime.py` |
 | `src/tools/finance/markov-distribution/meta-regime.ts` | `research/models/meta_regime.py` | 🟡 | — | `test_meta_regime.py` |
+| `src/tools/finance/markov-distribution/xiphos-btc-profile.ts` | `research/models/markov/xiphos_btc_profile.py` | 🟡 | `xiphos-btc-profile.test.ts` | `test_xiphos_btc_profile.py` |
 | `src/tools/finance/markov-distribution/confidence-intervals.ts` | `research/models/markov/forecast.py` + `research/models/trajectory/` | 🟡 | Distribution interpolation, scenario aliases, trajectory semantics, and regime-specific sigma are mirrored; TS still carries a wider production surface. | `test_markov_parity.py` + `test_trajectory_parity.py` |
 | `src/utils/finance/ensemble.ts` | `research/models/ensemble.py` | 🟡 | — | `test_ensemble_parity.py` + `test_ensemble_p1_parity.py` |
 | `src/utils/finance/vol-regime.ts` | `research/models/vol_regime.py` | 🟡 | — | `test_vol_regime_parity.py` |
@@ -74,6 +75,17 @@ F14 jump diffusion) already existed in both. Sobol sensitivity is Python-only by
 
 Note: `research/models/vol_regime.py` (VIX-based volatility regime, `test_vol_regime_parity.py`) is a
 separate concept from the new `research/models/markov/volume_regime.py` (trading-volume regime).
+
+### BTC parameter alignment with xiphos (2026-07)
+
+`xiphos-btc-profile.ts` / `xiphos_btc_profile.py` mirror the BTC/USD-tuned Markov parameters from
+`proopsios/trading/xiphos/markov/backtest/_parameter_sources.py` (`vbparam_1d`, the optimizer-precise
+1-day profile). The live TS Markov tool applies the walk-forward-verified subset (transition decay,
+regime threshold, GARCH vol, entropy CI, meta-regime conditioning) for BTC via `xiphosBtcLiveParams()`;
+the backtest preset is `src/tools/finance/backtest/xiphos-btc-preset.ts`, verified by
+`walk-forward-xiphos-btc.integration.test.ts` (improves BTC Brier + directional accuracy on the fixture).
+`studentTNu`/`trajectoryNSamples` are intentionally not overridden (crypto asset-profile; outside the
+verified gain), and `break_ci_slope`/`break_ci_max` have no cramer-short equivalent.
 
 ## Utils & Runtime Layer
 
