@@ -1,0 +1,114 @@
+/** Mirrors `research/models/markov/xiphos_btc_profile.py`. */
+
+/**
+ * BTC/USD Markov parameters ported from the xiphos optimizer at
+ * `proopsios/trading/xiphos/markov/backtest/_parameter_sources.py`.
+ *
+ * These are BTC/USD-tuned design levers. `vbparam_1d` is the optimizer-precise
+ * 1-day profile, which is cramer-short's finest daily forecast horizon, so it is
+ * the profile used here. The 6h profile is optimizer-precise too but sub-daily,
+ * so it is only recorded for provenance (cramer-short does not forecast at 6h).
+ *
+ * `break_ci_slope` / `break_ci_max` and `target_steps` have no direct cramer-short
+ * equivalent (cramer-short widens CIs via `entropyKappa` / conformal calibration),
+ * so they are recorded here for provenance but not wired into the forecast.
+ */
+export interface XiphosMarkovProfile {
+  /** Calendar days of training history before the first prediction (backtest lever). */
+  readonly warmupDays: number;
+  /** Exponential recency weight for transition-matrix counting (↔ transitionDecay). */
+  readonly decayRate: number;
+  /** Sensitivity of bull/bear vs sideways regime classification. */
+  readonly returnThresholdMultiplier: number;
+  /** Frobenius-divergence threshold for structural-break detection. */
+  readonly breakDivergenceThreshold: number;
+  /** Minimum |p_up - 0.5|*2 required before emitting a directional call. */
+  readonly abstentionThreshold: number;
+  /** Degrees of freedom for Student-t trajectory MC innovations. */
+  readonly studentTNu: number;
+  /** GARCH horizon after which scaling soft-blends back toward 1.0. */
+  readonly garchHorizonCap: number;
+  /** Upper clamp for GARCH scaling in calm regimes. */
+  readonly garchCalmCeiling: number;
+  /** Upper clamp for GARCH scaling in turbulent regimes. */
+  readonly garchTurbulentCeiling: number;
+  /** Rolling window for entropy-based CI modulation. */
+  readonly entropyWindowSize: number;
+  /** Number of HMM states for HMM-based regime detection. */
+  readonly hmmNumStates: number;
+  /** Lookback window for meta-regime volatility classification. */
+  readonly metaVolWindow: number;
+  /** Percentile threshold separating low/high-volatility meta-regimes. */
+  readonly metaHighVolThreshold: number;
+  /** Lookback window for volume-regime classification. */
+  readonly volumeLookback: number;
+  /** Sensitivity of high/low volume-regime classification. */
+  readonly volumeThresholdMultiplier: number;
+  /** Apply GARCH volatility scaling in the trajectory interval. */
+  readonly enableGarchVol: boolean;
+  /** Scale confidence intervals by transition-entropy z-score. */
+  readonly enableEntropyCiModulation: boolean;
+  /** Use HMM-based regime detection instead of threshold classification. */
+  readonly useHmmRegime: boolean;
+  /** Enable AH-HMM meta-regime conditioning. */
+  readonly useMetaRegime: boolean;
+  /** Number of Monte Carlo samples for trajectory simulation. */
+  readonly trajectoryNSamples: number;
+}
+
+/**
+ * xiphos `vbparam_1d` (BTC/USD, optimizer-precise 1-day profile).
+ * Source: `_parameter_sources.py` `vbparam_1d` (large simulation, dir_acc 55.6%).
+ */
+export const XIPHOS_BTC_MARKOV_PROFILE_1D: XiphosMarkovProfile = {
+  warmupDays: 54,
+  decayRate: 0.9494,
+  returnThresholdMultiplier: 0.6771,
+  breakDivergenceThreshold: 0.1165,
+  abstentionThreshold: 0.002,
+  studentTNu: 16,
+  garchHorizonCap: 19,
+  garchCalmCeiling: 1.3603,
+  garchTurbulentCeiling: 3.097,
+  entropyWindowSize: 38,
+  hmmNumStates: 2,
+  metaVolWindow: 40,
+  metaHighVolThreshold: 0.7824,
+  volumeLookback: 8,
+  volumeThresholdMultiplier: 1.4051,
+  enableGarchVol: true,
+  enableEntropyCiModulation: true,
+  useHmmRegime: true,
+  useMetaRegime: true,
+  trajectoryNSamples: 200,
+};
+
+/**
+ * xiphos `vbparam_6h` (BTC/USD, optimizer-precise 6-hour profile).
+ * Recorded for provenance; NOT applied because cramer-short forecasts daily.
+ */
+export const XIPHOS_BTC_MARKOV_PROFILE_6H: XiphosMarkovProfile = {
+  warmupDays: 50,
+  decayRate: 0.93621,
+  returnThresholdMultiplier: 0.43254,
+  breakDivergenceThreshold: 0.23088,
+  abstentionThreshold: 0.00366,
+  studentTNu: 12,
+  garchHorizonCap: 10,
+  garchCalmCeiling: 1.4054,
+  garchTurbulentCeiling: 3.61353,
+  entropyWindowSize: 87,
+  hmmNumStates: 4,
+  metaVolWindow: 11,
+  metaHighVolThreshold: 0.7989,
+  volumeLookback: 45,
+  volumeThresholdMultiplier: 1.8659,
+  enableGarchVol: true,
+  enableEntropyCiModulation: true,
+  useHmmRegime: true,
+  useMetaRegime: true,
+  trajectoryNSamples: 200,
+};
+
+/** The BTC profile cramer-short uses (the optimizer-precise 1-day profile). */
+export const XIPHOS_BTC_MARKOV_PROFILE: XiphosMarkovProfile = XIPHOS_BTC_MARKOV_PROFILE_1D;
