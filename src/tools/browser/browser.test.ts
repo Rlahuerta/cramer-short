@@ -233,3 +233,36 @@ describe('browser tool with mocked Playwright', () => {
     });
   });
 });
+
+describe('browser tool SSRF guard', () => {
+  it('rejects file:// URL on navigate before launching a browser', async () => {
+    const result = parseToolResult(
+      await browserTool.invoke({ action: 'navigate', url: 'file:///etc/passwd' }) as string,
+    );
+    expect(String(result.error)).toContain('must be http or https');
+    expect(launchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects 169.254.169.254 on navigate', async () => {
+    const result = parseToolResult(
+      await browserTool.invoke({ action: 'navigate', url: 'http://169.254.169.254/' }) as string,
+    );
+    expect(String(result.error)).toContain('internal or reserved');
+    expect(launchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects file:// URL on open', async () => {
+    const result = parseToolResult(
+      await browserTool.invoke({ action: 'open', url: 'file:///etc/passwd' }) as string,
+    );
+    expect(String(result.error)).toContain('must be http or https');
+    expect(launchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a normal https URL on navigate', async () => {
+    const result = parseToolResult(
+      await browserTool.invoke({ action: 'navigate', url: 'https://example.com/' }) as string,
+    );
+    expect(result).toMatchObject({ ok: true, url: 'https://example.com/' });
+  });
+});

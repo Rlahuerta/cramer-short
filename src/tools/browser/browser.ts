@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { logger } from '../../utils/logger.js';
+import { assertPublicHttpUrl } from '../fetch/url-guard.js';
 
 type BrowserRef = { role: string; name?: string; nth?: number };
 type BrowserLaunchOptions = { headless: boolean };
@@ -623,11 +624,21 @@ export function createBrowserTool(options: { runtime?: BrowserRuntime } = {}): D
             if (!url) {
               return formatToolResult({ error: 'url is required for navigate action' });
             }
+            try {
+              assertPublicHttpUrl(url);
+            } catch (err) {
+              return formatToolResult({ error: err instanceof Error ? err.message : String(err) });
+            }
             return formatToolResult(await runtime.navigate(url, signal));
 
           case 'open':
             if (!url) {
               return formatToolResult({ error: 'url is required for open action' });
+            }
+            try {
+              assertPublicHttpUrl(url);
+            } catch (err) {
+              return formatToolResult({ error: err instanceof Error ? err.message : String(err) });
             }
             return formatToolResult(await runtime.open(url, signal));
 
