@@ -203,4 +203,22 @@ describe('saveApiKeyToEnv', () => {
     expect(ok).toBe(false);
     rmSync(join(tempDir, '.env'), { recursive: true });
   });
+
+  test('rejects API key values containing newlines', () => {
+    const ok = saveApiKeyToEnv('OPENAI_API_KEY', 'sk-real\nINJECTED=evil');
+    expect(ok).toBe(false);
+  });
+
+  test('rejects API key values containing carriage returns', () => {
+    const ok = saveApiKeyToEnv('OPENAI_API_KEY', 'sk-real\rINJECTED=evil');
+    expect(ok).toBe(false);
+  });
+
+  test('does not write anything to .env when rejecting newline values', () => {
+    writeEnvFile('OPENAI_API_KEY=sk-original\n');
+    saveApiKeyToEnv('OPENAI_API_KEY', 'sk-real\nINJECTED=evil');
+    const written = readWrittenEnv();
+    expect(written).toContain('sk-original');
+    expect(written).not.toContain('INJECTED');
+  });
 });
