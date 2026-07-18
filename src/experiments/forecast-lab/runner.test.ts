@@ -2671,6 +2671,34 @@ describe('forecast-lab runner', () => {
     )).rejects.toThrow(/Unsafe forecast-lab command/);
   });
 
+  it('does not pass API keys to subprocess environment', async () => {
+    const originalKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-leak-test-key';
+
+    let capturedEnv: Record<string, string | undefined> = {};
+    const child = new FakeSpawnedChild();
+    const runner = createForecastLabCommandRunner(((_cmd: string, opts: { env: Record<string, string | undefined> }) => {
+      capturedEnv = opts.env ?? {};
+      queueMicrotask(() => {
+        child.stdout.write('ok\n');
+        child.emit('close');
+      });
+      return child as unknown as ReturnType<typeof import('node:child_process').spawn>;
+    }) as typeof import('node:child_process').spawn);
+
+    await runner(
+      { id: 'env-leak-test', command: 'bun --version' },
+      { phase: 'baseline', profile: {} as never, runId: 'runner-test-env-leak' },
+    );
+
+    if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalKey;
+
+    expect(capturedEnv['OPENAI_API_KEY']).toBeUndefined();
+    expect(capturedEnv['ANTHROPIC_API_KEY']).toBeUndefined();
+    expect(capturedEnv['PATH']).toBeDefined();
+  });
+
   it('refuses broad path writes outside .cramer-short/experiments', async () => {
     await expect(runForecastLab({
       profileId: 'multi-asset-markov-short-horizon',
