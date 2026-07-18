@@ -214,4 +214,18 @@ describe('skillTool — parameter resolution', () => {
     const result = await skillTool.invoke({ skill: 'dcf' });
     expect(result).toContain('{{unknown}}');
   });
+
+  test('wraps string parameter values in untrusted-content delimiters', async () => {
+    mockGetSkillFn = () =>
+      makeSkill({
+        parameters: {
+          query: { type: 'string', description: 'Search query', default: 'default-query' },
+        },
+        instructions: 'Search for: {{query}}.',
+      });
+    const result = await skillTool.invoke({ skill: 'dcf', params: { query: 'malicious-value' } });
+    expect(result).toContain('<<<UNTRUSTED_PARAMETER');
+    expect(result).toContain('malicious-value');
+    expect(result).toContain('END_UNTRUSTED_PARAMETER');
+  });
 });

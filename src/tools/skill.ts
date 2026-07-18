@@ -80,7 +80,13 @@ function applyPlaceholders(text: string, resolved: Record<string, string | numbe
     if (!(key in resolved)) return _match;
     const val = resolved[key];
     if (typeof val === 'string') {
-      return val.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+      const escaped = val
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t');
+      return `<<<UNTRUSTED_PARAMETER>>>${escaped}<<<END_UNTRUSTED_PARAMETER>>>`;
     }
     return String(val);
   });
