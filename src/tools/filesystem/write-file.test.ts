@@ -136,3 +136,49 @@ describe('write_file sandbox — escape attempts blocked', () => {
     ).rejects.toThrow(/sandbox/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sandbox: ~/ writes restricted to ~/reports/ and ~/.cramer-short/
+// ---------------------------------------------------------------------------
+
+describe('write_file sandbox — narrowed homedir scope', () => {
+  const ALLOWED_DIRS = ['reports', '.cramer-short'];
+
+  for (const dir of ALLOWED_DIRS) {
+    it(`allows writes to ~/${dir}/`, async () => {
+      const name = `cs-security-test-${nextTestId('home')}.txt`;
+      const testFile = `~/${dir}/${name}`;
+      const absPath = join(HOME, dir, name);
+      try {
+        const result = await writeFileTool.invoke({ path: testFile, content: 'safe' });
+        const parsed = JSON.parse(result);
+        expect(parsed.data.message).toContain('Successfully wrote');
+      } finally {
+        try { rmSync(absPath); } catch { /* ok */ }
+      }
+    });
+  }
+
+  // NOTE: These assert the guard rejects arbitrary ~/ dotfiles (the real threat is
+  // ~/.bashrc, ~/.ssh/authorized_keys, ~/.profile). We deliberately target SYNTHETIC
+  // throwaway paths, never the real dotfiles: if the guard ever regresses, the red
+  // path must not clobber a developer's actual shell config or SSH keys. A finally
+  // block removes any file that a regression might create.
+  const BLOCKED_PROBES: Array<{ label: string; path: string; abs: string }> = [
+    { label: '~/.ssh/authorized_keys (probe subdir)', path: '~/.cs-guard-probe-ssh/authorized_keys', abs: join(HOME, '.cs-guard-probe-ssh') },
+    { label: '~/.bashrc (probe dotfile)', path: '~/.cs-guard-probe-bashrc', abs: join(HOME, '.cs-guard-probe-bashrc') },
+    { label: '~/.profile (probe dotfile)', path: '~/.cs-guard-probe-profile', abs: join(HOME, '.cs-guard-probe-profile') },
+  ];
+
+  for (const probe of BLOCKED_PROBES) {
+    it(`blocks writes to ${probe.label}`, async () => {
+      try {
+        await expect(
+          writeFileTool.invoke({ path: probe.path, content: 'evil' }),
+        ).rejects.toThrow(/outside allowed home directories/);
+      } finally {
+        try { rmSync(probe.abs, { recursive: true, force: true }); } catch { /* ok */ }
+      }
+    });
+  }
+});
