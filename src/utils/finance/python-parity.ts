@@ -45,8 +45,26 @@ function findRepoRoot(): string {
  * **INTERNAL USE ONLY**: This function executes arbitrary Python code.
  * Do NOT expose to untrusted callers or external input.
  * Current usage is limited to internal parity testing.
+ *
+ * Execution is gated behind {@link enablePythonParity}: production code that
+ * never calls it cannot trigger Python execution even if it imports runPython.
  */
+let pythonParityEnabled = false;
+
+/**
+ * Opt in to Python execution. Test-only: call this from parity-test setup
+ * before invoking {@link runPython}. Never call from production code paths.
+ */
+export function enablePythonParity(): void {
+  pythonParityEnabled = true;
+}
+
 export function runPython(script: string): Promise<string> {
+  if (!pythonParityEnabled) {
+    return Promise.reject(
+      new Error('runPython is disabled outside parity tests; call enablePythonParity() first.'),
+    );
+  }
   const python = findCondaPython();
   const repoRoot = findRepoRoot();
 

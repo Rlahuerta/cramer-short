@@ -5,7 +5,9 @@
  * outputs across TypeScript and Python implementations.
  */
 import { describe, test, expect } from 'bun:test';
-import { runPython } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+
+enablePythonParity();
 import { matPow } from './hmm.js';
 
 const PYTHON_PARITY_TIMEOUT_MS = 20_000;

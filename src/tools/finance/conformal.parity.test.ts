@@ -5,7 +5,9 @@
  * produce numerically identical radius / interval outputs.
  */
 import { describe, test, expect } from 'bun:test';
-import { runPython } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+
+enablePythonParity();
 import { AdaptiveConformalPID, ConformalPID } from './conformal.js';
 
 const PYTHON_PARITY_TIMEOUT_MS = 30_000;

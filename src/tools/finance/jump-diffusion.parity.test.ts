@@ -5,7 +5,9 @@
  * outputs across the two implementations.
  */
 import { describe, test, expect } from 'bun:test';
-import { runPython } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+
+enablePythonParity();
 import {
   JUMP_DEFAULTS,
   buildJumpEventSpec,
