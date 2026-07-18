@@ -213,3 +213,39 @@ describe('web_fetch HTML extractor labeling', () => {
     expect(unwrapExternalContent(payload.data?.text)).toContain('Lead paragraph');
   });
 });
+
+// ---------------------------------------------------------------------------
+// SSRF guard — internal/private hosts must be rejected before any fetch.
+// ---------------------------------------------------------------------------
+
+describe('web_fetch SSRF guard', () => {
+  async function invoke(url: string): Promise<string> {
+    return webFetchTool.invoke({ url }) as Promise<string>;
+  }
+
+  test('rejects file:// URLs', async () => {
+    const result = await invoke('file:///etc/passwd');
+    expect(result).toContain('must be http or https');
+  });
+
+  test('rejects 127.0.0.1', async () => {
+    const result = await invoke('http://127.0.0.1:11434/api/tags');
+    expect(result).toContain('internal or reserved');
+  });
+
+  test('rejects 169.254.169.254 (cloud metadata)', async () => {
+    const result = await invoke('http://169.254.169.254/latest/meta-data/');
+    expect(result).toContain('internal or reserved');
+  });
+
+  test('rejects localhost', async () => {
+    const result = await invoke('http://localhost:3000/');
+    expect(result).toContain('internal or reserved');
+  });
+
+  test('does NOT reject a public URL (passes through to fetch or blocked-domain guard)', async () => {
+    const result = await invoke('https://example.com/').catch((e: Error) => e.message);
+    expect(result).not.toContain('internal or reserved');
+    expect(result).not.toContain('must be http or https');
+  });
+});

@@ -15,6 +15,7 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { extractText as extractPdfText } from 'unpdf';
 import { formatToolResult } from '../types.js';
+import { assertPublicHttpUrl } from './url-guard.js';
 import { wrapExternalContent, wrapWebContent } from './external-content.js';
 import {
   extractReadableContent,
@@ -277,15 +278,8 @@ async function fetchWithRedirects(params: {
   let redirectCount = 0;
 
   while (true) {
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(currentUrl);
-    } catch {
-      throw new Error("[Web Fetch] Invalid URL: must be http or https");
-    }
-    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      throw new Error("[Web Fetch] Invalid URL: must be http or https");
-    }
+    assertPublicHttpUrl(currentUrl);
+    const parsedUrl = new URL(currentUrl);
 
     const response = await fetch(parsedUrl.toString(), {
       redirect: "manual",
@@ -336,15 +330,7 @@ async function runWebFetch(params: {
     return { ...cached.value, cached: true };
   }
 
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(params.url);
-  } catch {
-    throw new Error("[Web Fetch] Invalid URL: must be http or https");
-  }
-  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-    throw new Error("[Web Fetch] Invalid URL: must be http or https");
-  }
+  assertPublicHttpUrl(params.url);
 
   const start = Date.now();
   const { response: res, finalUrl } = await fetchWithRedirects({
@@ -461,6 +447,12 @@ export const webFetchTool = new DynamicStructuredTool({
     const blocked = checkBlockedDomain(input.url);
     if (blocked) {
       return blocked;
+    }
+
+    try {
+      assertPublicHttpUrl(input.url);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
     }
 
     const extractMode: ExtractMode = input.extractMode === 'text' ? 'text' : 'markdown';
