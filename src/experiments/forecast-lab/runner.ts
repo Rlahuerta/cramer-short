@@ -260,7 +260,7 @@ interface StructuredMutationCatalogState {
 
 type ForecastingConfig = Config['forecasting'];
 
-const UNSAFE_SHELL_COMMAND_PATTERN = /[;&|`<>]|\$\(/;
+const UNSAFE_SHELL_COMMAND_PATTERN = /[;&|`<>\n\r]|\$\(|\$\{|\$\w/;
 const UNSAFE_GIT_COMMAND_PATTERN = /\bgit\s+(?:add|commit|push|reset|checkout|clean)\b/;
 const SAFE_PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const FORECAST_LAB_ACTIVE_STATE_DIR = 'active-promotions';

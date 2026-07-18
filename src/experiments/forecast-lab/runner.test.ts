@@ -2629,6 +2629,48 @@ describe('forecast-lab runner', () => {
     )).rejects.toThrow(/Unsafe forecast-lab command/);
   });
 
+  it('rejects newline injection in profile commands', async () => {
+    await expect(defaultForecastLabCommandRunner(
+      {
+        id: 'newline-injection',
+        command: 'echo hello\necho injected',
+      },
+      {
+        phase: 'baseline',
+        profile: {} as never,
+        runId: 'runner-test-newline-injection',
+      },
+    )).rejects.toThrow(/Unsafe forecast-lab command/);
+  });
+
+  it('rejects ${IFS} injection in profile commands', async () => {
+    await expect(defaultForecastLabCommandRunner(
+      {
+        id: 'ifs-injection',
+        command: 'echo${IFS}hello',
+      },
+      {
+        phase: 'baseline',
+        profile: {} as never,
+        runId: 'runner-test-ifs-injection',
+      },
+    )).rejects.toThrow(/Unsafe forecast-lab command/);
+  });
+
+  it('rejects ${...} variable expansion in profile commands', async () => {
+    await expect(defaultForecastLabCommandRunner(
+      {
+        id: 'var-expansion',
+        command: 'echo ${HOME}',
+      },
+      {
+        phase: 'baseline',
+        profile: {} as never,
+        runId: 'runner-test-var-expansion',
+      },
+    )).rejects.toThrow(/Unsafe forecast-lab command/);
+  });
+
   it('refuses broad path writes outside .cramer-short/experiments', async () => {
     await expect(runForecastLab({
       profileId: 'multi-asset-markov-short-horizon',
