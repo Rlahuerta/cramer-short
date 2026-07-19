@@ -21,6 +21,9 @@ import {
   type PortfolioRiskWatchlistEntry,
 } from './finance/portfolio-risk.js';
 import { waccInputsTool, WACC_INPUTS_DESCRIPTION } from './finance/wacc-inputs.js';
+import { dcfValuationTool, DCF_VALUATION_DESCRIPTION } from './finance/dcf-valuation.js';
+import { reverseDcfTool, REVERSE_DCF_DESCRIPTION } from './finance/reverse-dcf.js';
+import { rimValuationTool, RIM_VALUATION_DESCRIPTION } from './finance/rim-valuation.js';
 import { geopoliticsSearchTool, GEOPOLITICS_SEARCH_DESCRIPTION } from './osint/geopolitics-search.js';
 import { getFixedIncomeTool, FIXED_INCOME_DESCRIPTION } from './finance/fixed-income.js';
 import { getOptionsChainTool, OPTIONS_CHAIN_DESCRIPTION } from './finance/options.js';
@@ -117,6 +120,21 @@ export function getToolRegistry(model: string, options: ToolRegistryOptions = {}
       name: 'wacc_inputs',
       tool: waccInputsTool,
       description: WACC_INPUTS_DESCRIPTION,
+    },
+    {
+      name: 'dcf_valuation',
+      tool: dcfValuationTool,
+      description: DCF_VALUATION_DESCRIPTION,
+    },
+    {
+      name: 'reverse_dcf',
+      tool: reverseDcfTool,
+      description: REVERSE_DCF_DESCRIPTION,
+    },
+    {
+      name: 'rim_valuation',
+      tool: rimValuationTool,
+      description: RIM_VALUATION_DESCRIPTION,
     },
     {
       name: 'polymarket_search',

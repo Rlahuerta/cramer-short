@@ -70,6 +70,9 @@ describe('getToolRegistry core tools', () => {
       'memory_update',
       'recall_financial_context',
       'store_financial_insight',
+      'dcf_valuation',
+      'reverse_dcf',
+      'rim_valuation',
     ]));
   });
 
@@ -85,6 +88,19 @@ describe('getToolRegistry core tools', () => {
       'sequential_thinking',
       'web_fetch',
       'read_file',
+    ]));
+  });
+
+  it('always registers dcf_valuation, reverse_dcf, and rim_valuation regardless of memory flag', () => {
+    expect(namesWithMemoryDisabled()).toEqual(expect.arrayContaining([
+      'dcf_valuation',
+      'reverse_dcf',
+      'rim_valuation',
+    ]));
+    expect(names()).toEqual(expect.arrayContaining([
+      'dcf_valuation',
+      'reverse_dcf',
+      'rim_valuation',
     ]));
   });
 
