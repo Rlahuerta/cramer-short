@@ -207,6 +207,64 @@ describe('forecast_arbitrator integration', () => {
     });
   });
 
+  integrationIt('accepts percentage-style nested arbitrator payloads by normalizing them before schema validation', async () => {
+    const payload = {
+      ticker: 'BTC',
+      horizon_days: '1',
+      current_price: '64406.73',
+      leverage: '1',
+      markov: {
+        forecast_return: '0.00408',
+        p_up: '55',
+        confidence: '27.4',
+        structural_break: 'true',
+        flat_probability: '82.8',
+        ci_low: '62000',
+        ci_high: '68000',
+      },
+      polymarket: {
+        forecast_return: '-0.0121',
+        quality_score: '83',
+        markets: [
+          {
+            question: 'Will Bitcoin dip to $64,000 tomorrow?',
+            probability: '100',
+          },
+        ],
+      },
+      whale: {
+        direction: 'neutral',
+        confidence: '35',
+        summary: 'No whale transactions detected.',
+      },
+    };
+
+    const raw = await forecastArbitratorTool.invoke(payload);
+    const parsed = parseResult(raw);
+
+    expect(parsed.data.result).toMatchObject({
+      rawEvidence: {
+        markov: {
+          p_up: 0.55,
+          confidence: 0.274,
+          flat_probability: 0.828,
+        },
+        polymarket: {
+          quality_score: 83,
+          markets: [
+            {
+              question: 'Will Bitcoin dip to $64,000 tomorrow?',
+              probability: 1,
+            },
+          ],
+        },
+        whale: {
+          confidence: 0.35,
+        },
+      },
+    });
+  });
+
   integrationIt('drops malformed conformal mode strings instead of inventing a normal regime', async () => {
     const payload = {
       ticker: 'BTC',

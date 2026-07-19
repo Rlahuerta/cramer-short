@@ -13,8 +13,10 @@ import {
 } from './distribution.js';
 import {
   isCryptoForecastQuery,
+  isCryptoForecastPipelineQuery,
   isNonCryptoForecastQuery,
   isExplicitGoldCombinedMarkovPolymarketRequest,
+  isTradeDecisionQuery,
 } from './classification.js';
 import {
   buildForcedMarketDataArgs,
@@ -44,6 +46,7 @@ import {
   hasUsableOnchainResultForCryptoQuery,
   hasPolymarketForecastCoverage,
   hasPolymarketForecastErrorForCoverage,
+  hasAttemptedPolymarketForecastForQuery,
   shouldRerunPolymarketForecastWithMarkov,
   hasUsableFixedIncomeResult,
 } from './coverage.js';
@@ -109,7 +112,7 @@ export function shouldForceNonCryptoForecastFallback(query: string, toolCalls: T
 }
 
 export function shouldForceCryptoForecastTools(query: string, toolCalls: ToolCallRecord[]): boolean {
-  if (!isCryptoForecastQuery(query)) return false;
+  if (!isCryptoForecastPipelineQuery(query)) return false;
 
   const marketDataArgs = buildForcedMarketDataArgs(query);
   const socialSentimentArgs = buildForcedSocialSentimentArgs(query);
@@ -184,10 +187,6 @@ function inferLeverageFromQuery(query: string): number | null {
   return Number.isFinite(leverage) && leverage > 0 ? leverage : null;
 }
 
-function isTradeDecisionQuery(query: string): boolean {
-  return /\b(direction|entry|enter|stop|stop-loss|target|take profit|leverage|leveraged|\d{1,3}(?:\.\d+)?\s*x|long|short|trade setup|trade plan|position|arbitrator|verdict)\b/i.test(query);
-}
-
 export function hasForecastArbitratorForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
   const desiredTicker = inferDistributionTicker(query);
   const desiredHorizon = inferDistributionHorizon(query);
@@ -213,11 +212,9 @@ export function detectBtcShortHorizonDisagreement(query: string, toolCalls: Tool
 }
 
 export function buildForcedForecastArbiterArgs(query: string, toolCalls: ToolCallRecord[]): ForcedForecastArbiterArgs | null {
-  if (!isCryptoForecastQuery(query)) return null;
-  if (!isTradeDecisionQuery(query) && !detectBtcShortHorizonDisagreement(query, toolCalls)) return null;
-
   const detected = detectAssetType(query);
   if (detected.type !== 'crypto' || !detected.ticker) return null;
+  if (!isTradeDecisionQuery(query) && !detectBtcShortHorizonDisagreement(query, toolCalls)) return null;
 
   const horizon = inferDistributionHorizon(query) ?? inferBtcShortHorizonForecastHorizon(query) ?? 1;
   const markov = extractMarkovArbiterEvidence(query, toolCalls);
@@ -250,6 +247,11 @@ export function buildForcedForecastArbiterArgs(query: string, toolCalls: ToolCal
 
 export function shouldForceForecastArbitrator(query: string, toolCalls: ToolCallRecord[]): boolean {
   if (hasForecastArbitratorForQuery(query, toolCalls)) return false;
+  // Never force the arbitrator until Polymarket has been attempted, so it can
+  // never fire with a `polymarket: null` payload purely because Polymarket has
+  // not run yet. If Polymarket was attempted and errored, the arbiter may still
+  // run on Markov-only evidence.
+  if (!hasAttemptedPolymarketForecastForQuery(query, toolCalls)) return false;
   const args = buildForcedForecastArbiterArgs(query, toolCalls);
   return args !== null && !hasErrorAttemptForArgs(toolCalls, 'forecast_arbitrator', args);
 }

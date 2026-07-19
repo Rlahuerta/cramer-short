@@ -168,6 +168,24 @@ function optionalNumber(options: { min?: number; max?: number; positive?: boolea
   ).optional();
 }
 
+function normalizeUnitIntervalValue(value: unknown): unknown {
+  if (value === null || value === '') return undefined;
+  const numeric = typeof value === 'string' || typeof value === 'number'
+    ? Number(value)
+    : null;
+  if (numeric !== null && Number.isFinite(numeric) && numeric > 1 && numeric <= 100) {
+    return numeric / 100;
+  }
+  return value;
+}
+
+function optionalUnitIntervalNumber() {
+  return z.preprocess(
+    normalizeUnitIntervalValue,
+    z.coerce.number().finite().min(0).max(1).optional(),
+  ).optional();
+}
+
 function optionalBoolean() {
   return z.preprocess((value) => {
     if (value === null || value === '') return undefined;
@@ -225,10 +243,10 @@ const schema = z.object({
   leverage: optionalNumber({ positive: true, max: 125 }).default(1),
   markov: z.object({
     forecast_return: optionalNumber().describe('Markov expected return as a decimal, e.g. 0.004 for +0.4%.'),
-    p_up: optionalNumber({ min: 0, max: 1 }),
-    confidence: optionalNumber({ min: 0, max: 1 }),
+    p_up: optionalUnitIntervalNumber(),
+    confidence: optionalUnitIntervalNumber(),
     structural_break: optionalBoolean(),
-    flat_probability: optionalNumber({ min: 0, max: 1 }),
+    flat_probability: optionalUnitIntervalNumber(),
     ci_low: optionalNumber({ positive: true }),
     ci_high: optionalNumber({ positive: true }),
     trusted_anchors: optionalNumber({ min: 0 }),
@@ -238,7 +256,7 @@ const schema = z.object({
       applied: optionalBoolean(),
       radius: optionalNumber({ min: 0 }),
       coverageEstimate: z.preprocess(
-        (value) => value === '' ? undefined : value,
+        normalizeUnitIntervalValue,
         z.coerce.number().finite().min(0).max(1).nullable().optional(),
       ).optional(),
       mode: optionalConformalMode(),
@@ -249,7 +267,7 @@ const schema = z.object({
     forecast_return: optionalNumber().describe('Polymarket forecast return as a decimal, e.g. -0.012 for -1.2%.'),
     raw_forecast_return: optionalNumber().describe('Raw Polymarket-only forecast return as a decimal.'),
     blended_forecast_return: optionalNumber().describe('Blended Polymarket-plus-auxiliary forecast return as a decimal.'),
-    confidence: optionalNumber({ min: 0, max: 1 }),
+    confidence: optionalUnitIntervalNumber(),
     quality_score: optionalNumber({ min: 0, max: 100 }),
     quality_grade: optionalString(),
     querySet: z.array(z.coerce.string().max(10_000)).optional(),
@@ -257,19 +275,19 @@ const schema = z.object({
       marketId: optionalString(),
       assetId: optionalString(),
       question: z.coerce.string().max(10_000),
-      probability: optionalNumber({ min: 0, max: 1 }),
+      probability: optionalUnitIntervalNumber(),
       semantics: optionalSemantics(),
       price: optionalNumber({ positive: true }),
       volume24h: optionalNumber({ min: 0 }),
       endDate: optionalString(),
-      bid: optionalNumber({ min: 0, max: 1 }),
-      ask: optionalNumber({ min: 0, max: 1 }),
+      bid: optionalUnitIntervalNumber(),
+      ask: optionalUnitIntervalNumber(),
     })).optional().default([]),
     summary: optionalString(),
   }).optional(),
   whale: z.object({
     direction: optionalDirection(),
-    confidence: optionalNumber({ min: 0, max: 1 }),
+    confidence: optionalUnitIntervalNumber(),
     summary: optionalString(),
     source: optionalString(),
     observationWindowStart: optionalString(),

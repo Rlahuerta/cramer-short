@@ -114,6 +114,30 @@ export function isExplicitGoldCombinedMarkovPolymarketRequest(query: string): bo
   return resolved.assetClass === 'commodity_gold' && isExplicitCombinedMarkovPolymarketRequest(query);
 }
 
+/**
+ * Detect trade-decision intent (direction, entry, stop, target, leverage,
+ * arbitrator/verdict, trade plan/position). Used to route trade/briefing
+ * prompts through the forced forecast pipeline.
+ */
+export function isTradeDecisionQuery(query: string): boolean {
+  return /\b(direction|entry|enter|stop|stop-loss|target|take profit|leverage|leveraged|\d{1,3}(?:\.\d+)?\s*x|long|short|trade setup|trade plan|position|arbitrator|verdict)\b/i.test(query);
+}
+
+/**
+ * Broader gate for the crypto forced-forecast pipeline: true for standard
+ * crypto forecast queries AND for crypto trade/briefing prompts (e.g. a
+ * multi-block "arbitrator verdict / trade plan" briefing) that are not caught by
+ * `isCryptoForecastQuery` because they embed "markov_distribution" or lack
+ * "forecast/next N days" phrasing. Ensures Markov + Polymarket are force-run
+ * before the arbitrator for these prompts.
+ */
+export function isCryptoForecastPipelineQuery(query: string): boolean {
+  if (isForecastLabImprovementQuery(query)) return false;
+  if (isCryptoForecastQuery(query)) return true;
+  const detected = detectAssetType(query);
+  return detected.type === 'crypto' && !!detected.ticker && isTradeDecisionQuery(query);
+}
+
 export function detectExplicitSkillRequest(query: string): string | null {
   const match = query.match(/\buse (?:the )?([a-z0-9_-]+) skill\b/i);
   if (!match) return null;
