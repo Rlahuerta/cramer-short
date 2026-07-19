@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 
 import { reverseDcfTool } from './reverse-dcf.js';
+import { computeFairValuePerShare } from '../../utils/finance/dcf.js';
 
 function parseResult(raw: unknown): { data: Record<string, unknown> } {
   return JSON.parse(raw as string) as { data: Record<string, unknown> };
@@ -21,7 +22,6 @@ describe('reverseDcfTool — known solutions', () => {
     const dilutedShares = 10;
 
     // Forward-compute fair value at g=0.10
-    const { computeFairValuePerShare } = await import('../../utils/finance/dcf.js');
     const { fairValuePerShare } = computeFairValuePerShare({
       baseFcf,
       wacc,
@@ -59,7 +59,6 @@ describe('reverseDcfTool — known solutions', () => {
     const netDebt = 0;
     const dilutedShares = 1;
 
-    const { computeFairValuePerShare } = await import('../../utils/finance/dcf.js');
     const { fairValuePerShare } = computeFairValuePerShare({
       baseFcf,
       wacc,
@@ -98,7 +97,6 @@ describe('reverseDcfTool — boundary and edge cases', () => {
     const netDebt = 0;
     const dilutedShares = 10;
 
-    const { computeFairValuePerShare } = await import('../../utils/finance/dcf.js');
     const { fairValuePerShare } = computeFairValuePerShare({
       baseFcf,
       wacc,
@@ -173,7 +171,6 @@ describe('reverseDcfTool — boundary and edge cases', () => {
     const netDebt = 0;
     const dilutedShares = 1;
 
-    const { computeFairValuePerShare } = await import('../../utils/finance/dcf.js');
     const { fairValuePerShare } = computeFairValuePerShare({
       baseFcf,
       wacc,
@@ -215,7 +212,6 @@ describe('reverseDcfTool — structural', () => {
     const netDebt = 0;
     const dilutedShares = 1;
 
-    const { computeFairValuePerShare } = await import('../../utils/finance/dcf.js');
     const { fairValuePerShare } = computeFairValuePerShare({
       baseFcf,
       wacc,
