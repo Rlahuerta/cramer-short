@@ -219,17 +219,29 @@ export const reverseDcfTool = new DynamicStructuredTool({
   schema: ReverseDcfSchema,
   func: async (input) => {
     const ticker = input.ticker.trim().toUpperCase();
-    const result = solveReverseDcf(
-      ticker,
-      input.current_price,
-      input.base_fcf,
-      input.wacc,
-      input.terminal_growth_rate,
-      input.years,
-      input.decay,
-      input.net_debt,
-      input.diluted_shares,
-    );
-    return formatToolResult(result);
+    let solverResult: ReverseDcfResult;
+    try {
+      solverResult = solveReverseDcf(
+        ticker,
+        input.current_price,
+        input.base_fcf,
+        input.wacc,
+        input.terminal_growth_rate,
+        input.years,
+        input.decay,
+        input.net_debt,
+        input.diluted_shares,
+      );
+    } catch (e) {
+      return formatToolResult({
+        ticker,
+        currentPrice: input.current_price,
+        impliedGrowthRate: null,
+        impliedFcfProjection: [],
+        impliedTv: null,
+        resultStatus: 'no_solution',
+      });
+    }
+    return formatToolResult(solverResult);
   },
 });

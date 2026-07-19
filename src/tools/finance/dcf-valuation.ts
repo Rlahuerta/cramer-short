@@ -156,14 +156,19 @@ export const dcfValuationTool = new DynamicStructuredTool({
     });
 
     // 3. Sensitivity grid — default ranges per plan
-    const waccRange = { min: input.wacc - 0.01, max: input.wacc + 0.01, step: 0.005 };
-    const growthRange = {
-      min: input.terminal_growth_rate - 0.005,
-      max: input.terminal_growth_rate + 0.005,
-      step: 0.0025,
-    };
-    const grid = sensitivityGrid(dcfInputs, waccRange, growthRange);
-    const formattedGrid = formatSensitivityGrid(grid);
+    let formattedGrid: string[][] | null = null;
+    try {
+      const waccRange = { min: input.wacc - 0.01, max: input.wacc + 0.01, step: 0.005 };
+      const growthRange = {
+        min: input.terminal_growth_rate - 0.005,
+        max: input.terminal_growth_rate + 0.005,
+        step: 0.0025,
+      };
+      const grid = sensitivityGrid(dcfInputs, waccRange, growthRange);
+      formattedGrid = formatSensitivityGrid(grid);
+    } catch (e) {
+      validation.warnings.push(`Sensitivity grid skipped: ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     return formatToolResult({
       ticker,

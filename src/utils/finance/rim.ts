@@ -144,7 +144,7 @@ export function validateCleanSurplus(
   }
 
   for (let i = 0; i < bookValueChanges.length; i++) {
-    if (bookValueChanges[i] !== netIncome[i] - dividends[i]) {
+    if (Math.abs(bookValueChanges[i] - (netIncome[i] - dividends[i])) > 1e-9) {
       return false;
     }
   }
