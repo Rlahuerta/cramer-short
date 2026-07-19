@@ -38,6 +38,9 @@ const STABLE_TOOL_NAMES = new Set([
   'stock_screener',
   'portfolio_risk',
   'wacc_inputs',
+  'dcf_valuation',
+  'rim_valuation',
+  'reverse_dcf',
   'polymarket_search',
   'polymarket_forecast',
   'forecast_arbitrator',
@@ -154,6 +157,10 @@ const KNOWN_DATA_FIELDS = new Set([
   'confidenceThreshold', 'portfolioValue', 'riskPerTrade',
   'prediction_confidence', 'confidence_threshold', 'portfolio_risk',
   'watchlist', 'polymarket',
+  'base_fcf', 'net_debt', 'diluted_shares', 'growth_rate', 'terminal_growth_rate',
+  'years', 'exit_multiple', 'validation', 'fairValuePerShare', 'enterpriseValue',
+  'equityValue', 'sensitivityGrid', 'cost_of_equity', 'impliedGrowthRate',
+  'terminal_value_share_too_high', 'wacc_le_terminal_growth', 'exit_multiple_divergence',
 ]);
 
 function extractSkillRefs(instructions: string): string[] {
