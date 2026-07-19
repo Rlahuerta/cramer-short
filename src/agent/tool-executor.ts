@@ -5,6 +5,8 @@ import { createProgressChannel } from '../utils/progress-channel.js';
 import { loadCacheFromDisk, saveCacheToDisk } from '../utils/cross-session-cache.js';
 import { getExperimentsDir } from '../utils/paths.js';
 import { getSetting } from '../utils/config.js';
+import { assertAssetConsistency, resolveAssetIntent } from '../tools/finance/asset-resolver.js';
+import { resolveForecastToolTicker } from './query-router/forecast-ticker.js';
 import type {
   ApprovalDecision,
   ToolApprovalEvent,
@@ -28,6 +30,11 @@ type ToolExecutionEvent =
 
 const TOOLS_REQUIRING_APPROVAL = ['write_file', 'edit_file'] as const;
 const FORECAST_LAB_GUARDED_TOOLS = new Set(['write_file', 'edit_file', 'create_file']);
+// Forecast tools whose ticker must stay consistent with the query's resolved
+// asset intent (defense-in-depth behind the pre-execution ticker normalizer).
+const ASSET_CONSISTENCY_GUARDED_TOOLS = new Set([
+  'markov_distribution', 'polymarket_forecast', 'forecast_arbitrator',
+]);
 
 /** Max entries in the in-session request result cache. LRU eviction on overflow. */
 export const REQUEST_CACHE_MAX_SIZE = 256;
@@ -225,6 +232,18 @@ export class AgentToolExecutor {
     toolArgs: Record<string, unknown>,
     ctx: RunContext
   ): AsyncGenerator<ToolExecutionEvent, void> {
+    // Auto-correct a forecast tool's ticker to the query's resolved asset BEFORE
+    // anything else runs. executeSingle is the single choke point every call path
+    // flows through — model calls (executeAll) and forced/pre-executed calls
+    // (executeTool) — so a stray ticker (e.g. "PLAN") can never reach the tool
+    // and exhaust the iteration budget, regardless of which path emitted it.
+    if (ASSET_CONSISTENCY_GUARDED_TOOLS.has(toolName) && ctx.query && typeof toolArgs.ticker === 'string') {
+      const canonical = resolveForecastToolTicker(ctx.query, toolName);
+      if (canonical && toolArgs.ticker.toUpperCase() !== canonical.toUpperCase()) {
+        toolArgs = { ...toolArgs, ticker: canonical };
+      }
+    }
+
     const toolQuery = this.extractQueryFromArgs(toolArgs);
     const toolPath = typeof toolArgs.path === 'string' ? toolArgs.path : null;
 
@@ -236,6 +255,22 @@ export class AgentToolExecutor {
         const error =
           `Forecast-lab routed improvement queries${profileLabel} cannot write tracked source files directly. ` +
           `Write artifacts only under .cramer-short/experiments/ or use the bounded forecast-lab runner instead.`;
+        yield { type: 'tool_error', tool: toolName, error };
+        ctx.scratchpad.recordToolCall(toolName, toolQuery);
+        ctx.scratchpad.addToolResult(toolName, toolArgs, error);
+        return;
+      }
+    }
+
+    if (
+      ASSET_CONSISTENCY_GUARDED_TOOLS.has(toolName)
+      && typeof toolArgs.ticker === 'string'
+      && ctx.query
+    ) {
+      try {
+        assertAssetConsistency(resolveAssetIntent(ctx.query), toolName, toolArgs.ticker);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
         yield { type: 'tool_error', tool: toolName, error };
         ctx.scratchpad.recordToolCall(toolName, toolQuery);
         ctx.scratchpad.addToolResult(toolName, toolArgs, error);

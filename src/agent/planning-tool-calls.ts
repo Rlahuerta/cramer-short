@@ -1,6 +1,7 @@
 import type { AIMessage } from '@langchain/core/messages';
 import type { ForecastLabRoutingHint } from '../experiments/forecast-lab/query-router.js';
 import type { ToolCallRecord } from './scratchpad.js';
+import { resolveForecastToolTicker } from './query-router/forecast-ticker.js';
 import {
   buildForcedCryptoForecastMarkovArgs,
   buildForcedGoldCombinedForecastArbiterArgs,
@@ -77,11 +78,38 @@ export function normalizeExplicitGoldCombinedToolCalls(
   });
 }
 
+/**
+ * Corrects the ticker of the model's own forecast tool calls to the query's
+ * intended asset, so a stray symbol (e.g. markov_distribution(ticker="PLAN")
+ * on a "BTC-USD only" query) can't fail and trap the agent in a re-emit loop.
+ *
+ * Covers crypto, equities, and commodities via `inferDistributionTicker`
+ * (which already maps GOLD/GLD→GLD, SILVER→SLV, OIL→USO, BTC→BTC-USD, NVDA→NVDA).
+ * Per-tool conventions are honored: markov_distribution uses the markov form
+ * (hyphenated crypto or ETF proxy) while polymarket_forecast and
+ * forecast_arbitrator use the bare root (the crypto root, or the same proxy for
+ * commodities/equities).
+ *
+ * Fires for any single-asset forecast query. Without an explicit "X only"
+ * override it stays conservative: ambiguous multi-asset queries (e.g. "compare
+ * BTC and ETH") are skipped so a legitimate comparison ticker is never
+ * clobbered. Gold-combined requests keep their dedicated normalizer.
+ */
+export function normalizeForecastToolTickers(response: AIMessage, query: string): void {
+  if (!response.tool_calls?.length) return;
 
+  for (const toolCall of response.tool_calls) {
+    const canonical = resolveForecastToolTicker(query, toolCall.name);
+    if (!canonical) continue;
 
+    const current = typeof toolCall.args?.['ticker'] === 'string'
+      ? (toolCall.args['ticker'] as string)
+      : '';
+    if (current.toUpperCase() === canonical.toUpperCase()) continue;
 
-
-
+    toolCall.args = { ...(toolCall.args as Record<string, unknown>), ticker: canonical };
+  }
+}
 
 export function hasPrematureForecastArbitratorCall(response: AIMessage, query: string, toolCalls: ToolCallRecord[]): boolean {
   const requestedArbiter = response.tool_calls?.some((call) => call.name === 'forecast_arbitrator') ?? false;

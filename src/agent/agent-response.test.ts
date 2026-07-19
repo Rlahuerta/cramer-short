@@ -1081,3 +1081,142 @@ describe('buildSourcesFooter', () => {
     expect(footer).toContain('polymarket.com');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Forecast tool ticker normalization (end-to-end through the agent loop).
+// Reproduces the reported bug: on a "BTC / BTC-USD only" query the model
+// emitted markov_distribution(ticker="PLAN"); the executed tool must receive
+// the query-scoped BTC-USD ticker instead.
+// ---------------------------------------------------------------------------
+describe('Agent — forecast tool ticker normalization (integration)', () => {
+  it('rewrites a model-emitted markov ticker to the scoped ticker before execution', async () => {
+    const capturedTickers: unknown[] = [];
+    const capturingMarkovTool = {
+      name: 'markov_distribution',
+      invoke: async (input: { ticker?: unknown }) => {
+        capturedTickers.push(input?.ticker);
+        return JSON.stringify({
+          data: {
+            _tool: 'markov_distribution',
+            status: 'ok',
+            canonical: { ticker: 'BTC-USD', horizon: 1 },
+            forecastHint: { usage: 'forecast_only', markovReturn: 0.01 },
+          },
+        });
+      },
+    } satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+    const agent = await Agent.create({
+      model: 'gpt-5.4',
+      maxIterations: 5,
+      memoryEnabled: false,
+      tools: [sequentialThinkingTool, capturingMarkovTool] as unknown as StructuredToolInterface[],
+    });
+
+    mockState.callLlmQueue = [
+      { content: '', toolCalls: [ST_TOOL_CALL] },
+      {
+        content: '',
+        toolCalls: [
+          { id: 'm1', name: 'markov_distribution', args: { ticker: 'PLAN', horizon: 1 }, type: 'tool_call' },
+        ],
+      },
+      { content: 'done', toolCalls: [] },
+    ];
+
+    await collectEvents(agent.run('Give me a quick read. BTC / BTC-USD only.'));
+
+    expect(capturedTickers).toEqual(['BTC-USD']);
+  });
+
+  it('rewrites a commodity ticker to the correct proxy through the full loop (GOLD -> GLD)', async () => {
+    const capturedTickers: unknown[] = [];
+    const capturingMarkovTool = {
+      name: 'markov_distribution',
+      invoke: async (input: { ticker?: unknown }) => {
+        capturedTickers.push(input?.ticker);
+        return JSON.stringify({
+          data: {
+            _tool: 'markov_distribution',
+            status: 'ok',
+            canonical: { ticker: 'GLD', horizon: 5 },
+            forecastHint: { usage: 'forecast_only', markovReturn: 0.005 },
+          },
+        });
+      },
+    } satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+    const agent = await Agent.create({
+      model: 'gpt-5.4',
+      maxIterations: 5,
+      memoryEnabled: false,
+      tools: [sequentialThinkingTool, capturingMarkovTool] as unknown as StructuredToolInterface[],
+    });
+
+    mockState.callLlmQueue = [
+      { content: '', toolCalls: [ST_TOOL_CALL] },
+      {
+        content: '',
+        toolCalls: [
+          { id: 'm1', name: 'markov_distribution', args: { ticker: 'PLAN', horizon: 5 }, type: 'tool_call' },
+        ],
+      },
+      { content: 'done', toolCalls: [] },
+    ];
+
+    await collectEvents(agent.run('Give me a quick read. GOLD only.'));
+
+    expect(capturedTickers).toEqual(['GLD']);
+  });
+
+  it('resists the exact reported "Trade Plan / Only" prompt trap (PLAN never reaches the tool)', async () => {
+    const capturedTickers: unknown[] = [];
+    const capturingMarkovTool = {
+      name: 'markov_distribution',
+      invoke: async (input: { ticker?: unknown }) => {
+        capturedTickers.push(input?.ticker);
+        return JSON.stringify({
+          data: {
+            _tool: 'markov_distribution',
+            status: 'ok',
+            canonical: { ticker: 'BTC-USD', horizon: 1 },
+            forecastHint: { usage: 'forecast_only', markovReturn: 0.01 },
+          },
+        });
+      },
+    } satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+    const agent = await Agent.create({
+      model: 'gpt-5.4',
+      maxIterations: 8,
+      memoryEnabled: false,
+      tools: [sequentialThinkingTool, capturingMarkovTool] as unknown as StructuredToolInterface[],
+    });
+
+    // Reproduces the reported prompt: "BTC / BTC-USD only" plus the "Final BTC
+    // Trade Plan\nOnly provide…" text that previously made the exclusive-scope
+    // regex resolve to PLAN — for both the model call and any forced call.
+    const query = 'BTC live trading briefing for the next 24 hours / 1 trading day.\n'
+      + 'BTC / BTC-USD only. No GOLD, GLD, commodities, ETH, SOL, or proxy context.\n'
+      + 'markov_distribution for BTC-USD with horizon=1, trajectory=true, trajectoryDays=1.\n'
+      + '10. Final BTC Trade Plan\n Only provide an actionable plan if the verdict is TRADE or CONDITIONAL_TRADE.';
+
+    mockState.callLlmQueue = [
+      { content: '', toolCalls: [ST_TOOL_CALL] },
+      {
+        content: '',
+        toolCalls: [
+          { id: 'm1', name: 'markov_distribution', args: { ticker: 'PLAN', horizon: 1, trajectory: true, trajectoryDays: 1 }, type: 'tool_call' },
+        ],
+      },
+      { content: 'done', toolCalls: [] },
+    ];
+
+    await collectEvents(agent.run(query));
+
+    // Every executed markov call used BTC-USD — PLAN never reached the tool.
+    expect(capturedTickers.length).toBeGreaterThan(0);
+    expect(capturedTickers.every((t) => t === 'BTC-USD')).toBe(true);
+    expect(capturedTickers).not.toContain('PLAN');
+  });
+});

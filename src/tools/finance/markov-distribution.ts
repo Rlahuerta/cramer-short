@@ -338,14 +338,7 @@ function isAssetStyleTicker(ticker: string): boolean {
 
 function isUnsupportedTicker400(error: Error, ticker: string): boolean {
   if (getFinancialDatasetsHttpStatus(error) !== 400 || !isAssetStyleTicker(ticker)) return false;
-  const detail = error instanceof FinancialDatasetsHttpError
-    ? error.body ?? ''
-    : error.message;
-  return (
-    /\b(ticker|symbol|asset|instrument|crypto|cryptocurrency)\b.{0,120}\b(unsupported|not supported|not available|not found|unknown|unrecognized|not recognized|does not exist|no data)\b/i.test(detail) ||
-    /\b(unsupported|not supported|not available|not found|unknown|unrecognized|not recognized|does not exist|no data)\b.{0,120}\b(ticker|symbol|asset|instrument|crypto|cryptocurrency)\b/i.test(detail) ||
-    (/\binvalid ticker\b/i.test(detail) && /company_tickers\.json/i.test(detail))
-  );
+  return true;
 }
 
 function isFinancialDatasetsUnavailable(error: unknown, ticker: string): boolean {
@@ -359,13 +352,13 @@ function isFinancialDatasetsUnavailable(error: unknown, ticker: string): boolean
     message.includes('request timed out') ||
     message.includes('request failed for') ||
     isUnsupportedTicker400(error, ticker) ||
-    /\[Financial Datasets API\] request failed: (401|403|404|429|5\d\d)\b/.test(message)
+    /\[Financial Datasets API\] request failed: (400|401|403|404|429|5\d\d)\b/.test(message)
   );
 }
 
 /**
- * Fetch daily close prices. Tries Financial Datasets API first (fast, high quality),
- * then falls back to exchange APIs and Yahoo Finance.
+ * Fetch daily close prices. Crypto tickers (BTC-USD, ETH-USD, etc.) try Binance first;
+ * all others try Financial Datasets API first, then fall back to exchange APIs and Yahoo Finance.
  * Returns oldest-first array of close prices, or empty array on total failure.
  */
 export async function fetchHistoricalPrices(
@@ -373,6 +366,12 @@ export async function fetchHistoricalPrices(
   days = 120,
 ): Promise<number[]> {
   const normalizedTicker = normalizeHistoricalPriceTicker(ticker);
+
+  if (isAssetStyleTicker(normalizedTicker)) {
+    const binanceCloses = await fetchBinanceDailyCloses(normalizedTicker, days);
+    if (binanceCloses.length >= 10) return binanceCloses;
+  }
+
   const endDate = new Date().toISOString().slice(0, 10);
   const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -407,7 +406,14 @@ export async function fetchHistoricalPrices(
   if (bitmexCloses.length >= 10) return bitmexCloses;
 
   // Fallback: Yahoo Finance chart API (works for ETFs, commodities, most tickers)
-  return fetchYahooChartPrices(normalizedTicker, days);
+  try {
+    return await fetchYahooChartPrices(normalizedTicker, days);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('Yahoo Finance chart request failed for')) {
+      return [];
+    }
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------

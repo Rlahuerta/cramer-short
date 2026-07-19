@@ -1,3 +1,5 @@
+import { TICKER_STOP_WORDS } from '../../memory/ticker-extractor.js';
+
 export type ResolvedAssetClass = 'commodity_gold' | 'commodity_silver' | 'commodity_oil' | 'gold_miner' | 'ticker';
 
 export interface ResolvedAssetIntent {
@@ -25,7 +27,12 @@ const OIL_COMMODITY_RE = /\boil\b|\bcrude\b|\bwti\b|\bwticousd\b/i;
 const GOLD_PROXY_TICKERS = new Set(['GLD', 'IAU', 'SGOL', 'XAUUSD']);
 const SILVER_PROXY_TICKERS = new Set(['SLV', 'SIVR', 'XAGUSD', 'SILVER']);
 const OIL_PROXY_TICKERS = new Set(['USO', 'BNO', 'OIL', 'WTICOUSD', 'CRUDE']);
-const EXCLUSIVE_ASSET_ONLY_RE = /\b([A-Z]{2,5}(?:-USD)?|bitcoin|ethereum|solana|gold|silver|oil|crude)\s+only\b/gi;
+// Ticker tokens must be matched case-SENSITIVELY: an "only" scope refers to a
+// genuine uppercase symbol (e.g. "BTC-USD only"), never an ordinary titlecase
+// word like "…Trade Plan\nOnly provide…" (which previously resolved to PLAN).
+const EXCLUSIVE_TICKER_ONLY_RE = /\b([A-Z]{2,5}(?:-USD)?)\s+only\b/g;
+// Lowercase asset keywords stay case-insensitive ("gold only", "Bitcoin only").
+const EXCLUSIVE_KEYWORD_ONLY_RE = /\b(bitcoin|ethereum|solana|gold|silver|oil|crude)\s+only\b/gi;
 const CRYPTO_QUOTE_PAIR_RE = /\b([A-Z][A-Z0-9]{1,9}(?:USDT|USDC|USD))\b/g;
 const CRYPTO_QUOTE_ROOTS = new Set([
   'ADA', 'AVAX', 'BCH', 'BNB', 'BTC', 'DOGE', 'DOT', 'ETH', 'HYPE', 'LINK',
@@ -53,20 +60,27 @@ function mapExclusiveAssetToken(token: string): string | null {
 }
 
 export function extractExclusiveAssetOverride(query: string): string | null {
-  let lastMatch: { index: number; ticker: string } | null = null;
+  const candidates: Array<{ index: number; ticker: string }> = [];
 
-  for (const match of query.matchAll(EXCLUSIVE_ASSET_ONLY_RE)) {
-    const token = match[1];
-    if (!token) continue;
-    const ticker = mapExclusiveAssetToken(token);
-    if (!ticker) continue;
-    const index = match.index ?? -1;
-    if (!lastMatch || index >= lastMatch.index) {
-      lastMatch = { index, ticker };
-    }
+  const add = (rawToken: string | undefined, index: number): void => {
+    if (!rawToken) return;
+    // Reject stop-words that look like tickers (PLAN/BUY/HOLD/…) but are almost
+    // always ordinary words that happen to precede "only".
+    if (TICKER_STOP_WORDS.has(rawToken.toUpperCase().replace(/-USD$/, ''))) return;
+    const ticker = mapExclusiveAssetToken(rawToken);
+    if (ticker) candidates.push({ index, ticker });
+  };
+
+  for (const match of query.matchAll(EXCLUSIVE_TICKER_ONLY_RE)) {
+    add(match[1], match.index ?? -1);
+  }
+  for (const match of query.matchAll(EXCLUSIVE_KEYWORD_ONLY_RE)) {
+    add(match[1], match.index ?? -1);
   }
 
-  return lastMatch?.ticker ?? null;
+  if (candidates.length === 0) return null;
+  // Prefer the last "X only" scope in the text.
+  return candidates.reduce((best, current) => (current.index >= best.index ? current : best)).ticker;
 }
 
 export function extractCryptoQuotePairTickers(query: string): string[] {

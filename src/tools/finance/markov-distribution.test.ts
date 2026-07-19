@@ -314,13 +314,13 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
     }
   });
 
-  it('falls back to exchange history when Financial Datasets reports a crypto instrument is not recognized', async () => {
+  it('falls back to exchange history when Financial Datasets reports an invalid crypto ticker', async () => {
     const binanceCloses = Array.from({ length: 12 }, (_, i) => 77_000 + i * 100);
     const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(
       new FinancialDatasetsHttpError(
         400,
         'Bad Request',
-        '{"message":"This instrument is not recognized"}',
+        '{"error":"Invalid ticker"}',
       ),
     );
     const fetchMock: typeof fetch = Object.assign(
@@ -359,31 +359,121 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
     }
   });
 
-  it('does not fall back when unsupported-ticker keywords only align across duplicated Financial Datasets body boundaries', async () => {
-    const body = `{"message":"ticker ${'x'.repeat(121)} unsupported"}`;
+  it('falls back to Yahoo Finance for 400 on non-asset-style tickers', async () => {
+    const yahooCloses = Array.from({ length: 12 }, (_, i) => 100 + i);
     const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(
-      new FinancialDatasetsHttpError(400, 'Bad Request', body),
+      new FinancialDatasetsHttpError(400, 'Bad Request', '{"error":"Missing required parameter start_date"}'),
     );
-    const fetchSpy = spyOn(globalThis, 'fetch');
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('query1.finance.yahoo.com')) {
+          return new Response(JSON.stringify({
+            chart: {
+              result: [{
+                indicators: {
+                  quote: [{ close: yahooCloses }],
+                },
+              }],
+            },
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
 
     try {
-      await expect(fetchHistoricalPrices('BTC-USD', 30)).rejects.toThrow(/unsupported/);
-      expect(fetchSpy).not.toHaveBeenCalled();
+      await expect(fetchHistoricalPrices('AAPL', 30)).resolves.toEqual(yahooCloses);
     } finally {
       apiGetSpy.mockRestore();
       fetchSpy.mockRestore();
     }
   });
 
-  it('surfaces generic Financial Datasets 400 errors instead of falling through', async () => {
+  it('falls back to exchange history for any 400 on asset-style tickers', async () => {
+    const binanceCloses = Array.from({ length: 12 }, (_, i) => 77_000 + i * 100);
     const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(
-      new FinancialDatasetsHttpError(400, 'Bad Request', '{"error":"Missing required parameter start_date"}'),
+      new FinancialDatasetsHttpError(
+        400,
+        'Bad Request',
+        '{"error":"Bad Request","message":"Invalid request parameters"}',
+      ),
     );
-    const fetchSpy = spyOn(globalThis, 'fetch');
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('api.binance.com/api/v3/klines')) {
+          return new Response(JSON.stringify(binanceCloses.map((close) => [
+            0,
+            String(close - 50),
+            String(close + 50),
+            String(close - 100),
+            String(close),
+            '0',
+            0,
+            '0',
+            0,
+            '0',
+            '0',
+            '0',
+          ])), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
 
     try {
-      await expect(fetchHistoricalPrices('BTC-USD', 30)).rejects.toThrow(/Missing required parameter/);
-      expect(fetchSpy).not.toHaveBeenCalled();
+      await expect(fetchHistoricalPrices('BTC-USD', 30)).resolves.toEqual(binanceCloses);
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('falls back to Yahoo Finance for 400 on non-asset-style invalid tickers', async () => {
+    const yahooCloses = Array.from({ length: 12 }, (_, i) => 100 + i);
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(
+      new FinancialDatasetsHttpError(
+        400,
+        'Bad Request',
+        '{"error":"Bad Request","message":"Invalid request parameters"}',
+      ),
+    );
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('query1.finance.yahoo.com')) {
+          return new Response(JSON.stringify({
+            chart: {
+              result: [{
+                indicators: {
+                  quote: [{ close: yahooCloses }],
+                },
+              }],
+            },
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    try {
+      await expect(fetchHistoricalPrices('PLAN', 30)).resolves.toEqual(yahooCloses);
     } finally {
       apiGetSpy.mockRestore();
       fetchSpy.mockRestore();
@@ -422,6 +512,76 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
       await expect(fetchHistoricalPrices('AAPL', 30)).rejects.toThrow(
         /Malformed Yahoo Finance chart payload for AAPL: chart\.result\.0\.indicators\.quote\.0\.close\.1/,
       );
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('returns empty array when all fallback sources fail for invalid ticker', async () => {
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(
+      new FinancialDatasetsHttpError(
+        400,
+        'Bad Request',
+        '{"error":"Bad Request","message":"Invalid request parameters"}',
+      ),
+    );
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('query1.finance.yahoo.com')) {
+          return new Response('Not Found', { status: 404, statusText: 'Not Found' });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    try {
+      await expect(fetchHistoricalPrices('PLAN', 30)).resolves.toEqual([]);
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('routes crypto tickers to Binance first without calling Financial Datasets', async () => {
+    const binanceCloses = Array.from({ length: 12 }, (_, i) => 77_000 + i * 100);
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockImplementation(() => {
+      throw new Error('Financial Datasets should not be called for crypto tickers');
+    });
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('api.binance.com/api/v3/klines')) {
+          return new Response(JSON.stringify(binanceCloses.map((close) => [
+            0,
+            String(close - 50),
+            String(close + 50),
+            String(close - 100),
+            String(close),
+            '0',
+            0,
+            '0',
+            0,
+            '0',
+            '0',
+            '0',
+          ])), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    try {
+      await expect(fetchHistoricalPrices('BTC-USD', 30)).resolves.toEqual(binanceCloses);
+      expect(apiGetSpy).not.toHaveBeenCalled();
     } finally {
       apiGetSpy.mockRestore();
       fetchSpy.mockRestore();

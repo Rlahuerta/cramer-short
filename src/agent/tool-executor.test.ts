@@ -674,3 +674,94 @@ describe('AgentToolExecutor — requestCache bounded eviction', () => {
     expect(invokeCount).toBe(requestCacheMaxSize + 2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Forecast ticker auto-correction at the tool-executor choke point. Every call
+// path — model calls (executeAll) and forced/pre-executed calls (executeTool) —
+// flows through executeSingle, so a stray ticker (e.g. "PLAN") is rewritten to
+// the query's resolved asset before the tool runs, and can never exhaust the
+// iteration budget.
+// ---------------------------------------------------------------------------
+describe('AgentToolExecutor — forecast ticker auto-correction (choke point)', () => {
+  function runWith(
+    query: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    opts?: { forced?: boolean },
+  ) {
+    const received: unknown[] = [];
+    const fakeTool = {
+      name: toolName,
+      invoke: async (input: { ticker?: unknown }) => {
+        received.push(input?.ticker);
+        return '{"data":{"_tool":"markov_distribution","status":"ok"}}';
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+    const executor = new AgentToolExecutor(new Map([[toolName, fakeTool]]));
+    const ctx = createRunContext(query);
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{ id: 'c1', name: toolName, args, type: 'tool_call' as const }],
+    });
+    const events = opts?.forced
+      ? drainEvents(executor.executeTool(toolName, args, ctx))
+      : drainEvents(executor.executeAll(msg, ctx));
+    return { received, ctx, events };
+  }
+
+  const PLAN_TRAP_QUERY =
+    'BTC / BTC-USD only. No GOLD, ETH, SOL.\n10. Final BTC Trade Plan\n Only provide a plan if the verdict is TRADE.';
+
+  it('auto-corrects a stray PLAN ticker to BTC-USD (model path via executeAll)', async () => {
+    const { received, events } = runWith(
+      PLAN_TRAP_QUERY,
+      'markov_distribution',
+      { ticker: 'PLAN', horizon: 1, trajectory: true, trajectoryDays: 1 },
+    );
+    await events;
+    expect(received).toEqual(['BTC-USD']);
+  });
+
+  it('auto-corrects a stray PLAN ticker on the forced path (executeTool)', async () => {
+    const { received, events } = runWith(
+      PLAN_TRAP_QUERY,
+      'markov_distribution',
+      { ticker: 'PLAN', horizon: 1 },
+      { forced: true },
+    );
+    await events;
+    expect(received).toEqual(['BTC-USD']);
+  });
+
+  it('auto-corrects a commodity ticker to the proxy (GOLD -> GLD)', async () => {
+    const { received, events } = runWith(
+      'GOLD only. 5 trading day distribution.',
+      'markov_distribution',
+      { ticker: 'GOLD', horizon: 5 },
+    );
+    await events;
+    expect(received).toEqual(['GLD']);
+  });
+
+  it('leaves an already-correct ticker untouched', async () => {
+    const { received, events } = runWith(
+      'BTC 24h briefing. BTC-USD only.',
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 1 },
+    );
+    await events;
+    expect(received).toEqual(['BTC-USD']);
+  });
+
+  it('does not rewrite tickers for ambiguous multi-asset queries', async () => {
+    const { received, events } = runWith(
+      'Compare BTC and ETH over the next 7 days.',
+      'markov_distribution',
+      { ticker: 'ETH-USD', horizon: 7 },
+    );
+    await events;
+    expect(received).toEqual(['ETH-USD']);
+  });
+});
