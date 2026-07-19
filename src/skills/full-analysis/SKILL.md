@@ -32,6 +32,24 @@ Follow every step in that skill exactly. Key outputs to capture:
 - Key WACC and terminal growth assumptions
 - Sensitivity table (bull / base / bear intrinsic values)
 
+### Step 2.5 — RIM Cross-Check
+
+The `dcf-valuation` skill now produces a Residual Income Model (RIM) fair
+value alongside the DCF via the `rim_valuation` tool. Capture both:
+
+- **DCF fair value** (from Step 2)
+- **RIM fair value** (from `dcf-valuation` Step 5)
+- **Divergence** = `|RIM − DCF| / DCF × 100`
+  - Divergence ≤ 20% → the two models agree; report RIM as confirmation of
+    the DCF base case.
+  - Divergence > 20% → surface as a caveat and treat the DCF base case as
+    lower-confidence. Common causes: aggressive revenue recognition, large
+    one-time items, high-P/B vs. deep-value book-value effects, wrong Ke
+    (RIM discounts at Ke, not WACC).
+
+This step adds no extra tool calls — the RIM cross-check is part of the
+`dcf-valuation` skill's own Step 5.
+
 ### Step 3 — Peer Comparison
 Invoke skill `peer-comparison` with the ticker.
 
@@ -84,12 +102,14 @@ Combine all findings into this template:
 - **Intrinsic Value (base case):** $X.XX per share
 - **Upside / downside vs. current price:** +/- X%
 - **WACC:** X% | **Terminal growth:** X%
+- **Reverse-DCF implied growth:** X.X% (vs. fundamental X.X% — [over/under]valued signal)
 
 | Scenario | Intrinsic Value | vs. Current Price |
 |----------|----------------|-------------------|
 | Bull | $X | +X% |
 | Base | $X | +/-X% |
 | Bear | $X | -X% |
+| **RIM intrinsic value** | **$X.XX** | **divergence vs DCF: +/-X%** |
 
 *Key assumptions: [list 2–3 most important ones]*
 
@@ -139,6 +159,7 @@ Top risks:
 | Relative value | [Cheap / Fair / Expensive] vs. peers |
 | Bear-case risk | [Low / Medium / High] |
 | Bull probability | X% |
+| DCF ↔ RIM convergence | [Convergent (≤20% divergence) / Divergent (>20%)] — [boosts / reduces] confidence in the base case |
 
 **Bottom line:** [2–3 sentence investment conclusion integrating all four
 dimensions — include the biggest single reason to buy AND the biggest single
