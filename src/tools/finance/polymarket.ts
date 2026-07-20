@@ -18,6 +18,18 @@ import {
   fetchClobSpread,
 } from './polymarket-clob.js';
 import { hasEnv } from '../../utils/env.js';
+import {
+  createHttpReadDriver,
+  fetchWithRetry,
+  inferTagSlugs as inferTagSlugsFromGamma,
+  questionMatchesQuery as questionMatchesQueryFromGamma,
+  RETRY_DELAYS,
+  setRetryDelays,
+  type GammaEvent,
+  type GammaMarket,
+} from './polymarket-gamma-client.js';
+import type { NormalizedPolymarketMarket } from './polymarket-types.js';
+import { createPolymarketGateway } from './polymarket-gateway.js';
 
 // ---------------------------------------------------------------------------
 // Description (injected into system prompt)
@@ -72,32 +84,8 @@ Short, specific queries work far better than long compound strings.
 // Types
 // ---------------------------------------------------------------------------
 
-interface PolymarketMarket {
-  id: string;
-  conditionId?: string;
-  question: string;
-  outcomes: string;
-  outcomePrices: string;
-  clobTokenIds?: string | string[];
-  endDateIso?: string;
-  /** Gamma API returns ISO date string for market creation time. */
-  createdAt?: string;
-  volume24hr?: number;
-  volumeNum?: number;
-  liquidityNum?: number;
-  active: boolean;
-  closed: boolean;
-  enableOrderBook?: boolean;
-  description?: string;
-}
-
-interface PolymarketEvent {
-  id: string;
-  title: string;
-  endDate?: string;
-  markets?: PolymarketMarket[];
-  volume24hr?: number;
-}
+type PolymarketMarket = GammaMarket;
+type PolymarketEvent = GammaEvent;
 
 interface FormattedMarket {
   marketId: string;
@@ -124,40 +112,7 @@ const GAMMA_BASE = 'https://gamma-api.polymarket.com';
 // Retry with exponential backoff
 // ---------------------------------------------------------------------------
 
-/** Delays in ms between retry attempts (1s, 2s, 4s). */
-export let RETRY_DELAYS = [1_000, 2_000, 4_000];
-
-/** Override retry delays (for testing). Call with `[]` to disable waits. */
-export function setRetryDelays(delays: number[]): void {
-  RETRY_DELAYS = delays;
-}
-
-/**
- * Retries `fn` up to `maxRetries` times with exponential backoff.
- * Only retries on transient errors (network, 5xx, timeout).
- * 4xx errors are not retried.
- */
-export async function fetchWithRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries = 3,
-  delays: number[] = RETRY_DELAYS,
-): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err;
-      // Don't retry on 4xx client errors
-      if (err instanceof Error && /\b4\d{2}\b/.test(err.message)) throw err;
-      if (attempt < maxRetries) {
-        const delay = delays[attempt] ?? 4_000;
-        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-  }
-  throw lastError;
-}
+export { RETRY_DELAYS, setRetryDelays, fetchWithRetry };
 
 // ---------------------------------------------------------------------------
 // TTL cache for search results (5-minute default)
@@ -202,6 +157,12 @@ function setCache(key: string, data: FormattedMarket[]): void {
   searchCache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
 }
 
+function createDefaultGateway() {
+  return createPolymarketGateway({
+    readDriver: createHttpReadDriver(fetch),
+  });
+}
+
 /** Clear the search cache. Exported for testing. */
 export function clearPolymarketCache(): void {
   searchCache.clear();
@@ -237,42 +198,7 @@ function computeAgeDays(createdAt: string | undefined): number | undefined {
 // Client-side text filtering (API keyword param is unreliable)
 // ---------------------------------------------------------------------------
 
-const TEXT_FILTER_STOP_WORDS = new Set([
-  'the', 'and', 'for', 'are', 'not', 'will', 'can', 'has', 'was',
-  'how', 'what', 'that', 'this', 'its', 'from', 'with',
-]);
-
-const WEAK_QUERY_WORDS = new Set([
-  'price', 'prices', 'market', 'markets', 'commodity', 'commodities',
-  'forecast', 'forecasts', 'current', 'target', 'targets',
-]);
-
-/**
- * Returns true if the Polymarket question (or event title) contains at least
- * one significant word from the search query.
- *
- * The Gamma API `keyword` parameter is non-functional — it always returns
- * the highest-volume markets globally regardless of the query. This function
- * provides all client-side relevance filtering after every fetch.
- *
- * Exported for testing.
- */
-export function questionMatchesQuery(text: string, query: string): boolean {
-  const words = query
-    .toLowerCase()
-    .split(/[\s\-_/]+/)
-    .map((w) => w.replace(/[^a-z0-9]/g, ''))
-    .filter((w) => w.length >= 3 && !TEXT_FILTER_STOP_WORDS.has(w));
-
-  if (words.length === 0) return true;
-
-  const anchorWords = words.filter((word) => !WEAK_QUERY_WORDS.has(word));
-  if (words.length > 0 && anchorWords.length === 0) return false;
-
-  const candidateWords = anchorWords.length > 0 ? anchorWords : words;
-  const lower = text.toLowerCase();
-  return candidateWords.some((word) => lower.includes(word));
-}
+export const questionMatchesQuery = questionMatchesQueryFromGamma;
 
 function extractCanonicalNames(ticker: string): string[] {
   const normalized = ticker.trim().toUpperCase().replace(/-USD$/, '');
@@ -348,62 +274,10 @@ export function scoreAnchorMarketRelevance(
 }
 
 // ---------------------------------------------------------------------------
-// Tag-slug map  (verified against live Gamma API — /events endpoint only)
+// Tag-slug inference (verified against live Gamma API — /events endpoint only)
 // ---------------------------------------------------------------------------
-//
-// IMPORTANT: tag_slug ONLY works on the /events endpoint.
-//            The /markets endpoint ignores it entirely.
-//            The `keyword` parameter on BOTH endpoints is non-functional —
-//            it always returns the same top-volume global markets.
-//
-// Slugs were validated by probing GET /events?tag_slug=X and confirming
-// at least 3 relevant events are returned.
 
-const TAG_SLUG_PATTERNS: Array<{ patterns: string[]; slugs: string[] }> = [
-  { patterns: ['bitcoin', 'btc'],
-    slugs: ['bitcoin', 'crypto-prices', 'crypto'] },
-  { patterns: ['ethereum', 'eth'],
-    slugs: ['ethereum', 'crypto-prices', 'crypto'] },
-  { patterns: ['solana', 'sol', 'crypto', 'defi', 'nft', 'web3'],
-    slugs: ['crypto-prices', 'crypto'] },
-  { patterns: ['fed', 'fomc', 'federal reserve', 'rate cut', 'rate hike',
-               'interest rate', 'basis point'],
-    slugs: ['fed-rates', 'fed', 'economic-policy'] },
-  { patterns: ['recession', 'gdp', 'inflation', 'cpi', 'unemployment', 'economic'],
-    slugs: ['economy', 'business', 'economic-policy'] },
-  { patterns: ['tariff', 'trade war', 'trade deal', 'import duty'],
-    slugs: ['tariffs', 'politics', 'world'] },
-  { patterns: ['oil', 'opec', 'crude', 'energy', 'wti', 'brent', 'petroleum'],
-    slugs: ['commodities', 'world', 'business'] },
-  { patterns: ['gold', 'silver', 'copper', 'platinum', 'palladium', 'precious metal', 'metal'],
-    slugs: ['commodities', 'business'] },
-  { patterns: ['wheat', 'corn', 'soybean', 'coffee', 'sugar', 'grain', 'natural gas'],
-    slugs: ['commodities'] },
-  { patterns: ['fda', 'drug approval', 'clinical trial', 'pharma', 'pfizer', 'moderna', 'eli lilly'],
-    slugs: ['science', 'health'] },
-  { patterns: ['nvidia', 'apple', 'microsoft', 'google', 'amazon', 'meta',
-               'tesla', 'broadcom', 'qualcomm', 'intel', 'spacex'],
-    slugs: ['big-tech', 'tech', 'business'] },
-  { patterns: ['earnings', 'revenue', 'eps', 'quarterly results'],
-    slugs: ['business', 'finance'] },
-  { patterns: ['ai regulation', 'artificial intelligence', 'chatgpt', 'openai', 'antitrust'],
-    slugs: ['tech', 'science'] },
-  { patterns: ['middle east', 'ukraine', 'russia', 'china', 'taiwan', 'war', 'conflict', 'sanctions', 'geopolitical'],
-    slugs: ['world', 'politics'] },
-  { patterns: ['election', 'president', 'senate', 'congress', 'trump', 'white house'],
-    slugs: ['elections', 'us-politics', 'politics'] },
-  { patterns: ['ipo', 'initial public offering'],
-    slugs: ['ipos', 'ipo', 'business'] },
-];
-
-/** Returns an ordered list of tag slugs to try for the given query. Exported for testing. */
-export function inferTagSlugs(query: string): string[] {
-  const lower = query.toLowerCase();
-  for (const { patterns, slugs } of TAG_SLUG_PATTERNS) {
-    if (patterns.some((p) => lower.includes(p))) return slugs;
-  }
-  return [];
-}
+export const inferTagSlugs = inferTagSlugsFromGamma;
 
 // ---------------------------------------------------------------------------
 // Core fetch helpers
@@ -432,6 +306,31 @@ function formatVolume(n: number | undefined): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
   return `$${Math.round(n)}`;
+}
+
+function formatNormalizedMarket(m: NormalizedPolymarketMarket): FormattedMarket | null {
+  const probabilities: Record<string, string> = {};
+  if (m.outcomes.yes) {
+    probabilities[m.outcomes.yes.label] = `${(m.outcomes.yes.probability * 100).toFixed(1)}%`;
+  }
+  if (m.outcomes.no) {
+    probabilities[m.outcomes.no.label] = `${(m.outcomes.no.probability * 100).toFixed(1)}%`;
+  }
+  if (Object.keys(probabilities).length === 0) return null;
+
+  return {
+    marketId: m.marketId,
+    assetId: m.primaryYesTokenId,
+    question: m.question,
+    probabilities,
+    endDate: m.endDate,
+    volume24h: formatVolume(m.volume24h),
+    liquidity: formatVolume(m.liquidity),
+    ageDays: m.ageDays,
+    active: m.active,
+    closed: m.closed,
+    enableOrderBook: m.enableOrderBook,
+  };
 }
 
 function formatMarket(m: PolymarketMarket): FormattedMarket | null {
@@ -476,39 +375,15 @@ async function searchEventsByTag(
   limit: number,
 ): Promise<FormattedMarket[]> {
   try {
-    return await fetchWithRetry(async () => {
-      const params = new URLSearchParams({
-        limit: String(Math.min(limit * 8, 80)), // fetch wide — text filter reduces count
-        active: 'true',
-        closed: 'false',
-        order: 'volume24hr',
-        ascending: 'false',
-        tag_slug: tagSlug,
-      });
-      const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(12_000),
-      });
-      if (!res.ok) throw new Error(`Gamma API ${res.status} for tag_slug=${tagSlug}`);
-      const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
-
-      const results: FormattedMarket[] = [];
-      for (const event of events) {
-        if (!event.markets?.length) continue;
-        const titleMatches = questionMatchesQuery(event.title ?? '', textFilter);
-        const sorted = [...event.markets]
-          .filter((m) => m.active && !m.closed)
-          .sort((a, b) => (b.volume24hr ?? 0) - (a.volume24hr ?? 0))
-          .slice(0, 4); // up to 4 markets per event
-        for (const m of sorted) {
-          if (!titleMatches && !questionMatchesQuery(m.question, textFilter)) continue;
-          const fmt = formatMarket(m);
-          if (fmt) results.push(fmt);
-          if (results.length >= limit) return results;
-        }
-      }
-      return results;
+    const results = await createDefaultGateway().searchMarkets({
+      query: textFilter,
+      limit,
+      tagSlugs: [tagSlug],
+      pageSize: Math.min(limit * 8, 80),
     });
+    return results.markets
+      .map((market) => formatNormalizedMarket(market))
+      .filter((market): market is FormattedMarket => market !== null);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     _searchWarnings.push(`Tag "${tagSlug}" fetch failed after retries: ${msg}`);
@@ -561,50 +436,20 @@ async function searchEvents(query: string, limit: number): Promise<FormattedMark
   // Broad fallback: no tags inferred or tags returned 0 results.
   // Fetch top events globally and rely on text filter.
   try {
-    const results = await fetchWithRetry(async () => {
-      const params = new URLSearchParams({
-        limit: String(limit * 10),
-        active: 'true',
-        closed: 'false',
-        order: 'volume24hr',
-        ascending: 'false',
-      });
-      const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!res.ok) {
-        polymarketBreaker.onFailure();
-        throw new Error(`Polymarket API error: ${res.status}`);
-      }
-      polymarketBreaker.onSuccess();
-
-      const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
-      const out: FormattedMarket[] = [];
-      const seen = new Set<string>();
-      for (const event of events) {
-        if (!event.markets?.length) continue;
-        const titleMatches = questionMatchesQuery(event.title ?? '', query);
-        const sorted = [...event.markets]
-          .filter((m) => m.active && !m.closed)
-          .sort((a, b) => (b.volume24hr ?? 0) - (a.volume24hr ?? 0))
-          .slice(0, 2);
-        for (const m of sorted) {
-          if (!titleMatches && !questionMatchesQuery(m.question, query)) continue;
-          const fmt = formatMarket(m);
-          if (fmt && !seen.has(fmt.question)) {
-            seen.add(fmt.question);
-            out.push(fmt);
-          }
-          if (out.length >= limit) return out;
-        }
-      }
-      return out;
+    const results = await createDefaultGateway().searchMarkets({
+      query,
+      limit,
+      pageSize: Math.min(limit * 10, 80),
     });
+    polymarketBreaker.onSuccess();
+    const formatted = results.markets
+      .map((market) => formatNormalizedMarket(market))
+      .filter((market): market is FormattedMarket => market !== null);
 
-    if (results.length > 0) setCache(key, results);
-    return results;
+    if (formatted.length > 0) setCache(key, formatted);
+    return formatted;
   } catch (err) {
+    polymarketBreaker.onFailure();
     const msg = err instanceof Error ? err.message : String(err);
     _searchWarnings.push(`Global fallback fetch failed: ${msg}`);
     if (slugs.length === 0) throw err; // only re-throw if we had no tag results at all
@@ -677,72 +522,45 @@ async function searchEventsForAnchors(
 
   const fetchEvents = async (tagSlugOverride?: string, extraParams?: URLSearchParams): Promise<FormattedMarket[]> => {
     try {
-      return await fetchWithRetry(async () => {
-        const resolvedTagSlug = tagSlugOverride ?? uniqueSlugs[0];
-        const params = new URLSearchParams({
-          limit: String(fetchLimit),
-          active: 'true',
-          closed: 'false',
-          order: 'volume24hr',
-          ascending: 'false',
-          ...(resolvedTagSlug ? { tag_slug: resolvedTagSlug } : {}),
-        });
-        if (extraParams) {
-          for (const [k, v] of extraParams) params.set(k, v);
-        }
-        anchorTrace('search_events_for_anchors_request', {
-          query,
-          limit,
-          slugs,
-          params: Object.fromEntries(params.entries()),
-        });
-        const res = await fetch(`${GAMMA_BASE}/events?${params}`, {
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(12_000),
-        });
-        if (!res.ok) throw new Error(`Gamma API ${res.status}`);
-        const events: PolymarketEvent[] = await res.json() as PolymarketEvent[];
-        anchorTrace('search_events_for_anchors_response', {
-          query,
-          limit,
-          eventCount: events.length,
-          eventTitles: events.slice(0, 20).map((event) => ({
-            title: event.title ?? null,
-            marketCount: event.markets?.length ?? 0,
-          })),
-        });
-        const results: FormattedMarket[] = [];
-        const seen = new Set<string>();
-        for (const event of events) {
-          if (!event.markets?.length) continue;
-          const titleMatches = questionMatchesQuery(event.title ?? '', query);
-          const sorted = [...event.markets]
-            .filter((m) => m.active && !m.closed)
-            .sort((a, b) => (b.volume24hr ?? 0) - (a.volume24hr ?? 0))
-            .slice(0, 4);
-          for (const m of sorted) {
-            if (!titleMatches && !questionMatchesQuery(m.question, query)) continue;
-            const fmt = formatMarket(m);
-            if (fmt && !seen.has(fmt.question)) {
-              seen.add(fmt.question);
-              results.push(fmt);
-            }
-            if (results.length >= limit) return results;
+      const resolvedTagSlug = tagSlugOverride ?? uniqueSlugs[0];
+      const endDateFilter = extraParams
+        ? {
+            end_date_min: extraParams.get('end_date_min') ?? '',
+            end_date_max: extraParams.get('end_date_max') ?? '',
           }
-        }
-        anchorTrace('search_events_for_anchors_results', {
-          query,
-          limit,
-          resultCount: results.length,
-          results: results.map((market) => ({
-            question: market.question,
-            volume24h: market.volume24h,
-            ageDays: market.ageDays ?? null,
-            endDate: market.endDate ?? null,
-          })),
-        });
-        return results;
+        : undefined;
+      anchorTrace('search_events_for_anchors_request', {
+        query,
+        limit,
+        slugs,
+        tagSlug: resolvedTagSlug ?? null,
+        endDateFilter: endDateFilter ?? null,
       });
+      const results = await createDefaultGateway().searchMarkets({
+        query,
+        limit,
+        tagSlugs: resolvedTagSlug ? [resolvedTagSlug] : undefined,
+        endDateFilter: endDateFilter && endDateFilter.end_date_min && endDateFilter.end_date_max
+          ? endDateFilter
+          : undefined,
+        pageSize: fetchLimit,
+      });
+      const formatted = results.markets
+        .map((market) => formatNormalizedMarket(market))
+        .filter((market): market is FormattedMarket => market !== null);
+      anchorTrace('search_events_for_anchors_results', {
+        query,
+        limit,
+        resultCount: formatted.length,
+        results: formatted.map((market) => ({
+          question: market.question,
+          volume24h: market.volume24h,
+          ageDays: market.ageDays ?? null,
+          endDate: market.endDate ?? null,
+        })),
+        pagesRead: results.provenance.pagesRead,
+      });
+      return formatted;
     } catch {
       return [];
     }

@@ -577,6 +577,62 @@ describe('polymarketTool', () => {
     ]);
   });
 
+  it('paginates through tagged event results when the first page has no query matches', async () => {
+    const firstPage = Array.from({ length: 8 }, (_, index) => ({
+      id: `sports-${index}`,
+      title: 'Sports markets',
+      markets: [
+        {
+          id: `sports-market-${index}`,
+          question: `Will Team ${index} win the championship?`,
+          outcomes: '["Yes","No"]',
+          outcomePrices: '["0.40","0.60"]',
+          active: true,
+          closed: false,
+        },
+      ],
+    }));
+    const secondPage = [
+      {
+        id: 'btc-event',
+        title: 'Bitcoin markets',
+        markets: [
+          {
+            id: 'btc-market',
+            conditionId: 'condition-btc-market',
+            question: 'Will Bitcoin be above $120,000 on Dec 31?',
+            outcomes: '["Yes","No"]',
+            outcomePrices: '["0.42","0.58"]',
+            clobTokenIds: '["btc-yes","btc-no"]',
+            volume24hr: 125_000,
+            volumeNum: 125_000,
+            liquidityNum: 40_000,
+            active: true,
+            closed: false,
+          },
+        ],
+      },
+    ];
+
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlString = String(url);
+      calls.push(urlString);
+      const body = urlString.includes('offset=8') ? secondPage : firstPage;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+      } as Response;
+    }) as typeof fetch;
+
+    const result = await fetchPolymarketMarkets('bitcoin above', 1);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.question).toContain('Bitcoin');
+    expect(calls.some((call) => call.includes('offset=8'))).toBe(true);
+  });
+
   it('enriches structured results with CLOB spread and short-window price instability when requested', async () => {
     globalThis.fetch = mockFetchWithClob([MOCK_EVENT], [MOCK_MARKET], {
       spread: 0.025,
@@ -819,6 +875,20 @@ describe('fetchWithRetry', () => {
       expect((e as Error).message).toContain('404');
     }
     expect(calls).toBe(1); // no retries
+  });
+
+  it('retries on HTTP 429 rate-limit errors', async () => {
+    const { fetchWithRetry } = await import('./polymarket.js');
+    let calls = 0;
+
+    const result = await fetchWithRetry(async () => {
+      calls++;
+      if (calls < 3) throw new Error('HTTP 429 rate limited');
+      return 'ok';
+    }, 3, [0, 0, 0]);
+
+    expect(result).toBe('ok');
+    expect(calls).toBe(3);
   });
 
   it('throws after exhausting retries', async () => {
