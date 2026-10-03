@@ -9,11 +9,12 @@
 
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MemoryStore } from './store.js';
 import { MemoryDatabase } from './database.js';
+import { MemoryManager } from './index.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -127,5 +128,37 @@ describe('MemoryDatabase.loadRecentInsights', () => {
     expect(rows[0].ticker).toBe('VWS.CO');
     expect(rows[0].content).toBe('Vestas premium-only');
     expect(rows[0].routing).toBe('fmp-premium');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MemoryManager.get — async singleton race
+// ---------------------------------------------------------------------------
+
+describe('MemoryManager.get — singleton concurrency', () => {
+  let baseDir: string;
+  let originalCwd: string;
+
+  beforeEach(async () => {
+    originalCwd = process.cwd();
+    baseDir = await mkdtemp(join(tmpdir(), 'dexter-mm-'));
+    process.chdir(baseDir);
+    (MemoryManager as unknown as { instance: unknown; init: unknown }).instance = null;
+    (MemoryManager as unknown as { instance: unknown; init: unknown }).init = null;
+  });
+
+  afterEach(async () => {
+    (MemoryManager as unknown as { instance: unknown; init: unknown }).instance = null;
+    (MemoryManager as unknown as { instance: unknown; init: unknown }).init = null;
+    process.chdir(originalCwd);
+    await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it('returns a single shared instance for concurrent first calls', async () => {
+    const managers = await Promise.all(Array.from({ length: 10 }, () => MemoryManager.get()));
+
+    for (const manager of managers) {
+      expect(manager).toBe(managers[0]!);
+    }
   });
 });

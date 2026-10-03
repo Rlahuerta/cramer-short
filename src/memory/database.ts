@@ -262,6 +262,17 @@ export class MemoryDatabase {
     if (!this.vecEnabled) return false;
     if (this.vecTableDim === dim) return true;
     try {
+      const existing = this.db
+        .query<{ sql: string | null }>(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vec_chunks'",
+        )
+        .get();
+      const existingDim = existing?.sql ? Number(/float\[(\d+)\]/i.exec(existing.sql)?.[1]) : Number.NaN;
+      if (Number.isFinite(existingDim) && existingDim !== dim) {
+        // A persisted vec table with a different dimension cannot accept the new
+        // embeddings; recreate it instead of letting INSERTs fail silently.
+        this.db.exec('DROP TABLE vec_chunks');
+      }
       this.db.exec(
         `CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[${dim}] distance_metric=cosine)`,
       );
@@ -423,9 +434,13 @@ export class MemoryDatabase {
     const ids = rows.map((r) => r.insight_id);
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => '?').join(',');
-    return this.db
+    const records = this.db
       .query<FinancialInsightRecord>(`SELECT * FROM financial_insights WHERE id IN (${placeholders})`)
       .all(...ids);
+    const recordById = new Map(records.map((record) => [record.id, record]));
+    return ids
+      .map((id) => recordById.get(id))
+      .filter((record): record is FinancialInsightRecord => Boolean(record));
   }
 
   loadRecentInsights(limit: number): FinancialInsightRecord[] {
@@ -468,6 +483,13 @@ export class MemoryDatabase {
   clearEmbeddings(): void {
     this.db.query('UPDATE chunks SET embedding = NULL, embedding_provider = NULL, embedding_model = NULL').run();
     this.db.query('DELETE FROM embedding_cache').run();
+    try {
+      this.db.query('DELETE FROM vec_chunks').run();
+    } catch {
+      // vec_chunks only exists when the sqlite-vec extension loaded.
+    }
+    this.db.query("DELETE FROM meta WHERE key = 'embedding_dim'").run();
+    this.vecTableDim = -1;
   }
 
   getCachedEmbedding(contentHash: string): number[] | null {
@@ -596,7 +618,7 @@ export class MemoryDatabase {
     if (!this.ensureVecTable(dim)) return;
     // Persist dimension to meta so it survives process restarts.
     if (this.vecTableDim === dim) {
-      this.db.query("INSERT OR IGNORE INTO meta (key, value) VALUES ('embedding_dim', ?)").run(String(dim));
+      this.db.query("INSERT OR REPLACE INTO meta (key, value) VALUES ('embedding_dim', ?)").run(String(dim));
     }
     try {
       this.db.query('INSERT OR REPLACE INTO vec_chunks (rowid, embedding) VALUES (?, ?)').run(chunkId, embeddingBlob);
@@ -725,7 +747,7 @@ export class MemoryDatabase {
     return result;
   }
 
-  loadResultsByIds(ids: number[]): MemorySearchResult[] {
+  loadResultsByIds(ids: number[]): Array<MemorySearchResult & { id: number }> {
     if (ids.length === 0) {
       return [];
     }
@@ -740,6 +762,7 @@ export class MemoryDatabase {
       .map((id) => rowById.get(id))
       .filter((row): row is ChunkRow => Boolean(row))
       .map((row) => ({
+        id: row.id,
         snippet: row.content,
         path: row.file_path,
         startLine: row.start_line,

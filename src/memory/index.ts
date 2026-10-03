@@ -60,14 +60,24 @@ function resolveConfig(): MemoryRuntimeConfig {
 
 export class MemoryManager {
   private static instance: MemoryManager | null = null;
+  private static init: Promise<MemoryManager> | null = null;
 
-  static async get(): Promise<MemoryManager> {
-    if (!MemoryManager.instance) {
-      const instance = new MemoryManager(resolveConfig());
-      await instance.initialize();
-      MemoryManager.instance = instance;
+  static get(): Promise<MemoryManager> {
+    if (MemoryManager.instance) {
+      return Promise.resolve(MemoryManager.instance);
     }
-    return MemoryManager.instance;
+    if (!MemoryManager.init) {
+      MemoryManager.init = (async () => {
+        const instance = new MemoryManager(resolveConfig());
+        await instance.initialize();
+        MemoryManager.instance = instance;
+        return instance;
+      })().catch((error: unknown) => {
+        MemoryManager.init = null;
+        throw error;
+      });
+    }
+    return MemoryManager.init;
   }
 
   private readonly store = new MemoryStore();

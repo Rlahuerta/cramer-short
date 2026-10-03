@@ -101,6 +101,91 @@ describe('MemoryDatabase chunk indexing', () => {
   });
 });
 
+describe('MemoryDatabase vector table lifecycle', () => {
+  it('clearEmbeddings removes stale vec_chunks rows (same-dim provider switch)', () => {
+    db.upsertChunk({
+      chunk: chunk({ content: 'old-model AAPL vector', contentHash: 'stale-a' }),
+      embedding: [1, 0, 0, 0],
+      provider: 'old',
+      model: 'old',
+    });
+    db.upsertChunk({
+      chunk: chunk({ content: 'old-model TSLA vector', contentHash: 'stale-t' }),
+      embedding: [0, 1, 0, 0],
+      provider: 'old',
+      model: 'old',
+    });
+    // Sanity: the old-model vectors are searchable before the switch.
+    expect(db.searchVector([1, 0, 0, 0], 5).length).toBeGreaterThan(0);
+
+    db.clearEmbeddings();
+
+    // A provider switch must not resurrect old-model vectors from the vec table.
+    expect(db.searchVector([1, 0, 0, 0], 5)).toEqual([]);
+  });
+
+  it('recreates vec_chunks when the embedding dimension changes', () => {
+    db.upsertChunk({
+      chunk: chunk({ content: 'dim4 old vector', contentHash: 'dim4' }),
+      embedding: [1, 0, 0, 0],
+    });
+    db.clearEmbeddings();
+
+    const eight = [1, 0, 0, 0, 0, 0, 0, 0];
+    const inserted = db.upsertChunk({
+      chunk: chunk({ content: 'dim8 new vector', contentHash: 'dim8' }),
+      embedding: eight,
+    });
+
+    const raw = (db as unknown as { db: { query: <T>(sql: string) => { get(): T | null } } }).db;
+    const tableSql =
+      raw.query<{ sql: string }>("SELECT sql FROM sqlite_master WHERE name = 'vec_chunks'").get()?.sql ?? '';
+    expect(tableSql).toContain('float[8]');
+
+    const results = db.searchVector(eight, 5);
+    expect(results.map((result) => result.chunkId)).toEqual([inserted.id]);
+  });
+});
+
+describe('MemoryDatabase.loadResultsByIds id alignment', () => {
+  it('returns entries carrying their own id when some ids are missing', () => {
+    const first = db.upsertChunk({
+      chunk: chunk({ content: 'AAPL note', contentHash: 'keep-first' }),
+      embedding: null,
+    });
+    const second = db.upsertChunk({
+      chunk: chunk({ filePath: 'notes/nvda.md', content: 'NVDA demand', contentHash: 'keep-second' }),
+      embedding: null,
+    });
+
+    const results = db.loadResultsByIds([first.id, 999_999, second.id]);
+
+    expect(results.map((entry) => entry.id)).toEqual([first.id, second.id]);
+    expect(results[1]?.snippet).toContain('NVDA');
+  });
+});
+
+describe('MemoryDatabase.searchInsightsFts rank order', () => {
+  it('keeps FTS rank order in the returned rows', () => {
+    const weak = db.upsertInsight({
+      ticker: 'AAPL',
+      tags: '[]',
+      content: 'alpha mention once',
+      contentHash: 'rank-weak',
+    });
+    const strong = db.upsertInsight({
+      ticker: 'MSFT',
+      tags: '[]',
+      content: 'alpha alpha alpha alpha alpha',
+      contentHash: 'rank-strong',
+    });
+
+    const ranked = db.searchInsightsFts('alpha', 2);
+
+    expect(ranked.map((row) => row.id)).toEqual([strong, weak]);
+  });
+});
+
 describe('MemoryDatabase financial insights', () => {
   it('upserts insights, refreshes FTS rows, and searches tickers case-insensitively', () => {
     const id = db.upsertInsight({
