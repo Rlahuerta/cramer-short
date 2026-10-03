@@ -1,9 +1,10 @@
 import { Spacer, Text } from '@mariozechner/pi-tui';
 import type { TUI } from '@mariozechner/pi-tui';
-import type { ReasoningEvent, ToolEndEvent, ToolErrorEvent, ToolStartEvent } from '../agent/types.js';
+import type { DisplayEvent, ReasoningEvent, ToolEndEvent, ToolErrorEvent, ToolStartEvent } from '../agent/types.js';
+import type { AnswerBoxComponent } from '../components/answer-box.js';
 import type { ChatLogComponent } from '../components/index.js';
 import type { AgentRunnerController } from './agent-runner.js';
-import type { HistoryItem } from './types.js';
+import type { HistoryItem, HistoryItemStatus } from './types.js';
 import { theme } from '../theme.js';
 import { countRenderedTuiMarkdownLines, truncateTuiMarkdownTail } from '../utils/ui/markdown-table.js';
 import { formatExchangeForScrollback } from '../utils/ui/scrollback.js';
@@ -44,8 +45,50 @@ export function truncateAtWord(str: string, maxLength: number): string {
  */
 const MAX_RUNNING_EVENTS = 30;
 
+interface IncrementalRenderState {
+  itemId: string;
+  events: DisplayEvent[];
+  status: HistoryItemStatus;
+  answerLength: number;
+  renderedText: string;
+  rows: number;
+  columns: number;
+  answerComponent: AnswerBoxComponent | null;
+}
+
+const incrementalRenderState = new WeakMap<ChatLogComponent, IncrementalRenderState>();
+
 function getRenderedAnswerWidth(): number {
   return Math.max(10, process.stdout.columns ?? 80);
+}
+
+/**
+ * Append-only fast path for answer_chunk renders. The event list is unchanged,
+ * so the chat log is not cleared/rebuild — only the active answer component
+ * grows (O(1) component work per chunk instead of O(n) rebuilds).
+ */
+function appendStreamedAnswer(item: HistoryItem, state: IncrementalRenderState): void {
+  const maxContentLines = Math.max(8, (process.stdout.rows ?? 40) - 8);
+  const effectiveMaxEvents = Math.min(MAX_RUNNING_EVENTS, Math.max(2, Math.floor((maxContentLines - 5) / 2)));
+  const hiddenCount = item.events.length > effectiveMaxEvents ? item.events.length - effectiveMaxEvents : 0;
+  const visibleEventCount = hiddenCount > 0 ? effectiveMaxEvents : item.events.length;
+  const answerBudget = Math.max(3, maxContentLines - visibleEventCount * 2);
+  const width = getRenderedAnswerWidth();
+  const nextText = countRenderedTuiMarkdownLines(item.answer, width) > answerBudget
+    ? truncateTuiMarkdownTail(item.answer, answerBudget, width).text
+    : item.answer;
+
+  const component = state.answerComponent;
+  if (!component) {
+    return;
+  }
+  if (nextText.startsWith(state.renderedText)) {
+    component.appendText(nextText.slice(state.renderedText.length));
+  } else {
+    component.setText(nextText);
+  }
+  state.answerLength = item.answer.length;
+  state.renderedText = nextText;
 }
 
 /**
@@ -54,9 +97,32 @@ function getRenderedAnswerWidth(): number {
  * stays lean — only the active query lives in the TUI viewport.
  */
 export function renderCurrentQuery(chatLog: ChatLogComponent, history: AgentRunnerController['history']) {
-  chatLog.clearAll();
   const item = history[history.length - 1];
-  if (!item) return;
+  if (!item) {
+    chatLog.clearAll();
+    incrementalRenderState.delete(chatLog);
+    return;
+  }
+
+  const rows = process.stdout.rows ?? 40;
+  const columns = process.stdout.columns ?? 80;
+  const cached = incrementalRenderState.get(chatLog);
+  if (
+    cached &&
+    cached.itemId === item.id &&
+    cached.events === item.events &&
+    cached.status === item.status &&
+    item.status === 'processing' &&
+    cached.answerComponent &&
+    cached.answerLength < item.answer.length &&
+    cached.rows === rows &&
+    cached.columns === columns
+  ) {
+    appendStreamedAnswer(item, cached);
+    return;
+  }
+
+  chatLog.clearAll();
 
   chatLog.addQuery(item.query);
   chatLog.resetToolGrouping();
@@ -151,6 +217,8 @@ export function renderCurrentQuery(chatLog: ChatLogComponent, history: AgentRunn
     }
   }
 
+  let renderedAnswerText = '';
+  let answerComponent: AnswerBoxComponent | null = null;
   if (item.answer) {
     const isStreaming = item.status === 'processing';
 
@@ -163,20 +231,32 @@ export function renderCurrentQuery(chatLog: ChatLogComponent, history: AgentRunn
       const renderedAnswerLines = countRenderedTuiMarkdownLines(item.answer, getRenderedAnswerWidth());
       if (renderedAnswerLines > answerBudget) {
         const tail = truncateTuiMarkdownTail(item.answer, answerBudget, getRenderedAnswerWidth());
-        chatLog.finalizeAnswer(tail.text);
+        renderedAnswerText = tail.text;
       } else {
-        chatLog.finalizeAnswer(item.answer);
+        renderedAnswerText = item.answer;
       }
     } else {
       // Completed answer: show the full answer. The user needs to read it.
       // Overflow into terminal scrollback is acceptable — the flush-on-next-query
       // mechanism handles cleanup when the user starts a new query.
-      chatLog.finalizeAnswer(item.answer);
+      renderedAnswerText = item.answer;
     }
+    answerComponent = chatLog.finalizeAnswer(renderedAnswerText);
   }
   if (item.status === 'complete') {
     chatLog.addPerformanceStats(item.duration ?? 0, item.tokenUsage, item.tokensPerSecond);
   }
+
+  incrementalRenderState.set(chatLog, {
+    itemId: item.id,
+    events: item.events,
+    status: item.status,
+    answerLength: item.answer.length,
+    renderedText: renderedAnswerText,
+    rows,
+    columns,
+    answerComponent,
+  });
 }
 
 /**
