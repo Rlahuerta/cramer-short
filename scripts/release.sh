@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Release script for Dexter
+# Release script for Cramer-Short
 # Usage: bash scripts/release.sh [version]
 # If no version is provided, defaults to today's date as YYYY.M.D
 
@@ -48,7 +48,7 @@ while IFS= read -r line; do
   else
     CHANGES="${CHANGES}- ${subject}\n"
   fi
-done < <(git log --oneline --no-merges "$RANGE" | grep -v "^.*Bump version$")
+done < <(git log --oneline --no-merges "$RANGE" | grep -v "[Bb]ump version to")
 
 # Build release body
 BODY=""
@@ -94,13 +94,19 @@ fi
 # Create tag
 git tag "$TAG"
 
+# Push the current branch (the version-bump commit must land on origin too)
+git push origin HEAD
+
 # Push tag
 git push origin "$TAG"
 
+# Resolve the repo URL for the release output (gh preferred, origin fallback)
+REPO_URL=$(gh repo view --json url -q .url 2>/dev/null || git remote get-url origin)
+
 # Create GitHub release
 echo -e "$BODY" | gh release create "$TAG" \
-  --title "Dexter ${VERSION}" \
+  --title "Cramer-Short ${VERSION}" \
   --notes-file -
 
 echo ""
-echo "Released ${TAG}: https://github.com/virattt/dexter/releases/tag/${TAG}"
+echo "Released ${TAG}: ${REPO_URL}/releases/tag/${TAG}"
