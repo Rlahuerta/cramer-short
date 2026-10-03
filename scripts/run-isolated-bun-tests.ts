@@ -4,6 +4,8 @@ type IsolatedTestSpec = {
   env?: Record<string, string>;
 };
 
+export {};
+
 const E2E_SPEC_OVERRIDES: Record<string, Omit<IsolatedTestSpec, 'file'>> = {
   'src/agent/agent.e2e.test.ts': { timeoutMs: 360_000 },
   'src/agent/bitmex-trade-prompt.e2e.test.ts': { timeoutMs: 600_000, env: { E2E_TIMEOUT_MS: '600000' } },
