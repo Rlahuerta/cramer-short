@@ -1,5 +1,9 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, mock, spyOn, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { getQuotaStatus } from '../../utils/finance/fmp-quota.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -13,23 +17,11 @@ afterEach(() => {
 const mockReadCache = mock((..._args: unknown[]) => null as unknown);
 const mockWriteCache = mock((..._args: unknown[]) => undefined);
 const mockDescribeRequest = mock((endpoint: string) => String(endpoint));
-const mockTrackFmpCall = mock(() => ({
-  used: 1,
-  limit: 250,
-  usedPct: 1 / 250,
-  remaining: 249,
-}));
-const mockGetQuotaWarning = mock(() => null as string | null);
 
 mock.module('../../utils/cache.js', () => ({
   readCache: mockReadCache,
   writeCache: mockWriteCache,
   describeRequest: mockDescribeRequest,
-}));
-
-mock.module('../../utils/fmp-quota.js', () => ({
-  trackFmpCall: mockTrackFmpCall,
-  getQuotaWarning: mockGetQuotaWarning,
 }));
 
 // Use a cache-busting query param to force Bun to re-evaluate api.ts with the mocked
@@ -110,8 +102,6 @@ describe('api.get', () => {
   beforeEach(() => {
     mockReadCache.mockClear();
     mockWriteCache.mockClear();
-    mockTrackFmpCall.mockClear();
-    mockGetQuotaWarning.mockClear();
     originalApiKey = process.env.FINANCIAL_DATASETS_API_KEY;
     process.env.FINANCIAL_DATASETS_API_KEY = 'test-key';
 
@@ -200,6 +190,19 @@ describe('api.get', () => {
     await api.get('/prices/', { ticker: 'AAPL', start_date: '2023-01-01' }, { cacheable: true });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(mockWriteCache).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not decrement the FMP daily quota (run from a temp cwd so the real tracker counter is isolated)', async () => {
+    const originalCwd = process.cwd();
+    const testDir = await mkdtemp(join(tmpdir(), 'fd-quota-'));
+    process.chdir(testDir);
+    try {
+      await api.get('/earnings', { ticker: 'AAPL' });
+      expect(getQuotaStatus().used).toBe(0);
+    } finally {
+      process.chdir(originalCwd);
+      await rm(testDir, { recursive: true, force: true });
+    }
   });
 });
 
