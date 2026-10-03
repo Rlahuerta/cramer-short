@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { NUM_STATES, STATE_INDEX } from './core.js';
+import { NUM_STATES, STATE_INDEX, type RegimeState } from './core.js';
 import { classifyRegimeState } from './regime.js';
 import {
   adjustTransitionMatrix,
@@ -163,6 +163,69 @@ describe('estimateConditionalTransitionMatrices', () => {
     expect(matrices.high_uncertainty[STATE_INDEX['bear']][STATE_INDEX['bear']]).toBeGreaterThan(0.8);
     expect(matrices.low_uncertainty[STATE_INDEX['bull']][STATE_INDEX['bull']])
       .not.toBeCloseTo(matrices.high_uncertainty[STATE_INDEX['bull']][STATE_INDEX['bull']], 12);
+  });
+
+  /** Alternating transitions: env A owns the even (bull→bear) pairs, env B the odd (bear→bull) ones. */
+  function interleavedPairs(pairsPerEnv: number): { states: RegimeState[]; environments: string[] } {
+    const states: RegimeState[] = Array.from(
+      { length: 2 * pairsPerEnv + 1 },
+      (_, i) => (i % 2 === 0 ? 'bull' : 'bear'),
+    );
+    const environments = Array.from(
+      { length: 2 * pairsPerEnv + 1 },
+      (_, i) => (i % 2 === 0 ? 'A' : 'B'),
+    );
+    return { states, environments };
+  }
+
+  it('counts only each environment\'s own pairs — no spurious pair-boundary transitions', () => {
+    // Flattening each environment's pairs into a state sequence (the previous
+    // implementation) manufactured bear→bull edges inside A and bull→bear
+    // edges inside B across pair boundaries.
+    const pairsPerEnv = 16; // 2 entries per pair keeps this above transitionMinObservations (30)
+    const { states, environments } = interleavedPairs(pairsPerEnv);
+
+    const matrices = estimateConditionalTransitionMatrices(states, environments, 0.1, 1.0);
+
+    const bull = STATE_INDEX['bull'];
+    const bear = STATE_INDEX['bear'];
+    const prior = 1 / NUM_STATES;
+    const observed = (pairsPerEnv + 0.1) / (pairsPerEnv + 0.3);
+
+    // Environment A saw only bull→bear transitions.
+    expect(matrices.A[bull][bear]).toBeCloseTo(observed, 12);
+    expect(matrices.A[bull][bull]).toBeCloseTo(0.1 / (pairsPerEnv + 0.3), 12);
+    // No bear→bull / bear→bear evidence in A (spurious under pair flattening).
+    expect(matrices.A[bear][bull]).toBeCloseTo(prior, 12);
+    expect(matrices.A[bear][bear]).toBeCloseTo(prior, 12);
+
+    // Environment B saw only bear→bull transitions.
+    expect(matrices.B[bear][bull]).toBeCloseTo(observed, 12);
+    expect(matrices.B[bull][bear]).toBeCloseTo(prior, 12);
+    expect(matrices.B[bull][bull]).toBeCloseTo(prior, 12);
+  });
+
+  it('weights each counted pair by recency (per-pair decay, same scheme as estimateTransitionMatrix)', () => {
+    const pairsPerEnv = 16;
+    const { states, environments } = interleavedPairs(pairsPerEnv);
+
+    const decayRate = 0.5;
+    const matrices = estimateConditionalTransitionMatrices(states, environments, 0.1, decayRate);
+
+    // Most recent pair weight 1, each step back multiplies by decayRate.
+    const weighted = Array.from(
+      { length: pairsPerEnv },
+      (_, k) => Math.pow(decayRate, pairsPerEnv - 1 - k),
+    ).reduce((sum, w) => sum + w, 0);
+
+    const bull = STATE_INDEX['bull'];
+    const bear = STATE_INDEX['bear'];
+    const observed = (0.1 + weighted) / (0.1 + weighted + 0.2);
+
+    expect(matrices.A[bull][bear]).toBeCloseTo(observed, 12);
+    expect(matrices.B[bear][bull]).toBeCloseTo(observed, 12);
+    // Unobserved cells stay at the Dirichlet prior.
+    expect(matrices.A[bear][bull]).toBeCloseTo(1 / NUM_STATES, 12);
   });
 });
 describe('adjustTransitionMatrix', () => {

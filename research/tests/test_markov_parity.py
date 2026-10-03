@@ -216,6 +216,54 @@ def test_conditional_transition_matrices_distinct_environments_with_enough_data_
     assert not np.allclose(matrices["low_uncertainty"], matrices["high_uncertainty"], atol=1e-12)
 
 
+def _interleaved_pairs(pairs_per_env: int) -> tuple[list[str], list[str]]:
+    """Alternating transitions: env A owns even (bull→bear) pairs, env B odd (bear→bull) ones."""
+    states = ["bull" if i % 2 == 0 else "bear" for i in range(2 * pairs_per_env + 1)]
+    environments = ["A" if i % 2 == 0 else "B" for i in range(2 * pairs_per_env + 1)]
+    return states, environments
+
+
+def test_conditional_transition_matrices_count_only_own_pairs():
+    # Flattening each environment's pairs into a state sequence (the previous
+    # implementation) manufactured bear→bull edges inside A and bull→bear
+    # edges inside B across pair boundaries.
+    pairs_per_env = 16  # 2 entries per pair keeps this above transitionMinObservations (30)
+    states, environments = _interleaved_pairs(pairs_per_env)
+
+    matrices = estimate_conditional_transition_matrices(states, environments, alpha=0.1, decay_rate=1.0)
+
+    bull = STATE_INDEX["bull"]
+    bear = STATE_INDEX["bear"]
+    prior = 1 / NUM_STATES
+    observed = (pairs_per_env + 0.1) / (pairs_per_env + 0.3)
+
+    assert matrices["A"][bull][bear] == pytest.approx(observed, abs=1e-12)
+    assert matrices["A"][bull][bull] == pytest.approx(0.1 / (pairs_per_env + 0.3), abs=1e-12)
+    assert matrices["A"][bear][bull] == pytest.approx(prior, abs=1e-12)
+    assert matrices["A"][bear][bear] == pytest.approx(prior, abs=1e-12)
+
+    assert matrices["B"][bear][bull] == pytest.approx(observed, abs=1e-12)
+    assert matrices["B"][bull][bear] == pytest.approx(prior, abs=1e-12)
+    assert matrices["B"][bull][bull] == pytest.approx(prior, abs=1e-12)
+
+
+def test_conditional_transition_matrices_weight_pairs_by_recency():
+    pairs_per_env = 16
+    states, environments = _interleaved_pairs(pairs_per_env)
+
+    matrices = estimate_conditional_transition_matrices(states, environments, alpha=0.1, decay_rate=0.5)
+
+    # Most recent pair weight 1, each step back multiplies by decay_rate.
+    weighted = sum(0.5 ** (pairs_per_env - 1 - k) for k in range(pairs_per_env))
+    bull = STATE_INDEX["bull"]
+    bear = STATE_INDEX["bear"]
+    observed = (0.1 + weighted) / (0.1 + weighted + 0.2)
+
+    assert matrices["A"][bull][bear] == pytest.approx(observed, abs=1e-12)
+    assert matrices["B"][bear][bull] == pytest.approx(observed, abs=1e-12)
+    assert matrices["A"][bear][bull] == pytest.approx(1 / NUM_STATES, abs=1e-12)
+
+
 # ---------------------------------------------------------------------------
 # detect_structural_break
 # ---------------------------------------------------------------------------

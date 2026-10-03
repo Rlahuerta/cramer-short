@@ -98,23 +98,55 @@ export function estimateConditionalTransitionMatrices(
   const defaults = resolveForecastLabMarkovParameterDefaults();
   const sparseObservationCount = Math.max(2, Math.trunc(defaults.transitionMinObservations));
 
-  const pairsByEnv: Record<string, RegimeState[]> = {};
+  const pairsByEnv: Record<string, Array<[RegimeState, RegimeState]>> = {};
   for (const env of environmentSequence) {
     pairsByEnv[env] = [];
   }
   for (let i = 0; i < regimeSequence.length - 1; i++) {
     const env = environmentSequence[i];
     pairsByEnv[env] ??= [];
-    pairsByEnv[env].push(regimeSequence[i], regimeSequence[i + 1]);
+    pairsByEnv[env].push([regimeSequence[i], regimeSequence[i + 1]]);
   }
 
   const matrices: Record<string, TransitionMatrix> = {};
-  for (const [env, envRegimes] of Object.entries(pairsByEnv)) {
-    matrices[env] = envRegimes.length < sparseObservationCount
+  for (const [env, envPairs] of Object.entries(pairsByEnv)) {
+    // Sparse gate unchanged: a pair used to occupy two entries in the old
+    // flattened state sequence.
+    matrices[env] = envPairs.length * 2 < sparseObservationCount
       ? pooled
-      : estimateTransitionMatrix(envRegimes, alpha, undefined, decayRate);
+      : estimateTransitionMatrixFromPairs(envPairs, alpha, decayRate);
   }
   return matrices;
+}
+
+/**
+ * Estimate a matrix from ordered (from, to) pair observations.
+ *
+ * Equivalent to `estimateTransitionMatrix` over the pair sequence itself:
+ * Dirichlet prior in every cell, each pair weighted by
+ * `decayRate^(distance from the end)` (most recent pair weight 1), then the
+ * same row normalization. Counting pairs directly is what prevents spurious
+ * transitions across pair boundaries.
+ */
+function estimateTransitionMatrixFromPairs(
+  pairs: ReadonlyArray<readonly [RegimeState, RegimeState]>,
+  alpha?: number,
+  decayRate = resolveForecastLabMarkovParameterDefaults().transitionDecay,
+): TransitionMatrix {
+  const effectiveAlpha = alpha ?? Math.max(0.01, 5.0 / pairs.length);
+  const counts: number[][] = Array.from({ length: NUM_STATES }, () =>
+    Array(NUM_STATES).fill(effectiveAlpha),
+  );
+
+  const n = pairs.length;
+  for (let k = 0; k < n; k++) {
+    const from = STATE_INDEX[pairs[k][0]];
+    const to = STATE_INDEX[pairs[k][1]];
+    const age = n - 1 - k; // 0 = most recent, n-1 = oldest
+    counts[from][to] += Math.pow(decayRate, age);
+  }
+
+  return normalizeRows(counts);
 }
 
 /** Identity-like default matrix with correct row sums. */

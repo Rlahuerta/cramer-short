@@ -116,20 +116,60 @@ def estimate_conditional_transition_matrices(
     defaults = resolve_forecast_lab_markov_parameter_defaults()
     sparse_observation_count = max(2, int(defaults["transitionMinObservations"]))
 
-    pairs_by_env: dict[str, list[RegimeState]] = {env: [] for env in environment_sequence}
+    pairs_by_env: dict[str, list[tuple[RegimeState, RegimeState]]] = {
+        env: [] for env in environment_sequence
+    }
     for i in range(len(regime_sequence) - 1):
         env = environment_sequence[i]
-        pairs_by_env.setdefault(env, []).append(regime_sequence[i])
-        pairs_by_env[env].append(regime_sequence[i + 1])
+        pairs_by_env.setdefault(env, []).append(
+            (regime_sequence[i], regime_sequence[i + 1])
+        )
 
     matrices: dict[str, np.ndarray] = {}
-    for env, env_regimes in pairs_by_env.items():
+    for env, env_pairs in pairs_by_env.items():
+        # Sparse gate unchanged: a pair used to occupy two entries in the old
+        # flattened state sequence.
         matrices[env] = (
             pooled
-            if len(env_regimes) < sparse_observation_count
-            else estimate_transition_matrix(env_regimes, alpha=alpha, decay_rate=decay_rate)
+            if len(env_pairs) * 2 < sparse_observation_count
+            else _estimate_transition_matrix_from_pairs(
+                env_pairs, alpha=alpha, decay_rate=decay_rate
+            )
         )
     return matrices
+
+
+def _estimate_transition_matrix_from_pairs(
+    pairs: list[tuple[RegimeState, RegimeState]],
+    alpha: float | None = None,
+    decay_rate: float | None = None,
+) -> np.ndarray:
+    """Estimate a matrix from ordered (from, to) pair observations.
+
+    Equivalent to ``estimate_transition_matrix`` over the pair sequence itself:
+    Dirichlet prior in every cell, each pair weighted by
+    ``decay_rate ** (distance from the end)`` (most recent pair weight 1), then
+    the same row normalization. Counting pairs directly is what prevents
+    spurious transitions across pair boundaries.
+    """
+    defaults = resolve_forecast_lab_markov_parameter_defaults()
+    effective_decay_rate = float(
+        decay_rate if decay_rate is not None else defaults["transitionDecay"]
+    )
+    effective_alpha = alpha if alpha is not None else max(0.01, 5.0 / len(pairs))
+
+    counts = np.full((NUM_STATES, NUM_STATES), effective_alpha, dtype=float)
+
+    n = len(pairs)
+    for k, (from_state, to_state) in enumerate(pairs):
+        from_idx = STATE_INDEX[from_state]
+        to_idx = STATE_INDEX[to_state]
+        age = n - 1 - k  # 0 = most recent, n-1 = oldest
+        counts[from_idx][to_idx] += math.pow(effective_decay_rate, age)
+
+    row_sums = counts.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1.0  # avoid div by zero
+    return counts / row_sums
 
 
 def _default_matrix(diagonal: float = 0.6) -> np.ndarray:
