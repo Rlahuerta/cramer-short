@@ -25,6 +25,7 @@ const {
   getLlmCallTimeoutMs,
   DEFAULT_LLM_CALL_TIMEOUT_MS,
   streamCallLlm,
+  resolveOllamaTarget,
   _setModelFactory,
 } = await import('./llm.js');
 
@@ -97,6 +98,62 @@ describe('getChatModel — Ollama think flag', () => {
   test('strips ollama: prefix before passing model to ChatOllama', () => {
     const model = getChatModel('ollama:qwen3:4b') as { model?: string };
     expect(model.model).toBe('qwen3:4b');
+  });
+});
+
+describe('resolveOllamaTarget', () => {
+  const OLLAMA_ENV_KEYS = ['OLLAMA_BASE_URL', 'OLLAMA_API_KEY'] as const;
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of OLLAMA_ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of OLLAMA_ENV_KEYS) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key];
+      }
+    }
+  });
+
+  test('no envs → localhost default keeps the :cloud tag', () => {
+    expect(resolveOllamaTarget('ollama:deepseek-v4.1-flash:cloud')).toEqual({
+      model: 'deepseek-v4.1-flash:cloud',
+    });
+  });
+
+  test('OLLAMA_API_KEY only → direct Ollama Cloud with Bearer header and stripped :cloud', () => {
+    process.env.OLLAMA_API_KEY = 'cloud-key';
+    expect(resolveOllamaTarget('ollama:deepseek-v4.1-flash:cloud')).toEqual({
+      model: 'deepseek-v4.1-flash',
+      baseUrl: 'https://ollama.com',
+      headers: { Authorization: 'Bearer cloud-key' },
+    });
+  });
+
+  test('OLLAMA_BASE_URL only → explicit URL wins and the full name is kept', () => {
+    process.env.OLLAMA_BASE_URL = 'http://localhost:11434';
+    expect(resolveOllamaTarget('ollama:deepseek-v4.1-flash:cloud')).toEqual({
+      model: 'deepseek-v4.1-flash:cloud',
+      baseUrl: 'http://localhost:11434',
+    });
+  });
+
+  test('both set → explicit baseUrl wins and the Bearer header is attached', () => {
+    process.env.OLLAMA_BASE_URL = 'http://localhost:11434';
+    process.env.OLLAMA_API_KEY = 'cloud-key';
+    expect(resolveOllamaTarget('ollama:deepseek-v4.1-flash:cloud')).toEqual({
+      model: 'deepseek-v4.1-flash:cloud',
+      baseUrl: 'http://localhost:11434',
+      headers: { Authorization: 'Bearer cloud-key' },
+    });
   });
 });
 

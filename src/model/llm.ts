@@ -166,6 +166,38 @@ function getApiKey(envVar: string): string {
   return apiKey;
 }
 
+export interface OllamaTarget {
+  model: string;
+  baseUrl?: string;
+  headers?: Record<string, string>;
+}
+
+/**
+ * Resolves the Ollama model name plus optional base URL and auth headers.
+ * Precedence: OLLAMA_BASE_URL (explicit server) > OLLAMA_API_KEY (direct
+ * Ollama Cloud, `:cloud` tag stripped for the API form) > localhost default.
+ */
+export function resolveOllamaTarget(modelName: string): OllamaTarget {
+  const bare = modelName.replace(/^ollama:/i, '');
+  if (hasEnv('OLLAMA_BASE_URL')) {
+    return {
+      model: bare,
+      baseUrl: getEnv('OLLAMA_BASE_URL'),
+      ...(hasEnv('OLLAMA_API_KEY')
+        ? { headers: { Authorization: 'Bearer ' + getEnv('OLLAMA_API_KEY') } }
+        : {}),
+    };
+  }
+  if (hasEnv('OLLAMA_API_KEY')) {
+    return {
+      model: bare.replace(/:cloud$/i, ''),
+      baseUrl: 'https://ollama.com',
+      headers: { Authorization: 'Bearer ' + getEnv('OLLAMA_API_KEY') },
+    };
+  }
+  return { model: bare };
+}
+
 // Factories keyed by provider id — prefix routing is handled by resolveProvider()
 const MODEL_FACTORIES: Record<string, ModelFactory> = {
   anthropic: (name, opts) =>
@@ -219,11 +251,13 @@ const MODEL_FACTORIES: Record<string, ModelFactory> = {
   ollama: (name, opts, thinkOverride) => {
     // Use explicit override when provided; fall back to model-name auto-detect.
     const useThink = thinkOverride !== undefined ? thinkOverride : isThinkingModel(name);
+    const target = resolveOllamaTarget(name);
     return new ChatOllama({
-      model: name.replace(/^ollama:/i, ''),
+      model: target.model,
       ...opts,
       ...(useThink ? { think: true } : {}),
-      ...(hasEnv('OLLAMA_BASE_URL') ? { baseUrl: getEnv('OLLAMA_BASE_URL') } : {}),
+      ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
+      ...(target.headers ? { headers: target.headers } : {}),
     });
   },
 };
