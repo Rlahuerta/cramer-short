@@ -85,7 +85,7 @@ export interface ArbiterReplayPolymarketMarket {
   question: string;
   probability: number;
   volume24h: number;
-  endDate: string;
+  endDate?: string | null;
   semantics: ForecastMarketSemantics;
   extractedPriceLevels: number[];
   relevanceScore?: number;
@@ -311,7 +311,13 @@ function isReplayPolymarketMarket(value: unknown): value is ArbiterReplayPolymar
   if (typeof value.question !== 'string') return false;
   if (!isFiniteNumber(value.probability) || value.probability < 0 || value.probability > 1) return false;
   if (!isFiniteNumber(value.volume24h) || value.volume24h < 0) return false;
-  if (typeof value.endDate !== 'string' || !Number.isFinite(Date.parse(value.endDate))) return false;
+  if (
+    value.endDate !== undefined
+    && value.endDate !== null
+    && (typeof value.endDate !== 'string' || !Number.isFinite(Date.parse(value.endDate)))
+  ) {
+    return false;
+  }
   if (!isReplaySemantics(value.semantics)) return false;
   if (!Array.isArray(value.extractedPriceLevels) || !value.extractedPriceLevels.every((entry) => isFiniteNumber(entry))) {
     return false;
@@ -830,7 +836,7 @@ export function freezePolymarketReplayBlock(params: {
       question: market.question,
       probability: market.probability,
       volume24h: market.volume24h,
-      endDate: market.endDate ?? '',
+      ...(market.endDate !== undefined && market.endDate !== null ? { endDate: market.endDate } : {}),
       semantics: classifyPolymarketQuestion(market.question),
       extractedPriceLevels: extractPriceLevels(market.question),
       ...(market.relevanceScore !== undefined ? { relevanceScore: market.relevanceScore } : {}),

@@ -25,6 +25,7 @@ import {
   toReplayLabelBenchmarkReportPath,
   type ReplayLabelBenchmarkPipelineResult,
 } from './tools/finance/backtest/replay-label-benchmark-pipeline.js';
+import { assertNoCanonicalPathCollision } from './tools/finance/backtest/path-collision-guard.js';
 import {
   toReplayLabelBatchReportPath,
   type ReplayTickerHistoryLoader,
@@ -330,6 +331,18 @@ async function runReplayLabelJob(job: ReplayLabelScheduleJob, options: ScheduleC
     options,
   );
   const summaryOutputPath = job.outputFile ? resolveOutputPath(job.outputFile, options) : undefined;
+  if (summaryOutputPath) {
+    assertNoCanonicalPathCollision(
+      'schedule replay-label',
+      'the summary output file must not overwrite the labeled output file.',
+      { outputPath, outputFile: summaryOutputPath },
+    );
+  }
+  if (loaderMode !== 'fixture' && !loaderMode.startsWith('local:')) {
+    throw new Error(
+      `replay-label: unknown --loader mode "${loaderMode}". Supported modes: fixture, local:<path>`,
+    );
+  }
   const loaderFactory = options.replayLabelLoaderFactory ?? createReplayHistoryLoader;
   const loadHistory = loaderFactory(loaderMode);
   const runReplayLabelPipeline = options.runReplayLabelPipeline ?? runReplayLabelBenchmarkPipelineFromFile;

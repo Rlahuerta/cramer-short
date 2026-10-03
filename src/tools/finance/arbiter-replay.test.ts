@@ -229,6 +229,69 @@ describe('ArbiterReplayBundle persistence', () => {
     expect(parseArbiterReplayBundleLine('{"capturedAt":"not-a-date"}')).toBeNull();
   });
 
+  it('keeps markets with an unknown endDate through a write/read round-trip', () => {
+    const block = freezePolymarketReplayBlock({
+      querySet: ['bitcoin price'],
+      selectedMarkets: [
+        {
+          marketId: 'pm-no-end',
+          assetId: 'asset-yes-no-end',
+          question: 'Will Bitcoin be above $70,000?',
+          probability: 0.54,
+          volume24h: 250000,
+        },
+        {
+          marketId: 'pm-with-end',
+          assetId: 'asset-yes-with-end',
+          question: 'Will Bitcoin be above $75,000 on May 7?',
+          probability: 0.4,
+          volume24h: 100000,
+          endDate: '2026-05-07T00:00:00.000Z',
+        },
+      ],
+    });
+    const bundle: ArbiterReplayBundle = {
+      capturedAt: '2026-04-30T12:00:00.000Z',
+      ticker: 'BTC',
+      horizonDays: 7,
+      currentPrice: 68000,
+      polymarket: block,
+      warnings: [],
+    };
+
+    const parsed = parseArbiterReplayBundleLine(JSON.stringify(bundle));
+
+    expect(parsed?.polymarket?.selectedMarkets).toHaveLength(2);
+    expect(parsed?.polymarket?.selectedMarkets[0]?.endDate).toBeUndefined();
+    expect(parsed?.polymarket?.selectedMarkets[1]?.endDate).toBe('2026-05-07T00:00:00.000Z');
+  });
+
+  it('still rejects markets with a present but invalid endDate', () => {
+    const block = freezePolymarketReplayBlock({
+      querySet: ['bitcoin price'],
+      selectedMarkets: [
+        {
+          marketId: 'pm-bad-end',
+          assetId: 'asset-yes-bad-end',
+          question: 'Will Bitcoin be above $70,000?',
+          probability: 0.54,
+          volume24h: 250000,
+          endDate: 'not-a-date',
+        },
+      ],
+    });
+    const bundle: ArbiterReplayBundle = {
+      capturedAt: '2026-04-30T12:00:00.000Z',
+      ticker: 'BTC',
+      horizonDays: 7,
+      currentPrice: 68000,
+      polymarket: block,
+      warnings: [],
+    };
+
+    expect(parseArbiterReplayBundleLine(JSON.stringify(bundle))).toBeNull();
+  });
+
   it('parses semantic label arrays on replay bundles', () => {
     const labeledBundle: ArbiterReplayBundle = {
       ...validBundle,

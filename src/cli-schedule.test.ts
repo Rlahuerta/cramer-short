@@ -741,6 +741,72 @@ describe('schedule command', () => {
     expect(errors.join('\n')).toContain('outside allowed roots');
   });
 
+  it('refuses replay_label summaries that would overwrite the labeled output file', async () => {
+    const collidingTemplate = `${TEST_ROOT}/replay/{date}-labeled.jsonl`;
+    writeSchedules([
+      {
+        id: 'colliding-replay-label',
+        kind: 'replay_label',
+        outputPath: collidingTemplate,
+        outputFile: collidingTemplate,
+      } as ScheduleJob,
+    ]);
+    const datasetPath = resolve(process.cwd(), TEST_ROOT, 'replay', '2026-05-02-labeled.jsonl');
+    mkdirSync(dirname(datasetPath), { recursive: true });
+    writeFileSync(datasetPath, 'PRECIOUS DATASET\n', 'utf8');
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      runReplayLabelPipeline: async () => {
+        dispatchCount += 1;
+        return fakeReplayLabelResult(datasetPath);
+      },
+    } as ScheduleCommandOptions & {
+      runReplayLabelPipeline: () => Promise<ReplayLabelBenchmarkPipelineResult>;
+    });
+
+    await runScheduleCommand(['run', 'colliding-replay-label'], options);
+
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    const errorText = errors.join('\n');
+    expect(errorText).toContain('outputPath=');
+    expect(errorText).toContain('outputFile=');
+    expect(errorText).toContain(datasetPath);
+    expect(readFileSync(datasetPath, 'utf8')).toBe('PRECIOUS DATASET\n');
+  });
+
+  it('rejects unknown replay_label loader schemes before invoking the factory', async () => {
+    writeSchedules([
+      {
+        id: 'bad-loader-replay-label',
+        kind: 'replay_label',
+        outputPath: `${TEST_ROOT}/replay/{date}-labeled.jsonl`,
+        loader: 'http://example.com/prices.json',
+      } as ScheduleJob,
+    ]);
+    let factoryCalls = 0;
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      replayLabelLoaderFactory: () => {
+        factoryCalls += 1;
+        return async () => null;
+      },
+      runReplayLabelPipeline: async () => {
+        dispatchCount += 1;
+        return fakeReplayLabelResult('unused.jsonl');
+      },
+    } as ScheduleCommandOptions & {
+      runReplayLabelPipeline: () => Promise<ReplayLabelBenchmarkPipelineResult>;
+    });
+
+    await runScheduleCommand(['run', 'bad-loader-replay-label'], options);
+
+    expect(factoryCalls).toBe(0);
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('unknown --loader mode');
+  });
+
   it('includes structured mutation metadata in schedule summaries', async () => {
     writeSchedules([
       {
