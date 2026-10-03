@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { runScheduleCommand } from './cli-schedule.js';
 import type { ScheduleCommandOptions, ScheduleJob } from './cli-schedule.js';
+import * as configModule from './utils/config.js';
 import type { AgentEvent } from './agent/types.js';
 import type { ForecastLabRunOptions, ForecastLabRunResult } from './experiments/forecast-lab/runner.js';
 import type { ReplayLabelBenchmarkPipelineResult } from './tools/finance/backtest/replay-label-benchmark-pipeline.js';
@@ -230,7 +231,7 @@ describe('schedule command', () => {
     ]);
     const seenQueries: string[] = [];
     const { options, writes, errors } = makeOptions({
-      createAgent: async () => ({
+      createAgent: async (_config) => ({
         run: (query) => fakeAgentRun(query, seenQueries),
       }),
     });
@@ -242,6 +243,63 @@ describe('schedule command', () => {
     expect(writes.join('')).toBe('Agent answer');
     expect(errors).toEqual([]);
     expect(readFileSync(outPath, 'utf8')).toContain('Agent answer');
+  });
+
+  it('passes the configured settings model to the agent factory', async () => {
+    writeSchedules([
+      {
+        id: 'morning-briefing',
+        description: 'Daily watchlist briefing',
+        query: 'Run the watchlist-briefing skill',
+        outputFile: '~/.cramer-short/reports/{date}-briefing.md',
+      },
+    ]);
+    const seenConfigs: Array<{ model: string }> = [];
+    const { options } = makeOptions({
+      createAgent: async (config) => {
+        seenConfigs.push(config as { model: string });
+        return { run: (query) => fakeAgentRun(query, []) };
+      },
+    });
+    const getSettingSpy = spyOn(configModule, 'getSetting').mockImplementation(
+      <T>(key: string, defaultValue: T): T =>
+        (key === 'modelId' ? 'claude-sonnet-4-6' : defaultValue) as T,
+    );
+    try {
+      await runScheduleCommand(['run', 'morning-briefing'], options);
+    } finally {
+      getSettingSpy.mockRestore();
+    }
+
+    expect(seenConfigs).toEqual([{ model: 'claude-sonnet-4-6' }]);
+  });
+
+  it('defaults the agent factory model when no settings are saved', async () => {
+    writeSchedules([
+      {
+        id: 'morning-briefing',
+        description: 'Daily watchlist briefing',
+        query: 'Run the watchlist-briefing skill',
+        outputFile: '~/.cramer-short/reports/{date}-briefing.md',
+      },
+    ]);
+    const seenConfigs: Array<{ model: string }> = [];
+    const { options } = makeOptions({
+      createAgent: async (config) => {
+        seenConfigs.push(config as { model: string });
+        return { run: (query) => fakeAgentRun(query, []) };
+      },
+    });
+    const getSettingSpy = spyOn(configModule, 'getSetting').mockImplementation(
+      <T>(_key: string, defaultValue: T): T => defaultValue,
+    );
+    try {
+      await runScheduleCommand(['run', 'morning-briefing'], options);
+    } finally {
+      getSettingSpy.mockRestore();
+    }
+
+    expect(seenConfigs).toEqual([{ model: 'ollama:deepseek-v4.1-flash:cloud' }]);
   });
 
   it('dispatches forecast_lab jobs to runForecastLab in dry-run mode by default', async () => {

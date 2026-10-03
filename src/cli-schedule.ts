@@ -13,6 +13,9 @@ import { homedir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 import { Agent } from './agent/agent.js';
 import type { AgentEvent } from './agent/types.js';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER } from './model/llm.js';
+import { getSetting } from './utils/config.js';
+import { getDefaultModelForProvider } from './utils/model.js';
 import { createReplayHistoryLoader } from './cli-replay-label.js';
 import { assertForecastLabProfileId } from './experiments/forecast-lab/profiles.js';
 import { runForecastLab } from './experiments/forecast-lab/runner.js';
@@ -106,7 +109,7 @@ export interface ScheduleCommandOptions {
   write?: (message: string) => void;
   exit?: (code: number) => void;
   now?: () => Date;
-  createAgent?: () => Promise<AgentLike>;
+  createAgent?: (config: { model: string }) => Promise<AgentLike>;
   runLab?: (options: ForecastLabRunOptions) => Promise<ForecastLabRunResult>;
   runReplayLabelPipeline?: (params: {
     inputPath?: string;
@@ -211,14 +214,16 @@ async function runAgentJob(job: AgentScheduleJob, options: ScheduleCommandOption
   const error = options.error ?? console.error;
   const write = options.write ?? ((message: string) => process.stdout.write(message));
   const now = options.now ?? (() => new Date());
-  const createAgent = options.createAgent ?? (() => Agent.create());
+  const createAgent = options.createAgent ?? ((config) => Agent.create(config));
 
   log(`\n▶ Running job "${job.id}": ${job.description}`);
   const outPath = resolveOutputPath(job.outputFile, options);
   const outDir = dirname(outPath);
   if (outDir) await mkdir(outDir, { recursive: true });
 
-  const agent = await createAgent();
+  const provider = getSetting('provider', DEFAULT_PROVIDER);
+  const model = getSetting('modelId', null) ?? getDefaultModelForProvider(provider) ?? DEFAULT_MODEL;
+  const agent = await createAgent({ model });
   let answer = '';
 
   for await (const event of agent.run(job.query)) {
