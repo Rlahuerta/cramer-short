@@ -272,7 +272,7 @@ export async function runCli() {
     },
   };
 
-  const handleSubmit = async (query: string) => {
+  const submitQuery = async (query: string) => {
     if (answerViewerVisible) {
       answerViewerVisible = false;
       renderSelectionOverlay();
@@ -396,6 +396,22 @@ export async function runCli() {
 
     refreshError();
     tui.requestRender();
+  };
+
+  // Synchronous re-entrancy guard: the processing check inside submitQuery runs
+  // after several awaits, so a rapid double-Enter would otherwise start two
+  // concurrent runQuery calls. Cleared in finally so a failure cannot wedge input.
+  let isSubmitting = false;
+  const handleSubmit = async (query: string) => {
+    if (isSubmitting) {
+      return;
+    }
+    isSubmitting = true;
+    try {
+      await submitQuery(query);
+    } finally {
+      isSubmitting = false;
+    }
   };
 
   editor.onSubmit = (text) => {

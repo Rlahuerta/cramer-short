@@ -186,6 +186,11 @@ export class AgentRunnerController {
   }
 
   async runQuery(query: string): Promise<RunQueryResult | undefined> {
+    // Re-entry guard: a second submit racing the first must not start a
+    // concurrent query (the TUI checks isProcessing only after several awaits).
+    if (this.isProcessing) {
+      return undefined;
+    }
     this.queryWasCancelled = false;
     this.triggerCancellation = null;
     this.abortController = new AbortController();
