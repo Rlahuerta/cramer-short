@@ -1,5 +1,7 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, test, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { ChatOllama } from '@langchain/ollama';
+import { resolveProvider } from '../providers.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -154,6 +156,24 @@ describe('resolveOllamaTarget', () => {
       baseUrl: 'http://localhost:11434',
       headers: { Authorization: 'Bearer cloud-key' },
     });
+  });
+});
+
+// ===========================================================================
+// Default model routing + thinking detection
+// ===========================================================================
+
+describe('default model regression lock', () => {
+  test('resolveProvider routes the default model to the ollama provider', () => {
+    expect(resolveProvider('ollama:deepseek-v4.1-flash:cloud').id).toBe('ollama');
+  });
+
+  test('isThinkingModel detects the default model as thinking-capable', () => {
+    expect(isThinkingModel('ollama:deepseek-v4.1-flash:cloud')).toBe(true);
+  });
+
+  test('getChatModel returns a ChatOllama for the default model', () => {
+    expect(getChatModel('ollama:deepseek-v4.1-flash:cloud')).toBeInstanceOf(ChatOllama);
   });
 });
 

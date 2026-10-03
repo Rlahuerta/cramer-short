@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as ollamaUtils from '../utils/ollama.js';
 import * as configModule from '../utils/config.js';
+import { getModelDisplayName } from '../utils/model.js';
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from '../model/llm.js';
 import { ModelSelectionController } from './model-selection.js';
 
@@ -464,5 +465,9 @@ describe('ModelSelectionController — canonical default model', () => {
     } finally {
       getSettingSpy.mockRestore();
     }
+  });
+
+  it('displays the default model without the provider prefix', () => {
+    expect(getModelDisplayName('ollama:deepseek-v4.1-flash:cloud')).toBe('deepseek-v4.1-flash:cloud');
   });
 });
