@@ -29,8 +29,13 @@ export async function handleWatchlistSlashCommand(
   // watchlist panel renders over the chat area.
   if (sub.cmd === 'list' || sub.cmd === 'show' || sub.cmd === 'snapshot') {
     const prevItem = tuiState.history().at(-1);
-    if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted')) {
+    if (
+      prevItem &&
+      (prevItem.status === 'complete' || prevItem.status === 'interrupted') &&
+      !tuiState.flushedItems.has(prevItem)
+    ) {
       tuiState.flushItemToScrollback(prevItem);
+      tuiState.flushedItems.add(prevItem);
     }
   }
 

@@ -6,7 +6,7 @@
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WatchlistController } from './watchlist-controller.js';
@@ -39,6 +39,53 @@ describe('load()', () => {
     const data = new WatchlistController(tmpDir).load();
     expect(data.entries).toHaveLength(1);
     expect(data.entries[0]!.ticker).toBe('NVDA');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// load() malformed-file safety
+// ---------------------------------------------------------------------------
+describe('load() malformed-file safety', () => {
+  const writeRaw = (raw: string): void => {
+    const dir = join(tmpDir, '.cramer-short');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'watchlist.json'), raw, 'utf-8');
+  };
+
+  it('returns empty entries (no throw) when the file parses to null', () => {
+    writeRaw('null');
+    expect(() => ctrl.load().entries).not.toThrow();
+    expect(ctrl.load().entries).toEqual([]);
+  });
+
+  it('returns empty entries when the file parses to an object without entries', () => {
+    writeRaw('{}');
+    expect(ctrl.load().entries).toEqual([]);
+  });
+
+  it('returns empty entries when entries is not an array', () => {
+    writeRaw('{"version":1,"entries":"nope"}');
+    expect(ctrl.load().entries).toEqual([]);
+  });
+
+  it('warns on a malformed shape', () => {
+    writeRaw('{}');
+    const original = console.warn;
+    let warned = 0;
+    console.warn = () => { warned++; };
+    try {
+      ctrl.load();
+    } finally {
+      console.warn = original;
+    }
+    expect(warned).toBeGreaterThan(0);
+  });
+
+  it('list() and add() do not throw on a malformed file', () => {
+    writeRaw('null');
+    expect(() => ctrl.list()).not.toThrow();
+    expect(() => ctrl.add('AAPL')).not.toThrow();
+    expect(ctrl.list().some((e) => e.ticker === 'AAPL')).toBe(true);
   });
 });
 

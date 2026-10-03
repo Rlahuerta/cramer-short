@@ -98,8 +98,21 @@ export class WatchlistController {
       return { version: 1, entries: [] };
     }
     try {
-      return JSON.parse(readFileSync(this.filePath, 'utf-8')) as WatchlistFile;
-    } catch {
+      const parsed: unknown = JSON.parse(readFileSync(this.filePath, 'utf-8'));
+      if (
+        parsed === null ||
+        typeof parsed !== 'object' ||
+        !Array.isArray((parsed as { entries?: unknown }).entries)
+      ) {
+        console.warn(
+          `[watchlist] malformed ${this.filePath}: expected an object with an "entries" array. Using an empty watchlist.`,
+        );
+        return { ...EMPTY_FILE };
+      }
+      return parsed as WatchlistFile;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[watchlist] failed to read ${this.filePath} (${msg}). Using an empty watchlist.`);
       return { ...EMPTY_FILE };
     }
   }
