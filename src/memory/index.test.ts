@@ -15,6 +15,13 @@ import { tmpdir } from 'node:os';
 import { MemoryStore } from './store.js';
 import { MemoryDatabase } from './database.js';
 import { MemoryManager } from './index.js';
+import { MS_PER_DAY } from '../utils/time.js';
+
+function resetMemoryManagerSingleton(): void {
+  const statics = MemoryManager as unknown as { instance: unknown; init: unknown };
+  statics.instance = null;
+  statics.init = null;
+}
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -77,6 +84,15 @@ describe('MemoryStore.loadSessionContext — FINANCE.md', () => {
     expect(ctx.filesLoaded).not.toContain('MEMORY.md');
     expect(ctx.filesLoaded).not.toContain('FINANCE.md');
     expect(ctx.tokenEstimate).toBe(0);
+  });
+
+  it('includes a truncated head of an oversized MEMORY.md within the budget', async () => {
+    await writeFile(join(memDir, 'MEMORY.md'), 'A'.repeat(4000));
+    const ctx = await store.loadSessionContext(300);
+    expect(ctx.filesLoaded).toContain('MEMORY.md');
+    expect(ctx.text).toContain('### MEMORY.md');
+    expect(ctx.text).toContain('[truncated]');
+    expect(ctx.tokenEstimate).toBeLessThanOrEqual(300);
   });
 });
 
@@ -143,13 +159,11 @@ describe('MemoryManager.get — singleton concurrency', () => {
     originalCwd = process.cwd();
     baseDir = await mkdtemp(join(tmpdir(), 'dexter-mm-'));
     process.chdir(baseDir);
-    (MemoryManager as unknown as { instance: unknown; init: unknown }).instance = null;
-    (MemoryManager as unknown as { instance: unknown; init: unknown }).init = null;
+    resetMemoryManagerSingleton();
   });
 
   afterEach(async () => {
-    (MemoryManager as unknown as { instance: unknown; init: unknown }).instance = null;
-    (MemoryManager as unknown as { instance: unknown; init: unknown }).init = null;
+    resetMemoryManagerSingleton();
     process.chdir(originalCwd);
     await rm(baseDir, { recursive: true, force: true });
   });
@@ -160,5 +174,44 @@ describe('MemoryManager.get — singleton concurrency', () => {
     for (const manager of managers) {
       expect(manager).toBe(managers[0]!);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MemoryManager.loadSessionContext — insight TTL
+// ---------------------------------------------------------------------------
+
+describe('MemoryManager.loadSessionContext — insight TTL', () => {
+  let baseDir: string;
+  let originalCwd: string;
+
+  beforeEach(async () => {
+    originalCwd = process.cwd();
+    baseDir = await mkdtemp(join(tmpdir(), 'dexter-mm-ttl-'));
+    process.chdir(baseDir);
+    resetMemoryManagerSingleton();
+  });
+
+  afterEach(async () => {
+    resetMemoryManagerSingleton();
+    process.chdir(originalCwd);
+    await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it('excludes expired insights and keeps fresh ones', async () => {
+    const manager = await MemoryManager.get();
+    const financialStore = manager.getFinancialStore();
+    expect(financialStore).not.toBeNull();
+
+    setSystemTime(new Date(FIXED_TEST_NOW_MS));
+    await financialStore!.storeInsight({ ticker: 'AAPL', tags: [], content: 'Expired analyst note' });
+
+    setSystemTime(new Date(FIXED_TEST_NOW_MS + 61 * MS_PER_DAY));
+    await financialStore!.storeInsight({ ticker: 'MSFT', tags: [], content: 'Fresh valuation note' });
+
+    const ctx = await manager.loadSessionContext();
+
+    expect(ctx.text).toContain('Fresh valuation note');
+    expect(ctx.text).not.toContain('Expired analyst note');
   });
 });

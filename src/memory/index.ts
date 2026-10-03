@@ -3,7 +3,7 @@ import { createEmbeddingClient } from './embeddings.js';
 import { MemoryIndexer } from './indexer.js';
 import { hybridSearch } from './search.js';
 import { MemoryStore } from './store.js';
-import { FinancialMemoryStore } from './financial-store.js';
+import { FinancialMemoryStore, isInsightRowExpired } from './financial-store.js';
 import { estimateTokens } from '../utils/tokens.js';
 import type {
   MemoryReadOptions,
@@ -230,7 +230,7 @@ export class MemoryManager {
 
     if (!this.db) return base;
 
-    const recentInsights = this.db.loadRecentInsights(10);
+    const recentInsights = this.db.loadRecentInsights(10).filter((row) => !isInsightRowExpired(row));
     if (recentInsights.length === 0) return base;
 
     const lines = recentInsights.map((r) => {

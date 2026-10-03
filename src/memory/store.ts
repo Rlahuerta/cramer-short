@@ -17,6 +17,14 @@ function pad2(value: number): string {
   return String(value).padStart(2, '0');
 }
 
+const MIN_TRUNCATED_SECTION_TOKENS = 50;
+
+function truncateSection(header: string, content: string, note: string, budget: number): string | null {
+  const maxChars = Math.floor(budget * 3.5) - header.length - note.length;
+  if (maxChars <= 0) return null;
+  return `${header}${content.slice(0, Math.min(content.length, maxChars))}${note}`;
+}
+
 export function formatDailyFileName(date: Date = new Date()): string {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}.md`;
 }
@@ -127,15 +135,28 @@ export class MemoryStore {
         continue;
       }
 
-      const nextSection = `### ${file}\n${content}`;
+      const header = `### ${file}\n`;
+      const note = '\n… [truncated]';
+      const nextSection = `${header}${content}`;
       const nextTokens = estimateTokens(nextSection);
-      if (tokenEstimate + nextTokens > maxTokens) {
+      const remaining = maxTokens - tokenEstimate;
+      if (nextTokens <= remaining) {
+        tokenEstimate += nextTokens;
+        filesLoaded.push(file);
+        sections.push(nextSection);
         continue;
       }
 
-      tokenEstimate += nextTokens;
+      if (remaining < MIN_TRUNCATED_SECTION_TOKENS) {
+        continue;
+      }
+      const truncated = truncateSection(header, content, note, remaining);
+      if (!truncated) {
+        continue;
+      }
+      tokenEstimate += estimateTokens(truncated);
       filesLoaded.push(file);
-      sections.push(nextSection);
+      sections.push(truncated);
     }
 
     return {

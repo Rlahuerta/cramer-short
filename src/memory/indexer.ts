@@ -14,6 +14,7 @@ export class MemoryIndexer {
   private watchTimer: NodeJS.Timeout | null = null;
   private syncing: Promise<MemorySyncStats> | null = null;
   private dirty = true;
+  private dirtyGeneration = 0;
 
   constructor(
     private readonly store: MemoryStore,
@@ -29,6 +30,7 @@ export class MemoryIndexer {
 
   markDirty(): void {
     this.dirty = true;
+    this.dirtyGeneration += 1;
   }
 
   isDirty(): boolean {
@@ -103,13 +105,29 @@ export class MemoryIndexer {
     if (this.syncing) {
       return this.syncing;
     }
-    this.syncing = this.performSync(options).finally(() => {
+    this.syncing = this.runSyncPasses(options).finally(() => {
       this.syncing = null;
     });
     return this.syncing;
   }
 
+  private async runSyncPasses(options?: { force?: boolean }): Promise<MemorySyncStats> {
+    let stats = await this.performSync(options);
+    if (this.dirty) {
+      // Changes arrived while the first pass was running; run exactly one more pass.
+      const second = await this.performSync(options);
+      stats = {
+        indexedFiles: stats.indexedFiles + second.indexedFiles,
+        indexedChunks: stats.indexedChunks + second.indexedChunks,
+        updatedChunks: stats.updatedChunks + second.updatedChunks,
+        removedChunks: stats.removedChunks + second.removedChunks,
+      };
+    }
+    return stats;
+  }
+
   private async performSync(options?: { force?: boolean }): Promise<MemorySyncStats> {
+    const generationAtStart = this.dirtyGeneration;
     await this.store.ensureDirectoryExists();
 
     const files = await this.store.listMemoryFiles();
@@ -159,7 +177,9 @@ export class MemoryIndexer {
       removedChunks += sessionResult.removed;
     }
 
-    this.dirty = false;
+    if (this.dirtyGeneration === generationAtStart) {
+      this.dirty = false;
+    }
     return {
       indexedFiles: files.length + (this.options.indexSessions ? 1 : 0),
       indexedChunks,
