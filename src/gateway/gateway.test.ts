@@ -3,6 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import type { GatewayConfig } from './config.js';
 import type { GatewayRuntime } from './gateway.js';
 import type { WhatsAppInboundMessage } from './channels/whatsapp/types.js';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER } from '../model/llm.js';
 
 const cfg: GatewayConfig = {
   gateway: { accountId: 'default', logLevel: 'info' },
@@ -164,8 +165,8 @@ describe('startGateway orchestration', () => {
       sessionKey: 'whatsapp:default:+12025550100',
       query: 'Analyze AAPL',
       channel: 'whatsapp',
-      model: 'gpt-5.4',
-      modelProvider: 'openai',
+      model: DEFAULT_MODEL,
+      modelProvider: DEFAULT_PROVIDER,
     }));
     expect(sendMessageWhatsAppMock).toHaveBeenCalledWith({
       to: '12025550100@s.whatsapp.net',

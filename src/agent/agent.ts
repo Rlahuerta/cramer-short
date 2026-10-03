@@ -1,6 +1,6 @@
 import { AIMessage } from '@langchain/core/messages';
 import { StructuredToolInterface } from '@langchain/core/tools';
-import { callLlm, streamCallLlm, getLlmCallTimeoutMs } from '../model/llm.js';
+import { callLlm, streamCallLlm, getLlmCallTimeoutMs, DEFAULT_MODEL } from '../model/llm.js';
 import { getSetting, loadConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { buildToolDescriptions, getTools } from '../tools/registry.js';
@@ -177,7 +177,6 @@ export {
   shouldRerunPolymarketForecastWithMarkov,
 } from './query-router.js';
 
-const DEFAULT_MODEL = 'gpt-5.4';
 export const DEFAULT_MAX_ITERATIONS = 25;
 const MAX_OVERFLOW_RETRIES = 2;
 /** Flush memory to disk every N iterations regardless of context size. */

@@ -24,6 +24,7 @@ import type { GroupContext } from '../agent/prompts.js';
 import { appendFileSync } from 'node:fs';
 import { cramerShortPath } from '../utils/paths.js';
 import { getSetting } from '../utils/config.js';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER } from '../model/llm.js';
 
 const LOG_PATH = cramerShortPath('gateway-debug.log');
 function debugLog(msg: string) {
@@ -208,8 +209,8 @@ async function handleInbound(
     console.log(`Processing message with agent...`);
     runtime.debugLog(`[gateway] running agent for session=${route.sessionKey}`);
     const startedAt = Date.now();
-    const model = runtime.getSetting('modelId', 'gpt-5.4') as string;
-    const modelProvider = runtime.getSetting('provider', 'openai') as string;
+    const model = runtime.getSetting('modelId', DEFAULT_MODEL) as string;
+    const modelProvider = runtime.getSetting('provider', DEFAULT_PROVIDER) as string;
     const answer = await runtime.runAgentForMessage({
       sessionKey: route.sessionKey,
       query,

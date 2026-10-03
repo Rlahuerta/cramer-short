@@ -65,7 +65,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | File | What it owns |
 |------|-------------|
 | `src/index.tsx` | Entry point. Routes to TUI (`cli.ts`), schedule, forecast-lab, or replay-label subcommands |
-| `src/providers.ts` | Canonical LLM provider registry + model-prefix routing. Default: `gpt-5.4` / `openai` |
+| `src/providers.ts` | Canonical LLM provider registry + model-prefix routing. Default: `ollama:deepseek-v4.1-flash:cloud` via `ollama` |
 | `src/tools/registry.ts` | Canonical tool registry. Env-gated: `web_search` needs `EXASEARCH_API_KEY` \| `PERPLEXITY_API_KEY` \| `TAVILY_API_KEY`; `x_search` needs `X_BEARER_TOKEN`; `skill` only when skills are discovered |
 | `src/agent/agent.ts` | Core execution loop (1,400 lines post-refactor). Query routing, tool orchestration, memory injection, answer post-processing |
 | `src/agent/query-router.ts` | Compatibility re-export barrel; query-router implementation lives in `src/agent/query-router/` |
@@ -124,7 +124,7 @@ bun run test:integration     # integration tier
 - TypeScript is strict ESM. Use explicit `.js` extensions in local imports; `@/*` resolves to `src/*` via `tsconfig.json`.
 - Tool availability depends on env keys. `web_search` only registers when `EXASEARCH_API_KEY`, `PERPLEXITY_API_KEY`, or `TAVILY_API_KEY` is set, in that priority order; `X_BEARER_TOKEN` gates `x_search`.
 - Settings validation (`src/utils/config.ts`) preserves unknown keys, but invalid known fields are stripped with a warning to stderr instead of crashing startup.
-- Default model is `gpt-5.4` via OpenAI. Provider routing is prefix-based in `src/providers.ts`.
+- Default model is `ollama:deepseek-v4.1-flash:cloud` via Ollama (Ollama Cloud when `OLLAMA_API_KEY` is set, else local `OLLAMA_BASE_URL`/localhost). Provider routing is prefix-based in `src/providers.ts`.
 - SOUL.md load order: `.cramer-short/SOUL.md` first, then repo `SOUL.md`. User overrides take priority.
 - Skill overrides in `.cramer-short/skills/` shadow builtins by name.
 - `bun install` runs `playwright install chromium` in postinstall. CI skips this via `--ignore-scripts`.
