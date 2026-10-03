@@ -1,7 +1,8 @@
 import { MS_PER_DAY } from './time.js';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { existsSync, readFileSync } from 'fs';
 import { cramerShortPath } from './paths.js';
+import { resolveProvider } from '../providers.js';
+import { atomicWriteFileSync } from './atomic-write.js';
 import { ConfigSchema, type Config } from '../schemas/config.js';
 
 export { ConfigSchema, type Config } from '../schemas/config.js';
@@ -140,11 +141,7 @@ export function loadConfig(): Config {
 
 export function saveConfig(config: Config): boolean {
   try {
-    const dir = dirname(SETTINGS_FILE);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    writeFileSync(SETTINGS_FILE, JSON.stringify(config, null, 2));
+    atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(config, null, 2));
     configCache = null;
     return true;
   } catch {
@@ -164,13 +161,13 @@ function migrateModelToProvider(config: Config): Config {
 
   // If has legacy model setting, convert to provider
   if (config.model) {
-    const providerId = MODEL_TO_PROVIDER_MAP[config.model];
-    if (providerId) {
-      config.provider = providerId;
-      delete config.model;
-      // Save the migrated config
-      saveConfig(config);
+    config.provider = MODEL_TO_PROVIDER_MAP[config.model] ?? resolveProvider(config.model).id;
+    if (!config.modelId) {
+      config.modelId = config.model;
     }
+    delete config.model;
+    // Save the migrated config
+    saveConfig(config);
   }
 
   return config;
