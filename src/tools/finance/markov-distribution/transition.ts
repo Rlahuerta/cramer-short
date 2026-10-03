@@ -294,53 +294,62 @@ export function stationaryDistribution(
 }
 
 /**
- * Compute the second-largest absolute eigenvalue of the transition matrix
- * using the power iteration method with deflation.
+ * Compute the second-largest absolute eigenvalue (magnitude) of a
+ * row-stochastic transition matrix.
+ *
+ * Matches the Python reference (`np.linalg.eigvals`, second-largest magnitude)
+ * for 2×2 and 3×3 matrices:
+ *  - 2×2: closed-form quadratic on trace/determinant.
+ *  - 3×3: λ = 1 is known (rows sum to 1), so factor (λ − 1) out of the
+ *    characteristic polynomial and solve the remaining quadratic exactly.
+ * This replaces a deflated power iteration that returned 0 for every
+ * doubly-stochastic matrix: its uniform start vector is already the stationary
+ * eigenvector, so the projection cancelled the iterate immediately (the
+ * default matrix's true ρ = 0.4 came back as 0).
  *
  * ρ determines mixing time: exp(−ρ×n) is how quickly the chain forgets its
  * initial state. Small ρ → fast mixing, Markov signal decays quickly.
  *
  * Returns a value in [0, 1].
  */
-export function secondLargestEigenvalue(P: TransitionMatrix, iterations = 100): number {
+export function secondLargestEigenvalue(P: TransitionMatrix): number {
+  const magnitudes = eigenvalueMagnitudes(P);
+  if (magnitudes.length < 2) return 0;
+  magnitudes.sort((a, b) => b - a);
+  return Math.min(1, Math.max(0, magnitudes[1]));
+}
+
+function eigenvalueMagnitudes(P: TransitionMatrix): number[] {
   const n = P.length;
-
-  // First eigenvector (stationary distribution) via power iteration
-  let v = Array(n).fill(1 / n);
-  for (let iter = 0; iter < iterations; iter++) {
-    const next = Array(n).fill(0);
-    for (let i = 0; i < n; i++)
-      for (let j = 0; j < n; j++) next[j] += v[i] * P[i][j];
-    const norm = next.reduce((s, x) => s + x, 0);
-    v = next.map(x => x / norm);
+  if (n <= 1) return n === 1 ? [Math.abs(P[0][0])] : [];
+  if (n === 2) {
+    const tr = P[0][0] + P[1][1];
+    const det = P[0][0] * P[1][1] - P[0][1] * P[1][0];
+    const disc = tr * tr - 4 * det;
+    if (disc < 0) {
+      const mag = Math.sqrt(Math.max(0, det));
+      return [mag, mag];
+    }
+    const root = Math.sqrt(disc);
+    return [Math.abs((tr + root) / 2), Math.abs((tr - root) / 2)];
   }
-  // L2-normalize v for use in deflation (required for correct orthogonal projection)
-  const vL2 = v.reduce((s, x) => s + x * x, 0) ** 0.5;
-  const vUnit = vL2 < 1e-12 ? v : v.map(x => x / vL2);
-
-  // Deflate: remove first eigenvector component, find second via power iteration.
-  // Use uniform starting vector to avoid biasing toward any particular state.
-  let w: number[] = Array.from({ length: n }, () => 1 / n);
-  const wNorm = w.reduce((s, x) => s + x * x, 0) ** 0.5;
-  w = w.map(x => x / wNorm);
-
-  for (let iter = 0; iter < iterations; iter++) {
-    const next = Array(n).fill(0);
-    for (let i = 0; i < n; i++)
-      for (let j = 0; j < n; j++) next[j] += w[i] * P[i][j];
-    // Deflate: subtract L2-normalized component along stationary eigenvector
-    const dot = next.reduce((s, x, i) => s + x * vUnit[i], 0);
-    const deflated = next.map((x, i) => x - dot * vUnit[i]);
-    const norm = deflated.reduce((s, x) => s + x * x, 0) ** 0.5;
-    // deflated≈0 means second eigenvalue is ≈0 (e.g. uniform matrix has instant mixing)
-    if (norm < 1e-10) return 0;
-    w = deflated.map(x => x / norm);
+  if (n === 3) {
+    const tr = P[0][0] + P[1][1] + P[2][2];
+    const det =
+      P[0][0] * (P[1][1] * P[2][2] - P[1][2] * P[2][1]) -
+      P[0][1] * (P[1][0] * P[2][2] - P[1][2] * P[2][0]) +
+      P[0][2] * (P[1][0] * P[2][1] - P[1][1] * P[2][0]);
+    const b = tr - 1;
+    const c = det;
+    const disc = b * b - 4 * c;
+    if (disc < 0) {
+      const mag = Math.sqrt(Math.max(0, c));
+      return [1, mag, mag];
+    }
+    const root = Math.sqrt(disc);
+    const mu1 = b >= 0 ? (b + root) / 2 : (b - root) / 2;
+    const mu2 = mu1 !== 0 ? c / mu1 : 0;
+    return [1, Math.abs(mu1), Math.abs(mu2)];
   }
-
-  const Pw = Array(n).fill(0);
-  for (let i = 0; i < n; i++)
-    for (let j = 0; j < n; j++) Pw[j] += w[i] * P[i][j];
-
-  const lambda2 = w.reduce((s, x, i) => s + x * Pw[i], 0);
-  return Math.min(1, Math.max(0, Math.abs(lambda2)));
+  throw new Error('secondLargestEigenvalue supports matrices up to 3×3');
 }

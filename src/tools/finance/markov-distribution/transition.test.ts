@@ -291,25 +291,54 @@ describe('secondLargestEigenvalue', () => {
     expect(rho).toBeLessThanOrEqual(1);
   });
 
-  it('identity matrix has second eigenvalue close to 1 (no mixing)', () => {
+  it('identity matrix has second eigenvalue 1 (no mixing)', () => {
     const identity: number[][] = Array.from({ length: NUM_STATES }, (_, i) =>
       Array.from({ length: NUM_STATES }, (_, j) => (i === j ? 1 : 0)),
     );
     const rho = secondLargestEigenvalue(identity);
-    // Identity matrix: all eigenvalues = 1. The second eigenvalue is degenerate
-    // (any orthonormal vector is an eigenvector). The uniform starting vector is
-    // orthogonal to the first eigenvector's basis, so the deflated power iteration
-    // lands at zero → returns 0. This is correct behavior for a pathological matrix.
-    // A well-conditioned near-identity matrix would return ~1.
-    expect(rho).toBe(0);
+    // All |λ| = 1; np.linalg.eigvals' second-largest magnitude is 1. The old
+    // deflated power iteration returned 0 here, which the previous expectation
+    // encoded as "correct behavior for a pathological matrix".
+    expect(rho).toBeCloseTo(1, 12);
   });
 
-  it('uniform row matrix has second eigenvalue close to 0 (instant mixing)', () => {
+  it('uniform row matrix has second eigenvalue 0 (instant mixing)', () => {
     const uniform: number[][] = Array.from({ length: NUM_STATES }, () =>
       Array(NUM_STATES).fill(1 / NUM_STATES),
     );
     const rho = secondLargestEigenvalue(uniform);
-    expect(rho).toBeLessThan(0.1);
+    expect(rho).toBeCloseTo(0, 12);
+  });
+
+  it('default doubly-stochastic matrix has second eigenvalue 0.4 (regression)', () => {
+    // P = 0.6·I + 0.2·J → eigenvalues {1, 0.4, 0.4}. The old deflated power
+    // iteration started from the uniform vector, which is already the stationary
+    // eigenvector of any doubly-stochastic matrix, so deflation collapsed the
+    // iterate to 0 → computeMixingWeight = 1 → Markov anchors silently ignored.
+    const rho = secondLargestEigenvalue(buildDefaultMatrix());
+    expect(Math.abs(rho - 0.4)).toBeLessThan(1e-6);
+  });
+
+  it('non-doubly-stochastic 3×3 matches the eigvals oracle', () => {
+    // Stationary distribution ≠ uniform, so the old uniform-start deflation also
+    // biased this case; expected value from np.linalg.eigvals.
+    const P = [
+      [0.5, 0.5, 0.0],
+      [0.5, 0.3, 0.2],
+      [0.0, 0.2, 0.8],
+    ];
+    expect(secondLargestEigenvalue(P)).toBeCloseTo(0.7358898943540673, 9);
+  });
+
+  it('uses eigenvalue magnitude for a cyclic chain (complex pair)', () => {
+    // Eigenvalues 0.1 + 0.9·ω (complex pair); |λ| = sqrt(0.73). A deflated power
+    // iteration cannot represent the complex pair, so this locks the analytic path.
+    const P = [
+      [0.1, 0.9, 0.0],
+      [0.0, 0.1, 0.9],
+      [0.9, 0.0, 0.1],
+    ];
+    expect(secondLargestEigenvalue(P)).toBeCloseTo(0.854400374531753, 9);
   });
 });
 describe('stationaryDistribution', () => {
