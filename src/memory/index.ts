@@ -72,9 +72,8 @@ export class MemoryManager {
         await instance.initialize();
         MemoryManager.instance = instance;
         return instance;
-      })().catch((error: unknown) => {
+      })().finally(() => {
         MemoryManager.init = null;
-        throw error;
       });
     }
     return MemoryManager.init;

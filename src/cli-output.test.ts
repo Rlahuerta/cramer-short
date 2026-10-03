@@ -9,7 +9,7 @@
  *     the TUI, erase the live-view, write the exchange to stdout, and clear the
  *     chat-log so the next query starts from a clean slate.
  */
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import { stripThinkingTags } from './agent/agent.js';
 import { formatDuration, formatExchangeForScrollback } from './utils/ui/scrollback.js';
 import type { HistoryItem } from './controllers/types.js';
@@ -209,7 +209,6 @@ describe('flushExchangeToScrollback integration', () => {
 
     // Intercept stdout.write — restore after each test via the returned original.
     const orig = process.stdout.write.bind(process.stdout);
-    mock.module('process', () => ({})); // not needed — we patch directly
     process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
       writtenChunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
       return true;
