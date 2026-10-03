@@ -10,6 +10,11 @@ jobs:
   checks:
     if: github.event.action != 'labeled' || github.event.label.name == 'run-ci'
     runs-on: ubuntu-latest
+    services:
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +36,22 @@ jobs:
 
       - name: Coverage gate
         run: bun run test:coverage
+
+      - name: Warm up Ollama (pull qwen3:0.6b)
+        run: |
+          for attempt in $(seq 1 30); do
+            curl -fsS -X POST http://localhost:11434/api/pull \
+              -H 'Content-Type: application/json' \
+              -d '{"model":"qwen3:0.6b","stream":false}' > /dev/null 2>&1 || true
+            if curl -fsS http://localhost:11434/api/tags | grep -q '"qwen3:0.6b"'; then
+              echo "qwen3:0.6b is ready"
+              exit 0
+            fi
+            echo "Ollama not ready (attempt ${attempt}/30); retrying in 5s..."
+            sleep 5
+          done
+          echo "Timed out waiting for qwen3:0.6b"
+          exit 1
 
       - name: Integration tests
         run: bun run test:integration
