@@ -39,7 +39,7 @@ trap 'rm -f "$TMP_OUT"' EXIT
 
 # ─── TypeScript Unit Tests ──────────────────────────────────
 echo "── TypeScript Unit Tests ────────────────────────────────"
-if bun test --ignore 'src/**/*.integration.test.ts' --ignore 'src/**/*.e2e.test.ts' 2>&1 | tee "$TMP_OUT"; then
+if bun test 2>&1 | tee "$TMP_OUT"; then
   TS_PASS=$((TS_PASS + 1))
 else
   TS_FAIL=$((TS_FAIL + 1))
