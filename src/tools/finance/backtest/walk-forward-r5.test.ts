@@ -69,6 +69,22 @@ function syntheticChoppyPrices(): number[] {
   return prices;
 }
 
+// Regime drift flips at random intervals with overlapping emission distributions.
+// A fitted HMM keeps genuinely uncertain posteriors here, so soft regime weighting
+// stays observable; the deterministic alternating choppy series fits with near-zero
+// entropy and now behaves identically with the flag on or off.
+function syntheticAmbiguousRegimePrices(): number[] {
+  const rng = seedRng(202);
+  const prices = [100];
+  let regime = 0;
+  for (let i = 0; i < 300; i++) {
+    if (rng() < 0.15) regime = 1 - regime;
+    const drift = regime === 0 ? 0.0015 : -0.0012;
+    prices.push(prices.at(-1)! * Math.exp(drift + gauss(rng) * 0.012));
+  }
+  return prices;
+}
+
 interface AdaptiveConformalWalkForwardOptions {
   enableAdaptiveConformal?: boolean;
   conformalAlpha?: number;
@@ -517,13 +533,13 @@ describe('soft regime weighting walk-forward wiring', () => {
     expect(comparableStepProjection(explicitlyDisabled)).toEqual(comparableStepProjection(baseline));
   });
 
-  it('widens uncertainty and lowers average confidence on a choppy synthetic series when enabled', async () => {
-    const prices = syntheticChoppyPrices();
+  it('widens uncertainty and lowers average confidence on an ambiguous regime synthetic series when enabled', async () => {
+    const prices = syntheticAmbiguousRegimePrices();
     const baseConfig = {
       ticker: 'BTC-USD',
       prices,
       horizon: 7,
-      warmup: 120,
+      warmup: 160,
       stride: 5,
       predictionConfidenceMode: 'rebalanced' as const,
     };
