@@ -21,6 +21,8 @@ export interface DcfInputs {
   dilutedShares: number;
   /** Optional exit multiple for cross-check TV. */
   exitMultiple?: number;
+  /** Base-year EBITDA; when provided, the exit-multiple TV uses terminal EBITDA. */
+  ebitda?: number;
 }
 
 export interface DcfResult {
@@ -140,6 +142,7 @@ export function computeFairValuePerShare(inputs: DcfInputs): DcfResult {
     netDebt,
     dilutedShares,
     exitMultiple,
+    ebitda,
   } = inputs;
 
   // 1. Project FCFs
@@ -152,7 +155,11 @@ export function computeFairValuePerShare(inputs: DcfInputs): DcfResult {
   let tvMethod: DcfResult['tvMethod'] = 'gordon';
 
   if (exitMultiple !== undefined) {
-    exitTv = exitMultipleTv(finalFcf, exitMultiple);
+    // ponytail: absent ebitda falls back to final FCF — wrong basis but preserves legacy output; remove once every caller supplies ebitda
+    const exitBasis = ebitda !== undefined
+      ? projectFcf(ebitda, growthRate, years, decay)[years - 1]
+      : finalFcf;
+    exitTv = exitMultipleTv(exitBasis, exitMultiple);
     tvMethod = 'both';
   }
 

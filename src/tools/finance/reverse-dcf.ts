@@ -40,6 +40,10 @@ const ReverseDcfSchema = z.object({
     .default(0.05)
     .describe('Annual decay applied to growth rate (default 0.05 = 5%).'),
   base_fcf: z.number().describe('Base-year free cash flow (required).'),
+  ebitda: z
+    .number()
+    .optional()
+    .describe('Base-year EBITDA (optional; carried through to the DCF fair-value calls).'),
   net_debt: z
     .number()
     .describe('Net debt (can be negative for net-cash companies).'),
@@ -71,7 +75,7 @@ Solves for the market-implied FCF growth rate that makes the DCF fair value equa
 - Any time you want to understand what growth the market is pricing in.
 
 ## Inputs
-- ticker, current_price, wacc, terminal_growth_rate, years, decay, base_fcf, net_debt, diluted_shares
+- ticker, current_price, wacc, terminal_growth_rate, years, decay, base_fcf, ebitda, net_debt, diluted_shares
 
 ## Output
 - impliedGrowthRate: number | null
@@ -90,6 +94,7 @@ function solveReverseDcf(
   decay: number,
   netDebt: number,
   dilutedShares: number,
+  ebitda?: number,
 ): ReverseDcfResult {
   // No finite growth rate can produce a non-positive fair value when base FCF is positive.
   if (!isFinite(currentPrice) || currentPrice <= 0) {
@@ -118,6 +123,7 @@ function solveReverseDcf(
       decay,
       netDebt,
       dilutedShares,
+      ebitda,
     }).fairValuePerShare;
   }
 
@@ -231,6 +237,7 @@ export const reverseDcfTool = new DynamicStructuredTool({
         input.decay,
         input.net_debt,
         input.diluted_shares,
+        input.ebitda,
       );
     } catch (e) {
       return formatToolResult({

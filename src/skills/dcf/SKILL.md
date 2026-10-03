@@ -57,7 +57,7 @@ Call `get_financials` and `get_market_data` to assemble the inputs the typed
 tools will consume. Capture all values before proceeding to Step 4 — the
 `dcf_valuation` tool requires `base_fcf`, `net_debt`, `diluted_shares`,
 `wacc`, `growth_rate`, `terminal_growth_rate`, `years`, and (optionally)
-`exit_multiple`.
+`exit_multiple` and `ebitda`.
 
 ### 1.1 Cash Flow History
 
@@ -74,7 +74,7 @@ tools will consume. Capture all values before proceeding to Step 4 — the
 
 **Extract:** `market_cap`, `enterprise_value`, `free_cash_flow_growth`,
 `revenue_growth`, `return_on_invested_capital`, `debt_to_equity`,
-`free_cash_flow_per_share`
+`free_cash_flow_per_share`, `ebitda`
 
 ### 1.3 Balance Sheet
 
@@ -223,6 +223,8 @@ warnings/errors you must surface.
 dcf_valuation({
   ticker: "[TICKER]",
   base_fcf: [latest annual FCF from Step 1.1, in currency units],
+  ebitda: [latest annual EBITDA from Step 1.2, if available — required for an
+           EBITDA-based exit-multiple TV; omit only when EBITDA is unavailable],
   net_debt: [Net Debt from Step 1.4],
   diluted_shares: [shares outstanding from Step 1.3, Step 1.5, or get_financials],
   wacc: [from Step 3 — {{wacc}} override or wacc_inputs.wacc],
@@ -233,6 +235,11 @@ dcf_valuation({
   exit_multiple: [peer EV/EBITDA from peer-comparison skill if available, else 10]
 })
 ```
+
+When `ebitda` is provided, the exit-multiple TV is `terminal-year EBITDA ×
+exit_multiple` (standard basis); both series compound with the same decayed
+growth. When omitted, the tool falls back to final-year FCF for backward
+compatibility — pass `ebitda` whenever it is available.
 
 **Tool returns:**
 - `fairValuePerShare` — base-case intrinsic value (the headline number).
@@ -295,6 +302,7 @@ reverse_dcf({
   years: {{years}},
   decay: 0.05,
   base_fcf: [same base_fcf used in Step 4],
+  ebitda: [same ebitda used in Step 4, if provided],
   net_debt: [same net_debt used in Step 4],
   diluted_shares: [same diluted_shares used in Step 4]
 })

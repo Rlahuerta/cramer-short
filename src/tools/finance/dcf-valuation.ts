@@ -21,6 +21,8 @@ Runs a discounted cash flow (DCF) valuation using pre-computed inputs.
 ## Inputs
 - **ticker** (required): stock ticker symbol
 - **base_fcf** (required): current-year free cash flow (currency units)
+- **ebitda**: optional base-year EBITDA; when provided with exit_multiple,
+  the exit-multiple TV is computed from terminal EBITDA (standard basis)
 - **net_debt** (required): total debt minus cash and equivalents
 - **diluted_shares** (required): fully diluted shares outstanding
 - **wacc**: weighted average cost of capital as a decimal (default 0.10)
@@ -46,6 +48,12 @@ const DcfValuationSchema = z.object({
     .number()
     .gt(0)
     .describe('Current-year free cash flow in currency units (must be > 0).'),
+  ebitda: z
+    .number()
+    .optional()
+    .describe(
+      'Base-year EBITDA. When provided with exit_multiple, the exit-multiple TV uses terminal EBITDA.',
+    ),
   net_debt: z
     .number()
     .describe('Total debt minus cash and equivalents (can be negative for net-cash companies).'),
@@ -112,6 +120,7 @@ export const dcfValuationTool = new DynamicStructuredTool({
       netDebt: input.net_debt,
       dilutedShares: input.diluted_shares,
       exitMultiple: input.exit_multiple,
+      ebitda: input.ebitda,
     };
 
     let result: ReturnType<typeof computeFairValuePerShare>;

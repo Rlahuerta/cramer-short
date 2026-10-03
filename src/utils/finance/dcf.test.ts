@@ -223,6 +223,24 @@ describe('computeFairValuePerShare', () => {
     expect(result.divergencePct!).toBeGreaterThanOrEqual(0);
   });
 
+  it('exit-multiple TV uses terminal EBITDA when ebitda is provided', () => {
+    const inputs: DcfInputs = { ...baseInputs, ebitda: 200, exitMultiple: 5 };
+    const result = computeFairValuePerShare(inputs);
+    // EBITDA compounds exactly like base FCF (projectFcf), then × 5.
+    const terminalEbitda = projectFcf(200, 0.10, 3, 0.05)[2];
+    expect(result.exitMultipleTv).toBeCloseTo(terminalEbitda * 5, 6);
+    // Must NOT be the FCF-based TV (base FCF 100 × 5).
+    const fcfBasedTv = exitMultipleTv(projectFcf(100, 0.10, 3, 0.05)[2], 5);
+    expect(result.exitMultipleTv).not.toBeCloseTo(fcfBasedTv, 6);
+  });
+
+  it('exit-multiple TV falls back to final FCF when ebitda is absent (golden)', () => {
+    const inputs: DcfInputs = { ...baseInputs, exitMultiple: 12 };
+    const result = computeFairValuePerShare(inputs);
+    // Frozen pre-fix value: projectFcf(100, 0.10, 3, 0.05)[2] * 12
+    expect(result.exitMultipleTv).toBe(1575.4860000000003);
+  });
+
   it('monotonicity: higher growth → higher fair value', () => {
     const low = computeFairValuePerShare({ ...baseInputs, growthRate: 0.05 });
     const high = computeFairValuePerShare({ ...baseInputs, growthRate: 0.15 });
