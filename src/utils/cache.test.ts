@@ -1,7 +1,7 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, test, expect, beforeEach, afterEach, afterAll, mock, setSystemTime } from 'bun:test';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 
 beforeEach(() => {
@@ -67,6 +67,31 @@ describe('buildCacheKey', () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildCacheKey path-traversal hardening
+// ---------------------------------------------------------------------------
+
+describe('buildCacheKey path-traversal hardening', () => {
+  test('keeps the exact historical filename for valid tickers (BTC-USD, BRK.B)', () => {
+    expect(buildCacheKey('/prices/', { ticker: 'BTC-USD', interval: 'day', limit: 30 }))
+      .toBe('prices/BTC-USD_1c2c58aab189.json');
+    expect(buildCacheKey('/prices/', { ticker: 'BRK.B', interval: 'day', limit: 30 }))
+      .toBe('prices/BRK.B_3a9bc0fb0814.json');
+  });
+
+  test('sanitizes a path-traversal ticker so the file stays under the cache root', () => {
+    const key = buildCacheKey('/prices/', { ticker: '../../../../tmp/pwn' });
+    const [dir, filename] = key.split('/');
+    expect(dir).toBe('prices');
+    expect(filename).toBeDefined();
+    expect(filename!).not.toContain('/');
+    expect(filename!).not.toContain('..');
+    expect(filename!).toMatch(/^[A-Za-z0-9._-]{1,32}_[0-9a-f]{12}\.json$/);
+    const root = resolve(TEST_CACHE_DIR);
+    expect(resolve(root, key).startsWith(root + sep)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // readCache / writeCache round-trip
 // ---------------------------------------------------------------------------
 
@@ -106,6 +131,20 @@ describe('readCache / writeCache', () => {
   test('returns null on cache miss (no file)', () => {
     const cached = readCache('/prices/', { ticker: 'AAPL', start_date: '2024-01-01', end_date: '2024-12-31' });
     expect(cached).toBeNull();
+  });
+
+  test('round-trips a sanitized path-traversal ticker so lookups still cache', () => {
+    const endpoint = '/prices/';
+    const params = { ticker: '../../../../tmp/pwn', interval: 'day' };
+    const data = { prices: [{ close: 42 }] };
+    const url = 'https://api.financialdatasets.ai/prices/';
+
+    writeCache(endpoint, params, data, url);
+    const cached = readCache(endpoint, params);
+
+    expect(cached).not.toBeNull();
+    expect(cached!.data).toEqual(data);
+    expect(cached!.url).toBe(url);
   });
 
   test('returns null and removes file when cache entry is corrupted JSON', () => {
