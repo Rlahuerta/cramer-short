@@ -122,6 +122,9 @@ export function normalizeGammaMarket(market: GammaMarket): NormalizedPolymarketM
   if (outcomes.length === 0 || prices.length === 0) return null;
 
   const tokenIds = parseStringArrayField(market.clobTokenIds);
+  const yesIndex = outcomes.findIndex((outcome) => outcome.trim().toLowerCase() === 'yes');
+  // Labelled Yes → that token; no Yes label → keep the legacy first-token fallback.
+  const primaryYesTokenId = yesIndex >= 0 ? tokenIds[yesIndex] : tokenIds[0];
   const mappedOutcomes = outcomes.reduce<NormalizedPolymarketMarket['outcomes']>((acc, outcome, index) => {
     const normalized = outcome.trim().toLowerCase();
     if (normalized === 'yes') {
@@ -136,7 +139,7 @@ export function normalizeGammaMarket(market: GammaMarket): NormalizedPolymarketM
     marketId: market.conditionId ?? market.id,
     question: market.question,
     outcomes: mappedOutcomes,
-    ...(tokenIds[0] ? { primaryYesTokenId: tokenIds[0] } : {}),
+    ...(primaryYesTokenId ? { primaryYesTokenId } : {}),
     endDate: market.endDateIso ?? null,
     volume24h: typeof market.volume24hr === 'number' && Number.isFinite(market.volume24hr) ? market.volume24hr : 0,
     liquidity: typeof market.liquidityNum === 'number' && Number.isFinite(market.liquidityNum) ? market.liquidityNum : 0,

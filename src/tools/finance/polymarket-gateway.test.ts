@@ -63,6 +63,55 @@ describe('normalizeGammaMarket', () => {
     });
   });
 
+  it('maps the primary yes token by outcome label when No comes first', () => {
+    const raw = {
+      id: 'market-2',
+      conditionId: 'condition-2',
+      question: 'Will Bitcoin be above $120,000 on Dec 31?',
+      outcomes: '["No","Yes"]',
+      outcomePrices: '["0.58","0.42"]',
+      clobTokenIds: '["no-token","yes-token"]',
+      active: true,
+      closed: false,
+    };
+
+    expect(normalizeGammaMarket(raw)).toMatchObject({
+      primaryYesTokenId: 'yes-token',
+      outcomes: {
+        yes: { label: 'Yes', probability: 0.42, tokenId: 'yes-token' },
+        no: { label: 'No', probability: 0.58, tokenId: 'no-token' },
+      },
+    });
+  });
+
+  it('matches the Yes outcome label case-insensitively', () => {
+    const raw = {
+      id: 'market-3',
+      question: 'Will Bitcoin be above $120,000 on Dec 31?',
+      outcomes: '["no","YES"]',
+      outcomePrices: '["0.58","0.42"]',
+      clobTokenIds: '["no-token","yes-token"]',
+      active: true,
+      closed: false,
+    };
+
+    expect(normalizeGammaMarket(raw)?.primaryYesTokenId).toBe('yes-token');
+  });
+
+  it('falls back to the first token when no outcome is labelled Yes', () => {
+    const raw = {
+      id: 'market-4',
+      question: 'Will Bitcoin be above $120,000 on Dec 31?',
+      outcomes: '["Up","Down"]',
+      outcomePrices: '["0.42","0.58"]',
+      clobTokenIds: '["up-token","down-token"]',
+      active: true,
+      closed: false,
+    };
+
+    expect(normalizeGammaMarket(raw)?.primaryYesTokenId).toBe('up-token');
+  });
+
   describe('searchGammaEventsPaginated', () => {
     it('keeps paginating until it finds enough filtered matches', async () => {
       const pageOne = Array.from({ length: 50 }, (_, index) => ({
