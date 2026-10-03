@@ -245,6 +245,83 @@ describe('schedule command', () => {
     expect(readFileSync(outPath, 'utf8')).toContain('Agent answer');
   });
 
+  it('replaces every {date} placeholder with the local date, not the UTC date', async () => {
+    const localNow = new Date('2026-05-02T23:30:00.000Z');
+    const expectedDate = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+    writeSchedules([
+      {
+        id: 'morning-briefing',
+        description: 'Daily watchlist briefing',
+        query: 'Run the watchlist-briefing skill',
+        outputFile: `${TEST_ROOT}/reports/{date}/{date}-briefing.md`,
+      },
+    ]);
+    const { options } = makeOptions({
+      now: () => localNow,
+      createAgent: async () => ({ run: (query) => fakeAgentRun(query, []) }),
+    });
+
+    await runScheduleCommand(['run', 'morning-briefing'], options);
+
+    const outPath = resolve(process.cwd(), TEST_ROOT, 'reports', expectedDate, `${expectedDate}-briefing.md`);
+    expect(outPath).not.toContain('{date}');
+    expect(readFileSync(outPath, 'utf8')).toContain('Agent answer');
+  });
+
+  it('reports a friendly error when schedules.json is not a job array', async () => {
+    mkdirSync(dirname(SCHEDULES_PATH), { recursive: true });
+    writeFileSync(SCHEDULES_PATH, '{}\n', 'utf8');
+    const { options, errors, exitCodes } = makeOptions();
+
+    await runScheduleCommand(['list'], options);
+
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('expected an array of jobs');
+  });
+
+  it('reports a friendly error when a job has an unknown kind', async () => {
+    writeSchedules([
+      {
+        id: 'weird-job',
+        kind: 'bogus',
+        description: 'Not a real kind',
+        query: 'x',
+        outputFile: '~/.cramer-short/reports/{date}-weird.md',
+      } as unknown as ScheduleJob,
+    ]);
+    const { options, errors, exitCodes } = makeOptions();
+
+    await runScheduleCommand(['list'], options);
+
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('unknown kind');
+  });
+
+  it('fails the job and exits 1 when the agent produces no answer', async () => {
+    writeSchedules([
+      {
+        id: 'morning-briefing',
+        description: 'Daily watchlist briefing',
+        query: 'Run the watchlist-briefing skill',
+        outputFile: '~/.cramer-short/reports/{date}-briefing.md',
+      },
+    ]);
+    const { options, errors, exitCodes } = makeOptions({
+      createAgent: async () => ({
+        run: async function* (): AsyncGenerator<AgentEvent> {
+          yield { type: 'tool_start', tool: 'memory_search', args: {} };
+          yield { type: 'done', answer: '', toolCalls: [], iterations: 1, totalTime: 5 };
+        },
+      }),
+    });
+
+    await runScheduleCommand(['run', 'morning-briefing'], options);
+
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('produced no answer');
+    expect(existsSync(join(TEST_HOME, '.cramer-short', 'reports', '2026-05-02-briefing.md'))).toBe(false);
+  });
+
   it('passes the configured settings model to the agent factory', async () => {
     writeSchedules([
       {
