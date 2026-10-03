@@ -21,6 +21,30 @@ function debugLog(msg: string) {
   appendFileSync(LOG_PATH, `${new Date().toISOString()} ${msg}\n`);
 }
 
+function logHandlerError(event: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  debugLog(`[inbound] ${event} handler error: ${message}`);
+  console.error(`[whatsapp] ${event} handler failed: ${message}`);
+}
+
+function safeEventHandler<Args extends unknown[]>(
+  event: string,
+  handler: (...args: Args) => unknown,
+): (...args: Args) => unknown {
+  return (...args: Args) => {
+    try {
+      const result = handler(...args);
+      if (result instanceof Promise) {
+        result.catch((error: unknown) => logHandlerError(event, error));
+      }
+      return result;
+    } catch (error) {
+      logHandlerError(event, error);
+      return undefined;
+    }
+  };
+}
+
 function getSocketUserLid(user: unknown): string | null {
   if (!user || typeof user !== 'object' || !('lid' in user)) {
     return null;
@@ -312,8 +336,11 @@ export async function monitorWebInbox(params: {
     }
   };
 
-  sock.ev.on('messages.upsert', onMessagesUpsert);
-  sock.ev.on('connection.update', onConnectionUpdate);
+  const safeMessagesUpsert = safeEventHandler('messages.upsert', onMessagesUpsert);
+  const safeConnectionUpdate = safeEventHandler('connection.update', onConnectionUpdate);
+
+  sock.ev.on('messages.upsert', safeMessagesUpsert);
+  sock.ev.on('connection.update', safeConnectionUpdate);
 
   return {
     sock,
@@ -323,8 +350,8 @@ export async function monitorWebInbox(params: {
         status: 499,
         isLoggedOut: false,
       });
-      sock.ev.off('messages.upsert', onMessagesUpsert);
-      sock.ev.off('connection.update', onConnectionUpdate);
+      sock.ev.off('messages.upsert', safeMessagesUpsert);
+      sock.ev.off('connection.update', safeConnectionUpdate);
       setActiveWebListener(params.accountId, null);
       sock.ws.close();
     },

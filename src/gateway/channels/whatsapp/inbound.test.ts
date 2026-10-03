@@ -1,5 +1,5 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { afterAll, beforeEach, describe, expect, it, mock, afterEach, setSystemTime } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, mock, afterEach, setSystemTime, spyOn } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 
 beforeEach(() => {
@@ -70,10 +70,12 @@ mock.module('../../../utils/paths.js', () => ({
   getExperimentRunManifestPath: (runId: string) =>
     ['.cramer-short-test', 'whatsapp-inbound', 'experiments', 'runs', runId, 'manifest.json'].join('/'),
 }));
+const getStatusCodeMock = mock((_err: unknown) => 401);
+const isLoggedOutReasonMock = mock((_err: unknown) => true);
 mock.module('./session.js', () => ({
   createWaSocket: createWaSocketMock,
-  getStatusCode: () => 401,
-  isLoggedOutReason: () => true,
+  getStatusCode: getStatusCodeMock,
+  isLoggedOutReason: isLoggedOutReasonMock,
   waitForWaConnection: waitForWaConnectionMock,
 }));
 mock.module('./outbound.js', () => ({ setActiveWebListener: setActiveWebListenerMock }));
@@ -106,6 +108,8 @@ beforeEach(() => {
     resolveJidToPhoneJidMock,
     isRecentInboundMessageMock,
     setActiveWebListenerMock,
+    getStatusCodeMock,
+    isLoggedOutReasonMock,
   ]) {
     fn.mockClear();
   }
@@ -257,5 +261,66 @@ describe('monitorWebInbox inbound conversion', () => {
 
     expect(readMessagesMock).toHaveBeenCalled();
     expect(onMessageMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('monitorWebInbox event handler safety', () => {
+  async function startInbox(onMessage: (msg: any) => Promise<void>) {
+    await monitorWebInbox({
+      accountId: 'default',
+      authDir: '.cramer-short-test/auth',
+      verbose: false,
+      allowFrom: [],
+      dmPolicy: 'open',
+      groupPolicy: 'disabled',
+      groupAllowFrom: [],
+      onMessage,
+    });
+  }
+
+  it('catches a rejected messages.upsert handler and logs it', async () => {
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await startInbox(async () => {
+        throw new Error('onMessage exploded');
+      });
+
+      eventHandlers['messages.upsert']!({
+        type: 'notify',
+        messages: [{
+          key: { remoteJid: 'alice@lid', id: 'boom-1', fromMe: false },
+          message: { conversation: 'hi' },
+          messageTimestamp: 1,
+        }],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('messages.upsert'),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('catches a synchronous throw from the connection.update handler', async () => {
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await startInbox(async () => {});
+      getStatusCodeMock.mockImplementationOnce(() => {
+        throw new Error('status lookup failed');
+      });
+
+      expect(() => eventHandlers['connection.update']!({
+        connection: 'close',
+        lastDisconnect: { error: new Error('disconnected') },
+      })).not.toThrow();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('connection.update'),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

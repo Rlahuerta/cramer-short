@@ -91,6 +91,7 @@ async function handleInbound(
   cfg: GatewayConfig,
   inbound: WhatsAppInboundMessage,
   runtime: GatewayRuntime,
+  configPath?: string,
 ): Promise<void> {
   const bodyPreview = elide(inbound.body.replace(/\n/g, ' '), 50);
   const isGroup = inbound.chatType === 'group';
@@ -137,7 +138,9 @@ async function handleInbound(
     storePath,
     sessionKey: route.sessionKey,
     channel: 'whatsapp',
-    to: inbound.from,
+    // For groups the heartbeat must reply to the group JID; storing the
+    // sender's personal phone would make it DM that participant privately.
+    to: isGroup ? inbound.chatId : inbound.from,
     accountId: route.accountId,
     agentId: route.agentId,
   });
@@ -146,23 +149,33 @@ async function handleInbound(
   const TYPING_INTERVAL_MS = 5000; // Refresh every 5 seconds
   let typingTimer: ReturnType<typeof setInterval> | undefined;
 
-  const startTypingLoop = async () => {
-    // For groups, use inbound.sendComposing directly (bypasses outbound strict checks)
-    if (isGroup) {
-      await inbound.sendComposing();
-      typingTimer = setInterval(() => { void inbound.sendComposing(); }, TYPING_INTERVAL_MS);
-    } else {
-      await runtime.sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId });
-      typingTimer = setInterval(() => {
-        void runtime.sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId });
-      }, TYPING_INTERVAL_MS);
-    }
-  };
-
   const stopTypingLoop = () => {
     if (typingTimer) {
       clearInterval(typingTimer);
       typingTimer = undefined;
+    }
+  };
+
+  const handleTypingError = (error: unknown) => {
+    const msg = error instanceof Error ? error.message : String(error);
+    runtime.debugLog(`[gateway] typing indicator failed: ${msg} (stopping loop)`);
+    stopTypingLoop();
+  };
+
+  const startTypingLoop = async () => {
+    // For groups, use inbound.sendComposing directly (bypasses outbound strict checks)
+    if (isGroup) {
+      await inbound.sendComposing();
+      typingTimer = setInterval(() => {
+        void inbound.sendComposing().catch(handleTypingError);
+      }, TYPING_INTERVAL_MS);
+    } else {
+      await runtime.sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId, configPath });
+      typingTimer = setInterval(() => {
+        void runtime
+          .sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId, configPath })
+          .catch(handleTypingError);
+      }, TYPING_INTERVAL_MS);
     }
   };
 
@@ -171,7 +184,7 @@ async function handleInbound(
     // For groups, use chatId (the group JID); for DMs, use replyToJid
     const outboundTarget = isGroup ? inbound.chatId : inbound.replyToJid;
     try {
-      runtime.assertOutboundAllowed({ to: outboundTarget, accountId: inbound.accountId });
+      runtime.assertOutboundAllowed({ to: outboundTarget, accountId: inbound.accountId, configPath });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       runtime.debugLog(`[gateway] outbound BLOCKED: ${msg}`);
@@ -238,6 +251,7 @@ async function handleInbound(
           to: inbound.replyToJid,
           body: cleanedAnswer,
           accountId: inbound.accountId,
+          configPath,
         });
       }
       console.log(`Sent reply (${answer.length} chars, ${durationMs}ms)`);
@@ -263,7 +277,7 @@ export async function startGateway(
     loadConfig: () => runtime.loadGatewayConfig(params.configPath),
     onMessage: async (inbound) => {
       const current = runtime.loadGatewayConfig(params.configPath);
-      await handleInbound(current, inbound, runtime);
+      await handleInbound(current, inbound, runtime, params.configPath);
     },
   });
   const manager = runtime.createChannelManager({

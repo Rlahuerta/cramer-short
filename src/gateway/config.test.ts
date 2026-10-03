@@ -1,5 +1,5 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime, spyOn } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -130,6 +130,23 @@ describe('loadGatewayConfig — file present', () => {
     expect(cfg.channels.whatsapp.accounts['acc-1']).toBeDefined();
     expect(cfg.channels.whatsapp.accounts['acc-1']!.name).toBe('Main Account');
   });
+
+  it('warns and falls back to defaults when the config file is malformed JSON', () => {
+    const path = makeConfigPath();
+    writeFileSync(path, '{ this is not valid json', 'utf-8');
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const cfg = loadGatewayConfig(path);
+      expect(cfg.gateway.accountId).toBe('default');
+      expect(cfg.gateway.logLevel).toBe('info');
+      expect(cfg.channels.whatsapp.enabled).toBe(true);
+      expect(cfg.bindings).toHaveLength(0);
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -233,6 +250,31 @@ describe('resolveWhatsAppAccount', () => {
     // account-level allowFrom is used (not merged with channel-level in resolveWhatsAppAccount)
     expect(resolved.allowFrom).toContain('+12025559999');
     expect(resolved.dmPolicy).toBe('allowlist');
+  });
+
+  it('treats an empty per-account allowFrom as unspecified and falls back to the channel-level allowlist', () => {
+    const cfg: GatewayConfig = {
+      ...minimalConfig,
+      channels: {
+        whatsapp: {
+          enabled: true,
+          allowFrom: ['*'],
+          accounts: {
+            'bot': {
+              enabled: true,
+              allowFrom: [],
+              dmPolicy: 'allowlist',
+              groupPolicy: 'disabled',
+              groupAllowFrom: [],
+              sendReadReceipts: true,
+              authDir: '/auth',
+            },
+          },
+        },
+      },
+    };
+    const resolved = resolveWhatsAppAccount(cfg, 'bot');
+    expect(resolved.allowFrom).toEqual(['*']);
   });
 
   it('normalizes E.164 phone numbers in allowFrom', () => {

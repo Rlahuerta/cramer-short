@@ -137,7 +137,11 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
 
       // Verify outbound is allowed
       try {
-        assertOutboundAllowed({ to: session.lastTo, accountId: session.lastAccountId });
+        assertOutboundAllowed({
+          to: session.lastTo,
+          accountId: session.lastAccountId,
+          configPath: params.configPath,
+        });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         debugLog(`[heartbeat] outbound BLOCKED: ${msg}`);
@@ -179,6 +183,7 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
           body: cleaned,
           accountId: session.lastAccountId,
           signal,
+          configPath: params.configPath,
         });
         debugLog(`[heartbeat] sent message to ${session.lastTo}`);
 

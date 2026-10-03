@@ -97,8 +97,9 @@ function extractE164FromJid(jid: string): string | null {
 export function assertOutboundAllowed(params: {
   to: string;
   accountId?: string;
+  configPath?: string;
 }): { toJid: string; recipientE164: string } {
-  const cfg = loadGatewayConfig();
+  const cfg = loadGatewayConfig(params.configPath);
   const accountId = params.accountId ?? cfg.gateway.accountId;
   const account = resolveWhatsAppAccount(cfg, accountId);
   const toJid = toWhatsappJid(params.to);
@@ -136,10 +137,15 @@ export async function sendMessageWhatsApp(params: {
   accountId?: string;
   media?: AnyMessageContent;
   signal?: AbortSignal;
+  configPath?: string;
 }): Promise<{ messageId: string; toJid: string }> {
   const active = getActive(params.accountId);
   debugLog(`[outbound] input to=${params.to}`);
-  const { toJid: to } = assertOutboundAllowed({ to: params.to, accountId: params.accountId });
+  const { toJid: to } = assertOutboundAllowed({
+    to: params.to,
+    accountId: params.accountId,
+    configPath: params.configPath,
+  });
   debugLog(`[outbound] normalized to=${to}`);
   const payload = params.media ?? { text: params.body };
   debugLog(`[outbound] sending message...`);
@@ -152,8 +158,16 @@ export async function sendMessageWhatsApp(params: {
   return { messageId, toJid: to };
 }
 
-export async function sendComposing(params: { to: string; accountId?: string }): Promise<void> {
+export async function sendComposing(params: {
+  to: string;
+  accountId?: string;
+  configPath?: string;
+}): Promise<void> {
   const active = getActive(params.accountId);
-  const { toJid: to } = assertOutboundAllowed({ to: params.to, accountId: params.accountId });
+  const { toJid: to } = assertOutboundAllowed({
+    to: params.to,
+    accountId: params.accountId,
+    configPath: params.configPath,
+  });
   await active.sock.sendPresenceUpdate('composing', to);
 }

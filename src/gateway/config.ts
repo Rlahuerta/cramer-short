@@ -137,17 +137,28 @@ export function getGatewayConfigPath(overridePath?: string): string {
   return overridePath ?? getEnv('DEXTER_GATEWAY_CONFIG') ?? DEFAULT_GATEWAY_PATH;
 }
 
+function defaultGatewayConfig(): GatewayConfig {
+  return {
+    gateway: { accountId: 'default', logLevel: 'info' },
+    channels: { whatsapp: { enabled: true, accounts: {}, allowFrom: [] } },
+    bindings: [],
+  };
+}
+
 export function loadGatewayConfig(overridePath?: string): GatewayConfig {
   const path = getGatewayConfigPath(overridePath);
   if (!existsSync(path)) {
-    return {
-      gateway: { accountId: 'default', logLevel: 'info' },
-      channels: { whatsapp: { enabled: true, accounts: {}, allowFrom: [] } },
-      bindings: [],
-    };
+    return defaultGatewayConfig();
   }
   const raw = readFileSync(path, 'utf8');
-  const parsed = GatewayConfigSchema.parse(JSON.parse(raw));
+  let parsed: z.infer<typeof GatewayConfigSchema>;
+  try {
+    parsed = GatewayConfigSchema.parse(JSON.parse(raw));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[gateway] failed to parse config from ${path} (${message}). Using defaults.`);
+    return defaultGatewayConfig();
+  }
   return {
     ...parsed,
     gateway: {
@@ -198,7 +209,9 @@ export function resolveWhatsAppAccount(
 ): WhatsAppAccountConfig {
   const account = cfg.channels.whatsapp.accounts?.[accountId] ?? {};
   const authDir = account.authDir ?? cramerShortPath('credentials', 'whatsapp', accountId);
-  const rawAllowFrom = account.allowFrom ?? cfg.channels.whatsapp.allowFrom ?? [];
+  const accountAllowFrom = account.allowFrom ?? [];
+  const rawAllowFrom =
+    accountAllowFrom.length > 0 ? accountAllowFrom : (cfg.channels.whatsapp.allowFrom ?? []);
   const allowFrom = Array.from(
     new Set(
       rawAllowFrom

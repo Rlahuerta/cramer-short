@@ -49,6 +49,7 @@ const formatGroupHistoryContextMock = mock(() => 'formatted group query');
 const noteGroupMemberMock = mock(() => {});
 const formatGroupMembersListMock = mock(() => 'Alice (+12025550101)');
 const getSettingMock = mock(<T>(_key: string, fallback: T): T => fallback);
+const debugLogMock = mock((_msg: string) => {});
 
 const { startGateway } = await import('./gateway.js');
 
@@ -73,7 +74,7 @@ function runtime(): Partial<GatewayRuntime> {
     noteGroupMember: noteGroupMemberMock,
     formatGroupMembersList: formatGroupMembersListMock,
     getSetting: getSettingMock,
-    debugLog: () => {},
+    debugLog: debugLogMock,
   };
 }
 
@@ -122,6 +123,7 @@ beforeEach(() => {
     noteGroupMemberMock,
     formatGroupMembersListMock,
     getSettingMock,
+    debugLogMock,
   ]) {
     fn.mockClear();
   }
@@ -152,6 +154,7 @@ describe('startGateway orchestration', () => {
     expect(assertOutboundAllowedMock).toHaveBeenCalledWith({
       to: '12025550100@s.whatsapp.net',
       accountId: 'default',
+      configPath: 'gateway.json',
     });
     expect(upsertSessionMetaMock).toHaveBeenCalledWith(expect.objectContaining({
       sessionKey: 'whatsapp:default:+12025550100',
@@ -160,6 +163,7 @@ describe('startGateway orchestration', () => {
     expect(sendComposingMock).toHaveBeenCalledWith({
       to: '12025550100@s.whatsapp.net',
       accountId: 'default',
+      configPath: 'gateway.json',
     });
     expect(runAgentForMessageMock).toHaveBeenCalledWith(expect.objectContaining({
       sessionKey: 'whatsapp:default:+12025550100',
@@ -172,6 +176,7 @@ describe('startGateway orchestration', () => {
       to: '12025550100@s.whatsapp.net',
       body: 'clean:**agent answer**',
       accountId: 'default',
+      configPath: 'gateway.json',
     });
   });
 
@@ -220,5 +225,67 @@ describe('startGateway orchestration', () => {
     }));
     expect(replyMock).toHaveBeenCalledWith('clean:**agent answer**');
     expect(sendMessageWhatsAppMock).not.toHaveBeenCalled();
+  });
+
+  it('stores the group JID (not the sender phone) as the heartbeat delivery target', async () => {
+    groupMentioned = true;
+    await startGateway({ configPath: 'gateway.json', runtime: runtime() });
+    await capturedOnMessage!(inbound({
+      chatId: 'group-1@g.us',
+      replyToJid: 'group-1@g.us',
+      chatType: 'group',
+      from: '+12025550101',
+      senderId: '+12025550101',
+      body: '@bot analyze NVDA',
+    }));
+
+    expect(upsertSessionMetaMock).toHaveBeenCalledWith(expect.objectContaining({
+      to: 'group-1@g.us',
+      accountId: 'default',
+    }));
+  });
+
+  it('catches a rejecting typing indicator and stops the loop instead of leaking an unhandled rejection', async () => {
+    let intervalCb: (() => void) | undefined;
+    const originalSetInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    const timerHooks = globalThis as unknown as { setInterval: unknown; clearInterval: unknown };
+    timerHooks.setInterval = (cb: () => void) => {
+      intervalCb = cb;
+      return 'fake-typing-timer';
+    };
+    timerHooks.clearInterval = () => {};
+
+    try {
+      let composingCalls = 0;
+      const rejectingComposing = mock(() => {
+        composingCalls += 1;
+        return composingCalls === 1
+          ? Promise.resolve()
+          : Promise.reject(new Error('socket gone'));
+      });
+
+      groupMentioned = true;
+      await startGateway({ configPath: 'gateway.json', runtime: runtime() });
+      await capturedOnMessage!(inbound({
+        chatId: 'group-1@g.us',
+        replyToJid: 'group-1@g.us',
+        chatType: 'group',
+        from: '+12025550101',
+        senderId: '+12025550101',
+        sendComposing: rejectingComposing as never,
+      }));
+      expect(intervalCb).toBeDefined();
+
+      intervalCb!();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      expect(
+        debugLogMock.mock.calls.some(([msg]) => msg.includes('typing')),
+      ).toBe(true);
+    } finally {
+      timerHooks.setInterval = originalSetInterval;
+      timerHooks.clearInterval = originalClearInterval;
+    }
   });
 });
