@@ -4,13 +4,14 @@ import {
   extractMarkovPredictionConfidenceForQuery,
   getBtcSelectiveMarkovConfidenceThreshold,
   hasLowConfidenceBtcShortHorizonMarkov,
+  hasSuccessfulMarkovDistributionForQuery,
   isDistributionQuery,
 } from '../query-router.js';
-import { hasSuccessfulMarkovDistribution, parseToolCallData } from './tool-call-utils.js';
+import { parseToolCallData } from './tool-call-utils.js';
 
 export function buildDistributionWarningPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
   if (!isDistributionQuery(query)) return null;
-  if (hasSuccessfulMarkovDistribution(toolCalls)) return null;
+  if (hasSuccessfulMarkovDistributionForQuery(query, toolCalls)) return null;
 
   for (let i = toolCalls.length - 1; i >= 0; i--) {
     const call = toolCalls[i];
