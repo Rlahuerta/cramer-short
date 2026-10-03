@@ -422,3 +422,41 @@ describe('streamCallLlm', () => {
     expect(chunks.join('')).toBe('STREAM_OK');
   });
 });
+
+// ===========================================================================
+// callLlm — aborted calls are never retried (TDD lock)
+// ===========================================================================
+
+describe('callLlm — abort retry policy', () => {
+  test('an AbortError is attempted exactly once and rethrown', async () => {
+    let attempts = 0;
+    const invoke = mock(async () => {
+      attempts++;
+      const err = new Error('This operation was aborted');
+      err.name = 'AbortError';
+      throw err;
+    });
+    _setModelFactory((() => ({ invoke })) as any);
+
+    await expect(
+      callLlm('Reply with ABORT.', { model: 'ollama:llama3.1:8b', timeoutMs: 30_000 }),
+    ).rejects.toThrow(/abort/i);
+
+    expect(attempts).toBe(1);
+  });
+
+  test('a 429 rate-limit error still retries three times', async () => {
+    let attempts = 0;
+    const invoke = mock(async () => {
+      attempts++;
+      throw new Error('429 Too Many Requests: rate limit exceeded');
+    });
+    _setModelFactory((() => ({ invoke })) as any);
+
+    await expect(
+      callLlm('Reply with RATE.', { model: 'ollama:llama3.1:8b', timeoutMs: 30_000 }),
+    ).rejects.toThrow(/429|rate limit/i);
+
+    expect(attempts).toBe(3);
+  });
+});

@@ -232,7 +232,17 @@ export function classifyError(raw?: string): ErrorType {
   return 'unknown';
 }
 
+// An aborted signal stays aborted, so replaying the call can only fail again.
+// Match only abort signatures and the withTimeout() abort message — generic
+// timeouts (incl. network_timeout/ETIMEDOUT) must stay retryable.
+const ABORT_SIGNATURE_RE = /abort/i;
+const WITH_TIMEOUT_ABORT_RE = /timed out after [\d.]+s\. The model may be slow or unavailable\./i;
+
 export function isNonRetryableError(raw?: string): boolean {
+  if (raw && (ABORT_SIGNATURE_RE.test(raw) || WITH_TIMEOUT_ABORT_RE.test(raw))) {
+    return true;
+  }
+
   const type = classifyError(raw);
   return type === 'context_overflow' || type === 'billing' || type === 'auth';
 }
