@@ -402,10 +402,9 @@ export function baumWelch(
   }
 
   let params = initializeHMM(observations, nStates);
-  // Seed prevLL with the initial-parameter log-likelihood so iteration 1 can
-  // converge immediately when the initialisation is already at a fixed point.
-  const { logLikelihood: initialLL } = forward(observations, params);
-  let prevLL = initialLL;
+  // Seed with -Infinity so the first convergence check cannot pass before the
+  // first M-step: convergence must compare two fitted log-likelihoods.
+  let prevLL = -Infinity;
   let iterations = 0;
   let converged = false;
 

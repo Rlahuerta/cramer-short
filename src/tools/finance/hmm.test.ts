@@ -185,6 +185,21 @@ describe('backward algorithm', () => {
 });
 
 describe('baumWelch', () => {
+  it('runs at least one EM update before reporting convergence', () => {
+    // Regression: prevLL used to be seeded with the initial log-likelihood, so
+    // the first convergence check compared the initial LL against itself and
+    // baumWelch returned the initialisation untouched with iterations=1.
+    const obs = generateFromHMM(TWO_STATE_PARAMS, 500, 20260101);
+    const initialized = initializeHMM(obs, 2);
+    const result = baumWelch(obs, 2, 100, 1e-4);
+
+    expect(result.iterations).toBeGreaterThan(1);
+    const maxMeanShift = Math.max(
+      ...result.params.means.map((m, i) => Math.abs(m - initialized.means[i])),
+    );
+    expect(maxMeanShift).toBeGreaterThan(1e-6);
+  });
+
   it('converges on data from 2-state HMM', () => {
     const obs = generateFromHMM(TWO_STATE_PARAMS, 500);
     const result = baumWelch(obs, 2, 100, 1e-4);
@@ -250,7 +265,9 @@ describe('selectNumStates', () => {
   });
 
   it('selectNumStates computes comparable BIC AIC and HQC values', () => {
-    const obs = generateFromHMM(TWO_STATE_PARAMS, 500, 919);
+    // Both k=2 and k=3 must genuinely converge within selectNumStates' 100-iteration
+    // budget for the comparability assertions below to have two entries.
+    const obs = generateFromHMM(THREE_STATE_PARAMS, 500, 919);
     const result = selectNumStates(obs, 3, 'hqc', 20);
 
     expect(result.warning).toBeUndefined();

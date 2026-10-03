@@ -1413,6 +1413,15 @@ describe('markov_distribution tool output envelope', () => {
       predictionConfidenceMode: 'rebalanced',
       enableSoftRegimeWeighting: true,
     });
+    const disabledTrend = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: trendPrices[trendPrices.length - 1],
+      historicalPrices: trendPrices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: false,
+    });
 
     const softChoppy = getSoftRegimeMetadata(enabledChoppy.metadata);
     const softTrend = getSoftRegimeMetadata(enabledTrend.metadata);
@@ -1440,15 +1449,18 @@ describe('markov_distribution tool output envelope', () => {
     expect(Object.values(softChoppy!.currentRegimeMixture ?? {}).reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
     expect(Object.values(softChoppy!.forecastRegimeMixture ?? {}).reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
     expect(softChoppy!.transitionBlendWeight).toBeGreaterThan(0);
-    expect(softChoppy!.ciScale).toBeGreaterThan(1);
-    expect(softChoppy!.confidenceMultiplier).toBeLessThan(1);
-    expect(enabledChoppy.predictionConfidence).toBeLessThan(disabled.predictionConfidence);
-    expect(
-      Math.abs(enabledChoppy.actionSignal.expectedReturn - disabled.actionSignal.expectedReturn),
-    ).toBeGreaterThan(1e-4);
     expect(softTrend).toBeDefined();
-    expect(softTrend!.posteriorEntropy).toBeLessThanOrEqual(softChoppy!.posteriorEntropy);
-    expect(softTrend!.ciScale).toBeLessThanOrEqual(softChoppy!.ciScale);
+    // The deterministic alternating fixture fits with near-zero posterior entropy
+    // (soft weighting is a mathematical no-op there), so the material soft-weighting
+    // effect is asserted on the more ambiguous trend fixture.
+    expect(softTrend!.ciScale).toBeGreaterThan(1);
+    expect(softTrend!.confidenceMultiplier).toBeLessThan(1);
+    expect(enabledTrend.predictionConfidence).toBeLessThan(disabledTrend.predictionConfidence);
+    expect(
+      Math.abs(enabledTrend.actionSignal.expectedReturn - disabledTrend.actionSignal.expectedReturn),
+    ).toBeGreaterThan(1e-4);
+    expect(softChoppy!.posteriorEntropy).toBeLessThanOrEqual(softTrend!.posteriorEntropy);
+    expect(softChoppy!.ciScale).toBeLessThanOrEqual(softTrend!.ciScale);
   });
 
   it('lets soft regime entropy coefficients be tuned explicitly without changing explicit defaults', async () => {
