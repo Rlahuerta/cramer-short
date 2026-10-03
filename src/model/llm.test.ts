@@ -1,7 +1,8 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, test, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { describe, test, expect, mock, type Mock, beforeEach, afterEach, setSystemTime, spyOn } from 'bun:test';
 import { ChatOllama } from '@langchain/ollama';
 import { resolveProvider } from '../providers.js';
+import * as configModule from '@/utils/config.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -11,14 +12,7 @@ afterEach(() => {
   setSystemTime();
 });
 
-const actualConfig = await import('@/utils/config.js');
-
-const mockGetSetting = mock((_key: string, defaultValue: unknown) => defaultValue);
-
-mock.module('@/utils/config.js', () => ({
-  ...actualConfig,
-  getSetting: mockGetSetting,
-}));
+let mockGetSetting: Mock<(...args: any[]) => any>;
 
 const {
   isThinkingModel,
@@ -32,8 +26,14 @@ const {
 } = await import('./llm.js');
 
 beforeEach(() => {
-  mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
+  mockGetSetting = spyOn(configModule, 'getSetting').mockImplementation(
+    <T>(_key: string, defaultValue: T): T => defaultValue,
+  );
   _setModelFactory(null);
+});
+
+afterEach(() => {
+  mockGetSetting.mockRestore();
 });
 
 // ===========================================================================
