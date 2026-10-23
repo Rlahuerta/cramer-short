@@ -1144,11 +1144,13 @@ describe('markov_distribution tool output envelope', () => {
       }));
 
       const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
-      // Deterministic alternating prices produce poor out-of-sample R^2 without
-      // making this regression depend on deterministicRandom().
-      const prices = Array.from({ length: 80 }, (_, i) => (
-        Math.round((65000 + (i % 2 === 0 ? 2000 : -2000) + (i % 5) * 10) * 100) / 100
-      ));
+      // Deterministic LCG noise (±4%/day) has no predictable structure, so out-of-sample
+      // R^2 is poor without depending on deterministicRandom(). (A strict alternating
+      // series is no longer a valid fixture: path-integrated drift predicts it well.)
+      let lcg = 2024;
+      const noise = () => (lcg = (lcg * 1664525 + 1013904223) % 4294967296) / 4294967296;
+      const prices = [65000];
+      for (let i = 1; i < 80; i++) prices.push(Math.round(prices[i - 1] * (1 + (noise() - 0.5) * 0.08) * 100) / 100);
 
       const result = await freshTool.func({
         ticker: 'BTC-USD',

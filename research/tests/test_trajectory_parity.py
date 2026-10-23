@@ -9,6 +9,7 @@ from research.models.trajectory import (
     RegimeStats,
     compute_trajectory,
     compute_horizon_drift_vol,
+    compute_mixing_weight,
     interpolate_distribution,
     compute_scenario_probabilities,
     normal_cdf,
@@ -69,6 +70,49 @@ def test_compute_horizon_drift_vol_default():
     dv = compute_horizon_drift_vol(7, P, regime_stats, "bull")
     assert dv["mu_n"] > 0  # bull regime has positive drift
     assert dv["sigma_n"] > 0
+
+
+def _review_chain():
+    P = np.array([[0.9, 0.05, 0.05], [0.05, 0.9, 0.05], [0.05, 0.05, 0.9]])
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.015, std_return=0.02),
+        "bear": RegimeStats(mean_return=-0.015, std_return=0.02),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.01),
+    }
+    return P, regime_stats
+
+
+def test_compute_horizon_drift_vol_is_path_integrated():
+    # Mirrors confidence-intervals.test.ts: sum_d 0.015 * 0.85^d ≈ 8.43% (h·terminal mean was 0.34%).
+    P, regime_stats = _review_chain()
+    dv = compute_horizon_drift_vol(30, P, regime_stats, "bull")
+    expected = sum(0.015 * 0.85 ** d for d in range(1, 31))
+    assert dv["mu_n"] == pytest.approx(expected, abs=1e-12)
+
+
+def test_compute_horizon_drift_vol_scales_momentum_under_hmm_override():
+    P, regime_stats = _review_chain()
+    base = compute_horizon_drift_vol(10, P, regime_stats, "bull")["mu_n"]
+    dv = compute_horizon_drift_vol(
+        10, P, regime_stats, "bull", momentum_adjustment=0.004,
+        hmm_override={"drift": 0.001, "vol": 0.02, "weight": 0.75},
+    )
+    assert dv["mu_n"] == pytest.approx(0.75 * 10 * 0.001 + 0.25 * (base + 10 * 0.004), abs=1e-12)
+
+
+def test_compute_horizon_drift_vol_terminal_override_shifts_daily_drift():
+    P, regime_stats = _review_chain()
+    chain = compute_horizon_drift_vol(10, P, regime_stats, "bull")["mu_n"]
+    dv = compute_horizon_drift_vol(10, P, regime_stats, "bull", terminal_state_weights=[0.6, 0.1, 0.3])
+    p_bull = 1 / 3 + (2 / 3) * 0.85 ** 10
+    p_bear = 1 / 3 - (1 / 3) * 0.85 ** 10
+    shift = (0.6 - 0.1) * 0.015 - (p_bull - p_bear) * 0.015
+    assert dv["mu_n"] == pytest.approx(chain + 10 * shift, abs=1e-12)
+
+
+def test_compute_mixing_weight_is_power_of_rho():
+    assert compute_mixing_weight(0.85, 7) == pytest.approx(0.85 ** 7, abs=1e-12)
+    assert compute_mixing_weight(-0.5, 2) == pytest.approx(0.25, abs=1e-12)
 
 
 def test_compute_horizon_drift_vol_horizon_scaling():

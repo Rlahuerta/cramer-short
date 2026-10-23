@@ -125,6 +125,6 @@ def _compute_horizon_drift_vol(
 
     sigma_obs = math.sqrt(mixture_var)
     sigma_n = sigma_obs * math.sqrt(horizon)
-    mu_n = horizon * mu_obs
+    mu_n = compute_path_integrated_drift(horizon, P, regime_stats, initial_state, start_mixture)
 
     return {"mu_n": mu_n, "sigma_n": sigma_n}
