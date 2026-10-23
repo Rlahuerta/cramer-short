@@ -1,8 +1,8 @@
 import { describe, it, expect, spyOn, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getSetting, saveConfig, validateConfigValue, validateAndSanitizeConfig } from './config.js';
+import { getSetting, saveConfig, setSetting, validateConfigValue, validateAndSanitizeConfig } from './config.js';
 import * as atomicWrite from './atomic-write.js';
 
 describe('validateConfigValue — maxIterations', () => {
@@ -398,5 +398,45 @@ describe('atomic settings writes', () => {
 
     expect(readFileSync(target, 'utf-8')).toBe('{"a":1}');
     expect(readdirSync(join(testDir, 'nested')).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+});
+
+describe('loadConfig/setSetting — unreadable settings.json is never overwritten', () => {
+  const originalCwd = process.cwd();
+  let dir: string;
+  let warnSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cramer-config-'));
+    process.chdir(dir);
+    warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    saveConfig({}); // resets the module-level cache
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('moves invalid JSON aside before the next write', () => {
+    writeFileSync('.cramer-short/settings.json', '{"modelId": "gpt-5.4",');
+    expect(setSetting('provider', 'openai')).toBe(true);
+
+    expect(JSON.parse(readFileSync('.cramer-short/settings.json', 'utf-8'))).toEqual({ provider: 'openai' });
+    const backups = readdirSync('.cramer-short').filter((f) => f.startsWith('settings.json.corrupt-'));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join('.cramer-short', backups[0]!), 'utf-8')).toBe('{"modelId": "gpt-5.4",');
+  });
+
+  it.skipIf(process.getuid?.() === 0)('refuses to write when settings.json cannot be read', () => {
+    writeFileSync('.cramer-short/settings.json', '{"modelId": "gpt-5.4"}');
+    chmodSync('.cramer-short/settings.json', 0o200); // write-only: read fails, write would succeed
+    try {
+      expect(setSetting('provider', 'openai')).toBe(false);
+    } finally {
+      chmodSync('.cramer-short/settings.json', 0o644);
+    }
+    expect(readFileSync('.cramer-short/settings.json', 'utf-8')).toBe('{"modelId": "gpt-5.4"}');
   });
 });

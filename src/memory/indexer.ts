@@ -163,10 +163,8 @@ export class MemoryIndexer {
       indexedChunks += result.indexed;
       updatedChunks += result.updated;
 
-      // Ensure removed files do not linger if a file was truncated to empty.
-      if (chunks.length === 0) {
-        removedChunks += this.db.deleteChunksForFile(file);
-      }
+      // Drop chunks whose content is no longer in the file (edits, deletions, truncation to empty).
+      removedChunks += this.db.deleteChunksForFile(file, new Set(chunks.map((chunk) => chunk.contentHash)));
     }
 
     // Sync session transcripts if enabled.

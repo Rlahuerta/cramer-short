@@ -29,6 +29,21 @@ export function formatDailyFileName(date: Date = new Date()): string {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}.md`;
 }
 
+// Per-file write queue shared by all MemoryStore instances, so parallel tool calls
+// cannot interleave a read-modify-write and drop each other's changes.
+// ponytail: in-process only; a second process writing the same file can still race.
+const fileLocks = new Map<string, Promise<unknown>>();
+
+function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const run = (fileLocks.get(path) ?? Promise.resolve()).then(fn);
+  const tail = run.catch(() => {});
+  fileLocks.set(path, tail);
+  void tail.then(() => {
+    if (fileLocks.get(path) === tail) fileLocks.delete(path);
+  });
+  return run;
+}
+
 export class MemoryStore {
   constructor(private readonly baseDir: string = getCramerShortDir()) {}
 
@@ -67,29 +82,35 @@ export class MemoryStore {
   }
 
   async appendMemoryFile(path: string, content: string): Promise<void> {
-    const previous = await this.readMemoryFile(path);
-    const separator = previous.endsWith('\n') || previous.length === 0 ? '' : '\n';
-    await this.writeMemoryFile(path, `${previous}${separator}${content}`);
+    return withFileLock(this.resolveMemoryPath(path), async () => {
+      const previous = await this.readMemoryFile(path);
+      const separator = previous.endsWith('\n') || previous.length === 0 ? '' : '\n';
+      await this.writeMemoryFile(path, `${previous}${separator}${content}`);
+    });
   }
 
   async editInMemoryFile(path: string, oldText: string, newText: string): Promise<boolean> {
-    const content = await this.readMemoryFile(path);
-    if (!content.includes(oldText)) {
-      return false;
-    }
-    const updated = content.replace(oldText, newText);
-    await this.writeMemoryFile(path, updated);
-    return true;
+    return withFileLock(this.resolveMemoryPath(path), async () => {
+      const content = await this.readMemoryFile(path);
+      if (!content.includes(oldText)) {
+        return false;
+      }
+      const updated = content.replace(oldText, () => newText);
+      await this.writeMemoryFile(path, updated);
+      return true;
+    });
   }
 
   async deleteFromMemoryFile(path: string, textToDelete: string): Promise<boolean> {
-    const content = await this.readMemoryFile(path);
-    if (!content.includes(textToDelete)) {
-      return false;
-    }
-    const updated = content.replace(textToDelete, '').replace(/\n{3,}/g, '\n\n');
-    await this.writeMemoryFile(path, updated);
-    return true;
+    return withFileLock(this.resolveMemoryPath(path), async () => {
+      const content = await this.readMemoryFile(path);
+      if (!content.includes(textToDelete)) {
+        return false;
+      }
+      const updated = content.replace(textToDelete, '').replace(/\n{3,}/g, '\n\n');
+      await this.writeMemoryFile(path, updated);
+      return true;
+    });
   }
 
   async listMemoryFiles(): Promise<string[]> {
@@ -98,7 +119,7 @@ export class MemoryStore {
     return entries
       .filter((entry) => entry.isFile())
       .map((entry) => entry.name)
-      .filter((name) => name === LONG_TERM_FILE || DAILY_FILE_RE.test(name))
+      .filter((name) => name === LONG_TERM_FILE || name === FINANCE_FILE || DAILY_FILE_RE.test(name))
       .sort();
   }
 
@@ -211,6 +232,9 @@ export class MemoryStore {
     const rel = relative(memoryDir, candidate);
     if (rel.startsWith('..') || rel.includes('/../') || rel === '..') {
       throw new Error(`Path is outside memory directory: ${path}`);
+    }
+    if (rel !== LONG_TERM_FILE && rel !== FINANCE_FILE && !DAILY_FILE_RE.test(rel)) {
+      throw new Error(`Not a memory file (expected MEMORY.md, FINANCE.md or YYYY-MM-DD.md): ${path}`);
     }
     return candidate;
   }
