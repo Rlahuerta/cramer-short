@@ -216,7 +216,11 @@ describe('AgentToolExecutor — request deduplication', () => {
 // from this basic test and cover them separately.
 // ---------------------------------------------------------------------------
 describe('AgentToolExecutor — uncacheable tools bypass cache', () => {
-  const NON_APPROVAL_UNCACHEABLE = ['browser', 'sequential_thinking', 'create_file', 'memory_store'];
+  const NON_APPROVAL_UNCACHEABLE = [
+    'browser', 'sequential_thinking', 'read_file', 'memory_get', 'memory_search',
+    'memory_update', 'store_financial_insight', 'recall_financial_context', 'heartbeat',
+    'unknown_future_tool',
+  ];
 
   for (const toolName of NON_APPROVAL_UNCACHEABLE) {
     it(`does not cache '${toolName}' calls`, async () => {
@@ -227,6 +231,23 @@ describe('AgentToolExecutor — uncacheable tools bypass cache', () => {
       const msg = new AIMessage({
         content: '',
         tool_calls: [{ id: 'c1', name: toolName, args: { query: 'same args' }, type: 'tool_call' as const }],
+      });
+
+      await drainEvents(executor.executeAll(msg, ctx));
+      await drainEvents(executor.executeAll(msg, ctx));
+
+      expect(fakeTool.invocationCount).toBe(2);
+    });
+  }
+
+  for (const errorResult of ['Error: upstream 503', '{"error":"rate limited"}']) {
+    it(`does not cache error-like results (${errorResult})`, async () => {
+      const fakeTool = makeFakeTool('web_search', errorResult);
+      const executor = new AgentToolExecutor(new Map([['web_search', fakeTool]]));
+      const ctx = makeCtx();
+      const msg = new AIMessage({
+        content: '',
+        tool_calls: [{ id: 'c1', name: 'web_search', args: { query: 'q' }, type: 'tool_call' as const }],
       });
 
       await drainEvents(executor.executeAll(msg, ctx));
@@ -763,5 +784,64 @@ describe('AgentToolExecutor — forecast ticker auto-correction (choke point)', 
     );
     await events;
     expect(received).toEqual(['ETH-USD']);
+  });
+});
+
+describe('AgentToolExecutor — action-level approval gating', () => {
+  const GATED = [
+    ['heartbeat', 'update'],
+    ['forecast_lab_run', 'promote-approved'],
+    ['forecast_lab_run', 'reset-live'],
+  ] as const;
+
+  for (const [toolName, action] of GATED) {
+    it(`requires approval for ${toolName} action=${action} and skips the tool on deny`, async () => {
+      const fakeTool = makeFakeTool(toolName, 'ok');
+      const approval = mock(async () => 'deny' as const);
+      const executor = new AgentToolExecutor(new Map([[toolName, fakeTool]]), undefined, approval);
+      const msg = new AIMessage({
+        content: '',
+        tool_calls: [{ id: 'c1', name: toolName, args: { action }, type: 'tool_call' as const }],
+      });
+
+      const events = await drainEvents(executor.executeAll(msg, makeCtx()));
+
+      expect(approval).toHaveBeenCalledTimes(1);
+      expect(events.some((e) => e.type === 'tool_denied')).toBe(true);
+      expect(fakeTool.invocationCount).toBe(0);
+    });
+  }
+
+  it('does not gate read-only actions (heartbeat view)', async () => {
+    const fakeTool = makeFakeTool('heartbeat', 'checklist');
+    const approval = mock(async () => 'deny' as const);
+    const executor = new AgentToolExecutor(new Map([['heartbeat', fakeTool]]), undefined, approval);
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{ id: 'c1', name: 'heartbeat', args: { action: 'view' }, type: 'tool_call' as const }],
+    });
+
+    await drainEvents(executor.executeAll(msg, makeCtx()));
+
+    expect(approval).not.toHaveBeenCalled();
+    expect(fakeTool.invocationCount).toBe(1);
+  });
+
+  it('allow-session for heartbeat does not pre-approve write_file', async () => {
+    const approved = new Set<string>();
+    const executor = new AgentToolExecutor(
+      new Map([['heartbeat', makeFakeTool('heartbeat', 'ok')]]),
+      undefined,
+      async () => 'allow-session' as const,
+      approved,
+    );
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{ id: 'c1', name: 'heartbeat', args: { action: 'update', content: 'x' }, type: 'tool_call' as const }],
+    });
+
+    await drainEvents(executor.executeAll(msg, makeCtx()));
+
+    expect([...approved]).toEqual(['heartbeat']);
   });
 });

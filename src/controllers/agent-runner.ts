@@ -80,6 +80,8 @@ export class AgentRunnerController {
       createAgent?: CreateAgentFn;
       autoStoreFromRun?: AutoStoreFromRunFn;
       onEvent?: EventObserver;
+      /** Headless callers (e.g. the gateway) supply a non-interactive approval policy. */
+      requestToolApproval?: AgentConfig['requestToolApproval'];
     } = {},
   ) {
     this.agentConfig = agentConfig;
@@ -88,6 +90,7 @@ export class AgentRunnerController {
     this.createAgent = options.createAgent ?? Agent.create;
     this.autoStoreFromRun = options.autoStoreFromRun ?? autoStoreFromRun;
     this.onEvent = options.onEvent;
+    if (options.requestToolApproval) this.requestToolApproval = options.requestToolApproval;
   }
 
   /**
@@ -266,7 +269,7 @@ export class AgentRunnerController {
     }
   }
 
-  private requestToolApproval = (request: { tool: string; args: Record<string, unknown> }) => {
+  private requestToolApproval: NonNullable<AgentConfig['requestToolApproval']> = (request: { tool: string; args: Record<string, unknown> }) => {
     return new Promise<ApprovalDecision>((resolve) => {
       this.approvalResolve = resolve;
       this.pendingApprovalValue = request;

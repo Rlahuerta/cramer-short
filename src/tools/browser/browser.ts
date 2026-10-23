@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { logger } from '../../utils/logger.js';
-import { assertPublicHttpUrl } from '../fetch/url-guard.js';
+import { assertPublicHttpUrl, assertPublicUrl } from '../fetch/url-guard.js';
 
 type BrowserRef = { role: string; name?: string; nth?: number };
 type BrowserLaunchOptions = { headless: boolean };
@@ -15,8 +15,14 @@ type LocatorLike = {
   nth(nth: number): LocatorLike;
   ariaSnapshot(): Promise<string>;
 };
+type RouteLike = {
+  request(): { url(): string };
+  continue(): Promise<void>;
+  abort(errorCode?: string): Promise<void>;
+};
 type BrowserContextLike = {
   newPage(): Promise<PageLike>;
+  route(url: string, handler: (route: RouteLike) => Promise<void>): Promise<void>;
 };
 type PageLike = {
   goto(url: string, options: { timeout: number; waitUntil: 'networkidle' }): Promise<unknown>;
@@ -38,11 +44,21 @@ type PageLike = {
   _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<SnapshotForAIResult>;
 };
 type BrowserLike = {
-  newContext(): Promise<BrowserContextLike>;
+  newContext(options: { serviceWorkers: 'block' }): Promise<BrowserContextLike>;
   close(): Promise<void>;
 };
 type BrowserLauncher = (options: BrowserLaunchOptions) => Promise<BrowserLike>;
 type BrowserRuntimeOptions = { launchBrowser?: BrowserLauncher };
+
+/** Aborts every page/subresource request whose URL fails the SSRF guard. */
+export async function guardRoute(route: RouteLike): Promise<void> {
+  try {
+    await assertPublicUrl(route.request().url());
+  } catch {
+    return route.abort('blockedbyclient');
+  }
+  return route.continue();
+}
 
 const actRequestSchema = z.object({
   kind: z.enum(['click', 'type', 'press', 'hover', 'scroll', 'wait']).describe('The type of interaction'),
@@ -189,6 +205,7 @@ class PlaywrightBrowserRuntime implements BrowserRuntime {
   }
 
   async navigate(url: string, signal?: AbortSignal): Promise<BrowserNavigateResult> {
+    await assertPublicUrl(url);
     const p = await this.ensurePage(signal);
     await withAbort(() => p.goto(url, { timeout: 30000, waitUntil: 'networkidle' }), signal);
     return {
@@ -200,6 +217,7 @@ class PlaywrightBrowserRuntime implements BrowserRuntime {
   }
 
   async open(url: string, signal?: AbortSignal): Promise<BrowserOpenResult> {
+    await assertPublicUrl(url);
     const currentPage = await this.ensurePage(signal);
     const context = currentPage.context();
     const newPage = await withAbort(() => context.newPage(), signal);
@@ -327,7 +345,9 @@ class PlaywrightBrowserRuntime implements BrowserRuntime {
     }
     const activeBrowser = this.browser;
     if (!this.page) {
-      const context = await withAbort(() => activeBrowser.newContext(), signal);
+      // Service workers bypass context.route, so block them.
+      const context = await withAbort(() => activeBrowser.newContext({ serviceWorkers: 'block' }), signal);
+      await context.route('**/*', guardRoute);
       this.page = await withAbort(() => context.newPage(), signal);
     }
     return this.page;

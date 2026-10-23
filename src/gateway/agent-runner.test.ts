@@ -6,6 +6,8 @@ import {
   _clearSessionsForTest,
   _hasSessionForTest,
   MAX_SESSIONS,
+  GATEWAY_EXCLUDED_TOOLS,
+  denyToolApproval,
 } from './agent-runner.js';
 import type { AgentEvent } from '../agent/types.js';
 
@@ -75,5 +77,17 @@ describe('sessions Map — bounded LRU eviction', () => {
     expect(getSessionCount()).toBe(MAX_SESSIONS);
     expect(_hasSessionForTest('session-0')).toBe(true);
     expect(_hasSessionForTest('session-1')).toBe(false);
+  });
+});
+
+describe('gateway tool restrictions', () => {
+  it('excludes local-filesystem, browser, and heartbeat tools for remote senders', () => {
+    expect([...GATEWAY_EXCLUDED_TOOLS]).toEqual(
+      expect.arrayContaining(['read_file', 'write_file', 'edit_file', 'browser', 'heartbeat']),
+    );
+  });
+
+  it('auto-denies tool approval requests instead of waiting for an interactive user', async () => {
+    expect(await denyToolApproval()).toBe('deny');
   });
 });
