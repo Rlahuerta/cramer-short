@@ -8,7 +8,7 @@ arXiv:2502.09079 Puoti et al. 2025.
 Computes simple model-free baselines that any non-trivial forecast head
 must beat:
   - Coin-flip:   always P(up)=0.5
-  - Last-period: P(up)=0.65 if previous step was up, else 0.35
+  - Last-period: P(up)=0.65 if the latest realized step was up, else 0.35
 
 The gate: deployed arm directional accuracy must be >= better baseline
 accuracy minus `slack` (default 0.02).
@@ -70,10 +70,12 @@ def compute_coin_flip_baseline(steps: list[BacktestStep]) -> BaselineMetricBlock
     return BaselineMetricBlock(n=len(steps), brier_score=bs, directional_accuracy=da)
 
 
-def compute_last_period_baseline(steps: list[BacktestStep]) -> BaselineMetricBlock:
+def compute_last_period_baseline(steps: list[BacktestStep], horizon: int) -> BaselineMetricBlock:
     """Baseline: predict last realized direction continues.
 
-    For step 0 (no prior): falls back to coin-flip (P=0.5).
+    Step j's outcome is realized only once start_idx_j + horizon <= start_idx,
+    so with stride < horizon the immediately preceding step is not usable.
+    Until any outcome is realized: falls back to coin-flip (P=0.5).
     Probability assignment: 0.65 if last-up, 0.35 if last-down (avoids
     degenerate 0/1 Brier extremes on random walks).
     """
@@ -81,15 +83,15 @@ def compute_last_period_baseline(steps: list[BacktestStep]) -> BaselineMetricBlo
         return BaselineMetricBlock(n=0, brier_score=1.0, directional_accuracy=0.0)
 
     synthetic: list[BacktestStep] = []
-    prev_return = 0.0
+    observed = -1  # latest step whose outcome is realized by the current origin
 
-    for i, step in enumerate(steps):
-        if i == 0:
+    for step in steps:
+        while observed + 1 < len(steps) and steps[observed + 1].start_idx + horizon <= step.start_idx:
+            observed += 1
+        if observed < 0:
             synth_step = _synth(step, 0.5)
         else:
-            prob = 0.65 if prev_return > 0 else 0.35
-            synth_step = _synth(step, prob)
-        prev_return = step.realised_return
+            synth_step = _synth(step, 0.65 if steps[observed].realised_return > 0 else 0.35)
         synthetic.append(synth_step)
 
     outcomes = [1.0 if s.realised_return > 0 else 0.0 for s in synthetic]
@@ -99,16 +101,17 @@ def compute_last_period_baseline(steps: list[BacktestStep]) -> BaselineMetricBlo
     return BaselineMetricBlock(n=len(steps), brier_score=bs, directional_accuracy=da)
 
 
-def compute_naive_baselines(steps: list[BacktestStep]) -> NaiveBaselineReport:
+def compute_naive_baselines(steps: list[BacktestStep], horizon: int) -> NaiveBaselineReport:
     """Compute both coin-flip and last-period baselines in one call."""
     return NaiveBaselineReport(
         coin_flip=compute_coin_flip_baseline(steps),
-        last_period=compute_last_period_baseline(steps),
+        last_period=compute_last_period_baseline(steps, horizon),
     )
 
 
 def naive_baseline_guard(
     arm_steps: list[BacktestStep],
+    horizon: int,
     slack: float = 0.02,
 ) -> dict:
     """Strict quality gate: arm directional accuracy must beat baselines.
@@ -119,7 +122,7 @@ def naive_baseline_guard(
     from research.backtest.metrics import directional_accuracy
 
     arm_dir_acc = directional_accuracy(arm_steps)
-    baselines = compute_naive_baselines(arm_steps)
+    baselines = compute_naive_baselines(arm_steps, horizon)
     baseline_dir_acc = max(
         baselines.coin_flip.directional_accuracy,
         baselines.last_period.directional_accuracy,

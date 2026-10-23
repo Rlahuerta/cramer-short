@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { computeMarkovDistribution } from '../markov-distribution.js';
-import { walkForward, type WalkForwardConfig } from './walk-forward.js';
+import { sliceCrossAssetReturnsToOrigin, walkForward, type WalkForwardConfig } from './walk-forward.js';
 
 const realRandom = Math.random;
 
@@ -140,5 +140,34 @@ describe('walk-forward Markov feature flags', () => {
     }));
 
     expect(explicitOffCore).toEqual(implicitCore);
+  });
+});
+
+describe('walk-forward look-ahead guards', () => {
+  it('conformal calibration only uses outcomes realized by the forecast origin', async () => {
+    const horizon = 5;
+    const result = await withSeed(11, () => walkForward({
+      ticker: 'SPY',
+      prices: syntheticTrajectoryPrices(),
+      horizon,
+      warmup: 100,
+      stride: 1,
+      randomState: 11,
+      enableAdaptiveConformal: true,
+      conformalResetOnStructuralBreak: false,
+    }));
+
+    expect(result.steps.length).toBeGreaterThan(horizon * 2);
+    for (const step of result.steps) {
+      const matured = result.steps.filter((earlier) => earlier.t + horizon <= step.t).length;
+      expect(step.conformalSampleCount).toBe(matured);
+    }
+  }, 60_000);
+
+  it('cross-asset peer returns are cut at the forecast origin', () => {
+    const peers = { QQQ: [0.1, 0.2, 0.3, 0.4], TLT: [-0.1, -0.2, -0.3, -0.4] };
+    expect(sliceCrossAssetReturnsToOrigin(peers, 2)).toEqual({ QQQ: [0.1, 0.2], TLT: [-0.1, -0.2] });
+    expect(peers.QQQ).toHaveLength(4);
+    expect(sliceCrossAssetReturnsToOrigin(undefined, 2)).toBeUndefined();
   });
 });

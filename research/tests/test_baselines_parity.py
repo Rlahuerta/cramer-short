@@ -13,14 +13,14 @@ from research.backtest.baselines import (
 from research.backtest.walk_forward import BacktestStep
 
 
-def _step(realised_return: float, predicted_prob: float = 0.5) -> BacktestStep:
+def _step(realised_return: float, predicted_prob: float = 0.5, start_idx: int = 0) -> BacktestStep:
     """Minimal BacktestStep factory for baseline tests."""
     pred_up = predicted_prob > 0.5
     direction_correct = (pred_up and realised_return > 0) or (
         not pred_up and realised_return <= 0
     )
     return BacktestStep(
-        start_idx=0,
+        start_idx=start_idx,
         predicted_prob=predicted_prob,
         predicted_return=realised_return,
         ci_lower=-0.05,
@@ -64,42 +64,51 @@ class TestCoinFlipBaseline:
 
 class TestLastPeriodBaseline:
     def test_empty_input(self):
-        r = compute_last_period_baseline([])
+        r = compute_last_period_baseline([], 1)
         assert r.n == 0
 
     def test_first_step_uses_coin_flip(self):
         steps = [_step(0.01)]  # only one step
-        r = compute_last_period_baseline(steps)
+        r = compute_last_period_baseline(steps, 1)
         # The first step uses P=0.5 (coin flip)
         assert r.brier_score == pytest.approx(0.25)
 
     def test_persistent_up_trend_has_high_accuracy(self):
         """All returns > 0: last-period correctly predicts up each time."""
-        steps = [_step(0.01)] * 10
-        r = compute_last_period_baseline(steps)
+        steps = [_step(0.01, start_idx=i) for i in range(10)]
+        r = compute_last_period_baseline(steps, 1)
         # Step 0: P=0.5 (coinflip), steps 1-9: P=0.65 (prev was up) -> correct
         assert r.directional_accuracy >= 0.8
 
     def test_prediction_tracks_previous_direction(self):
         """After a down step, the prediction should be P=0.35 (bearish)."""
-        steps = [_step(-0.01), _step(-0.02)]
-        r = compute_last_period_baseline(steps)
+        steps = [_step(-0.01, start_idx=0), _step(-0.02, start_idx=1)]
+        r = compute_last_period_baseline(steps, 1)
         # Step 1 should predict down (P=0.35) and be correct
         assert r.n == 2
 
     def test_different_from_coin_flip_on_trending_data(self):
         """Last-period should differ from coin-flip on trending returns."""
-        steps = [_step(0.02 * (i + 1)) for i in range(20)]
+        steps = [_step(0.02 * (i + 1), start_idx=i) for i in range(20)]
         cf = compute_coin_flip_baseline(steps)
-        lp = compute_last_period_baseline(steps)
+        lp = compute_last_period_baseline(steps, 1)
         # On uptrend, last-period should have higher directional accuracy
         assert lp.directional_accuracy >= cf.directional_accuracy
+
+
+    def test_only_uses_outcomes_realized_by_origin(self):
+        """Mirrors baselines.test.ts: horizon 3, stride 1, signs alternating in blocks of 3."""
+        returns = [0.05, 0.05, 0.05, -0.05, -0.05, -0.05, 0.05, 0.05, 0.05, -0.05, -0.05, -0.05]
+        steps = [_step(r, start_idx=i) for i, r in enumerate(returns)]
+        # Steps 0-2: nothing realized (P=0.5 -> pred down, wrong on ups); 3+: follow t-3, always opposite.
+        assert compute_last_period_baseline(steps, 3).directional_accuracy == pytest.approx(0.0)
+        assert compute_last_period_baseline(steps, 1).directional_accuracy == pytest.approx(8 / 12)
 
 
 class TestComputeNaiveBaselines:
     def test_returns_both_baselines(self):
         steps = [_step(r) for r in [0.01, -0.02, 0.01, -0.01, 0.03]]
-        report = compute_naive_baselines(steps)
+        report = compute_naive_baselines(steps, 1)
         assert report.coin_flip.n == 5
         assert report.last_period.n == 5
 
@@ -108,26 +117,26 @@ class TestNaiveBaselineGuard:
     def test_passes_when_arm_beats_baselines(self):
         """Perfect directional accuracy should easily beat baselines."""
         # All returns up, arm correctly predicts up
-        steps = [_step(0.01, predicted_prob=0.8) for _ in range(20)]
-        result = naive_baseline_guard(steps)
+        steps = [_step(0.01, predicted_prob=0.8, start_idx=i) for i in range(20)]
+        result = naive_baseline_guard(steps, 1)
         assert result["passes"] is True
 
     def test_fails_when_arm_is_below_baseline_minus_slack(self):
         """Arm with 0% directional accuracy should fail."""
         # All returns up but arm predicts down
-        steps = [_step(0.01, predicted_prob=0.3) for _ in range(20)]
-        result = naive_baseline_guard(steps)
+        steps = [_step(0.01, predicted_prob=0.3, start_idx=i) for i in range(20)]
+        result = naive_baseline_guard(steps, 1)
         assert result["passes"] is False
 
     def test_gap_is_computed_correctly(self):
-        steps = [_step(r) for r in [0.01, -0.01, 0.02, -0.02, 0.01]]
-        result = naive_baseline_guard(steps)
+        steps = [_step(r, start_idx=i) for i, r in enumerate([0.01, -0.01, 0.02, -0.02, 0.01])]
+        result = naive_baseline_guard(steps, 1)
         assert result["gap"] == pytest.approx(
             result["arm_dir_acc"] - result["baseline_dir_acc"]
         )
 
     def test_custom_slack(self):
         """With very generous slack, even a below-baseline arm should pass."""
-        steps = [_step(0.01, predicted_prob=0.3) for _ in range(20)]
-        result = naive_baseline_guard(steps, slack=0.99)
+        steps = [_step(0.01, predicted_prob=0.3, start_idx=i) for i in range(20)]
+        result = naive_baseline_guard(steps, 1, slack=0.99)
         assert result["passes"] is True

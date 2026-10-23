@@ -412,13 +412,19 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
 
     const firstResetStep = resetSteps[0];
     const laterRerunStep = rerunSteps.find(step => step.t > firstResetStep.t);
+    // Two post-reset outcomes (origins t and t + stride) have matured by t + horizon + stride.
+    const nextResetT = resetSteps[1]?.t ?? Infinity;
+    const maturedStep = conformalStepView(withReset).find(step =>
+      step.t >= firstResetStep.t + baseConfig.horizon + baseConfig.stride && step.t < nextResetT);
 
     expect(firstResetStep.structuralBreakRerunTriggered).toBe(true);
     expect(firstResetStep.conformalMode).toBe('break');
-    expect(firstResetStep.conformalSampleCount).toBe(1);
+    // Outcomes are recorded only once realized (t + horizon), so nothing has matured at the reset step.
+    expect(firstResetStep.conformalSampleCount).toBe(0);
     expect(laterRerunStep).toBeDefined();
     expect(laterRerunStep?.conformalResetTriggered).toBeUndefined();
-    expect(laterRerunStep?.conformalSampleCount).toBeGreaterThan(1);
+    expect(maturedStep).toBeDefined();
+    expect(maturedStep?.conformalSampleCount).toBeGreaterThan(1);
   });
 
   it('keeps score aggregation disabled by default and identical to an explicit false flag', async () => {

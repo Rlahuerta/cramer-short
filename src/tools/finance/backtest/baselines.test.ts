@@ -50,8 +50,8 @@ describe('R5 Idea #3 — naive baselines', () => {
     // Alternating: +5%, -5%, +5%, -5%, ... after step 0 it always predicts
     // the *opposite* of what happens, so dirAcc = 0 (excluding step 0).
     const seq = [+0.05, -0.05, +0.05, -0.05, +0.05, -0.05, +0.05, -0.05];
-    const steps = seq.map(r => step({ actualReturn: r, predictedProb: 0.5, recommendation: 'HOLD' }));
-    const lp = computeLastPeriodBaseline(steps);
+    const steps = seq.map((r, t) => step({ t, actualReturn: r, predictedProb: 0.5, recommendation: 'HOLD' }));
+    const lp = computeLastPeriodBaseline(steps, 1);
     // Step 0 is always HOLD on a >3% move ⇒ wrong; subsequent steps predict
     // wrong direction every time.  Expect dirAcc = 0.
     expect(lp.directionalAccuracy).toBeLessThan(0.2);
@@ -62,15 +62,27 @@ describe('R5 Idea #3 — naive baselines', () => {
   it('last-period baseline scores 100% on a persistent uptrend', () => {
     // All up moves > 3%: after step 0, lastPeriod always predicts BUY → correct.
     const seq = [+0.05, +0.05, +0.05, +0.05, +0.05];
-    const steps = seq.map(r => step({ actualReturn: r, predictedProb: 0.5, recommendation: 'BUY' }));
-    const lp = computeLastPeriodBaseline(steps);
+    const steps = seq.map((r, t) => step({ t, actualReturn: r, predictedProb: 0.5, recommendation: 'BUY' }));
+    const lp = computeLastPeriodBaseline(steps, 1);
     // Step 0 is HOLD on +5% move ⇒ wrong. Steps 1..4 all correctly BUY.
     expect(lp.directionalAccuracy).toBeCloseTo(0.8, 2);
   });
 
+  it('last-period baseline only uses outcomes realized by the origin when stride < horizon', () => {
+    // horizon 3, stride 1: step t's outcome is known at t+3. Signs alternate in blocks of 3,
+    // so the unresolved previous step (t−1) usually agrees while the realized one (t−3) never does.
+    const seq = [+0.05, +0.05, +0.05, -0.05, -0.05, -0.05, +0.05, +0.05, +0.05, -0.05, -0.05, -0.05];
+    const steps = seq.map((r, t) => step({ t, actualReturn: r, predictedProb: 0.5, recommendation: 'HOLD' }));
+    const lp = computeLastPeriodBaseline(steps, 3);
+    // Steps 0-2 have nothing realized (HOLD on ±5% ⇒ wrong); steps 3+ follow t−3, always the opposite sign.
+    expect(lp.directionalAccuracy).toBe(0);
+    // The leaky lag-1 rule would score 8/12 here.
+    expect(computeLastPeriodBaseline(steps, 1).directionalAccuracy).toBeCloseTo(8 / 12, 10);
+  });
+
   it('computeNaiveBaselines returns both blocks', () => {
     const steps = [step({ actualReturn: 0.05, predictedProb: 0.5, recommendation: 'BUY' })];
-    const r = computeNaiveBaselines(steps);
+    const r = computeNaiveBaselines(steps, 1);
     expect(r.coinFlip.n).toBe(1);
     expect(r.lastPeriod.n).toBe(1);
   });
@@ -84,7 +96,7 @@ describe('R5 Idea #3 — naive baseline CI guard', () => {
       step({ actualReturn:  0.05, predictedProb: 0.7, recommendation: 'BUY'  }),  // correct
       step({ actualReturn: -0.05, predictedProb: 0.3, recommendation: 'SELL' }),  // correct
     ];
-    const g = naiveBaselineGuard(steps);
+    const g = naiveBaselineGuard(steps, 1);
     expect(g.armDirAcc).toBe(1);
     expect(g.passes).toBe(true);
     expect(g.gap).toBeGreaterThan(0);
@@ -96,8 +108,8 @@ describe('R5 Idea #3 — naive baseline CI guard', () => {
     // every step ⇒ dirAcc=0 vs baseline=0 ⇒ gap=0 ⇒ passes (within slack).
     // To force failure we need a scenario where lastPeriod is right.
     const seq = [+0.05, +0.05, +0.05];  // persistent uptrend
-    const steps = seq.map(r => step({ actualReturn: r, predictedProb: 0.5, recommendation: 'SELL' }));
-    const g = naiveBaselineGuard(steps, 0.01);
+    const steps = seq.map((r, t) => step({ t, actualReturn: r, predictedProb: 0.5, recommendation: 'SELL' }));
+    const g = naiveBaselineGuard(steps, 1, 0.01);
     // Arm dirAcc = 0; lastPeriod dirAcc = 2/3 ≈ 0.67; gap = -0.67 < -0.01 ⇒ fails
     expect(g.armDirAcc).toBe(0);
     expect(g.baselineDirAcc).toBeGreaterThan(0.5);
