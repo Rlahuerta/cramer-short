@@ -1936,6 +1936,22 @@ describe('Agent', () => {
       ).toBeNull();
       expect(detectForecastLabPromotionApproval('How do I promote these improvements?', history)).toBeNull();
       expect(detectForecastLabPromotionApproval('What is BTC doing next week?', history)).toBeNull();
+      expect(
+        detectForecastLabPromotionApproval('Approve run btc-markov-ultra-short-horizon.keep-1.', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      });
+      for (const rejected of [
+        "No, don't promote it.",
+        'Do not approve forecast-lab promotion for that kept run.',
+        "I don't want to approve forecast-lab promotion yet.",
+        'Should I approve forecast-lab promotion for that kept run?',
+        'Yes, go ahead.',
+        'Promote it.',
+      ]) {
+        expect(detectForecastLabPromotionApproval(rejected, history)).toBeNull();
+      }
     });
 
     it('detects explicit forecast-lab reset requests from history context', () => {
@@ -1969,6 +1985,14 @@ describe('Agent', () => {
         mode: 'defaults',
       });
       expect(detectForecastLabResetRequest('Reset BTC to defaults.')).toBeNull();
+      for (const rejected of [
+        "Please don't reset btc-markov-ultra-short-horizon to defaults.",
+        'Do not restore the last known good baseline.',
+        'Should I reset BTC to defaults?',
+        'No, never roll back to the previous baseline.',
+      ]) {
+        expect(detectForecastLabResetRequest(rejected, history)).toBeNull();
+      }
     });
 
     it('detects current-best vs shipped-baseline comparison requests from history context', () => {
