@@ -38,6 +38,7 @@ def _point(price: float, p_up: float = 0.5) -> SimpleNamespace:
         lower_bound=price * 0.95,
         upper_bound=price * 1.05,
         p_up=p_up,
+        sigma_n=0.04,
     )
 
 
@@ -431,7 +432,7 @@ def test_window_forecast_p_up_matches_final_trajectory_without_calibration(
     assert result["p_up"] == pytest.approx(0.82)
 
 
-def test_window_forecast_reports_trajectory_median_for_break_rerun_rescaling(
+def test_window_forecast_reports_trajectory_median_and_sigma_for_break_rerun_rescaling(
     monkeypatch: pytest.MonkeyPatch,
 ):
     regimes = ["bull", "bull", "bear", "sideways", "bull", "bear"]
@@ -459,6 +460,7 @@ def test_window_forecast_reports_trajectory_median_for_break_rerun_rescaling(
 
     # Empirical up-rates replace predicted_return; the median stays the trajectory's.
     assert result["median_price"] == pytest.approx(prices[-1] * 1.02)
+    assert result["sigma_n"] == pytest.approx(0.04)
 
 
 def test_hmm_disabled_does_not_attempt_hmm_or_change_base_forecast(
