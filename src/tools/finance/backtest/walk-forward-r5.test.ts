@@ -427,6 +427,30 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
     expect(maturedStep?.conformalSampleCount).toBeGreaterThan(1);
   });
 
+  it('keeps the full-window spread when a structural-break rerun moves the forecast', async () => {
+    const prices = syntheticVolBurstPrices();
+    const baseConfig = { ticker: 'BTC-USD', prices, horizon: 14, warmup: 160, stride: 5 } as const;
+
+    const fullWindow = await withSeed(141, () => walkForward(baseConfig));
+    const withRerun = await withSeed(141, () => walkForward({
+      ...baseConfig,
+      postBreakShortWindow: true,
+      postBreakWindowSize: 60,
+    }));
+
+    const rerunSteps = withRerun.steps.filter(step => step.structuralBreakRerunTriggered === true);
+    expect(rerunSteps.length).toBeGreaterThan(0);
+    const spread = (step: BacktestStep) => step.central90CiUpper! / step.central90CiLower!;
+    let moved = false;
+    for (const step of rerunSteps) {
+      const original = fullWindow.steps.find(s => s.t === step.t)!;
+      // A multiplicative re-centre keeps the upper/lower ratio of every interval.
+      expect(spread(step)).toBeCloseTo(spread(original), 9);
+      moved ||= Math.abs(step.central90CiLower! - original.central90CiLower!) > 1e-6;
+    }
+    expect(moved).toBe(true);
+  });
+
   it('keeps score aggregation disabled by default and identical to an explicit false flag', async () => {
     const prices = syntheticVolBurstPrices();
     const baseConfig = {
