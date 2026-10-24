@@ -20,6 +20,7 @@
  */
 
 import { describe, it, expect, mock, afterEach, beforeEach, setSystemTime, spyOn } from 'bun:test';
+import { useNoNetwork } from '../../utils/test-no-network.js';
 import { integrationIt } from '../../utils/test-guards.js';
 import { MS_PER_DAY } from '../../utils/time.js';
 import {
@@ -86,6 +87,9 @@ import {
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 import { FinancialDatasetsHttpError } from './api.js';
+import * as polymarket from './polymarket.js';
+
+useNoNetwork();
 
 const realPolymarketModule = { ...(await import('./polymarket.js')) };
 const realHmmModule = { ...(await import('./hmm.js')) };
@@ -1681,12 +1685,17 @@ describe('markovDistributionTool output format', () => {
   });
 
   it('output shows warnings when no anchors provided', async () => {
+    // Empty polymarketMarkets triggers a live anchor fetch: stub it to find nothing.
+    const anchorSpies = [
+      spyOn(polymarket, 'fetchPolymarketAnchorMarkets').mockResolvedValue([]),
+      spyOn(polymarket, 'fetchPolymarketAnchorMarketsWithQueries').mockResolvedValue([]),
+    ];
     const output = await markovDistributionTool.invoke({
       ticker: 'FMT_TEST',
       horizon: 15,
       historicalPrices: prices,
       polymarketMarkets: [],
-    });
+    }).finally(() => anchorSpies.forEach((spy) => spy.mockRestore()));
     expect(output).toContain('Why this abstained');
     expect(output).toMatch(/anchor coverage is sparse|No trusted/);
   });
