@@ -82,3 +82,36 @@ describe('createEmbeddingClient — provider resolution', () => {
     expect(result).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ollama permanent errors — local stub server, no external network
+// ---------------------------------------------------------------------------
+
+describe('createEmbeddingClient — ollama permanent errors', () => {
+  const savedOllama = process.env.OLLAMA_BASE_URL;
+
+  afterEach(() => {
+    if (savedOllama === undefined) delete process.env.OLLAMA_BASE_URL;
+    else process.env.OLLAMA_BASE_URL = savedOllama;
+  });
+
+  it('fails fast without retrying when the model is not pulled (404)', async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch() {
+        requests += 1;
+        return Response.json({ error: 'model "missing-embed" not found, try pulling it first' }, { status: 404 });
+      },
+    });
+    try {
+      process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${server.port}`;
+      const client = createEmbeddingClient({ provider: 'ollama', model: 'missing-embed' });
+      await expect(embedSingleQuery(client, 'financial analysis')).rejects.toThrow(/not found/);
+      expect(requests).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  }, 10_000);
+});

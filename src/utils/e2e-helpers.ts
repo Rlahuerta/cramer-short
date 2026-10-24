@@ -341,6 +341,8 @@ interface E2EOptions {
   model?: string;
   historySeed?: readonly E2ESeedMessage[];
   timeoutMs?: number;
+  /** Approve every approval-gated tool call (unattended runs otherwise deny them). */
+  approveTools?: boolean;
 }
 
 interface E2ERetryOptions extends E2EOptions {
@@ -496,6 +498,7 @@ export async function runAgentE2EInProcess(
     maxIterations,
     memoryEnabled: false, // keep E2E tests hermetic — no cross-test memory bleed
     signal: ac.signal,
+    ...(opts.approveTools ? { requestToolApproval: async () => 'allow-once' as const } : {}),
   });
   const inMemoryHistory = historySeed?.length
     ? await (async () => {

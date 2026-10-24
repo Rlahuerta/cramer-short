@@ -780,6 +780,29 @@ describe('Agent', () => {
       expect(done?.answer).toContain('shipped defaults');
     });
 
+    it.each([
+      ['promotion', 'Yes, approve forecast-lab promotion for that kept run.'],
+      ['reset', 'Reset the forecast-lab active baseline for btc-markov-ultra-short-horizon back to shipped defaults.'],
+    ])('ends the turn without claiming success when the forecast-lab %s is denied', async (_label, prompt) => {
+      const history = new InMemoryChatHistory();
+      history.seedMessage({
+        query: 'Improve the BTC 1d/2d/3d Markov forecast workflow.',
+        answer: 'Forecast-lab guided improvement finished. Approval required before promotion. Reply "approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1" to continue.',
+        summary: null,
+      });
+      const deny = mock(async () => 'deny' as const);
+      const agent = await Agent.create({ maxIterations: 3 });
+      installForecastLabTool(agent, deny);
+      const events = await collectEvents(agent.run(prompt, history));
+      const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
+
+      expect(deny).toHaveBeenCalledTimes(1);
+      expect(forecastLabMockState.calls).toEqual([]);
+      expect(events.some((event) => event.type === 'tool_denied')).toBe(true);
+      expect(done?.answer).toBe('');
+      expect(mockState.callCount).toBe(0);
+    });
+
     it('routes current-best vs shipped-baseline questions into the bounded forecast-lab comparison flow', async () => {
       const history = new InMemoryChatHistory();
       history.seedMessage({
