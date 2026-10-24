@@ -614,13 +614,16 @@ function stepMixtureCrps(step: BacktestStep): number {
   );
   if (nodes.length < 2) return stepCrps(step);
 
+  // y is a node, so the indicator 1{x ≥ y} is constant on each segment and F − 1 is
+  // linear there: ∫ (linear)² = (a² + ab + b²)/3 · width is exact.
   let area = 0;
   for (let index = 0; index < nodes.length - 1; index++) {
     const left = nodes[index];
     const right = nodes[index + 1];
-    const leftDiff = mixtureCdf(distribution, left) - (left >= step.realizedPrice ? 1 : 0);
-    const rightDiff = mixtureCdf(distribution, right) - (right >= step.realizedPrice ? 1 : 0);
-    area += 0.5 * ((leftDiff * leftDiff) + (rightDiff * rightDiff)) * (right - left);
+    const indicator = left >= step.realizedPrice ? 1 : 0;
+    const leftDiff = mixtureCdf(distribution, left) - indicator;
+    const rightDiff = mixtureCdf(distribution, right) - indicator;
+    area += ((leftDiff * leftDiff) + (leftDiff * rightDiff) + (rightDiff * rightDiff)) / 3 * (right - left);
   }
 
   return Number.isFinite(area) ? Math.max(0, area) : stepCrps(step);

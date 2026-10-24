@@ -575,6 +575,18 @@ describe('mixtureCrps', () => {
   it('returns 0 for empty input', () => {
     expect(mixtureCrps([])).toBe(0);
   });
+
+  it('matches the exact CRPS of a uniform forecast on [0, 100]', () => {
+    // CRPS(U[0,100], y) = (y³ + (100 − y)³) / (3·100²)
+    const uniform = [
+      { price: 0, probability: 1 },
+      { price: 100, probability: 0 },
+    ];
+    for (const y of [5, 50, 95]) {
+      const exact = (y ** 3 + (100 - y) ** 3) / (3 * 100 ** 2);
+      expect(mixtureCrps([makeStep({ realizedPrice: y, forecastDistribution: uniform })])).toBeCloseTo(exact, 9);
+    }
+  });
 });
 
 describe('tailWeightedCrps', () => {
