@@ -519,14 +519,16 @@ export { injectForecastLabRoutingHint };
  * @param originalQuery - The user's original query
  * @param fullToolResults - Formatted full tool results (or placeholder for cleared)
  * @param toolUsageStatus - Optional tool usage status for graceful exit mechanism
+ * @param queryContext - The run's initial prompt (history, memory and Polymarket context) when it adds more than the bare query
  */
 export function buildIterationPrompt(
   originalQuery: string,
   fullToolResults: string,
   toolUsageStatus?: string | null,
   forecastLabRoutingHint?: ForecastLabRoutingHint | null,
+  queryContext?: string,
 ): string {
-  let prompt = `Query: ${originalQuery}`;
+  let prompt = queryContext ?? `Query: ${originalQuery}`;
 
   if (fullToolResults.trim()) {
     prompt += `

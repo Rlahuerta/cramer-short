@@ -26,7 +26,7 @@ afterAll(() => {
 
 const { AgentToolExecutor } = await import('./tool-executor.js');
 const { createRunContext } = await import('./run-context.js');
-import type { ToolEndEvent, ToolStartEvent } from './types.js';
+import type { ApprovalDecision, ToolEndEvent, ToolStartEvent } from './types.js';
 import type { RunContext } from './run-context.js';
 import { AIMessage } from '@langchain/core/messages';
 import { DynamicStructuredTool } from '@langchain/core/tools';
@@ -839,5 +839,67 @@ describe('AgentToolExecutor — action-level approval gating', () => {
     await drainEvents(executor.executeAll(msg, makeCtx()));
 
     expect([...approved]).toEqual(['heartbeat']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parallel approval-gated calls. The CLI controller holds one pending approval
+// at a time, so concurrent requests would overwrite each other and hang.
+// ---------------------------------------------------------------------------
+describe('AgentToolExecutor — approval-gated calls in one batch', () => {
+  function singleSlotApprover(answer: (n: number) => ApprovalDecision) {
+    let resolveCurrent: ((decision: ApprovalDecision) => void) | null = null;
+    let asked = 0;
+    const approver = (_request: { tool: string; args: Record<string, unknown> }) =>
+      new Promise<ApprovalDecision>((resolve) => {
+        asked++;
+        resolveCurrent = resolve; // a second concurrent request overwrites the first
+        queueMicrotask(() => {
+          const respond = resolveCurrent;
+          resolveCurrent = null;
+          respond?.(answer(asked));
+        });
+      });
+    return { approver, asked: () => asked };
+  }
+
+  function twoWrites() {
+    return aiMsgTwoDiff('write_file', { path: 'a.txt', content: 'a' }, { path: 'b.txt', content: 'b' });
+  }
+
+  it('asks one approval at a time so every gated call completes', async () => {
+    const fakeTool = makeFakeTool('write_file', 'written');
+    const { approver, asked } = singleSlotApprover(() => 'allow-once');
+    const executor = new AgentToolExecutor(new Map([['write_file', fakeTool]]), undefined, approver);
+
+    const run = drainEvents(executor.executeAll(twoWrites(), makeCtx()));
+    const events = await Promise.race([run, Bun.sleep(1_000).then(() => 'hung' as const)]);
+
+    expect(events).not.toBe('hung');
+    expect(asked()).toBe(2);
+    expect(fakeTool.invocationCount).toBe(2);
+  });
+
+  it('lets an allow-session answer cover the calls queued behind it', async () => {
+    const fakeTool = makeFakeTool('write_file', 'written');
+    const { approver, asked } = singleSlotApprover(() => 'allow-session');
+    const executor = new AgentToolExecutor(new Map([['write_file', fakeTool]]), undefined, approver);
+
+    await drainEvents(executor.executeAll(twoWrites(), makeCtx()));
+
+    expect(asked()).toBe(1);
+    expect(fakeTool.invocationCount).toBe(2);
+  });
+
+  it('stops asking after a denial', async () => {
+    const fakeTool = makeFakeTool('write_file', 'written');
+    const { approver, asked } = singleSlotApprover(() => 'deny');
+    const executor = new AgentToolExecutor(new Map([['write_file', fakeTool]]), undefined, approver);
+
+    const events = await drainEvents(executor.executeAll(twoWrites(), makeCtx()));
+
+    expect(asked()).toBe(1);
+    expect(fakeTool.invocationCount).toBe(0);
+    expect(events.filter((event) => event.type === 'tool_denied')).toHaveLength(1);
   });
 });

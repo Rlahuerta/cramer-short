@@ -191,8 +191,9 @@ function getMemoryManagerFactory(config: AgentConfig): () => Promise<AgentMemory
 
 function mergeForcedToolStatus(
   current: ForcedToolRouteStatus,
-  next: ForcedToolExecutionStatus,
+  next: ForcedToolRouteStatus,
 ): ForcedToolRouteStatus {
+  if (next === 'idle') return current;
   if (next === 'denied') return 'denied';
   if (next === 'error') return 'error';
   return current === 'idle' ? 'success' : current;
@@ -337,21 +338,26 @@ export class Agent {
     }
 
     // Build initial prompt with conversation history context
-    let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory, forecastLabRoutingHint);
+    let promptContext = this.buildInitialPrompt(query, inMemoryHistory);
 
     // Auto-inject relevant prior research memories based on tickers mentioned
     if (this.memoryEnabled) {
-      currentPrompt = await injectMemoryContext(query, currentPrompt, {
+      promptContext = await injectMemoryContext(query, promptContext, {
         getMemoryManager: this.getMemoryManager,
         extractTickers: (text) => extractTickersFn(text),
       });
     }
 
     // Auto-inject Polymarket prediction market context for detected asset signals
-    currentPrompt = await injectPolymarketContext(query, currentPrompt, {
+    promptContext = await injectPolymarketContext(query, promptContext, {
       extractSignals: (text) => extractSignalsFn(text),
       fetchMarkets: (q, limit) => fetchPolymarketMarkets(q, limit),
     });
+
+    // Every iteration prompt is rebuilt on top of this context so follow-ups keep their referent.
+    if (promptContext !== query) ctx.promptContext = promptContext;
+    const initialPrompt = forecastLabRouter.injectRoutingHint(promptContext, forecastLabRoutingHint);
+    let currentPrompt = initialPrompt;
 
     const explicitlyRequestedSkill = detectExplicitSkillRequest(query);
 
@@ -379,6 +385,8 @@ export class Agent {
 
       runState.sequentialThinkingUsed = true;
     }
+
+    let stoppedOnRepeatedFailures = false;
 
     // Main agent loop
     while (ctx.iteration < this.maxIterations) {
@@ -411,6 +419,7 @@ export class Agent {
                 ctx.scratchpad.getToolResults(),
                 ctx.scratchpad.formatToolUsageForPrompt(),
                 forecastLabRoutingHint,
+                ctx.promptContext,
               );
               continue;
             }
@@ -421,6 +430,7 @@ export class Agent {
           yield {
             type: 'done',
             answer: `Error: ${formatUserFacingError(errorMessage, provider)}`,
+            error: true,
             toolCalls: ctx.scratchpad.getToolCallRecords(),
             iterations: ctx.iteration,
             totalTime,
@@ -660,6 +670,7 @@ export class Agent {
       if (skippedToolCalls.length > 0) {
         (response as AIMessage).tool_calls = executableToolCalls;
         if (executableToolCalls.length === 0) {
+          stoppedOnRepeatedFailures = true;
           break;
         }
         repeatedFailureSkipped = true;
@@ -690,6 +701,7 @@ export class Agent {
         ctx.scratchpad.getToolResults(),
         ctx.scratchpad.formatToolUsageForPrompt(),
         forecastLabRoutingHint,
+        ctx.promptContext,
       );
 
       if (repeatedFailureSkipped) {
@@ -703,7 +715,7 @@ export class Agent {
       }
     }
 
-    // Max iterations reached — synthesize a best-effort answer from gathered research
+    // Max iterations reached (or the loop-breaker stopped the run) — synthesize a best-effort answer from gathered research
     // rather than yielding a bare failure message. Any data collected is still useful.
     const toolResults = ctx.scratchpad.getToolResults().trim();
     const hasMeaningfulResearch = toolResults.length > 50;
@@ -732,12 +744,15 @@ export class Agent {
           toolResults,
           ctx.scratchpad.formatToolUsageForPrompt(),
           forecastLabRoutingHint,
+          ctx.promptContext,
         ) +
-          `\n\n[SYSTEM NOTE: You have reached the maximum number of research steps (${this.maxIterations}). ` +
+          `\n\n[SYSTEM NOTE: ${stoppedOnRepeatedFailures
+            ? 'Research stopped because your tool calls only repeated calls that already failed with the same arguments'
+            : `You have reached the maximum number of research steps (${this.maxIterations})`}. ` +
           `You MUST now write your best-effort final answer using ONLY the data gathered above. ` +
           `Start your response with "**[Best-effort summary — research may be incomplete]**\\n\\n" ` +
           `then provide the most useful analysis you can from the available data. Do NOT call any more tools.]`
-      : query;
+      : initialPrompt;
 
     yield* this.handleDirectResponse('', ctx, synthesisPrompt);
   }
@@ -1021,6 +1036,7 @@ export class Agent {
       ctx.scratchpad.getToolResults(),
       ctx.scratchpad.formatToolUsageForPrompt(),
       forecastLabRoutingHint,
+      ctx.promptContext,
     );
   }
 
@@ -1062,7 +1078,13 @@ export class Agent {
     ctx: RunContext,
     toolName: string,
     args: Record<string, unknown>,
-  ): AsyncGenerator<AgentEvent, ForcedToolExecutionStatus> {
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
+    // Re-forcing an identical call can't change the outcome (it is usually a
+    // cache hit reported as success) and would only burn iterations.
+    const key = `${toolName}:${JSON.stringify(args)}`;
+    if (ctx.forcedToolCalls.has(key)) return 'idle';
+    ctx.forcedToolCalls.add(key);
+
     let status: ForcedToolExecutionStatus = 'success';
 
     for await (const event of this.toolExecutor.executeTool(toolName, args, ctx)) {
@@ -1289,13 +1311,16 @@ export class Agent {
         }
       } catch (error) {
         logger.warn('[Agent] final synthesis failed', error);
-        // Synthesis timed out or failed — surface the raw tool results so the
-        // user has something to work with rather than seeing a blank answer.
+        // Synthesis was cancelled, timed out or failed — surface the raw tool
+        // results so the user has something to work with rather than a blank answer.
         const toolSummary = ctx.scratchpad.getToolResults().trim();
         if (toolSummary) {
+          const reason = this.signal?.aborted
+            ? 'synthesis cancelled'
+            : timeoutSignal.aborted ? 'synthesis timed out' : 'synthesis failed';
           const fallback =
-            '**[Research interrupted — synthesis timed out]**\n\n' +
-            'The model did not complete in time. Raw research data gathered:\n\n' +
+            `**[Research interrupted — ${reason}]**\n\n` +
+            'Raw research data gathered:\n\n' +
             toolSummary.slice(0, 3000);
           yield { type: 'answer_chunk', chunk: fallback } as AnswerChunkEvent;
           streamedAnswer = fallback;
@@ -1427,20 +1452,14 @@ export class Agent {
   private buildInitialPrompt(
     query: string,
     inMemoryChatHistory?: InMemoryChatHistory,
-    forecastLabRoutingHint?: ForecastLabRoutingHint | null,
   ): string {
     if (!inMemoryChatHistory?.hasMessages()) {
-      return forecastLabRouter.injectRoutingHint(query, forecastLabRoutingHint);
+      return query;
     }
 
-    const recentTurns = inMemoryChatHistory.getRecentTurns();
-    if (recentTurns.length === 0) {
-      return forecastLabRouter.injectRoutingHint(query, forecastLabRoutingHint);
-    }
-
-    return forecastLabRouter.injectRoutingHint(buildHistoryContext({
-      entries: recentTurns,
+    return buildHistoryContext({
+      entries: inMemoryChatHistory.getRecentTurns(),
       currentMessage: query,
-    }), forecastLabRoutingHint);
+    });
   }
 }
