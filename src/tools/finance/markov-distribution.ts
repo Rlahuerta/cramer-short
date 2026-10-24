@@ -3255,10 +3255,10 @@ export async function computeMarkovDistribution(params: {
   /** KSWIN significance level. Default 0.005. */
   kswinAlpha?: number;
   /** R4 Idea 2: enable cross-asset Lasso pooling — adds an additive bias to
-   *  trajectory drift learned from peer-asset 1-day returns.  Default OFF. */
+   *  the per-day drift (distribution and trajectory) learned from peer-asset 1-day returns.  Default OFF. */
   enableCrossAssetBias?: boolean;
-  /** Map of peer-ticker → daily-return series, time-aligned with historicalPrices.
-   *  Required for `enableCrossAssetBias`. */
+  /** Map of peer-ticker → daily-return series ending on the same day as historicalPrices
+   *  (longer series are end-aligned).  Required for `enableCrossAssetBias`. */
   crossAssetReturns?: Record<string, number[]>;
   /** Lasso L1 strength.  Default 0.005. */
   crossAssetLassoLambda?: number;
@@ -3556,8 +3556,31 @@ export async function computeMarkovDistribution(params: {
   const ensemble = computeEnsembleSignal(historicalPrices);
   // Only apply ensemble adjustment when consensus is high (≥2 of 3 signals agree)
   const ensembleAdj = ensemble.consensus >= 2 ? ensemble.adjustment : 0;
-  // Combine momentum + ensemble into a single drift modifier
-  const combinedDriftAdj = momentumAdj + ensembleAdj;
+  // R4 Phase D — optional cross-asset Lasso bias (default OFF), added to the
+  // per-day drift so the distribution, its CI and the trajectory all see it.
+  let crossAssetBiasMeta: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number } | undefined;
+  if (
+    enableCrossAssetBias === true
+    && crossAssetReturns
+    && Object.keys(crossAssetReturns).length > 0
+  ) {
+    const bias = estimateCrossAssetBias(
+      returns,
+      crossAssetReturns,
+      horizon,
+      { lambda: crossAssetLassoLambda ?? 0.005 },
+    );
+    if (bias && Number.isFinite(bias.perDayBias)) {
+      crossAssetBiasMeta = {
+        // Clip to a sane range so a pathological fit can't dominate the drift.
+        perDayBias: Math.max(-0.05, Math.min(0.05, bias.perDayBias)),
+        tickers: bias.tickers,
+        nonZeroCoefCount: bias.fit.coef.filter(c => c !== 0).length,
+      };
+    }
+  }
+  // Combine momentum + ensemble (+ cross-asset bias) into a single drift modifier
+  const combinedDriftAdj = momentumAdj + ensembleAdj + (crossAssetBiasMeta?.perDayBias ?? 0);
 
   // --- HMM forecast (Idea B: Hidden Markov Model + Idea C: Multi-feature) ---
   // Fit a Gaussian HMM on daily returns when we have enough data.
@@ -4237,7 +4260,6 @@ export async function computeMarkovDistribution(params: {
 
   let trajectoryResult: TrajectoryPoint[] | undefined;
   let jumpDiffusionMeta: { compensatorPerDay: number; events: Array<{ id: string; dailyIntensity: number; meanLogJump: number; stdLogJump: number }> } | undefined;
-  let crossAssetBiasMeta: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number } | undefined;
   if (params.trajectory) {
     const trajDays = Math.min(30, Math.max(1, params.trajectoryDays ?? horizon));
     const activeJumpSpec = hasJumps ? activeJumpEvents : undefined;
@@ -4274,33 +4296,9 @@ export async function computeMarkovDistribution(params: {
       }
     }
 
-    // R4 Phase D — optional cross-asset Lasso bias (default OFF).
-    let trajectoryDriftAdj = combinedDriftAdj;
-    if (
-      enableCrossAssetBias === true
-      && crossAssetReturns
-      && Object.keys(crossAssetReturns).length > 0
-    ) {
-      const bias = estimateCrossAssetBias(
-        returns,
-        crossAssetReturns,
-        Math.min(trajDays, horizon),
-        { lambda: crossAssetLassoLambda ?? 0.005 },
-      );
-      if (bias && Number.isFinite(bias.perDayBias)) {
-        // Clip to a sane range so a pathological fit can't dominate the drift.
-        const clipped = Math.max(-0.05, Math.min(0.05, bias.perDayBias));
-        trajectoryDriftAdj = combinedDriftAdj + clipped;
-        crossAssetBiasMeta = {
-          perDayBias: clipped,
-          tickers: bias.tickers,
-          nonZeroCoefCount: bias.fit.coef.filter(c => c !== 0).length,
-        };
-      }
-    }
     trajectoryResult = computeTrajectory(
       currentPrice, trajDays, effectiveP, regimeStats, currentRegime,
-      trajectoryDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
+      combinedDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
       recentDailyVol, effectiveMixture, activeJumpSpec,
       garchScalesForTraj,
       uncertaintyTrajectoryScale,

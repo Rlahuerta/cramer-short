@@ -131,6 +131,18 @@ describe('estimateCrossAssetBias', () => {
     expect(a?.perDayBias).toEqual(b?.perDayBias);
   });
 
+  it('end-aligns target and peer series of different lengths (both end at the latest observation)', () => {
+    const rng = seedRng(5);
+    const peer = Array.from({ length: 300 }, () => gauss(rng) * 0.02);
+    // Target window is the most recent 100 returns (e.g. a post-break short-window rerun),
+    // and moves 1:1 with the peer on the same day.
+    const target = peer.slice(-100);
+    const r = estimateCrossAssetBias(target, { ETH: peer }, 1, { lambda: 0.0001, minSamples: 60 });
+    expect(r).not.toBeNull();
+    expect(r!.fit.coef[0]).toBeGreaterThan(0.015);
+    expect(r!.perDayBias).toBeCloseTo(peer[299], 3);
+  });
+
   it('per-day bias scales inversely with horizon', () => {
     const rng = seedRng(11);
     const n = 200;
