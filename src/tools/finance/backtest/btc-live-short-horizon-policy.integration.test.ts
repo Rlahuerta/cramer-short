@@ -107,12 +107,7 @@ describe('BTC live short-horizon policy walk-forward', () => {
 
       expect(baselineMetrics.errors).toBe(0);
       expect(tunedMetrics.errors).toBe(0);
-      if (horizon === 14) {
-        // At 14d the tuned policy ties the baseline on direction (.494 vs .495); its gain is Brier.
-        expect(tunedMetrics.brierScore).toBeLessThan(baselineMetrics.brierScore);
-      } else {
-        expect(tunedMetrics.directionalAccuracy).toBeGreaterThan(baselineMetrics.directionalAccuracy);
-      }
+      expect(tunedMetrics.directionalAccuracy).toBeGreaterThan(baselineMetrics.directionalAccuracy);
 
       // Refreshed after the zero-anchor cryptoModelOnly break fix shifted the
       // deterministic BTC fixture toward slightly more conservative HOLD usage.
