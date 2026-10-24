@@ -2213,6 +2213,22 @@ describe('markov_distribution tool output envelope', () => {
       criticalD: expect.any(Number),
     });
     expect(longHorizon.metadata.kswinTrim).toBeUndefined();
+
+    // A short calm suffix would otherwise leave ~70 prices; the trim keeps at least 120.
+    const shortCalm = makePriceSeries([
+      ...Array.from({ length: 200 }, () => randn(rng) * 0.04),
+      ...Array.from({ length: 70 }, () => randn(rng) * 0.002),
+    ]);
+    const shortCalmTrim = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 1,
+      currentPrice: shortCalm[shortCalm.length - 1],
+      historicalPrices: shortCalm,
+      polymarketMarkets: [],
+      enableKswinTrim: true,
+    });
+    expect(shortCalmTrim.metadata.kswinTrim?.keptPrices).toBeGreaterThanOrEqual(120);
+    expect(shortCalmTrim.metadata.kswinTrim?.keptPrices).toBeLessThan(shortCalm.length);
   });
 
   it('exposes Hawkes amplification metadata when clustered jumps are present', async () => {
