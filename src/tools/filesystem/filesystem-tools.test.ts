@@ -5,6 +5,7 @@
  * sandbox root without requiring a process.cwd() spy.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { randomUUID } from 'node:crypto';
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -18,8 +19,9 @@ import { expandPath, resolveReadPath, resolveToCwd } from './utils/path-utils.js
 // Temp directory setup — kept inside cwd so sandbox checks pass without mocking
 // ---------------------------------------------------------------------------
 
-const TMP_DIR = join(process.cwd(), '.cramer-short-fs-test-tmp');
-const REL_TMP = '.cramer-short-fs-test-tmp'; // relative to cwd
+// Per-process name: concurrent `bun test` runs in one checkout would otherwise delete each other's files.
+const REL_TMP = `.cramer-short-fs-test-tmp-${randomUUID()}`; // relative to cwd
+const TMP_DIR = join(process.cwd(), REL_TMP);
 
 beforeEach(async () => {
   await mkdir(TMP_DIR, { recursive: true });
