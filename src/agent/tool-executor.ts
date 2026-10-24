@@ -64,6 +64,8 @@ export const PENDING_REQUESTS_MAX_SIZE = 64;
 export interface AgentToolExecutorLimits {
   requestCacheMaxSize?: number;
   pendingRequestsMaxSize?: number;
+  /** Max tool calls from one batch running at once; 0 or unset = unlimited. */
+  parallelToolLimit?: number;
 }
 
 function setBoundedLru<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number): void {
@@ -105,6 +107,7 @@ export class AgentToolExecutor {
   private readonly sessionApprovedTools: Set<string>;
   private readonly requestCacheMaxSize: number;
   private readonly pendingRequestsMaxSize: number;
+  private readonly parallelToolLimit: number;
 
   /**
    * In-session request cache keyed on `toolName:stableJsonArgs`.
@@ -147,6 +150,7 @@ export class AgentToolExecutor {
     this.sessionApprovedTools = sessionApprovedTools ?? new Set();
     this.requestCacheMaxSize = limits.requestCacheMaxSize ?? REQUEST_CACHE_MAX_SIZE;
     this.pendingRequestsMaxSize = limits.pendingRequestsMaxSize ?? PENDING_REQUESTS_MAX_SIZE;
+    this.parallelToolLimit = limits.parallelToolLimit ?? 0;
 
     // Pre-populate in-session cache from disk (fire-and-forget)
     loadCacheFromDisk().then((diskCache) => {
@@ -204,7 +208,10 @@ export class AgentToolExecutor {
     const lanes = toolCalls.map((tc) => this.executeSingle(tc.name, tc.args as Record<string, unknown>, ctx, true));
 
     const queue: QueueItem[] = [];
-    let pending = lanes.length;
+    // Each worker drains lanes one after another, so at most `workers` run at once.
+    const workers = this.parallelToolLimit > 0 ? Math.min(this.parallelToolLimit, lanes.length) : lanes.length;
+    let pending = workers;
+    let nextLane = 0;
 
     const notifyWaiter = { fn: null as (() => void) | null };
 
@@ -214,11 +221,13 @@ export class AgentToolExecutor {
       notifyWaiter.fn = null;
     };
 
-    for (const lane of lanes) {
+    for (let w = 0; w < workers; w++) {
       (async () => {
         try {
-          for await (const event of lane) {
-            push({ done: false, event });
+          while (nextLane < lanes.length) {
+            for await (const event of lanes[nextLane++]) {
+              push({ done: false, event });
+            }
           }
         } finally {
           if (--pending === 0) push({ done: true });

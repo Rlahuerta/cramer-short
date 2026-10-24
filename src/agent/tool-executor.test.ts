@@ -945,3 +945,48 @@ describe('AgentToolExecutor — approval-gated calls in one batch', () => {
     expect(events.filter((event) => event.type === 'tool_denied')).toHaveLength(1);
   });
 });
+
+describe('AgentToolExecutor — parallelToolLimit', () => {
+  function concurrencyProbe() {
+    let active = 0;
+    let peak = 0;
+    const tool = {
+      name: 'browser',
+      invoke: async () => {
+        peak = Math.max(peak, ++active);
+        await Bun.sleep(5);
+        active--;
+        return 'ok';
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+    return { tool, peak: () => peak };
+  }
+
+  function fourCalls() {
+    return new AIMessage({
+      content: '',
+      tool_calls: [1, 2, 3, 4].map((n) => ({ id: `c${n}`, name: 'browser', args: { url: `u${n}` }, type: 'tool_call' as const })),
+    });
+  }
+
+  it('caps how many calls in a batch run at once', async () => {
+    const { tool, peak } = concurrencyProbe();
+    const executor = new AgentToolExecutor(new Map([['browser', tool]]), undefined, undefined, undefined, { parallelToolLimit: 2 });
+
+    const events = await drainEvents(executor.executeAll(fourCalls(), makeCtx()));
+
+    expect(peak()).toBe(2);
+    expect(events.filter((event) => event.type === 'tool_end')).toHaveLength(4);
+  });
+
+  it('runs the whole batch at once when the limit is 0', async () => {
+    const { tool, peak } = concurrencyProbe();
+    const executor = new AgentToolExecutor(new Map([['browser', tool]]), undefined, undefined, undefined, { parallelToolLimit: 0 });
+
+    await drainEvents(executor.executeAll(fourCalls(), makeCtx()));
+
+    expect(peak()).toBe(4);
+  });
+});

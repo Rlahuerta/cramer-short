@@ -56,6 +56,8 @@ export interface AgentConfig {
   modelProvider?: string;
   /** Maximum agent loop iterations (default: 10) */
   maxIterations?: number;
+  /** Max tool calls from one model turn running at once; 0 = unlimited (default: `parallelToolLimit` setting) */
+  parallelToolLimit?: number;
   /** AbortSignal for cancelling agent execution */
   signal?: AbortSignal;
   /** Delivery channel (e.g., 'whatsapp', 'cli') — affects response formatting */

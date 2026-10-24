@@ -15,6 +15,7 @@ import type { ChatResult } from '@langchain/core/outputs';
 import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
 import { z } from 'zod';
 import { _setModelFactory } from '../model/llm.js';
+import * as config from '../utils/config.js';
 import { HISTORY_CONTEXT_MARKER } from '../utils/parsing/history-context.js';
 import type { AgentEvent, DoneEvent } from './types.js';
 
@@ -247,5 +248,29 @@ describe('exit messages', () => {
     const done = doneOf(await collect(agent.run('look up ZZZ')));
 
     expect(done.answer).toContain('Research interrupted');
+  });
+});
+
+describe('Agent — parallelToolLimit wiring', () => {
+  function executorLimit(agent: AgentInstance): unknown {
+    const executor = Object.getOwnPropertyDescriptor(agent, 'toolExecutor')?.value as object;
+    return Object.getOwnPropertyDescriptor(executor, 'parallelToolLimit')?.value;
+  }
+
+  it('reads the parallelToolLimit setting when the config leaves it unset', async () => {
+    const realGetSetting = config.getSetting;
+    const spy = spyOn(config, 'getSetting').mockImplementation(((key: string, fallback: unknown) =>
+      key === 'parallelToolLimit' ? 2 : realGetSetting(key, fallback)) as typeof config.getSetting);
+    try {
+      const agent = await Agent.create({ memoryEnabled: false });
+      expect(executorLimit(agent)).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('lets AgentConfig.parallelToolLimit override the setting', async () => {
+    const agent = await Agent.create({ memoryEnabled: false, parallelToolLimit: 3 });
+    expect(executorLimit(agent)).toBe(3);
   });
 });
