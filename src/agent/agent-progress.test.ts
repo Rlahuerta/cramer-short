@@ -8,7 +8,10 @@
  * - Iterates do not exceed maxIterations
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll, setSystemTime, spyOn } from 'bun:test';
+import { useNoNetwork } from '../utils/test-no-network.js';
+import * as polymarket from '../tools/finance/polymarket.js';
+import * as embeddings from '../memory/embeddings.js';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,6 +19,21 @@ import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { BaseMessage } from '@langchain/core/messages';
 import { AIMessage } from '@langchain/core/messages';
 import { _setModelFactory } from '../model/llm.js';
+
+useNoNetwork();
+
+// Agent.run() injects live Polymarket context, and memory search would embed
+// via OpenAI with the stub key: keep both offline.
+let offlineSpies: Array<{ mockRestore: () => void }> = [];
+beforeEach(() => {
+  offlineSpies = [
+    spyOn(polymarket, 'fetchPolymarketMarkets').mockResolvedValue([]),
+    spyOn(embeddings, 'createEmbeddingClient').mockReturnValue(null),
+  ];
+});
+afterEach(() => {
+  for (const spy of offlineSpies) spy.mockRestore();
+});
 
 // ---------------------------------------------------------------------------
 // Isolation: each test gets its own tmp dir for Scratchpad persistence
