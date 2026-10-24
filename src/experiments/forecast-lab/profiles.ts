@@ -173,7 +173,7 @@ const WALK_FORWARD_GOLD_SHORT_HORIZON_COMMANDS = deepFreeze([
 const WALK_FORWARD_SOL_SHORT_HORIZON_COMMANDS = deepFreeze([
   {
     id: 'walk-forward-sol-short-horizon',
-    command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.integration.test.ts --timeout 480000',
+    command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.integration.test.ts --timeout 480000 --path-ignore-patterns=',
     env: {
       RUN_INTEGRATION: '1',
       FORECAST_LAB_OUTPUT_METRICS: '1',
@@ -185,7 +185,7 @@ const WALK_FORWARD_SOL_SHORT_HORIZON_COMMANDS = deepFreeze([
 const WALK_FORWARD_HYPE_SHORT_HORIZON_COMMANDS = deepFreeze([
   {
     id: 'walk-forward-hype-short-horizon',
-    command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.integration.test.ts --timeout 480000',
+    command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.integration.test.ts --timeout 480000 --path-ignore-patterns=',
     env: {
       RUN_INTEGRATION: '1',
       FORECAST_LAB_OUTPUT_METRICS: '1',

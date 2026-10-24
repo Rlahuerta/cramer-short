@@ -73,7 +73,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
     commands: [
       {
         id: 'walk-forward-sol-short-horizon',
-        command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.integration.test.ts --timeout 480000',
+        command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.integration.test.ts --timeout 480000 --path-ignore-patterns=',
         env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
         timeoutMs: 480_000,
       },
@@ -84,7 +84,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
     commands: [
       {
         id: 'walk-forward-hype-short-horizon',
-        command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.integration.test.ts --timeout 480000',
+        command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.integration.test.ts --timeout 480000 --path-ignore-patterns=',
         env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
         timeoutMs: 480_000,
       },
@@ -360,6 +360,16 @@ describe('forecast-lab profiles', () => {
         const testPath = command.match(/^bun test (\S+)/)?.[1];
         expect(testPath).toBeDefined();
         expect(existsSync(join(import.meta.dir, '../../..', testPath!))).toBe(true);
+      }
+    }
+  });
+
+  it('overrides bunfig tier exclusions for commands that run integration tests', () => {
+    for (const profile of listForecastLabProfiles()) {
+      for (const { command } of [...profile.baselineCommands, ...profile.candidateCommands]) {
+        if (/\.(integration|e2e)\.test\.ts\b/.test(command)) {
+          expect(command).toContain('--path-ignore-patterns=');
+        }
       }
     }
   });
