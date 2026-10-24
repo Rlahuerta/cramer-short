@@ -17,6 +17,8 @@ export interface RunContext {
   forecastLabGuard?: ForecastLabGuard;
   /** Initial prompt context (history, memory, Polymarket) reused by every iteration prompt. */
   promptContext?: string;
+  /** `tool:args` keys of forced tool calls already made this run; never forced twice. */
+  readonly forcedToolCalls: Set<string>;
 }
 
 export function createRunContext(query: string): RunContext {
@@ -26,5 +28,6 @@ export function createRunContext(query: string): RunContext {
     tokenCounter: new TokenCounter(),
     startTime: Date.now(),
     iteration: 0,
+    forcedToolCalls: new Set(),
   };
 }

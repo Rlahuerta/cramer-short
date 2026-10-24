@@ -12,6 +12,8 @@ import { BaseChatModel, type BaseChatModelCallOptions, type BindToolsInput } fro
 import type { BaseLanguageModelInput } from '@langchain/core/language_models/base';
 import { AIMessage, AIMessageChunk, type BaseMessage, type ToolCall } from '@langchain/core/messages';
 import type { ChatResult } from '@langchain/core/outputs';
+import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
+import { z } from 'zod';
 import { _setModelFactory } from '../model/llm.js';
 import { HISTORY_CONTEXT_MARKER } from '../utils/parsing/history-context.js';
 import type { AgentEvent, DoneEvent } from './types.js';
@@ -94,6 +96,23 @@ afterEach(() => {
 
 const { Agent } = await import('./agent.js');
 const { InMemoryChatHistory } = await import('../utils/in-memory-chat-history.js');
+const { AgentToolExecutor } = await import('./tool-executor.js');
+
+type AgentInstance = Awaited<ReturnType<typeof Agent.create>>;
+
+/** Replace (or add) agent tools with fixtures and rebuild its executor around them. */
+function installTools(agent: AgentInstance, tools: Record<string, () => string>): void {
+  const toolMap = Object.getOwnPropertyDescriptor(agent, 'toolMap')?.value as Map<string, StructuredToolInterface>;
+  for (const [name, invoke] of Object.entries(tools)) {
+    toolMap.set(name, new DynamicStructuredTool({
+      name,
+      description: `${name} fixture`,
+      schema: z.record(z.string(), z.unknown()),
+      func: async () => invoke(),
+    }));
+  }
+  Object.defineProperty(agent, 'toolExecutor', { value: new AgentToolExecutor(toolMap), configurable: true });
+}
 
 async function collect(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
@@ -158,5 +177,25 @@ describe('failed model calls', () => {
     const done = doneOf(await collect(agent.run('what is up')));
 
     expect(done.error).toBeUndefined();
+  });
+});
+
+describe('forced tool routes', () => {
+  it('never re-forces a (tool, args) pair it already forced', async () => {
+    const agent = await Agent.create({ maxIterations: 6, memoryEnabled: false });
+    let markovRuns = 0;
+    installTools(agent, {
+      // Succeeds without a usable distribution, so the force predicate stays true.
+      markov_distribution: () => {
+        markovRuns++;
+        return JSON.stringify({ data: { _tool: 'markov_distribution', status: 'pending' } });
+      },
+    });
+
+    const done = doneOf(await collect(agent.run('What is the probability distribution for BTC-USD in 7 trading days?')));
+
+    expect(markovRuns).toBe(1);
+    expect(done.iterations).toBeLessThan(6);
+    expect(done.answer).toContain('Final answer');
   });
 });

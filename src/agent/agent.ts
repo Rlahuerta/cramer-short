@@ -191,8 +191,9 @@ function getMemoryManagerFactory(config: AgentConfig): () => Promise<AgentMemory
 
 function mergeForcedToolStatus(
   current: ForcedToolRouteStatus,
-  next: ForcedToolExecutionStatus,
+  next: ForcedToolRouteStatus,
 ): ForcedToolRouteStatus {
+  if (next === 'idle') return current;
   if (next === 'denied') return 'denied';
   if (next === 'error') return 'error';
   return current === 'idle' ? 'success' : current;
@@ -1072,7 +1073,13 @@ export class Agent {
     ctx: RunContext,
     toolName: string,
     args: Record<string, unknown>,
-  ): AsyncGenerator<AgentEvent, ForcedToolExecutionStatus> {
+  ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
+    // Re-forcing an identical call can't change the outcome (it is usually a
+    // cache hit reported as success) and would only burn iterations.
+    const key = `${toolName}:${JSON.stringify(args)}`;
+    if (ctx.forcedToolCalls.has(key)) return 'idle';
+    ctx.forcedToolCalls.add(key);
+
     let status: ForcedToolExecutionStatus = 'success';
 
     for await (const event of this.toolExecutor.executeTool(toolName, args, ctx)) {
