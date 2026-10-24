@@ -1,14 +1,23 @@
-import { describe, test, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getQuotaStatus } from '../../utils/finance/fmp-quota.js';
+import { useTempCramerShortDir } from '../../utils/test-cramer-short-dir.js';
 
 // ---------------------------------------------------------------------------
 // FMP_API_KEY must be set before the module is loaded so getFmpApiKey() does
-// not throw during tool creation.
+// not throw during tool creation. Restored afterAll so it can't leak into later files.
 // ---------------------------------------------------------------------------
+const originalFmpApiKey = process.env.FMP_API_KEY;
 process.env.FMP_API_KEY = 'test-fmp-key';
+afterAll(() => {
+  if (originalFmpApiKey === undefined) delete process.env.FMP_API_KEY;
+  else process.env.FMP_API_KEY = originalFmpApiKey;
+});
+
+// fmpApi.get records quota in .cramer-short/fmp-quota.json; keep it out of the working tree.
+useTempCramerShortDir();
 
 const fmpModulePath: string = './fmp.js?fmp-unit';
 const { fmpApi, getFmpIncomeStatements, getFmpBalanceSheets, getFmpCashFlowStatements, FMP_PREMIUM_REQUIRED } =

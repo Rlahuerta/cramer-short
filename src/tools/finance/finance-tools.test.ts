@@ -16,9 +16,19 @@ mock.module('./api.js', () => ({
   callApi: mockGet,
 }));
 
+// These tools fall back to live FMP / Tavily when their keys are set (e.g. from a local
+// .env); unset them so only the mocked api.js is exercised, as on a fresh checkout.
+const FALLBACK_API_KEYS = ['FMP_API_KEY', 'TAVILY_API_KEY'] as const;
+const originalFallbackKeys = FALLBACK_API_KEYS.map((name) => [name, process.env[name]] as const);
+for (const name of FALLBACK_API_KEYS) delete process.env[name];
+
 afterAll(() => {
   setSystemTime();
   mock.module('./api.js', () => realApi);
+  for (const [name, value] of originalFallbackKeys) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
 });
 
 // Dynamic imports after mocking.
