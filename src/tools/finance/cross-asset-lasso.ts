@@ -161,30 +161,27 @@ export function estimateCrossAssetBias(
   const tickers = Object.keys(peerReturns).sort();
   if (tickers.length === 0) return null;
 
-  // Align: usable index range is [0, T - horizon - lag).
-  const T = targetReturns.length;
-  const peerLengths = tickers.map(t => peerReturns[t].length);
-  const minPeerLen = Math.min(...peerLengths);
-  const usable = Math.min(T, minPeerLen) - horizon - lag;
-  if (usable < minSamples) return null;
+  // All series end at the latest observation, so align from the end: a target
+  // window shorter than the peers (trimmed history, short-window rerun) keeps
+  // each target return paired with the peer return of the same day.
+  const L = Math.min(targetReturns.length, ...tickers.map(t => peerReturns[t].length));
+  const target = targetReturns.slice(targetReturns.length - L);
+  const peers = tickers.map(t => peerReturns[t].slice(peerReturns[t].length - L));
+  const n = L - horizon - lag;
+  if (n < minSamples) return null;
 
-  const n = usable;
   const X: number[][] = new Array(n);
   const y: number[] = new Array(n);
   for (let i = 0; i < n; i++) {
-    const row = new Array(tickers.length);
-    for (let k = 0; k < tickers.length; k++) row[k] = peerReturns[tickers[k]][i];
-    X[i] = row;
+    X[i] = peers.map(p => p[i]);
     let fwd = 0;
-    for (let h = 0; h < horizon; h++) fwd += targetReturns[i + lag + h];
+    for (let h = 0; h < horizon; h++) fwd += target[i + lag + h];
     y[i] = fwd;
   }
 
   const fit = fitLasso(X, y, opts);
 
-  // Latest peer observations (most recent index that exists in all peers).
-  const latestIdx = Math.min(...peerLengths) - 1;
-  const latest = tickers.map(t => peerReturns[t][latestIdx]);
+  const latest = peers.map(p => p[L - 1]);
   const yhat = predictLasso(fit, latest);
   const perDayBias = yhat / Math.max(1, horizon);
   return { perDayBias, fit, tickers };

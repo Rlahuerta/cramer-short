@@ -147,7 +147,7 @@ export interface WalkForwardConfig {
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
   kswinAlpha?: number;
-  /** R4 Idea 2: enable cross-asset Lasso bias on trajectory drift. Default false. */
+  /** R4 Idea 2: enable cross-asset Lasso bias on the forecast drift. Default false. */
   enableCrossAssetBias?: boolean;
   /** Peer-ticker → daily-return series, time-aligned with the target. */
   crossAssetReturns?: Record<string, number[]>;

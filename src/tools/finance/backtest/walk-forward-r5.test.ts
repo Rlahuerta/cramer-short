@@ -572,3 +572,28 @@ describe('soft regime weighting walk-forward wiring', () => {
     expect(Math.abs(avgPredictedProb(enabled.steps) - avgPredictedProb(baseline.steps))).toBeGreaterThan(1e-4);
   });
 });
+
+describe('cross-asset bias walk-forward wiring', () => {
+  it('changes the walk-forward forecast when a peer leads the target', async () => {
+    const rng = seedRng(606);
+    const peer = Array.from({ length: 260 }, () => gauss(rng) * 0.02);
+    const prices = [100];
+    for (let i = 0; i < peer.length; i++) {
+      prices.push(prices.at(-1)! * Math.exp((i > 0 ? 0.8 * peer[i - 1] : 0) + gauss(rng) * 0.004));
+    }
+    const baseConfig = { ticker: 'BTC-USD', prices, horizon: 7, warmup: 150, stride: 20 } as const;
+
+    const baseline = await withSeed(606, () => walkForward(baseConfig));
+    const enabled = await withSeed(606, () => walkForward({
+      ...baseConfig,
+      enableCrossAssetBias: true,
+      crossAssetReturns: { ETH: peer },
+      crossAssetLassoLambda: 0.001,
+    }));
+
+    expect(enabled.errors).toHaveLength(0);
+    const probChanged = enabled.steps.some((step, i) =>
+      Math.abs(step.predictedProb - baseline.steps[i].predictedProb) > 1e-6);
+    expect(probChanged).toBe(true);
+  });
+});
