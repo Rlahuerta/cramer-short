@@ -5,7 +5,7 @@
  * external dependencies.  Used to find sparse, robust signal from a panel of
  * peer-asset daily returns onto the *target* asset's H-day forward return.
  *
- * The fitted intercept-corrected linear predictor at the most recent observation
+ * The fitted linear predictor, minus its intercept, at the most recent observation
  * supplies an additive bias to the Markov-chain drift in the trajectory MC.
  *
  * Algorithm:
@@ -145,8 +145,9 @@ export function predictLasso(fit: LassoFit, x: readonly number[]): number {
  *   y[i] = sum_{k=0..horizon-1} targetReturns[i + lag + k]   (forward H-day return)
  *   x[i] = [ peer1_returns[i], peer2_returns[i], … ]         (today's peer 1-day returns)
  *
- * Fits Lasso, then returns `predict(latest peer returns) / horizon` as a
- * per-day bias to be *added* to the Markov drift inside computeTrajectory.
+ * Fits Lasso, then returns `(predict(latest peer returns) − intercept) / horizon`
+ * as a per-day bias to be *added* to the Markov drift inside computeTrajectory.
+ * The intercept is excluded so the bias is 0 when every coefficient is zero.
  *
  * Returns `null` when there is insufficient overlapping data.
  */
@@ -182,7 +183,8 @@ export function estimateCrossAssetBias(
   const fit = fitLasso(X, y, opts);
 
   const latest = peers.map(p => p[L - 1]);
-  const yhat = predictLasso(fit, latest);
-  const perDayBias = yhat / Math.max(1, horizon);
+  // Drop the intercept (the trailing mean H-day return): the Markov drift
+  // already models the mean, so the bias carries only the peer signal.
+  const perDayBias = (predictLasso(fit, latest) - fit.intercept) / Math.max(1, horizon);
   return { perDayBias, fit, tickers };
 }
