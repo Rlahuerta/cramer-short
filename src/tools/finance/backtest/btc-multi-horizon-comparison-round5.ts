@@ -39,7 +39,6 @@ interface FixtureData {
 }
 
 const TICKER = 'BTC-USD';
-const PEER_TICKERS = ['SPY', 'GLD', 'QQQ'] as const;
 const HORIZONS = [1, 2, 3, 7, 14, 30] as const;
 const WARMUP = 180;
 const STRIDE = 3;
@@ -129,7 +128,7 @@ function renderMarkdown(art: BtcMultiHorizonRound5Artifact): string {
   lines.push('');
   for (const l of renderArmMetricTable(art.improvedHA)) lines.push(l);
   lines.push('');
-  lines.push('## Improved + R4 flags (GARCH + KSWIN + Lasso)');
+  lines.push('## Improved + R4 flags (GARCH + KSWIN)');
   lines.push('');
   for (const l of renderArmMetricTable(art.improvedR4)) lines.push(l);
   lines.push('');
@@ -174,42 +173,11 @@ async function main(): Promise<void> {
   if (!btcData) throw new Error(`No fixture data for ${TICKER}`);
   console.log(`Loaded ${btcData.closes.length} BTC closes (${raw.startDate} → ${raw.endDate})`);
 
-  // Build peer return series aligned to BTC by date.
-  // Equities have ~501 closes (trading days only); BTC has 731 (including weekends).
-  // We align by date: for each BTC calendar day with a return, look up the peer
-  // return for that same date (0 if the peer doesn't trade that day).
-  const btcDates = btcData.dates ?? [];
-  const peerLogReturns: Record<string, number[]> = {};
-  for (const peer of PEER_TICKERS) {
-    const pdata = raw.tickers[peer];
-    if (!pdata || !pdata.dates) {
-      console.warn(`  peer ${peer}: no data or no dates, skipping`);
-      continue;
-    }
-    // Build a date → 1-day log-return map for the peer.
-    const peerRetByDate = new Map<string, number>();
-    for (let i = 1; i < pdata.closes.length; i++) {
-      const ret = Math.log(pdata.closes[i] / pdata.closes[i - 1]);
-      peerRetByDate.set(pdata.dates[i], ret);
-    }
-    // For each BTC date (starting from index 1, matching BTC return index), look up peer.
-    const aligned: number[] = [];
-    for (let i = 1; i < btcDates.length; i++) {
-      aligned.push(peerRetByDate.get(btcDates[i]) ?? 0);
-    }
-    peerLogReturns[peer] = aligned;
-    const nonZero = aligned.filter(r => r !== 0).length;
-    console.log(`  peer ${peer}: ${aligned.length} aligned returns, ${nonZero} trading days`);
-  }
-
   const improvedR4Flags: Partial<WalkForwardConfig> = {
     ...improvedHAFlags,
     enableGarchVol: true,
     enableKswinTrim: true,
     kswinAlpha: 0.005,
-    enableCrossAssetBias: true,
-    crossAssetReturns: peerLogReturns,
-    crossAssetLassoLambda: 0.005,
   };
 
   const improvedR5Flags: Partial<WalkForwardConfig> = {
@@ -224,7 +192,7 @@ async function main(): Promise<void> {
   const improved = await runMultiHorizonArm('improved', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedFlags });
   console.log('\n— IMPROVED + HAWKES + ADWIN (Round-2) —');
   const improvedHA = await runMultiHorizonArm('improvedHA', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedHAFlags });
-  console.log('\n— IMPROVED + R4 FLAGS (GARCH + KSWIN + Lasso) —');
+  console.log('\n— IMPROVED + R4 FLAGS (GARCH + KSWIN) —');
   const improvedR4 = await runMultiHorizonArm('improvedR4', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedR4Flags });
   console.log('\n— IMPROVED + R5 (R4 + horizon-aware/regime-clamped GARCH) —');
   const improvedR5 = await runMultiHorizonArm('improvedR5', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedR5Flags });

@@ -9,6 +9,6 @@ export {
   fmtMoney,
   fmtPct,
 } from './panels.js';
-export { handleCoreSlashCommand, handleExitCommand } from './core.js';
+export { handleCoreSlashCommand, handleExitCommand, isExitCommand } from './core.js';
 export { handleDreamSlashCommand } from './dream.js';
 export { handleWatchlistSlashCommand } from './watchlist.js';

@@ -20,3 +20,8 @@ export interface HistoryItem {
   tokenUsage?: TokenUsage;
   tokensPerSecond?: number;
 }
+
+/** True once an exchange has ended (complete, interrupted or error) and can be flushed to scrollback. */
+export function isFinishedHistoryItem(item: HistoryItem): boolean {
+  return item.status !== 'processing';
+}

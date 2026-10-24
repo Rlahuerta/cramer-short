@@ -441,3 +441,15 @@ def test_interpolate_distribution_returns_ts_style_distribution_points():
     assert all("lowerBound" in point and "upperBound" in point and "source" in point for point in points)
     assert all(points[i]["price"] <= points[i + 1]["price"] for i in range(len(points) - 1))
     assert all(points[i]["probability"] >= points[i + 1]["probability"] for i in range(len(points) - 1))
+
+
+def test_compute_trajectory_sigma_n_reproduces_p_up():
+    # walk_forward re-centres this Student-t on a rerun's median to read P(up).
+    P, regime_stats = _make_fixture()
+    current = 100.0
+    traj = compute_trajectory(current, 7, P, regime_stats, "bull", n_samples=500)
+    for pt in traj:
+        mu_n = math.log(pt.expected_price / current)
+        assert student_t_survival(current, current, mu_n, pt.sigma_n) == pytest.approx(
+            pt.p_up, abs=2e-3
+        )

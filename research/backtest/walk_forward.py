@@ -26,12 +26,15 @@ produce comparable results on the same price fixtures.
 
 from __future__ import annotations
 
+import math
+
 from research.backtest._config import BacktestStep, WalkForwardResult
 from research.backtest._window_forecaster import compute_window_forecast
 from research.models.markov import (
     get_btc_short_horizon_live_policy,
     resolve_forecast_lab_markov_parameter_defaults,
 )
+from research.models.trajectory import student_t_survival
 from research.models.transition_entropy import EntropyZScoreTracker, entropy_z_to_ci_scale
 from research.utils.forecast_lab_runtime_defaults import (
     forecast_lab_runtime_asset_scope,
@@ -237,6 +240,7 @@ def walk_forward(
                     and len(window_prices_i) > max(30, effective["post_break_window_size"])
                 ):
                     structural_break_rerun_triggered = True
+                    full_window_wf = wf_i
                     wf_i = compute_window_forecast(
                         window_prices_i[-max(30, effective["post_break_window_size"]):],
                         horizon=horizon,
@@ -256,6 +260,19 @@ def walk_forward(
                         use_conditional_transitions=use_conditional_transitions,
                         use_path_integrated_drift=use_path_integrated_drift,
                     )
+                    # The short window moves the location, but a sigma fitted on ~60
+                    # returns is too narrow. Mirrors keepFullWindowSpread(): keep the
+                    # full-window distribution, re-centred on the rerun's median.
+                    scale = wf_i["median_price"] / full_window_wf["median_price"]
+                    wf_i["ci_lower"] = full_window_wf["ci_lower"] * scale
+                    wf_i["ci_upper"] = full_window_wf["ci_upper"] * scale
+                    if not effective_use_empirical_up_rates:
+                        wf_i["p_up"] = student_t_survival(
+                            current_price_i,
+                            current_price_i,
+                            math.log(wf_i["median_price"] / current_price_i),
+                            full_window_wf["sigma_n"],
+                        )
                     wf_i["break_rerun_triggered"] = True
 
                 break_result = wf_i["break_result"]

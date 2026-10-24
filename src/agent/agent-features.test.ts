@@ -9,7 +9,7 @@ import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } f
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll, setSystemTime, spyOn } from 'bun:test';
 import * as polymarket from '../tools/finance/polymarket.js';
 import * as embeddings from '../memory/embeddings.js';
-import { rmSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';

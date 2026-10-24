@@ -85,7 +85,7 @@ separate concept from the new `research/models/markov/volume_regime.py` (trading
 1-day profile). The live TS Markov tool applies the walk-forward-verified subset (transition decay,
 regime threshold, GARCH vol, entropy CI, meta-regime conditioning) for BTC via `xiphosBtcLiveParams()`;
 the backtest preset is `src/tools/finance/backtest/xiphos-btc-preset.ts`, verified by
-`walk-forward-xiphos-btc.integration.test.ts` (no Brier/directional-accuracy regression vs defaults on the same forecast origins; 1d improves both).
+`walk-forward-xiphos-btc.integration.test.ts` (improves BTC Brier + directional accuracy on the fixture).
 `studentTNu`/`trajectoryNSamples` are intentionally not overridden (crypto asset-profile; outside the
 verified gain), and `break_ci_slope`/`break_ci_max` have no cramer-short equivalent.
 
@@ -106,7 +106,7 @@ verified gain), and `break_ci_slope`/`break_ci_max` have no cramer-short equival
 |---------|-------------|--------|-------|
 | `src/tools/finance/backtest/baselines.ts` | `research/backtest/baselines.py` | 🟡 | Naive baselines (coin-flip = fair-coin expected hit rate, last-period). Last-period takes `horizon` and only uses outcomes realized by the step's origin |
 | `src/tools/finance/backtest/metrics.ts` | `research/backtest/metrics.py` | 🟡 | Brier, directional accuracy, CI coverage, calibration tables, CRPS. TS `directionalAccuracy` scores traded (BUY/SELL) steps only, HOLD is an abstention (`abstainRate`); its Python mirror is `markov_tool_backtest.ts_directional_accuracy` |
-| `src/tools/finance/backtest/walk-forward.ts` | `research/backtest/walk_forward.py` | 🟡 | Walk-forward harness with HMM/GARCH/entropy options. Adaptive conformal (records queued until `t+horizon`) and cross-asset Lasso (peers sliced to the origin) are TS-only |
+| `src/tools/finance/backtest/walk-forward.ts` | `research/backtest/walk_forward.py` | 🟡 | Walk-forward harness with HMM/GARCH/entropy options. Adaptive conformal (records queued until `t+horizon`) and cross-asset Lasso (peers sliced to the origin) are TS-only. Post-break short-window rerun mirrors `keepFullWindowSpread()`: the full-window interval, rescaled to the rerun's median, is kept, and P(up) is read off the full-window Student-t re-centred on that median (Python-only `TrajectoryPoint.sigma_n`). With `use_empirical_up_rates` (no TS counterpart) P(up) stays the rerun's empirical rate |
 
 ## Data Layer (TS-only tool wrappers)
 

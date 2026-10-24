@@ -1,11 +1,15 @@
 import { lookup } from 'node:dns/promises';
-import { BlockList, isIP } from 'node:net';
+import http from 'node:http';
+import https from 'node:https';
+import { BlockList, isIP, type LookupFunction } from 'node:net';
+import { Readable } from 'node:stream';
 
 /**
  * SSRF guard shared by `web_fetch` and the `browser` tool.
  *
- * ponytail: resolve-then-fetch leaves a DNS-rebinding TOCTOU window; pin the
- * resolved IP in the HTTP agent if that becomes a realistic threat.
+ * Network code passes `guardedLookup` as the socket `lookup`, so the address a
+ * connection uses is the very address that was checked (no DNS-rebinding window
+ * between a pre-check and a second resolution).
  */
 
 const BLOCKED = new BlockList();
@@ -69,8 +73,11 @@ export function assertPublicHttpUrl(raw: string): void {
  */
 export async function assertPublicUrl(raw: string): Promise<void> {
   const host = publicHostOf(raw);
-  if (isIP(host)) return;
+  if (!isIP(host)) await resolvePublic(host);
+}
 
+/** Resolves a hostname once; throws unless every address is public. */
+async function resolvePublic(host: string): Promise<string[]> {
   let addresses: Array<{ address: string }>;
   try {
     addresses = await resolveHost(host);
@@ -81,6 +88,69 @@ export async function assertPublicUrl(raw: string): Promise<void> {
   for (const { address } of addresses) {
     if (isBlockedIp(address)) reject(`${host} (${address})`);
   }
+  return addresses.map((a) => a.address);
+}
+
+/**
+ * `dns.lookup`-compatible resolver for http/https/net `lookup` options: resolves
+ * once and fails the connection unless every address is public. Not consulted
+ * for IP-literal hosts, so pair it with `assertPublicHttpUrl`.
+ */
+export const guardedLookup = ((hostname: string, options: unknown, callback?: unknown) => {
+  const cb = (typeof options === 'function' ? options : callback) as (
+    err: Error | null,
+    address?: string | Array<{ address: string; family: number }>,
+    family?: number,
+  ) => void;
+  const all = typeof options === 'object' && options !== null && (options as { all?: boolean }).all === true;
+  const host = hostname.toLowerCase().replace(/\.+$/, '');
+  Promise.resolve()
+    .then(() => {
+      checkHost(host);
+      return resolvePublic(host);
+    })
+    .then((addresses) => {
+      if (all) cb(null, addresses.map((address) => ({ address, family: isIP(address) })));
+      else cb(null, addresses[0], isIP(addresses[0]));
+    })
+    .catch((err: Error) => cb(err));
+}) as unknown as LookupFunction;
+
+/**
+ * Minimal fetch over node http(s) that connects only to guard-validated
+ * addresses (literal IPs via `assertPublicHttpUrl`, hostnames via
+ * `guardedLookup`). Never follows redirects — callers re-check each hop.
+ */
+export async function fetchPinned(
+  url: string,
+  init: { headers?: Record<string, string>; signal?: AbortSignal } = {},
+): Promise<Response> {
+  assertPublicHttpUrl(url);
+  const client = url.startsWith('https:') ? https : http;
+  return new Promise((resolve, rejectPromise) => {
+    const req = client.request(
+      url,
+      {
+        // identity: node does not auto-decompress like fetch does.
+        headers: { ...init.headers, 'Accept-Encoding': 'identity' },
+        signal: init.signal,
+        lookup: guardedLookup,
+      },
+      (res) => {
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(res.headers)) {
+          for (const v of [value ?? []].flat()) headers.append(name, v);
+        }
+        const status = res.statusCode ?? 502;
+        const noBody = status === 204 || status === 205 || status === 304;
+        if (noBody) res.resume();
+        const body = noBody ? null : (Readable.toWeb(res) as unknown as ReadableStream);
+        resolve(new Response(body, { status, statusText: res.statusMessage, headers }));
+      },
+    );
+    req.on('error', rejectPromise);
+    req.end();
+  });
 }
 
 /** Validates scheme and host string; returns the normalized host. */
@@ -96,7 +166,11 @@ function publicHostOf(raw: string): string {
   }
 
   const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+  checkHost(host);
+  return host;
+}
+
+function checkHost(host: string): void {
   if (!host || BLOCKED_HOSTNAMES.has(host) || host.endsWith('.localhost')) reject(host);
   if (isIP(host) && isBlockedIp(host)) reject(host);
-  return host;
 }

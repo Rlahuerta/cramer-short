@@ -1,6 +1,7 @@
 import { runDream, shouldRunDream } from '../../memory/dream.js';
 import { MemoryStore } from '../../memory/store.js';
 import type { TuiStateController } from '../tui-state-controller.js';
+import { isFinishedHistoryItem } from '../types.js';
 
 export async function handleDreamSlashCommand(query: string, tuiState: TuiStateController): Promise<boolean> {
   if (!query.startsWith('/dream')) {
@@ -112,7 +113,7 @@ export async function handleDreamSlashCommand(query: string, tuiState: TuiStateC
   }
   // Flush previous agent exchange to scrollback before rendering the dream answer.
   const prevItem = tuiState.history().at(-1);
-  if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted') && !tuiState.flushedItems.has(prevItem)) {
+  if (prevItem && isFinishedHistoryItem(prevItem) && !tuiState.flushedItems.has(prevItem)) {
     tuiState.flushItemToScrollback(prevItem);
     tuiState.flushedItems.add(prevItem);
     // Small yield: let TUI settle before the second flush.

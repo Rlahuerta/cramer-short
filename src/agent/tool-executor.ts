@@ -64,6 +64,8 @@ export const PENDING_REQUESTS_MAX_SIZE = 64;
 export interface AgentToolExecutorLimits {
   requestCacheMaxSize?: number;
   pendingRequestsMaxSize?: number;
+  /** Max tool calls from one batch running at once; 0 or unset = unlimited. */
+  parallelToolLimit?: number;
 }
 
 function setBoundedLru<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number): void {
@@ -105,6 +107,7 @@ export class AgentToolExecutor {
   private readonly sessionApprovedTools: Set<string>;
   private readonly requestCacheMaxSize: number;
   private readonly pendingRequestsMaxSize: number;
+  private readonly parallelToolLimit: number;
 
   /**
    * In-session request cache keyed on `toolName:stableJsonArgs`.
@@ -147,6 +150,7 @@ export class AgentToolExecutor {
     this.sessionApprovedTools = sessionApprovedTools ?? new Set();
     this.requestCacheMaxSize = limits.requestCacheMaxSize ?? REQUEST_CACHE_MAX_SIZE;
     this.pendingRequestsMaxSize = limits.pendingRequestsMaxSize ?? PENDING_REQUESTS_MAX_SIZE;
+    this.parallelToolLimit = limits.parallelToolLimit ?? 0;
 
     // Pre-populate in-session cache from disk (fire-and-forget)
     loadCacheFromDisk().then((diskCache) => {
@@ -193,8 +197,21 @@ export class AgentToolExecutor {
       | { done: true }
       | { done: false; event: ToolExecutionEvent };
 
+    // Ask every approval before any call starts: approvers handle one request
+    // at a time, an allow-session answer covers later calls in the batch, and a
+    // denial runs nothing (the agent ends the run on it).
+    for (const tc of toolCalls) {
+      const args = tc.args as Record<string, unknown>;
+      if (this.isForecastLabBlocked(ctx, tc.name, args)) continue; // rejected in executeSingle without asking
+      if (!(yield* this.approve(tc.name, args))) return;
+    }
+    const lanes = toolCalls.map((tc) => this.executeSingle(tc.name, tc.args as Record<string, unknown>, ctx, true));
+
     const queue: QueueItem[] = [];
-    let pending = toolCalls.length;
+    // Each worker drains lanes one after another, so at most `workers` run at once.
+    const workers = this.parallelToolLimit > 0 ? Math.min(this.parallelToolLimit, lanes.length) : lanes.length;
+    let pending = workers;
+    let nextLane = 0;
 
     const notifyWaiter = { fn: null as (() => void) | null };
 
@@ -204,15 +221,20 @@ export class AgentToolExecutor {
       notifyWaiter.fn = null;
     };
 
-    for (const tc of toolCalls) {
+    for (let w = 0; w < workers; w++) {
       (async () => {
         try {
-          for await (const event of this.executeSingle(
-            tc.name,
-            tc.args as Record<string, unknown>,
-            ctx,
-          )) {
-            push({ done: false, event });
+          while (nextLane < lanes.length) {
+            const lane = nextLane++;
+            try {
+              for await (const event of lanes[lane]) {
+                push({ done: false, event });
+              }
+            } catch (error) {
+              // A throw outside executeSingle's own try would otherwise be an unhandled rejection.
+              const message = error instanceof Error ? error.message : String(error);
+              push({ done: false, event: { type: 'tool_error', tool: toolCalls[lane].name, error: message } });
+            }
           }
         } finally {
           if (--pending === 0) push({ done: true });
@@ -250,7 +272,8 @@ export class AgentToolExecutor {
   private async *executeSingle(
     toolName: string,
     toolArgs: Record<string, unknown>,
-    ctx: RunContext
+    ctx: RunContext,
+    preApproved = false,
   ): AsyncGenerator<ToolExecutionEvent, void> {
     // Auto-correct a forecast tool's ticker to the query's resolved asset BEFORE
     // anything else runs. executeSingle is the single choke point every call path
@@ -265,21 +288,18 @@ export class AgentToolExecutor {
     }
 
     const toolQuery = this.extractQueryFromArgs(toolArgs);
-    const toolPath = typeof toolArgs.path === 'string' ? toolArgs.path : null;
 
-    if (ctx.forecastLabGuard && FORECAST_LAB_GUARDED_TOOLS.has(toolName)) {
-      if (!toolPath || !isInsideForecastLabExperiments(toolPath)) {
-        const profileLabel = ctx.forecastLabGuard.recommendedProfileId
-          ? ` for profile "${ctx.forecastLabGuard.recommendedProfileId}"`
-          : '';
-        const error =
-          `Forecast-lab routed improvement queries${profileLabel} cannot write tracked source files directly. ` +
-          `Write artifacts only under .cramer-short/experiments/ or use the bounded forecast-lab runner instead.`;
-        yield { type: 'tool_error', tool: toolName, error };
-        ctx.scratchpad.recordToolCall(toolName, toolQuery);
-        ctx.scratchpad.addToolResult(toolName, toolArgs, error);
-        return;
-      }
+    if (ctx.forecastLabGuard && this.isForecastLabBlocked(ctx, toolName, toolArgs)) {
+      const profileLabel = ctx.forecastLabGuard.recommendedProfileId
+        ? ` for profile "${ctx.forecastLabGuard.recommendedProfileId}"`
+        : '';
+      const error =
+        `Forecast-lab routed improvement queries${profileLabel} cannot write tracked source files directly. ` +
+        `Write artifacts only under .cramer-short/experiments/ or use the bounded forecast-lab runner instead.`;
+      yield { type: 'tool_error', tool: toolName, error };
+      ctx.scratchpad.recordToolCall(toolName, toolQuery);
+      ctx.scratchpad.addToolResult(toolName, toolArgs, error);
+      return;
     }
 
     if (
@@ -298,20 +318,7 @@ export class AgentToolExecutor {
       }
     }
 
-    if (this.requiresApproval(toolName, toolArgs) && !this.sessionApprovedTools.has(toolName)) {
-      const decision = (await this.requestToolApproval?.({ tool: toolName, args: toolArgs })) ?? 'deny';
-      yield { type: 'tool_approval', tool: toolName, args: toolArgs, approved: decision };
-      if (decision === 'deny') {
-        yield { type: 'tool_denied', tool: toolName, args: toolArgs };
-        return;
-      }
-      if (decision === 'allow-session') {
-        const isFileTool = (TOOLS_REQUIRING_APPROVAL as readonly string[]).includes(toolName);
-        for (const name of isFileTool ? TOOLS_REQUIRING_APPROVAL : [toolName]) {
-          this.sessionApprovedTools.add(name);
-        }
-      }
-    }
+    if (!preApproved && !(yield* this.approve(toolName, toolArgs))) return;
 
     const limitCheck = ctx.scratchpad.canCallTool(toolName, toolQuery);
 
@@ -455,6 +462,34 @@ export class AgentToolExecutor {
     }
 
     return undefined;
+  }
+
+  /** Asks for approval when the call needs it; false (after a tool_denied event) when denied. */
+  private async *approve(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+  ): AsyncGenerator<ToolExecutionEvent, boolean> {
+    if (!this.requiresApproval(toolName, toolArgs) || this.sessionApprovedTools.has(toolName)) return true;
+    const decision = (await this.requestToolApproval?.({ tool: toolName, args: toolArgs })) ?? 'deny';
+    yield { type: 'tool_approval', tool: toolName, args: toolArgs, approved: decision };
+    if (decision === 'deny') {
+      yield { type: 'tool_denied', tool: toolName, args: toolArgs };
+      return false;
+    }
+    if (decision === 'allow-session') {
+      const isFileTool = (TOOLS_REQUIRING_APPROVAL as readonly string[]).includes(toolName);
+      for (const name of isFileTool ? TOOLS_REQUIRING_APPROVAL : [toolName]) {
+        this.sessionApprovedTools.add(name);
+      }
+    }
+    return true;
+  }
+
+  /** Forecast-lab routed runs may only write under .cramer-short/experiments/. */
+  private isForecastLabBlocked(ctx: RunContext, toolName: string, toolArgs: Record<string, unknown>): boolean {
+    if (!ctx.forecastLabGuard || !FORECAST_LAB_GUARDED_TOOLS.has(toolName)) return false;
+    const toolPath = typeof toolArgs.path === 'string' ? toolArgs.path : null;
+    return !toolPath || !isInsideForecastLabExperiments(toolPath);
   }
 
   private requiresApproval(toolName: string, args: Record<string, unknown>): boolean {

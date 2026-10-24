@@ -30,13 +30,13 @@ describe('fetchKalshiVolSignals', () => {
             ticker: 'CPI-26JUN',
             title: 'Will CPI come in above 0.3% MoM?',
             expiration_time: '2026-06-11T12:30:00Z',
-            yes_ask: 0.58,
+            yes_ask: 58,
           },
           {
             ticker: 'SPORTS-IGNORE',
             title: 'Will the Knicks win game 7?',
             expiration_time: '2026-06-20T00:00:00Z',
-            yes_ask: 0.51,
+            yes_ask: 51,
           },
         ],
       }), { status: 200 });
@@ -94,6 +94,17 @@ describe('extractKalshiVolSignalsFromPayload', () => {
       fromDate: '2026-06-01',
       toDate: '2026-06-30',
     })).toThrow('Kalshi response missing markets array');
+  });
+
+  it('reads Kalshi prices as cents, including 1¢', () => {
+    const signals = extractKalshiVolSignalsFromPayload({
+      markets: [
+        { ticker: 'FOMC-1C', title: 'Will the Fed hike rates?', expiration_time: '2026-06-18T18:00:00Z', yes_ask: 1 },
+        { ticker: 'CPI-99C', title: 'Will CPI beat?', expiration_time: '2026-06-11T12:30:00Z', last_price: 99 },
+      ],
+    }, { fromDate: '2026-06-01', toDate: '2026-06-30' });
+
+    expect(signals.map((signal) => signal.probability)).toEqual([0.01, 0.99]);
   });
 });
 

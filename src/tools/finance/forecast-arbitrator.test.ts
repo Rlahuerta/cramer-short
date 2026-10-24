@@ -226,6 +226,13 @@ describe('forecast arbitrator', () => {
     expect(extractPriceLevels('Will Bitcoin dip to $75,000 or reach $80K?')).toEqual([75_000, 80_000]);
   });
 
+  it('does not read days or years as price levels', () => {
+    expect(extractPriceLevels('Will Bitcoin be above $70,000 on Oct 24?')).toEqual([70_000]);
+    expect(extractPriceLevels('In 2026, will Bitcoin reach 150k?')).toEqual([150_000]);
+    expect(extractPriceLevels('Will ETH close above 3,500 on October 24, 2026?')).toEqual([3_500]);
+    expect(extractPriceLevels('Will BTC hit 120000 by Dec. 31 2026?')).toEqual([120_000]);
+  });
+
   it('rejects an immediate 10x trade when Markov and Polymarket diverge in a flat-dominant market', () => {
     const result = arbitrateForecast({
       ticker: 'BTC',

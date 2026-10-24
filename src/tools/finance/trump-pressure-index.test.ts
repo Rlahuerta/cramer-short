@@ -18,6 +18,8 @@ import {
   detectPressureStructuralBreak,
   computeTacoProb,
   redistributeWeights,
+  scorePressureComponents,
+  parseSentimentScore,
   formatPressureResult,
   COMPONENT_WEIGHTS,
   TACO_LANDMARKS,
@@ -642,5 +644,41 @@ describe('edge cases', () => {
     }));
     const weights = redistributeWeights(components);
     expect(weights.get('spx')!).toBeCloseTo(1.0, 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scorePressureComponents — single-observation components carry no z-score
+// ---------------------------------------------------------------------------
+
+describe('scorePressureComponents', () => {
+  it('drops components with fewer than 2 points and renormalises the rest', () => {
+    const spx = [0.01, -0.02, 0.03, -0.04, -0.06];
+    const { components, compositeScore, availability, warnings } = scorePressureComponents(new Map([
+      ['spx', { values: spx, quality: 'live' as const }],
+      ['approval', { values: [55], quality: 'stale' as const }],
+      ['polymarket', { values: [0.4], quality: 'live' as const }],
+      ['sentiment', { values: [12], quality: 'live' as const }],
+    ]));
+
+    const byName = new Map(components.map((c) => [c.name, c]));
+    for (const name of ['Approval Proxy', 'Policy Reversal', 'Social Sentiment']) {
+      expect(byName.get(name)!.weight).toBe(0);
+      expect(byName.get(name)!.dataQuality).toBe('unavailable');
+    }
+    expect(components.reduce((sum, c) => sum + c.weight, 0)).toBeCloseTo(1, 10);
+    expect(compositeScore).toBeCloseTo(computeZScore(spx, -1).zScore, 10);
+    expect(availability.filter((a) => a.available).map((a) => a.key)).toEqual(['spx']);
+    expect(warnings.some((w) => w.includes('Policy Reversal') && w.includes('single observation'))).toBe(true);
+  });
+});
+
+describe('parseSentimentScore', () => {
+  it('reads the social_sentiment "score +N/100" headline, not the Fear & Greed value', () => {
+    const report = JSON.stringify({ data: { result: '**55/100** — Greed\n## Overall: 🟢 Bullish (score +42/100)' } });
+    expect(parseSentimentScore(report)).toBe(42);
+    expect(parseSentimentScore('## Overall: 🔴 Bearish (score -17/100)')).toBe(-17);
+    expect(parseSentimentScore('## Overall: ⚪ Neutral (score 0/100)')).toBe(0);
+    expect(parseSentimentScore('no headline')).toBeNull();
   });
 });

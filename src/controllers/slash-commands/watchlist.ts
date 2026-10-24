@@ -1,6 +1,7 @@
 import { seedWatchlistEntries } from '../../memory/auto-store.js';
 import { WatchlistController, parseWatchlistSubcommand } from '../watchlist-controller.js';
 import type { TuiStateController } from '../tui-state-controller.js';
+import { isFinishedHistoryItem } from '../types.js';
 
 export type WatchlistSlashCommandResult =
   | { handled: true }
@@ -31,7 +32,7 @@ export async function handleWatchlistSlashCommand(
     const prevItem = tuiState.history().at(-1);
     if (
       prevItem &&
-      (prevItem.status === 'complete' || prevItem.status === 'interrupted') &&
+      isFinishedHistoryItem(prevItem) &&
       !tuiState.flushedItems.has(prevItem)
     ) {
       tuiState.flushItemToScrollback(prevItem);

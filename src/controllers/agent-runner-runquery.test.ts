@@ -218,6 +218,58 @@ describe('runQuery — success path', () => {
   });
 });
 
+describe('runQuery — answer summary', () => {
+  it('marks the item complete without waiting for the history summary', async () => {
+    fakeState.events = [{ type: 'done', answer: 'AAPL is $180', totalTime: 10, toolCalls: [] }];
+    const chatHistory = makeFakeChatHistory();
+    const saveAnswer = mock((_answer: string) => new Promise<void>(() => {})); // summary LLM call never returns
+    (chatHistory as unknown as { saveAnswer: typeof saveAnswer }).saveAnswer = saveAnswer;
+    const ctrl = new AgentRunnerController({ model: undefined }, chatHistory, undefined, {
+      createAgent: fakeCreateAgent as never,
+      autoStoreFromRun: fakeAutoStoreFromRun as never,
+    });
+
+    const outcome = await Promise.race([ctrl.runQuery('What is AAPL?'), Bun.sleep(500).then(() => 'hung' as const)]);
+
+    expect(outcome).toEqual({ answer: 'AAPL is $180' });
+    expect(ctrl.history[0].status).toBe('complete');
+    expect(ctrl.isProcessing).toBe(false);
+    expect(saveAnswer).toHaveBeenCalledWith('AAPL is $180');
+  });
+});
+
+describe('runQuery — failed model call', () => {
+  function erroredDone() {
+    return { type: 'done', answer: 'Error: provider down', error: true, totalTime: 10, toolCalls: [] };
+  }
+
+  it('does not save the error answer to chat history', async () => {
+    fakeState.events = [erroredDone()];
+    const chatHistory = makeFakeChatHistory();
+    const ctrl = new AgentRunnerController({ model: undefined }, chatHistory, undefined, {
+      createAgent: fakeCreateAgent as never,
+      autoStoreFromRun: fakeAutoStoreFromRun as never,
+    });
+    await ctrl.runQuery('Is AAPL cheap?');
+    expect((chatHistory.saveAnswer as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
+
+  it('does not auto-store the error answer as an insight', async () => {
+    fakeState.events = [erroredDone()];
+    const { ctrl } = makeController();
+    await ctrl.runQuery('Is AAPL cheap?');
+    expect(fakeAutoStoreFromRun).not.toHaveBeenCalled();
+  });
+
+  it('marks the history item as an error and keeps the message visible', async () => {
+    fakeState.events = [erroredDone()];
+    const { ctrl } = makeController();
+    await ctrl.runQuery('Is AAPL cheap?');
+    expect(ctrl.history[0].status).toBe('error');
+    expect(ctrl.history[0].answer).toBe('Error: provider down');
+  });
+});
+
 // ─── runQuery — error paths ───────────────────────────────────────────────────
 
 describe('runQuery — non-abort error', () => {
@@ -330,6 +382,36 @@ describe('makeCancellable — cancellation race', () => {
     const result = await runPromise;
     // Should return undefined — either via AbortError or just no answer
     expect(result).toBeUndefined();
+  });
+});
+
+describe('cancelExecution — closes the agent stream', () => {
+  it("runs the agent generator's finally block after a cancel", async () => {
+    let unblock!: () => void;
+    const stall = new Promise<void>((res) => (unblock = res));
+    let closed = false;
+    fakeState.createOverride = async () => ({
+      run: async function* () {
+        try {
+          yield { type: 'thinking', content: 'working' };
+          await stall;
+          yield { type: 'done', answer: 'late answer', totalTime: 1, toolCalls: [] };
+        } finally {
+          closed = true;
+        }
+      },
+    });
+
+    const { ctrl } = makeController();
+    const runPromise = ctrl.runQuery('slow query');
+    await new Promise((res) => setTimeout(res, 0));
+
+    ctrl.cancelExecution();
+    expect(await runPromise).toBeUndefined();
+    unblock();
+    await new Promise((res) => setTimeout(res, 0));
+
+    expect(closed).toBe(true);
   });
 });
 

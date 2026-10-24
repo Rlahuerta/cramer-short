@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, test } from 'bun:test';
-import { _setDnsLookupForTest, assertPublicHttpUrl, assertPublicUrl } from './url-guard.js';
+import { createServer, type Server } from 'node:http';
+import { _setDnsLookupForTest, assertPublicHttpUrl, assertPublicUrl, fetchPinned, guardedLookup } from './url-guard.js';
 
 describe('assertPublicHttpUrl', () => {
   test('accepts a normal https URL', () => {
@@ -158,5 +159,73 @@ describe('assertPublicUrl', () => {
       throw new Error('ENOTFOUND');
     });
     await expect(assertPublicUrl('https://nx.example/')).rejects.toThrow(/Could not resolve/);
+  });
+});
+
+/** Local target that counts hits — reaching it means the guard was bypassed. */
+async function startTarget(): Promise<{ server: Server; port: number; hits: () => number }> {
+  let hits = 0;
+  const server = createServer((_req, res) => {
+    hits++;
+    res.end('internal-secret');
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  return { server, port: (server.address() as { port: number }).port, hits: () => hits };
+}
+
+function lookupAsync(host: string, all: boolean): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    guardedLookup(host, { all }, (err: Error | null, address?: unknown, family?: number) =>
+      err ? reject(err) : resolve(all ? address : { address, family }),
+    );
+  });
+}
+
+describe('guardedLookup (resolve once, connect to the checked address)', () => {
+  it('fails the connection when any resolved address is internal', async () => {
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }, { address: '127.0.0.1' }]);
+    await expect(lookupAsync('rebind.example', true)).rejects.toThrow(/internal or reserved/);
+  });
+
+  it('returns the validated public addresses with families', async () => {
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }, { address: '2606:2800:220:1::1' }]);
+    expect(await lookupAsync('ok.example', true)).toEqual([
+      { address: '93.184.216.34', family: 4 },
+      { address: '2606:2800:220:1::1', family: 6 },
+    ]);
+    expect(await lookupAsync('ok.example', false)).toEqual({ address: '93.184.216.34', family: 4 });
+  });
+
+  it('resolves exactly once per lookup so the checked answer is the one used', async () => {
+    let calls = 0;
+    _setDnsLookupForTest(async () => {
+      calls++;
+      return [{ address: '93.184.216.34' }];
+    });
+    await lookupAsync('once.example', false);
+    expect(calls).toBe(1);
+  });
+});
+
+describe('fetchPinned', () => {
+  it('never connects when the hostname resolves to an internal address', async () => {
+    const target = await startTarget();
+    _setDnsLookupForTest(async () => [{ address: '127.0.0.1' }]);
+    try {
+      await expect(fetchPinned(`http://internal.example:${target.port}/`)).rejects.toThrow(/internal or reserved/);
+      expect(target.hits()).toBe(0);
+    } finally {
+      target.server.close();
+    }
+  });
+
+  it('rejects internal IP literals before connecting', async () => {
+    const target = await startTarget();
+    try {
+      await expect(fetchPinned(`http://127.0.0.1:${target.port}/`)).rejects.toThrow(/internal or reserved/);
+      expect(target.hits()).toBe(0);
+    } finally {
+      target.server.close();
+    }
   });
 });

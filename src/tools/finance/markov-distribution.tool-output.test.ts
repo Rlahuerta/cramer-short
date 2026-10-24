@@ -44,6 +44,7 @@ import {
   winsorize,
   interpolateSurvival,
   computeScenarioProbabilities,
+  computeActionLevels,
   normalizeAnchorPricesForETF,
   buildProfileFallbackMatrix,
   computeBlendWeight,
@@ -69,6 +70,7 @@ import {
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 import { MS_PER_DAY } from '../../utils/time.js';
+import { xiphosBtcLiveParams } from './markov-distribution/xiphos-btc-profile.js';
 import * as polymarket from './polymarket.js';
 
 beforeEach(() => {
@@ -2178,14 +2180,24 @@ describe('markov_distribution tool output envelope', () => {
 
     const disabled = await computeMarkovDistribution({
       ticker: 'BTC-USD',
-      horizon: 7,
+      horizon: 2,
       currentPrice: prices[prices.length - 1],
       historicalPrices: prices,
       polymarketMarkets: [],
     });
     const enabled = await computeMarkovDistribution({
       ticker: 'BTC-USD',
-      horizon: 7,
+      horizon: 2,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableKswinTrim: true,
+    });
+    // Long horizons keep the full window: on the BTC walk-forward the trim
+    // only helped Brier at h<=2 and regressed it at h>=3.
+    const longHorizon = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 30,
       currentPrice: prices[prices.length - 1],
       historicalPrices: prices,
       polymarketMarkets: [],
@@ -2199,6 +2211,23 @@ describe('markov_distribution tool output envelope', () => {
       maxD: expect.any(Number),
       criticalD: expect.any(Number),
     });
+    expect(longHorizon.metadata.kswinTrim).toBeUndefined();
+
+    // A short calm suffix would otherwise leave ~70 prices; the trim keeps at least 120.
+    const shortCalm = makePriceSeries([
+      ...Array.from({ length: 200 }, () => randn(rng) * 0.04),
+      ...Array.from({ length: 70 }, () => randn(rng) * 0.002),
+    ]);
+    const shortCalmTrim = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 1,
+      currentPrice: shortCalm[shortCalm.length - 1],
+      historicalPrices: shortCalm,
+      polymarketMarkets: [],
+      enableKswinTrim: true,
+    });
+    expect(shortCalmTrim.metadata.kswinTrim?.keptPrices).toBeGreaterThanOrEqual(120);
+    expect(shortCalmTrim.metadata.kswinTrim?.keptPrices).toBeLessThan(shortCalm.length);
   });
 
   it('exposes Hawkes amplification metadata when clustered jumps are present', async () => {
@@ -2320,6 +2349,28 @@ describe('markov_distribution tool output envelope', () => {
       tickers: ['ETH'],
       nonZeroCoefCount: expect.any(Number),
     });
+
+    // The bias must come from how today's peer return predicts the target's
+    // next H days, not from same-day co-movement already priced in.
+    const rng2 = makeRng(23);
+    const raw = Array.from({ length: n }, () => randn(rng2) * 0.02);
+    const rawMean = raw.reduce((a, b) => a + b, 0) / n;
+    // Centered so the Lasso intercept (sample mean of y) doesn't swamp the slope.
+    const peer = raw.map(r => r - rawMean);
+    peer[n - 1] = 0.04;
+    const target = peer.map((p, i) => 0.5 * p + (i > 0 ? 0.3 * peer[i - 1] : 0) + 0.002 * randn(rng2));
+    const coMoving = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: makePriceSeries(target).at(-1)!,
+      historicalPrices: makePriceSeries(target),
+      polymarketMarkets: [],
+      enableCrossAssetBias: true,
+      crossAssetReturns: { ETH: peer },
+      crossAssetLassoLambda: 0.001,
+    });
+    // Lead-only effect: 0.3 * 0.04 / 7 ≈ 0.0017; same-day leakage would add 0.5 * 0.04 / 7.
+    expect(coMoving.metadata.crossAssetBias!.perDayBias).toBeCloseTo(0.3 * 0.04 / 7, 3);
   });
 
   it('keeps BTC 30-day off-window fallback candidates from enabling canonical emission', async () => {
@@ -3144,6 +3195,129 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.canonical.diagnostics.originalStructuralBreakDetected).toBe(true);
       expect(parsed.data.canonical.diagnostics.originalStructuralBreakDivergence).toBeGreaterThan(0.10);
       expect(parsed.data.report).toContain('reran on the last 60d');
+    });
+
+    it('BTC 1-3d post-break rerun keeps the full-window spread and takes the rerun median', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+
+      const prices: number[] = [];
+      let p = 65000;
+      prices.push(p);
+      for (let i = 1; i < 252; i++) {
+        const shock = i < 200 ? (i % 2 === 0 ? 0.02 : -0.02) : 0.02;
+        p *= 1 + shock;
+        prices.push(Math.round(p * 100) / 100);
+      }
+      const currentPrice = prices[prices.length - 1];
+
+      // Price where P(>price) crosses q on the survival curve.
+      const survivalQuantile = (dist: MarkovDistributionPoint[], q: number): number => {
+        for (let i = 0; i < dist.length - 1; i++) {
+          const hi = dist[i];
+          const lo = dist[i + 1];
+          if (hi.probability >= q && lo.probability <= q) {
+            if (hi.probability === lo.probability) return hi.price;
+            return hi.price + ((hi.probability - q) / (hi.probability - lo.probability)) * (lo.price - hi.price);
+          }
+        }
+        throw new Error(`no P(>price)=${q} crossing`);
+      };
+      const relativeWidth90 = (dist: MarkovDistributionPoint[]) =>
+        (survivalQuantile(dist, 0.05) - survivalQuantile(dist, 0.95)) / survivalQuantile(dist, 0.5);
+
+      for (const horizon of [1, 2, 3]) {
+        const policy = getBtcShortHorizonLivePolicy('BTC-USD', horizon)!;
+        const params = {
+          ...xiphosBtcLiveParams(),
+          ticker: 'BTC-USD',
+          horizon,
+          currentPrice,
+          historicalPrices: prices,
+          polymarketMarkets: [],
+          btcBreakDivergenceThreshold: policy.breakDivergenceThreshold,
+        };
+        const fullWindow = await computeMarkovDistribution(params);
+        const rerun = await computeMarkovDistribution({
+          ...params,
+          historicalPrices: prices.slice(-policy.rerunWindowDays!),
+        });
+
+        const parsed = JSON.parse(await freshTool.func({
+          ticker: 'BTC-USD',
+          horizon,
+          currentPrice,
+          historicalPrices: prices,
+          polymarketMarkets: [],
+          trajectory: false,
+        }));
+        const { distribution, decisionDistribution, canonical } = parsed.data;
+
+        expect(canonical.diagnostics.btcShortHorizonRerunTriggered).toBe(true);
+        expect(canonical.diagnostics.historicalDays).toBe(policy.rerunWindowDays! - 1);
+        expect(canonical.diagnostics.originalHistoricalDays).toBe(251);
+        // Location from the short-window rerun ...
+        expect(survivalQuantile(distribution, 0.5)).toBeCloseTo(survivalQuantile(rerun.distribution, 0.5), 6);
+        // ... spread from the full window, not the short-window fit.
+        expect(relativeWidth90(distribution)).toBeCloseTo(relativeWidth90(fullWindow.distribution), 9);
+        expect(Math.abs(relativeWidth90(rerun.distribution) - relativeWidth90(fullWindow.distribution))).toBeGreaterThan(1e-3);
+        // The decision surface the report shows follows the same blended distribution.
+        expect(canonical.scenarios).toEqual(computeScenarioProbabilities(decisionDistribution, currentPrice));
+        expect(canonical.actionSignal.actionLevels).toEqual(computeActionLevels(decisionDistribution, currentPrice));
+      }
+    });
+
+    it('BTC 3d post-break rerun on 45d carries the full-window validation instead of abstaining', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+
+      const prices: number[] = [];
+      let p = 65000;
+      prices.push(p);
+      for (let i = 1; i < 252; i++) {
+        const shock = i < 200 ? (i % 2 === 0 ? 0.02 : -0.02) : 0.02;
+        p *= 1 + shock;
+        prices.push(Math.round(p * 100) / 100);
+      }
+      const currentPrice = prices[prices.length - 1];
+      const policy = getBtcShortHorizonLivePolicy('BTC-USD', 3)!;
+      const fullWindow = await computeMarkovDistribution({
+        ...xiphosBtcLiveParams(),
+        ticker: 'BTC-USD',
+        horizon: 3,
+        currentPrice,
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        btcBreakDivergenceThreshold: policy.breakDivergenceThreshold,
+      });
+
+      const parsed = JSON.parse(await freshTool.func({
+        ticker: 'BTC-USD',
+        horizon: 3,
+        currentPrice,
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      }));
+      const { canonical } = parsed.data;
+
+      // 45 prices give 44 returns, below the 50 the daily-return validator needs.
+      expect(canonical.diagnostics.btcShortHorizonRerunTriggered).toBe(true);
+      expect(canonical.diagnostics.historicalDays).toBe(44);
+      expect(fullWindow.metadata.outOfSampleR2).not.toBeNull();
+      expect(canonical.diagnostics.outOfSampleR2).toBe(fullWindow.metadata.outOfSampleR2);
+      expect(parsed.data.abstainReasons ?? []).not.toContain('Out-of-sample Markov validation is unavailable for this run.');
+      expect(parsed.data.status).toBe('ok');
     });
 
     it('keeps anchored BTC abstain reports free of GOLD proxy metadata and commodity bypass wording', async () => {

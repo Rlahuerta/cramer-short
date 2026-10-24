@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { extractText as extractPdfText } from 'unpdf';
 import { formatToolResult } from '../types.js';
 import { wrapExternalContent, wrapWebContent } from './external-content.js';
-import { assertPublicHttpUrl, assertPublicUrl } from './url-guard.js';
+import { assertPublicHttpUrl, fetchPinned } from './url-guard.js';
 import {
   extractReadableContent,
   htmlToMarkdown,
@@ -266,6 +266,15 @@ function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
+/** Transport for web_fetch; connects only to guard-validated addresses. */
+let httpFetch: (url: string, init: { headers: Record<string, string>; signal?: AbortSignal }) => Promise<Response> =
+  fetchPinned;
+
+/** @internal Test-only: replace the HTTP transport. */
+export function _setHttpFetchForTest(fn?: typeof httpFetch): void {
+  httpFetch = fn ?? fetchPinned;
+}
+
 async function fetchWithRedirects(params: {
   url: string;
   maxRedirects: number;
@@ -278,16 +287,16 @@ async function fetchWithRedirects(params: {
   let redirectCount = 0;
 
   while (true) {
-    await assertPublicUrl(currentUrl);
+    assertPublicHttpUrl(currentUrl);
     const parsedUrl = new URL(currentUrl);
 
-    const response = await fetch(parsedUrl.toString(), {
-      redirect: "manual",
+    const response = await httpFetch(parsedUrl.toString(), {
       headers: params.headers,
       signal,
     });
 
     if (isRedirectStatus(response.status)) {
+      await response.body?.cancel();
       const location = response.headers.get("location");
       if (!location) {
         throw new Error(`[Web Fetch] Redirect missing location header (${response.status})`);

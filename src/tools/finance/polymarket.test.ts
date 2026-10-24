@@ -577,6 +577,16 @@ describe('polymarketTool', () => {
     ]);
   });
 
+  it('carries numeric probability and volume without a display-string round-trip', async () => {
+    const market = { ...MOCK_MARKET, outcomePrices: '["0.0004","0.9996"]', volume24hr: 4_500 };
+    globalThis.fetch = mockFetch([{ ...MOCK_EVENT, markets: [market] }], [market]) as typeof fetch;
+
+    const [result] = await fetchPolymarketMarkets('Fed rate cut', 1);
+
+    expect(result?.probability).toBe(0.0004);
+    expect(result?.volume24h).toBe(4_500);
+  });
+
   it('paginates through tagged event results when the first page has no query matches', async () => {
     const firstPage = Array.from({ length: 8 }, (_, index) => ({
       id: `sports-${index}`,

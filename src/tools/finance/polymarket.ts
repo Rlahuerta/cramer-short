@@ -26,7 +26,6 @@ import {
   RETRY_DELAYS,
   setRetryDelays,
   type GammaEvent,
-  type GammaMarket,
 } from './polymarket-gamma-client.js';
 import type { NormalizedPolymarketMarket } from './polymarket-types.js';
 import { createPolymarketGateway } from './polymarket-gateway.js';
@@ -84,7 +83,6 @@ Short, specific queries work far better than long compound strings.
 // Types
 // ---------------------------------------------------------------------------
 
-type PolymarketMarket = GammaMarket;
 type PolymarketEvent = GammaEvent;
 
 interface FormattedMarket {
@@ -95,6 +93,9 @@ interface FormattedMarket {
   endDate: string | null;
   volume24h: string;
   liquidity: string;
+  /** Numeric YES probability and 24h USD volume; the strings above are display-only. */
+  yesProbability: number;
+  volume24hUsd: number;
   /** Days since the market was created (undefined if createdAt missing from API). */
   ageDays: number | undefined;
   active: boolean;
@@ -180,18 +181,6 @@ export function drainSearchWarnings(): string[] {
   const w = _searchWarnings;
   _searchWarnings = [];
   return w;
-}
-
-// ---------------------------------------------------------------------------
-// Market age computation
-// ---------------------------------------------------------------------------
-
-/** Compute days since creation from an ISO date string. Returns undefined if invalid. */
-function computeAgeDays(createdAt: string | undefined): number | undefined {
-  if (!createdAt) return undefined;
-  const ms = Date.now() - new Date(createdAt).getTime();
-  if (isNaN(ms) || ms < 0) return undefined;
-  return Math.floor(ms / MS_PER_DAY);
 }
 
 // ---------------------------------------------------------------------------
@@ -283,24 +272,6 @@ export const inferTagSlugs = inferTagSlugsFromGamma;
 // Core fetch helpers
 // ---------------------------------------------------------------------------
 
-function parseStringArrayField(raw: string | readonly string[] | undefined): string[] {
-  const parsed = typeof raw === 'string'
-    ? (() => {
-        try {
-          return JSON.parse(raw) as unknown;
-        } catch {
-          return [];
-        }
-      })()
-    : raw;
-
-  return Array.isArray(parsed)
-    ? parsed
-        .filter((item): item is string | number => typeof item === 'string' || typeof item === 'number')
-        .map((item) => String(item))
-    : [];
-}
-
 function formatVolume(n: number | undefined): string {
   if (!n) return '$0';
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -326,34 +297,9 @@ function formatNormalizedMarket(m: NormalizedPolymarketMarket): FormattedMarket 
     endDate: m.endDate,
     volume24h: formatVolume(m.volume24h),
     liquidity: formatVolume(m.liquidity),
+    yesProbability: (m.outcomes.yes ?? m.outcomes.no)!.probability,
+    volume24hUsd: m.volume24h ?? 0,
     ageDays: m.ageDays,
-    active: m.active,
-    closed: m.closed,
-    enableOrderBook: m.enableOrderBook,
-  };
-}
-
-function formatMarket(m: PolymarketMarket): FormattedMarket | null {
-  const outcomes = parseStringArrayField(m.outcomes);
-  const prices = parseStringArrayField(m.outcomePrices);
-  const clobTokenIds = parseStringArrayField(m.clobTokenIds);
-  if (!outcomes.length || !prices.length) return null;
-
-  const probabilities: Record<string, string> = {};
-  outcomes.forEach((outcome, i) => {
-    const pct = parseFloat(prices[i] ?? '0') * 100;
-    probabilities[outcome] = `${pct.toFixed(1)}%`;
-  });
-
-  return {
-    marketId: m.conditionId ?? m.id,
-    assetId: clobTokenIds.find((tokenId) => typeof tokenId === 'string' && tokenId.trim().length > 0),
-    question: m.question,
-    probabilities,
-    endDate: m.endDateIso ?? null,
-    volume24h: formatVolume(m.volume24hr),
-    liquidity: formatVolume(m.liquidityNum),
-    ageDays: computeAgeDays(m.createdAt),
     active: m.active,
     closed: m.closed,
     enableOrderBook: m.enableOrderBook,
@@ -694,8 +640,8 @@ function toStructuredMarketResult(m: FormattedMarket): PolymarketMarketResult {
     marketId: m.marketId,
     assetId: m.assetId,
     question: m.question,
-    probability: parseYesProbability(m.probabilities),
-    volume24h: parseVolumeStr(m.volume24h),
+    probability: Math.min(1, Math.max(0, m.yesProbability)),
+    volume24h: m.volume24hUsd,
     ageDays: m.ageDays,
     endDate: m.endDate,
     active: m.active,
@@ -738,20 +684,6 @@ async function enrichStructuredMarketsMicrostructure(
 ): Promise<PolymarketMarketResult[]> {
   const enriched = await Promise.allSettled(markets.map(enrichStructuredMarketMicrostructure));
   return enriched.map((result, index) => result.status === 'fulfilled' ? result.value : markets[index]!);
-}
-
-function parseYesProbability(probs: Record<string, string>): number {
-  const key = Object.keys(probs).find((k) => k.toLowerCase() === 'yes') ?? Object.keys(probs)[0];
-  if (!key) return 0.5;
-  return Math.min(1, Math.max(0, parseFloat(probs[key].replace('%', '')) / 100));
-}
-
-function parseVolumeStr(s: string): number {
-  const n = parseFloat(s.replace(/[$,]/g, ''));
-  if (isNaN(n)) return 0;
-  if (s.includes('M')) return n * 1_000_000;
-  if (s.includes('K')) return n * 1_000;
-  return n;
 }
 
 /**

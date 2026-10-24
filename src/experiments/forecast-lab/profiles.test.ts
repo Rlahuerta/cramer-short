@@ -73,7 +73,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
     commands: [
       {
         id: 'walk-forward-sol-short-horizon',
-        command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.integration.test.ts --path-ignore-patterns= --timeout 480000',
+        command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.integration.test.ts --timeout 480000 --path-ignore-patterns=',
         env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
         timeoutMs: 480_000,
       },
@@ -84,7 +84,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
     commands: [
       {
         id: 'walk-forward-hype-short-horizon',
-        command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.integration.test.ts --path-ignore-patterns= --timeout 480000',
+        command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.integration.test.ts --timeout 480000 --path-ignore-patterns=',
         env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
         timeoutMs: 480_000,
       },
@@ -364,11 +364,11 @@ describe('forecast-lab profiles', () => {
     }
   });
 
-  it('un-ignores integration test files, which bunfig.toml pathIgnorePatterns would otherwise skip', () => {
+  it('overrides bunfig tier exclusions for commands that run integration tests', () => {
     for (const profile of listForecastLabProfiles()) {
       for (const { command } of [...profile.baselineCommands, ...profile.candidateCommands]) {
-        if (/\.integration\.test\.ts\b/.test(command)) {
-          expect(command).toContain(' --path-ignore-patterns= ');
+        if (/\.(integration|e2e)\.test\.ts\b/.test(command)) {
+          expect(command).toContain('--path-ignore-patterns=');
         }
       }
     }

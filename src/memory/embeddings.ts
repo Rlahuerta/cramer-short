@@ -68,6 +68,17 @@ async function embedBatchWithClient(
   throw new Error('Embeddings client does not expose embedDocuments() or embedQuery().');
 }
 
+/**
+ * LangChain only skips retries for 4xx errors exposing `status`; ollama-js
+ * errors carry `status_code`, so a missing model ("not found, try pulling it")
+ * was retried six times (~100s). Throwing here stops the retry loop.
+ */
+function failFastOnPermanentOllamaError(error: Error & { status_code?: number }): void {
+  if (error.name === 'AbortError') throw error;
+  const status = error.status_code;
+  if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) throw error;
+}
+
 export function createEmbeddingClient(params: {
   provider: EmbeddingProviderId;
   model?: string;
@@ -109,6 +120,7 @@ export function createEmbeddingClient(params: {
   const embeddings = new OllamaEmbeddings({
     baseUrl: getEnvOrDefault('OLLAMA_BASE_URL', 'http://127.0.0.1:11434'),
     model,
+    onFailedAttempt: failFastOnPermanentOllamaError,
   });
   return {
     provider: 'ollama',

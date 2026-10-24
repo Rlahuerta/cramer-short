@@ -8,6 +8,7 @@
 import {
   computeMarkovDistribution,
   getAssetProfile,
+  keepFullWindowSpread,
   type MarkovDistributionResult,
   type BreakFallbackCandidate,
   type DivergencePenaltySchedule,
@@ -147,7 +148,7 @@ export interface WalkForwardConfig {
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
   kswinAlpha?: number;
-  /** R4 Idea 2: enable cross-asset Lasso bias on trajectory drift. Default false. */
+  /** R4 Idea 2: enable cross-asset Lasso bias on the forecast drift. Default false. */
   enableCrossAssetBias?: boolean;
   /** Peer-ticker → daily-return series, time-aligned with the target. */
   crossAssetReturns?: Record<string, number[]>;
@@ -305,12 +306,12 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         const shortWindowSize = Math.max(30, config.postBreakWindowSize ?? 60);
         if (histPrices.length > shortWindowSize) {
           structuralBreakRerunTriggered = true;
-          result = await computeMarkovDistribution({
+          result = keepFullWindowSpread(result, await computeMarkovDistribution({
             ...originDistributionConfig,
             currentPrice,
             historicalPrices: histPrices.slice(-shortWindowSize),
             transitionEntropyHistory: entropyHistory,
-          });
+          }));
         }
       }
 

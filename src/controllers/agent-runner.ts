@@ -198,6 +198,7 @@ export class AgentRunnerController {
     this.triggerCancellation = null;
     this.abortController = new AbortController();
     let finalAnswer: string | undefined;
+    let stream: AsyncGenerator<AgentEvent> | undefined;
 
     const startTime = Date.now();
     const item: HistoryItem = {
@@ -229,7 +230,7 @@ export class AgentRunnerController {
 
       // Drive the stream manually so each next() can be raced against
       // triggerCancellation — Ollama cloud endpoints don't honour AbortSignal.
-      const stream = agent.run(query, this.inMemoryChatHistory);
+      stream = agent.run(query, this.inMemoryChatHistory);
       let doneEvent: DoneEvent | null = null;
       while (true) {
         const nextResult = await this.makeCancellable(stream.next());
@@ -244,7 +245,7 @@ export class AgentRunnerController {
 
       // Auto-persist financial context when the LLM didn't call
       // store_financial_insight itself. Fire-and-forget — never block the UI.
-      if (doneEvent) {
+      if (doneEvent && !doneEvent.error) {
         void this.autoStoreFromRun(query, doneEvent.answer, doneEvent.toolCalls);
       }
 
@@ -264,6 +265,9 @@ export class AgentRunnerController {
       this.emitChange();
       return undefined;
     } finally {
+      // Close the agent generator so its finally blocks run after a cancel or error.
+      // Not awaited: return() queues behind a stream.next() that may never settle.
+      void stream?.return(undefined).catch(() => {});
       this.abortController = null;
       this.triggerCancellation = null;
     }
@@ -406,16 +410,17 @@ export class AgentRunnerController {
       }
       case 'done': {
         const done = event as DoneEvent;
-        if (done.answer) {
-          await this.inMemoryChatHistory.saveAnswer(done.answer).catch((err) => {
-            // Answer persistence error - log but don't block UI
+        if (done.answer && !done.error) {
+          // saveAnswer records the answer synchronously, then awaits an LLM
+          // summary; don't hold the item in 'processing' (dropping input) for it.
+          void this.inMemoryChatHistory.saveAnswer(done.answer).catch((err) => {
             console.warn('[agent-runner] Failed to save answer to history:', err);
           });
         }
         this.updateLastItem((last) => ({
           ...last,
           answer: done.answer,
-          status: 'complete',
+          status: done.error ? 'error' : 'complete',
           duration: done.totalTime,
           tokenUsage: done.tokenUsage,
           tokensPerSecond: done.tokensPerSecond,

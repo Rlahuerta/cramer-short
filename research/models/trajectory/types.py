@@ -27,3 +27,6 @@ class TrajectoryPoint:
     p_up: float
     cumulative_return: str
     regime: RegimeState
+    # Python-only: horizon log-return scale behind p_up (Student-t around
+    # log(expected_price / current_price)).
+    sigma_n: float

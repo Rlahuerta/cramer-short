@@ -471,6 +471,11 @@ function isRecoverableHmmOverlayError(error: unknown): error is Error {
 
 const RECOVERABLE_HMM_FAILURE_LOG_LIKELIHOOD = 0;
 
+/** Longest horizon (days) at which the opt-in KSWIN history trim applies. */
+const KSWIN_MAX_HORIZON = 2;
+/** Fewest prices the KSWIN trim may keep. */
+const KSWIN_MIN_KEEP_PRICES = 120;
+
 function sanitizeHmmLogLikelihood(logLikelihood: number): number {
   return Number.isFinite(logLikelihood)
     ? logLikelihood
@@ -2892,6 +2897,55 @@ export function computeActionLevels(
   };
 }
 
+/**
+ * Combine a post-break short-window rerun with the full-window forecast. The
+ * rerun moves the location (its median), but a sigma fitted on ~60 returns is
+ * too narrow (walk-forward BTC central-90 coverage fell to 0.82-0.86), so the
+ * full-window distributions, re-centred on the rerun's median, set the spread.
+ * Scenarios and the spread-derived action-signal fields (zone probabilities,
+ * risk/reward, price levels) follow the blended decision surface; the rerun's
+ * expected return, recommendation, confidence, metadata, trajectory and raw
+ * distribution are kept. Out-of-sample validation also comes from the full
+ * window: the daily-return validator needs 50 returns, so a 45-day rerun has
+ * none and the live tool would always abstain on it.
+ */
+export function keepFullWindowSpread(
+  fullWindow: MarkovDistributionResult,
+  rerun: MarkovDistributionResult,
+): MarkovDistributionResult {
+  const { currentPrice } = rerun;
+  const scale = computeActionLevels(rerun.distribution, currentPrice).medianPrice
+    / computeActionLevels(fullWindow.distribution, currentPrice).medianPrice;
+  const rescale = (dist: MarkovDistributionPoint[]) => dist.map(point => ({ ...point, price: point.price * scale }));
+  const distribution = rescale(fullWindow.distribution);
+  const decisionDistribution = rescale(fullWindow.decisionDistribution);
+  const decisionScenarios = computeScenarioProbabilities(decisionDistribution, currentPrice);
+  const { buyProbability, holdProbability, sellProbability, riskRewardRatio, actionLevels } = computeActionSignal(
+    decisionDistribution, currentPrice, rerun.actionSignal.buyThreshold, rerun.actionSignal.sellThreshold,
+  );
+  return {
+    ...rerun,
+    metadata: {
+      ...rerun.metadata,
+      outOfSampleR2: fullWindow.metadata.outOfSampleR2,
+      validationMetric: fullWindow.metadata.validationMetric,
+    },
+    distribution,
+    decisionDistribution,
+    decisionSurface: fullWindow.decisionSurface,
+    scenarios: computeScenarioProbabilities(distribution, currentPrice),
+    decisionScenarios,
+    actionSignal: {
+      ...rerun.actionSignal,
+      buyProbability,
+      holdProbability,
+      sellProbability,
+      riskRewardRatio,
+      actionLevels,
+    },
+  };
+}
+
 export function capBtcShortHorizonConfidence(options: {
   ticker: string;
   horizon: number;
@@ -3250,15 +3304,16 @@ export async function computeMarkovDistribution(params: {
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
+   *  Applied only when horizon <= KSWIN_MAX_HORIZON (2); keeps >= 120 prices.
    *  Default false ⇒ byte-identical to pre-Phase-C. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
   kswinAlpha?: number;
   /** R4 Idea 2: enable cross-asset Lasso pooling — adds an additive bias to
-   *  trajectory drift learned from peer-asset 1-day returns.  Default OFF. */
+   *  the per-day drift (distribution and trajectory) learned from peer-asset 1-day returns.  Default OFF. */
   enableCrossAssetBias?: boolean;
-  /** Map of peer-ticker → daily-return series, time-aligned with historicalPrices.
-   *  Required for `enableCrossAssetBias`. */
+  /** Map of peer-ticker → daily-return series ending on the same day as historicalPrices
+   *  (longer series are end-aligned).  Required for `enableCrossAssetBias`. */
   crossAssetReturns?: Record<string, number[]>;
   /** Lasso L1 strength.  Default 0.005. */
   crossAssetLassoLambda?: number;
@@ -3341,11 +3396,15 @@ export async function computeMarkovDistribution(params: {
 
   // R4 KSWIN trim — opt-in, variance-aware (complementary to mean-aware ADWIN).
   // Applied AFTER ADWIN so the two flags can be enabled independently or
-  // composed.  Default OFF preserves byte-identical behaviour.
+  // composed.  Default OFF preserves byte-identical behaviour.  Skipped past
+  // KSWIN_MAX_HORIZON: on the BTC walk-forward the shortened window helped
+  // Brier only at h<=2 and regressed it at h=3 and h>=7.  Keeping at least
+  // KSWIN_MIN_KEEP_PRICES improved h=1,2 Brier further.
   let kswinTrimMeta: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number } | undefined;
-  if (enableKswinTrim === true && Array.isArray(historicalPrices) && historicalPrices.length > 60) {
+  if (enableKswinTrim === true && horizon <= KSWIN_MAX_HORIZON && Array.isArray(historicalPrices) && historicalPrices.length > 60) {
     const { trimmedPrices, result } = applyKswinTrim(historicalPrices, {
       alpha: kswinAlpha,
+      minKeep: KSWIN_MIN_KEEP_PRICES,
     });
     if (result.trimmed) {
       historicalPrices = trimmedPrices;
@@ -3556,8 +3615,32 @@ export async function computeMarkovDistribution(params: {
   const ensemble = computeEnsembleSignal(historicalPrices);
   // Only apply ensemble adjustment when consensus is high (≥2 of 3 signals agree)
   const ensembleAdj = ensemble.consensus >= 2 ? ensemble.adjustment : 0;
-  // Combine momentum + ensemble into a single drift modifier
-  const combinedDriftAdj = momentumAdj + ensembleAdj;
+  // R4 Phase D — optional cross-asset Lasso bias (default OFF), added to the
+  // per-day drift so the distribution, its CI and the trajectory all see it.
+  let crossAssetBiasMeta: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number } | undefined;
+  if (
+    enableCrossAssetBias === true
+    && crossAssetReturns
+    && Object.keys(crossAssetReturns).length > 0
+  ) {
+    const bias = estimateCrossAssetBias(
+      returns,
+      crossAssetReturns,
+      horizon,
+      // lag 1: today's peer return vs the target's next H days, not same-day co-movement.
+      { lambda: crossAssetLassoLambda ?? 0.005, lag: 1 },
+    );
+    if (bias && Number.isFinite(bias.perDayBias)) {
+      crossAssetBiasMeta = {
+        // Clip to a sane range so a pathological fit can't dominate the drift.
+        perDayBias: Math.max(-0.05, Math.min(0.05, bias.perDayBias)),
+        tickers: bias.tickers,
+        nonZeroCoefCount: bias.fit.coef.filter(c => c !== 0).length,
+      };
+    }
+  }
+  // Combine momentum + ensemble (+ cross-asset bias) into a single drift modifier
+  const combinedDriftAdj = momentumAdj + ensembleAdj + (crossAssetBiasMeta?.perDayBias ?? 0);
 
   // --- HMM forecast (Idea B: Hidden Markov Model + Idea C: Multi-feature) ---
   // Fit a Gaussian HMM on daily returns when we have enough data.
@@ -4237,7 +4320,6 @@ export async function computeMarkovDistribution(params: {
 
   let trajectoryResult: TrajectoryPoint[] | undefined;
   let jumpDiffusionMeta: { compensatorPerDay: number; events: Array<{ id: string; dailyIntensity: number; meanLogJump: number; stdLogJump: number }> } | undefined;
-  let crossAssetBiasMeta: { perDayBias: number; tickers: string[]; nonZeroCoefCount: number } | undefined;
   if (params.trajectory) {
     const trajDays = Math.min(30, Math.max(1, params.trajectoryDays ?? horizon));
     const activeJumpSpec = hasJumps ? activeJumpEvents : undefined;
@@ -4274,33 +4356,9 @@ export async function computeMarkovDistribution(params: {
       }
     }
 
-    // R4 Phase D — optional cross-asset Lasso bias (default OFF).
-    let trajectoryDriftAdj = combinedDriftAdj;
-    if (
-      enableCrossAssetBias === true
-      && crossAssetReturns
-      && Object.keys(crossAssetReturns).length > 0
-    ) {
-      const bias = estimateCrossAssetBias(
-        returns,
-        crossAssetReturns,
-        Math.min(trajDays, horizon),
-        { lambda: crossAssetLassoLambda ?? 0.005 },
-      );
-      if (bias && Number.isFinite(bias.perDayBias)) {
-        // Clip to a sane range so a pathological fit can't dominate the drift.
-        const clipped = Math.max(-0.05, Math.min(0.05, bias.perDayBias));
-        trajectoryDriftAdj = combinedDriftAdj + clipped;
-        crossAssetBiasMeta = {
-          perDayBias: clipped,
-          tickers: bias.tickers,
-          nonZeroCoefCount: bias.fit.coef.filter(c => c !== 0).length,
-        };
-      }
-    }
     trajectoryResult = computeTrajectory(
       currentPrice, trajDays, effectiveP, regimeStats, currentRegime,
-      trajectoryDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
+      combinedDriftAdj, hmmOverride, 1000, assetProfile.studentTNu,
       recentDailyVol, effectiveMixture, activeJumpSpec,
       garchScalesForTraj,
       uncertaintyTrajectoryScale,
@@ -4811,7 +4869,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       rerunResult.metadata.originalHistoricalDays = result.metadata.historicalDays;
       rerunResult.metadata.originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
       rerunResult.metadata.originalStructuralBreakDivergence = result.metadata.structuralBreakDivergence;
-      result = rerunResult;
+      result = keepFullWindowSpread(result, rerunResult);
     }
 
     const { metadata: m, actionSignal: sig } = result;

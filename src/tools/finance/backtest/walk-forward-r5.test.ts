@@ -427,6 +427,30 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
     expect(maturedStep?.conformalSampleCount).toBeGreaterThan(1);
   });
 
+  it('keeps the full-window spread when a structural-break rerun moves the forecast', async () => {
+    const prices = syntheticVolBurstPrices();
+    const baseConfig = { ticker: 'BTC-USD', prices, horizon: 14, warmup: 160, stride: 5 } as const;
+
+    const fullWindow = await withSeed(141, () => walkForward(baseConfig));
+    const withRerun = await withSeed(141, () => walkForward({
+      ...baseConfig,
+      postBreakShortWindow: true,
+      postBreakWindowSize: 60,
+    }));
+
+    const rerunSteps = withRerun.steps.filter(step => step.structuralBreakRerunTriggered === true);
+    expect(rerunSteps.length).toBeGreaterThan(0);
+    const spread = (step: BacktestStep) => step.central90CiUpper! / step.central90CiLower!;
+    let moved = false;
+    for (const step of rerunSteps) {
+      const original = fullWindow.steps.find(s => s.t === step.t)!;
+      // A multiplicative re-centre keeps the upper/lower ratio of every interval.
+      expect(spread(step)).toBeCloseTo(spread(original), 9);
+      moved ||= Math.abs(step.central90CiLower! - original.central90CiLower!) > 1e-6;
+    }
+    expect(moved).toBe(true);
+  });
+
   it('keeps score aggregation disabled by default and identical to an explicit false flag', async () => {
     const prices = syntheticVolBurstPrices();
     const baseConfig = {
@@ -570,5 +594,30 @@ describe('soft regime weighting walk-forward wiring', () => {
 
     expect(avgConfidence(enabled.steps)).toBeLessThan(avgConfidence(baseline.steps));
     expect(Math.abs(avgPredictedProb(enabled.steps) - avgPredictedProb(baseline.steps))).toBeGreaterThan(1e-4);
+  });
+});
+
+describe('cross-asset bias walk-forward wiring', () => {
+  it('changes the walk-forward forecast when a peer leads the target', async () => {
+    const rng = seedRng(606);
+    const peer = Array.from({ length: 260 }, () => gauss(rng) * 0.02);
+    const prices = [100];
+    for (let i = 0; i < peer.length; i++) {
+      prices.push(prices.at(-1)! * Math.exp((i > 0 ? 0.8 * peer[i - 1] : 0) + gauss(rng) * 0.004));
+    }
+    const baseConfig = { ticker: 'BTC-USD', prices, horizon: 7, warmup: 150, stride: 20 } as const;
+
+    const baseline = await withSeed(606, () => walkForward(baseConfig));
+    const enabled = await withSeed(606, () => walkForward({
+      ...baseConfig,
+      enableCrossAssetBias: true,
+      crossAssetReturns: { ETH: peer },
+      crossAssetLassoLambda: 0.001,
+    }));
+
+    expect(enabled.errors).toHaveLength(0);
+    const probChanged = enabled.steps.some((step, i) =>
+      Math.abs(step.predictedProb - baseline.steps[i].predictedProb) > 1e-6);
+    expect(probChanged).toBe(true);
   });
 });

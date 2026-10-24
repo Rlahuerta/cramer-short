@@ -84,6 +84,16 @@ describe('handleWatchlistSlashCommand scrollback flush bookkeeping', () => {
     expect(flushes).toHaveLength(1);
   });
 
+  it('flushes an exchange that ended in an error', async () => {
+    const item: HistoryItem = { ...completedItem('q3'), answer: 'Error: provider down', status: 'error' };
+    const { state, flushes, flushedItems } = makeTuiState([item]);
+
+    await handleWatchlistSlashCommand('/watchlist list', state);
+
+    expect(flushes).toEqual([item]);
+    expect(flushedItems.has(item)).toBe(true);
+  });
+
   it('does not flush an exchange that is already in flushedItems', async () => {
     const item = completedItem('q2');
     const { state, flushes, flushedItems } = makeTuiState([item]);

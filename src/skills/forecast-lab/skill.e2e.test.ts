@@ -125,6 +125,8 @@ const getMutatorExecutionFixture = createForecastLabE2EFixture(FORECAST_LAB_MUTA
 const getApprovalCommandFixture = createForecastLabE2EFixture(FORECAST_LAB_APPROVAL_COMMAND_QUERY, {
   maxIterations: 4,
   historySeed: FORECAST_LAB_APPROVAL_HISTORY,
+  // promote-approved is approval-gated; approve it so the run reaches the missing-source answer.
+  approveTools: true,
 });
 const getComparisonFixture = createForecastLabE2EFixture(FORECAST_LAB_COMPARISON_QUERY, {
   maxIterations: 4,

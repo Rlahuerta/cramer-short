@@ -121,6 +121,19 @@ describe('estimateCrossAssetBias', () => {
     expect(r!.fit.coef[0]).toBeGreaterThan(0);
   });
 
+  it('carries only the peer signal, not the intercept: zero coefficients give zero bias', () => {
+    const rng = seedRng(3);
+    const n = 200;
+    const peer = Array.from({ length: n }, () => gauss(rng) * 0.02);
+    // Strong positive mean return, no relationship to the peer.
+    const target = Array.from({ length: n }, () => 0.01 + gauss(rng) * 0.001);
+    const r = estimateCrossAssetBias(target, { ETH: peer }, 7, { lambda: 0.05, lag: 1 });
+    expect(r).not.toBeNull();
+    expect(r!.fit.coef).toEqual([0]);
+    expect(r!.fit.intercept).toBeGreaterThan(0.05);
+    expect(r!.perDayBias).toBe(0);
+  });
+
   it('is deterministic for the same input', () => {
     const rng = seedRng(99);
     const n = 150;
@@ -129,6 +142,20 @@ describe('estimateCrossAssetBias', () => {
     const a = estimateCrossAssetBias(target, { ETH: peer, SOL: peer.map(x => x * 0.5) }, 7, { lambda: 0.005 });
     const b = estimateCrossAssetBias(target, { ETH: peer, SOL: peer.map(x => x * 0.5) }, 7, { lambda: 0.005 });
     expect(a?.perDayBias).toEqual(b?.perDayBias);
+  });
+
+  it('end-aligns target and peer series of different lengths (both end at the latest observation)', () => {
+    const rng = seedRng(5);
+    const peer = Array.from({ length: 300 }, () => gauss(rng) * 0.02);
+    // Target window is the most recent 100 returns (e.g. a post-break short-window rerun),
+    // and moves 1:1 with the peer on the same day.
+    const target = peer.slice(-100);
+    const r = estimateCrossAssetBias(target, { ETH: peer }, 1, { lambda: 0.0001, minSamples: 60 });
+    expect(r).not.toBeNull();
+    expect(r!.fit.coef[0]).toBeGreaterThan(0.015);
+    // Bias excludes the intercept: latest return minus the fit window's mean.
+    const fitMean = peer.slice(200, 299).reduce((a, b) => a + b, 0) / 99;
+    expect(r!.perDayBias).toBeCloseTo(peer[299] - fitMean, 3);
   });
 
   it('per-day bias scales inversely with horizon', () => {

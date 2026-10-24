@@ -18,6 +18,7 @@
 import { describe, expect, beforeAll, beforeEach } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
+import { getE2EPreflightStatus } from '@/utils/e2e-helpers.js';
 
 import { callLlm, _setModelFactory } from '@/model/llm.js';
 
@@ -26,15 +27,7 @@ import { callLlm, _setModelFactory } from '@/model/llm.js';
 // Declared at file scope to register before the describe block's tests.
 beforeEach(() => { _setModelFactory(null); });
 
-const NEMOTRON_MODEL = 'ollama:kimi-k2.6:cloud';
-const GENERAL_CLOUD_MODEL_PREFERENCES = [
-  'glm-5.1:cloud',
-  'minimax-m2.7:cloud',
-  'glm-5:cloud',
-  'kimi-k2.6:cloud',
-  'qwen3.5:cloud',
-  'qwen3-next:80b-cloud',
-] as const;
+const NEMOTRON_MODEL = 'ollama:nemotron-3-super:cloud';
 const GENERAL_CLOUD_CALL_TIMEOUT_MS = 75_000;
 
 // ---------------------------------------------------------------------------
@@ -43,21 +36,11 @@ const GENERAL_CLOUD_CALL_TIMEOUT_MS = 75_000;
 
 let resolvedModel: string | null = null;
 
-function resolveGeneralCloudModel(models: string[]): string | null {
-  for (const candidate of GENERAL_CLOUD_MODEL_PREFERENCES) {
-    if (models.includes(candidate)) return `ollama:${candidate}`;
-  }
-
-  const cloudModels = models
-    .filter((m) => m.includes(':cloud'))
-    .sort((a, b) => a.localeCompare(b));
-  return cloudModels[0] ? `ollama:${cloudModels[0]}` : null;
-}
-
 beforeAll(async () => {
   if (!RUN_E2E) return;
-  const models = await getOllamaModels();
-  resolvedModel = resolveGeneralCloudModel(models);
+  // Shared resolver: honours E2E_MODEL and skips cloud models Ollama has retired.
+  const status = await getE2EPreflightStatus();
+  resolvedModel = status.available ? status.model : null;
   console.log(`Resolved Ollama cloud model for general live-call e2e: ${resolvedModel ?? 'none'}`);
 });
 

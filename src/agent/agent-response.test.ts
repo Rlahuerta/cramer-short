@@ -21,7 +21,7 @@ import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } f
 import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime, spyOn } from 'bun:test';
 import * as polymarket from '../tools/finance/polymarket.js';
 import * as embeddings from '../memory/embeddings.js';
-import { rmSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { StructuredToolInterface } from '@langchain/core/tools';

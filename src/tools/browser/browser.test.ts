@@ -140,7 +140,11 @@ describe('browser tool with mocked Playwright', () => {
       url: 'https://example.com/isolated',
       title: 'Isolated page',
     });
-    expect(isolatedLaunchMock).toHaveBeenCalledWith({ headless: false });
+    expect(isolatedLaunchMock).toHaveBeenCalledWith({
+      headless: false,
+      // All browser traffic (incl. WebSockets) goes through the local SSRF guard proxy.
+      proxy: { server: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/) },
+    });
     expect(launchMock).not.toHaveBeenCalled();
 
     await isolatedTool.invoke({ action: 'close' });
@@ -154,7 +158,11 @@ describe('browser tool with mocked Playwright', () => {
       url: 'https://example.com/investors',
     }) as string);
 
-    expect(launchMock).toHaveBeenCalledWith({ headless: false });
+    expect(launchMock).toHaveBeenCalledWith({
+      headless: false,
+      // All browser traffic (incl. WebSockets) goes through the local SSRF guard proxy.
+      proxy: { server: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/) },
+    });
     expect(result).toMatchObject({
       ok: true,
       url: 'https://example.com/investors',
