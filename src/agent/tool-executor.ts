@@ -193,14 +193,15 @@ export class AgentToolExecutor {
       | { done: true }
       | { done: false; event: ToolExecutionEvent };
 
-    // Approval-gated calls share one sequential lane: approvers handle one
-    // request at a time, an allow-session answer covers the calls behind it,
-    // and a denial stops the rest of the lane.
-    const gated = toolCalls.filter((tc) => this.requiresApproval(tc.name, tc.args as Record<string, unknown>));
-    const lanes = toolCalls
-      .filter((tc) => !gated.includes(tc))
-      .map((tc) => this.executeSingle(tc.name, tc.args as Record<string, unknown>, ctx));
-    if (gated.length > 0) lanes.push(this.executeInSequence(gated, ctx));
+    // Ask every approval before any call starts: approvers handle one request
+    // at a time, an allow-session answer covers later calls in the batch, and a
+    // denial runs nothing (the agent ends the run on it).
+    for (const tc of toolCalls) {
+      const args = tc.args as Record<string, unknown>;
+      if (this.isForecastLabBlocked(ctx, tc.name, args)) continue; // rejected in executeSingle without asking
+      if (!(yield* this.approve(tc.name, args))) return;
+    }
+    const lanes = toolCalls.map((tc) => this.executeSingle(tc.name, tc.args as Record<string, unknown>, ctx, true));
 
     const queue: QueueItem[] = [];
     let pending = lanes.length;
@@ -244,18 +245,6 @@ export class AgentToolExecutor {
     }
   }
 
-  private async *executeInSequence(
-    toolCalls: NonNullable<AIMessage['tool_calls']>,
-    ctx: RunContext,
-  ): AsyncGenerator<ToolExecutionEvent, void> {
-    for (const tc of toolCalls) {
-      for await (const event of this.executeSingle(tc.name, tc.args as Record<string, unknown>, ctx)) {
-        yield event;
-        if (event.type === 'tool_denied') return;
-      }
-    }
-  }
-
   async *executeTool(
     toolName: string,
     toolArgs: Record<string, unknown>,
@@ -267,7 +256,8 @@ export class AgentToolExecutor {
   private async *executeSingle(
     toolName: string,
     toolArgs: Record<string, unknown>,
-    ctx: RunContext
+    ctx: RunContext,
+    preApproved = false,
   ): AsyncGenerator<ToolExecutionEvent, void> {
     // Auto-correct a forecast tool's ticker to the query's resolved asset BEFORE
     // anything else runs. executeSingle is the single choke point every call path
@@ -282,21 +272,18 @@ export class AgentToolExecutor {
     }
 
     const toolQuery = this.extractQueryFromArgs(toolArgs);
-    const toolPath = typeof toolArgs.path === 'string' ? toolArgs.path : null;
 
-    if (ctx.forecastLabGuard && FORECAST_LAB_GUARDED_TOOLS.has(toolName)) {
-      if (!toolPath || !isInsideForecastLabExperiments(toolPath)) {
-        const profileLabel = ctx.forecastLabGuard.recommendedProfileId
-          ? ` for profile "${ctx.forecastLabGuard.recommendedProfileId}"`
-          : '';
-        const error =
-          `Forecast-lab routed improvement queries${profileLabel} cannot write tracked source files directly. ` +
-          `Write artifacts only under .cramer-short/experiments/ or use the bounded forecast-lab runner instead.`;
-        yield { type: 'tool_error', tool: toolName, error };
-        ctx.scratchpad.recordToolCall(toolName, toolQuery);
-        ctx.scratchpad.addToolResult(toolName, toolArgs, error);
-        return;
-      }
+    if (ctx.forecastLabGuard && this.isForecastLabBlocked(ctx, toolName, toolArgs)) {
+      const profileLabel = ctx.forecastLabGuard.recommendedProfileId
+        ? ` for profile "${ctx.forecastLabGuard.recommendedProfileId}"`
+        : '';
+      const error =
+        `Forecast-lab routed improvement queries${profileLabel} cannot write tracked source files directly. ` +
+        `Write artifacts only under .cramer-short/experiments/ or use the bounded forecast-lab runner instead.`;
+      yield { type: 'tool_error', tool: toolName, error };
+      ctx.scratchpad.recordToolCall(toolName, toolQuery);
+      ctx.scratchpad.addToolResult(toolName, toolArgs, error);
+      return;
     }
 
     if (
@@ -315,20 +302,7 @@ export class AgentToolExecutor {
       }
     }
 
-    if (this.requiresApproval(toolName, toolArgs) && !this.sessionApprovedTools.has(toolName)) {
-      const decision = (await this.requestToolApproval?.({ tool: toolName, args: toolArgs })) ?? 'deny';
-      yield { type: 'tool_approval', tool: toolName, args: toolArgs, approved: decision };
-      if (decision === 'deny') {
-        yield { type: 'tool_denied', tool: toolName, args: toolArgs };
-        return;
-      }
-      if (decision === 'allow-session') {
-        const isFileTool = (TOOLS_REQUIRING_APPROVAL as readonly string[]).includes(toolName);
-        for (const name of isFileTool ? TOOLS_REQUIRING_APPROVAL : [toolName]) {
-          this.sessionApprovedTools.add(name);
-        }
-      }
-    }
+    if (!preApproved && !(yield* this.approve(toolName, toolArgs))) return;
 
     const limitCheck = ctx.scratchpad.canCallTool(toolName, toolQuery);
 
@@ -472,6 +446,34 @@ export class AgentToolExecutor {
     }
 
     return undefined;
+  }
+
+  /** Asks for approval when the call needs it; false (after a tool_denied event) when denied. */
+  private async *approve(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+  ): AsyncGenerator<ToolExecutionEvent, boolean> {
+    if (!this.requiresApproval(toolName, toolArgs) || this.sessionApprovedTools.has(toolName)) return true;
+    const decision = (await this.requestToolApproval?.({ tool: toolName, args: toolArgs })) ?? 'deny';
+    yield { type: 'tool_approval', tool: toolName, args: toolArgs, approved: decision };
+    if (decision === 'deny') {
+      yield { type: 'tool_denied', tool: toolName, args: toolArgs };
+      return false;
+    }
+    if (decision === 'allow-session') {
+      const isFileTool = (TOOLS_REQUIRING_APPROVAL as readonly string[]).includes(toolName);
+      for (const name of isFileTool ? TOOLS_REQUIRING_APPROVAL : [toolName]) {
+        this.sessionApprovedTools.add(name);
+      }
+    }
+    return true;
+  }
+
+  /** Forecast-lab routed runs may only write under .cramer-short/experiments/. */
+  private isForecastLabBlocked(ctx: RunContext, toolName: string, toolArgs: Record<string, unknown>): boolean {
+    if (!ctx.forecastLabGuard || !FORECAST_LAB_GUARDED_TOOLS.has(toolName)) return false;
+    const toolPath = typeof toolArgs.path === 'string' ? toolArgs.path : null;
+    return !toolPath || !isInsideForecastLabExperiments(toolPath);
   }
 
   private requiresApproval(toolName: string, args: Record<string, unknown>): boolean {
