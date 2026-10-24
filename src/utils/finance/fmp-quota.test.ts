@@ -1,7 +1,7 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { MS_PER_DAY } from '../time.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { rm, mkdir } from 'node:fs/promises';
+import { rm, mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { writeFileSync } from 'node:fs';
@@ -19,8 +19,7 @@ let testDir: string;
 let quotaPath: string;
 
 beforeEach(async () => {
-  testDir = join(tmpdir(), `dexter-quota-test-${FIXED_TEST_NOW_MS}`);
-  await mkdir(testDir, { recursive: true });
+  testDir = await mkdtemp(join(tmpdir(), 'dexter-quota-test-'));
   quotaPath = join(testDir, 'fmp-quota.json');
 });
 

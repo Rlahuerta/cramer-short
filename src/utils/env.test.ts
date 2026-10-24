@@ -7,7 +7,7 @@
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, test, expect, mock, beforeEach, afterAll, afterEach, setSystemTime } from 'bun:test';
-import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,8 +23,7 @@ afterEach(() => {
 // Temp directory — all .env file reads/writes go here
 // ─────────────────────────────────────────────────────────────────────────────
 const originalCwd = process.cwd();
-const tempDir = join(tmpdir(), `dexter-env-test-${FIXED_TEST_NOW_MS}`);
-mkdirSync(tempDir, { recursive: true });
+const tempDir = mkdtempSync(join(tmpdir(), 'dexter-env-test-'));
 process.chdir(tempDir);
 
 afterAll(() => {

@@ -1,6 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, mock, setSystemTime } from 'bun:test';
-import { mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -22,8 +22,7 @@ afterEach(() => {
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `cache-test-${nextTestId('path')}`);
-  mkdirSync(tmpDir, { recursive: true });
+  tmpDir = mkdtempSync(join(tmpdir(), 'cache-test-'));
   // Re-install a mock that points paths.js at this test's tmp dir. Because the
   // dynamic import below uses a cache-busting query string, the cache module
   // is re-evaluated and picks up this mock.

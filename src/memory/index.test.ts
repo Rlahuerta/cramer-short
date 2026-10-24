@@ -9,8 +9,8 @@
 
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, rm, writeFile, mkdtemp } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MemoryStore } from './store.js';
 import { MemoryDatabase } from './database.js';
@@ -33,7 +33,7 @@ describe('MemoryStore.loadSessionContext — FINANCE.md', () => {
   let store: MemoryStore;
 
   beforeEach(async () => {
-    baseDir = join(tmpdir(), `dexter-store-test-${FIXED_TEST_NOW_MS}`);
+    baseDir = await mkdtemp(join(tmpdir(), 'dexter-store-test-'));
     memDir = join(baseDir, 'memory');
     await mkdir(memDir, { recursive: true });
     store = new MemoryStore(baseDir);
@@ -88,13 +88,13 @@ describe('MemoryDatabase.loadRecentInsights', () => {
   let db: MemoryDatabase;
 
   beforeEach(async () => {
-    dbPath = join(tmpdir(), `dexter-db-test-${FIXED_TEST_NOW_MS}.sqlite`);
+    dbPath = join(await mkdtemp(join(tmpdir(), 'dexter-db-test-')), 'memory.sqlite');
     db = await MemoryDatabase.create(dbPath);
   });
 
   afterEach(async () => {
-    db.close();
-    await rm(dbPath, { force: true });
+    db?.close();
+    await rm(dirname(dbPath), { recursive: true, force: true });
   });
 
   it('returns an empty array when no insights exist', () => {

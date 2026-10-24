@@ -1,6 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, test, expect, beforeEach, afterEach, afterAll, mock, setSystemTime } from 'bun:test';
-import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, rmSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -13,7 +13,8 @@ afterEach(() => {
 });
 
 // Unique temp dir per worker run — prevents parallel worker contamination of the real .cramer-short/cache
-const TEST_CACHE_DIR = join(tmpdir(), `dexter-cache-test-${nextTestId('path')}`);
+const TEST_ROOT = mkdtempSync(join(tmpdir(), 'dexter-cache-test-'));
+const TEST_CACHE_DIR = join(TEST_ROOT, 'cache');
 
 // Mock paths.js BEFORE cache.ts loads so the module-level CACHE_DIR = cramerShortPath('cache') resolves to our temp dir
 mock.module('./paths.js', () => ({
@@ -71,9 +72,7 @@ describe('buildCacheKey', () => {
 // ---------------------------------------------------------------------------
 
 afterAll(() => {
-  if (existsSync(TEST_CACHE_DIR)) {
-    rmSync(TEST_CACHE_DIR, { recursive: true, force: true });
-  }
+  rmSync(TEST_ROOT, { recursive: true, force: true });
 });
 
 describe('readCache / writeCache', () => {

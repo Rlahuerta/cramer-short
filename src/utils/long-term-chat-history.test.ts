@@ -1,6 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
+import { rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LongTermChatHistory, type ConversationEntry } from './long-term-chat-history.js';
@@ -24,8 +24,7 @@ function makeHistory(dir: string): LongTermChatHistory {
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `dexter-chat-history-${FIXED_TEST_NOW_MS}`);
-  mkdirSync(tmpDir, { recursive: true });
+  tmpDir = mkdtempSync(join(tmpdir(), 'dexter-chat-history-'));
 });
 
 afterEach(() => {
