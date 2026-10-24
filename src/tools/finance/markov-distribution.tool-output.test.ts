@@ -3,7 +3,7 @@
  */
 
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, afterEach, beforeEach, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, spyOn, afterEach, beforeEach, setSystemTime } from 'bun:test';
 import { integrationIt } from '../../utils/test-guards.js';
 import {
   classifyRegimeState,
@@ -3051,6 +3051,8 @@ describe('markov_distribution tool output envelope', () => {
     });
 
     it('auto-fetches the 252d BTC live-policy history for short horizons', async () => {
+      // Crypto history tries Binance via global fetch first; fail it so the api.js mock below is used.
+      const fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
       mock.module('./polymarket.js', () => ({
         ...realPolymarketModule,
         fetchPolymarketMarkets: async () => [],
@@ -3083,7 +3085,7 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 2,
         polymarketMarkets: [],
         trajectory: false,
-      });
+      }).finally(() => fetchSpy.mockRestore());
 
       const parsed = JSON.parse(result);
       expect(parsed.data.canonical.diagnostics.historicalDays).toBe(251);
