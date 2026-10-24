@@ -1405,3 +1405,13 @@ class TestMixingTimeScale:
         slow = _default_matrix(diagonal=0.99)
         fast = np.full((3, 3), 1.0 / 3.0, dtype=float)
         assert mixing_time_scale(slow, horizon=10) > mixing_time_scale(fast, horizon=10)
+
+
+def test_estimate_regime_stats_std_is_raw_dispersion_about_capped_mean():
+    from research.models.markov.regime import estimate_regime_stats
+
+    returns = [0.02] * 49 + [0.12]
+    stats = estimate_regime_stats(np.array(returns), ["bull"] * 50, max_daily_drift=0.012)
+    rms = float(np.sqrt(np.mean((np.array(returns) - 0.012) ** 2)))
+    assert stats["bull"]["meanReturn"] == pytest.approx(0.012, abs=1e-12)
+    assert stats["bull"]["stdReturn"] == pytest.approx(rms, abs=1e-12)
