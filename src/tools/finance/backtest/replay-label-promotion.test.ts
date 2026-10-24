@@ -1,6 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DEFAULT_ARBITER_REPLAY_BUNDLES_PATH,
@@ -16,7 +17,7 @@ import {
 import { toReplayLabelBatchReportPath } from './replay-label-batch-runner.js';
 import { toReplayLabelBenchmarkReportPath } from './replay-label-benchmark-pipeline.js';
 
-const SCRATCH_ROOT = join(import.meta.dir, '__test-scratch__');
+const SCRATCH_ROOT = mkdtempSync(join(tmpdir(), 'replay-test-scratch-'));
 const scratchDirs: string[] = [];
 
 function makeScratchDir(): string {
