@@ -1,0 +1,142 @@
+/**
+ * Agent-loop regression tests: prompt context across iterations, failed model
+ * calls, forced-route reruns and exit messages. A scripted chat model records
+ * every prompt it is sent and replays a queue of responses.
+ */
+import { FIXED_TEST_DATE, nextTestId } from '@/utils/test-determinism.js';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
+import { mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { BaseChatModel, type BaseChatModelCallOptions, type BindToolsInput } from '@langchain/core/language_models/chat_models';
+import type { BaseLanguageModelInput } from '@langchain/core/language_models/base';
+import { AIMessage, AIMessageChunk, type BaseMessage, type ToolCall } from '@langchain/core/messages';
+import type { ChatResult } from '@langchain/core/outputs';
+import { _setModelFactory } from '../model/llm.js';
+import { HISTORY_CONTEXT_MARKER } from '../utils/parsing/history-context.js';
+import type { AgentEvent, DoneEvent } from './types.js';
+
+type Scripted = string | ToolCall[] | Error;
+
+const script = {
+  responses: [] as Scripted[],
+  fallback: 'Final answer' as Scripted,
+  prompts: [] as string[],
+  streamPrompts: [] as string[],
+  streamChunks: ['synthesized answer'] as string[],
+  streamError: null as Error | null,
+};
+
+function lastText(messages: BaseMessage[]): string {
+  const content = messages.at(-1)?.content;
+  return typeof content === 'string' ? content : JSON.stringify(content);
+}
+
+class ScriptedChatModel extends BaseChatModel {
+  _llmType(): string { return 'scripted'; }
+
+  async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+    script.prompts.push(lastText(messages));
+    const next = script.responses.length > 0 ? script.responses.shift()! : script.fallback;
+    if (next instanceof Error) throw next;
+    const message = typeof next === 'string'
+      ? new AIMessage({ content: next })
+      : new AIMessage({ content: '', tool_calls: next });
+    return { generations: [{ message, text: typeof next === 'string' ? next : '' }] };
+  }
+
+  async *_streamIterator(input: BaseLanguageModelInput, _options?: BaseChatModelCallOptions): AsyncGenerator<AIMessageChunk> {
+    script.streamPrompts.push(Array.isArray(input) ? lastText(input as BaseMessage[]) : String(input));
+    if (script.streamError) throw script.streamError;
+    for (const chunk of script.streamChunks) yield new AIMessageChunk({ content: chunk });
+  }
+
+  bindTools(_tools: BindToolsInput[]): this { return this; }
+}
+
+const ST_CALL: ToolCall = {
+  id: 'st1',
+  name: 'sequential_thinking',
+  args: { thought: 'plan the research steps for this question', nextThoughtNeeded: false, thoughtNumber: 1, totalThoughts: 1 },
+  type: 'tool_call',
+};
+
+beforeAll(() => { _setModelFactory(() => new ScriptedChatModel({})); });
+afterAll(() => { _setModelFactory(null); });
+
+let tmpDir: string;
+let originalCwd: string;
+let prevOpenAiKey: string | undefined;
+
+beforeEach(() => {
+  setSystemTime(FIXED_TEST_DATE);
+  tmpDir = join(tmpdir(), `agent-loop-test-${nextTestId('path')}`);
+  mkdirSync(tmpDir, { recursive: true });
+  originalCwd = process.cwd();
+  process.chdir(tmpDir);
+  prevOpenAiKey = process.env.OPENAI_API_KEY;
+  if (!prevOpenAiKey) process.env.OPENAI_API_KEY = 'sk-test-stub';
+  script.responses = [];
+  script.fallback = 'Final answer';
+  script.prompts = [];
+  script.streamPrompts = [];
+  script.streamChunks = ['synthesized answer'];
+  script.streamError = null;
+});
+
+afterEach(() => {
+  setSystemTime();
+  process.chdir(originalCwd);
+  rmSync(tmpDir, { recursive: true, force: true });
+  if (!prevOpenAiKey) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = prevOpenAiKey;
+});
+
+const { Agent } = await import('./agent.js');
+const { InMemoryChatHistory } = await import('../utils/in-memory-chat-history.js');
+
+async function collect(gen: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
+  const events: AgentEvent[] = [];
+  for await (const event of gen) events.push(event);
+  return events;
+}
+
+function doneOf(events: AgentEvent[]): DoneEvent {
+  const done = events.find((event) => event.type === 'done');
+  if (!done) throw new Error('run produced no done event');
+  return done as DoneEvent;
+}
+
+function historyWithPriorTurn() {
+  const history = new InMemoryChatHistory();
+  history.seedMessage({
+    query: 'Tell me about Zephyrcorp',
+    answer: 'Zephyrcorp is a widget maker.',
+    summary: null,
+  });
+  return history;
+}
+
+describe('iteration prompts keep the initial context', () => {
+  it('keeps chat history in the prompt after a tool round', async () => {
+    script.responses = [[ST_CALL], 'Margins compared'];
+    const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
+
+    await collect(agent.run('compare its margins', historyWithPriorTurn()));
+
+    expect(script.prompts).toHaveLength(2);
+    expect(script.prompts[0]).toContain(HISTORY_CONTEXT_MARKER);
+    expect(script.prompts[1]).toContain(HISTORY_CONTEXT_MARKER);
+    expect(script.prompts[1]).toContain('Zephyrcorp');
+  });
+
+  it('keeps chat history in the max-iterations synthesis prompt', async () => {
+    script.fallback = [ST_CALL];
+    const agent = await Agent.create({ maxIterations: 1, memoryEnabled: false });
+
+    await collect(agent.run('compare its margins', historyWithPriorTurn()));
+
+    expect(script.streamPrompts).toHaveLength(1);
+    expect(script.streamPrompts[0]).toContain('Zephyrcorp');
+  });
+});

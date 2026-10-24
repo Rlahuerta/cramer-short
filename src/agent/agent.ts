@@ -337,21 +337,26 @@ export class Agent {
     }
 
     // Build initial prompt with conversation history context
-    let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory, forecastLabRoutingHint);
+    let promptContext = this.buildInitialPrompt(query, inMemoryHistory);
 
     // Auto-inject relevant prior research memories based on tickers mentioned
     if (this.memoryEnabled) {
-      currentPrompt = await injectMemoryContext(query, currentPrompt, {
+      promptContext = await injectMemoryContext(query, promptContext, {
         getMemoryManager: this.getMemoryManager,
         extractTickers: (text) => extractTickersFn(text),
       });
     }
 
     // Auto-inject Polymarket prediction market context for detected asset signals
-    currentPrompt = await injectPolymarketContext(query, currentPrompt, {
+    promptContext = await injectPolymarketContext(query, promptContext, {
       extractSignals: (text) => extractSignalsFn(text),
       fetchMarkets: (q, limit) => fetchPolymarketMarkets(q, limit),
     });
+
+    // Every iteration prompt is rebuilt on top of this context so follow-ups keep their referent.
+    if (promptContext !== query) ctx.promptContext = promptContext;
+    const initialPrompt = forecastLabRouter.injectRoutingHint(promptContext, forecastLabRoutingHint);
+    let currentPrompt = initialPrompt;
 
     const explicitlyRequestedSkill = detectExplicitSkillRequest(query);
 
@@ -411,6 +416,7 @@ export class Agent {
                 ctx.scratchpad.getToolResults(),
                 ctx.scratchpad.formatToolUsageForPrompt(),
                 forecastLabRoutingHint,
+                ctx.promptContext,
               );
               continue;
             }
@@ -690,6 +696,7 @@ export class Agent {
         ctx.scratchpad.getToolResults(),
         ctx.scratchpad.formatToolUsageForPrompt(),
         forecastLabRoutingHint,
+        ctx.promptContext,
       );
 
       if (repeatedFailureSkipped) {
@@ -732,12 +739,13 @@ export class Agent {
           toolResults,
           ctx.scratchpad.formatToolUsageForPrompt(),
           forecastLabRoutingHint,
+          ctx.promptContext,
         ) +
           `\n\n[SYSTEM NOTE: You have reached the maximum number of research steps (${this.maxIterations}). ` +
           `You MUST now write your best-effort final answer using ONLY the data gathered above. ` +
           `Start your response with "**[Best-effort summary — research may be incomplete]**\\n\\n" ` +
           `then provide the most useful analysis you can from the available data. Do NOT call any more tools.]`
-      : query;
+      : initialPrompt;
 
     yield* this.handleDirectResponse('', ctx, synthesisPrompt);
   }
@@ -1021,6 +1029,7 @@ export class Agent {
       ctx.scratchpad.getToolResults(),
       ctx.scratchpad.formatToolUsageForPrompt(),
       forecastLabRoutingHint,
+      ctx.promptContext,
     );
   }
 
@@ -1427,20 +1436,14 @@ export class Agent {
   private buildInitialPrompt(
     query: string,
     inMemoryChatHistory?: InMemoryChatHistory,
-    forecastLabRoutingHint?: ForecastLabRoutingHint | null,
   ): string {
     if (!inMemoryChatHistory?.hasMessages()) {
-      return forecastLabRouter.injectRoutingHint(query, forecastLabRoutingHint);
+      return query;
     }
 
-    const recentTurns = inMemoryChatHistory.getRecentTurns();
-    if (recentTurns.length === 0) {
-      return forecastLabRouter.injectRoutingHint(query, forecastLabRoutingHint);
-    }
-
-    return forecastLabRouter.injectRoutingHint(buildHistoryContext({
-      entries: recentTurns,
+    return buildHistoryContext({
+      entries: inMemoryChatHistory.getRecentTurns(),
       currentMessage: query,
-    }), forecastLabRoutingHint);
+    });
   }
 }

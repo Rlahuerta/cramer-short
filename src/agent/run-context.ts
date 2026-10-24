@@ -15,6 +15,8 @@ export interface RunContext {
   readonly startTime: number;
   iteration: number;
   forecastLabGuard?: ForecastLabGuard;
+  /** Initial prompt context (history, memory, Polymarket) reused by every iteration prompt. */
+  promptContext?: string;
 }
 
 export function createRunContext(query: string): RunContext {
