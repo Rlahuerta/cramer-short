@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { runScheduleCommand } from './cli-schedule.js';
 import type { ScheduleCommandOptions, ScheduleJob } from './cli-schedule.js';
@@ -12,13 +13,15 @@ import type { ReplayTickerHistoryLoader } from './tools/finance/backtest/replay-
 import { toReplayLabelBatchReportPath } from './tools/finance/backtest/replay-label-batch-runner.js';
 import { DEFAULT_ARBITER_REPLAY_CACHE_BUNDLES_PATH } from './tools/finance/arbiter-replay.js';
 
-const TEST_ROOT = join('.cramer-short', 'cli-schedule-test');
+// Schedule output must stay under <cwd>/.cramer-short, so run against a temp cwd, not the working tree.
+const TEST_CWD = join(tmpdir(), `cramer-short-cli-schedule-test-${process.pid}`);
+const TEST_ROOT = join(TEST_CWD, '.cramer-short', 'cli-schedule-test');
 const TEST_HOME = join(TEST_ROOT, 'home');
 const SCHEDULES_PATH = join(TEST_HOME, '.cramer-short', 'schedules.json');
 const NOW = new Date('2026-05-02T12:34:56.000Z');
 
 function cleanup(): void {
-  rmSync(TEST_ROOT, { recursive: true, force: true });
+  rmSync(TEST_CWD, { recursive: true, force: true });
 }
 
 function writeSchedules(jobs: readonly ScheduleJob[]): void {
@@ -46,7 +49,7 @@ function makeOptions(overrides: ScheduleCommandOptions = {}): {
     options: {
       schedulesPath: SCHEDULES_PATH,
       homeDir: TEST_HOME,
-      cwd: process.cwd(),
+      cwd: TEST_CWD,
       now: () => NOW,
       log: (message) => output.push(message),
       error: (message) => errors.push(message),

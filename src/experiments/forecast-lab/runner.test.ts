@@ -6,7 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { join, resolve, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { runForecastLabCommand } from '../../cli-forecast-lab.js';
-import { getExperimentRunDir, getExperimentRunManifestPath } from '../../utils/paths.js';
+import { getCramerShortDir, getExperimentRunDir, getExperimentRunManifestPath, getExperimentsDir } from '../../utils/paths.js';
+import { useTempCramerShortDir } from '../../utils/test-cramer-short-dir.js';
 import {
   getForecastLabCandidateWorktreePath,
   makeForecastLabCandidateBranch,
@@ -51,9 +52,12 @@ import {
 } from '../../tools/finance/regime-calibrator.js';
 import type { ForecastLabRuntimeAssetScope } from '../../tools/finance/forecast-lab-runtime-defaults.js';
 
-const TEST_LEDGER_DIR = join('.cramer-short', 'experiments', '__runner_test__');
+// Runs, ledgers and candidate worktrees all go under a temp .cramer-short, never the working tree's.
+useTempCramerShortDir();
+
+const TEST_LEDGER_DIR = join(getExperimentsDir(), '__runner_test__');
 const TEST_LEDGER_PATH = join(TEST_LEDGER_DIR, 'forecast-results.tsv');
-const TEST_ROUTING_STATS_PATH = join('.cramer-short', '__runner_test__', 'forecast-lab-routing-stats.json');
+const TEST_ROUTING_STATS_PATH = join(getCramerShortDir(), '__runner_test__', 'forecast-lab-routing-stats.json');
 const RUN_IDS = [
   'runner-test-dry-run',
   'runner-test-unknown',
@@ -128,7 +132,7 @@ function listForecastLabRunnerTestBranches(): ReadonlySet<string> {
 function cleanup(): void {
   rmSync(TEST_LEDGER_DIR, { recursive: true, force: true });
   rmSync(TEST_ROUTING_STATS_PATH, { force: true });
-  rmSync(join('.cramer-short', 'experiments', 'active-promotions'), { recursive: true, force: true });
+  rmSync(join(getExperimentsDir(), 'active-promotions'), { recursive: true, force: true });
   for (const runId of RUN_IDS) {
     const worktreePath = getForecastLabCandidateWorktreePath(runId);
     const promotionWorktreePath = getForecastLabPromotionWorktreePath(runId);
@@ -581,7 +585,7 @@ function appendStructuredMutationHistory(params: {
     mutationSpecSummary: mutation.specSummary,
     candidateWorkspace: {
       kind: 'candidate-worktree',
-      rootDir: resolve('.cramer-short', 'experiments', 'worktrees', params.runId),
+      rootDir: resolve(getExperimentsDir(), 'worktrees', params.runId),
       branch: makeForecastLabCandidateBranch(params.runId),
     },
     ...(promotion ? { promotion } : {}),
@@ -604,7 +608,7 @@ function appendStructuredMutationHistory(params: {
     mutationSpecSummary: mutation.specSummary,
     candidateWorkspace: {
       kind: 'candidate-worktree',
-      rootDir: resolve('.cramer-short', 'experiments', 'worktrees', params.runId),
+      rootDir: resolve(getExperimentsDir(), 'worktrees', params.runId),
       branch: makeForecastLabCandidateBranch(params.runId),
     },
     ...(promotion ? { promotion } : {}),
@@ -717,7 +721,7 @@ describe('forecast-lab runner', () => {
     const runDir = getExperimentRunDir('runner-test-dry-run');
     for (const fileName of ['manifest.json', 'baseline.json', 'candidate.json', 'decision.json']) {
       expect(existsSync(join(runDir, fileName))).toBe(true);
-      expect(resolve(join(runDir, fileName)).startsWith(resolve('.cramer-short', 'experiments') + sep)).toBe(true);
+      expect(resolve(join(runDir, fileName)).startsWith(resolve(getExperimentsDir()) + sep)).toBe(true);
     }
 
     const candidate = JSON.parse(readFileSync(join(runDir, 'candidate.json'), 'utf8')) as Record<string, unknown>;
@@ -734,22 +738,22 @@ describe('forecast-lab runner', () => {
     expect(entries[0]).toMatchObject({
       runId: 'runner-test-dry-run',
       decision: 'keep',
-      artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run'),
+      artifactsPath: join(getExperimentsDir(), 'runs', 'runner-test-dry-run'),
       effectiveMutationContract: result.manifest.effectiveMutationContract,
     });
     expect(entries[0]).not.toHaveProperty('candidateWorkspace');
     expect(entries[0]).not.toHaveProperty('promotion');
     expect(progress).toEqual([
       'forecast-lab: started multi-asset-markov-short-horizon (runner-test-dry-run)',
-      `forecast-lab: manifest written to ${join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run', 'manifest.json')}`,
+      `forecast-lab: manifest written to ${join(getExperimentsDir(), 'runs', 'runner-test-dry-run', 'manifest.json')}`,
       'forecast-lab: starting baseline gate',
       'baseline: running walk-forward-short-horizon — bun test src/tools/finance/backtest/walk-forward-short-horizon.test.ts --timeout 480000',
       'baseline: completed walk-forward-short-horizon (exit 0, 1ms)',
-      `forecast-lab: baseline results written to ${join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run', 'baseline.json')}`,
+      `forecast-lab: baseline results written to ${join(getExperimentsDir(), 'runs', 'runner-test-dry-run', 'baseline.json')}`,
       'forecast-lab: starting candidate gate (dry-run)',
       'candidate: running walk-forward-short-horizon — bun test src/tools/finance/backtest/walk-forward-short-horizon.test.ts --timeout 480000',
       'candidate: completed walk-forward-short-horizon (exit 0, 1ms)',
-      `forecast-lab: candidate results written to ${join('.cramer-short', 'experiments', 'runs', 'runner-test-dry-run', 'candidate.json')}`,
+      `forecast-lab: candidate results written to ${join(getExperimentsDir(), 'runs', 'runner-test-dry-run', 'candidate.json')}`,
       'forecast-lab: decision keep — candidate walk-forward short-horizon test command must pass; candidate walk-forward short-horizon test command must not regress versus baseline',
       `forecast-lab: ledger appended at ${TEST_LEDGER_PATH}`,
     ]);
@@ -1237,7 +1241,7 @@ describe('forecast-lab runner', () => {
 
         if (context.phase === 'candidate') {
           const candidateRoot = context.cwd!;
-          expect(candidateRoot).toBe(resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured'));
+          expect(candidateRoot).toBe(resolve(getExperimentsDir(), 'worktrees', 'runner-test-structured'));
           expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
             getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
           );
@@ -1265,7 +1269,7 @@ describe('forecast-lab runner', () => {
 
     expect(calls).toEqual([
       `baseline:walk-forward-short-horizon:${process.cwd()}`,
-      `candidate:walk-forward-short-horizon:${resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured')}`,
+      `candidate:walk-forward-short-horizon:${resolve(getExperimentsDir(), 'worktrees', 'runner-test-structured')}`,
     ]);
     expect(result.decision.decision).toBe('keep');
     expect(result.manifest.mutationMode).toBe('structured');
@@ -1297,7 +1301,7 @@ describe('forecast-lab runner', () => {
     const candidateWorkspace = result.manifest.candidateWorkspace;
     expect(candidateWorkspace).toEqual({
       kind: 'candidate-worktree',
-      rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured'),
+      rootDir: resolve(getExperimentsDir(), 'worktrees', 'runner-test-structured'),
       branch: 'topic/forecast-lab-runner-test-structured',
     });
     expect(candidateWorkspace).toBeDefined();
@@ -1339,7 +1343,7 @@ describe('forecast-lab runner', () => {
     });
     expect(readLedgerEntries(TEST_LEDGER_PATH).at(-1)).not.toHaveProperty('parentRunId');
     expect(progress).toContain(
-      `forecast-lab: candidate workspace ${resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured')}`,
+      `forecast-lab: candidate workspace ${resolve(getExperimentsDir(), 'worktrees', 'runner-test-structured')}`,
     );
     expect(progress).toContain('forecast-lab: selected mutator markov-shorter-reactive-window (search-replace)');
     expect(progress).toContain(
@@ -1449,7 +1453,7 @@ describe('forecast-lab runner', () => {
 
     expect(calls).toEqual([
       `baseline:walk-forward-short-horizon:${process.cwd()}`,
-      `candidate:walk-forward-short-horizon:${resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured-parent-child')}`,
+      `candidate:walk-forward-short-horizon:${resolve(getExperimentsDir(), 'worktrees', 'runner-test-structured-parent-child')}`,
     ]);
     expect(result.manifest.parentRunId).toBe('runner-test-structured-parent-root');
     expect(result.manifest.mutationId).toBe('markov-faster-decay-reaction');
@@ -1745,7 +1749,7 @@ describe('forecast-lab runner', () => {
           branch: 'topic/forecast-lab-promote-runner-test-promote-verify',
         },
       });
-      expect(result.activeStatePath).toBe(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'));
+      expect(result.activeStatePath).toBe(join(getExperimentsDir(), 'active-promotions', 'multi-asset-markov-short-horizon.json'));
       if (!source.manifest.promotion || source.manifest.promotion.status !== 'approval-required') {
         throw new Error('expected the promotion source fixture to start in approval-required state');
       }
@@ -1953,7 +1957,7 @@ describe('forecast-lab runner', () => {
       expect(readRunManifest(getExperimentRunManifestPath('runner-test-promote-source')).promotion).toEqual(
         source.manifest.promotion,
       );
-      expect(existsSync(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'))).toBe(
+      expect(existsSync(join(getExperimentsDir(), 'active-promotions', 'multi-asset-markov-short-horizon.json'))).toBe(
         false,
       );
       expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('shared'));
@@ -2003,7 +2007,7 @@ describe('forecast-lab runner', () => {
       expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('shared'));
       expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('gold'));
       expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('btc'));
-      expect(existsSync(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'))).toBe(false);
+      expect(existsSync(join(getExperimentsDir(), 'active-promotions', 'multi-asset-markov-short-horizon.json'))).toBe(false);
       const resetArtifact = JSON.parse(readFileSync(result.resetArtifactPath, 'utf8')) as Record<string, unknown>;
       expect(resetArtifact.mode).toBe('defaults');
       expect(resetArtifact.profileId).toBe('multi-asset-markov-short-horizon');
@@ -2132,7 +2136,7 @@ describe('forecast-lab runner', () => {
       });
 
       expect(result.mode).toBe('last-known-good');
-      expect(result.activeStatePath).toBe(join('.cramer-short', 'experiments', 'active-promotions', 'multi-asset-markov-short-horizon.json'));
+      expect(result.activeStatePath).toBe(join(getExperimentsDir(), 'active-promotions', 'multi-asset-markov-short-horizon.json'));
       expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
       expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
@@ -2704,7 +2708,7 @@ describe('forecast-lab runner', () => {
       profileId: 'multi-asset-markov-short-horizon',
       dryRun: true,
       runId: 'runner-test-outside-ledger',
-      ledgerPath: join('.cramer-short', 'forecast-results.tsv'),
+      ledgerPath: join(getCramerShortDir(), 'forecast-results.tsv'),
       commandRunner: passingRunner([]),
     })).rejects.toThrow(/outside \.cramer-short\/experiments/);
   });
@@ -2842,7 +2846,7 @@ describe('forecast-lab CLI module', () => {
             baselineCommit: '0123456789abcdef0123456789abcdef01234567',
             candidateBranch: 'topic/forecast-lab-runner-test-explicit-structured',
             allowedGlobs: ['src/tools/finance/markov-distribution/core.ts'],
-            artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-explicit-structured'),
+            artifactsPath: join(getExperimentsDir(), 'runs', 'runner-test-explicit-structured'),
           },
           baseline: { exitCode: 0 },
           candidate: { exitCode: 0 },
@@ -2862,7 +2866,7 @@ describe('forecast-lab CLI module', () => {
             candidateSummary: { exitCode: 0 },
             decision: 'keep',
             reason: 'candidate passed',
-            artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-explicit-structured'),
+            artifactsPath: join(getExperimentsDir(), 'runs', 'runner-test-explicit-structured'),
           },
         };
       },
@@ -2927,10 +2931,10 @@ describe('forecast-lab CLI module', () => {
           mutationReplayPayload: snapshotForecastLabMarkovParameterMutation(BTC_SHORTER_REACTIVE_WINDOW),
           candidateWorkspace: {
             kind: 'candidate-worktree',
-            rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured-summary'),
+            rootDir: resolve(getExperimentsDir(), 'worktrees', 'runner-test-structured-summary'),
             branch: 'topic/forecast-lab-runner-test-structured-summary',
           },
-          artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-structured-summary'),
+          artifactsPath: join(getExperimentsDir(), 'runs', 'runner-test-structured-summary'),
         },
         baseline: { exitCode: 0 },
         candidate: { exitCode: 0 },
@@ -2958,14 +2962,14 @@ describe('forecast-lab CLI module', () => {
           mutationSummary: BTC_SHORTER_REACTIVE_WINDOW.specSummary.summary,
           candidateWorkspace: {
             kind: 'candidate-worktree',
-            rootDir: resolve('.cramer-short', 'experiments', 'worktrees', 'runner-test-structured-summary'),
+            rootDir: resolve(getExperimentsDir(), 'worktrees', 'runner-test-structured-summary'),
             branch: 'topic/forecast-lab-runner-test-structured-summary',
           },
           baselineSummary: { exitCode: 0 },
           candidateSummary: { exitCode: 0 },
           decision: 'keep',
           reason: 'candidate BTC ultra-short-horizon test command must pass',
-          artifactsPath: join('.cramer-short', 'experiments', 'runs', 'runner-test-structured-summary'),
+          artifactsPath: join(getExperimentsDir(), 'runs', 'runner-test-structured-summary'),
         },
       }),
     });
@@ -2997,7 +3001,7 @@ describe('forecast-lab CLI module', () => {
 
   it('diagnostic-only mode prevents promotion state, ledger entries, and routing stats', async () => {
     const profile = getForecastLabProfile('btc-markov-ultra-short-horizon');
-    const tempRoot = join('.cramer-short', 'experiments', 'diagnostic-only-test');
+    const tempRoot = join(getExperimentsDir(), 'diagnostic-only-test');
     const ledgerPath = join(tempRoot, 'ledger.jsonl');
     const routingStatsPath = join(tempRoot, 'routing-stats.json');
 
@@ -3046,7 +3050,7 @@ describe('forecast-lab CLI module', () => {
 
   it('normal mode (diagnosticOnly=false) creates promotion state, ledger entries, and routing stats', async () => {
     const profile = getForecastLabProfile('btc-markov-ultra-short-horizon');
-    const tempRoot = join('.cramer-short', 'experiments', 'normal-mode-test');
+    const tempRoot = join(getExperimentsDir(), 'normal-mode-test');
     const ledgerPath = join(tempRoot, 'ledger.jsonl');
     const routingStatsPath = join(tempRoot, 'routing-stats.json');
 

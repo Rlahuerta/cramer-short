@@ -1,4 +1,5 @@
-import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
+import * as apiRoutingCache from '../../utils/api-routing-cache.js';
 import { AIMessage } from '@langchain/core/messages';
 
 // Capture real module before mocking so afterAll can restore
@@ -18,8 +19,15 @@ mock.module('../../model/llm.js', () => ({
   callLlm: mockCallLlm,
 }));
 
+// The routing cache lives in .cramer-short/api-routing.json: don't read a local copy or write one.
+const routingSpies = [
+  spyOn(apiRoutingCache, 'getPreferredApi').mockResolvedValue(null),
+  spyOn(apiRoutingCache, 'setPreferredApi').mockResolvedValue(undefined),
+];
+
 afterAll(() => {
   mock.module('../../model/llm.js', () => realLlm);
+  for (const spy of routingSpies) spy.mockRestore();
 });
 
 // ---------------------------------------------------------------------------

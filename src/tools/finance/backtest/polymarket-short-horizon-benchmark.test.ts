@@ -1,6 +1,7 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { afterEach, describe, expect, it, beforeEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 beforeEach(() => {
@@ -28,11 +29,7 @@ import {
 const repoTempDirs: string[] = [];
 
 function makeRepoTempFile(name: string): string {
-  const dir = join(
-    process.cwd(),
-    '.test-artifacts',
-    `short-horizon-benchmark-${nextTestId('path')}`,
-  );
+  const dir = join(tmpdir(), `short-horizon-benchmark-${nextTestId('path')}`);
   mkdirSync(dir, { recursive: true });
   repoTempDirs.push(dir);
   return join(dir, name);

@@ -1,5 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { GatewayConfig } from './config.js';
 import type { GatewayRuntime } from './gateway.js';
 import type { WhatsAppInboundMessage } from './channels/whatsapp/types.js';
@@ -97,8 +96,6 @@ function inbound(overrides: Partial<WhatsAppInboundMessage> = {}): WhatsAppInbou
 }
 
 beforeEach(() => {
-  rmSync('.cramer-short-test/gateway-unit', { recursive: true, force: true });
-  mkdirSync('.cramer-short-test/gateway-unit', { recursive: true });
   capturedOnMessage = undefined;
   groupMentioned = false;
   for (const fn of [
@@ -129,9 +126,6 @@ beforeEach(() => {
   }
 });
 
-afterAll(() => {
-  rmSync('.cramer-short-test/gateway-unit', { recursive: true, force: true });
-});
 
 describe('startGateway orchestration', () => {
   it('starts the channel manager and stops heartbeat before channels', async () => {
