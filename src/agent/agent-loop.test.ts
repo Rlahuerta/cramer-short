@@ -4,7 +4,7 @@
  * every prompt it is sent and replays a queue of responses.
  */
 import { FIXED_TEST_DATE, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
+import { describe, it, expect, spyOn, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -63,8 +63,16 @@ const ST_CALL: ToolCall = {
   type: 'tool_call',
 };
 
-beforeAll(() => { _setModelFactory(() => new ScriptedChatModel({})); });
-afterAll(() => { _setModelFactory(null); });
+// Keep runs off the network: Polymarket context injection fetches by default.
+let fetchSpy: { mockRestore(): void } | undefined;
+beforeAll(() => {
+  _setModelFactory(() => new ScriptedChatModel({}));
+  fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => Response.json([])) as unknown as typeof fetch);
+});
+afterAll(() => {
+  _setModelFactory(null);
+  fetchSpy?.mockRestore();
+});
 
 let tmpDir: string;
 let originalCwd: string;
