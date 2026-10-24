@@ -13,3 +13,7 @@
 # named explicitly on the command line, so scripts/run-isolated-bun-tests.ts
 # passes an empty --path-ignore-patterns (CLI replaces this list) to run them.
 pathIgnorePatterns = ["**/*.integration.test.ts", "**/*.e2e.test.ts"]
+
+# Unit tests must not reach the network: non-local fetches fail the test that
+# made them. Inert when RUN_INTEGRATION / RUN_E2E select a live tier.
+preload = ["./src/utils/test-no-network.ts"]
