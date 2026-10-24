@@ -9,7 +9,8 @@
  *   1. S&P 500 1-month change  (w=0.20)
  *   2. 10Y Treasury yield 1-month change  (w=0.15)
  *   3. Inflation expectations 1-month change  (w=0.15)
- *   4. Approval rating 1-month change  (w=0.10)
+ *   4. Approval proxy  (w=0.10) — Polymarket approval-market probability, else
+ *      UMCSENT consumer sentiment; not a polled approval rating
  *
  * Cramer-Short extensions (40% weight):
  *   5. Gas prices (UGA ETF) 1-month change  (w=0.12)
@@ -134,7 +135,7 @@ export const COMPONENT_WEIGHTS: ComponentWeight[] = [
   { name: 'S&P 500',            key: 'spx',       weight: 0.20, direction: -1, group: 'db_core' },
   { name: '10Y Treasury',       key: 'yield10y',   weight: 0.15, direction:  1, group: 'db_core' },
   { name: 'Inflation Expect.',   key: 'inflation',  weight: 0.15, direction:  1, group: 'db_core' },
-  { name: 'Approval Rating',    key: 'approval',   weight: 0.10, direction: -1, group: 'db_core' },
+  { name: 'Approval Proxy',     key: 'approval',   weight: 0.10, direction: -1, group: 'db_core' },
   // Cramer-Short Extensions (40%)
   { name: 'Gas Prices',         key: 'gas',        weight: 0.12, direction:  1, group: 'extension' },
   { name: 'Policy Reversal',    key: 'polymarket',  weight: 0.15, direction:  1, group: 'extension' },
@@ -544,6 +545,12 @@ async function fetchApprovalData(): Promise<number | null> {
   return null;
 }
 
+export function parseSentimentScore(report: string): number | null {
+  // social_sentiment headline: "## Overall: 🟢 Bullish (score +42/100)"
+  const match = report.match(/\(score\s+([+-]?\d+(?:\.\d+)?)\/100\)/);
+  return match ? parseFloat(match[1]) : null;
+}
+
 /** Fetch social sentiment for Trump policy / market impact.
  *  Primary: socialSentimentTool. Fallback: GDELT news tone. */
 async function fetchPolicySentiment(): Promise<number | null> {
@@ -551,8 +558,8 @@ async function fetchPolicySentiment(): Promise<number | null> {
   try {
     const { socialSentimentTool } = await import('./social-sentiment.js');
     const result = await socialSentimentTool.invoke({ query: 'Trump tariffs economy market impact' });
-    const match = typeof result === 'string' ? result.match(/Sentiment Score:\s*([-\d.]+)/) : null;
-    if (match) return parseFloat(match[1]);
+    const score = typeof result === 'string' ? parseSentimentScore(result) : null;
+    if (score !== null) return score;
   } catch {
     // fall through to GDELT
   }
@@ -633,6 +640,69 @@ export function redistributeWeights(
   return result;
 }
 
+type ComponentSeries = { values: number[]; quality: 'live' | 'stale' | 'unavailable' };
+
+/** A z-score needs a history; a single point always scores 0 and would only dilute the composite. */
+function isScorable(data: ComponentSeries | undefined): boolean {
+  return data !== undefined && data.quality !== 'unavailable' && data.values.length >= 2;
+}
+
+/** Z-score each component and combine them into the weighted composite. */
+export function scorePressureComponents(componentResults: Map<string, ComponentSeries>): {
+  components: PressureComponent[];
+  compositeScore: number;
+  availability: Array<{ key: string; available: boolean }>;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+  const availability = COMPONENT_WEIGHTS.map(cw => ({
+    key: cw.key,
+    available: isScorable(componentResults.get(cw.key)),
+  }));
+
+  const adjustedWeights = redistributeWeights(availability);
+
+  const components: PressureComponent[] = [];
+  let compositeScore = 0;
+
+  for (const cw of COMPONENT_WEIGHTS) {
+    const data = componentResults.get(cw.key);
+    const adjWeight = adjustedWeights.get(cw.key) ?? 0;
+
+    if (!data || !isScorable(data)) {
+      if (data && data.quality !== 'unavailable' && data.values.length === 1) {
+        warnings.push(`${cw.name} has a single observation — no z-score, weight redistributed`);
+      }
+      components.push({
+        name: cw.name,
+        rawValue: 0,
+        zScore: 0,
+        weight: adjWeight,
+        contribution: 0,
+        dataQuality: 'unavailable',
+        qualityPenalty: 1,
+      });
+      continue;
+    }
+
+    const { zScore } = computeZScore(data.values, cw.direction);
+    const contribution = zScore * adjWeight;
+    compositeScore += contribution;
+
+    components.push({
+      name: cw.name,
+      rawValue: data.values[data.values.length - 1],
+      zScore,
+      weight: adjWeight,
+      contribution,
+      dataQuality: data.quality,
+      qualityPenalty: data.quality === 'stale' ? 0.5 : 0,
+    });
+  }
+
+  return { components, compositeScore, availability, warnings };
+}
+
 // ---------------------------------------------------------------------------
 // Core computation pipeline
 // ---------------------------------------------------------------------------
@@ -644,7 +714,7 @@ export function redistributeWeights(
  */
 export async function computeTrumpPressureIndex(): Promise<TrumpPressureResult> {
   const warnings: string[] = [];
-  const componentResults = new Map<string, { values: number[]; quality: 'live' | 'stale' | 'unavailable' }>();
+  const componentResults = new Map<string, ComponentSeries>();
   const warnAndFallback = <T>(label: string, fallback: T) => (err: unknown): T => {
     const msg = err instanceof Error ? err.message : String(err);
     warnings.push(`${label} unavailable: ${msg}`);
@@ -709,13 +779,12 @@ export async function computeTrumpPressureIndex(): Promise<TrumpPressureResult> 
     warnings.push('Inflation expectations data unavailable (FRED T5YIE) — weight redistributed');
   }
 
-  // 4. Approval rating (Polymarket proxy)
+  // 4. Approval proxy (Polymarket approval-market probability or UMCSENT)
   if (approvalData !== null) {
-    // Use single-point data; Z-score will center on 0
     componentResults.set('approval', { values: [approvalData], quality: 'stale' });
   } else {
     componentResults.set('approval', { values: [], quality: 'unavailable' });
-    warnings.push('Approval rating data unavailable — weight redistributed');
+    warnings.push('Approval proxy data unavailable — weight redistributed');
   }
 
   // 5. Gas prices (UGA ETF)
@@ -747,48 +816,8 @@ export async function computeTrumpPressureIndex(): Promise<TrumpPressureResult> 
   }
 
   // ── Compute Z-scores and weighted composite ────────────────────────────
-
-  const availability = COMPONENT_WEIGHTS.map(cw => ({
-    key: cw.key,
-    available: (componentResults.get(cw.key)?.quality ?? 'unavailable') !== 'unavailable',
-  }));
-
-  const adjustedWeights = redistributeWeights(availability);
-
-  const components: PressureComponent[] = [];
-  let compositeScore = 0;
-
-  for (const cw of COMPONENT_WEIGHTS) {
-    const data = componentResults.get(cw.key);
-    const adjWeight = adjustedWeights.get(cw.key) ?? 0;
-
-    if (!data || data.quality === 'unavailable' || data.values.length === 0) {
-      components.push({
-        name: cw.name,
-        rawValue: 0,
-        zScore: 0,
-        weight: adjWeight,
-        contribution: 0,
-        dataQuality: 'unavailable',
-        qualityPenalty: 1,
-      });
-      continue;
-    }
-
-    const { zScore } = computeZScore(data.values, cw.direction);
-    const contribution = zScore * adjWeight;
-    compositeScore += contribution;
-
-    components.push({
-      name: cw.name,
-      rawValue: data.values[data.values.length - 1],
-      zScore,
-      weight: adjWeight,
-      contribution,
-      dataQuality: data.quality,
-      qualityPenalty: data.quality === 'stale' ? 0.5 : 0,
-    });
-  }
+  const { components, compositeScore, availability, warnings: scoringWarnings } = scorePressureComponents(componentResults);
+  warnings.push(...scoringWarnings);
 
   // ── Regime classification ──────────────────────────────────────────────
   const regime = classifyPressureRegime(compositeScore);
@@ -948,10 +977,11 @@ Inspired by Deutsche Bank's methodology (Maximilian Uleer), extended with Polyma
 1. S&P 500 monthly change (DB core)
 2. 10Y Treasury yield change (DB core)
 3. Inflation expectations change (DB core)
-4. Approval rating change (DB core)
+4. Approval proxy — Polymarket approval market or UMCSENT consumer sentiment (DB core)
 5. Gas prices monthly change (extension)
 6. Polymarket policy-reversal probability (extension)
 7. Social sentiment score (extension)
+Components with fewer than 2 observations have no z-score; their weight is redistributed.
 
 ## Output
 - Pressure score (σ units)
