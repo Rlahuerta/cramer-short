@@ -56,6 +56,7 @@ import {
   handleCoreSlashCommand,
   handleDreamSlashCommand,
   handleExitCommand,
+  isExitCommand,
   handleWatchlistSlashCommand,
 } from './controllers/slash-commands/index.js';
 import { flushExchangeToScrollback, renderCurrentQuery } from './controllers/cli-rendering.js';
@@ -87,6 +88,26 @@ export const DEEP_MAX_ITERATIONS = 40;
  */
 export function resolveMaxIterations(argv: string[] = process.argv): number {
   return argv.includes('--deep') ? DEEP_MAX_ITERATIONS : DEFAULT_MAX_ITERATIONS;
+}
+
+/**
+ * Runs one submit at a time: a submit while one is running is dropped, except
+ * exit/quit and /help, which must still work while a query runs.
+ */
+export function serializeSubmits(submit: (query: string) => Promise<void>): (query: string) => Promise<void> {
+  let isSubmitting = false;
+  return async (query) => {
+    if (isSubmitting) {
+      if (isExitCommand(query) || query === '/help') await submit(query);
+      return;
+    }
+    isSubmitting = true;
+    try {
+      await submit(query);
+    } finally {
+      isSubmitting = false;
+    }
+  };
 }
 
 export async function runCli() {
@@ -400,19 +421,8 @@ export async function runCli() {
 
   // Synchronous re-entrancy guard: the processing check inside submitQuery runs
   // after several awaits, so a rapid double-Enter would otherwise start two
-  // concurrent runQuery calls. Cleared in finally so a failure cannot wedge input.
-  let isSubmitting = false;
-  const handleSubmit = async (query: string) => {
-    if (isSubmitting) {
-      return;
-    }
-    isSubmitting = true;
-    try {
-      await submitQuery(query);
-    } finally {
-      isSubmitting = false;
-    }
-  };
+  // concurrent runQuery calls.
+  const handleSubmit = serializeSubmits(submitQuery);
 
   editor.onSubmit = (text) => {
     const value = text.trim();
