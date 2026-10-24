@@ -835,6 +835,10 @@ export class Agent {
         ctx,
       )) {
         yield event;
+        if (event.type === 'tool_denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
       }
     } finally {
       delete ctx.forecastLabGuard;
@@ -864,6 +868,10 @@ export class Agent {
         ctx,
       )) {
         yield event;
+        if (event.type === 'tool_denied') {
+          yield* this.finishAfterToolDenied(ctx);
+          return;
+        }
       }
     } finally {
       delete ctx.forecastLabGuard;
