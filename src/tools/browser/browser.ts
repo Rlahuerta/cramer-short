@@ -5,9 +5,10 @@ import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { logger } from '../../utils/logger.js';
 import { assertPublicHttpUrl, assertPublicUrl } from '../fetch/url-guard.js';
+import { startGuardProxy } from './guard-proxy.js';
 
 type BrowserRef = { role: string; name?: string; nth?: number };
-type BrowserLaunchOptions = { headless: boolean };
+type BrowserLaunchOptions = { headless: boolean; proxy: { server: string } };
 type LocatorLike = {
   click(options: { timeout: number }): Promise<void>;
   fill(text: string, options: { timeout: number }): Promise<void>;
@@ -50,10 +51,13 @@ type BrowserLike = {
 type BrowserLauncher = (options: BrowserLaunchOptions) => Promise<BrowserLike>;
 type BrowserRuntimeOptions = { launchBrowser?: BrowserLauncher };
 
-/** Aborts every page/subresource request whose URL fails the SSRF guard. */
+/**
+ * Aborts requests with a non-http(s) scheme or an internal literal host. DNS is
+ * checked (and pinned) by the guard proxy, so no lookup is repeated here.
+ */
 export async function guardRoute(route: RouteLike): Promise<void> {
   try {
-    await assertPublicUrl(route.request().url());
+    assertPublicHttpUrl(route.request().url());
   } catch {
     return route.abort('blockedbyclient');
   }
@@ -193,6 +197,7 @@ interface SnapshotForAIResult {
 class PlaywrightBrowserRuntime implements BrowserRuntime {
   private browser: BrowserLike | null = null;
   private page: PageLike | null = null;
+  private proxy: Awaited<ReturnType<typeof startGuardProxy>> | null = null;
   private launchBrowser: BrowserLauncher;
   private currentRefs: Map<string, BrowserRef> = new Map();
 
@@ -341,7 +346,10 @@ class PlaywrightBrowserRuntime implements BrowserRuntime {
   private async ensurePage(signal?: AbortSignal): Promise<PageLike> {
     throwIfAborted(signal);
     if (!this.browser) {
-      this.browser = await withAbort(() => this.launchBrowser({ headless: false }), signal);
+      // All browser traffic (incl. WebSockets) is pinned through the SSRF guard proxy.
+      this.proxy ??= await startGuardProxy();
+      const proxy = { server: this.proxy.server };
+      this.browser = await withAbort(() => this.launchBrowser({ headless: false, proxy }), signal);
     }
     const activeBrowser = this.browser;
     if (!this.page) {
@@ -360,6 +368,8 @@ class PlaywrightBrowserRuntime implements BrowserRuntime {
       this.browser = null;
     }
     this.page = null;
+    await this.proxy?.close();
+    this.proxy = null;
   }
 
   private async replaceActivePage(nextPage: PageLike): Promise<void> {
