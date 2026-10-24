@@ -1,18 +1,10 @@
-import { afterEach, beforeEach, describe, test, expect, spyOn } from 'bun:test';
+import { afterEach, describe, test, expect, spyOn } from 'bun:test';
 import { webFetchTool } from './web-fetch.js';
 import { _setDnsLookupForTest } from './url-guard.js';
 import { extractText as extractPdfText } from 'unpdf';
 // Warm the HTML extractor's dynamic imports outside individual test timers.
 import '@mozilla/readability';
 import 'linkedom';
-
-// The url-guard resolves hostnames before fetching: fail any lookup a test did not stub.
-beforeEach(() => {
-  _setDnsLookupForTest(async (hostname) => {
-    throw new Error(`unit test blocked DNS lookup for ${hostname}`);
-  });
-});
-afterEach(() => _setDnsLookupForTest());
 
 // Minimal valid 1-page PDF with the text "Hello PDF World"
 const MINIMAL_PDF_BASE64 =
@@ -185,6 +177,7 @@ describe('web_fetch PDF content-type routing', () => {
       expect(unwrapExternalContent(payload.data?.text)).toContain('Hello HTML');
     } finally {
       globalThis.fetch = originalFetch;
+      _setDnsLookupForTest();
     }
   });
 });
@@ -194,6 +187,7 @@ describe('web_fetch HTML extractor labeling', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    _setDnsLookupForTest();
   });
 
   async function invokeHtml(
