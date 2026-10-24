@@ -159,7 +159,7 @@ function renderMarkdown(art: BtcMultiHorizonRound4Artifact): string {
   lines.push('- Fixture: 2024-01-01 → 2025-12-31 real BTC daily closes, warmup=180 days, stride=3 days.');
   lines.push('- `polymarketMarkets` is empty so Hawkes fires only on endogenous 3σ BTC returns.');
   lines.push('- GARCH: `fitGarch11` on the history window; per-day scalar clamped [0.33, 3.0].');
-  lines.push('- KSWIN: operates on |log-return| (variance proxy) at α=0.005; runs after ADWIN.');
+  lines.push('- KSWIN: operates on |log-return| (variance proxy) at α=0.005; runs after ADWIN, only for h<=2.');
   lines.push('- A neutral or negative Δ on the R4 arm is informative: it means these flags need');
   lines.push('  different defaults or the fixture period lacks the regimes where they help most.');
   return lines.join('\n');
