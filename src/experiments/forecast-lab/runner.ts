@@ -1133,6 +1133,7 @@ function selectStructuredMutation(
   usedMutationIds?: ReadonlySet<string>,
   isApplicable: (candidate: ForecastLabMarkovParameterMutationCandidate) => boolean = () => true,
   ranking?: ForecastLabMutatorRanking,
+  droppedMutationIds?: ReadonlySet<string>,
 ): ForecastLabMarkovParameterMutationCandidate {
   if (profile.mutation.mode !== 'structured') {
     throw new ForecastLabRunnerError(
@@ -1173,6 +1174,9 @@ function selectStructuredMutation(
     ?? ranking?.rankedCandidates.find((candidate) =>
       allowedCandidateIds.has(candidate.id) && candidate.applicable
     )?.candidate
+    ?? allowedCandidates.find((candidate) =>
+      !usedMutationIds?.has(candidate.id) && !droppedMutationIds?.has(candidate.id) && isApplicable(candidate)
+    )
     ?? allowedCandidates.find((candidate) => !usedMutationIds?.has(candidate.id) && isApplicable(candidate))
     ?? allowedCandidates.find((candidate) => isApplicable(candidate));
   if (!selected) {
@@ -2248,6 +2252,12 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
           candidate,
         ),
         mutatorRanking,
+        // Unranked order is catalog order: without this, a dropped first entry is re-picked forever.
+        profile.mutation.allowMultipleCandidateAttempts
+          ? undefined
+          : new Set(ledgerEntries
+            .filter((entry) => entry.profileId === profile.id && entry.mutationMode === 'structured' && entry.decision !== 'keep')
+            .flatMap((entry) => (entry.mutationId ? [entry.mutationId] : []))),
       );
       const mutation = applyStructuredMutation(
         workspace.metadata.rootDir,

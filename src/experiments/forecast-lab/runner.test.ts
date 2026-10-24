@@ -1553,6 +1553,27 @@ describe('forecast-lab runner', () => {
     expect(progress).toContain('forecast-lab: selected mutator markov-faster-decay-reaction (search-replace)');
   });
 
+  it('does not re-pick a dropped mutator on the unranked path while untried ones remain', async () => {
+    appendStructuredMutationHistory({
+      runId: 'runner-test-unranked-history-drop',
+      mutationId: 'markov-shorter-reactive-window',
+      decision: 'drop',
+      startedAt: '2026-05-01T00:00:00.000Z',
+    });
+
+    const result = await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      mutationMode: 'structured',
+      rankMutators: false,
+      runId: 'runner-test-unranked-after-drop',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+
+    // The catalog's first entry was already tried and dropped; take the next one.
+    expect(result.manifest.mutationId).toBe('markov-longer-stability-window');
+  });
+
   it('prefers better-ranked kept structured mutations when ranking is enabled', async () => {
     appendStructuredMutationHistory({
       runId: 'runner-test-ranked-history-long-keep',
