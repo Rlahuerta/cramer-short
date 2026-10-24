@@ -2327,6 +2327,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
             catalog: mutationCatalog!,
             ledgerEntries,
             usedMutationIds: mutationSeed?.usedMutationIds,
+            allowMultipleCandidateAttempts: profile.mutation.allowMultipleCandidateAttempts,
             isApplicable: (candidate) => canApplyStructuredMutation(
               workspace.metadata.rootDir,
               mutationSeed?.replayedMutations ?? [],
