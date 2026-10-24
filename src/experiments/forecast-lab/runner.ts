@@ -172,6 +172,8 @@ export interface ForecastLabPromotionOptions {
   readonly now?: () => Date;
   readonly commandRunner?: ForecastLabCommandRunner;
   readonly ledgerPath?: string;
+  /** Checkout whose mutable source files activation rewrites. Defaults to process.cwd(). */
+  readonly liveSourceRoot?: string;
   readonly progress?: (message: string) => void;
   readonly output?: (chunk: string) => void;
 }
@@ -195,6 +197,8 @@ export interface ForecastLabResetOptions {
   readonly mode: ForecastLabResetMode;
   readonly runId?: string;
   readonly now?: () => Date;
+  /** Checkout whose mutable source files reset rewrites. Defaults to process.cwd(). */
+  readonly liveSourceRoot?: string;
   readonly progress?: (message: string) => void;
 }
 
@@ -1448,12 +1452,12 @@ function restoreStructuredMutationRuntimeDefaults(
 function applyStructuredMutationToLiveSource(
   profile: ForecastLabProfile,
   mutation: ForecastLabMarkovParameterMutationCandidate,
+  rootDir: string,
 ): {
   readonly mutatedFiles: readonly string[];
   readonly previousContents: Map<string, string>;
   readonly runtimeDefaults: readonly ForecastLabRuntimeDefaultsSnapshot[];
   } {
-  const rootDir = process.cwd();
   const assetScope = resolveForecastLabRuntimeAssetScopeForProfile(profile);
   if (assetScope === 'gold' || assetScope === 'sol' || assetScope === 'hype') {
     return {
@@ -1800,6 +1804,7 @@ export async function promoteForecastLab(options: ForecastLabPromotionOptions): 
   const output = options.output;
   const ledgerPath = options.ledgerPath ?? getExperimentLedgerPath({ create: true });
   const commandRunner = options.commandRunner ?? defaultForecastLabCommandRunner;
+  const liveSourceRoot = options.liveSourceRoot ?? process.cwd();
   const workspaceMaterializePaths = options.commandRunner ? profile.mutation.mutableFiles : undefined;
   const lightweightWorkspace = options.commandRunner !== undefined;
   const source = resolvePromotionSource(profile, ledgerPath, options.sourceRunId);
@@ -1919,7 +1924,7 @@ export async function promoteForecastLab(options: ForecastLabPromotionOptions): 
         workspace: workspace.metadata,
       };
       const liveReplayMutation = replayForecastLabMarkovParameterMutation(structuredMutation.mutationReplayPayload);
-      const liveActivation = applyStructuredMutationToLiveSource(profile, liveReplayMutation);
+      const liveActivation = applyStructuredMutationToLiveSource(profile, liveReplayMutation, liveSourceRoot);
       const activatedAt = now().toISOString();
       const promotion: Extract<ForecastLabPromotionState, { status: 'activated' }> = {
         status: 'activated',
@@ -1997,7 +2002,7 @@ export async function promoteForecastLab(options: ForecastLabPromotionOptions): 
         try {
           writeRunManifest(source.manifestPath, refreshedSourceManifest);
           applyForecastLabCandidateEdits(
-            process.cwd(),
+            liveSourceRoot,
             [...liveActivation.previousContents.entries()].map(([path, contents]) => ({ path, contents })),
             {
               allowedPaths: profile.mutation.mutableFiles,
@@ -2047,6 +2052,7 @@ export async function resetForecastLab(options: ForecastLabResetOptions): Promis
   const startedAt = now().toISOString();
   const runId = options.runId ?? makeResetRunId(profile.id, new Date(startedAt));
   const progress = options.progress;
+  const liveSourceRoot = options.liveSourceRoot ?? process.cwd();
   const activeStatePath = getForecastLabActiveStatePath(profile.id);
   const activeState = readForecastLabActiveState(activeStatePath, profile.id);
 
@@ -2062,7 +2068,7 @@ export async function resetForecastLab(options: ForecastLabResetOptions): Promis
   }
 
   progress?.(`forecast-lab: resetting live parameters for ${profile.id} (${runId})`);
-  const liveReset = applyStructuredMutationToLiveSource(profile, resetMutation);
+  const liveReset = applyStructuredMutationToLiveSource(profile, resetMutation, liveSourceRoot);
   const resetAt = now().toISOString();
 
   try {
@@ -2115,7 +2121,7 @@ export async function resetForecastLab(options: ForecastLabResetOptions): Promis
     try {
       restoreStructuredMutationRuntimeDefaults(liveReset.runtimeDefaults);
       applyForecastLabCandidateEdits(
-        process.cwd(),
+        liveSourceRoot,
         [...liveReset.previousContents.entries()].map(([path, contents]) => ({ path, contents })),
         {
           allowedPaths: profile.mutation.mutableFiles,

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, setDefaultTimeout } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -186,6 +187,40 @@ describe('forecast-lab git helpers', () => {
 
     expect(existsSync(worktreePath)).toBe(false);
     expect(branchExists(branch)).toBe(false);
+  });
+
+  it('materializes candidate files from the baseline commit instead of a dirty working tree', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forecast-lab-git-test-repo-'));
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', ['-C', repoRoot, '-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(result.status).toBe(0);
+    };
+
+    try {
+      const corePath = join(repoRoot, 'src/core.ts');
+      mkdirSync(join(repoRoot, 'src'), { recursive: true });
+      writeFileSync(corePath, '  momentumLookback: 12,\n');
+      git('init', '-q');
+      git('add', '.');
+      git('commit', '-q', '-m', 'baseline');
+      writeFileSync(corePath, '  momentumLookback: 999,\n');
+
+      const workspace = prepareForecastLabCandidateWorkspace('git-test-dirty-working-tree', {
+        repoRoot,
+        materializePaths: ['src/core.ts'],
+        lightweight: true,
+      });
+      try {
+        expect(readFileSync(join(workspace.metadata.rootDir, 'src/core.ts'), 'utf8')).toBe('  momentumLookback: 12,\n');
+      } finally {
+        workspace.cleanup();
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 
   it('refuses to reuse a pre-existing worktree path before git unregisters it', () => {
