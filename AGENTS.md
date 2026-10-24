@@ -129,6 +129,7 @@ bun run test:integration     # integration tier
 - Skill overrides in `.cramer-short/skills/` shadow builtins by name.
 - `bun install` runs `playwright install chromium` in postinstall. CI skips this via `--ignore-scripts`.
 - `bun run test:e2e` and `bun run test:integration` run each file in an isolated Bun process via `scripts/run-isolated-bun-tests.ts` to avoid `mock.module()` contamination.
+- Unit tests share one Bun process, and `mock.module()` is never undone: prefer `spyOn(moduleNamespace, 'fn')` + `mockRestore()`, or snapshot the real module as `{ ...(await import(x)) }` (the bare namespace is rewritten by the mock) and re-mock it in `afterAll`. Write files only under `os.tmpdir()` (`useTempCramerShortDir()` in `src/utils/test-cramer-short-dir.ts` redirects `.cramer-short/`), and set/restore env vars instead of relying on `.env`. Parity tests skip without the `cramer-research` conda env unless `REQUIRE_PARITY=1`.
 - Calendar versioning: `YYYY.M.D`, no zero padding.
 - Schedule mode reads from `~/.cramer-short/schedules.json`, not a project-local path. Job `outputFile` supports `~` and `{date}`.
 - `src/types.ts` was deleted in Phase 1 refactoring. `HistoryItem`, `WorkingState`, and `HistoryItemStatus` now live in `src/controllers/types.ts`.
