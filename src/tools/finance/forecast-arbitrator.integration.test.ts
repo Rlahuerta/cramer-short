@@ -242,13 +242,15 @@ describe('forecast_arbitrator integration', () => {
     const raw = await forecastArbitratorTool.invoke(payload);
     const parsed = parseResult(raw);
 
+    // Percent → fraction is a /100 division, so compare the rescaled fields with
+    // toBeCloseTo (27.4 / 100 === 0.27399999999999997 in IEEE-754).
+    const markov = parsed.data.result.rawEvidence.markov;
+    expect(markov?.p_up).toBeCloseTo(0.55, 10);
+    expect(markov?.confidence).toBeCloseTo(0.274, 10);
+    expect(markov?.flat_probability).toBeCloseTo(0.828, 10);
+    expect(parsed.data.result.rawEvidence.whale?.confidence).toBeCloseTo(0.35, 10);
     expect(parsed.data.result).toMatchObject({
       rawEvidence: {
-        markov: {
-          p_up: 0.55,
-          confidence: 0.274,
-          flat_probability: 0.828,
-        },
         polymarket: {
           quality_score: 83,
           markets: [
@@ -257,9 +259,6 @@ describe('forecast_arbitrator integration', () => {
               probability: 1,
             },
           ],
-        },
-        whale: {
-          confidence: 0.35,
         },
       },
     });
