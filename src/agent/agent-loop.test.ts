@@ -27,6 +27,7 @@ const script = {
   streamPrompts: [] as string[],
   streamChunks: ['synthesized answer'] as string[],
   streamError: null as Error | null,
+  onStream: null as (() => void) | null,
 };
 
 function lastText(messages: BaseMessage[]): string {
@@ -49,6 +50,7 @@ class ScriptedChatModel extends BaseChatModel {
 
   async *_streamIterator(input: BaseLanguageModelInput, _options?: BaseChatModelCallOptions): AsyncGenerator<AIMessageChunk> {
     script.streamPrompts.push(Array.isArray(input) ? lastText(input as BaseMessage[]) : String(input));
+    script.onStream?.();
     if (script.streamError) throw script.streamError;
     for (const chunk of script.streamChunks) yield new AIMessageChunk({ content: chunk });
   }
@@ -92,6 +94,7 @@ beforeEach(() => {
   script.streamPrompts = [];
   script.streamChunks = ['synthesized answer'];
   script.streamError = null;
+  script.onStream = null;
 });
 
 afterEach(() => {
@@ -110,6 +113,7 @@ type AgentInstance = Awaited<ReturnType<typeof Agent.create>>;
 
 /** Replace (or add) agent tools with fixtures and rebuild its executor around them. */
 function installTools(agent: AgentInstance, tools: Record<string, () => string>): void {
+  // Throwing fixtures are recorded by the executor as failed calls.
   const toolMap = Object.getOwnPropertyDescriptor(agent, 'toolMap')?.value as Map<string, StructuredToolInterface>;
   for (const [name, invoke] of Object.entries(tools)) {
     toolMap.set(name, new DynamicStructuredTool({
@@ -205,5 +209,43 @@ describe('forced tool routes', () => {
     expect(markovRuns).toBe(1);
     expect(done.iterations).toBeLessThan(6);
     expect(done.answer).toContain('Final answer');
+  });
+});
+
+describe('exit messages', () => {
+  it('does not claim the iteration limit when the repeated-failure loop-breaker stops the run', async () => {
+    const failing: ToolCall = { id: 'f1', name: 'lookup_fixture', args: { ticker: 'ZZZ' }, type: 'tool_call' };
+    script.responses = [[ST_CALL, failing], [{ ...failing, id: 'f2' }]];
+    const agent = await Agent.create({ maxIterations: 10, memoryEnabled: false });
+    installTools(agent, { lookup_fixture: () => { throw new Error('unknown ticker'); } });
+
+    await collect(agent.run('look up ZZZ'));
+
+    expect(script.streamPrompts).toHaveLength(1);
+    expect(script.streamPrompts[0]).not.toContain('maximum number of research steps');
+    expect(script.streamPrompts[0]).toContain('repeated');
+  });
+
+  it('reports a user abort during final synthesis as a cancellation, not a timeout', async () => {
+    const controller = new AbortController();
+    script.fallback = [ST_CALL];
+    script.onStream = () => controller.abort();
+    script.streamError = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const agent = await Agent.create({ maxIterations: 1, memoryEnabled: false, signal: controller.signal });
+
+    const done = doneOf(await collect(agent.run('look up ZZZ')));
+
+    expect(done.answer).not.toContain('timed out');
+    expect(done.answer).toContain('cancelled');
+  });
+
+  it('still reports a synthesis timeout as a timeout', async () => {
+    script.fallback = [ST_CALL];
+    script.streamError = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+    const agent = await Agent.create({ maxIterations: 1, memoryEnabled: false });
+
+    const done = doneOf(await collect(agent.run('look up ZZZ')));
+
+    expect(done.answer).toContain('Research interrupted');
   });
 });

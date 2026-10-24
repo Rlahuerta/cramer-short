@@ -386,6 +386,8 @@ export class Agent {
       runState.sequentialThinkingUsed = true;
     }
 
+    let stoppedOnRepeatedFailures = false;
+
     // Main agent loop
     while (ctx.iteration < this.maxIterations) {
       ctx.iteration++;
@@ -668,6 +670,7 @@ export class Agent {
       if (skippedToolCalls.length > 0) {
         (response as AIMessage).tool_calls = executableToolCalls;
         if (executableToolCalls.length === 0) {
+          stoppedOnRepeatedFailures = true;
           break;
         }
         repeatedFailureSkipped = true;
@@ -712,7 +715,7 @@ export class Agent {
       }
     }
 
-    // Max iterations reached — synthesize a best-effort answer from gathered research
+    // Max iterations reached (or the loop-breaker stopped the run) — synthesize a best-effort answer from gathered research
     // rather than yielding a bare failure message. Any data collected is still useful.
     const toolResults = ctx.scratchpad.getToolResults().trim();
     const hasMeaningfulResearch = toolResults.length > 50;
@@ -743,7 +746,9 @@ export class Agent {
           forecastLabRoutingHint,
           ctx.promptContext,
         ) +
-          `\n\n[SYSTEM NOTE: You have reached the maximum number of research steps (${this.maxIterations}). ` +
+          `\n\n[SYSTEM NOTE: ${stoppedOnRepeatedFailures
+            ? 'Research stopped because your tool calls only repeated calls that already failed with the same arguments'
+            : `You have reached the maximum number of research steps (${this.maxIterations})`}. ` +
           `You MUST now write your best-effort final answer using ONLY the data gathered above. ` +
           `Start your response with "**[Best-effort summary — research may be incomplete]**\\n\\n" ` +
           `then provide the most useful analysis you can from the available data. Do NOT call any more tools.]`
@@ -1306,13 +1311,16 @@ export class Agent {
         }
       } catch (error) {
         logger.warn('[Agent] final synthesis failed', error);
-        // Synthesis timed out or failed — surface the raw tool results so the
-        // user has something to work with rather than seeing a blank answer.
+        // Synthesis was cancelled, timed out or failed — surface the raw tool
+        // results so the user has something to work with rather than a blank answer.
         const toolSummary = ctx.scratchpad.getToolResults().trim();
         if (toolSummary) {
+          const reason = this.signal?.aborted
+            ? 'synthesis cancelled'
+            : timeoutSignal.aborted ? 'synthesis timed out' : 'synthesis failed';
           const fallback =
-            '**[Research interrupted — synthesis timed out]**\n\n' +
-            'The model did not complete in time. Raw research data gathered:\n\n' +
+            `**[Research interrupted — ${reason}]**\n\n` +
+            'Raw research data gathered:\n\n' +
             toolSummary.slice(0, 3000);
           yield { type: 'answer_chunk', chunk: fallback } as AnswerChunkEvent;
           streamedAnswer = fallback;
