@@ -8,6 +8,7 @@
 import {
   computeMarkovDistribution,
   getAssetProfile,
+  keepFullWindowSpread,
   type MarkovDistributionResult,
   type BreakFallbackCandidate,
   type DivergencePenaltySchedule,
@@ -305,22 +306,12 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         const shortWindowSize = Math.max(30, config.postBreakWindowSize ?? 60);
         if (histPrices.length > shortWindowSize) {
           structuralBreakRerunTriggered = true;
-          const fullWindowDistribution = result.distribution;
-          result = await computeMarkovDistribution({
+          result = keepFullWindowSpread(result, await computeMarkovDistribution({
             ...originDistributionConfig,
             currentPrice,
             historicalPrices: histPrices.slice(-shortWindowSize),
             transitionEntropyHistory: entropyHistory,
-          });
-          // The short window moves the forecast's location, but a sigma fitted on
-          // ~60 returns is too narrow (BTC central-90 coverage fell to 0.82-0.86).
-          // Keep the full-window spread, re-centred on the rerun's median.
-          const scale = distributionMedian(result.distribution, currentPrice)
-            / distributionMedian(fullWindowDistribution, currentPrice);
-          result = {
-            ...result,
-            distribution: fullWindowDistribution.map(point => ({ ...point, price: point.price * scale })),
-          };
+          }));
         }
       }
 
@@ -590,13 +581,6 @@ function extractCentralCI(
 ): { ciLower: number; ciUpper: number } {
   const tailProbability = alpha / 2;
   return extractSurvivalInterval(dist, currentPrice, 1 - tailProbability, tailProbability);
-}
-
-function distributionMedian(
-  dist: MarkovDistributionResult['distribution'],
-  currentPrice: number,
-): number {
-  return extractSurvivalInterval(dist, currentPrice, 0.5, 0.5).ciLower;
 }
 
 function extractSurvivalInterval(

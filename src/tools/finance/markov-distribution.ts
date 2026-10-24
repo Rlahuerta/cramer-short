@@ -2897,6 +2897,48 @@ export function computeActionLevels(
   };
 }
 
+/**
+ * Combine a post-break short-window rerun with the full-window forecast. The
+ * rerun moves the location (its median), but a sigma fitted on ~60 returns is
+ * too narrow (walk-forward BTC central-90 coverage fell to 0.82-0.86), so the
+ * full-window distributions, re-centred on the rerun's median, set the spread.
+ * Scenarios and the spread-derived action-signal fields (zone probabilities,
+ * risk/reward, price levels) follow the blended decision surface; the rerun's
+ * expected return, recommendation, confidence, metadata, trajectory and raw
+ * distribution are kept.
+ */
+export function keepFullWindowSpread(
+  fullWindow: MarkovDistributionResult,
+  rerun: MarkovDistributionResult,
+): MarkovDistributionResult {
+  const { currentPrice } = rerun;
+  const scale = computeActionLevels(rerun.distribution, currentPrice).medianPrice
+    / computeActionLevels(fullWindow.distribution, currentPrice).medianPrice;
+  const rescale = (dist: MarkovDistributionPoint[]) => dist.map(point => ({ ...point, price: point.price * scale }));
+  const distribution = rescale(fullWindow.distribution);
+  const decisionDistribution = rescale(fullWindow.decisionDistribution);
+  const decisionScenarios = computeScenarioProbabilities(decisionDistribution, currentPrice);
+  const { buyProbability, holdProbability, sellProbability, riskRewardRatio, actionLevels } = computeActionSignal(
+    decisionDistribution, currentPrice, rerun.actionSignal.buyThreshold, rerun.actionSignal.sellThreshold,
+  );
+  return {
+    ...rerun,
+    distribution,
+    decisionDistribution,
+    decisionSurface: fullWindow.decisionSurface,
+    scenarios: computeScenarioProbabilities(distribution, currentPrice),
+    decisionScenarios,
+    actionSignal: {
+      ...rerun.actionSignal,
+      buyProbability,
+      holdProbability,
+      sellProbability,
+      riskRewardRatio,
+      actionLevels,
+    },
+  };
+}
+
 export function capBtcShortHorizonConfidence(options: {
   ticker: string;
   horizon: number;
@@ -4820,7 +4862,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       rerunResult.metadata.originalHistoricalDays = result.metadata.historicalDays;
       rerunResult.metadata.originalStructuralBreakDetected = result.metadata.structuralBreakDetected;
       rerunResult.metadata.originalStructuralBreakDivergence = result.metadata.structuralBreakDivergence;
-      result = rerunResult;
+      result = keepFullWindowSpread(result, rerunResult);
     }
 
     const { metadata: m, actionSignal: sig } = result;
