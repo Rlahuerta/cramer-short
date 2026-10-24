@@ -71,7 +71,8 @@ function parseDate(value: string): number {
 function normalizeProbability(market: KalshiMarketRecord): number | null {
   const raw = market.yes_ask ?? market.last_price;
   if (raw === undefined || !Number.isFinite(raw)) return null;
-  const probability = raw > 1 ? raw / 100 : raw;
+  // Kalshi quotes yes_ask/last_price in integer cents (1–99).
+  const probability = raw / 100;
   return probability >= 0 && probability <= 1 ? probability : null;
 }
 

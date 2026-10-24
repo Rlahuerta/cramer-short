@@ -1270,6 +1270,40 @@ export function resolveSpreadFamily(
   return lookupImpact(category, assetClass).tier;
 }
 
+const STRIKE_RE = /\$\s*(\d[\d,]*(?:\.\d+)?)\s*([KkMm])?\b/;
+const BELOW_WORDING_RE = /\b(?:below|under|less\s+than|dips?|drops?|falls?|sinks?|declines?)\b/i;
+
+/**
+ * Conditional returns for an asset-price threshold market ("above/below/reach/dip to $K"),
+ * derived from the strike instead of a fixed category delta.
+ *
+ * With m = K / currentPrice − 1, an "above K" YES means the price ends at or beyond the
+ * strike (≈ max(m, 0)) and NO means it stays short of it (≈ min(m, 0)); "below" swaps them.
+ * Returns null when the question has no strike, and zero deltas when the strike cannot be
+ * compared with the current price (none given, or the question is about another asset).
+ */
+export function deriveThresholdMarketDeltas(
+  question: string,
+  currentPrice: number | undefined,
+  assetNames: readonly string[],
+): { deltaYes: number; deltaNo: number } | null {
+  const match = STRIKE_RE.exec(question);
+  if (!match) return null;
+  const suffix = (match[2] ?? '').toLowerCase();
+  const strike = parseFloat(match[1]!.replace(/,/g, '')) * (suffix === 'k' ? 1_000 : suffix === 'm' ? 1_000_000 : 1);
+  const lower = question.toLowerCase();
+  const aboutAsset = assetNames.some((name) => new RegExp(`\\b${name.toLowerCase()}\\b`).test(lower));
+  if (!(strike > 0) || currentPrice === undefined || !(currentPrice > 0) || !aboutAsset) {
+    return { deltaYes: 0, deltaNo: 0 };
+  }
+  const move = strike / currentPrice - 1;
+  const up = Math.max(move, 0);
+  const down = Math.min(move, 0);
+  return BELOW_WORDING_RE.test(question)
+    ? { deltaYes: down, deltaNo: up }
+    : { deltaYes: up, deltaNo: down };
+}
+
 function sign(n: number): string {
   return n >= 0 ? '+' : '';
 }
@@ -1338,6 +1372,10 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const basePrice = currentPrice ?? 100;
         const searchIdentity = resolveTickerSearchIdentity(ticker);
         const assetClass = inferAssetClass(searchIdentity.canonicalTicker);
+        const marketImpact = (m: { signalCategory: string; question: string }) =>
+          (m.signalCategory === 'btc_price_target'
+            && deriveThresholdMarketDeltas(m.question, currentPrice, searchIdentity.canonicalNames))
+          || lookupImpact(m.signalCategory, assetClass);
         const historyWarnings: string[] = [];
         const nowMs = Date.now();
         const replayCapturedAt = new Date(nowMs).toISOString();
@@ -1484,7 +1522,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         // Step 3: Build MarketInput array
         let calibratedMarketCount = 0;
         const markets: MarketInput[] = rawMarkets.map((m) => {
-          const mImpact = lookupImpact(m.signalCategory, assetClass);
+          const mImpact = marketImpact(m);
           const shouldApplyLiveCalibration = (
             liveCalibration.mode === 'static' || liveCalibration.mode === 'horizon_aware'
           ) && isLiveCalibrationApplicable(m.probability);
@@ -1581,7 +1619,8 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         let thresholdPathActive = false;
         const thresholdPathWarnings: string[] = [];
 
-        if (thresholdChartAligned && forecastLadder.length >= 2) {
+        // The ladder is in absolute dollars; without a current price there is no base to price it against.
+        if (currentPrice !== undefined && thresholdChartAligned && forecastLadder.length >= 2) {
           const ladderCheck = isCleanThresholdLadder(forecastLadder);
           thresholdPathWarnings.push(...ladderCheck.warnings);
           if (ladderCheck.clean) {
@@ -1747,7 +1786,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
 
           const byCategory = new Map<string, { question: string; probability: number; condReturn: number }[]>();
           for (const m of rawMarkets) {
-            const mImpact = lookupImpact(m.signalCategory, assetClass);
+            const mImpact = marketImpact(m);
             const condReturn = computeConditionalReturn(adjustYesBias(m.probability), mImpact.deltaYes, mImpact.deltaNo);
             if (!byCategory.has(m.signalCategory)) byCategory.set(m.signalCategory, []);
             byCategory.get(m.signalCategory)!.push({ question: m.question, probability: m.probability, condReturn });

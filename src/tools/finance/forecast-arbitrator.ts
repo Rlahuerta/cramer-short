@@ -339,19 +339,32 @@ export function classifyPolymarketQuestion(question: string): ForecastMarketSema
   return 'unknown';
 }
 
+const MONTH_BEFORE_RE = /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+$/i;
+
+/**
+ * Price levels mentioned in a market question. "$"-prefixed or "k"-suffixed numbers win;
+ * bare numbers are a fallback and skip calendar tokens ("Oct 24", "2026").
+ */
 export function extractPriceLevels(text: string): number[] {
-  const levels: number[] = [];
-  const pattern = /\$?\b(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*([kK])?\b/g;
+  const explicit: number[] = [];
+  const bare: number[] = [];
+  const pattern = /(\$)?\b(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*([kK])?\b/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    const raw = match[1];
+    const raw = match[2];
     if (!raw) continue;
     const parsed = Number.parseFloat(raw.replace(/,/g, ''));
     if (!Number.isFinite(parsed) || parsed < 10) continue;
-    const level = match[2] ? parsed * 1_000 : parsed;
-    levels.push(level);
+    const level = match[3] ? parsed * 1_000 : parsed;
+    if (match[1] || match[3]) {
+      explicit.push(level);
+      continue;
+    }
+    const isYear = /^\d{4}$/.test(raw) && parsed >= 1900 && parsed <= 2100;
+    const isDay = MONTH_BEFORE_RE.test(text.slice(0, match.index));
+    if (!isYear && !isDay) bare.push(level);
   }
-  return [...new Set(levels)];
+  return [...new Set(explicit.length > 0 ? explicit : bare)];
 }
 
 function inferMarketSemantics(markets: ForecastMarketEvidence[] | undefined): {
