@@ -1,4 +1,4 @@
-import { afterEach, describe, test, expect, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, test, expect, spyOn } from 'bun:test';
 import { useNoNetwork } from '../../utils/test-no-network.js';
 import { webFetchTool } from './web-fetch.js';
 import { _setDnsLookupForTest } from './url-guard.js';
@@ -8,6 +8,14 @@ import '@mozilla/readability';
 import 'linkedom';
 
 useNoNetwork();
+
+// The url-guard resolves hostnames before fetching: fail any lookup a test did not stub.
+beforeEach(() => {
+  _setDnsLookupForTest(async (hostname) => {
+    throw new Error(`unit test blocked DNS lookup for ${hostname}`);
+  });
+});
+afterEach(() => _setDnsLookupForTest());
 
 // Minimal valid 1-page PDF with the text "Hello PDF World"
 const MINIMAL_PDF_BASE64 =
@@ -171,6 +179,7 @@ describe('web_fetch PDF content-type routing', () => {
       { preconnect: originalFetch.preconnect },
     );
     globalThis.fetch = fetchHtml;
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
     try {
       const result = await (webFetchTool.invoke({ url: 'https://example.com/' }) as Promise<string>);
       const payload = JSON.parse(result) as { data?: { extractor?: string; text?: string } };
@@ -199,6 +208,7 @@ describe('web_fetch HTML extractor labeling', () => {
       { preconnect: originalFetch.preconnect },
     );
     globalThis.fetch = fetchHtml;
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
     return JSON.parse(await (webFetchTool.invoke({ url }) as Promise<string>)) as {
       data?: { extractor?: string; text?: string; title?: string };
     };
