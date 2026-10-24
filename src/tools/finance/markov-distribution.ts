@@ -4188,7 +4188,7 @@ export async function computeMarkovDistribution(params: {
     rawPUp > 0.60 &&
     momentum.acceleration <= 0;
 
-  const distribution = calibrateProbabilities(rawDistribution, {
+  const calibrationOptions = {
     ensembleConsensus: ensemble.consensus,
     historicalDays: returns.length,
     hmmConverged: hmmOverlayApplied,
@@ -4198,8 +4198,11 @@ export async function computeMarkovDistribution(params: {
     currentPrice,
     driftN: calDriftN,
     volN: calVolN,
-    nu: horizonStudentTNu(assetProfile.studentTNu, horizon),
     matureBullCalibrationActive,
+  };
+  const distribution = calibrateProbabilities(rawDistribution, {
+    ...calibrationOptions,
+    nu: horizonStudentTNu(assetProfile.studentTNu, horizon),
   });
 
   // --- Base-rate floor (Idea S, Round 4) ---
@@ -4221,6 +4224,26 @@ export async function computeMarkovDistribution(params: {
     applyBaseRateFloor(distribution, currentPrice, pUpFloor);
   }
 
+  // Trade-facing decision surface. The BTC live-policy direction floors were tuned on the
+  // pre-fix distribution: daily profile nu and an additive base-rate floor, whose deficit
+  // mass above the grid top lifts expected return so floored steps lean BUY. BUY/SELL/HOLD
+  // stays on that surface; intervals and P(up) read `distribution`. Same grid as
+  // rawDistribution, so it borrows that Monte Carlo CI band instead of sampling its own.
+  const legacyRawDistribution = interpolateDistribution(
+    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
+    20, 0, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
+    assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
+    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights,
+  ).map((pt, i) => ({ ...pt, lowerBound: rawDistribution[i].lowerBound, upperBound: rawDistribution[i].upperBound }));
+  const legacyDistribution = calibrateProbabilities(legacyRawDistribution, {
+    ...calibrationOptions,
+    nu: assetProfile.studentTNu,
+  });
+  const legacyFloorDeficit = pUpFloor - interpolateSurvival(legacyDistribution, currentPrice);
+  if (legacyFloorDeficit > 0) {
+    for (const pt of legacyDistribution) pt.probability = Math.min(1.0, pt.probability + legacyFloorDeficit);
+  }
+
   // --- P(up) from both raw and calibrated distributions for confidence scoring ---
   // Raw P(up) reflects model's actual signal strength BEFORE calibration compresses it.
   // This gives a much more discriminative decisiveness score.
@@ -4235,7 +4258,7 @@ export async function computeMarkovDistribution(params: {
     const recalibrated = applyRegimePlatt(calPUp, currentRegime, regimePlattFits);
     if (Math.abs(recalibrated - calPUp) > 1e-9) {
       const delta = recalibrated - calPUp;
-      for (const pt of distribution) {
+      for (const pt of [...distribution, ...legacyDistribution]) {
         pt.probability = Math.max(0, Math.min(1, pt.probability + delta));
         if (pt.lowerBound != null) pt.lowerBound = Math.max(0, Math.min(1, pt.lowerBound + delta));
         if (pt.upperBound != null) pt.upperBound = Math.max(0, Math.min(1, pt.upperBound + delta));
@@ -4469,8 +4492,8 @@ export async function computeMarkovDistribution(params: {
 
   const diagnosticsPass = anchorBasedDiag || priceOnlyCryptoDiag || commodityModelOnlyDiag;
 
-  const rawPUpForBlend = interpolateSurvival(rawDistribution, currentPrice);
-  const calPUpForBlend = interpolateSurvival(distribution, currentPrice);
+  const rawPUpForBlend = interpolateSurvival(legacyRawDistribution, currentPrice);
+  const calPUpForBlend = interpolateSurvival(legacyDistribution, currentPrice);
 
   const usePr3fBlend = Boolean(
     pr3fCryptoShortHorizonDisagreementPrior &&
@@ -4494,45 +4517,45 @@ export async function computeMarkovDistribution(params: {
     !usePr3fBlend
   );
 
-  let decisionDistribution = distribution;
-  let decisionScenarios = scenarios;
+  let decisionDistribution = legacyDistribution;
+  let decisionScenarios = computeScenarioProbabilities(legacyDistribution, currentPrice);
   let rawActionSignal: ActionSignal | null = null;
   let bearishBreakRecommendationGateActive = false;
 
   if (usePr3fBlend) {
-    decisionDistribution = distribution.map((d, i) => ({
+    decisionDistribution = legacyDistribution.map((d, i) => ({
       price: d.price,
-      probability: (d.probability + rawDistribution[i].probability) / 2,
+      probability: (d.probability + legacyRawDistribution[i].probability) / 2,
       lowerBound: d.lowerBound,
       upperBound: d.upperBound,
       source: 'blend',
     }));
     decisionScenarios = computeScenarioProbabilities(decisionDistribution, currentPrice);
   } else if (useRawDecision) {
-    decisionDistribution = rawDistribution;
-    decisionScenarios = computeScenarioProbabilities(rawDistribution, currentPrice);
+    decisionDistribution = legacyRawDistribution;
+    decisionScenarios = computeScenarioProbabilities(legacyRawDistribution, currentPrice);
   } else if (useRawDirectionHybrid) {
     rawActionSignal = computeActionSignal(
-      rawDistribution,
+      legacyRawDistribution,
       currentPrice,
       undefined,
       undefined,
       horizon,
       recentDailyVol,
-      computeScenarioProbabilities(rawDistribution, currentPrice),
+      computeScenarioProbabilities(legacyRawDistribution, currentPrice),
       assetProfile.type,
     );
   }
 
   if (!rawActionSignal && assetProfile.type === 'crypto' && horizon <= 14) {
     rawActionSignal = computeActionSignal(
-      rawDistribution,
+      legacyRawDistribution,
       currentPrice,
       undefined,
       undefined,
       horizon,
       recentDailyVol,
-      computeScenarioProbabilities(rawDistribution, currentPrice),
+      computeScenarioProbabilities(legacyRawDistribution, currentPrice),
       assetProfile.type,
     );
   }
@@ -4559,8 +4582,8 @@ export async function computeMarkovDistribution(params: {
     structuralBreakDetected: breakResult.detected,
     regimeState: currentRegime,
     predictionConfidence,
-    rawPredictedProb: rawPUp,
-    predictedProb: calPUp,
+    rawPredictedProb: rawPUpForBlend,
+    predictedProb: calPUpForBlend,
     expectedReturn: actionSignal.expectedReturn,
   })) {
     actionSignal.recommendation = 'SELL';

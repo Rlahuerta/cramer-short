@@ -846,6 +846,29 @@ describe('applyBaseRateFloor', () => {
   });
 });
 
+describe('base-rate floor decision surface', () => {
+  it('keeps recommendations on the pre-fix surface the live-policy floors were tuned on', async () => {
+    const { readFileSync } = await import('fs');
+    const closes: number[] = JSON.parse(
+      readFileSync(new URL('./fixtures/backtest-prices.json', import.meta.url), 'utf-8'),
+    ).tickers['BTC-USD'].closes;
+    const t = 422; // floored 2d forecast: calibrated P(up) ~0.46
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 2,
+      currentPrice: closes[t],
+      historicalPrices: closes.slice(0, t + 1),
+      polymarketMarkets: [],
+    });
+
+    // Intervals and P(up) read the shape-preserving floor...
+    expect(interpolateSurvival(result.distribution, closes[t])).toBeLessThan(0.5);
+    expect(result.distribution[0].probability).toBeLessThan(1);
+    // ...while BUY/SELL/HOLD reads the legacy floored surface (deficit mass above the grid).
+    expect(result.actionSignal.recommendation).toBe('BUY');
+  });
+});
+
 describe('commodityModelOnly condition logic', () => {
   const COMMODITY_WRAPPER_MIN_R2 = -0.02;
   const COMMODITY_WRAPPER_MIN_CONFIDENCE = 0.15;
@@ -2088,8 +2111,10 @@ describe('computeMarkovDistribution trajectory mode', () => {
     expect(result.trajectory).toBeDefined();
     expect(result.trajectory!.length).toBe(7);
     expect(result.decisionSurface).toBe('calibrated');
-    expect(result.decisionDistribution).toEqual(result.distribution);
-    expect(result.decisionScenarios).toEqual(result.scenarios);
+    // Decisions read the legacy calibrated surface (daily profile nu, additive floor) on the raw grid.
+    expect(result.decisionDistribution.map(p => p.price)).toEqual(result.rawDistribution.map(p => p.price));
+    expect(result.decisionDistribution).not.toEqual(result.rawDistribution);
+    expect(result.decisionScenarios).toEqual(computeScenarioProbabilities(result.decisionDistribution, 118));
   });
 
   it('trajectory is undefined when trajectory=false', async () => {
