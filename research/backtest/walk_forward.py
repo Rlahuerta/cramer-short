@@ -237,6 +237,7 @@ def walk_forward(
                     and len(window_prices_i) > max(30, effective["post_break_window_size"])
                 ):
                     structural_break_rerun_triggered = True
+                    full_window_wf = wf_i
                     wf_i = compute_window_forecast(
                         window_prices_i[-max(30, effective["post_break_window_size"]):],
                         horizon=horizon,
@@ -256,6 +257,12 @@ def walk_forward(
                         use_conditional_transitions=use_conditional_transitions,
                         use_path_integrated_drift=use_path_integrated_drift,
                     )
+                    # The short window moves the location, but a sigma fitted on ~60
+                    # returns is too narrow. Mirrors keepFullWindowSpread(): keep the
+                    # full-window interval, re-centred on the rerun's median.
+                    scale = wf_i["median_price"] / full_window_wf["median_price"]
+                    wf_i["ci_lower"] = full_window_wf["ci_lower"] * scale
+                    wf_i["ci_upper"] = full_window_wf["ci_upper"] * scale
                     wf_i["break_rerun_triggered"] = True
 
                 break_result = wf_i["break_result"]
