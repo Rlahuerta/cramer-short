@@ -431,6 +431,36 @@ def test_window_forecast_p_up_matches_final_trajectory_without_calibration(
     assert result["p_up"] == pytest.approx(0.82)
 
 
+def test_window_forecast_reports_trajectory_median_for_break_rerun_rescaling(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    regimes = ["bull", "bull", "bear", "sideways", "bull", "bear"]
+    _patch_base_markov(monkeypatch, regimes)
+    monkeypatch.setattr(
+        wf,
+        "compute_trajectory",
+        lambda current_price, *_args, **_kwargs: [_point(current_price * 1.02)],
+    )
+    prices = _prices_from_returns([0.02, 0.01, -0.03, 0.01, 0.02, -0.01])
+
+    result = wf.compute_window_forecast(
+        prices,
+        horizon=1,
+        return_threshold_multiplier=0.5,
+        decay_rate=0.95,
+        break_divergence_threshold=0.2,
+        use_hmm=False,
+        asset_profile="crypto",
+        enable_garch_vol=False,
+        garch_horizon=None,
+        garch_ceiling=None,
+        use_empirical_up_rates=True,
+    )
+
+    # Empirical up-rates replace predicted_return; the median stays the trajectory's.
+    assert result["median_price"] == pytest.approx(prices[-1] * 1.02)
+
+
 def test_hmm_disabled_does_not_attempt_hmm_or_change_base_forecast(
     monkeypatch: pytest.MonkeyPatch,
 ):

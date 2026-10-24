@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 from types import SimpleNamespace
 
+import pytest
 from research.backtest.walk_forward import walk_forward
 from research.models.conformal import (
     resolve_forecast_lab_conformal_parameter_defaults,
@@ -202,6 +203,7 @@ def test_walk_forward_uses_runtime_scoped_decay_rate_for_break_reruns(
         return {
             "p_up": 0.6,
             "predicted_return": 0.01,
+            "median_price": window_prices[-1],
             "ci_lower": window_prices[-1] * 0.99,
             "ci_upper": window_prices[-1] * 1.01,
             "garch_vol_applied": False,
@@ -239,6 +241,56 @@ def test_walk_forward_uses_runtime_scoped_decay_rate_for_break_reruns(
         btc_defaults["transitionDecay"],
         btc_defaults["transitionDecay"],
     ]
+
+
+def test_walk_forward_break_rerun_keeps_full_window_spread(monkeypatch):
+    # Mirrors keepFullWindowSpread() in markov-distribution.ts: the rerun sets
+    # the median, the full window sets the spread (rescaled to that median).
+    entropy = SimpleNamespace(entropy_nats=0.0, entropy_norm=0.0)
+    calls: list[int] = []
+
+    def fake_compute_window_forecast(window_prices, **_kwargs):
+        calls.append(len(window_prices))
+        full_window = len(calls) == 1
+        median = 100.0 if full_window else 105.0
+        return {
+            "p_up": 0.55 if full_window else 0.7,
+            "predicted_return": 0.0 if full_window else 0.05,
+            "median_price": median,
+            "ci_lower": 90.0 if full_window else 103.0,
+            "ci_upper": 110.0 if full_window else 107.0,
+            "garch_vol_applied": False,
+            "entropy": entropy,
+            "break_result": {"detected": not full_window, "divergence": 0.0},
+            "break_rerun_triggered": False,
+            "original_break_result": {"detected": full_window, "divergence": 0.2},
+            "hmm_status": "off",
+        }
+
+    monkeypatch.setattr(
+        walk_forward_module, "compute_window_forecast", fake_compute_window_forecast
+    )
+
+    result = walk_forward(
+        _make_prices(131),
+        ticker="BTC-USD",
+        horizon=1,
+        warmup=120,
+        stride=40,
+        post_break_short_window=True,
+        post_break_window_size=60,
+    )
+
+    assert not result.errors
+    assert calls == [121, 60]
+    step = result.steps[0]
+    assert step.structural_break_rerun_triggered is True
+    # Full-window spread (90..110 around 100) re-centred on the rerun's median.
+    assert step.ci_lower == pytest.approx(94.5)
+    assert step.ci_upper == pytest.approx(115.5)
+    assert (step.ci_upper - step.ci_lower) / 105.0 == pytest.approx(20.0 / 100.0)
+    assert step.predicted_prob == pytest.approx(0.7)
+    assert step.predicted_return == pytest.approx(0.05)
 
 
 def test_walk_forward_sol_and_hype_runtime_scopes_produce_steps():

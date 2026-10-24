@@ -147,7 +147,9 @@ class WindowForecast(TypedDict):
     Fields carry both the tradable forecast outputs and the diagnostics needed
     by the orchestrator.  ``p_up`` is the horizon probability of a positive
     return, ``predicted_return`` is the horizon expected return from the
-    simulated trajectory, and ``ci_lower``/``ci_upper`` are price-level bounds.
+    simulated trajectory, ``median_price`` is the trajectory's horizon median
+    (used to re-centre the full-window interval on a post-break rerun), and
+    ``ci_lower``/``ci_upper`` are price-level bounds.
     ``entropy`` summarizes transition-matrix uncertainty, while
     ``break_result`` and ``original_break_result`` preserve structural-break
     metadata for any downstream confidence-interval widening or short-window
@@ -156,6 +158,7 @@ class WindowForecast(TypedDict):
 
     p_up: float
     predicted_return: float
+    median_price: float
     ci_lower: float
     ci_upper: float
     garch_vol_applied: bool
@@ -541,6 +544,7 @@ def compute_window_forecast(
     return {
         "p_up": float(p_up),
         "predicted_return": float(predicted_return),
+        "median_price": float(horizon_point.expected_price),
         "ci_lower": float(horizon_point.lower_bound),
         "ci_upper": float(horizon_point.upper_bound),
         "garch_vol_applied": bool(garch_vol_applied),
