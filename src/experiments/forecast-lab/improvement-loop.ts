@@ -1,6 +1,6 @@
 import { fetchBitmexDailyCloses } from '../../tools/finance/bitmex.js';
 import { walkForward } from '../../tools/finance/backtest/walk-forward.js';
-import { brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from '../../tools/finance/backtest/metrics.js';
+import { abstainRate, brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from '../../tools/finance/backtest/metrics.js';
 import {
   getForecastLabProfile,
   listForecastLabStructuredMutations,
@@ -32,6 +32,7 @@ export interface ForecastLabImprovementHorizonMetrics {
   readonly ciCoverage: number;
   readonly structuralBreakCount: number;
   readonly abstainCount: number;
+  readonly abstainRate: number;
 }
 
 export interface ForecastLabImprovementMetrics {
@@ -149,6 +150,7 @@ function emptyImprovementMetrics(): MutableImprovementMetrics {
     ciCoverage: 0,
     structuralBreakCount: 0,
     abstainCount: 0,
+    abstainRate: 0,
   };
   return {
     h1: emptyHorizonMetrics,
@@ -445,6 +447,7 @@ async function benchmarkProfileMetrics(
         ciCoverage: walkForwardResult.steps.length > 0 ? ciCoverage(walkForwardResult.steps) : 0,
         structuralBreakCount: countStructuralBreaks(walkForwardResult.steps),
         abstainCount: countAbstains(walkForwardResult.steps),
+        abstainRate: abstainRate(walkForwardResult.steps),
       };
     }));
 

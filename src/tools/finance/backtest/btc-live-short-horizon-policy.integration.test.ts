@@ -2,7 +2,7 @@ import { describe, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
-import { MARKOV_PHASE0_BASELINES } from './markov-phase-baselines.js';
+import { BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS, MARKOV_PHASE0_BASELINES } from './markov-phase-baselines.js';
 import { walkForward } from './walk-forward.js';
 import { brierScore, ciCoverage, directionalAccuracy } from './metrics.js';
 
@@ -112,26 +112,26 @@ describe('BTC live short-horizon policy walk-forward', () => {
       // Refreshed after the zero-anchor cryptoModelOnly break fix shifted the
       // deterministic BTC fixture toward slightly more conservative HOLD usage.
       if (horizon === 1) {
-        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(0.58);
+        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h1);
         expect(tunedMetrics.rerunRate).toBeGreaterThan(0.50);
       }
 
       if (horizon === 2) {
-        expect(tunedMetrics.directionalAccuracy).toBeGreaterThan(MARKOV_PHASE0_BASELINES.btc.h2.directionalAccuracy);
+        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h2);
         expect(tunedMetrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h2.abstainCount);
         expect(tunedMetrics.rerunRate).toBeGreaterThan(0.45);
         expect(tunedMetrics.rerunRate).toBeLessThan(0.60);
       }
 
       if (horizon === 3) {
-        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(MARKOV_PHASE0_BASELINES.btc.h3.directionalAccuracy);
+        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h3);
         expect(tunedMetrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h3.abstainCount);
         expect(tunedMetrics.rerunRate).toBeGreaterThan(0.45);
         expect(tunedMetrics.rerunRate).toBeLessThan(0.60);
       }
 
       if (horizon === 14) {
-        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(MARKOV_PHASE0_BASELINES.btc.h14.directionalAccuracy);
+        expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h14);
         expect(tunedMetrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h14.abstainCount);
         expect(tunedMetrics.brierScore).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h14.brierScore);
         expect(tunedMetrics.rerunRate).toBe(0);
