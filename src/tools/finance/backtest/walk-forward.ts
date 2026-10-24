@@ -159,7 +159,7 @@ export interface WalkForwardConfig {
   useMetaRegime?: boolean;
   /** Experimental: select transition matrix conditional on current meta-regime. Default false. */
   useConditionalTransitions?: boolean;
-  /** Experimental placeholder for path-integrated drift. Default false. */
+  /** No-op: horizon drift is always path-integrated (see computeHorizonDriftVol). Kept for config compatibility. */
   usePathIntegratedDrift?: boolean;
 }
 
@@ -173,6 +173,18 @@ export interface WalkForwardResult {
 // ---------------------------------------------------------------------------
 // Walk-forward engine
 // ---------------------------------------------------------------------------
+
+/**
+ * Peer returns are index-aligned with the target's returns (index i = prices[i] → prices[i+1]),
+ * so at origin t only indices < t have been observed.
+ */
+export function sliceCrossAssetReturnsToOrigin(
+  crossAssetReturns: Record<string, number[]> | undefined,
+  t: number,
+): Record<string, number[]> | undefined {
+  if (!crossAssetReturns) return undefined;
+  return Object.fromEntries(Object.entries(crossAssetReturns).map(([peer, r]) => [peer, r.slice(0, t)]));
+}
 
 /**
  * Run a walk-forward backtest.
@@ -203,6 +215,9 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
   let adaptiveConformal: AdaptiveConformalPID | undefined;
   let scoreAggregatedConformal: ScoreAggregatedConformal | undefined;
   let conformalBreakEpisodeActive = false;
+  // Conformal outcomes become observable only at t + horizon; queue them so origins
+  // with stride < horizon never calibrate on prices they could not have seen.
+  const pendingConformalRecords: Array<{ dueT: number; record: () => void }> = [];
 
   const baseDistributionConfig = {
     ticker,
@@ -269,10 +284,14 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     const currentPrice = prices[t];
     const realizedPrice = prices[t + horizon];
     const actualReturn = (realizedPrice - currentPrice) / currentPrice;
+    const originDistributionConfig = {
+      ...baseDistributionConfig,
+      crossAssetReturns: sliceCrossAssetReturnsToOrigin(config.crossAssetReturns, t),
+    };
 
     try {
       let result: MarkovDistributionResult = await computeMarkovDistribution({
-        ...baseDistributionConfig,
+        ...originDistributionConfig,
         currentPrice,
         historicalPrices: histPrices,
         transitionEntropyHistory: entropyHistory,
@@ -287,7 +306,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
         if (histPrices.length > shortWindowSize) {
           structuralBreakRerunTriggered = true;
           result = await computeMarkovDistribution({
-            ...baseDistributionConfig,
+            ...originDistributionConfig,
             currentPrice,
             historicalPrices: histPrices.slice(-shortWindowSize),
             transitionEntropyHistory: entropyHistory,
@@ -341,10 +360,15 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
           });
         }
 
+        while (pendingConformalRecords.length > 0 && pendingConformalRecords[0]!.dueT <= t) {
+          pendingConformalRecords.shift()!.record();
+        }
+
         const enteringBreakRerunEpisode = structuralBreakRerunTriggered && !conformalBreakEpisodeActive;
         if (enteringBreakRerunEpisode && (config.conformalResetOnStructuralBreak ?? true)) {
           adaptiveConformal.reset({ radius: adaptiveConformal.currentRadius() });
           scoreAggregatedConformal?.reset();
+          pendingConformalRecords.length = 0;
           conformalResetTriggered = true;
         }
         conformalBreakEpisodeActive = structuralBreakRerunTriggered;
@@ -390,8 +414,15 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
             ciUpper = mergedUpper;
           }
         }
-        adaptiveConformal.record(forecastCenter, realizedPrice, adaptiveDiagnostics);
-        scoreAggregatedConformal?.record(forecastCenter, realizedPrice, [projectedModelRadius, adaptiveRadius]);
+        const pid = adaptiveConformal;
+        const scoreAggregator = scoreAggregatedConformal;
+        pendingConformalRecords.push({
+          dueT: t + horizon,
+          record: () => {
+            pid.record(forecastCenter, realizedPrice, adaptiveDiagnostics);
+            scoreAggregator?.record(forecastCenter, realizedPrice, [projectedModelRadius, adaptiveRadius]);
+          },
+        });
         conformalApplied = true;
         conformalRadius = adaptiveRadius;
         conformalCoverageEstimate = adaptiveConformal.empiricalCoverage();

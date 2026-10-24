@@ -3119,7 +3119,7 @@ export async function computeMarkovDistribution(params: {
   useMetaRegime?: boolean;
   /** Experimental: select transition matrix conditional on current meta-regime. Default false. */
   useConditionalTransitions?: boolean;
-  /** Experimental placeholder for path-integrated drift. Default false. */
+  /** No-op: horizon drift is always path-integrated (see computeHorizonDriftVol). Kept for config compatibility. */
   usePathIntegratedDrift?: boolean;
   /**
    * Idea 2 — Polymarket-informed jump-diffusion.  When true and `jumpEvents`

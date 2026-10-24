@@ -94,10 +94,9 @@ describe('interpolateDistribution', () => {
 
   it('source=polymarket for nearby high-trust anchor at short horizon', () => {
     const anchors = [{ price: 100, rawProbability: 0.5, probability: 0.475, trustScore: 'high' as const, source: 'polymarket' as const }];
-    // Low second eigenvalue → Markov dominant
+    // Low second eigenvalue → fast mixing, anchor dominant (markovWeight = 0.01² = 1e-4)
     const dist = interpolateDistribution(100, 2, P, regimeStats, 'sideways', anchors, 0.01);
     const point = dist.find(d => Math.abs(d.price - 100) < 5);
-    // With very low ρ, markovWeight ≈ exp(-0.01×2) ≈ 0.98 → should be 'markov' or 'blend'
     expect(['markov', 'blend', 'polymarket']).toContain(point?.source as string);
   });
 });
@@ -110,8 +109,14 @@ describe('computeMixingWeight', () => {
     expect(computeMixingWeight(0.9, 100)).toBeLessThan(0.001);
   });
 
-  it('Fix 7: at long horizon with ρ≈0, weight stays near 1', () => {
-    expect(computeMixingWeight(0.001, 90)).toBeGreaterThan(0.9);
+  it('weight is |ρ|^h, matching Python compute_mixing_weight', () => {
+    expect(computeMixingWeight(0.85, 7)).toBeCloseTo(0.85 ** 7, 12); // ≈ 0.32, was exp(-0.85·7) ≈ 0.0026
+    expect(computeMixingWeight(-0.5, 2)).toBeCloseTo(0.25, 12);
+  });
+
+  it('fast-mixing chain (ρ≈0) hands over to anchors; slow-mixing chain keeps Markov', () => {
+    expect(computeMixingWeight(0.001, 3)).toBeLessThan(1e-6);
+    expect(computeMixingWeight(0.999, 90)).toBeGreaterThan(0.9);
   });
 });
 describe('estimateRegimeStats', () => {
@@ -807,5 +812,45 @@ describe('computePathIntegratedDrift', () => {
     const expected = 0.001425 + 0.001595;
 
     expect(result).toBeCloseTo(expected, 12);
+  });
+});
+
+describe('computeHorizonDriftVol — path-integrated drift', () => {
+  // Review repro: diagonal 0.9, regime means ±1.5%. Terminal-weighted h·μ gives 0.34% at h=30.
+  const P = [
+    [0.9, 0.05, 0.05],
+    [0.05, 0.9, 0.05],
+    [0.05, 0.05, 0.9],
+  ];
+  const regimeStats = {
+    bull: { meanReturn: 0.015, stdReturn: 0.02 },
+    bear: { meanReturn: -0.015, stdReturn: 0.02 },
+    sideways: { meanReturn: 0, stdReturn: 0.01 },
+  };
+
+  it('mu_n sums each day\'s regime-weighted drift instead of h × terminal drift', () => {
+    const { mu_n } = computeHorizonDriftVol(30, P, regimeStats, 'bull');
+    expect(mu_n).toBeCloseTo(computePathIntegratedDrift(30, P, regimeStats, 'bull'), 12);
+    expect(mu_n).toBeCloseTo(0.0843, 3);
+  });
+
+  it('a terminal-weight override shifts each day\'s drift by its deviation from the chain mix', () => {
+    const override = [0.6, 0.1, 0.3];
+    const { mu_n } = computeHorizonDriftVol(10, P, regimeStats, 'bull', 0, undefined, undefined, undefined, undefined, undefined, override);
+    const chain = computeHorizonDriftVol(10, P, regimeStats, 'bull');
+    const p10Bull = 1 / 3 + (2 / 3) * 0.85 ** 10;
+    const p10Bear = 1 / 3 - (1 / 3) * 0.85 ** 10;
+    const shift = (0.6 - 0.1) * 0.015 - (p10Bull - p10Bear) * 0.015;
+    expect(mu_n).toBeCloseTo(chain.mu_n + 10 * shift, 12);
+  });
+
+  it('momentum is scaled by (1 − w) under the HMM override', () => {
+    const hmm = { drift: 0.001, vol: 0.02, weight: 0.75 };
+    const { mu_n } = computeHorizonDriftVol(10, P, regimeStats, 'bull', 0.004, hmm);
+    const markovArm = computePathIntegratedDrift(10, P, regimeStats, 'bull') + 10 * 0.004;
+    expect(mu_n).toBeCloseTo(0.75 * 10 * 0.001 + 0.25 * markovArm, 12);
+
+    const fullOverride = computeHorizonDriftVol(10, P, regimeStats, 'bull', 0.004, { ...hmm, weight: 1 });
+    expect(fullOverride.mu_n).toBeCloseTo(10 * 0.001, 12);
   });
 });

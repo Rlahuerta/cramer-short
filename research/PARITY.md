@@ -4,7 +4,7 @@ Auto-generated from codebase audit. Lists every TypeScript module in `src/`
 with a known or intended Python mirror in `research/`, its parity-test status,
 and known divergences.
 
-**Last updated**: 2026-07-15
+**Last updated**: 2026-10-23
 **Convention**: A TS file is "mirrored" when it carries a `Mirrors research/...`
 JSDoc tag AND its math is verified against the Python implementation.
 
@@ -67,7 +67,9 @@ F14 jump diffusion) already existed in both. Sobol sensitivity is Python-only by
 | Volume regime detection | `markov-distribution/volume-regime.ts` | `markov/volume_regime.py` | `volume-regime.test.ts` / `test_volume_regime.py` |
 | Meta-regime detection | `markov-distribution/meta-regime.ts` | `meta_regime.py` | `meta-regime.test.ts` / `test_meta_regime.py` |
 | HMM BIC/AIC/HQC state selection | `hmm.ts` `selectNumStates` | `hmm.py` `select_num_states` | `hmm.test.ts` / `test_hmm_parity.py` |
-| Path-integrated drift | `confidence-intervals.ts` `computePathIntegratedDrift` | `markov/forecast.py` `compute_path_integrated_drift` | `confidence-intervals.test.ts` / `test_markov_parity.py` |
+| Path-integrated drift (now always used for horizon `mu_n`; `usePathIntegratedDrift` flag is a no-op; a `terminalStateWeights` override adds `h·(μ(override) − μ(Pʰ))`) | `confidence-intervals.ts` `computePathIntegratedDrift`, `computeHorizonDriftVol` | `markov/forecast.py` `compute_path_integrated_drift`, `_compute_horizon_drift_vol`; `trajectory/driftvol.py` `compute_horizon_drift_vol` | `confidence-intervals.test.ts` / `test_markov_parity.py` + `test_trajectory_parity.py` |
+| Mixing weight `\|ρ\|^h` (TS previously used `exp(−ρh)`) | `confidence-intervals.ts` `computeMixingWeight` | `trajectory/driftvol.py` `compute_mixing_weight` | `confidence-intervals.test.ts` / `test_trajectory_parity.py` |
+| HMM override scales momentum by `(1−w)` | `confidence-intervals.ts` `computeHorizonDriftVol` | `trajectory/driftvol.py` `compute_horizon_drift_vol` | `confidence-intervals.test.ts` / `test_trajectory_parity.py` |
 | Seedable Monte Carlo | `confidence-intervals.ts` `computeTrajectory(randomState)` | `trajectory/simulation.py` `compute_trajectory(random_state)` | `confidence-intervals.test.ts` / `test_trajectory_parity.py` |
 | Sobol sensitivity (Python-only) | — | `sensitivity.py` | — / `test_sensitivity.py` |
 | Walk-forward flags: `useMetaRegime`, `useConditionalTransitions`, `randomState` (all default-off) | `backtest/walk-forward.ts` + `markov-distribution.ts` | `backtest/walk_forward.py` + `backtest/_window_forecaster.py` | `walk-forward-markov-features.test.ts` / `test_walk_forward_features.py` |
@@ -102,9 +104,9 @@ verified gain), and `break_ci_slope`/`break_ci_max` have no cramer-short equival
 
 | TS File | Python File | Status | Notes |
 |---------|-------------|--------|-------|
-| `src/tools/finance/backtest/baselines.ts` | `research/backtest/baselines.py` | 🟡 | Naive baselines (coin-flip, last-period) |
+| `src/tools/finance/backtest/baselines.ts` | `research/backtest/baselines.py` | 🟡 | Naive baselines (coin-flip, last-period). Last-period takes `horizon` and only uses outcomes realized by the step's origin |
 | `src/tools/finance/backtest/metrics.ts` | `research/backtest/metrics.py` | 🟡 | Brier, directional accuracy, CI coverage, calibration tables, CRPS |
-| `src/tools/finance/backtest/walk-forward.ts` | `research/backtest/walk_forward.py` | 🟡 | Walk-forward harness with HMM/GARCH/entropy options |
+| `src/tools/finance/backtest/walk-forward.ts` | `research/backtest/walk_forward.py` | 🟡 | Walk-forward harness with HMM/GARCH/entropy options. Adaptive conformal (records queued until `t+horizon`) and cross-asset Lasso (peers sliced to the origin) are TS-only |
 
 ## Data Layer (TS-only tool wrappers)
 

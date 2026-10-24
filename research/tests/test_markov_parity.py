@@ -17,7 +17,7 @@ from research.models.markov import (
     compute_regime_up_rates,
 )
 from research.models.markov.transition import estimate_conditional_transition_matrices
-from research.models.markov.forecast import compute_path_integrated_drift
+from research.models.markov.forecast import _compute_horizon_drift_vol, compute_path_integrated_drift
 from research.models.soft_regime import one_hot_regime_mixture
 
 
@@ -500,6 +500,19 @@ def test_compute_path_integrated_drift_supports_soft_start_mixture():
     expected = sum(float(start_vector @ np.linalg.matrix_power(P, d) @ means) for d in range(1, 3))
 
     assert result == pytest.approx(expected, abs=1e-12)
+
+
+def test_compute_horizon_drift_vol_uses_path_integrated_drift():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    result = _compute_horizon_drift_vol(5, P, regime_stats, "bull")
+
+    assert result["mu_n"] == pytest.approx(compute_path_integrated_drift(5, P, regime_stats, "bull"), abs=1e-12)
 
 
 # ---------------------------------------------------------------------------

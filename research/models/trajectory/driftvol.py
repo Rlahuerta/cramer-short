@@ -58,19 +58,20 @@ def compute_horizon_drift_vol(
     garch_scales: list[float] | None = None,
     terminal_state_weights: list[float] | np.ndarray | None = None,
 ) -> dict[str, float]:
+    Pn = _mat_pow(P, horizon)
+    if start_mixture:
+        chain_weights = np.zeros(NUM_STATES)
+        for state, w in start_mixture.items():
+            idx = STATE_INDEX[state]
+            chain_weights += w * Pn[idx]
+        chain_weights = _normalize_state_weight_vector(chain_weights)
+    else:
+        chain_weights = _normalize_state_weight_vector(Pn[STATE_INDEX[initial_state]])
+
     if terminal_state_weights is not None:
         state_weights = _normalize_state_weight_vector(terminal_state_weights)
     else:
-        Pn = _mat_pow(P, horizon)
-
-        if start_mixture:
-            state_weights = np.zeros(NUM_STATES)
-            for state, w in start_mixture.items():
-                idx = STATE_INDEX[state]
-                state_weights += w * Pn[idx]
-            state_weights = _normalize_state_weight_vector(state_weights)
-        else:
-            state_weights = _normalize_state_weight_vector(Pn[STATE_INDEX[initial_state]])
+        state_weights = chain_weights
 
     mu_obs = sum(
         state_weights[i] * regime_stats[state].mean_return
@@ -89,18 +90,36 @@ def compute_horizon_drift_vol(
         + var_of_means
     )
 
-    mu_eff = mu_obs
     dominant_idx = int(np.argmax(state_weights))
     dominant_sigma = regime_stats[REGIME_STATES[dominant_idx]].std_return
     threshold = 0.60 if regime_specific_sigma_threshold is None else regime_specific_sigma_threshold
     sigma_eff = dominant_sigma if regime_specific_sigma and float(np.max(state_weights)) > threshold else mixture_sigma
 
-    mu_n = horizon * (mu_eff + momentum_adjustment)
+    # Path-integrated drift: sum each day's regime-weighted mean (matches the
+    # trajectory simulation), not horizon x the terminal-day mean.
+    path_drift = 0.0
+    for d in range(1, horizon + 1):
+        Pd = _mat_pow(P, d)
+        if start_mixture:
+            w_d = _normalize_state_weight_vector(sum(w * Pd[STATE_INDEX[state]] for state, w in start_mixture.items()))
+        else:
+            w_d = Pd[STATE_INDEX[initial_state]]
+        path_drift += sum(w_d[i] * regime_stats[state].mean_return for i, state in enumerate(REGIME_STATES))
+
+    # A terminal-weight override (soft regime blend) shifts every day's mean by its
+    # deviation from the P-implied terminal mix.
+    override_shift = 0.0
+    if terminal_state_weights is not None:
+        override_shift = mu_obs - sum(
+            chain_weights[i] * regime_stats[state].mean_return for i, state in enumerate(REGIME_STATES)
+        )
+
+    mu_n = path_drift + horizon * (override_shift + momentum_adjustment)
     sigma_n = sigma_eff * math.sqrt(horizon)
 
     if hmm_override:
         w = hmm_override.get("weight", 0.0)
-        hmm_drift = hmm_override.get("drift", mu_eff)
+        hmm_drift = hmm_override.get("drift", mu_obs)
         hmm_vol = hmm_override.get("vol", sigma_eff)
         mu_n = w * (horizon * hmm_drift) + (1 - w) * mu_n
         sigma_n = w * (hmm_vol * math.sqrt(horizon)) + (1 - w) * sigma_n

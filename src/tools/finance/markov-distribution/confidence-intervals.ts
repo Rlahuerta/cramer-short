@@ -115,12 +115,13 @@ export function estimateRegimeStats(
  * Compute the mixing-time weight: how much to trust the Markov regime signal
  * vs. anchor-only at a given horizon.
  *
- * weight = exp(−ρ × n) where ρ = second-largest eigenvalue of P.
- * Near 1 at short horizons (Markov-dominant).
- * Approaches 0 at long horizons (Polymarket anchors dominate).
+ * weight = |ρ|^n where ρ = second-largest eigenvalue of P — the rate at which
+ * the chain forgets its start state. Slow-mixing chains (|ρ| near 1) keep the
+ * Markov signal for longer; fast-mixing chains hand over to the anchors quickly.
+ * Mirrors `compute_mixing_weight` in research/models/trajectory/driftvol.py.
  */
 export function computeMixingWeight(secondEigenvalue: number, horizon: number): number {
-  return Math.exp(-secondEigenvalue * horizon);
+  return Math.pow(Math.max(1e-15, Math.abs(secondEigenvalue)), horizon);
 }
 
 /**
@@ -402,15 +403,23 @@ export function computeHorizonDriftVol(
   const useRegimeSigma = regimeSpecificSigma === true && maxWeight > threshold;
   const sigma_obs = useRegimeSigma ? dominantSigma : mixtureSigmaObs;
 
-  let mu_eff: number;
-  let sigma_eff: number;
+  // Drift is the sum of each day's regime-weighted mean (matching computeTrajectory),
+  // not horizon × the terminal-day mean, which understates drift as the chain mixes.
+  // A terminal-weight override (soft regime blend) shifts every day's mean by its
+  // deviation from the P-implied terminal mix.
+  // Momentum is part of the Markov arm, so the HMM override scales it by (1 − w) too.
+  let overrideShift = 0;
+  if (terminalStateWeights) {
+    const chainWeights = computeTerminalStateWeights(horizon, P, initialState, startMixture);
+    overrideShift = mu_obs - REGIME_STATES.reduce((s, state, i) => s + chainWeights[i] * regimeStats[state].meanReturn, 0);
+  }
+  let mu_n = computePathIntegratedDrift(horizon, P, regimeStats, initialState, startMixture)
+    + horizon * (overrideShift + momentumAdjustment);
+  let sigma_eff = sigma_obs;
   if (hmmOverride) {
     const w = hmmOverride.weight;
-    mu_eff = w * hmmOverride.drift + (1 - w) * mu_obs;
+    mu_n = w * horizon * hmmOverride.drift + (1 - w) * mu_n;
     sigma_eff = w * hmmOverride.vol + (1 - w) * sigma_obs;
-  } else {
-    mu_eff = mu_obs;
-    sigma_eff = sigma_obs;
   }
 
   let sigma_n = sigma_eff * Math.sqrt(horizon);
@@ -423,10 +432,7 @@ export function computeHorizonDriftVol(
     sigma_n = sigma_eff * Math.sqrt(varianceScale);
   }
 
-  return {
-    mu_n: horizon * (mu_eff + momentumAdjustment),
-    sigma_n,
-  };
+  return { mu_n, sigma_n };
 }
 
 /**
