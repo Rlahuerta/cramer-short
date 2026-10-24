@@ -18,7 +18,10 @@
  *    that embed raw JSON in their reasoning text don't flood the terminal.
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime, spyOn } from 'bun:test';
+import { useNoNetwork } from '../utils/test-no-network.js';
+import * as polymarket from '../tools/finance/polymarket.js';
+import * as embeddings from '../memory/embeddings.js';
 import { mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -29,6 +32,21 @@ import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distri
 import { _setModelFactory } from '../model/llm.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { AIMessage, AIMessageChunk, type BaseMessage } from '@langchain/core/messages';
+
+useNoNetwork();
+
+// Agent.run() injects live Polymarket context, and memory search would embed
+// via OpenAI with the stub key: keep both offline.
+let offlineSpies: Array<{ mockRestore: () => void }> = [];
+beforeEach(() => {
+  offlineSpies = [
+    spyOn(polymarket, 'fetchPolymarketMarkets').mockResolvedValue([]),
+    spyOn(embeddings, 'createEmbeddingClient').mockReturnValue(null),
+  ];
+});
+afterEach(() => {
+  for (const spy of offlineSpies) spy.mockRestore();
+});
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
