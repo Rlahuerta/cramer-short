@@ -9,24 +9,20 @@
  * - Cache key is stable regardless of arg key ordering.
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach, afterAll, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import * as crossSessionCache from '../utils/cross-session-cache.js';
 
-const actualPaths = await import('../utils/paths.js');
-
-// Keep paths relative so chdir isolation works. Override any absolute-path
-// mock that parallel worker (agent.test.ts) might have registered.
-mock.module('../utils/paths.js', () => ({
-  ...actualPaths,
-  cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
-  getCramerShortDir: mock(() => '.dexter'),
-}));
-
-mock.module('../utils/cross-session-cache.js', () => ({
-  loadCacheFromDisk: async () => new Map<string, string>(),
-  saveCacheToDisk: () => {},
-}));
+// spyOn (restored afterAll) rather than mock.module, which would leak into later test files.
+const crossSessionCacheSpies = [
+  spyOn(crossSessionCache, 'loadCacheFromDisk').mockImplementation(async () => new Map<string, string>()),
+  spyOn(crossSessionCache, 'saveCacheToDisk').mockImplementation(() => {}),
+];
+afterAll(() => {
+  for (const spy of crossSessionCacheSpies) spy.mockRestore();
+});
 
 const { AgentToolExecutor } = await import('./tool-executor.js');
 const { createRunContext } = await import('./run-context.js');
@@ -53,7 +49,7 @@ let originalCwd: string;
 
 beforeEach(() => {
   originalCwd = process.cwd();
-  tmpDir = join(originalCwd, '.cramer-short', 'test-runs', `tool-exec-test-${nextTestId('path')}`);
+  tmpDir = join(tmpdir(), `tool-exec-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
   process.chdir(tmpDir);
 });

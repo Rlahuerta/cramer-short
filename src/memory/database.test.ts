@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryDatabase } from './database.js';
 import type { MemoryChunk } from './types.js';
 
-const TEST_DIR = join(process.cwd(), '.cramer-short-test', 'memory-database');
+const TEST_DIR = join(tmpdir(), `cramer-short-memory-database-test-${process.pid}`);
 const DB_PATH = join(TEST_DIR, 'index.sqlite');
 
 let db: MemoryDatabase;

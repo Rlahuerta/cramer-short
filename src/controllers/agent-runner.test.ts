@@ -18,6 +18,10 @@ import { describe, it, expect, mock } from 'bun:test';
 import { AgentRunnerController } from './agent-runner.js';
 import type { HistoryItem } from '../controllers/types.js';
 import type { ToolStartEvent, ToolEndEvent, ToolErrorEvent } from '../agent/types.js';
+import { useTempCramerShortDir } from '../utils/test-cramer-short-dir.js';
+
+// Error paths call logError(); keep its errors.jsonl out of the working tree.
+useTempCramerShortDir();
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Minimal stubs

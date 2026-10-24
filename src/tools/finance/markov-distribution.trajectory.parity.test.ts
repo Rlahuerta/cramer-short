@@ -5,9 +5,11 @@
  * and trajectory generation consistency.
  */
 import { describe, test, expect } from 'bun:test';
-import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity, pythonParityAvailable } from '../../utils/finance/python-parity.js';
 
 enablePythonParity();
+// Skip (with a warning) when the cramer-research conda env is absent; REQUIRE_PARITY=1 forces a run.
+const describeParity = describe.skipIf(!pythonParityAvailable());
 import {
   estimateRegimeStats,
   logNormalSurvival,
@@ -17,7 +19,7 @@ import type { RegimeState } from './markov-distribution/core.js';
 const PYTHON_PARITY_TIMEOUT_MS = 30_000;
 const SURVIVAL_PARITY_DIGITS = 6;
 
-describe('TS/Python parity — log_normal_survival', () => {
+describeParity('TS/Python parity — log_normal_survival', () => {
   test('at-the-money, 21-day horizon', async () => {
     const ts = logNormalSurvival(100, 100, 0.10, 0.25);
     const py = await runPython(`
@@ -41,7 +43,7 @@ print(log_normal_survival(100, 120, -0.05, 0.30))
   }, PYTHON_PARITY_TIMEOUT_MS);
 });
 
-describe('TS/Python parity — estimate_regime_stats', () => {
+describeParity('TS/Python parity — estimate_regime_stats', () => {
   test('consistent across TS and Python', async () => {
     const returns = [
       0.02, 0.01, 0.03, 0.015, 0.025, 0.018,

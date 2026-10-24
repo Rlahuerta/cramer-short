@@ -1,6 +1,8 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { afterAll, beforeEach, describe, expect, it, mock, afterEach, setSystemTime, spyOn } from 'bun:test';
+import { beforeEach, describe, expect, it, mock, afterEach, setSystemTime, spyOn, afterAll } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { useTempCramerShortDir } from '../../../utils/test-cramer-short-dir.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -48,28 +50,31 @@ const resolveJidToPhoneJidMock = mock(async (jid: string) => (
 const isRecentInboundMessageMock = mock(() => false);
 const setActiveWebListenerMock = mock(() => {});
 
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realBaileysModule = { ...(await import('@whiskeysockets/baileys')) };
+const realSessionModule = { ...(await import('./session.js')) };
+const realOutboundModule = { ...(await import('./outbound.js')) };
+const realDedupeModule = { ...(await import('./dedupe.js')) };
+const realAuthStoreModule = { ...(await import('./auth-store.js')) };
+const realAccessControlModule = { ...(await import('../../access-control.js')) };
+const realLidModule = { ...(await import('./lid.js')) };
+afterAll(() => {
+  mock.module('@whiskeysockets/baileys', () => realBaileysModule);
+  mock.module('./session.js', () => realSessionModule);
+  mock.module('./outbound.js', () => realOutboundModule);
+  mock.module('./dedupe.js', () => realDedupeModule);
+  mock.module('./auth-store.js', () => realAuthStoreModule);
+  mock.module('../../access-control.js', () => realAccessControlModule);
+  mock.module('./lid.js', () => realLidModule);
+});
+
 mock.module('@whiskeysockets/baileys', () => ({
   isJidGroup: (jid: string) => jid.endsWith('@g.us'),
   normalizeMessageContent: (message: unknown) => message,
   extractMessageContent: (message: unknown) => message,
 }));
-mock.module('../../../utils/paths.js', () => ({
-  getCramerShortDir: () => '.cramer-short-test/whatsapp-inbound',
-  cramerShortPath: (...segments: string[]) => ['.cramer-short-test', 'whatsapp-inbound', ...segments].join('/'),
-  arbiterReplayCachePath: (...segments: string[]) =>
-    ['.cramer-short-test', 'whatsapp-inbound', 'cache', 'arbiter-replay', ...segments].join('/'),
-  experimentsPath: (...segments: string[]) =>
-    ['.cramer-short-test', 'whatsapp-inbound', 'experiments', ...segments].join('/'),
-  getExperimentsDir: () => '.cramer-short-test/whatsapp-inbound/experiments',
-  getExperimentLedgerPath: () => '.cramer-short-test/whatsapp-inbound/experiments/forecast-results.tsv',
-  getExperimentRunsDir: () => '.cramer-short-test/whatsapp-inbound/experiments/runs',
-  getExperimentRunDir: (runId: string) =>
-    ['.cramer-short-test', 'whatsapp-inbound', 'experiments', 'runs', runId].join('/'),
-  getExperimentRunArtifactsDir: (runId: string) =>
-    ['.cramer-short-test', 'whatsapp-inbound', 'experiments', 'runs', runId, 'artifacts'].join('/'),
-  getExperimentRunManifestPath: (runId: string) =>
-    ['.cramer-short-test', 'whatsapp-inbound', 'experiments', 'runs', runId, 'manifest.json'].join('/'),
-}));
+const testStateDir = useTempCramerShortDir();
 const getStatusCodeMock = mock((_err: unknown) => 401);
 const isLoggedOutReasonMock = mock((_err: unknown) => true);
 mock.module('./session.js', () => ({
@@ -93,8 +98,8 @@ const {
 } = await import(`./inbound.js?t=${nextTestId('module')}`) as typeof import('./inbound.js');
 
 beforeEach(() => {
-  rmSync('.cramer-short-test/whatsapp-inbound', { recursive: true, force: true });
-  mkdirSync('.cramer-short-test/whatsapp-inbound', { recursive: true });
+  rmSync(testStateDir, { recursive: true, force: true });
+  mkdirSync(testStateDir, { recursive: true });
   eventHandlers = {};
   for (const fn of [
     sendMessageMock,
@@ -113,10 +118,6 @@ beforeEach(() => {
   ]) {
     fn.mockClear();
   }
-});
-
-afterAll(() => {
-  rmSync('.cramer-short-test/whatsapp-inbound', { recursive: true, force: true });
 });
 
 describe('WhatsApp inbound parsing helpers', () => {
@@ -148,7 +149,7 @@ describe('monitorWebInbox inbound conversion', () => {
     const received: any[] = [];
     await monitorWebInbox({
       accountId: 'default',
-      authDir: '.cramer-short-test/auth',
+      authDir: join(testStateDir, 'auth'),
       verbose: false,
       allowFrom: [],
       dmPolicy: 'open',
@@ -194,7 +195,7 @@ describe('monitorWebInbox inbound conversion', () => {
     const received: any[] = [];
     await monitorWebInbox({
       accountId: 'default',
-      authDir: '.cramer-short-test/auth',
+      authDir: join(testStateDir, 'auth'),
       verbose: false,
       allowFrom: [],
       dmPolicy: 'disabled',
@@ -241,7 +242,7 @@ describe('monitorWebInbox inbound conversion', () => {
     const onMessageMock = mock(async () => {});
     await monitorWebInbox({
       accountId: 'default',
-      authDir: '.cramer-short-test/auth',
+      authDir: join(testStateDir, 'auth'),
       verbose: false,
       allowFrom: [],
       dmPolicy: 'open',
@@ -268,7 +269,7 @@ describe('monitorWebInbox event handler safety', () => {
   async function startInbox(onMessage: (msg: any) => Promise<void>) {
     await monitorWebInbox({
       accountId: 'default',
-      authDir: '.cramer-short-test/auth',
+      authDir: join(testStateDir, 'auth'),
       verbose: false,
       allowFrom: [],
       dmPolicy: 'open',

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   getExperimentLedgerPath,
@@ -50,7 +51,7 @@ function serializeLegacyLedgerField(value: unknown): string {
   return stableJsonStringify(value === undefined ? null : value);
 }
 
-const TEST_ROOT = join(process.cwd(), '.cramer-short', 'experiments', '__ledger_test__');
+const TEST_ROOT = join(tmpdir(), `cramer-short-ledger-test-${process.pid}`);
 const PATH_TEST_RUN_ID = 'ledger-path-test';
 const LEGACY_LEDGER_HEADER = [
   'runId',
@@ -198,7 +199,6 @@ function makePendingPromotion(runId = 'run-1') {
 
 afterEach(() => {
   rmSync(TEST_ROOT, { recursive: true, force: true });
-  rmSync(getExperimentRunDir(PATH_TEST_RUN_ID), { recursive: true, force: true });
 });
 
 describe('forecast-lab ledger serialization', () => {
@@ -896,15 +896,24 @@ describe('experiment path helpers', () => {
   });
 
   it('creates experiment directories only when requested', () => {
-    const ledgerPath = getExperimentLedgerPath({ create: true });
-    const artifactsDir = getExperimentRunArtifactsDir(PATH_TEST_RUN_ID, { create: true });
-    const manifestPath = getExperimentRunManifestPath(PATH_TEST_RUN_ID, { create: true });
+    // The paths are cwd-relative: create them under a temp cwd, not the working tree.
+    const originalCwd = process.cwd();
+    const tempCwd = mkdtempSync(join(tmpdir(), 'cramer-short-ledger-paths-'));
+    process.chdir(tempCwd);
+    try {
+      const ledgerPath = getExperimentLedgerPath({ create: true });
+      const artifactsDir = getExperimentRunArtifactsDir(PATH_TEST_RUN_ID, { create: true });
+      const manifestPath = getExperimentRunManifestPath(PATH_TEST_RUN_ID, { create: true });
 
-    expect(ledgerPath).toBe(join('.cramer-short', 'experiments', 'forecast-results.tsv'));
-    expect(existsSync(getExperimentsDir())).toBe(true);
-    expect(existsSync(artifactsDir)).toBe(true);
-    expect(manifestPath).toBe(join('.cramer-short', 'experiments', 'runs', PATH_TEST_RUN_ID, 'manifest.json'));
-    expect(existsSync(getExperimentRunDir(PATH_TEST_RUN_ID))).toBe(true);
+      expect(ledgerPath).toBe(join('.cramer-short', 'experiments', 'forecast-results.tsv'));
+      expect(existsSync(getExperimentsDir())).toBe(true);
+      expect(existsSync(artifactsDir)).toBe(true);
+      expect(manifestPath).toBe(join('.cramer-short', 'experiments', 'runs', PATH_TEST_RUN_ID, 'manifest.json'));
+      expect(existsSync(getExperimentRunDir(PATH_TEST_RUN_ID))).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(tempCwd, { recursive: true, force: true });
+    }
   });
 
   it('rejects unsafe run ids before building per-run paths', () => {

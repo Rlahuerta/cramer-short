@@ -2,8 +2,8 @@ import { describe, test, expect, mock, spyOn, beforeEach, afterEach, afterAll } 
 import { AIMessage } from '@langchain/core/messages';
 
 // Capture real modules before mocking so afterAll can restore
-const realLlm = await import('../../model/llm.js');
-const realDate = await import('../../utils/date.js');
+const realLlm = { ...(await import('../../model/llm.js')) };
+const realDate = { ...(await import('../../utils/date.js')) };
 
 const mockCallLlm = mock(async () => ({
   response: new AIMessage({ content: '', tool_calls: [] }),

@@ -64,7 +64,8 @@ if (specs.length === 0) {
 }
 
 for (const spec of specs) {
-  const cmd = [process.execPath, 'test', spec.file];
+  // Empty --path-ignore-patterns overrides bunfig.toml's tier exclusions for this explicit file.
+  const cmd = [process.execPath, 'test', '--path-ignore-patterns=', spec.file];
   if (spec.timeoutMs) {
     cmd.push('--timeout', String(spec.timeoutMs));
   }

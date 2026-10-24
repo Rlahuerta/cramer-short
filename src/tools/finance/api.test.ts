@@ -1,5 +1,5 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, spyOn, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach, setSystemTime, afterAll } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +17,13 @@ afterEach(() => {
 const mockReadCache = mock((..._args: unknown[]) => null as unknown);
 const mockWriteCache = mock((..._args: unknown[]) => undefined);
 const mockDescribeRequest = mock((endpoint: string) => String(endpoint));
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realCacheModule = { ...(await import('../../utils/cache.js')) };
+afterAll(() => {
+  mock.module('../../utils/cache.js', () => realCacheModule);
+});
 
 mock.module('../../utils/cache.js', () => ({
   readCache: mockReadCache,
