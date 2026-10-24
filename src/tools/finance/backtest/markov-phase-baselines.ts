@@ -102,10 +102,13 @@ export const MARKOV_PHASE0_BASELINES = {
  * measured once directionalAccuracy() stopped scoring HOLD as correct (2026-10:
  * traded steps only). The phase-0 directionalAccuracy values above were taken with
  * the old |r| < 3% HOLD band and are not comparable with directionalAccuracy() any more.
+ * Re-baselined when the base-rate floor stopped adding its P(up) deficit to every
+ * survival point: that mass sat above the grid top and inflated expected return by
+ * 0.5-1.9%, turning floored steps with P(up) < 0.5 into BUY (h2 .538, h3 .557, h14 .514).
  */
 export const BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS = {
-  h1: 0.49,
-  h2: 0.53,
-  h3: 0.55,
-  h14: 0.51,
+  h1: 0.50,
+  h2: 0.45,
+  h3: 0.46,
+  h14: 0.49,
 } as const;
