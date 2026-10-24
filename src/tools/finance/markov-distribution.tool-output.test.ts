@@ -2323,6 +2323,28 @@ describe('markov_distribution tool output envelope', () => {
       tickers: ['ETH'],
       nonZeroCoefCount: expect.any(Number),
     });
+
+    // The bias must come from how today's peer return predicts the target's
+    // next H days, not from same-day co-movement already priced in.
+    const rng2 = makeRng(23);
+    const raw = Array.from({ length: n }, () => randn(rng2) * 0.02);
+    const rawMean = raw.reduce((a, b) => a + b, 0) / n;
+    // Centered so the Lasso intercept (sample mean of y) doesn't swamp the slope.
+    const peer = raw.map(r => r - rawMean);
+    peer[n - 1] = 0.04;
+    const target = peer.map((p, i) => 0.5 * p + (i > 0 ? 0.3 * peer[i - 1] : 0) + 0.002 * randn(rng2));
+    const coMoving = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: makePriceSeries(target).at(-1)!,
+      historicalPrices: makePriceSeries(target),
+      polymarketMarkets: [],
+      enableCrossAssetBias: true,
+      crossAssetReturns: { ETH: peer },
+      crossAssetLassoLambda: 0.001,
+    });
+    // Lead-only effect: 0.3 * 0.04 / 7 ≈ 0.0017; same-day leakage would add 0.5 * 0.04 / 7.
+    expect(coMoving.metadata.crossAssetBias!.perDayBias).toBeCloseTo(0.3 * 0.04 / 7, 3);
   });
 
   it('keeps BTC 30-day off-window fallback candidates from enabling canonical emission', async () => {
