@@ -121,6 +121,19 @@ describe('estimateCrossAssetBias', () => {
     expect(r!.fit.coef[0]).toBeGreaterThan(0);
   });
 
+  it('carries only the peer signal, not the intercept: zero coefficients give zero bias', () => {
+    const rng = seedRng(3);
+    const n = 200;
+    const peer = Array.from({ length: n }, () => gauss(rng) * 0.02);
+    // Strong positive mean return, no relationship to the peer.
+    const target = Array.from({ length: n }, () => 0.01 + gauss(rng) * 0.001);
+    const r = estimateCrossAssetBias(target, { ETH: peer }, 7, { lambda: 0.05, lag: 1 });
+    expect(r).not.toBeNull();
+    expect(r!.fit.coef).toEqual([0]);
+    expect(r!.fit.intercept).toBeGreaterThan(0.05);
+    expect(r!.perDayBias).toBe(0);
+  });
+
   it('is deterministic for the same input', () => {
     const rng = seedRng(99);
     const n = 150;
@@ -140,7 +153,9 @@ describe('estimateCrossAssetBias', () => {
     const r = estimateCrossAssetBias(target, { ETH: peer }, 1, { lambda: 0.0001, minSamples: 60 });
     expect(r).not.toBeNull();
     expect(r!.fit.coef[0]).toBeGreaterThan(0.015);
-    expect(r!.perDayBias).toBeCloseTo(peer[299], 3);
+    // Bias excludes the intercept: latest return minus the fit window's mean.
+    const fitMean = peer.slice(200, 299).reduce((a, b) => a + b, 0) / 99;
+    expect(r!.perDayBias).toBeCloseTo(peer[299] - fitMean, 3);
   });
 
   it('per-day bias scales inversely with horizon', () => {
