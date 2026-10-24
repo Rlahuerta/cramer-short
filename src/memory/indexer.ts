@@ -222,9 +222,8 @@ export class MemoryIndexer {
 
     const result = await this.embedAndUpsertChunks(chunks, 'sessions');
 
-    if (chunks.length === 0) {
-      removed += this.db.deleteChunksForFile(SESSION_FILE_PATH);
-    }
+    // Drop chunks of turns that are no longer in the chat history.
+    removed += this.db.deleteChunksForFile(SESSION_FILE_PATH, new Set(chunks.map((chunk) => chunk.contentHash)));
 
     return { indexed: result.indexed, updated: result.updated, removed };
   }

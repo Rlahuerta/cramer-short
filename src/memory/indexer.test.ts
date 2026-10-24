@@ -85,3 +85,41 @@ describe('MemoryIndexer.sync — edited files', () => {
     expect(contents.some((c) => c.includes('AAPL'))).toBe(true);
   });
 });
+
+describe('MemoryIndexer.sync — session transcripts', () => {
+  it('drops chunks of chat turns that are no longer in chat_history.json', async () => {
+    const store = new MemoryStore(baseDir);
+    const indexer = new MemoryIndexer(store, db, {
+      chunkTokens: 8,
+      overlapTokens: 0,
+      watchDebounceMs: 1000,
+      embeddingClient: null,
+      indexSessions: true,
+    });
+    const writeHistory = async (turns: [string, string][]) => {
+      await mkdir(join(baseDir, 'messages'), { recursive: true });
+      const messages = turns.map(([userMessage, agentResponse], i) => ({
+        id: String(i),
+        timestamp: '2026-10-24T00:00:00Z',
+        userMessage,
+        agentResponse,
+      }));
+      await writeFile(store.getChatHistoryPath(), JSON.stringify({ messages }));
+    };
+    const sessionContents = () =>
+      db.listAllChunks().filter((c) => c.file_path === 'sessions/chat_history.json').map((c) => c.content);
+
+    await writeHistory([['Ask about AAPL', 'AAPL looks fine.'], ['Ask about MSFT', 'MSFT looks fine.']]);
+    await indexer.sync();
+    expect(sessionContents().some((c) => c.includes('MSFT'))).toBe(true);
+
+    await writeHistory([['Ask about AAPL', 'AAPL looks fine.'], ['Ask about NVDA', 'NVDA looks fine.']]);
+    indexer.markDirty();
+    await indexer.sync();
+
+    const contents = sessionContents();
+    expect(contents.some((c) => c.includes('MSFT'))).toBe(false);
+    expect(contents.some((c) => c.includes('NVDA'))).toBe(true);
+    expect(contents.some((c) => c.includes('AAPL'))).toBe(true);
+  });
+});
