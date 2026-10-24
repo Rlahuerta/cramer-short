@@ -5,7 +5,7 @@
  * Scratchpad JSONL files do not accumulate in the project tree.
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -17,16 +17,6 @@ beforeEach(() => {
 afterEach(() => {
   setSystemTime();
 });
-
-const actualPaths = await import('../utils/paths.js');
-
-// Keep paths relative so chdir isolation works. Override any absolute-path
-// mock that parallel worker (agent.test.ts) might have registered.
-mock.module('../utils/paths.js', () => ({
-  ...actualPaths,
-  cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
-  getCramerShortDir: mock(() => '.dexter'),
-}));
 
 const { createRunContext } = await import('./run-context.js');
 const { Scratchpad } = await import('./scratchpad.js');

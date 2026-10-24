@@ -1,8 +1,9 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, beforeEach, afterEach, mock, setSystemTime } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, setSystemTime } from 'bun:test';
 import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import * as paths from './paths.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -13,27 +14,23 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Isolation: each test gets a unique tmp dir and re-mocks `./paths.js` to
-// point at it. We avoid process.chdir() and bare env-var overrides because
-// Bun runs test files concurrently in the same process and a sibling test
-// file (`src/agent/prompts.test.ts`) installs its own `mock.module` for
-// `../utils/paths.js`, which would otherwise bleed into the cache module.
+// Isolation: each test gets a unique tmp dir and points getCramerShortDir at
+// it via spyOn (restored afterEach). mock.module is avoided because Bun never
+// undoes it, so it would leak into every later test file.
 // ---------------------------------------------------------------------------
 let tmpDir: string;
+let dirSpy: ReturnType<typeof spyOn>;
 
 beforeEach(() => {
   tmpDir = join(tmpdir(), `cache-test-${nextTestId('path')}`);
   mkdirSync(tmpDir, { recursive: true });
-  // Re-install a mock that points paths.js at this test's tmp dir. Because the
-  // dynamic import below uses a cache-busting query string, the cache module
-  // is re-evaluated and picks up this mock.
-  mock.module('./paths.js', () => ({
-    getCramerShortDir: () => tmpDir,
-    cramerShortPath: (...segs: string[]) => join(tmpDir, ...segs),
-  }));
+  // The dynamic import below uses a cache-busting query string, so the cache
+  // module is re-evaluated and computes CACHE_DIR from this spy.
+  dirSpy = spyOn(paths, 'getCramerShortDir').mockReturnValue(tmpDir);
 });
 
 afterEach(() => {
+  dirSpy.mockRestore();
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -42,7 +39,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 async function getCacheModule() {
   // CACHE_DIR is computed at module init from getCramerShortDir(), so we
-  // re-import per test to pick up the mocked paths.js. Bun caches modules by
+  // re-import per test to pick up the getCramerShortDir spy. Bun caches modules by
   // specifier, so we use a timestamp+random query param to bust the cache.
   const mod = await import(`./cross-session-cache.js?t=${nextTestId('module')}`);
   return mod as typeof import('./cross-session-cache.js');

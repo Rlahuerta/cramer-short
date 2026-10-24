@@ -1,5 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, test, expect, beforeEach, afterEach, afterAll, mock, setSystemTime } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, afterAll, setSystemTime } from 'bun:test';
+import { useTempCramerShortDir } from './test-cramer-short-dir.js';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
@@ -12,19 +13,13 @@ afterEach(() => {
   setSystemTime();
 });
 
-// Unique temp dir per worker run — prevents parallel worker contamination of the real .cramer-short/cache
-const TEST_CACHE_DIR = join(tmpdir(), `dexter-cache-test-${nextTestId('path')}`);
-
-// Mock paths.js BEFORE cache.ts loads so the module-level CACHE_DIR = cramerShortPath('cache') resolves to our temp dir
-mock.module('./paths.js', () => ({
-  cramerShortPath: (first?: string, ...rest: string[]) =>
-    first === 'cache' ? TEST_CACHE_DIR : join(TEST_CACHE_DIR, ...(first ? [first, ...rest] : [])),
-  getCramerShortDir: () => TEST_CACHE_DIR,
-}));
+// Point getCramerShortDir at a temp dir BEFORE cache.ts loads so the module-level
+// CACHE_DIR = cramerShortPath('cache') resolves inside it (never the real .cramer-short/cache).
+const TEST_CACHE_DIR = join(useTempCramerShortDir(), 'cache');
 
 // Use a cache-busting query param to force Bun to re-evaluate cache.ts so that
-// the module-level CACHE_DIR = cramerShortPath('cache') is evaluated AFTER paths.js
-// is mocked above. Without the ?t= suffix, Bun returns a previously-cached
+// the module-level CACHE_DIR = cramerShortPath('cache') is evaluated AFTER the
+// getCramerShortDir spy above. Without the ?t= suffix, Bun returns a previously-cached
 // cache.ts instance (loaded by filings.test.ts → api.ts → cache.ts) that
 // already resolved CACHE_DIR against the real .cramer-short directory.
 const { buildCacheKey, readCache, writeCache } = await import(`./cache.js?t=${nextTestId('module')}`) as typeof import('./cache.js');
