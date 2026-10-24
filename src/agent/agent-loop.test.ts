@@ -5,7 +5,7 @@
  */
 import { FIXED_TEST_DATE, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, spyOn, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BaseChatModel, type BaseChatModelCallOptions, type BindToolsInput } from '@langchain/core/language_models/chat_models';
@@ -83,8 +83,7 @@ let prevOpenAiKey: string | undefined;
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
-  tmpDir = join(tmpdir(), `agent-loop-test-${nextTestId('path')}`);
-  mkdirSync(tmpDir, { recursive: true });
+  tmpDir = mkdtempSync(join(tmpdir(), 'agent-loop-test-'));
   originalCwd = process.cwd();
   process.chdir(tmpDir);
   prevOpenAiKey = process.env.OPENAI_API_KEY;
