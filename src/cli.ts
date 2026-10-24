@@ -34,7 +34,7 @@ import {
   createSkillSelector,
 } from './components/index.js';
 import { editorTheme, theme } from './theme.js';
-import type { HistoryItem } from './controllers/types.js';
+import { isFinishedHistoryItem, type HistoryItem } from './controllers/types.js';
 import {
   exportSession,
   getBooleanEnv,
@@ -355,7 +355,7 @@ export async function runCli() {
     // new query. If already flushed, skip the scrollback write and just clear
     // the compact TUI view.
     const prevItem = agentRunner.history.at(-1);
-    if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted')) {
+    if (prevItem && isFinishedHistoryItem(prevItem)) {
       if (flushedItems.has(prevItem)) {
         chatLog.clearAll(); // compact view is still in chatLog; clear it
       } else {
@@ -623,7 +623,7 @@ export async function runCli() {
           if (loaded) {
             // Flush any current exchange to scrollback before overwriting history.
             const prevItem = agentRunner.history.at(-1);
-            if (prevItem && (prevItem.status === 'complete' || prevItem.status === 'interrupted')) {
+            if (prevItem && isFinishedHistoryItem(prevItem)) {
               flushExchangeToScrollback(tui, chatLog, prevItem);
             } else {
               chatLog.clearAll();
