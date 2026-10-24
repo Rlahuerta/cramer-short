@@ -1,10 +1,13 @@
-import { afterEach, describe, test, expect } from 'bun:test';
+import { afterEach, describe, test, expect, spyOn } from 'bun:test';
+import { useNoNetwork } from '../../utils/test-no-network.js';
 import { webFetchTool } from './web-fetch.js';
 import { _setDnsLookupForTest } from './url-guard.js';
 import { extractText as extractPdfText } from 'unpdf';
 // Warm the HTML extractor's dynamic imports outside individual test timers.
 import '@mozilla/readability';
 import 'linkedom';
+
+useNoNetwork();
 
 // Minimal valid 1-page PDF with the text "Hello PDF World"
 const MINIMAL_PDF_BASE64 =
@@ -60,11 +63,20 @@ describe('web_fetch blocked-domain guard', () => {
   });
 
   test('does NOT reject legitimate news URLs', async () => {
-    // cnbc.com, reuters.com, ft.com etc. should pass through to the real fetch
-    // (we just verify the guard does not fire — the network call itself may fail
-    //  in CI, so we only check that the message is not a "Blocked domain" one).
-    const result = await invoke('https://httpbin.org/get').catch((e: Error) => e.message);
-    expect(result).not.toContain('Blocked domain');
+    // cnbc.com, reuters.com, ft.com etc. should pass through to fetch
+    // (DNS and fetch are stubbed: we only verify the guard does not fire).
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('<p>ok</p>', { status: 200, headers: { 'content-type': 'text/html' } }),
+    );
+    try {
+      const result = await invoke('https://httpbin.org/get');
+      expect(result).not.toContain('Blocked domain');
+      expect(fetchSpy).toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      _setDnsLookupForTest();
+    }
   });
 });
 
