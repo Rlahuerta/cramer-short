@@ -1049,7 +1049,7 @@ describe('computeMarkovDistribution (integration)', () => {
     expect(result.horizon).toBe(10);
   });
 
-  it('distribution has 21 points (0..numLevels)', async () => {
+  it('distribution has 22 points (0..numLevels plus currentPrice)', async () => {
     const result = await computeMarkovDistribution({
       ticker: 'TEST',
       horizon: 5,
@@ -1057,7 +1057,7 @@ describe('computeMarkovDistribution (integration)', () => {
       historicalPrices: prices,
       polymarketMarkets: [],
     });
-    expect(result.distribution.length).toBe(21);
+    expect(result.distribution.length).toBe(22);
   });
 
   it('metadata includes all expected fields', async () => {
@@ -2877,8 +2877,11 @@ describe('PR3 Post-Experiment: matureBullCalibration', () => {
   it('applies extra shrinkage for overconfident BTC bull runs with stalling acceleration at 14d horizon', async () => {
     const prices = [];
     let p = 60000;
+    // Late drift 0.002 keeps raw P(up) (~0.94) above the 0.80 calibration center, so the
+    // run really is overconfident. At 0.001 raw P(up) is ~0.74, below the center, and
+    // extra shrinkage toward the center would raise P(up) instead.
     for (let i = 0; i < 140; i++) {
-      const drift = i < 70 ? 0.012 : 0.001;
+      const drift = i < 70 ? 0.012 : 0.002;
       const wobble = Math.sin(i / 2) * 0.003;
       p *= (1 + drift + wobble);
       prices.push(p);
@@ -2913,8 +2916,7 @@ describe('PR3 Post-Experiment: matureBullCalibration', () => {
     const defaultAtCurrent = interpolateSurvival(defaultResult.distribution, currentPrice);
     const experimentAtCurrent = interpolateSurvival(experimentResult.distribution, currentPrice);
 
-    // Both can sit exactly on the base-rate floor; allow float noise from the floor's grid rescale.
-    expect(experimentAtCurrent).toBeLessThanOrEqual(defaultAtCurrent + 1e-12);
+    expect(experimentAtCurrent).toBeLessThan(defaultAtCurrent);
   });
 });
 
