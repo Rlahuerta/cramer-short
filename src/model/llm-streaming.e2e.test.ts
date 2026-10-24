@@ -11,16 +11,16 @@
  *
  * These tests require:
  *   - Ollama running on http://127.0.0.1:11434
- *   - nemotron-3-super:cloud (thinking model — for think-filter test)
- *   - deepseek-v3.2:cloud  (non-thinking model — for plain streaming test)
+ *   - deepseek-v4.1-flash:cloud (E2E_OLLAMA_MODEL) for every test
  */
 
 import { describe, expect } from 'bun:test';
 import { e2eIt } from '@/utils/test-guards.js';
+import { E2E_OLLAMA_MODEL } from '@/utils/e2e-helpers.js';
 import { streamCallLlm } from '@/model/llm.js';
 
-const THINKING_MODEL = 'ollama:kimi-k2.6:cloud';
-const PLAIN_MODEL = 'ollama:kimi-k2.6:cloud';
+const THINKING_MODEL = E2E_OLLAMA_MODEL;
+const PLAIN_MODEL = E2E_OLLAMA_MODEL;
 
 // ---------------------------------------------------------------------------
 // Basic streaming
@@ -89,7 +89,7 @@ describe('streamCallLlm — <think> block stripping', () => {
       const chunks: string[] = [];
       for await (const chunk of streamCallLlm('Reply with exactly: THINK_STRIPPED', {
         model: THINKING_MODEL,
-        // thinkOverride not set — will use isThinkingModel() → true for nemotron
+        // thinkOverride not set — uses isThinkingModel() for the model
       })) {
         chunks.push(chunk);
       }

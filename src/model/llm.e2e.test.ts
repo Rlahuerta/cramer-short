@@ -7,7 +7,7 @@
  *
  * Prerequisites:
  *   - Ollama running at OLLAMA_BASE_URL (default http://127.0.0.1:11434)
- *   - At least one `*:cloud` model available
+ *   - deepseek-v4.1-flash:cloud available (or E2E_MODEL set)
  *
  * Run with:
  *   bun run test:e2e
@@ -17,7 +17,6 @@
 
 import { describe, expect, beforeAll, beforeEach } from 'bun:test';
 import { e2eIt, RUN_E2E } from '@/utils/test-guards.js';
-import { getOllamaModels } from '@/utils/ollama.js';
 import { getE2EPreflightStatus } from '@/utils/e2e-helpers.js';
 
 import { callLlm, _setModelFactory } from '@/model/llm.js';
@@ -27,7 +26,6 @@ import { callLlm, _setModelFactory } from '@/model/llm.js';
 // Declared at file scope to register before the describe block's tests.
 beforeEach(() => { _setModelFactory(null); });
 
-const NEMOTRON_MODEL = 'ollama:nemotron-3-super:cloud';
 const GENERAL_CLOUD_CALL_TIMEOUT_MS = 75_000;
 
 // ---------------------------------------------------------------------------
@@ -38,7 +36,7 @@ let resolvedModel: string | null = null;
 
 beforeAll(async () => {
   if (!RUN_E2E) return;
-  // Shared resolver: honours E2E_MODEL and skips cloud models Ollama has retired.
+  // Shared resolver: deepseek-v4.1-flash:cloud unless E2E_MODEL overrides it.
   const status = await getE2EPreflightStatus();
   resolvedModel = status.available ? status.model : null;
   console.log(`Resolved Ollama cloud model for general live-call e2e: ${resolvedModel ?? 'none'}`);
@@ -97,30 +95,6 @@ describe('Ollama cloud model — live callLlm', () => {
       const text = extractText(response);
       expect(text.trim().length).toBeGreaterThan(0);
       expect(text.toUpperCase()).toContain('PONG');
-    },
-    90_000,
-  );
-
-  e2eIt(
-    'nemotron-3-super:cloud answers a simple arithmetic question',
-    async () => {
-      const models = await getOllamaModels();
-      if (!models.includes('nemotron-3-super:cloud')) {
-        console.log('nemotron-3-super:cloud not available — skipping');
-        return;
-      }
-
-      const { response } = await callLlm(
-          'What is 2 + 2? Reply with only the number.',
-        {
-          model: NEMOTRON_MODEL,
-          systemPrompt: 'Answer with a single number, no explanation.',
-          timeoutMs: GENERAL_CLOUD_CALL_TIMEOUT_MS,
-        },
-      );
-
-      const text = extractText(response);
-      expect(text.trim()).toMatch(/4/);
     },
     90_000,
   );

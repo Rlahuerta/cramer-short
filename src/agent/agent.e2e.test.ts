@@ -4,7 +4,7 @@
  * Run with:  bun run test:e2e
  * Skipped in normal `bun test` / CI runs.
  *
- * Model: auto-resolved Ollama cloud model (override via E2E_MODEL env var)
+ * Model: deepseek-v4.1-flash:cloud (override via E2E_MODEL env var)
  * Timeout: 600 s per test
  */
 import { describe, expect } from 'bun:test';

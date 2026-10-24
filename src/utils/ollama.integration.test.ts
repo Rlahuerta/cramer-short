@@ -108,31 +108,13 @@ describe('getOllamaModels — OLLAMA_BASE_URL override', () => {
 // ---------------------------------------------------------------------------
 
 describe('getOllamaModels — expected models on this machine', () => {
-  integrationIt('glm-5:cloud is available', () => {
-    if (skipWhenOllamaUnreachable(preflight, 'glm-5:cloud is available')) return;
-    if (!hasModel('glm-5:cloud')) {
+  integrationIt('deepseek-v4.1-flash:cloud (the test model) is available', () => {
+    if (skipWhenOllamaUnreachable(preflight, 'deepseek-v4.1-flash:cloud (the test model) is available')) return;
+    if (!hasModel('deepseek-v4.1-flash')) {
       expect(true).toBe(true);
       return;
     }
-    expect(models).toContain('glm-5:cloud');
-  });
-
-  integrationIt('qwen3.5:397b-cloud is available', () => {
-    if (skipWhenOllamaUnreachable(preflight, 'qwen3.5:397b-cloud is available')) return;
-    if (!hasModel('qwen3.5')) {
-      expect(true).toBe(true);
-      return;
-    }
-    expect(models).toContain('qwen3.5:397b-cloud');
-  });
-
-  integrationIt('nemotron-3-super:cloud is available', () => {
-    if (skipWhenOllamaUnreachable(preflight, 'nemotron-3-super:cloud is available')) return;
-    if (!hasModel('nemotron-3-super')) {
-      expect(true).toBe(true);
-      return;
-    }
-    expect(models).toContain('nemotron-3-super:cloud');
+    expect(models).toContain('deepseek-v4.1-flash:cloud');
   });
 
   integrationIt('mxbai-embed-large:latest is available (embedding model)', () => {
