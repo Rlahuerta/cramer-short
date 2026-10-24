@@ -291,3 +291,15 @@ describe('Scratchpad file', () => {
     expect(second.getToolResults()).not.toContain('tool_a');
   });
 });
+
+describe('Scratchpad entries', () => {
+  it('serves accessors from memory instead of re-reading the file', () => {
+    const sp = new Scratchpad('cached query');
+    sp.addToolResult('tool_a', { ticker: 'AAA' }, JSON.stringify({ value: 1 }));
+    writeFileSync(filepathOf(sp), '');
+
+    expect(sp.hasToolResults()).toBe(true);
+    expect(sp.getToolResults()).toContain('tool_a');
+    expect(sp.getToolCallRecords()).toHaveLength(1);
+  });
+});

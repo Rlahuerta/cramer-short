@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { createHash, randomBytes } from 'crypto';
 import { cramerShortPath } from '../utils/paths.js';
@@ -76,6 +76,9 @@ export class Scratchpad {
   // In-memory tracking for Anthropic-style context clearing (JSONL file untouched)
   // Stores indices of tool_result entries that have been cleared from context
   private clearedToolIndices: Set<number> = new Set();
+
+  // Parsed copy of every entry written to the JSONL file, so accessors never re-read it
+  private readonly entries: ScratchpadEntry[] = [];
 
   constructor(query: string, limitConfig?: Partial<ToolLimitConfig>) {
     this.limitConfig = { ...DEFAULT_LIMIT_CONFIG, ...limitConfig };
@@ -551,37 +554,14 @@ export class Scratchpad {
    * Append-only write
    */
   private append(entry: ScratchpadEntry): void {
-    appendFileSync(this.filepath, JSON.stringify(entry) + '\n');
+    const line = JSON.stringify(entry);
+    appendFileSync(this.filepath, line + '\n');
+    // Keep the JSON round-trip so entries look exactly as a read of the file would.
+    this.entries.push(JSON.parse(line) as ScratchpadEntry);
   }
 
-  /**
-   * Parse and validate a single JSONL line. Returns null for malformed or invalid entries.
-   */
-  private parseLine(line: string): ScratchpadEntry | null {
-    try {
-      const parsed = JSON.parse(line);
-      return parsed && typeof parsed === 'object' && 'type' in parsed && 'timestamp' in parsed
-        ? (parsed as ScratchpadEntry)
-        : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Read all entries from the log.
-   * Skips malformed or corrupt lines (partial writes, disk corruption) to avoid
-   * a single bad line crashing tool-context methods.
-   */
+  /** All entries written so far. */
   private readEntries(): ScratchpadEntry[] {
-    if (!existsSync(this.filepath)) {
-      return [];
-    }
-
-    return readFileSync(this.filepath, 'utf-8')
-      .split('\n')
-      .filter((line) => line.trim())
-      .map((line) => this.parseLine(line))
-      .filter((entry): entry is ScratchpadEntry => entry !== null);
+    return this.entries;
   }
 }
