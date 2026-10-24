@@ -274,3 +274,41 @@ describe('Agent — parallelToolLimit wiring', () => {
     expect(executorLimit(agent)).toBe(3);
   });
 });
+
+describe('web_search fallback note after a tool error', () => {
+  const NOTE = 'you MUST call web_search next';
+  const call = (name: string, id: string): ToolCall => ({ id, name, args: { query: 'ZZZ revenue' }, type: 'tool_call' });
+
+  async function promptAfterFailedTool(opts: { webSearch: 'missing' | 'available' | 'called' }): Promise<string> {
+    const agent = await Agent.create({ maxIterations: 4, memoryEnabled: false });
+    const toolMap = Object.getOwnPropertyDescriptor(agent, 'toolMap')?.value as Map<string, StructuredToolInterface>;
+    toolMap.delete('web_search');
+    installTools(agent, {
+      zz_data: () => '{"error": "no data for ZZZ"}',
+      ...(opts.webSearch === 'missing' ? {} : { web_search: () => '{"results": []}' }),
+    });
+    script.responses = [
+      [ST_CALL],
+      opts.webSearch === 'called' ? [call('zz_data', 'z1'), call('web_search', 'w1')] : [call('zz_data', 'z1')],
+      'Final answer',
+    ];
+
+    await collect(agent.run('look up ZZZ'));
+
+    expect(script.prompts.length).toBeGreaterThanOrEqual(3);
+    expect(script.prompts[2]).toContain('no data for ZZZ');
+    return script.prompts[2];
+  }
+
+  it('asks for web_search when it is registered and has not run', async () => {
+    expect(await promptAfterFailedTool({ webSearch: 'available' })).toContain(NOTE);
+  });
+
+  it('leaves the note out when web_search is not registered', async () => {
+    expect(await promptAfterFailedTool({ webSearch: 'missing' })).not.toContain(NOTE);
+  });
+
+  it('leaves the note out once web_search has run', async () => {
+    expect(await promptAfterFailedTool({ webSearch: 'called' })).not.toContain(NOTE);
+  });
+});

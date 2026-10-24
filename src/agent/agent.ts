@@ -416,13 +416,7 @@ export class Agent {
 
             if (clearedCount > 0) {
               yield { type: 'context_cleared', clearedCount, keptCount: overflowKeep };
-              currentPrompt = buildIterationPrompt(
-                query,
-                ctx.scratchpad.getToolResults(),
-                ctx.scratchpad.formatToolUsageForPrompt(),
-                forecastLabRoutingHint,
-                ctx.promptContext,
-              );
+              currentPrompt = this.iterationPrompt(ctx, query, forecastLabRoutingHint);
               continue;
             }
           }
@@ -698,13 +692,7 @@ export class Agent {
       }
 
       // Build iteration prompt with full tool results (Anthropic-style)
-      currentPrompt = buildIterationPrompt(
-        query,
-        ctx.scratchpad.getToolResults(),
-        ctx.scratchpad.formatToolUsageForPrompt(),
-        forecastLabRoutingHint,
-        ctx.promptContext,
-      );
+      currentPrompt = this.iterationPrompt(ctx, query, forecastLabRoutingHint);
 
       if (repeatedFailureSkipped) {
         currentPrompt += '\n\n[SYSTEM NOTE: One or more tool calls exactly repeated a call that already failed with the same arguments and were skipped. Do NOT repeat an identical failing call — change the arguments (e.g. correct the ticker or horizon) or synthesize your answer from the data already gathered.]';
@@ -741,13 +729,7 @@ export class Agent {
     }
 
     const synthesisPrompt = hasMeaningfulResearch
-      ? buildIterationPrompt(
-          query,
-          toolResults,
-          ctx.scratchpad.formatToolUsageForPrompt(),
-          forecastLabRoutingHint,
-          ctx.promptContext,
-        ) +
+      ? this.iterationPrompt(ctx, query, forecastLabRoutingHint, toolResults) +
           `\n\n[SYSTEM NOTE: ${stoppedOnRepeatedFailures
             ? 'Research stopped because your tool calls only repeated calls that already failed with the same arguments'
             : `You have reached the maximum number of research steps (${this.maxIterations})`}. ` +
@@ -1026,6 +1008,25 @@ export class Agent {
     return true;
   }
 
+  /** The iteration prompt over this run's tool results and initial context. */
+  private iterationPrompt(
+    ctx: RunContext,
+    query: string,
+    forecastLabRoutingHint: ForecastLabRoutingHint | null,
+    toolResults = ctx.scratchpad.getToolResults(),
+  ): string {
+    const webSearchUntried = this.toolMap.has('web_search')
+      && !ctx.scratchpad.getToolUsageStatus().some((status) => status.toolName === 'web_search');
+    return buildIterationPrompt(
+      query,
+      toolResults,
+      ctx.scratchpad.formatToolUsageForPrompt(),
+      forecastLabRoutingHint,
+      ctx.promptContext,
+      webSearchUntried,
+    );
+  }
+
   private async *rebuildPromptAfterForcedTools(
     ctx: RunContext,
     query: string,
@@ -1033,13 +1034,7 @@ export class Agent {
     forecastLabRoutingHint: ForecastLabRoutingHint | null,
   ): AsyncGenerator<AgentEvent, string> {
     yield* this.manageContextThreshold(ctx, query, memoryFlush);
-    return buildIterationPrompt(
-      query,
-      ctx.scratchpad.getToolResults(),
-      ctx.scratchpad.formatToolUsageForPrompt(),
-      forecastLabRoutingHint,
-      ctx.promptContext,
-    );
+    return this.iterationPrompt(ctx, query, forecastLabRoutingHint);
   }
 
   private async *finishAfterToolDenied(ctx: RunContext): AsyncGenerator<AgentEvent, void> {
