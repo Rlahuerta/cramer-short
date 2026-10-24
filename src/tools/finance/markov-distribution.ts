@@ -471,6 +471,9 @@ function isRecoverableHmmOverlayError(error: unknown): error is Error {
 
 const RECOVERABLE_HMM_FAILURE_LOG_LIKELIHOOD = 0;
 
+/** Longest horizon (days) at which the opt-in KSWIN history trim applies. */
+const KSWIN_MAX_HORIZON = 2;
+
 function sanitizeHmmLogLikelihood(logLikelihood: number): number {
   return Number.isFinite(logLikelihood)
     ? logLikelihood
@@ -3250,6 +3253,7 @@ export async function computeMarkovDistribution(params: {
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
+   *  Applied only when horizon <= KSWIN_MAX_HORIZON (2).
    *  Default false ⇒ byte-identical to pre-Phase-C. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -3341,9 +3345,11 @@ export async function computeMarkovDistribution(params: {
 
   // R4 KSWIN trim — opt-in, variance-aware (complementary to mean-aware ADWIN).
   // Applied AFTER ADWIN so the two flags can be enabled independently or
-  // composed.  Default OFF preserves byte-identical behaviour.
+  // composed.  Default OFF preserves byte-identical behaviour.  Skipped past
+  // KSWIN_MAX_HORIZON: on the BTC walk-forward the shortened window helped
+  // Brier only at h<=2 and regressed it at h=3 and h>=7.
   let kswinTrimMeta: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number } | undefined;
-  if (enableKswinTrim === true && Array.isArray(historicalPrices) && historicalPrices.length > 60) {
+  if (enableKswinTrim === true && horizon <= KSWIN_MAX_HORIZON && Array.isArray(historicalPrices) && historicalPrices.length > 60) {
     const { trimmedPrices, result } = applyKswinTrim(historicalPrices, {
       alpha: kswinAlpha,
     });

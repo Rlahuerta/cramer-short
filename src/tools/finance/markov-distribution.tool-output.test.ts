@@ -2181,14 +2181,24 @@ describe('markov_distribution tool output envelope', () => {
 
     const disabled = await computeMarkovDistribution({
       ticker: 'BTC-USD',
-      horizon: 7,
+      horizon: 2,
       currentPrice: prices[prices.length - 1],
       historicalPrices: prices,
       polymarketMarkets: [],
     });
     const enabled = await computeMarkovDistribution({
       ticker: 'BTC-USD',
-      horizon: 7,
+      horizon: 2,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableKswinTrim: true,
+    });
+    // Long horizons keep the full window: on the BTC walk-forward the trim
+    // only helped Brier at h<=2 and regressed it at h>=3.
+    const longHorizon = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 30,
       currentPrice: prices[prices.length - 1],
       historicalPrices: prices,
       polymarketMarkets: [],
@@ -2202,6 +2212,7 @@ describe('markov_distribution tool output envelope', () => {
       maxD: expect.any(Number),
       criticalD: expect.any(Number),
     });
+    expect(longHorizon.metadata.kswinTrim).toBeUndefined();
   });
 
   it('exposes Hawkes amplification metadata when clustered jumps are present', async () => {
