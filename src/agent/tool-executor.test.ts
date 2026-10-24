@@ -891,6 +891,48 @@ describe('AgentToolExecutor — approval-gated calls in one batch', () => {
     expect(fakeTool.invocationCount).toBe(2);
   });
 
+  it('runs nothing in the batch when an approval is denied', async () => {
+    const writeTool = makeFakeTool('write_file', 'written');
+    const searchTool = makeFakeTool('financial_search', 'results');
+    const { approver } = singleSlotApprover(() => 'deny');
+    const executor = new AgentToolExecutor(
+      new Map([['write_file', writeTool], ['financial_search', searchTool]]),
+      undefined,
+      approver,
+    );
+    const batch = new AIMessage({
+      content: '',
+      tool_calls: [
+        { id: 'c1', name: 'financial_search', args: { query: 'AAPL revenue' }, type: 'tool_call' as const },
+        { id: 'c2', name: 'write_file', args: { path: 'a.txt', content: 'a' }, type: 'tool_call' as const },
+      ],
+    });
+
+    const events = await drainEvents(executor.executeAll(batch, makeCtx()));
+
+    expect(searchTool.invocationCount).toBe(0);
+    expect(writeTool.invocationCount).toBe(0);
+    expect(events.some((event) => event.type === 'tool_start')).toBe(false);
+    expect(events.filter((event) => event.type === 'tool_denied')).toHaveLength(1);
+  });
+
+  it('does not ask approval for a batched write the forecast-lab guard will block', async () => {
+    const writeTool = makeFakeTool('write_file', 'written');
+    const { approver, asked } = singleSlotApprover(() => 'allow-once');
+    const executor = new AgentToolExecutor(new Map([['write_file', writeTool]]), undefined, approver);
+    const ctx = makeCtx();
+    ctx.forecastLabGuard = { recommendedProfileId: 'btc-markov-ultra-short-horizon' };
+
+    const events = await drainEvents(executor.executeAll(
+      aiMsgTwoDiff('write_file', { path: 'src/a.ts', content: 'a' }, { path: 'src/b.ts', content: 'b' }),
+      ctx,
+    ));
+
+    expect(asked()).toBe(0);
+    expect(writeTool.invocationCount).toBe(0);
+    expect(events.filter((event) => event.type === 'tool_error')).toHaveLength(2);
+  });
+
   it('stops asking after a denial', async () => {
     const fakeTool = makeFakeTool('write_file', 'written');
     const { approver, asked } = singleSlotApprover(() => 'deny');
