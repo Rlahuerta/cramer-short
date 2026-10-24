@@ -10,6 +10,7 @@ import type { BacktestStep } from './metrics.js';
 import {
   brierScore,
   bootstrapDirectionalCI,
+  centralIntervalCoverage,
   ciCoverage,
   directionalAccuracy,
   meanEdge,
@@ -25,6 +26,8 @@ export interface MetricBlock {
   directionalAccuracy: number;
   brierScore: number;
   ciCoverage: number;
+  /** Coverage of the literal central 90% interval (ciCoverage scores a wider helper interval). */
+  central90Coverage: number;
   meanEdge: number;
   sharpness: number;
   avgConfidence: number;
@@ -47,6 +50,7 @@ export interface DeltaRow {
   directionalAccuracyDelta: number;
   brierScoreDelta: number;
   ciCoverageDelta: number;
+  central90CoverageDelta: number;
   meanEdgeDelta: number;
   sharpnessDelta: number;
 }
@@ -80,6 +84,7 @@ export function summarizeBacktestSteps(steps: BacktestStep[]): MetricBlock {
       directionalAccuracy: 0,
       brierScore: 0,
       ciCoverage: 0,
+      central90Coverage: 0,
       meanEdge: 0,
       sharpness: 0,
       avgConfidence: 0,
@@ -101,6 +106,7 @@ export function summarizeBacktestSteps(steps: BacktestStep[]): MetricBlock {
     directionalAccuracy: da,
     brierScore: bs,
     ciCoverage: cic,
+    central90Coverage: centralIntervalCoverage(steps, 0.9),
     meanEdge: edge,
     sharpness: sharp,
     avgConfidence: avgConf,
@@ -206,6 +212,7 @@ export function computeMetricDelta(base: ArmReport, ext: ArmReport): DeltaRow[] 
       directionalAccuracyDelta: e.metrics.directionalAccuracy - b.metrics.directionalAccuracy,
       brierScoreDelta: e.metrics.brierScore - b.metrics.brierScore,
       ciCoverageDelta: e.metrics.ciCoverage - b.metrics.ciCoverage,
+      central90CoverageDelta: e.metrics.central90Coverage - b.metrics.central90Coverage,
       meanEdgeDelta: e.metrics.meanEdge - b.metrics.meanEdge,
       sharpnessDelta: e.metrics.sharpness - b.metrics.sharpness,
     };
@@ -221,12 +228,12 @@ function fmtSign(x: number, digits = 3): string {
  */
 export function renderArmMetricTable(arm: ArmReport): string[] {
   const lines: string[] = [];
-  lines.push('| h (d) | n | dirAcc | dirAcc 95% CI | Brier | Coverage | meanEdge | sharpness | avgConf |');
-  lines.push('|------:|--:|-------:|---------------|------:|---------:|---------:|----------:|--------:|');
+  lines.push('| h (d) | n | dirAcc | dirAcc 95% CI | Brier | Coverage | Central-90 | meanEdge | sharpness | avgConf |');
+  lines.push('|------:|--:|-------:|---------------|------:|---------:|-----------:|---------:|----------:|--------:|');
   for (const row of arm.perHorizon) {
     const m = row.metrics;
     lines.push(
-      `| ${row.horizon} | ${m.n} | ${m.directionalAccuracy.toFixed(3)} | [${m.directionalCi.lower.toFixed(3)}, ${m.directionalCi.upper.toFixed(3)}] | ${m.brierScore.toFixed(3)} | ${m.ciCoverage.toFixed(3)} | ${m.meanEdge.toFixed(4)} | ${m.sharpness.toFixed(4)} | ${m.avgConfidence.toFixed(3)} |`,
+      `| ${row.horizon} | ${m.n} | ${m.directionalAccuracy.toFixed(3)} | [${m.directionalCi.lower.toFixed(3)}, ${m.directionalCi.upper.toFixed(3)}] | ${m.brierScore.toFixed(3)} | ${m.ciCoverage.toFixed(3)} | ${m.central90Coverage.toFixed(3)} | ${m.meanEdge.toFixed(4)} | ${m.sharpness.toFixed(4)} | ${m.avgConfidence.toFixed(3)} |`,
     );
   }
   return lines;
@@ -237,11 +244,11 @@ export function renderArmMetricTable(arm: ArmReport): string[] {
  */
 export function renderDeltaMetricTable(rows: DeltaRow[]): string[] {
   const lines: string[] = [];
-  lines.push('| h (d) | n | ΔdirAcc | ΔBrier | ΔCoverage | ΔmeanEdge | Δsharpness |');
-  lines.push('|------:|--:|--------:|-------:|----------:|----------:|-----------:|');
+  lines.push('| h (d) | n | ΔdirAcc | ΔBrier | ΔCoverage | ΔCentral-90 | ΔmeanEdge | Δsharpness |');
+  lines.push('|------:|--:|--------:|-------:|----------:|------------:|----------:|-----------:|');
   for (const r of rows) {
     lines.push(
-      `| ${r.horizon} | ${r.n} | ${fmtSign(r.directionalAccuracyDelta)} | ${fmtSign(r.brierScoreDelta)} | ${fmtSign(r.ciCoverageDelta)} | ${fmtSign(r.meanEdgeDelta, 4)} | ${fmtSign(r.sharpnessDelta, 4)} |`,
+      `| ${r.horizon} | ${r.n} | ${fmtSign(r.directionalAccuracyDelta)} | ${fmtSign(r.brierScoreDelta)} | ${fmtSign(r.ciCoverageDelta)} | ${fmtSign(r.central90CoverageDelta)} | ${fmtSign(r.meanEdgeDelta, 4)} | ${fmtSign(r.sharpnessDelta, 4)} |`,
     );
   }
   return lines;
