@@ -1,6 +1,6 @@
-import { afterEach, describe, test, expect, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, test, expect, mock } from 'bun:test';
 import { useNoNetwork } from '../../utils/test-no-network.js';
-import { webFetchTool } from './web-fetch.js';
+import { _setHttpFetchForTest, webFetchTool } from './web-fetch.js';
 import { _setDnsLookupForTest } from './url-guard.js';
 import { extractText as extractPdfText } from 'unpdf';
 // Warm the HTML extractor's dynamic imports outside individual test timers.
@@ -8,6 +8,15 @@ import '@mozilla/readability';
 import 'linkedom';
 
 useNoNetwork();
+
+// web_fetch uses its own pinned transport (not globalThis.fetch), so block it
+// here too; tests opt into a stub, or into the real transport with stubbed DNS.
+beforeEach(() =>
+  _setHttpFetchForTest(async (url: string) => {
+    throw new Error(`unit test blocked network call to ${new URL(url).host}`);
+  }),
+);
+afterEach(() => _setHttpFetchForTest());
 
 // Minimal valid 1-page PDF with the text "Hello PDF World"
 const MINIMAL_PDF_BASE64 =
@@ -66,15 +75,15 @@ describe('web_fetch blocked-domain guard', () => {
     // cnbc.com, reuters.com, ft.com etc. should pass through to fetch
     // (DNS and fetch are stubbed: we only verify the guard does not fire).
     _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
-    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response('<p>ok</p>', { status: 200, headers: { 'content-type': 'text/html' } }),
+    const transport = mock(
+      async (_url: string) => new Response('<p>ok</p>', { status: 200, headers: { 'content-type': 'text/html' } }),
     );
+    _setHttpFetchForTest(transport);
     try {
       const result = await invoke('https://httpbin.org/get');
       expect(result).not.toContain('Blocked domain');
-      expect(fetchSpy).toHaveBeenCalled();
+      expect(transport).toHaveBeenCalled();
     } finally {
-      fetchSpy.mockRestore();
       _setDnsLookupForTest();
     }
   });
@@ -135,12 +144,12 @@ describe('web_fetch PDF content-type routing', () => {
         }),
       { preconnect: originalFetch.preconnect },
     );
-    globalThis.fetch = fetchPdf;
+    _setHttpFetchForTest(fetchPdf);
     _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
     try {
       return await (webFetchTool.invoke({ url }) as Promise<string>);
     } finally {
-      globalThis.fetch = originalFetch;
+      _setHttpFetchForTest();
       _setDnsLookupForTest();
     }
   }
@@ -170,7 +179,7 @@ describe('web_fetch PDF content-type routing', () => {
       async () => new Response(htmlBuf, { status: 200, headers: { 'content-type': 'text/html' } }),
       { preconnect: originalFetch.preconnect },
     );
-    globalThis.fetch = fetchHtml;
+    _setHttpFetchForTest(fetchHtml);
     try {
       const result = await (webFetchTool.invoke({ url: 'https://example.com/' }) as Promise<string>);
       const payload = JSON.parse(result) as { data?: { extractor?: string; text?: string } };
@@ -178,7 +187,7 @@ describe('web_fetch PDF content-type routing', () => {
       expect(payload.data?.text).toContain('<<<EXTERNAL_UNTRUSTED_CONTENT>>>');
       expect(unwrapExternalContent(payload.data?.text)).toContain('Hello HTML');
     } finally {
-      globalThis.fetch = originalFetch;
+      _setHttpFetchForTest();
     }
   });
 });
@@ -187,7 +196,7 @@ describe('web_fetch HTML extractor labeling', () => {
   const originalFetch = globalThis.fetch;
 
   afterEach(() => {
-    globalThis.fetch = originalFetch;
+    _setHttpFetchForTest();
   });
 
   async function invokeHtml(
@@ -198,7 +207,7 @@ describe('web_fetch HTML extractor labeling', () => {
       async () => new Response(html, { status: 200, headers: { 'content-type': 'text/html' } }),
       { preconnect: originalFetch.preconnect },
     );
-    globalThis.fetch = fetchHtml;
+    _setHttpFetchForTest(fetchHtml);
     return JSON.parse(await (webFetchTool.invoke({ url }) as Promise<string>)) as {
       data?: { extractor?: string; text?: string; title?: string };
     };
@@ -259,6 +268,7 @@ describe('web_fetch SSRF guard', () => {
   });
 
   test('does NOT reject a public URL (passes through to fetch or blocked-domain guard)', async () => {
+    _setHttpFetchForTest(async () => new Response('<p>ok</p>', { status: 200, headers: { 'content-type': 'text/html' } }));
     const result = await invoke('https://example.com/').catch((e: Error) => e.message);
     expect(result).not.toContain('internal or reserved');
     expect(result).not.toContain('must be http or https');
@@ -266,45 +276,52 @@ describe('web_fetch SSRF guard', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SSRF guard — DNS-resolved and redirect-hop targets.
+// SSRF guard — every redirect hop is re-checked.
 // ---------------------------------------------------------------------------
 
-describe('web_fetch SSRF guard (DNS + redirects)', () => {
+describe('web_fetch SSRF guard (redirects)', () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => {
-    globalThis.fetch = originalFetch;
+    _setHttpFetchForTest();
     _setDnsLookupForTest();
-  });
-
-  test('rejects a public-looking hostname that resolves to a private address, without calling fetch', async () => {
-    _setDnsLookupForTest(async () => [{ address: '169.254.169.254' }]);
-    const fetched: string[] = [];
-    globalThis.fetch = Object.assign(
-      async (url: Parameters<typeof globalThis.fetch>[0]) => {
-        fetched.push(String(url));
-        return new Response('secret');
-      },
-      { preconnect: originalFetch.preconnect },
-    );
-    await expect(webFetchTool.invoke({ url: 'https://metadata.attacker.example/' })).rejects.toThrow(
-      /internal or reserved/,
-    );
-    expect(fetched).toEqual([]);
   });
 
   test('rejects a redirect from a public host to an internal one', async () => {
     _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
     const fetched: string[] = [];
-    globalThis.fetch = Object.assign(
-      async (url: Parameters<typeof globalThis.fetch>[0]) => {
-        fetched.push(String(url));
-        return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:8080/admin' } });
-      },
-      { preconnect: originalFetch.preconnect },
-    );
+    _setHttpFetchForTest(async (url: string) => {
+      fetched.push(url);
+      return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:8080/admin' } });
+    });
     await expect(webFetchTool.invoke({ url: 'https://example.com/redirect' })).rejects.toThrow(
       /internal or reserved/,
     );
     expect(fetched).toEqual(['https://example.com/redirect']);
+  });
+});
+
+describe('web_fetch default transport', () => {
+  afterEach(() => _setDnsLookupForTest());
+
+  test('never reaches a server when the hostname resolves to an internal address', async () => {
+    const { createServer } = await import('node:http');
+    let hits = 0;
+    const server = createServer((_req, res) => {
+      hits++;
+      res.end('internal-secret');
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as { port: number }).port;
+    _setDnsLookupForTest(async () => [{ address: '127.0.0.1' }]);
+    _setHttpFetchForTest(); // real pinned transport; DNS is stubbed so nothing leaves the host
+    try {
+      const result = await (webFetchTool.invoke({ url: `http://internal.example:${port}/` }) as Promise<string>).catch(
+        (e: Error) => e.message,
+      );
+      expect(result).toMatch(/internal or reserved/);
+      expect(hits).toBe(0);
+    } finally {
+      server.close();
+    }
   });
 });
