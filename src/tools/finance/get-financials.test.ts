@@ -1,6 +1,11 @@
 import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
+import { useNoNetwork } from '../../utils/test-no-network.js';
 import * as apiRoutingCache from '../../utils/api-routing-cache.js';
+import { getAnalystEstimates } from './estimates.js';
+import { getYahooAnalystTargets } from './yahoo-finance.js';
 import { AIMessage } from '@langchain/core/messages';
+
+useNoNetwork();
 
 // Capture real module before mocking so afterAll can restore
 const realLlm = { ...(await import('../../model/llm.js')) };
@@ -25,9 +30,14 @@ const routingSpies = [
   spyOn(apiRoutingCache, 'setPreferredApi').mockResolvedValue(undefined),
 ];
 
+// These tests only check routing: keep the routed sub-tools off financialdatasets.ai and Yahoo.
+const subToolSpies = [getAnalystEstimates, getYahooAnalystTargets].map((subTool) =>
+  spyOn(subTool, 'invoke').mockResolvedValue(JSON.stringify({ data: {}, sourceUrls: [] })),
+);
+
 afterAll(() => {
   mock.module('../../model/llm.js', () => realLlm);
-  for (const spy of routingSpies) spy.mockRestore();
+  for (const spy of [...routingSpies, ...subToolSpies]) spy.mockRestore();
 });
 
 // ---------------------------------------------------------------------------
