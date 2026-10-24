@@ -3200,7 +3200,7 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.report).toContain('reran on the last 60d');
     });
 
-    it('BTC 1-2d post-break rerun keeps the full-window spread and takes the rerun median', async () => {
+    it('BTC 1-3d post-break rerun keeps the full-window spread and takes the rerun median', async () => {
       mock.module('./polymarket.js', () => ({
         ...realPolymarketModule,
         fetchPolymarketMarkets: async () => [],
@@ -3234,9 +3234,7 @@ describe('markov_distribution tool output envelope', () => {
       const relativeWidth90 = (dist: MarkovDistributionPoint[]) =>
         (survivalQuantile(dist, 0.05) - survivalQuantile(dist, 0.95)) / survivalQuantile(dist, 0.5);
 
-      // h=3 reruns on 45d, too short for out-of-sample validation (needs 50 returns),
-      // so it always abstains and emits no distribution.
-      for (const horizon of [1, 2]) {
+      for (const horizon of [1, 2, 3]) {
         const policy = getBtcShortHorizonLivePolicy('BTC-USD', horizon)!;
         const params = {
           ...xiphosBtcLiveParams(),
@@ -3275,6 +3273,54 @@ describe('markov_distribution tool output envelope', () => {
         expect(canonical.scenarios).toEqual(computeScenarioProbabilities(decisionDistribution, currentPrice));
         expect(canonical.actionSignal.actionLevels).toEqual(computeActionLevels(decisionDistribution, currentPrice));
       }
+    });
+
+    it('BTC 3d post-break rerun on 45d carries the full-window validation instead of abstaining', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+
+      const prices: number[] = [];
+      let p = 65000;
+      prices.push(p);
+      for (let i = 1; i < 252; i++) {
+        const shock = i < 200 ? (i % 2 === 0 ? 0.02 : -0.02) : 0.02;
+        p *= 1 + shock;
+        prices.push(Math.round(p * 100) / 100);
+      }
+      const currentPrice = prices[prices.length - 1];
+      const policy = getBtcShortHorizonLivePolicy('BTC-USD', 3)!;
+      const fullWindow = await computeMarkovDistribution({
+        ...xiphosBtcLiveParams(),
+        ticker: 'BTC-USD',
+        horizon: 3,
+        currentPrice,
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        btcBreakDivergenceThreshold: policy.breakDivergenceThreshold,
+      });
+
+      const parsed = JSON.parse(await freshTool.func({
+        ticker: 'BTC-USD',
+        horizon: 3,
+        currentPrice,
+        historicalPrices: prices,
+        polymarketMarkets: [],
+        trajectory: false,
+      }));
+      const { canonical } = parsed.data;
+
+      // 45 prices give 44 returns, below the 50 the daily-return validator needs.
+      expect(canonical.diagnostics.btcShortHorizonRerunTriggered).toBe(true);
+      expect(canonical.diagnostics.historicalDays).toBe(44);
+      expect(fullWindow.metadata.outOfSampleR2).not.toBeNull();
+      expect(canonical.diagnostics.outOfSampleR2).toBe(fullWindow.metadata.outOfSampleR2);
+      expect(parsed.data.abstainReasons ?? []).not.toContain('Out-of-sample Markov validation is unavailable for this run.');
+      expect(parsed.data.status).toBe('ok');
     });
 
     it('keeps anchored BTC abstain reports free of GOLD proxy metadata and commodity bypass wording', async () => {

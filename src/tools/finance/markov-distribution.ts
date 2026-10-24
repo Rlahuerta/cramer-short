@@ -2905,7 +2905,9 @@ export function computeActionLevels(
  * Scenarios and the spread-derived action-signal fields (zone probabilities,
  * risk/reward, price levels) follow the blended decision surface; the rerun's
  * expected return, recommendation, confidence, metadata, trajectory and raw
- * distribution are kept.
+ * distribution are kept. Out-of-sample validation also comes from the full
+ * window: the daily-return validator needs 50 returns, so a 45-day rerun has
+ * none and the live tool would always abstain on it.
  */
 export function keepFullWindowSpread(
   fullWindow: MarkovDistributionResult,
@@ -2923,6 +2925,11 @@ export function keepFullWindowSpread(
   );
   return {
     ...rerun,
+    metadata: {
+      ...rerun.metadata,
+      outOfSampleR2: fullWindow.metadata.outOfSampleR2,
+      validationMetric: fullWindow.metadata.validationMetric,
+    },
     distribution,
     decisionDistribution,
     decisionSurface: fullWindow.decisionSurface,
