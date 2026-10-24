@@ -10,7 +10,7 @@
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
+import { rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { extractKeyFacts, extractTickerMetrics, buildContextSummaryText } from './agent.js';
@@ -33,9 +33,8 @@ let tmpDir: string;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `agent-ctx-test-${nextTestId('path')}`);
-  mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
+  tmpDir = mkdtempSync(join(tmpdir(), 'agent-ctx-test-'));
   process.chdir(tmpDir);
 });
 

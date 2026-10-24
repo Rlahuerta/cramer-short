@@ -19,7 +19,7 @@
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
+import { rmSync, mkdtempSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { StructuredToolInterface } from '@langchain/core/tools';
@@ -212,9 +212,8 @@ beforeEach(() => {
   mockState.streamShouldThrow = false;
   mockState.callLlmQueue = [];
 
-  tmpDir = join(tmpdir(), `agent-resp-${nextTestId('path')}`);
-  mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
+  tmpDir = mkdtempSync(join(tmpdir(), 'agent-resp-'));
   process.chdir(tmpDir);
 
   prevOpenAiKey = process.env.OPENAI_API_KEY;

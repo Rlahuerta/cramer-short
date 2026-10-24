@@ -1,6 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MemoryStore } from './store.js';
@@ -224,7 +224,7 @@ describe('MemoryStore dream methods', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-store-${FIXED_TEST_NOW_MS}`);
+    tmpDir = mkdtempSync(join(tmpdir(), 'dexter-dream-store-'));
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });
@@ -294,7 +294,7 @@ describe('gatherSignals', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-signal-${FIXED_TEST_NOW_MS}`);
+    tmpDir = mkdtempSync(join(tmpdir(), 'dexter-dream-signal-'));
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });
@@ -351,11 +351,14 @@ describe('gatherSignals', () => {
     const signalWithCore = await gatherSignals(store);
 
     // Fresh store without core files
-    const emptyDir = join(tmpdir(), `dexter-dream-signal-empty-${FIXED_TEST_NOW_MS}`);
-    mkdirSync(join(emptyDir, 'memory'), { recursive: true });
-    const emptyStore = makeStore(emptyDir);
-    const signalEmpty = await gatherSignals(emptyStore);
-    rmSync(emptyDir, { recursive: true, force: true });
+    const emptyDir = mkdtempSync(join(tmpdir(), 'dexter-dream-signal-empty-'));
+    let signalEmpty;
+    try {
+      mkdirSync(join(emptyDir, 'memory'), { recursive: true });
+      signalEmpty = await gatherSignals(makeStore(emptyDir));
+    } finally {
+      rmSync(emptyDir, { recursive: true, force: true });
+    }
 
     expect(signalWithCore.estimatedTokens).toBeGreaterThan(signalEmpty.estimatedTokens);
   });
@@ -378,7 +381,7 @@ describe('incrementDreamSessionCount', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-inc-${FIXED_TEST_NOW_MS}`);
+    tmpDir = mkdtempSync(join(tmpdir(), 'dexter-dream-inc-'));
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });
@@ -419,7 +422,7 @@ describe('runDream — skip conditions', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-skip-${FIXED_TEST_NOW_MS}`);
+    tmpDir = mkdtempSync(join(tmpdir(), 'dexter-dream-skip-'));
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });
@@ -477,7 +480,7 @@ describe('runDream — full cycle (E2E)', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `dexter-dream-e2e-${FIXED_TEST_NOW_MS}`);
+    tmpDir = mkdtempSync(join(tmpdir(), 'dexter-dream-e2e-'));
     mkdirSync(join(tmpDir, 'memory'), { recursive: true });
     store = makeStore(tmpDir);
   });

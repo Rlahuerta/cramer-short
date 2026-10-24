@@ -1,7 +1,7 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, expect, it, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { heartbeatTool, HEARTBEAT_TOOL_DESCRIPTION } from './heartbeat-tool.js';
-import { mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -26,8 +26,7 @@ let originalCwd: string;
 
 beforeEach(() => {
   originalCwd = process.cwd();
-  tmpDir = join(tmpdir(), `dexter-heartbeat-test-${FIXED_TEST_NOW_MS}`);
-  mkdirSync(tmpDir, { recursive: true });
+  tmpDir = mkdtempSync(join(tmpdir(), 'dexter-heartbeat-test-'));
   process.chdir(tmpDir);
 });
 
