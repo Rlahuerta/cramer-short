@@ -85,7 +85,7 @@ separate concept from the new `research/models/markov/volume_regime.py` (trading
 1-day profile). The live TS Markov tool applies the walk-forward-verified subset (transition decay,
 regime threshold, GARCH vol, entropy CI, meta-regime conditioning) for BTC via `xiphosBtcLiveParams()`;
 the backtest preset is `src/tools/finance/backtest/xiphos-btc-preset.ts`, verified by
-`walk-forward-xiphos-btc.integration.test.ts` (improves BTC Brier + directional accuracy on the fixture).
+`walk-forward-xiphos-btc.integration.test.ts` (no Brier/directional-accuracy regression vs defaults on the same forecast origins; 1d improves both).
 `studentTNu`/`trajectoryNSamples` are intentionally not overridden (crypto asset-profile; outside the
 verified gain), and `break_ci_slope`/`break_ci_max` have no cramer-short equivalent.
 
