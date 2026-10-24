@@ -243,6 +243,17 @@ export function inverseStudentTCDF(p: number, nu: number): number {
 }
 
 /**
+ * Student-t degrees of freedom for an h-day log-return. Tails thin as days
+ * aggregate: an h-day sum of iid t5 days has excess kurtosis 6/h, matched by
+ * nu = 4 + h. Applying the daily profile nu (3-5) at every horizon put the
+ * variance-matched central 90% bound at ~1.36-1.56 sd instead of ~1.645, and
+ * BTC central-90 coverage fell to 0.85.
+ */
+export function horizonStudentTNu(nu: number, horizon: number): number {
+  return Math.max(nu, 4 + horizon);
+}
+
+/**
  * Fat-tailed survival function: P(price > X) using Student-t distribution.
  * Same interface as logNormalSurvival but uses Student-t with `nu` degrees
  * of freedom (default 5, typical for daily equity returns).

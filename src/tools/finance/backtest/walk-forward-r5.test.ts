@@ -351,7 +351,9 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
     expect(adaptiveShockSlice.some(step => step.conformalMode === 'break')).toBe(true);
     expect(adaptiveShockSlice.every(step => typeof step.conformalRadius === 'number')).toBe(true);
     expect(adaptiveShockSlice.every(step => typeof step.conformalCoverageEstimate === 'number')).toBe(true);
-    expect(coveredCount(adaptiveShockSlice)).toBeGreaterThan(coveredCount(baselineShockSlice));
+    // With the base-rate floor and horizon nu fixed, the plain model already covers 11/12
+    // shock steps (9/12 before), so conformal can match but no longer beat it here.
+    expect(coveredCount(adaptiveShockSlice)).toBeGreaterThanOrEqual(coveredCount(baselineShockSlice));
     expect(medianIntervalWidth(adaptiveShockSlice)).toBeGreaterThan(medianIntervalWidth(baselineShockSlice));
   });
 

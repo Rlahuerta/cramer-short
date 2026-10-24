@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import { classifyRegimeState } from './regime.js';
 import { buildDefaultMatrix } from './transition.js';
-import { computeHorizonDriftVol, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
+import { computeHorizonDriftVol, horizonStudentTNu, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
 import { combineUncertaintyCiScale, computeMarkovDistribution } from '../markov-distribution.js';
 import type { MarkovDistributionPoint, RegimeState } from './core.js';
 
@@ -22,6 +22,16 @@ beforeEach(() => {
 afterEach(() => {
   randomSpy?.mockRestore();
   randomSpy = undefined;
+});
+
+describe('horizonStudentTNu', () => {
+  it('thins the tails with horizon like an h-day sum of t5 days', () => {
+    // Excess kurtosis of an h-day sum of iid t5 days is 6/h, which t with nu = 4 + h matches.
+    expect(horizonStudentTNu(3, 1)).toBe(5);
+    expect(horizonStudentTNu(4, 7)).toBe(11);
+    expect(horizonStudentTNu(5, 30)).toBe(34);
+    expect(horizonStudentTNu(8, 1)).toBe(8);
+  });
 });
 
 describe('logNormalSurvival', () => {

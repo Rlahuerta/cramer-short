@@ -160,6 +160,7 @@ import {
   computeTerminalStateWeights,
   computeTrajectory,
   estimateRegimeStats,
+  horizonStudentTNu,
   interpolateDistribution,
   inverseStudentTCDF,
   logNormalSurvival,
@@ -3140,6 +3141,32 @@ export function computeBaseRateFloor(
   return { bearMargin, pUpFloor };
 }
 
+/**
+ * Lift P(up) to `pUpFloor` by sliding the survival curve along log-price, i.e. a
+ * drift shift that keeps the distribution's shape. Adding the deficit to every
+ * point instead piled the lower tail at 1 and parked the deficit above the grid
+ * top, which pinned the upper CI bound to the grid edge and raised the lower one.
+ * Mutates `distribution` in place.
+ */
+export function applyBaseRateFloor(
+  distribution: MarkovDistributionPoint[],
+  currentPrice: number,
+  pUpFloor: number,
+): void {
+  for (let i = 0; i < distribution.length - 1; i++) {
+    const a = distribution[i], b = distribution[i + 1];
+    if (a.probability >= pUpFloor && b.probability < pUpFloor) {
+      // Price q with S(q) = pUpFloor; rescaling the grid by currentPrice / q puts it at currentPrice.
+      const q = b.price + (pUpFloor - b.probability) / (a.probability - b.probability) * (a.price - b.price);
+      for (const pt of distribution) pt.price *= currentPrice / q;
+      return;
+    }
+  }
+  // ponytail: no crossing means the floor sits above the grid bottom's survival; keep the old additive lift there.
+  const deficit = pUpFloor - interpolateSurvival(distribution, currentPrice);
+  for (const pt of distribution) pt.probability = Math.min(1.0, pt.probability + deficit);
+}
+
 // ---------------------------------------------------------------------------
 // 8b. markovDistribution — main orchestration function
 // ---------------------------------------------------------------------------
@@ -4091,7 +4118,7 @@ export async function computeMarkovDistribution(params: {
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
-    assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
+    horizonStudentTNu(assetProfile.studentTNu, horizon), regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights,
   );
 
@@ -4171,7 +4198,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice,
     driftN: calDriftN,
     volN: calVolN,
-    nu: assetProfile.studentTNu,
+    nu: horizonStudentTNu(assetProfile.studentTNu, horizon),
     matureBullCalibrationActive,
   });
 
@@ -4191,10 +4218,7 @@ export async function computeMarkovDistribution(params: {
     cryptoShortHorizonBearMarginMultiplier
   );
   if (calPUpPreFloor < pUpFloor) {
-    const deficit = pUpFloor - calPUpPreFloor;
-    for (const pt of distribution) {
-      pt.probability = Math.min(1.0, pt.probability + deficit);
-    }
+    applyBaseRateFloor(distribution, currentPrice, pUpFloor);
   }
 
   // --- P(up) from both raw and calibrated distributions for confidence scoring ---
