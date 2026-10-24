@@ -3266,3 +3266,34 @@ describe('btc_price_target signal direction', () => {
     expect(Math.abs(above - below)).toBeLessThan(0.01);
   });
 });
+
+describe('threshold path without current_price', () => {
+  it('does not price an absolute-dollar ladder against base 100 or persist that forecast', async () => {
+    const ladder: PolymarketMarketResult[] = [
+      { marketId: 'btc-60', assetId: 'btc-60-yes', question: 'Will Bitcoin be above $60,000 on Dec 31?', probability: 0.7, volume24h: 500_000, ageDays: 30, endDate: futureIso(30) },
+      { marketId: 'btc-70', assetId: 'btc-70-yes', question: 'Will Bitcoin be above $70,000 on Dec 31?', probability: 0.3, volume24h: 500_000, ageDays: 30, endDate: futureIso(30) },
+    ];
+    const captures: Array<NonNullable<ArbiterReplayBundle['polymarket']>> = [];
+    const tool = makeHermeticTool(
+      async (query) => query === 'Bitcoin price target' ? ladder : [],
+      ({ polymarket }) => { captures.push(polymarket); },
+    );
+
+    const payload = parsePayload(await tool.func({ ticker: 'BTC', horizon_days: 30 }, undefined));
+
+    expect(Math.abs(payload.rawForecastReturn!)).toBeLessThan(0.5);
+    expect(captures).toHaveLength(1);
+    expect(Math.abs(captures[0]!.rawForecastReturn!)).toBeLessThan(0.5);
+    expect(payload.result).not.toContain('[threshold-implied distribution]');
+  });
+
+  it('still uses the threshold ladder when current_price is given', async () => {
+    const ladder: PolymarketMarketResult[] = [
+      { marketId: 'btc-60', assetId: 'btc-60-yes', question: 'Will Bitcoin be above $60,000 on Dec 31?', probability: 0.7, volume24h: 500_000, ageDays: 30, endDate: futureIso(30) },
+      { marketId: 'btc-70', assetId: 'btc-70-yes', question: 'Will Bitcoin be above $70,000 on Dec 31?', probability: 0.3, volume24h: 500_000, ageDays: 30, endDate: futureIso(30) },
+    ];
+    const tool = makeHermeticTool(async (query) => query === 'Bitcoin price target' ? ladder : []);
+    const payload = parsePayload(await tool.func({ ticker: 'BTC', horizon_days: 30, current_price: 65_000 }, undefined));
+    expect(payload.result).toContain('[threshold-implied distribution]');
+  });
+});

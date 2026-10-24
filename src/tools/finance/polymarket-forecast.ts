@@ -1619,7 +1619,8 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         let thresholdPathActive = false;
         const thresholdPathWarnings: string[] = [];
 
-        if (thresholdChartAligned && forecastLadder.length >= 2) {
+        // The ladder is in absolute dollars; without a current price there is no base to price it against.
+        if (currentPrice !== undefined && thresholdChartAligned && forecastLadder.length >= 2) {
           const ladderCheck = isCleanThresholdLadder(forecastLadder);
           thresholdPathWarnings.push(...ladderCheck.warnings);
           if (ladderCheck.clean) {
