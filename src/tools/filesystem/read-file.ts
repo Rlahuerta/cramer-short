@@ -1,6 +1,7 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { constants } from 'node:fs';
 import { access, readFile } from 'node:fs/promises';
+import { basename, relative } from 'node:path';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { assertSandboxPath } from './sandbox.js';
@@ -36,6 +37,20 @@ const readFileSchema = z.object({
   limit: z.number().optional().describe('Maximum number of lines to read from the offset.'),
 });
 
+/** Secret-bearing paths that must never reach the LLM context, even inside the cwd sandbox. */
+export function isSecretPath(relPath: string): boolean {
+  const rel = relPath.normalize('NFC').replace(/\\/g, '/').toLowerCase();
+  const name = basename(rel);
+  return (
+    name.startsWith('.env') ||
+    name.endsWith('.pem') ||
+    name.endsWith('.key') ||
+    rel === '.cramer-short/settings.json' ||
+    rel === '.cramer-short/credentials' ||
+    rel.startsWith('.cramer-short/credentials/')
+  );
+}
+
 /** Reads a UTF-8 text file from disk. */
 export const readFileTool = new DynamicStructuredTool({
   name: 'read_file',
@@ -50,6 +65,9 @@ export const readFileTool = new DynamicStructuredTool({
       root: cwd,
     });
     const absolutePath = resolveReadPath(sandboxPath, cwd);
+    if (isSecretPath(relative(cwd, absolutePath))) {
+      throw new Error(`Access denied: ${input.path} may contain secrets`);
+    }
 
     await access(absolutePath, constants.R_OK);
 

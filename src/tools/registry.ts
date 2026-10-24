@@ -61,6 +61,8 @@ export interface ToolRegistryOptions {
   watchlistEntries?: PortfolioRiskWatchlistEntry[];
   discoverSkills?: typeof discoverSkills;
   memoryEnabled?: boolean;
+  /** Tool names to omit (e.g. untrusted channels like the WhatsApp gateway). */
+  excludeTools?: readonly string[];
 }
 
 /**
@@ -308,7 +310,8 @@ export function getToolRegistry(model: string, options: ToolRegistryOptions = {}
     });
   }
 
-  return tools;
+  const excluded = options.excludeTools;
+  return excluded?.length ? tools.filter((t) => !excluded.includes(t.name)) : tools;
 }
 
 /**

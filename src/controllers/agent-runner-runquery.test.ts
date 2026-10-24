@@ -471,3 +471,26 @@ describe('cancelExecution — triggerCancellation', () => {
     expect(() => ctrl.cancelExecution()).not.toThrow();
   });
 });
+
+describe('requestToolApproval override (headless callers)', () => {
+  it('passes the injected approval policy to the agent instead of the interactive prompt', async () => {
+    const deny = mock(async () => 'deny' as const);
+    let received: ((r: { tool: string; args: Record<string, unknown> }) => Promise<string>) | undefined;
+    fakeState.createOverride = async () => ({ run: (_q: string, _h: unknown) => makeStream([], null) });
+    const createAgent = mock(async (config: { requestToolApproval?: typeof received }) => {
+      received = config.requestToolApproval;
+      return fakeCreateAgent();
+    });
+    const ctrl = new AgentRunnerController({ model: undefined }, makeFakeChatHistory(), undefined, {
+      createAgent: createAgent as never,
+      autoStoreFromRun: fakeAutoStoreFromRun as never,
+      requestToolApproval: deny,
+    });
+
+    await ctrl.runQuery('q');
+
+    expect(received).toBe(deny);
+    expect(await received?.({ tool: 'write_file', args: {} })).toBe('deny');
+    expect(getPendingApproval(ctrl)).toBeNull();
+  });
+});

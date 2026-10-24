@@ -408,9 +408,15 @@ function getMutableAgentToolMap(agent: AgentInstance): Map<string, StructuredToo
   return value as Map<string, StructuredToolInterface>;
 }
 
-function replaceAgentToolExecutor(agent: AgentInstance, toolMap: Map<string, StructuredToolInterface>): void {
+type ApprovalFn = ConstructorParameters<typeof AgentToolExecutor>[2];
+
+function replaceAgentToolExecutor(
+  agent: AgentInstance,
+  toolMap: Map<string, StructuredToolInterface>,
+  requestToolApproval?: ApprovalFn,
+): void {
   Object.defineProperty(agent, 'toolExecutor', {
-    value: new AgentToolExecutor(toolMap),
+    value: new AgentToolExecutor(toolMap, undefined, requestToolApproval),
     configurable: true,
   });
 }
@@ -433,15 +439,16 @@ function installFixtureTools(
     name: string;
     invoke: (input: Record<string, unknown>) => Promise<string> | string;
   }>,
+  requestToolApproval?: ApprovalFn,
 ): void {
   const toolMap = getMutableAgentToolMap(agent);
   for (const tool of tools) {
     toolMap.set(tool.name, createJsonFixtureTool(tool.name, tool.invoke));
   }
-  replaceAgentToolExecutor(agent, toolMap);
+  replaceAgentToolExecutor(agent, toolMap, requestToolApproval);
 }
 
-function installForecastLabTool(agent: AgentInstance): void {
+function installForecastLabTool(agent: AgentInstance, requestToolApproval?: ApprovalFn): void {
   installFixtureTools(agent, [{
     name: 'forecast_lab_run',
     invoke: async (input: Record<string, unknown>) => {
@@ -466,7 +473,7 @@ function installForecastLabTool(agent: AgentInstance): void {
       }
       return forecastLabMockState.guidedImproveResult;
     },
-  }]);
+  }], requestToolApproval);
 }
 
 // ---------------------------------------------------------------------------
@@ -698,11 +705,14 @@ describe('Agent', () => {
         answer: 'Forecast-lab guided improvement finished. Approval required before promotion. Reply "approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1" to continue.',
         summary: null,
       });
+      // promote-approved / reset-live mutate live forecast state, so they pass the approval gate.
+      const approve = mock(async () => 'allow-once' as const);
       const agent = await Agent.create({ maxIterations: 3 });
-      installForecastLabTool(agent);
+      installForecastLabTool(agent, approve);
       const events = await collectEvents(
         agent.run('Yes, approve forecast-lab promotion for that kept run.', history),
       );
+      expect(approve).toHaveBeenCalledTimes(1);
 
       const toolStarts = events.filter((event) => event.type === 'tool_start');
       const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
@@ -727,11 +737,14 @@ describe('Agent', () => {
         answer: 'Promotion completed for btc-markov-ultra-short-horizon from kept run btc-markov-ultra-short-horizon.keep-1. Promoted parameters are now live for normal forecasts. Active baseline: .cramer-short/experiments/active-promotions/btc-markov-ultra-short-horizon.json',
         summary: null,
       });
+      // promote-approved / reset-live mutate live forecast state, so they pass the approval gate.
+      const approve = mock(async () => 'allow-once' as const);
       const agent = await Agent.create({ maxIterations: 3 });
-      installForecastLabTool(agent);
+      installForecastLabTool(agent, approve);
       const events = await collectEvents(
         agent.run('Reset the forecast-lab active baseline for btc-markov-ultra-short-horizon back to shipped defaults.', history),
       );
+      expect(approve).toHaveBeenCalledTimes(1);
 
       const toolStarts = events.filter((event) => event.type === 'tool_start');
       const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;

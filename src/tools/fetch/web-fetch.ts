@@ -15,8 +15,8 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { extractText as extractPdfText } from 'unpdf';
 import { formatToolResult } from '../types.js';
-import { assertPublicHttpUrl } from './url-guard.js';
 import { wrapExternalContent, wrapWebContent } from './external-content.js';
+import { assertPublicHttpUrl, assertPublicUrl } from './url-guard.js';
 import {
   extractReadableContent,
   htmlToMarkdown,
@@ -278,7 +278,7 @@ async function fetchWithRedirects(params: {
   let redirectCount = 0;
 
   while (true) {
-    assertPublicHttpUrl(currentUrl);
+    await assertPublicUrl(currentUrl);
     const parsedUrl = new URL(currentUrl);
 
     const response = await fetch(parsedUrl.toString(), {

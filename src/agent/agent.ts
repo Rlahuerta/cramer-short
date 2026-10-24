@@ -239,6 +239,7 @@ export class Agent {
     const registryOptions = {
       watchlistEntries: config.watchlistEntries,
       memoryEnabled,
+      excludeTools: config.excludeTools,
     };
     const tools = config.tools ?? getTools(model, registryOptions);
     const soulContentPromise = loadSoulDocument();

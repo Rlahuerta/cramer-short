@@ -20,6 +20,7 @@ type LocatorCall = {
 const locatorCalls: LocatorCall[] = [];
 const pageCalls: Array<{ action: string; value?: unknown }> = [];
 const browserCloseMock = mock(async () => {});
+const contextRouteMock = mock(async (_url: string, _handler: unknown) => {});
 
 type FakePageThis = {
   currentUrl: string;
@@ -58,7 +59,7 @@ function makePage(title: string) {
     }),
     url: mock(function (this: FakePageThis) { return this.currentUrl; }),
     title: mock(async function (this: FakePageThis) { return this.currentTitle; }),
-    context: mock(() => ({ newPage: mock(async () => fakeNewPage) })),
+    context: mock(() => ({ newPage: mock(async () => fakeNewPage), route: mock(async () => {}) })),
     close: mock(async () => {}),
     waitForLoadState: mock(async () => {}),
     _snapshotForAI: mock(async function (this: FakePageThis) { return { full: this.snapshot }; }),
@@ -77,13 +78,17 @@ function makePage(title: string) {
 
 function makeBrowser(page: ReturnType<typeof makePage>, close = browserCloseMock) {
   return {
-    newContext: mock(async () => ({ newPage: mock(async () => page) })),
+    newContext: mock(async (_options: { serviceWorkers: 'block' }) => ({
+      newPage: mock(async () => page),
+      route: contextRouteMock,
+    })),
     close,
   };
 }
 
-const { _setBrowserLauncherForTest, browserTool, createBrowserRuntime, createBrowserTool } =
+const { _setBrowserLauncherForTest, browserTool, createBrowserRuntime, createBrowserTool, guardRoute } =
   await import(`./browser.js?t=${nextTestId('module')}`) as typeof import('./browser.js');
+const { _setDnsLookupForTest } = await import('../fetch/url-guard.js');
 
 function parseToolResult(result: string): Record<string, unknown> {
   return (JSON.parse(result) as { data: Record<string, unknown> }).data;
@@ -98,11 +103,14 @@ beforeEach(() => {
   fakeNewPage = makePage('Second page');
   fakeBrowser = makeBrowser(fakePage);
   _setBrowserLauncherForTest(launchMock);
+  contextRouteMock.mockClear();
+  _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
 });
 
 afterEach(async () => {
   await browserTool.invoke({ action: 'close' });
   _setBrowserLauncherForTest();
+  _setDnsLookupForTest();
 });
 
 describe('browser tool with mocked Playwright', () => {
@@ -264,5 +272,49 @@ describe('browser tool SSRF guard', () => {
       await browserTool.invoke({ action: 'navigate', url: 'https://example.com/' }) as string,
     );
     expect(result).toMatchObject({ ok: true, url: 'https://example.com/' });
+  });
+});
+
+describe('browser SSRF guard (DNS + route interception)', () => {
+  it('refuses to navigate to a hostname that resolves to a private address', async () => {
+    _setDnsLookupForTest(async () => [{ address: '10.0.0.5' }]);
+    const result = parseToolResult(await browserTool.invoke({
+      action: 'navigate',
+      url: 'https://intranet.attacker.example/',
+    }) as string);
+
+    expect(String(result.error)).toMatch(/internal or reserved/);
+    expect(launchMock).not.toHaveBeenCalled();
+  });
+
+  it('installs a catch-all route guard and blocks service workers on the browser context', async () => {
+    await browserTool.invoke({ action: 'navigate', url: 'https://example.com' });
+
+    expect(fakeBrowser.newContext).toHaveBeenCalledWith({ serviceWorkers: 'block' });
+    expect(contextRouteMock).toHaveBeenCalledWith('**/*', guardRoute);
+  });
+
+  function makeRoute(url: string) {
+    return {
+      request: () => ({ url: () => url }),
+      continue: mock(async () => {}),
+      abort: mock(async (_code?: string) => {}),
+    };
+  }
+
+  it('guardRoute aborts subresource requests to internal hosts', async () => {
+    for (const url of ['http://127.0.0.1:8080/admin', 'http://[fd00:ec2::254]/', 'file:///etc/passwd']) {
+      const route = makeRoute(url);
+      await guardRoute(route);
+      expect(route.abort).toHaveBeenCalledWith('blockedbyclient');
+      expect(route.continue).not.toHaveBeenCalled();
+    }
+  });
+
+  it('guardRoute continues public requests', async () => {
+    const route = makeRoute('https://example.com/app.js');
+    await guardRoute(route);
+    expect(route.continue).toHaveBeenCalledTimes(1);
+    expect(route.abort).not.toHaveBeenCalled();
   });
 });

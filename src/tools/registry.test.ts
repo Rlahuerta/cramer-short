@@ -127,6 +127,17 @@ describe('getToolRegistry core tools', () => {
   });
 });
 
+describe('getToolRegistry excludeTools', () => {
+  it('omits excluded tools from both the tool list and prompt descriptions', () => {
+    const options = { discoverSkills: () => availableSkills, excludeTools: ['read_file', 'browser'] };
+    const names = getToolRegistry('gpt-5.4', options).map((entry) => entry.name);
+    expect(names).not.toContain('read_file');
+    expect(names).not.toContain('browser');
+    expect(names).toContain('web_fetch');
+    expect(buildToolDescriptions('gpt-5.4', options)).not.toContain('### read_file');
+  });
+});
+
 describe('getToolRegistry env-gated tools', () => {
   it('uses Exa for web_search before Perplexity and Tavily', () => {
     process.env.EXASEARCH_API_KEY = 'exa-test';

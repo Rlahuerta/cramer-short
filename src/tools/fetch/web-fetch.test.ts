@@ -1,5 +1,6 @@
 import { afterEach, describe, test, expect } from 'bun:test';
 import { webFetchTool } from './web-fetch.js';
+import { _setDnsLookupForTest } from './url-guard.js';
 import { extractText as extractPdfText } from 'unpdf';
 // Warm the HTML extractor's dynamic imports outside individual test timers.
 import '@mozilla/readability';
@@ -123,10 +124,12 @@ describe('web_fetch PDF content-type routing', () => {
       { preconnect: originalFetch.preconnect },
     );
     globalThis.fetch = fetchPdf;
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
     try {
       return await (webFetchTool.invoke({ url }) as Promise<string>);
     } finally {
       globalThis.fetch = originalFetch;
+      _setDnsLookupForTest();
     }
   }
 
@@ -247,5 +250,49 @@ describe('web_fetch SSRF guard', () => {
     const result = await invoke('https://example.com/').catch((e: Error) => e.message);
     expect(result).not.toContain('internal or reserved');
     expect(result).not.toContain('must be http or https');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSRF guard — DNS-resolved and redirect-hop targets.
+// ---------------------------------------------------------------------------
+
+describe('web_fetch SSRF guard (DNS + redirects)', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    _setDnsLookupForTest();
+  });
+
+  test('rejects a public-looking hostname that resolves to a private address, without calling fetch', async () => {
+    _setDnsLookupForTest(async () => [{ address: '169.254.169.254' }]);
+    const fetched: string[] = [];
+    globalThis.fetch = Object.assign(
+      async (url: Parameters<typeof globalThis.fetch>[0]) => {
+        fetched.push(String(url));
+        return new Response('secret');
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    await expect(webFetchTool.invoke({ url: 'https://metadata.attacker.example/' })).rejects.toThrow(
+      /internal or reserved/,
+    );
+    expect(fetched).toEqual([]);
+  });
+
+  test('rejects a redirect from a public host to an internal one', async () => {
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
+    const fetched: string[] = [];
+    globalThis.fetch = Object.assign(
+      async (url: Parameters<typeof globalThis.fetch>[0]) => {
+        fetched.push(String(url));
+        return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:8080/admin' } });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    await expect(webFetchTool.invoke({ url: 'https://example.com/redirect' })).rejects.toThrow(
+      /internal or reserved/,
+    );
+    expect(fetched).toEqual(['https://example.com/redirect']);
   });
 });

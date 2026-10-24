@@ -66,6 +66,8 @@ export interface AgentConfig {
   requestToolApproval?: (request: { tool: string; args: Record<string, unknown> }) => Promise<ApprovalDecision>;
   /** Shared set of tool names that have been session-approved (persists across queries) */
   sessionApprovedTools?: Set<string>;
+  /** Tool names to omit from the registry for this agent (tools and prompt descriptions). */
+  excludeTools?: readonly string[];
   /** Enable/disable persistent memory integration for this run */
   memoryEnabled?: boolean;
   /** Optional memory manager factory for tests or isolated harnesses. Defaults to MemoryManager.get(). */
