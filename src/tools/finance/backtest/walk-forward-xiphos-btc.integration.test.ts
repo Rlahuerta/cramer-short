@@ -23,6 +23,8 @@ function metrics(steps: BacktestStep[]) {
     brier: brierScore(steps),
     dirAcc: directionalAccuracy(steps),
     abstain: abstainRate(steps),
+    // Correct calls over all steps (HOLD counts as a miss) = dirAcc × (1 − abstain).
+    hitsPerStep: directionalAccuracy(steps) * (1 - abstainRate(steps)),
     ciCov: ciCoverage(steps),
     n: steps.length,
   };
@@ -58,8 +60,8 @@ describe('xiphos BTC profile walk-forward benchmark', () => {
         const x = metrics(xiphos.steps.filter(s => s.t >= windowStart));
         console.log(
           `[xiphos-btc ${horizon}d] baseline n=${b.n} brier=${b.brier.toFixed(4)} dirAcc=${b.dirAcc.toFixed(4)} ` +
-            `abstain=${b.abstain.toFixed(4)} | xiphos n=${x.n} brier=${x.brier.toFixed(4)} ` +
-            `dirAcc=${x.dirAcc.toFixed(4)} abstain=${x.abstain.toFixed(4)}`,
+            `abstain=${b.abstain.toFixed(4)} hits/step=${b.hitsPerStep.toFixed(4)} | xiphos n=${x.n} brier=${x.brier.toFixed(4)} ` +
+            `dirAcc=${x.dirAcc.toFixed(4)} abstain=${x.abstain.toFixed(4)} hits/step=${x.hitsPerStep.toFixed(4)}`,
         );
 
         expect(base.errors.length).toBe(0);
@@ -67,6 +69,9 @@ describe('xiphos BTC profile walk-forward benchmark', () => {
         // No meaningful regression (tolerances); on the fixture the xiphos profile improves both.
         expect(x.brier).toBeLessThanOrEqual(b.brier + 0.01);
         expect(x.dirAcc).toBeGreaterThanOrEqual(b.dirAcc - 0.02);
+        // dirAcc scores traded steps only, so abstaining more can inflate it. Check
+        // the extra abstentions don't cost correct calls: hits per step must hold up.
+        expect(x.hitsPerStep).toBeGreaterThanOrEqual(b.hitsPerStep - 0.02);
       },
       TIMEOUT,
     );
