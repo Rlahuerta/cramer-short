@@ -407,8 +407,9 @@ export class AgentRunnerController {
       case 'done': {
         const done = event as DoneEvent;
         if (done.answer && !done.error) {
-          await this.inMemoryChatHistory.saveAnswer(done.answer).catch((err) => {
-            // Answer persistence error - log but don't block UI
+          // saveAnswer records the answer synchronously, then awaits an LLM
+          // summary; don't hold the item in 'processing' (dropping input) for it.
+          void this.inMemoryChatHistory.saveAnswer(done.answer).catch((err) => {
             console.warn('[agent-runner] Failed to save answer to history:', err);
           });
         }

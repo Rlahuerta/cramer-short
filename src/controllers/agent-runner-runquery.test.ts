@@ -218,6 +218,26 @@ describe('runQuery — success path', () => {
   });
 });
 
+describe('runQuery — answer summary', () => {
+  it('marks the item complete without waiting for the history summary', async () => {
+    fakeState.events = [{ type: 'done', answer: 'AAPL is $180', totalTime: 10, toolCalls: [] }];
+    const chatHistory = makeFakeChatHistory();
+    const saveAnswer = mock((_answer: string) => new Promise<void>(() => {})); // summary LLM call never returns
+    (chatHistory as unknown as { saveAnswer: typeof saveAnswer }).saveAnswer = saveAnswer;
+    const ctrl = new AgentRunnerController({ model: undefined }, chatHistory, undefined, {
+      createAgent: fakeCreateAgent as never,
+      autoStoreFromRun: fakeAutoStoreFromRun as never,
+    });
+
+    const outcome = await Promise.race([ctrl.runQuery('What is AAPL?'), Bun.sleep(500).then(() => 'hung' as const)]);
+
+    expect(outcome).toEqual({ answer: 'AAPL is $180' });
+    expect(ctrl.history[0].status).toBe('complete');
+    expect(ctrl.isProcessing).toBe(false);
+    expect(saveAnswer).toHaveBeenCalledWith('AAPL is $180');
+  });
+});
+
 describe('runQuery — failed model call', () => {
   function erroredDone() {
     return { type: 'done', answer: 'Error: provider down', error: true, totalTime: 10, toolCalls: [] };
