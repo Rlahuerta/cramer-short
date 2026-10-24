@@ -5,14 +5,16 @@
  * outputs across TypeScript and Python implementations.
  */
 import { describe, test, expect } from 'bun:test';
-import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity, pythonParityAvailable } from '../../utils/finance/python-parity.js';
 
 enablePythonParity();
+// Skip (with a warning) when the cramer-research conda env is absent; REQUIRE_PARITY=1 forces a run.
+const describeParity = describe.skipIf(!pythonParityAvailable());
 import { matPow } from './hmm.js';
 
 const PYTHON_PARITY_TIMEOUT_MS = 20_000;
 
-describe('TS/Python parity — hmm.mat_pow', () => {
+describeParity('TS/Python parity — hmm.mat_pow', () => {
   test('2x2 matrix, power 3', () => {
     const A = [
       [0.7, 0.3],
@@ -38,7 +40,7 @@ describe('TS/Python parity — hmm.mat_pow', () => {
   });
 });
 
-describe('TS/Python parity — hmm.student_t_log_pdf', () => {
+describeParity('TS/Python parity — hmm.student_t_log_pdf', () => {
   test('t(5) at z=0, 1, 2', async () => {
     const py = await runPython(`
 from research.models.hmm import student_t_log_pdf

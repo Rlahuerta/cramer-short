@@ -5,9 +5,11 @@
  * outputs across the two implementations.
  */
 import { describe, test, expect } from 'bun:test';
-import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity, pythonParityAvailable } from '../../utils/finance/python-parity.js';
 
 enablePythonParity();
+// Skip (with a warning) when the cramer-research conda env is absent; REQUIRE_PARITY=1 forces a run.
+const describeParity = describe.skipIf(!pythonParityAvailable());
 import {
   JUMP_DEFAULTS,
   buildJumpEventSpec,
@@ -15,7 +17,7 @@ import {
   polymarketProbToHazard,
 } from './jump-diffusion.js';
 
-describe('TS/Python parity — polymarket_prob_to_hazard', () => {
+describeParity('TS/Python parity — polymarket_prob_to_hazard', () => {
   test('p=0.3, days=30', async () => {
     const ts = polymarketProbToHazard(0.3, 30);
     const py = await runPython(`
@@ -35,7 +37,7 @@ print(polymarket_prob_to_hazard(0.85, 14))
   });
 });
 
-describe('TS/Python parity — JUMP_DEFAULTS', () => {
+describeParity('TS/Python parity — JUMP_DEFAULTS', () => {
   test('all asset classes match exactly', async () => {
     const py = await runPython(`
 from research.models.jump_diffusion import JUMP_DEFAULTS
@@ -50,7 +52,7 @@ print(json.dumps({k: dict(v) for k, v in JUMP_DEFAULTS.items()}))
   });
 });
 
-describe('TS/Python parity — jump_drift_compensator', () => {
+describeParity('TS/Python parity — jump_drift_compensator', () => {
   test('multi-event compensator', async () => {
     const events = [
       { id: 'a', dailyIntensity: 0.005, meanLogJump: -0.05, stdLogJump: 0.03 },
@@ -69,7 +71,7 @@ print(jump_drift_compensator(events))
   });
 });
 
-describe('TS/Python parity — build_jump_event_spec', () => {
+describeParity('TS/Python parity — build_jump_event_spec', () => {
   test('equity prior end-to-end composition', async () => {
     const ts = buildJumpEventSpec(0.3, 30, 0.10, 0.05, 0.20, JUMP_DEFAULTS.equity, 'mkt');
     const py = await runPython(`

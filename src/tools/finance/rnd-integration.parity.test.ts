@@ -6,12 +6,14 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity, pythonParityAvailable } from '../../utils/finance/python-parity.js';
 
 enablePythonParity();
+// Skip (with a warning) when the cramer-research conda env is absent; REQUIRE_PARITY=1 forces a run.
+const describeParity = describe.skipIf(!pythonParityAvailable());
 import { transformQToP, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix } from './rnd-integration.js';
 
-describe('TS/Python parity — transform_q_to_p', () => {
+describeParity('TS/Python parity — transform_q_to_p', () => {
   test('identity case', async () => {
     const ts = transformQToP(0.3, 0.05, 0.05, 0.5, 30);
     const py = await runPython(`
@@ -58,7 +60,7 @@ print(transform_q_to_p(0.30, 0.50, 0.05, 0.30, 30, 0.1))
   });
 });
 
-describe('TS/Python parity — lognormal fit + regime mapping', () => {
+describeParity('TS/Python parity — lognormal fit + regime mapping', () => {
   test('recovers same parameters', async () => {
     const strikes = [40000, 45000, 50000, 55000, 60000];
     const yesPrices = [0.85, 0.65, 0.45, 0.25, 0.10];
@@ -83,7 +85,7 @@ print(json.dumps({"mu": mu, "sigma": sigma, "regimes": regimes}))
   });
 });
 
-describe('TS/Python parity — nudge_transition_matrix', () => {
+describeParity('TS/Python parity — nudge_transition_matrix', () => {
   test('same nudge for identical inputs', async () => {
     const P = [
       [0.7, 0.2, 0.1],

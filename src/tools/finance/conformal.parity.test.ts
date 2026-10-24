@@ -5,9 +5,11 @@
  * produce numerically identical radius / interval outputs.
  */
 import { describe, test, expect } from 'bun:test';
-import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity, pythonParityAvailable } from '../../utils/finance/python-parity.js';
 
 enablePythonParity();
+// Skip (with a warning) when the cramer-research conda env is absent; REQUIRE_PARITY=1 forces a run.
+const describeParity = describe.skipIf(!pythonParityAvailable());
 import { AdaptiveConformalPID, ConformalPID } from './conformal.js';
 
 const PYTHON_PARITY_TIMEOUT_MS = 30_000;
@@ -19,7 +21,7 @@ function expectNumberArraysClose(actual: number[], expected: number[], digits = 
   }
 }
 
-describe('TS/Python parity — ConformalPID basic', () => {
+describeParity('TS/Python parity — ConformalPID basic', () => {
   test('radius adjusts after over-coverage', async () => {
     const tsPid = new ConformalPID({ alpha: 0.1, initialRadius: 1.0, kp: 1.0, ki: 0.2, kd: 0.1 });
     const tsRadii: number[] = [];
@@ -71,7 +73,7 @@ print(cov)
   }, PYTHON_PARITY_TIMEOUT_MS);
 });
 
-describe('TS/Python parity — AdaptiveConformalPID break mode', () => {
+describeParity('TS/Python parity — AdaptiveConformalPID break mode', () => {
   test('enters break mode when structural break detected', async () => {
     const events: [number, number, boolean, number][] = [
       [100, 99, false, 0.0],

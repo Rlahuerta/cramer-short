@@ -5,14 +5,16 @@
  * identical outputs across TypeScript and Python.
  */
 import { describe, test, expect } from 'bun:test';
-import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity, pythonParityAvailable } from '../../utils/finance/python-parity.js';
 
 enablePythonParity();
+// Skip (with a warning) when the cramer-research conda env is absent; REQUIRE_PARITY=1 forces a run.
+const describeParity = describe.skipIf(!pythonParityAvailable());
 import { adjustYesBias, adjustYesBiasV2, depthDecayHaircut, YES_BIAS_MULTIPLIER } from './ensemble.js';
 
 const PYTHON_PARITY_TIMEOUT_MS = 20_000;
 
-describe('TS/Python parity — adjust_yes_bias', () => {
+describeParity('TS/Python parity — adjust_yes_bias', () => {
   test('p=0.60 → 0.95x (basic multiplier)', async () => {
     const ts = adjustYesBias(0.60, 0.035);
     const py = await runPython(`
@@ -34,7 +36,7 @@ print(adjust_yes_bias(${p}))
   }, PYTHON_PARITY_TIMEOUT_MS);
 });
 
-describe('TS/Python parity — adjust_yes_bias_v2 (U-shaped)', () => {
+describeParity('TS/Python parity — adjust_yes_bias_v2 (U-shaped)', () => {
   test('extreme longshots pulled toward center', async () => {
     const ts = adjustYesBiasV2(0.02);
     const py = await runPython(`
@@ -67,7 +69,7 @@ print(adjust_yes_bias_v2(0.45))
   }, PYTHON_PARITY_TIMEOUT_MS);
 });
 
-describe('TS/Python parity — depth_decay_haircut', () => {
+describeParity('TS/Python parity — depth_decay_haircut', () => {
   test('same-day expiry → floor weight', async () => {
     const ts = depthDecayHaircut(0);
     const py = await runPython(`
@@ -99,7 +101,7 @@ print(depth_decay_haircut(None))
   }, PYTHON_PARITY_TIMEOUT_MS);
 });
 
-describe('TS/Python parity — YES_BIAS_MULTIPLIER', () => {
+describeParity('TS/Python parity — YES_BIAS_MULTIPLIER', () => {
   test('constant matches Python', async () => {
     const py = await runPython(`
 from research.utils.calibration import YES_BIAS_MULTIPLIER

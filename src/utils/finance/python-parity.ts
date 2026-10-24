@@ -13,14 +13,32 @@ const CONDA_INSTALL_CANDIDATES = [
   '/opt/miniconda3',
 ];
 
+function condaPythonCandidates(): string[] {
+  return CONDA_INSTALL_CANDIDATES.map((root) => join(root, 'envs', CONDA_ENV_NAME, 'bin', 'python'));
+}
+
+/**
+ * Test-only gate for *.parity.test.ts suites. False (with a warning) when the
+ * conda env is missing, so parity suites skip on machines/CI without it;
+ * REQUIRE_PARITY=1 forces true so a missing env fails loudly instead.
+ */
+export function pythonParityAvailable(): boolean {
+  if (getEnvironment().REQUIRE_PARITY === '1') return true;
+  if (condaPythonCandidates().some((python) => existsSync(python))) return true;
+  console.warn(
+    `[parity] Skipping TS/Python parity tests: conda env "${CONDA_ENV_NAME}" not found ` +
+    `(see environment-research.yml). Set REQUIRE_PARITY=1 to fail instead.`,
+  );
+  return false;
+}
+
 function findCondaPython(): string {
-  for (const root of CONDA_INSTALL_CANDIDATES) {
-    const python = join(root, 'envs', CONDA_ENV_NAME, 'bin', 'python');
+  for (const python of condaPythonCandidates()) {
     if (existsSync(python)) return python;
   }
   throw new Error(
     `Could not find conda environment "${CONDA_ENV_NAME}". ` +
-    `Searched: ${CONDA_INSTALL_CANDIDATES.map(d => join(d, 'envs', CONDA_ENV_NAME, 'bin', 'python')).join(', ')}`,
+    `Searched: ${condaPythonCandidates().join(', ')}`,
   );
 }
 

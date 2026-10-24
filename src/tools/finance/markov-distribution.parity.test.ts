@@ -6,9 +6,11 @@
  * produce numerically identical outputs.
  */
 import { describe, test, expect } from 'bun:test';
-import { runPython, enablePythonParity } from '../../utils/finance/python-parity.js';
+import { runPython, enablePythonParity, pythonParityAvailable } from '../../utils/finance/python-parity.js';
 
 enablePythonParity();
+// Skip (with a warning) when the cramer-research conda env is absent; REQUIRE_PARITY=1 forces a run.
+const describeParity = describe.skipIf(!pythonParityAvailable());
 import { classifyRegimeState } from './markov-distribution/regime.js';
 
 const PYTHON_PARITY_TIMEOUT_MS = 20_000;
@@ -22,7 +24,7 @@ function parsePythonRegimeState(value: string): RegimeState {
   throw new Error(`Unexpected Python regime state: ${value}`);
 }
 
-describe('TS/Python parity — classify_regime_state', () => {
+describeParity('TS/Python parity — classify_regime_state', () => {
   test('strong bull day (+3%)', async () => {
     const ts = classifyRegimeState(0.03, 0.01);
     const py = parsePythonRegimeState(await runPython(`
@@ -60,7 +62,7 @@ print(classify_regime(0.005))
   }, PYTHON_PARITY_TIMEOUT_MS);
 });
 
-describe('TS/Python parity — regime constants', () => {
+describeParity('TS/Python parity — regime constants', () => {
   test('REGIME_STATES match Python', async () => {
     const py = await runPython(`
 from research.models.markov import REGIME_STATES
