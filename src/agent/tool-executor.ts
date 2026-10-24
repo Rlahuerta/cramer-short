@@ -193,8 +193,17 @@ export class AgentToolExecutor {
       | { done: true }
       | { done: false; event: ToolExecutionEvent };
 
+    // Approval-gated calls share one sequential lane: approvers handle one
+    // request at a time, an allow-session answer covers the calls behind it,
+    // and a denial stops the rest of the lane.
+    const gated = toolCalls.filter((tc) => this.requiresApproval(tc.name, tc.args as Record<string, unknown>));
+    const lanes = toolCalls
+      .filter((tc) => !gated.includes(tc))
+      .map((tc) => this.executeSingle(tc.name, tc.args as Record<string, unknown>, ctx));
+    if (gated.length > 0) lanes.push(this.executeInSequence(gated, ctx));
+
     const queue: QueueItem[] = [];
-    let pending = toolCalls.length;
+    let pending = lanes.length;
 
     const notifyWaiter = { fn: null as (() => void) | null };
 
@@ -204,14 +213,10 @@ export class AgentToolExecutor {
       notifyWaiter.fn = null;
     };
 
-    for (const tc of toolCalls) {
+    for (const lane of lanes) {
       (async () => {
         try {
-          for await (const event of this.executeSingle(
-            tc.name,
-            tc.args as Record<string, unknown>,
-            ctx,
-          )) {
+          for await (const event of lane) {
             push({ done: false, event });
           }
         } finally {
@@ -236,6 +241,18 @@ export class AgentToolExecutor {
           resolve();
         }
       });
+    }
+  }
+
+  private async *executeInSequence(
+    toolCalls: NonNullable<AIMessage['tool_calls']>,
+    ctx: RunContext,
+  ): AsyncGenerator<ToolExecutionEvent, void> {
+    for (const tc of toolCalls) {
+      for await (const event of this.executeSingle(tc.name, tc.args as Record<string, unknown>, ctx)) {
+        yield event;
+        if (event.type === 'tool_denied') return;
+      }
     }
   }
 
