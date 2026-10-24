@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { cramerShortPath } from '../utils/paths.js';
 import { annotateFinancialNumbers } from '../utils/finance/number-format.js';
 
@@ -90,7 +90,8 @@ export class Scratchpad {
       .slice(0, 19)           // "2026-01-21T15:30:45"
       .replace('T', '-')      // "2026-01-21-15:30:45"
       .replace(/:/g, '');     // "2026-01-21-153045"
-    this.filepath = join(this.scratchpadDir, `${timestamp}_${hash}.jsonl`);
+    // Random suffix: the same query twice in one second must not share a file.
+    this.filepath = join(this.scratchpadDir, `${timestamp}_${hash}_${randomBytes(4).toString('hex')}.jsonl`);
 
     // Write initial entry with the query
     this.append({ type: 'init', content: query, timestamp: new Date().toISOString() });
