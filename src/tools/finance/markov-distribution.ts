@@ -3568,7 +3568,8 @@ export async function computeMarkovDistribution(params: {
       returns,
       crossAssetReturns,
       horizon,
-      { lambda: crossAssetLassoLambda ?? 0.005 },
+      // lag 1: today's peer return vs the target's next H days, not same-day co-movement.
+      { lambda: crossAssetLassoLambda ?? 0.005, lag: 1 },
     );
     if (bias && Number.isFinite(bias.perDayBias)) {
       crossAssetBiasMeta = {
