@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
 import { walkForward } from './walk-forward.js';
-import { brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
+import { abstainRate, brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
 import { xiphosBtcWalkForwardConfig } from './xiphos-btc-preset.js';
 
 /**
@@ -22,6 +22,7 @@ function metrics(steps: BacktestStep[]) {
   return {
     brier: brierScore(steps),
     dirAcc: directionalAccuracy(steps),
+    abstain: abstainRate(steps),
     ciCov: ciCoverage(steps),
     n: steps.length,
   };
@@ -47,11 +48,18 @@ describe('xiphos BTC profile walk-forward benchmark', () => {
           ...xiphosBtcWalkForwardConfig(),
         });
 
+        // The xiphos profile warms up earlier (54d vs the default 120d), so its run
+        // also forecasts dates the baseline never sees. Score both arms over the
+        // baseline's window so the comparison isolates the parameter effect rather
+        // than the extra early steps — with traded-only directional accuracy those
+        // ~14 steps alone are enough to swing the 7d hit rate past the tolerance.
+        const windowStart = base.steps[0]!.t;
         const b = metrics(base.steps);
-        const x = metrics(xiphos.steps);
+        const x = metrics(xiphos.steps.filter(s => s.t >= windowStart));
         console.log(
-          `[xiphos-btc ${horizon}d] baseline brier=${b.brier.toFixed(4)} dirAcc=${b.dirAcc.toFixed(4)} | ` +
-            `xiphos brier=${x.brier.toFixed(4)} dirAcc=${x.dirAcc.toFixed(4)}`,
+          `[xiphos-btc ${horizon}d] baseline n=${b.n} brier=${b.brier.toFixed(4)} dirAcc=${b.dirAcc.toFixed(4)} ` +
+            `abstain=${b.abstain.toFixed(4)} | xiphos n=${x.n} brier=${x.brier.toFixed(4)} ` +
+            `dirAcc=${x.dirAcc.toFixed(4)} abstain=${x.abstain.toFixed(4)}`,
         );
 
         expect(base.errors.length).toBe(0);
