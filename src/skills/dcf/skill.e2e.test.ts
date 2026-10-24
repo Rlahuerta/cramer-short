@@ -1,4 +1,4 @@
-/**
+/** *
  * E2E tests — DCF valuation skill with real Ollama model.
  *
  * Run with:  bun run test:e2e
@@ -26,6 +26,9 @@ const FINANCIAL_TOOL_NAMES = [
   'get_earnings_transcript',
   'get_fixed_income',
   'get_options_chain',
+  'dcf_valuation',
+  'rim_valuation',
+  'reverse_dcf',
 ];
 
 const DCF_E2E_MAX_ITERATIONS = 6;
@@ -74,6 +77,36 @@ describe('DCF skill E2E', () => {
     expect(
       calledFinancial,
       `at least one financial tool must be called. Tools called: [${tools.join(', ')}]`,
+    ).toBe(true);
+  });
+
+  e2eIt('calls dcf_valuation typed tool', () => {
+    const usedDCFValuation = tools.some((t) => t === 'dcf_valuation');
+    const usedDCFWorkflow =
+      tools.some((t) => t === 'get_financials') &&
+      tools.some((t) => t === 'wacc_inputs');
+
+    expect(
+      usedDCFValuation || usedDCFWorkflow,
+      `dcf_valuation typed tool or direct DCF workflow tools (get_financials + wacc_inputs) must be called. Tools called: [${tools.join(', ')}]`,
+    ).toBe(true);
+  });
+
+  e2eIt('answer contains both DCF and RIM figures or a divergence statement', () => {
+    const hasDcfOrRim = /dcf|rim|residual|abnormal/i.test(answer);
+    const hasDivergence = /divergence|cross-check/i.test(answer);
+    expect(
+      hasDcfOrRim || hasDivergence,
+      `answer must contain DCF/RIM terminology or a divergence/cross-check statement. Answer:\n${answer.slice(0, 500)}`,
+    ).toBe(true);
+  });
+
+  e2eIt('answer contains an implied growth figure', () => {
+    const hasImpliedGrowth = /implied growth|reverse dcf/i.test(answer.toLowerCase());
+    const hasNumericImpliedGrowth = /implied growth[^\d]*-?\d+\.?\d*/i.test(answer);
+    expect(
+      hasImpliedGrowth || hasNumericImpliedGrowth,
+      `answer must contain an implied growth figure or reverse-DCF terminology. Answer:\n${answer.slice(0, 500)}`,
     ).toBe(true);
   });
 

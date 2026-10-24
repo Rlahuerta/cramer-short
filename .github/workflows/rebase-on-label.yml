@@ -64,10 +64,11 @@ jobs:
         env:
           REBASE_PUSH_TOKEN: ${{ secrets.REBASE_PUSH_TOKEN }}
           DEFAULT_GITHUB_TOKEN: ${{ github.token }}
+          # Passed via env (not ${{ }} interpolation) so a crafted branch name cannot inject shell.
+          HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
+          HEAD_REF: ${{ steps.meta.outputs.head_ref }}
         run: |
           set -euo pipefail
-          HEAD_REPO="${{ steps.meta.outputs.head_repo }}"
-          HEAD_REF="${{ steps.meta.outputs.head_ref }}"
           PUSH_TOKEN="${REBASE_PUSH_TOKEN:-$DEFAULT_GITHUB_TOKEN}"
 
           git fetch origin main

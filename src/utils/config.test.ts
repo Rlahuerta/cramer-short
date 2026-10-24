@@ -1,5 +1,9 @@
 import { describe, it, expect, spyOn, beforeEach, afterEach } from 'bun:test';
-import { validateConfigValue, validateAndSanitizeConfig } from './config.js';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { getSetting, saveConfig, setSetting, validateConfigValue, validateAndSanitizeConfig } from './config.js';
+import * as atomicWrite from './atomic-write.js';
 
 describe('validateConfigValue — maxIterations', () => {
   it('accepts a value within range', () => {
@@ -294,5 +298,145 @@ describe('ConfigSchema — forecasting block', () => {
     expect(f.enableJumpDiffusion).toBe(true);
     expect(f.enableForecastLabAutoRoute).toBe(false);
     expect(f.legacyForecastingFlag).toBe('keep-me');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Legacy model migration (getSetting) — lossless carry into provider/modelId
+// ---------------------------------------------------------------------------
+
+const ORIGINAL_CWD = process.cwd();
+let testDir: string;
+
+function writeSettings(settings: Record<string, unknown>): void {
+  mkdirSync(join(testDir, '.cramer-short'), { recursive: true });
+  writeFileSync(join(testDir, '.cramer-short', 'settings.json'), JSON.stringify(settings, null, 2));
+}
+
+function readSettings(): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(testDir, '.cramer-short', 'settings.json'), 'utf-8'));
+}
+
+function setupSettingsFixture(): void {
+  testDir = mkdtempSync(join(tmpdir(), 'cramer-config-'));
+  process.chdir(testDir);
+  saveConfig({}); // reset the config cache and start from an empty settings file
+}
+
+function teardownSettingsFixture(): void {
+  process.chdir(ORIGINAL_CWD);
+  rmSync(testDir, { recursive: true, force: true });
+}
+
+describe('legacy model migration (getSetting)', () => {
+  beforeEach(setupSettingsFixture);
+  afterEach(teardownSettingsFixture);
+
+  it('carries an unmapped legacy model into provider and modelId (prefix routing)', () => {
+    writeSettings({ model: 'claude-opus-4-6' });
+
+    expect(getSetting('provider', 'openai')).toBe('anthropic');
+
+    const saved = readSettings();
+    expect(saved.provider).toBe('anthropic');
+    expect(saved.modelId).toBe('claude-opus-4-6');
+    expect(saved.model).toBeUndefined();
+  });
+
+  it('keeps mapped legacy models working and preserves them in modelId', () => {
+    writeSettings({ model: 'gpt-5.2' });
+
+    expect(getSetting('provider', 'openai')).toBe('openai');
+
+    const saved = readSettings();
+    expect(saved.modelId).toBe('gpt-5.2');
+    expect(saved.model).toBeUndefined();
+  });
+
+  it('never overrides a provider already set in modern keys', () => {
+    writeSettings({ provider: 'openai', modelId: 'gpt-5.4', model: 'claude-opus-4-6' });
+
+    expect(getSetting('provider', 'openai')).toBe('openai');
+    expect(readSettings().modelId).toBe('gpt-5.4');
+  });
+
+  it('never overrides a modelId already set in modern keys while resolving the legacy provider', () => {
+    writeSettings({ modelId: 'gpt-5.4', model: 'claude-opus-4-6' });
+
+    expect(getSetting('provider', 'openai')).toBe('anthropic');
+
+    const saved = readSettings();
+    expect(saved.modelId).toBe('gpt-5.4');
+    expect(saved.model).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Atomic settings writes
+// ---------------------------------------------------------------------------
+
+describe('atomic settings writes', () => {
+  beforeEach(setupSettingsFixture);
+  afterEach(teardownSettingsFixture);
+
+  it('saveConfig writes through atomicWriteFileSync', () => {
+    const spy = spyOn(atomicWrite, 'atomicWriteFileSync');
+
+    expect(saveConfig({ provider: 'openai' })).toBe(true);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [filePath, contents] = spy.mock.calls[0] as [string, string];
+    expect(filePath).toBe(join('.cramer-short', 'settings.json'));
+    expect(JSON.parse(contents)).toEqual({ provider: 'openai' });
+    spy.mockRestore();
+  });
+
+  it('atomicWriteFileSync writes the contents and leaves no temp file behind', () => {
+    const target = join(testDir, 'nested', 'out.json');
+
+    atomicWrite.atomicWriteFileSync(target, '{"a":1}');
+
+    expect(readFileSync(target, 'utf-8')).toBe('{"a":1}');
+    expect(readdirSync(join(testDir, 'nested')).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+});
+
+describe('loadConfig/setSetting — unreadable settings.json is never overwritten', () => {
+  const originalCwd = process.cwd();
+  let dir: string;
+  let warnSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cramer-config-'));
+    process.chdir(dir);
+    warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    saveConfig({}); // resets the module-level cache
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    process.chdir(originalCwd);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('moves invalid JSON aside before the next write', () => {
+    writeFileSync('.cramer-short/settings.json', '{"modelId": "gpt-5.4",');
+    expect(setSetting('provider', 'openai')).toBe(true);
+
+    expect(JSON.parse(readFileSync('.cramer-short/settings.json', 'utf-8'))).toEqual({ provider: 'openai' });
+    const backups = readdirSync('.cramer-short').filter((f) => f.startsWith('settings.json.corrupt-'));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join('.cramer-short', backups[0]!), 'utf-8')).toBe('{"modelId": "gpt-5.4",');
+  });
+
+  it.skipIf(process.getuid?.() === 0)('refuses to write when settings.json cannot be read', () => {
+    writeFileSync('.cramer-short/settings.json', '{"modelId": "gpt-5.4"}');
+    chmodSync('.cramer-short/settings.json', 0o200); // write-only: read fails, write would succeed
+    try {
+      expect(setSetting('provider', 'openai')).toBe(false);
+    } finally {
+      chmodSync('.cramer-short/settings.json', 0o644);
+    }
+    expect(readFileSync('.cramer-short/settings.json', 'utf-8')).toBe('{"modelId": "gpt-5.4"}');
   });
 });

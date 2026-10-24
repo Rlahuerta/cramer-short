@@ -100,13 +100,7 @@ export async function hybridSearch(params: {
   // We load more than maxResults because decay and MMR will re-rank them.
   const ids = merged.map((entry) => entry.id);
   const details = params.db.loadResultsByIds(ids);
-  const byId = new Map<number, MemorySearchResult>();
-  for (const [index, detail] of details.entries()) {
-    const id = ids[index];
-    if (id !== undefined) {
-      byId.set(id, detail);
-    }
-  }
+  const byId = new Map<number, MemorySearchResult>(details.map((detail) => [detail.id, detail]));
 
   // Extract tickers from the query for ticker-aware score boost.
   const queryTickers = new Set(extractTickers(params.query));

@@ -16,6 +16,7 @@ import {
   forward,
   backward,
   baumWelch,
+  selectNumStates,
   viterbi,
   predict,
   attachStudentTPredictiveEmissions,
@@ -184,6 +185,21 @@ describe('backward algorithm', () => {
 });
 
 describe('baumWelch', () => {
+  it('runs at least one EM update before reporting convergence', () => {
+    // Regression: prevLL used to be seeded with the initial log-likelihood, so
+    // the first convergence check compared the initial LL against itself and
+    // baumWelch returned the initialisation untouched with iterations=1.
+    const obs = generateFromHMM(TWO_STATE_PARAMS, 500, 20260101);
+    const initialized = initializeHMM(obs, 2);
+    const result = baumWelch(obs, 2, 100, 1e-4);
+
+    expect(result.iterations).toBeGreaterThan(1);
+    const maxMeanShift = Math.max(
+      ...result.params.means.map((m, i) => Math.abs(m - initialized.means[i])),
+    );
+    expect(maxMeanShift).toBeGreaterThan(1e-6);
+  });
+
   it('converges on data from 2-state HMM', () => {
     const obs = generateFromHMM(TWO_STATE_PARAMS, 500);
     const result = baumWelch(obs, 2, 100, 1e-4);
@@ -234,6 +250,45 @@ describe('baumWelch', () => {
     const result = baumWelch(obs, 2);
     expect(result.converged).toBe(false);
     expect(result.params.nStates).toBe(2);
+  });
+});
+
+describe('selectNumStates', () => {
+  it('selectNumStates falls back with a warning when observations are insufficient', () => {
+    const result = selectNumStates([0.01, -0.01, 0.02], 5, 'bic', 50);
+
+    expect(result.selected_states).toBe(3);
+    expect(result.bic_values).toBeNull();
+    expect(result.aic_values).toBeNull();
+    expect(result.criterion_used).toBe('bic');
+    expect(result.warning).toContain('Only 3 observations');
+  });
+
+  it('selectNumStates computes comparable BIC AIC and HQC values', () => {
+    // Both k=2 and k=3 must genuinely converge within selectNumStates' 100-iteration
+    // budget for the comparability assertions below to have two entries.
+    const obs = generateFromHMM(THREE_STATE_PARAMS, 500, 919);
+    const result = selectNumStates(obs, 3, 'hqc', 20);
+
+    expect(result.warning).toBeUndefined();
+    expect(result.selected_states).toBeGreaterThanOrEqual(2);
+    expect(result.selected_states).toBeLessThanOrEqual(3);
+    expect(result.bic_values).toHaveLength(2);
+    expect(result.aic_values).toHaveLength(2);
+    expect(result.hqc_values).toHaveLength(2);
+    expect(result.criterion_used).toBe('hqc');
+
+    const hqcBestIndex = result.hqc_values!.indexOf(Math.min(...result.hqc_values!));
+    expect(result.selected_states).toBe(hqcBestIndex + 2);
+
+    for (let k = 2; k <= 3; k++) {
+      const nParams = k * k + 2 * k - 1;
+      const idx = k - 2;
+      expect(result.bic_values![idx] - result.aic_values![idx]).toBeCloseTo(
+        nParams * (Math.log(obs.length) - 2),
+        8,
+      );
+    }
   });
 });
 

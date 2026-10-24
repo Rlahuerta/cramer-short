@@ -1,5 +1,5 @@
 import { extractTickers as extractTickersFn } from '../../memory/ticker-extractor.js';
-import { resolveAssetIntent } from '../../tools/finance/asset-resolver.js';
+import { extractCryptoQuotePairTickers, resolveAssetIntent } from '../../tools/finance/asset-resolver.js';
 import { detectAssetType } from '../../tools/finance/signal-extractor.js';
 import { resolveForecastLabMarkovParameterDefaults } from '../../tools/finance/markov-distribution.js';
 import {
@@ -11,6 +11,7 @@ import {
   isExplicitGoldCombinedMarkovPolymarketRequest,
 } from './classification.js';
 import type { ToolCallRecord } from '../scratchpad.js';
+import { matchesTickerAndOptionalHorizon, parseToolCallData } from './types.js';
 
 const TRADING_DAYS_PER_WEEK = 5;
 const TRADING_DAYS_PER_MONTH = 21;
@@ -27,6 +28,9 @@ export function getBtcSelectiveMarkovConfidenceThreshold(): number {
 }
 
 export function inferDistributionTicker(query: string): string | null {
+  const cryptoQuotePairs = extractCryptoQuotePairTickers(query);
+  if (cryptoQuotePairs.length > 0) return cryptoQuotePairs[0]!;
+
   const resolved = resolveAssetIntent(query, extractTickersFn(query)[0] ?? null);
   if (resolved.resolvedTicker) {
     if (resolved.assetClass === 'ticker' && /^[A-Z]{2,5}$/.test(resolved.resolvedTicker)) {
@@ -168,6 +172,50 @@ export function buildForcedMarkovArgs(query: string): { ticker: string; horizon:
   return args;
 }
 
+export function buildForcedMarkovArgCandidates(query: string): Array<{ ticker: string; horizon: number; trajectory?: true; trajectoryDays?: number }> {
+  const horizon = inferDistributionHorizon(query);
+  if (!horizon) return [];
+
+  const cryptoQuotePairs = extractCryptoQuotePairTickers(query);
+  if (cryptoQuotePairs.length > 0) {
+    const wantsTrajectory = inferTrajectoryRequest(query);
+    return cryptoQuotePairs.map((ticker) => {
+      const args: { ticker: string; horizon: number; trajectory?: true; trajectoryDays?: number } = { ticker, horizon };
+      if (wantsTrajectory) {
+        args.trajectory = true;
+        args.trajectoryDays = Math.min(30, horizon);
+      }
+      return args;
+    });
+  }
+
+  const single = buildForcedMarkovArgs(query);
+  return single ? [single] : [];
+}
+
+function hasCompletedMarkovDistributionForArgs(
+  args: { ticker: string; horizon: number },
+  toolCalls: ToolCallRecord[],
+): boolean {
+  return toolCalls.some((call) => {
+    if (call.tool !== 'markov_distribution') return false;
+    if (!matchesTickerAndOptionalHorizon(call.args, args.ticker, 'horizon', args.horizon)) return false;
+
+    const data = parseToolCallData(call);
+    return data?._tool === 'markov_distribution'
+      && (data.status === 'ok' || data.status === 'abstain');
+  });
+}
+
+export function buildNextForcedMarkovArgs(
+  query: string,
+  toolCalls: ToolCallRecord[],
+): { ticker: string; horizon: number; trajectory?: true; trajectoryDays?: number } | null {
+  return buildForcedMarkovArgCandidates(query).find((args) =>
+    !hasCompletedMarkovDistributionForArgs(args, toolCalls)
+  ) ?? null;
+}
+
 export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCallRecord[]): boolean {
   if (isForecastLabImprovementQuery(query)) return false;
 
@@ -175,7 +223,7 @@ export function shouldForceMarkovDistribution(query: string, toolCalls: ToolCall
     || inferTrajectoryRequest(query)
     || (isExplicitGoldCombinedMarkovPolymarketRequest(query) && buildForcedMarkovArgs(query) !== null);
 
-  return shouldForceForQuery && !toolCalls.some((call) => call.tool === 'markov_distribution');
+  return shouldForceForQuery && buildNextForcedMarkovArgs(query, toolCalls) !== null;
 }
 
 export function shouldInjectBtcShortHorizonMixedEvidencePrompt(

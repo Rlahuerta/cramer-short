@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { runScheduleCommand } from './cli-schedule.js';
 import type { ScheduleCommandOptions, ScheduleJob } from './cli-schedule.js';
+import * as configModule from './utils/config.js';
 import type { AgentEvent } from './agent/types.js';
 import type { ForecastLabRunOptions, ForecastLabRunResult } from './experiments/forecast-lab/runner.js';
 import type { ReplayLabelBenchmarkPipelineResult } from './tools/finance/backtest/replay-label-benchmark-pipeline.js';
@@ -11,13 +13,15 @@ import type { ReplayTickerHistoryLoader } from './tools/finance/backtest/replay-
 import { toReplayLabelBatchReportPath } from './tools/finance/backtest/replay-label-batch-runner.js';
 import { DEFAULT_ARBITER_REPLAY_CACHE_BUNDLES_PATH } from './tools/finance/arbiter-replay.js';
 
-const TEST_ROOT = join('.cramer-short', 'cli-schedule-test');
+// Schedule output must stay under <cwd>/.cramer-short, so run against a temp cwd, not the working tree.
+const TEST_CWD = join(tmpdir(), `cramer-short-cli-schedule-test-${process.pid}`);
+const TEST_ROOT = join(TEST_CWD, '.cramer-short', 'cli-schedule-test');
 const TEST_HOME = join(TEST_ROOT, 'home');
 const SCHEDULES_PATH = join(TEST_HOME, '.cramer-short', 'schedules.json');
 const NOW = new Date('2026-05-02T12:34:56.000Z');
 
 function cleanup(): void {
-  rmSync(TEST_ROOT, { recursive: true, force: true });
+  rmSync(TEST_CWD, { recursive: true, force: true });
 }
 
 function writeSchedules(jobs: readonly ScheduleJob[]): void {
@@ -45,7 +49,7 @@ function makeOptions(overrides: ScheduleCommandOptions = {}): {
     options: {
       schedulesPath: SCHEDULES_PATH,
       homeDir: TEST_HOME,
-      cwd: process.cwd(),
+      cwd: TEST_CWD,
       now: () => NOW,
       log: (message) => output.push(message),
       error: (message) => errors.push(message),
@@ -230,7 +234,7 @@ describe('schedule command', () => {
     ]);
     const seenQueries: string[] = [];
     const { options, writes, errors } = makeOptions({
-      createAgent: async () => ({
+      createAgent: async (_config) => ({
         run: (query) => fakeAgentRun(query, seenQueries),
       }),
     });
@@ -242,6 +246,140 @@ describe('schedule command', () => {
     expect(writes.join('')).toBe('Agent answer');
     expect(errors).toEqual([]);
     expect(readFileSync(outPath, 'utf8')).toContain('Agent answer');
+  });
+
+  it('replaces every {date} placeholder with the local date, not the UTC date', async () => {
+    const localNow = new Date('2026-05-02T23:30:00.000Z');
+    const expectedDate = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
+    writeSchedules([
+      {
+        id: 'morning-briefing',
+        description: 'Daily watchlist briefing',
+        query: 'Run the watchlist-briefing skill',
+        outputFile: `${TEST_ROOT}/reports/{date}/{date}-briefing.md`,
+      },
+    ]);
+    const { options } = makeOptions({
+      now: () => localNow,
+      createAgent: async () => ({ run: (query) => fakeAgentRun(query, []) }),
+    });
+
+    await runScheduleCommand(['run', 'morning-briefing'], options);
+
+    const outPath = resolve(process.cwd(), TEST_ROOT, 'reports', expectedDate, `${expectedDate}-briefing.md`);
+    expect(outPath).not.toContain('{date}');
+    expect(readFileSync(outPath, 'utf8')).toContain('Agent answer');
+  });
+
+  it('reports a friendly error when schedules.json is not a job array', async () => {
+    mkdirSync(dirname(SCHEDULES_PATH), { recursive: true });
+    writeFileSync(SCHEDULES_PATH, '{}\n', 'utf8');
+    const { options, errors, exitCodes } = makeOptions();
+
+    await runScheduleCommand(['list'], options);
+
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('expected an array of jobs');
+  });
+
+  it('reports a friendly error when a job has an unknown kind', async () => {
+    writeSchedules([
+      {
+        id: 'weird-job',
+        kind: 'bogus',
+        description: 'Not a real kind',
+        query: 'x',
+        outputFile: '~/.cramer-short/reports/{date}-weird.md',
+      } as unknown as ScheduleJob,
+    ]);
+    const { options, errors, exitCodes } = makeOptions();
+
+    await runScheduleCommand(['list'], options);
+
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('unknown kind');
+  });
+
+  it('fails the job and exits 1 when the agent produces no answer', async () => {
+    writeSchedules([
+      {
+        id: 'morning-briefing',
+        description: 'Daily watchlist briefing',
+        query: 'Run the watchlist-briefing skill',
+        outputFile: '~/.cramer-short/reports/{date}-briefing.md',
+      },
+    ]);
+    const { options, errors, exitCodes } = makeOptions({
+      createAgent: async () => ({
+        run: async function* (): AsyncGenerator<AgentEvent> {
+          yield { type: 'tool_start', tool: 'memory_search', args: {} };
+          yield { type: 'done', answer: '', toolCalls: [], iterations: 1, totalTime: 5 };
+        },
+      }),
+    });
+
+    await runScheduleCommand(['run', 'morning-briefing'], options);
+
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('produced no answer');
+    expect(existsSync(join(TEST_HOME, '.cramer-short', 'reports', '2026-05-02-briefing.md'))).toBe(false);
+  });
+
+  it('passes the configured settings model to the agent factory', async () => {
+    writeSchedules([
+      {
+        id: 'morning-briefing',
+        description: 'Daily watchlist briefing',
+        query: 'Run the watchlist-briefing skill',
+        outputFile: '~/.cramer-short/reports/{date}-briefing.md',
+      },
+    ]);
+    const seenConfigs: Array<{ model: string }> = [];
+    const { options } = makeOptions({
+      createAgent: async (config) => {
+        seenConfigs.push(config as { model: string });
+        return { run: (query) => fakeAgentRun(query, []) };
+      },
+    });
+    const getSettingSpy = spyOn(configModule, 'getSetting').mockImplementation(
+      <T>(key: string, defaultValue: T): T =>
+        (key === 'modelId' ? 'claude-sonnet-4-6' : defaultValue) as T,
+    );
+    try {
+      await runScheduleCommand(['run', 'morning-briefing'], options);
+    } finally {
+      getSettingSpy.mockRestore();
+    }
+
+    expect(seenConfigs).toEqual([{ model: 'claude-sonnet-4-6' }]);
+  });
+
+  it('defaults the agent factory model when no settings are saved', async () => {
+    writeSchedules([
+      {
+        id: 'morning-briefing',
+        description: 'Daily watchlist briefing',
+        query: 'Run the watchlist-briefing skill',
+        outputFile: '~/.cramer-short/reports/{date}-briefing.md',
+      },
+    ]);
+    const seenConfigs: Array<{ model: string }> = [];
+    const { options } = makeOptions({
+      createAgent: async (config) => {
+        seenConfigs.push(config as { model: string });
+        return { run: (query) => fakeAgentRun(query, []) };
+      },
+    });
+    const getSettingSpy = spyOn(configModule, 'getSetting').mockImplementation(
+      <T>(_key: string, defaultValue: T): T => defaultValue,
+    );
+    try {
+      await runScheduleCommand(['run', 'morning-briefing'], options);
+    } finally {
+      getSettingSpy.mockRestore();
+    }
+
+    expect(seenConfigs).toEqual([{ model: 'ollama:deepseek-v4.1-flash:cloud' }]);
   });
 
   it('dispatches forecast_lab jobs to runForecastLab in dry-run mode by default', async () => {
@@ -604,6 +742,72 @@ describe('schedule command', () => {
     expect(dispatchCount).toBe(0);
     expect(exitCodes).toEqual([1]);
     expect(errors.join('\n')).toContain('outside allowed roots');
+  });
+
+  it('refuses replay_label summaries that would overwrite the labeled output file', async () => {
+    const collidingTemplate = `${TEST_ROOT}/replay/{date}-labeled.jsonl`;
+    writeSchedules([
+      {
+        id: 'colliding-replay-label',
+        kind: 'replay_label',
+        outputPath: collidingTemplate,
+        outputFile: collidingTemplate,
+      } as ScheduleJob,
+    ]);
+    const datasetPath = resolve(process.cwd(), TEST_ROOT, 'replay', '2026-05-02-labeled.jsonl');
+    mkdirSync(dirname(datasetPath), { recursive: true });
+    writeFileSync(datasetPath, 'PRECIOUS DATASET\n', 'utf8');
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      runReplayLabelPipeline: async () => {
+        dispatchCount += 1;
+        return fakeReplayLabelResult(datasetPath);
+      },
+    } as ScheduleCommandOptions & {
+      runReplayLabelPipeline: () => Promise<ReplayLabelBenchmarkPipelineResult>;
+    });
+
+    await runScheduleCommand(['run', 'colliding-replay-label'], options);
+
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    const errorText = errors.join('\n');
+    expect(errorText).toContain('outputPath=');
+    expect(errorText).toContain('outputFile=');
+    expect(errorText).toContain(datasetPath);
+    expect(readFileSync(datasetPath, 'utf8')).toBe('PRECIOUS DATASET\n');
+  });
+
+  it('rejects unknown replay_label loader schemes before invoking the factory', async () => {
+    writeSchedules([
+      {
+        id: 'bad-loader-replay-label',
+        kind: 'replay_label',
+        outputPath: `${TEST_ROOT}/replay/{date}-labeled.jsonl`,
+        loader: 'http://example.com/prices.json',
+      } as ScheduleJob,
+    ]);
+    let factoryCalls = 0;
+    let dispatchCount = 0;
+    const { options, errors, exitCodes } = makeOptions({
+      replayLabelLoaderFactory: () => {
+        factoryCalls += 1;
+        return async () => null;
+      },
+      runReplayLabelPipeline: async () => {
+        dispatchCount += 1;
+        return fakeReplayLabelResult('unused.jsonl');
+      },
+    } as ScheduleCommandOptions & {
+      runReplayLabelPipeline: () => Promise<ReplayLabelBenchmarkPipelineResult>;
+    });
+
+    await runScheduleCommand(['run', 'bad-loader-replay-label'], options);
+
+    expect(factoryCalls).toBe(0);
+    expect(dispatchCount).toBe(0);
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('unknown --loader mode');
   });
 
   it('includes structured mutation metadata in schedule summaries', async () => {

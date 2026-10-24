@@ -9,24 +9,20 @@
  * - Cache key is stable regardless of arg key ordering.
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach, afterAll, setSystemTime } from 'bun:test';
+import { rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import * as crossSessionCache from '../utils/cross-session-cache.js';
 
-const actualPaths = await import('../utils/paths.js');
-
-// Keep paths relative so chdir isolation works. Override any absolute-path
-// mock that parallel worker (agent.test.ts) might have registered.
-mock.module('../utils/paths.js', () => ({
-  ...actualPaths,
-  cramerShortPath: mock((...segments: string[]) => join('.cramer-short', ...segments)),
-  getCramerShortDir: mock(() => '.dexter'),
-}));
-
-mock.module('../utils/cross-session-cache.js', () => ({
-  loadCacheFromDisk: async () => new Map<string, string>(),
-  saveCacheToDisk: () => {},
-}));
+// spyOn (restored afterAll) rather than mock.module, which would leak into later test files.
+const crossSessionCacheSpies = [
+  spyOn(crossSessionCache, 'loadCacheFromDisk').mockImplementation(async () => new Map<string, string>()),
+  spyOn(crossSessionCache, 'saveCacheToDisk').mockImplementation(() => {}),
+];
+afterAll(() => {
+  for (const spy of crossSessionCacheSpies) spy.mockRestore();
+});
 
 const { AgentToolExecutor } = await import('./tool-executor.js');
 const { createRunContext } = await import('./run-context.js');
@@ -53,8 +49,7 @@ let originalCwd: string;
 
 beforeEach(() => {
   originalCwd = process.cwd();
-  tmpDir = join(originalCwd, '.cramer-short', 'test-runs', `tool-exec-test-${nextTestId('path')}`);
-  mkdirSync(tmpDir, { recursive: true });
+  tmpDir = mkdtempSync(join(tmpdir(), 'tool-exec-test-'));
   process.chdir(tmpDir);
 });
 
@@ -216,7 +211,11 @@ describe('AgentToolExecutor — request deduplication', () => {
 // from this basic test and cover them separately.
 // ---------------------------------------------------------------------------
 describe('AgentToolExecutor — uncacheable tools bypass cache', () => {
-  const NON_APPROVAL_UNCACHEABLE = ['browser', 'sequential_thinking', 'create_file', 'memory_store'];
+  const NON_APPROVAL_UNCACHEABLE = [
+    'browser', 'sequential_thinking', 'read_file', 'memory_get', 'memory_search',
+    'memory_update', 'store_financial_insight', 'recall_financial_context', 'heartbeat',
+    'unknown_future_tool',
+  ];
 
   for (const toolName of NON_APPROVAL_UNCACHEABLE) {
     it(`does not cache '${toolName}' calls`, async () => {
@@ -227,6 +226,23 @@ describe('AgentToolExecutor — uncacheable tools bypass cache', () => {
       const msg = new AIMessage({
         content: '',
         tool_calls: [{ id: 'c1', name: toolName, args: { query: 'same args' }, type: 'tool_call' as const }],
+      });
+
+      await drainEvents(executor.executeAll(msg, ctx));
+      await drainEvents(executor.executeAll(msg, ctx));
+
+      expect(fakeTool.invocationCount).toBe(2);
+    });
+  }
+
+  for (const errorResult of ['Error: upstream 503', '{"error":"rate limited"}']) {
+    it(`does not cache error-like results (${errorResult})`, async () => {
+      const fakeTool = makeFakeTool('web_search', errorResult);
+      const executor = new AgentToolExecutor(new Map([['web_search', fakeTool]]));
+      const ctx = makeCtx();
+      const msg = new AIMessage({
+        content: '',
+        tool_calls: [{ id: 'c1', name: 'web_search', args: { query: 'q' }, type: 'tool_call' as const }],
       });
 
       await drainEvents(executor.executeAll(msg, ctx));
@@ -672,5 +688,155 @@ describe('AgentToolExecutor — requestCache bounded eviction', () => {
 
     await run(1); // q1 was evicted, so the tool runs again
     expect(invokeCount).toBe(requestCacheMaxSize + 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forecast ticker auto-correction at the tool-executor choke point. Every call
+// path — model calls (executeAll) and forced/pre-executed calls (executeTool) —
+// flows through executeSingle, so a stray ticker (e.g. "PLAN") is rewritten to
+// the query's resolved asset before the tool runs, and can never exhaust the
+// iteration budget.
+// ---------------------------------------------------------------------------
+describe('AgentToolExecutor — forecast ticker auto-correction (choke point)', () => {
+  function runWith(
+    query: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    opts?: { forced?: boolean },
+  ) {
+    const received: unknown[] = [];
+    const fakeTool = {
+      name: toolName,
+      invoke: async (input: { ticker?: unknown }) => {
+        received.push(input?.ticker);
+        return '{"data":{"_tool":"markov_distribution","status":"ok"}}';
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+    const executor = new AgentToolExecutor(new Map([[toolName, fakeTool]]));
+    const ctx = createRunContext(query);
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{ id: 'c1', name: toolName, args, type: 'tool_call' as const }],
+    });
+    const events = opts?.forced
+      ? drainEvents(executor.executeTool(toolName, args, ctx))
+      : drainEvents(executor.executeAll(msg, ctx));
+    return { received, ctx, events };
+  }
+
+  const PLAN_TRAP_QUERY =
+    'BTC / BTC-USD only. No GOLD, ETH, SOL.\n10. Final BTC Trade Plan\n Only provide a plan if the verdict is TRADE.';
+
+  it('auto-corrects a stray PLAN ticker to BTC-USD (model path via executeAll)', async () => {
+    const { received, events } = runWith(
+      PLAN_TRAP_QUERY,
+      'markov_distribution',
+      { ticker: 'PLAN', horizon: 1, trajectory: true, trajectoryDays: 1 },
+    );
+    await events;
+    expect(received).toEqual(['BTC-USD']);
+  });
+
+  it('auto-corrects a stray PLAN ticker on the forced path (executeTool)', async () => {
+    const { received, events } = runWith(
+      PLAN_TRAP_QUERY,
+      'markov_distribution',
+      { ticker: 'PLAN', horizon: 1 },
+      { forced: true },
+    );
+    await events;
+    expect(received).toEqual(['BTC-USD']);
+  });
+
+  it('auto-corrects a commodity ticker to the proxy (GOLD -> GLD)', async () => {
+    const { received, events } = runWith(
+      'GOLD only. 5 trading day distribution.',
+      'markov_distribution',
+      { ticker: 'GOLD', horizon: 5 },
+    );
+    await events;
+    expect(received).toEqual(['GLD']);
+  });
+
+  it('leaves an already-correct ticker untouched', async () => {
+    const { received, events } = runWith(
+      'BTC 24h briefing. BTC-USD only.',
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 1 },
+    );
+    await events;
+    expect(received).toEqual(['BTC-USD']);
+  });
+
+  it('does not rewrite tickers for ambiguous multi-asset queries', async () => {
+    const { received, events } = runWith(
+      'Compare BTC and ETH over the next 7 days.',
+      'markov_distribution',
+      { ticker: 'ETH-USD', horizon: 7 },
+    );
+    await events;
+    expect(received).toEqual(['ETH-USD']);
+  });
+});
+
+describe('AgentToolExecutor — action-level approval gating', () => {
+  const GATED = [
+    ['heartbeat', 'update'],
+    ['forecast_lab_run', 'promote-approved'],
+    ['forecast_lab_run', 'reset-live'],
+  ] as const;
+
+  for (const [toolName, action] of GATED) {
+    it(`requires approval for ${toolName} action=${action} and skips the tool on deny`, async () => {
+      const fakeTool = makeFakeTool(toolName, 'ok');
+      const approval = mock(async () => 'deny' as const);
+      const executor = new AgentToolExecutor(new Map([[toolName, fakeTool]]), undefined, approval);
+      const msg = new AIMessage({
+        content: '',
+        tool_calls: [{ id: 'c1', name: toolName, args: { action }, type: 'tool_call' as const }],
+      });
+
+      const events = await drainEvents(executor.executeAll(msg, makeCtx()));
+
+      expect(approval).toHaveBeenCalledTimes(1);
+      expect(events.some((e) => e.type === 'tool_denied')).toBe(true);
+      expect(fakeTool.invocationCount).toBe(0);
+    });
+  }
+
+  it('does not gate read-only actions (heartbeat view)', async () => {
+    const fakeTool = makeFakeTool('heartbeat', 'checklist');
+    const approval = mock(async () => 'deny' as const);
+    const executor = new AgentToolExecutor(new Map([['heartbeat', fakeTool]]), undefined, approval);
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{ id: 'c1', name: 'heartbeat', args: { action: 'view' }, type: 'tool_call' as const }],
+    });
+
+    await drainEvents(executor.executeAll(msg, makeCtx()));
+
+    expect(approval).not.toHaveBeenCalled();
+    expect(fakeTool.invocationCount).toBe(1);
+  });
+
+  it('allow-session for heartbeat does not pre-approve write_file', async () => {
+    const approved = new Set<string>();
+    const executor = new AgentToolExecutor(
+      new Map([['heartbeat', makeFakeTool('heartbeat', 'ok')]]),
+      undefined,
+      async () => 'allow-session' as const,
+      approved,
+    );
+    const msg = new AIMessage({
+      content: '',
+      tool_calls: [{ id: 'c1', name: 'heartbeat', args: { action: 'update', content: 'x' }, type: 'tool_call' as const }],
+    });
+
+    await drainEvents(executor.executeAll(msg, makeCtx()));
+
+    expect([...approved]).toEqual(['heartbeat']);
   });
 });

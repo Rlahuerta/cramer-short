@@ -1,4 +1,16 @@
-"""Minimal Python mirror of the TypeScript forecast trust-policy logic."""
+"""Forecast trust-policy engine — determines the trust level of model predictions.
+
+Decides whether a forecast should be trusted at full strength, emitted with
+a context-only label, or rejected entirely.  The policy considers:
+
+- Ensemble consensus strength (Polymarket agreement)
+- Structural-break presence
+- Conformal confidence
+- HMM convergence and posterior entropy
+- Domain/horizon trust scores
+
+Mirrors ``src/agent/forecast-policy.ts``.
+"""
 
 from __future__ import annotations
 

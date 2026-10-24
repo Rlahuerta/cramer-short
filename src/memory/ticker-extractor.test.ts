@@ -95,8 +95,9 @@ describe('extractTickers — stop-word filtering', () => {
     expect(extractTickers('Consider an ETF instead of individual REIT holdings')).toEqual([]);
   });
 
-  it('filters common direction words', () => {
+  it('filters common direction and planning words', () => {
     expect(extractTickers('BUY SELL HOLD LONG SHORT positions')).toEqual([]);
+    expect(extractTickers('Final BTC Trade Plan: BLOCK 10')).not.toContain('PLAN');
   });
 
   it('returns empty array for plain lowercase prose', () => {

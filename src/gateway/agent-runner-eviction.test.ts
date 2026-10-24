@@ -1,22 +1,22 @@
 /**
  * Tests for session LRU eviction in gateway/agent-runner.ts.
- * Uses mock.module to avoid real LLM / API calls.
+ * Stubs AgentRunnerController methods to avoid real LLM / API calls.
  */
 
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, spyOn, beforeEach, afterAll } from 'bun:test';
+import { AgentRunnerController } from '../controllers/agent-runner.js';
 
-mock.module('../controllers/agent-runner.js', () => ({
-  AgentRunnerController: class {
-    setModel() {}
-    setRunOptions() {}
-    cancelExecution() {}
-    async runQuery() { return { answer: 'ok' }; }
-  },
-}));
-
-mock.module('./heartbeat/suppression.js', () => ({
-  HEARTBEAT_OK_TOKEN: '__heartbeat__',
-}));
+// Stub the controller's runtime methods on the prototype (restored afterAll) instead of
+// mock.module, which would replace the controller module for every later test file.
+const controllerSpies = [
+  spyOn(AgentRunnerController.prototype, 'setModel').mockImplementation(() => {}),
+  spyOn(AgentRunnerController.prototype, 'setRunOptions').mockImplementation(() => {}),
+  spyOn(AgentRunnerController.prototype, 'cancelExecution').mockImplementation(() => {}),
+  spyOn(AgentRunnerController.prototype, 'runQuery').mockImplementation(async () => ({ answer: 'ok' }) as never),
+];
+afterAll(() => {
+  for (const spy of controllerSpies) spy.mockRestore();
+});
 
 const {
   runAgentForMessage,

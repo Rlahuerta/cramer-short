@@ -3,9 +3,9 @@ import { describe, test, expect, mock, beforeEach, afterEach, afterAll, spyOn } 
 // Signal that FMP is configured — fallback will only run when the key is set.
 process.env.FMP_API_KEY = 'test-fmp-key';
 
-const realFmpModule = await import('./fmp.js');
-const realYahooFinanceModule = await import('./yahoo-finance.js');
-const realTavilyModule = await import('../search/tavily.js');
+const realFmpModule = { ...(await import('./fmp.js')) };
+const realYahooFinanceModule = { ...(await import('./yahoo-finance.js')) };
+const realTavilyModule = { ...(await import('../search/tavily.js')) };
 
 // ---------------------------------------------------------------------------
 // Mock ./fmp.js BEFORE importing fundamentals.js so the dynamic import picks

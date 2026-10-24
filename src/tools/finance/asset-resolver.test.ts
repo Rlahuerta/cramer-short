@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { assertAssetConsistency, resolveAssetIntent, resolveTickerSearchIdentity } from './asset-resolver.js';
+import { assertAssetConsistency, extractExclusiveAssetOverride, resolveAssetIntent, resolveTickerSearchIdentity } from './asset-resolver.js';
 
 describe('resolveAssetIntent', () => {
   it('routes commodity gold queries to GLD proxy', () => {
@@ -161,5 +161,42 @@ describe('resolveTickerSearchIdentity', () => {
     expect(result.searchQuery).toBe('oil');
     expect(result.canonicalNames).toEqual(['oil', 'uso']);
     expect(result.strictQuestionMatch).toBe(false);
+  });
+});
+
+describe('extractExclusiveAssetOverride', () => {
+  it('does not read a titlecase "Plan" before "Only" as an exclusive ticker (regression)', () => {
+    const query = 'BTC / BTC-USD only. No GOLD, ETH, SOL.\n'
+      + '10. Final BTC Trade Plan\n'
+      + ' Only provide an actionable plan if the verdict is TRADE or CONDITIONAL_TRADE.';
+    expect(extractExclusiveAssetOverride(query)).toBe('BTC');
+  });
+
+  it('resolves an explicit crypto quote-pair "only" scope', () => {
+    expect(extractExclusiveAssetOverride('ETH / ETH-USD only. 1 day forecast.')).toBe('ETH');
+  });
+
+  it('resolves an uppercase equity "only" scope', () => {
+    expect(extractExclusiveAssetOverride('NVDA only. 5 day distribution.')).toBe('NVDA');
+  });
+
+  it('resolves a lowercase commodity keyword "only" scope', () => {
+    expect(extractExclusiveAssetOverride('gold only forecast next week')).toBe('GOLD');
+  });
+
+  it('maps the bitcoin keyword "only" scope to BTC', () => {
+    expect(extractExclusiveAssetOverride('bitcoin only, next 24 hours')).toBe('BTC');
+  });
+
+  it('ignores a titlecase word before "only" with no real ticker', () => {
+    expect(extractExclusiveAssetOverride('Final Trade Plan. Only provide the summary.')).toBeNull();
+  });
+
+  it('filters an all-caps stop word before "only" (PLAN)', () => {
+    expect(extractExclusiveAssetOverride('PLAN only for the next day')).toBeNull();
+  });
+
+  it('returns null when there is no exclusive scope', () => {
+    expect(extractExclusiveAssetOverride('How is the market doing today?')).toBeNull();
   });
 });

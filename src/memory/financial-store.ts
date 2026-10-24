@@ -26,6 +26,11 @@ export function isExpired(insight: { tags: string[]; updatedAt?: number; created
   return nowMs - lastUpdate > ttl;
 }
 
+export function isInsightRowExpired(row: FinancialInsightRecord, nowMs = Date.now()): boolean {
+  const tags = JSON.parse(row.tags || '[]') as string[];
+  return isExpired({ tags, updatedAt: row.updated_at, createdAt: row.created_at }, nowMs);
+}
+
 export interface FinancialInsight {
   id?: number;
   ticker: string;

@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, spyOn, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
 
 // ---------------------------------------------------------------------------
 // Mock ./fmp.js BEFORE importing wacc-inputs.js
@@ -7,6 +7,14 @@ import { describe, test, expect, mock, spyOn, beforeEach } from 'bun:test';
 const mockFmpGet = mock(async <T>(_path: string, _params: unknown): Promise<T> =>
   [] as unknown as T,
 );
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realFmpModule = { ...(await import('./fmp.js')) };
+afterAll(() => {
+  mock.module('./fmp.js', () => realFmpModule);
+});
+
 mock.module('./fmp.js', () => ({
   fmpApi: { get: mockFmpGet },
 }));

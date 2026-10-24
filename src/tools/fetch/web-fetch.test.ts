@@ -1,9 +1,13 @@
-import { afterEach, describe, test, expect } from 'bun:test';
+import { afterEach, describe, test, expect, spyOn } from 'bun:test';
+import { useNoNetwork } from '../../utils/test-no-network.js';
 import { webFetchTool } from './web-fetch.js';
+import { _setDnsLookupForTest } from './url-guard.js';
 import { extractText as extractPdfText } from 'unpdf';
 // Warm the HTML extractor's dynamic imports outside individual test timers.
 import '@mozilla/readability';
 import 'linkedom';
+
+useNoNetwork();
 
 // Minimal valid 1-page PDF with the text "Hello PDF World"
 const MINIMAL_PDF_BASE64 =
@@ -59,11 +63,20 @@ describe('web_fetch blocked-domain guard', () => {
   });
 
   test('does NOT reject legitimate news URLs', async () => {
-    // cnbc.com, reuters.com, ft.com etc. should pass through to the real fetch
-    // (we just verify the guard does not fire — the network call itself may fail
-    //  in CI, so we only check that the message is not a "Blocked domain" one).
-    const result = await invoke('https://httpbin.org/get').catch((e: Error) => e.message);
-    expect(result).not.toContain('Blocked domain');
+    // cnbc.com, reuters.com, ft.com etc. should pass through to fetch
+    // (DNS and fetch are stubbed: we only verify the guard does not fire).
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('<p>ok</p>', { status: 200, headers: { 'content-type': 'text/html' } }),
+    );
+    try {
+      const result = await invoke('https://httpbin.org/get');
+      expect(result).not.toContain('Blocked domain');
+      expect(fetchSpy).toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      _setDnsLookupForTest();
+    }
   });
 });
 
@@ -123,10 +136,12 @@ describe('web_fetch PDF content-type routing', () => {
       { preconnect: originalFetch.preconnect },
     );
     globalThis.fetch = fetchPdf;
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
     try {
       return await (webFetchTool.invoke({ url }) as Promise<string>);
     } finally {
       globalThis.fetch = originalFetch;
+      _setDnsLookupForTest();
     }
   }
 
@@ -211,5 +226,85 @@ describe('web_fetch HTML extractor labeling', () => {
     expect(payload.data?.title).toContain('<<<EXTERNAL_UNTRUSTED_CONTENT>>>');
     expect(unwrapExternalContent(payload.data?.title)).toBe('Short Article');
     expect(unwrapExternalContent(payload.data?.text)).toContain('Lead paragraph');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSRF guard — internal/private hosts must be rejected before any fetch.
+// ---------------------------------------------------------------------------
+
+describe('web_fetch SSRF guard', () => {
+  async function invoke(url: string): Promise<string> {
+    return webFetchTool.invoke({ url }) as Promise<string>;
+  }
+
+  test('rejects file:// URLs', async () => {
+    const result = await invoke('file:///etc/passwd');
+    expect(result).toContain('must be http or https');
+  });
+
+  test('rejects 127.0.0.1', async () => {
+    const result = await invoke('http://127.0.0.1:11434/api/tags');
+    expect(result).toContain('internal or reserved');
+  });
+
+  test('rejects 169.254.169.254 (cloud metadata)', async () => {
+    const result = await invoke('http://169.254.169.254/latest/meta-data/');
+    expect(result).toContain('internal or reserved');
+  });
+
+  test('rejects localhost', async () => {
+    const result = await invoke('http://localhost:3000/');
+    expect(result).toContain('internal or reserved');
+  });
+
+  test('does NOT reject a public URL (passes through to fetch or blocked-domain guard)', async () => {
+    const result = await invoke('https://example.com/').catch((e: Error) => e.message);
+    expect(result).not.toContain('internal or reserved');
+    expect(result).not.toContain('must be http or https');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSRF guard — DNS-resolved and redirect-hop targets.
+// ---------------------------------------------------------------------------
+
+describe('web_fetch SSRF guard (DNS + redirects)', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    _setDnsLookupForTest();
+  });
+
+  test('rejects a public-looking hostname that resolves to a private address, without calling fetch', async () => {
+    _setDnsLookupForTest(async () => [{ address: '169.254.169.254' }]);
+    const fetched: string[] = [];
+    globalThis.fetch = Object.assign(
+      async (url: Parameters<typeof globalThis.fetch>[0]) => {
+        fetched.push(String(url));
+        return new Response('secret');
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    await expect(webFetchTool.invoke({ url: 'https://metadata.attacker.example/' })).rejects.toThrow(
+      /internal or reserved/,
+    );
+    expect(fetched).toEqual([]);
+  });
+
+  test('rejects a redirect from a public host to an internal one', async () => {
+    _setDnsLookupForTest(async () => [{ address: '93.184.216.34' }]);
+    const fetched: string[] = [];
+    globalThis.fetch = Object.assign(
+      async (url: Parameters<typeof globalThis.fetch>[0]) => {
+        fetched.push(String(url));
+        return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:8080/admin' } });
+      },
+      { preconnect: originalFetch.preconnect },
+    );
+    await expect(webFetchTool.invoke({ url: 'https://example.com/redirect' })).rejects.toThrow(
+      /internal or reserved/,
+    );
+    expect(fetched).toEqual(['https://example.com/redirect']);
   });
 });

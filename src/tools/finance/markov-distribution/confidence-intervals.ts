@@ -19,6 +19,17 @@ import {
   type JumpEventSpec,
 } from '../jump-diffusion.js';
 
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /**
  * Standard normal CDF Φ(x) via Abramowitz & Stegun erf approximation (eq 7.1.26).
  * The A&S formula computes erf(t) which equals Φ(t√2)*2−1, so we
@@ -104,12 +115,13 @@ export function estimateRegimeStats(
  * Compute the mixing-time weight: how much to trust the Markov regime signal
  * vs. anchor-only at a given horizon.
  *
- * weight = exp(−ρ × n) where ρ = second-largest eigenvalue of P.
- * Near 1 at short horizons (Markov-dominant).
- * Approaches 0 at long horizons (Polymarket anchors dominate).
+ * weight = |ρ|^n where ρ = second-largest eigenvalue of P — the rate at which
+ * the chain forgets its start state. Slow-mixing chains (|ρ| near 1) keep the
+ * Markov signal for longer; fast-mixing chains hand over to the anchors quickly.
+ * Mirrors `compute_mixing_weight` in research/models/trajectory/driftvol.py.
  */
 export function computeMixingWeight(secondEigenvalue: number, horizon: number): number {
-  return Math.exp(-secondEigenvalue * horizon);
+  return Math.pow(Math.max(1e-15, Math.abs(secondEigenvalue)), horizon);
 }
 
 /**
@@ -321,6 +333,29 @@ export function computeTerminalStateWeights(
   return normalizeStateWeightVector(weights);
 }
 
+export function computePathIntegratedDrift(
+  horizon: number,
+  P: TransitionMatrix,
+  regimeStats: Record<RegimeState, RegimeStats>,
+  initialState: RegimeState,
+  startMixture?: Record<RegimeState, number>,
+): number {
+  if (horizon < 0) {
+    throw new Error(`horizon must be non-negative, got ${horizon}`);
+  }
+
+  let total = 0;
+  for (let d = 1; d <= horizon; d++) {
+    const weights = computeTerminalStateWeights(d, P, initialState, startMixture);
+    total += REGIME_STATES.reduce(
+      (sum, state, i) => sum + weights[i] * regimeStats[state].meanReturn,
+      0,
+    );
+  }
+
+  return total;
+}
+
 /**
  * Compute the effective n-step drift and volatility from the Markov chain.
  * Extracted so both interpolateDistribution and calibration logic can reuse it.
@@ -368,15 +403,23 @@ export function computeHorizonDriftVol(
   const useRegimeSigma = regimeSpecificSigma === true && maxWeight > threshold;
   const sigma_obs = useRegimeSigma ? dominantSigma : mixtureSigmaObs;
 
-  let mu_eff: number;
-  let sigma_eff: number;
+  // Drift is the sum of each day's regime-weighted mean (matching computeTrajectory),
+  // not horizon × the terminal-day mean, which understates drift as the chain mixes.
+  // A terminal-weight override (soft regime blend) shifts every day's mean by its
+  // deviation from the P-implied terminal mix.
+  // Momentum is part of the Markov arm, so the HMM override scales it by (1 − w) too.
+  let overrideShift = 0;
+  if (terminalStateWeights) {
+    const chainWeights = computeTerminalStateWeights(horizon, P, initialState, startMixture);
+    overrideShift = mu_obs - REGIME_STATES.reduce((s, state, i) => s + chainWeights[i] * regimeStats[state].meanReturn, 0);
+  }
+  let mu_n = computePathIntegratedDrift(horizon, P, regimeStats, initialState, startMixture)
+    + horizon * (overrideShift + momentumAdjustment);
+  let sigma_eff = sigma_obs;
   if (hmmOverride) {
     const w = hmmOverride.weight;
-    mu_eff = w * hmmOverride.drift + (1 - w) * mu_obs;
+    mu_n = w * horizon * hmmOverride.drift + (1 - w) * mu_n;
     sigma_eff = w * hmmOverride.vol + (1 - w) * sigma_obs;
-  } else {
-    mu_eff = mu_obs;
-    sigma_eff = sigma_obs;
   }
 
   let sigma_n = sigma_eff * Math.sqrt(horizon);
@@ -389,10 +432,7 @@ export function computeHorizonDriftVol(
     sigma_n = sigma_eff * Math.sqrt(varianceScale);
   }
 
-  return {
-    mu_n: horizon * (mu_eff + momentumAdjustment),
-    sigma_n,
-  };
+  return { mu_n, sigma_n };
 }
 
 /**
@@ -433,6 +473,15 @@ export function computeTrajectory(
    * arithmetic, no extra RNG draws).
    */
   garchScales?: readonly number[],
+  /**
+   * Phase 4 — shared structural-break/entropy uncertainty CI scale.
+   * Multiplies CI half-width around expectedPrice. 1.0 = baseline (no
+   * widening), >1.0 = widen (structural break or high transition entropy),
+   * <1.0 = tighten (deterministic transitions). Default 1.0 preserves
+   * existing behavior.
+   */
+  uncertaintyCiScale = 1.0,
+  randomState?: number,
 ): TrajectoryPoint[] {
   const initialIdx = STATE_INDEX[initialState];
   const trajectory: TrajectoryPoint[] = [];
@@ -518,13 +567,15 @@ export function computeTrajectory(
     }
   }
 
+  const seededRandom = randomState === undefined ? undefined : mulberry32(randomState);
+
   // Run shared Monte Carlo with per-day mixture drift/vol
   const paths: number[][] = [];
   for (let s = 0; s < nSamples; s++) {
     const path = new Array(days);
     let cumLogReturn = 0;
     for (let d = 0; d < days; d++) {
-      const u = Math.random();
+      const u = seededRandom === undefined ? Math.random() : seededRandom();
       const z = inverseStudentTCDF(u, nu);
       const scaledVol = nu > 2 ? dailyVols[d] * Math.sqrt((nu - 2) / nu) : dailyVols[d];
       cumLogReturn += dailyDrifts[d] + z * scaledVol;
@@ -533,11 +584,11 @@ export function computeTrajectory(
       // default-off path stays bit-for-bit identical to the legacy run.
       if (hasJumps) {
         for (const e of jumpSpec!) {
-          if (Math.random() < e.dailyIntensity) {
+          if ((seededRandom === undefined ? Math.random() : seededRandom()) < e.dailyIntensity) {
             // Box-Muller via two uniforms — keeps the dependency surface
             // identical to the diffusion draw above (no extra libs).
-            const u1 = Math.max(1e-12, Math.random());
-            const u2 = Math.random();
+            const u1 = Math.max(1e-12, seededRandom === undefined ? Math.random() : seededRandom());
+            const u2 = seededRandom === undefined ? Math.random() : seededRandom();
             const zJ = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
             cumLogReturn += e.meanLogJump + zJ * e.stdLogJump;
           }
@@ -570,13 +621,27 @@ export function computeTrajectory(
     prices.sort((a, b) => a - b);
     const p5Idx = Math.max(0, Math.floor(nSamples * 0.05) - 1);
     const p95Idx = Math.min(nSamples - 1, Math.ceil(nSamples * 0.95));
-    const lowerBound = prices[p5Idx];
-    const upperBound = prices[p95Idx];
+    let lowerBound = prices[p5Idx];
+    let upperBound = prices[p95Idx];
 
     // Keep trajectory expectedPrice on the mean path even when an empirical-vol
     // floor widens the MC interval. Otherwise the trajectory can silently switch
     // from mean to median semantics and contradict the terminal expected price.
     const expectedPrice = analyticalExpected;
+
+    // Apply uncertainty CI scale from the original asymmetric bounds around
+    // expectedPrice. Re-centering total width can shrink one side of a skewed
+    // lognormal interval even when the caller requested widening.
+    if (uncertaintyCiScale !== 1.0) {
+      let scaledLower = expectedPrice - (expectedPrice - lowerBound) * uncertaintyCiScale;
+      let scaledUpper = expectedPrice + (upperBound - expectedPrice) * uncertaintyCiScale;
+      if (uncertaintyCiScale >= 1.0) {
+        scaledLower = Math.min(lowerBound, scaledLower);
+        scaledUpper = Math.max(upperBound, scaledUpper);
+      }
+      lowerBound = Math.max(0.01, scaledLower);
+      upperBound = scaledUpper;
+    }
 
     // P(up) from Student-t survival at currentPrice
     const pUp = studentTSurvival(currentPrice, currentPrice, mu_n, sigma_n, nu);

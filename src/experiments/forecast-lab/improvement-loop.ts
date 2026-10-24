@@ -329,16 +329,13 @@ export async function runForecastLabImprovementSearch<TMetrics>(params: {
   const maxIterations = Math.max(1, params.maxIterations ?? 2);
   const minObjectiveImprovement = params.minObjectiveImprovement ?? 0.000001;
   const buildTrials = params.buildTrials ?? ((seed, context) => buildForecastLabImprovementTrials(seed, context));
-  const seedResults = await Promise.all(
-    params.seedCandidates.map(async (mutation) => {
-      const evaluation = await params.evaluate(mutation, { iteration: 0, stage: 'seed' });
-      return {
-        iteration: 0,
-        mutation,
-        ...evaluation,
-      } satisfies ForecastLabImprovementScoredMutation<TMetrics>;
-    }),
-  );
+  // Evaluate one candidate at a time: evaluators apply parameters through a process-global
+  // override map, so concurrent evaluations would score candidates with each other's parameters.
+  const seedResults: ForecastLabImprovementScoredMutation<TMetrics>[] = [];
+  for (const mutation of params.seedCandidates) {
+    const evaluation = await params.evaluate(mutation, { iteration: 0, stage: 'seed' });
+    seedResults.push({ iteration: 0, mutation, ...evaluation });
+  }
   seedResults.sort((left, right) => right.objectiveScore - left.objectiveScore || right.primaryScore - left.primaryScore);
 
   let bestResult = seedResults[0]!;
@@ -351,15 +348,12 @@ export async function runForecastLabImprovementSearch<TMetrics>(params: {
       return { seedResults, bestResult, history, iterationsRun: history.length };
     }
 
-    const scoredTrials = await Promise.all(trials.map(async (mutation) => {
+    const scoredTrials: ForecastLabImprovementScoredMutation<TMetrics>[] = [];
+    for (const mutation of trials) {
       seenIds.add(mutation.id);
       const evaluation = await params.evaluate(mutation, { iteration, stage: 'trial' });
-      return {
-        iteration,
-        mutation,
-        ...evaluation,
-      } satisfies ForecastLabImprovementScoredMutation<TMetrics>;
-    }));
+      scoredTrials.push({ iteration, mutation, ...evaluation });
+    }
     scoredTrials.sort((left, right) => right.objectiveScore - left.objectiveScore || right.primaryScore - left.primaryScore);
     const bestTrial = scoredTrials[0];
 

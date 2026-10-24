@@ -1,8 +1,18 @@
-import { describe, test, expect, mock, spyOn, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
 
 const mockTavilyInvoke = mock(async (_input: unknown): Promise<string> =>
   JSON.stringify({ data: { result: 'AAPL current price $185' }, sourceUrls: [] }),
 );
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realTavilyModule = { ...(await import('../search/tavily.js')) };
+const realRobinhoodClientModule = { ...(await import('./robinhood-client.js')) };
+afterAll(() => {
+  mock.module('../search/tavily.js', () => realTavilyModule);
+  mock.module('./robinhood-client.js', () => realRobinhoodClientModule);
+});
+
 mock.module('../search/tavily.js', () => ({
   tavilySearch: { invoke: mockTavilyInvoke, name: 'web_search' },
 }));

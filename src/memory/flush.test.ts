@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, spyOn } from 'bun:test';
 import { shouldRunMemoryFlush, MEMORY_FLUSH_TOKEN, validateFlushOutput } from './flush.js';
 import { CONTEXT_THRESHOLD } from '../utils/tokens.js';
+import * as tokens from '../utils/tokens.js';
 
 // ============================================================================
 // shouldRunMemoryFlush
@@ -27,6 +28,16 @@ describe('shouldRunMemoryFlush', () => {
     const customThreshold = 1000;
     expect(shouldRunMemoryFlush({ estimatedContextTokens: 1000, alreadyFlushed: false, threshold: customThreshold })).toBe(true);
     expect(shouldRunMemoryFlush({ estimatedContextTokens: 999, alreadyFlushed: false, threshold: customThreshold })).toBe(false);
+  });
+
+  it('resolves the default threshold through getContextThreshold()', () => {
+    const spy = spyOn(tokens, 'getContextThreshold').mockReturnValue(1000);
+    try {
+      expect(shouldRunMemoryFlush({ estimatedContextTokens: 1000, alreadyFlushed: false })).toBe(true);
+      expect(shouldRunMemoryFlush({ estimatedContextTokens: 999, alreadyFlushed: false })).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

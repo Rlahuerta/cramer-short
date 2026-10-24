@@ -6,7 +6,7 @@
 import { mock, describe, it, expect, beforeEach, afterAll } from 'bun:test';
 
 // Capture real module before mocking so afterAll can restore
-const realLlm = await import('../model/llm.js');
+const realLlm = { ...(await import('../model/llm.js')) };
 
 // Mock callLlm before importing the class
 const mockCallLlm = mock(async (_prompt: string, _opts?: unknown) => ({

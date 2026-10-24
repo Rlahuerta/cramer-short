@@ -18,7 +18,10 @@
  *    that embed raw JSON in their reasoning text don't flood the terminal.
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime, spyOn } from 'bun:test';
+import { useNoNetwork } from '../utils/test-no-network.js';
+import * as polymarket from '../tools/finance/polymarket.js';
+import * as embeddings from '../memory/embeddings.js';
 import { rmSync, mkdtempSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -29,6 +32,21 @@ import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distri
 import { _setModelFactory } from '../model/llm.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { AIMessage, AIMessageChunk, type BaseMessage } from '@langchain/core/messages';
+
+useNoNetwork();
+
+// Agent.run() injects live Polymarket context, and memory search would embed
+// via OpenAI with the stub key: keep both offline.
+let offlineSpies: Array<{ mockRestore: () => void }> = [];
+beforeEach(() => {
+  offlineSpies = [
+    spyOn(polymarket, 'fetchPolymarketMarkets').mockResolvedValue([]),
+    spyOn(embeddings, 'createEmbeddingClient').mockReturnValue(null),
+  ];
+});
+afterEach(() => {
+  for (const spy of offlineSpies) spy.mockRestore();
+});
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -151,6 +169,7 @@ const {
   buildLowConfidenceBtcShortHorizonForecastPrefix,
   ensureStructuredDensityTable,
 } = await import('./agent.js');
+const { createForecastArbitratorTool } = await import('../tools/finance/forecast-arbitrator.js');
 
 const sequentialThinkingTool = {
   name: 'sequential_thinking',
@@ -1078,5 +1097,309 @@ describe('buildSourcesFooter', () => {
     expect(footer).not.toContain('reddit.com');
     expect(footer).toContain('financialmodelingprep.com');
     expect(footer).toContain('polymarket.com');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forecast tool ticker normalization (end-to-end through the agent loop).
+// Reproduces the reported bug: on a "BTC / BTC-USD only" query the model
+// emitted markov_distribution(ticker="PLAN"); the executed tool must receive
+// the query-scoped BTC-USD ticker instead.
+// ---------------------------------------------------------------------------
+describe('Agent — forecast tool ticker normalization (integration)', () => {
+  it('rewrites a model-emitted markov ticker to the scoped ticker before execution', async () => {
+    const capturedTickers: unknown[] = [];
+    const capturingMarkovTool = {
+      name: 'markov_distribution',
+      invoke: async (input: { ticker?: unknown }) => {
+        capturedTickers.push(input?.ticker);
+        return JSON.stringify({
+          data: {
+            _tool: 'markov_distribution',
+            status: 'ok',
+            canonical: { ticker: 'BTC-USD', horizon: 1 },
+            forecastHint: { usage: 'forecast_only', markovReturn: 0.01 },
+          },
+        });
+      },
+    } satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+    const agent = await Agent.create({
+      model: 'gpt-5.4',
+      maxIterations: 5,
+      memoryEnabled: false,
+      tools: [sequentialThinkingTool, capturingMarkovTool] as unknown as StructuredToolInterface[],
+    });
+
+    mockState.callLlmQueue = [
+      { content: '', toolCalls: [ST_TOOL_CALL] },
+      {
+        content: '',
+        toolCalls: [
+          { id: 'm1', name: 'markov_distribution', args: { ticker: 'PLAN', horizon: 1 }, type: 'tool_call' },
+        ],
+      },
+      { content: 'done', toolCalls: [] },
+    ];
+
+    await collectEvents(agent.run('Give me a quick read. BTC / BTC-USD only.'));
+
+    expect(capturedTickers).toEqual(['BTC-USD']);
+  });
+
+  it('rewrites a commodity ticker to the correct proxy through the full loop (GOLD -> GLD)', async () => {
+    const capturedTickers: unknown[] = [];
+    const capturingMarkovTool = {
+      name: 'markov_distribution',
+      invoke: async (input: { ticker?: unknown }) => {
+        capturedTickers.push(input?.ticker);
+        return JSON.stringify({
+          data: {
+            _tool: 'markov_distribution',
+            status: 'ok',
+            canonical: { ticker: 'GLD', horizon: 5 },
+            forecastHint: { usage: 'forecast_only', markovReturn: 0.005 },
+          },
+        });
+      },
+    } satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+    const agent = await Agent.create({
+      model: 'gpt-5.4',
+      maxIterations: 5,
+      memoryEnabled: false,
+      tools: [sequentialThinkingTool, capturingMarkovTool] as unknown as StructuredToolInterface[],
+    });
+
+    mockState.callLlmQueue = [
+      { content: '', toolCalls: [ST_TOOL_CALL] },
+      {
+        content: '',
+        toolCalls: [
+          { id: 'm1', name: 'markov_distribution', args: { ticker: 'PLAN', horizon: 5 }, type: 'tool_call' },
+        ],
+      },
+      { content: 'done', toolCalls: [] },
+    ];
+
+    await collectEvents(agent.run('Give me a quick read. GOLD only.'));
+
+    expect(capturedTickers).toEqual(['GLD']);
+  });
+
+  it('resists the exact reported "Trade Plan / Only" prompt trap (PLAN never reaches the tool)', async () => {
+    const capturedTickers: unknown[] = [];
+    const capturingMarkovTool = {
+      name: 'markov_distribution',
+      invoke: async (input: { ticker?: unknown }) => {
+        capturedTickers.push(input?.ticker);
+        return JSON.stringify({
+          data: {
+            _tool: 'markov_distribution',
+            status: 'ok',
+            canonical: { ticker: 'BTC-USD', horizon: 1 },
+            forecastHint: { usage: 'forecast_only', markovReturn: 0.01 },
+          },
+        });
+      },
+    } satisfies Pick<StructuredToolInterface, 'name' | 'invoke'>;
+
+    const agent = await Agent.create({
+      model: 'gpt-5.4',
+      maxIterations: 8,
+      memoryEnabled: false,
+      tools: [sequentialThinkingTool, capturingMarkovTool] as unknown as StructuredToolInterface[],
+    });
+
+    // Reproduces the reported prompt: "BTC / BTC-USD only" plus the "Final BTC
+    // Trade Plan\nOnly provide…" text that previously made the exclusive-scope
+    // regex resolve to PLAN — for both the model call and any forced call.
+    const query = 'BTC live trading briefing for the next 24 hours / 1 trading day.\n'
+      + 'BTC / BTC-USD only. No GOLD, GLD, commodities, ETH, SOL, or proxy context.\n'
+      + 'markov_distribution for BTC-USD with horizon=1, trajectory=true, trajectoryDays=1.\n'
+      + '10. Final BTC Trade Plan\n Only provide an actionable plan if the verdict is TRADE or CONDITIONAL_TRADE.';
+
+    mockState.callLlmQueue = [
+      { content: '', toolCalls: [ST_TOOL_CALL] },
+      {
+        content: '',
+        toolCalls: [
+          { id: 'm1', name: 'markov_distribution', args: { ticker: 'PLAN', horizon: 1, trajectory: true, trajectoryDays: 1 }, type: 'tool_call' },
+        ],
+      },
+      { content: 'done', toolCalls: [] },
+    ];
+
+    await collectEvents(agent.run(query));
+
+    // Every executed markov call used BTC-USD — PLAN never reached the tool.
+    expect(capturedTickers.length).toBeGreaterThan(0);
+    expect(capturedTickers.every((t) => t === 'BTC-USD')).toBe(true);
+    expect(capturedTickers).not.toContain('PLAN');
+  });
+
+  it('handles the exact BTC briefing arbitrator payload without schema errors when nested values are percentages', async () => {
+    const arbiterTool = createForecastArbitratorTool({ recordReplayBundleCapture: () => {} });
+    const agent = await Agent.create({
+      model: 'gpt-5.4',
+      maxIterations: 5,
+      memoryEnabled: false,
+      tools: [sequentialThinkingTool, arbiterTool] as unknown as StructuredToolInterface[],
+    });
+
+    const query = 'BTC live trading briefing for the next 24 hours / 1 trading day.\n'
+      + 'BTC / BTC-USD only. No GOLD, GLD, commodities, ETH, SOL, or proxy context.\n'
+      + 'Gather live inputs first using markov_distribution, polymarket_forecast, get_onchain_crypto, forecast arbitrator if available.\n'
+      + 'Then return this 10-block format with Final Arbitrator Verdict and Final BTC Trade Plan.';
+
+    mockState.callLlmQueue = [
+      { content: '', toolCalls: [ST_TOOL_CALL] },
+      {
+        content: '',
+        toolCalls: [
+          {
+            id: 'a1',
+            name: 'forecast_arbitrator',
+            args: {
+              ticker: 'BTC',
+              horizon_days: 1,
+              current_price: 64_406.73,
+              leverage: 1,
+              markov: {
+                forecast_return: 0.00408,
+                p_up: 55,
+                confidence: 27.4,
+                structural_break: true,
+                flat_probability: 82.8,
+                ci_low: 62_000,
+                ci_high: 68_000,
+              },
+              polymarket: {
+                forecast_return: -0.0121,
+                quality_score: 83,
+                markets: [
+                  {
+                    question: 'Will Bitcoin dip to $64,000 tomorrow?',
+                    probability: 100,
+                  },
+                ],
+              },
+              whale: {
+                direction: 'neutral',
+                confidence: 35,
+                summary: 'No whale transactions detected.',
+              },
+            },
+            type: 'tool_call',
+          },
+        ],
+      },
+      { content: 'done', toolCalls: [] },
+    ];
+
+    const events = await collectEvents(agent.run(query));
+    const arbiterErrors = events.filter(
+      (event) => event && typeof event === 'object'
+        && (event as { type?: string; tool?: string }).type === 'tool_error'
+        && (event as { tool?: string }).tool === 'forecast_arbitrator',
+    );
+    expect(arbiterErrors).toHaveLength(0);
+
+    const arbiterEnd = events.find(
+      (event) => event && typeof event === 'object'
+        && (event as { type?: string; tool?: string }).type === 'tool_end'
+        && (event as { tool?: string }).tool === 'forecast_arbitrator',
+    ) as { result: string } | undefined;
+    expect(arbiterEnd).toBeDefined();
+
+    const payload = JSON.parse(arbiterEnd!.result) as {
+      data?: {
+        result?: {
+          rawEvidence?: {
+            markov?: { p_up?: number; confidence?: number; flat_probability?: number };
+            polymarket?: { quality_score?: number; markets?: Array<{ probability?: number }> };
+            whale?: { confidence?: number };
+          };
+        };
+      };
+    };
+    expect(payload.data?.result?.rawEvidence?.markov?.p_up).toBe(0.55);
+    expect(payload.data?.result?.rawEvidence?.markov?.confidence).toBeCloseTo(0.274, 12);
+    expect(payload.data?.result?.rawEvidence?.markov?.flat_probability).toBe(0.828);
+    expect(payload.data?.result?.rawEvidence?.polymarket?.quality_score).toBe(83);
+    expect(payload.data?.result?.rawEvidence?.polymarket?.markets?.[0]?.probability).toBe(1);
+    expect(payload.data?.result?.rawEvidence?.whale?.confidence).toBe(0.35);
+  });
+
+  it('forces Polymarket before the arbitrator on a briefing prompt (arbiter never gets polymarket: null)', async () => {
+    const callOrder: string[] = [];
+    const arbiterPolymarketPresent: boolean[] = [];
+
+    const fake = (name: string, result: string) => ({
+      name,
+      invoke: async () => {
+        callOrder.push(name);
+        return result;
+      },
+    });
+
+    const marketDataTool = fake('get_market_data', JSON.stringify({ data: { get_crypto_price_snapshot_BTC: { ticker: 'BTC', price: 64_444.02 } } }));
+    const sentimentTool = fake('social_sentiment', JSON.stringify({ data: { result: '## Overall: 📈 Bullish (score +42/100)' } }));
+    const markovTool = fake('markov_distribution', JSON.stringify({
+      data: {
+        _tool: 'markov_distribution', status: 'ok',
+        canonical: {
+          scenarios: { pUp: 0.55, expectedReturn: 0.00408, buckets: [{ label: 'Flat ±3%', probability: 0.75 }] },
+          actionSignal: { expectedReturn: 0.004, confidence: 'MEDIUM' },
+          diagnostics: { predictionConfidence: 0.3, structuralBreakDetected: false },
+        },
+        distribution: [{ price: 62_000, probability: 0.95 }, { price: 68_000, probability: 0.05 }],
+      },
+    }));
+    const polymarketTool = fake('polymarket_forecast', JSON.stringify({
+      data: {
+        forecastReturn: -0.0121,
+        result: 'Polymarket Forecast: BTC | Horizon: 1 days | Grade: C (45/100)\nWill Bitcoin dip to $64,000 tomorrow?: 75% YES',
+      },
+    }));
+    const onchainTool = fake('get_onchain_crypto', JSON.stringify({ data: { ticker: 'BTC', result: 'No whale transactions detected.' } }));
+    const fixedIncomeTool = fake('get_fixed_income', JSON.stringify({ data: { treasury_yields: [] } }));
+    const arbiterTool = {
+      name: 'forecast_arbitrator',
+      invoke: async (input: { polymarket?: unknown }) => {
+        callOrder.push('forecast_arbitrator');
+        arbiterPolymarketPresent.push(input?.polymarket != null);
+        return JSON.stringify({ data: { result: { verdict: 'NO_TRADE' } } });
+      },
+    };
+
+    const agent = await Agent.create({
+      model: 'gpt-5.4',
+      maxIterations: 8,
+      memoryEnabled: false,
+      tools: [
+        sequentialThinkingTool, marketDataTool, sentimentTool, markovTool,
+        polymarketTool, onchainTool, fixedIncomeTool, arbiterTool,
+      ] as unknown as StructuredToolInterface[],
+    });
+
+    const query = 'BTC live trading briefing for the next 24 hours / 1 trading day.\n'
+      + 'BTC / BTC-USD only. No GOLD, GLD, commodities, ETH, SOL, or proxy context.\n'
+      + 'markov_distribution for BTC-USD with horizon=1. Final Arbitrator Verdict and Final BTC Trade Plan.';
+
+    // ST first, then a direct answer → triggers the forced crypto pipeline.
+    mockState.callLlmQueue = [
+      { content: '', toolCalls: [ST_TOOL_CALL] },
+      { content: 'done', toolCalls: [] },
+    ];
+
+    await collectEvents(agent.run(query));
+
+    const polyIdx = callOrder.indexOf('polymarket_forecast');
+    const arbiterIdx = callOrder.indexOf('forecast_arbitrator');
+    expect(polyIdx).toBeGreaterThanOrEqual(0);
+    expect(arbiterIdx).toBeGreaterThanOrEqual(0);
+    expect(polyIdx).toBeLessThan(arbiterIdx);
+    expect(arbiterPolymarketPresent[0]).toBe(true);
   });
 });

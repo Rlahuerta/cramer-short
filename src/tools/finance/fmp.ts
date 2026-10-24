@@ -4,6 +4,7 @@ import { stripFieldsDeep } from './api.js';
 import { formatToolResult } from '../types.js';
 import { getEnv } from '../../utils/env.js';
 import { withRetry, isRateLimitError } from '../../utils/retry.js';
+import { trackFmpCall } from '../../utils/finance/fmp-quota.js';
 
 const FMP_BASE_URL = 'https://financialmodelingprep.com/stable';
 
@@ -111,7 +112,9 @@ export const fmpApi = {
       if (!response.ok) {
         throw new Error(`[FMP API] ${response.status} ${response.statusText}`);
       }
-      return response.json() as Promise<T>;
+      const data = (await response.json()) as T;
+      trackFmpCall();
+      return data;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
         throw new Error('[FMP API] request timed out after 30s');

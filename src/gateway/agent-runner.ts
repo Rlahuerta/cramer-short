@@ -1,7 +1,7 @@
 import { AgentRunnerController } from '../controllers/agent-runner.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
 import { HEARTBEAT_OK_TOKEN } from './heartbeat/suppression.js';
-import type { AgentEvent } from '../agent/types.js';
+import type { AgentEvent, ApprovalDecision } from '../agent/types.js';
 import type { GroupContext } from '../agent/prompts.js';
 
 type EventForwarder = {
@@ -20,6 +20,15 @@ type SessionState = {
 type SessionEntry =
   | { kind: 'active'; session: SessionState }
   | { kind: 'test-placeholder' };
+
+/**
+ * Gateway (WhatsApp) messages come from remote senders, so tools that touch the
+ * local filesystem, drive a browser, or rewrite the heartbeat checklist are not
+ * exposed. Approval prompts have no interactive user here, so they auto-deny
+ * instead of hanging the run.
+ */
+export const GATEWAY_EXCLUDED_TOOLS = ['read_file', 'write_file', 'edit_file', 'browser', 'heartbeat'] as const;
+export const denyToolApproval = async (): Promise<ApprovalDecision> => 'deny';
 
 /** Maximum number of concurrent sessions to keep in memory. LRU eviction on overflow. */
 const MAX_SESSIONS = 50;
@@ -112,10 +121,10 @@ function getSession(sessionKey: string, model: string, modelProvider: string): S
   const inMemoryChatHistory = new InMemoryChatHistory(model);
   const eventForwarder = new BufferedEventForwarder();
   const controller = new AgentRunnerController(
-    { model, modelProvider },
+    { model, modelProvider, excludeTools: GATEWAY_EXCLUDED_TOOLS },
     inMemoryChatHistory,
     undefined,
-    { onEvent: (event) => eventForwarder.forward(event) },
+    { onEvent: (event) => eventForwarder.forward(event), requestToolApproval: denyToolApproval },
   );
 
   const created: SessionState = {

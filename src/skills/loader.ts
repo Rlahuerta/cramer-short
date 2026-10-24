@@ -2,6 +2,12 @@ import { readFileSync } from 'fs';
 import matter from 'gray-matter';
 import type { Skill, SkillSource } from './types.js';
 
+const rejectJsFrontmatter = (): never => {
+  throw new Error('JavaScript frontmatter is not allowed in skill files');
+};
+/** gray-matter's built-in js/javascript engines eval() the frontmatter; disable them. */
+const MATTER_OPTIONS = { engines: { js: rejectJsFrontmatter, javascript: rejectJsFrontmatter } };
+
 /**
  * Parse a SKILL.md file content into a Skill object.
  * Extracts YAML frontmatter (name, description) and the markdown body (instructions).
@@ -13,7 +19,7 @@ import type { Skill, SkillSource } from './types.js';
  * @throws Error if required frontmatter fields are missing
  */
 export function parseSkillFile(content: string, path: string, source: SkillSource): Skill {
-  const { data, content: instructions } = matter(content);
+  const { data, content: instructions } = matter(content, MATTER_OPTIONS);
 
   // Validate required frontmatter fields
   if (!data.name || typeof data.name !== 'string') {
@@ -56,7 +62,7 @@ export function loadSkillFromPath(path: string, source: SkillSource): Skill {
  */
 export function extractSkillMetadata(path: string, source: SkillSource): { name: string; description: string; path: string; source: SkillSource } {
   const content = readFileSync(path, 'utf-8');
-  const { data } = matter(content);
+  const { data } = matter(content, MATTER_OPTIONS);
 
   if (!data.name || typeof data.name !== 'string') {
     throw new Error(`Skill at ${path} is missing required 'name' field in frontmatter`);

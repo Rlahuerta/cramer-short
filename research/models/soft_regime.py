@@ -1,4 +1,13 @@
-"""Helpers mirroring soft-regime mixture wiring from TypeScript."""
+"""Soft-regime mixture weighting — mirrors TypeScript soft-regime blending.
+
+When the Markov model classifies the current state as a discrete regime
+(bull/bear/sideways) but the HMM posterior shows substantial uncertainty,
+soft-regime blending creates a weighted mixture across all three regimes
+instead of a one-hot assignment.  This smooths the transition between
+regimes and improves forecast stability at regime boundaries.
+
+Mirrors ``src/tools/finance/markov-distribution.ts`` (soft-regime section).
+"""
 
 from __future__ import annotations
 

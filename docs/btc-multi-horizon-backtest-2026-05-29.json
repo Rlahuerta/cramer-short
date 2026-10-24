@@ -1,0 +1,303 @@
+{
+  "generatedAt": "2026-05-29T15:03:05.361Z",
+  "ticker": "BTC-USD",
+  "fixtureRange": {
+    "startDate": "2024-01-01",
+    "endDate": "2025-12-31",
+    "days": 731
+  },
+  "config": {
+    "warmup": 180,
+    "stride": 3,
+    "horizons": [
+      1,
+      2,
+      3,
+      7,
+      14,
+      30
+    ]
+  },
+  "baseline": {
+    "label": "baseline",
+    "perHorizon": [
+      {
+        "horizon": 1,
+        "metrics": {
+          "n": 184,
+          "directionalAccuracy": 0.6086956521739131,
+          "brierScore": 0.2548258669295992,
+          "ciCoverage": 0.9782608695652174,
+          "meanEdge": -0.005592725877319907,
+          "sharpness": 0.171170560688282,
+          "avgConfidence": 0.4001881273049733,
+          "directionalCi": {
+            "lower": 0.5380434782608695,
+            "median": 0.6086956521739131,
+            "upper": 0.6739130434782609,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 2,
+        "metrics": {
+          "n": 183,
+          "directionalAccuracy": 0.5409836065573771,
+          "brierScore": 0.25484695660164874,
+          "ciCoverage": 0.9836065573770492,
+          "meanEdge": -0.008254773261001387,
+          "sharpness": 0.22873535360101704,
+          "avgConfidence": 0.4013670189776051,
+          "directionalCi": {
+            "lower": 0.47540983606557374,
+            "median": 0.5409836065573771,
+            "upper": 0.6174863387978142,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 3,
+        "metrics": {
+          "n": 183,
+          "directionalAccuracy": 0.5792349726775956,
+          "brierScore": 0.25788224423374406,
+          "ciCoverage": 0.994535519125683,
+          "meanEdge": -0.006790589621953363,
+          "sharpness": 0.2697804188660955,
+          "avgConfidence": 0.40129092358128987,
+          "directionalCi": {
+            "lower": 0.5027322404371585,
+            "median": 0.5792349726775956,
+            "upper": 0.6557377049180327,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 7,
+        "metrics": {
+          "n": 182,
+          "directionalAccuracy": 0.5,
+          "brierScore": 0.25976409015340285,
+          "ciCoverage": 0.989010989010989,
+          "meanEdge": -0.012627128795301461,
+          "sharpness": 0.3630081644091186,
+          "avgConfidence": 0.3866051860071391,
+          "directionalCi": {
+            "lower": 0.4340659340659341,
+            "median": 0.5054945054945055,
+            "upper": 0.5714285714285714,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 14,
+        "metrics": {
+          "n": 179,
+          "directionalAccuracy": 0.4860335195530726,
+          "brierScore": 0.26317570594046935,
+          "ciCoverage": 0.9832402234636871,
+          "meanEdge": -0.011202414962668352,
+          "sharpness": 0.49311139275315113,
+          "avgConfidence": 0.41027496839133065,
+          "directionalCi": {
+            "lower": 0.4134078212290503,
+            "median": 0.4860335195530726,
+            "upper": 0.5642458100558659,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 30,
+        "metrics": {
+          "n": 174,
+          "directionalAccuracy": 0.4425287356321839,
+          "brierScore": 0.27276203416316,
+          "ciCoverage": 0.9597701149425287,
+          "meanEdge": -0.0003098306329448609,
+          "sharpness": 0.6901616763141334,
+          "avgConfidence": 0.2900412647248933,
+          "directionalCi": {
+            "lower": 0.367816091954023,
+            "median": 0.4425287356321839,
+            "upper": 0.5114942528735632,
+            "nResamples": 500
+          }
+        }
+      }
+    ]
+  },
+  "improved": {
+    "label": "improved",
+    "perHorizon": [
+      {
+        "horizon": 1,
+        "metrics": {
+          "n": 184,
+          "directionalAccuracy": 0.6630434782608695,
+          "brierScore": 0.2556303470797852,
+          "ciCoverage": 0.9782608695652174,
+          "meanEdge": -0.005680256392610749,
+          "sharpness": 0.15579417667426587,
+          "avgConfidence": 0.32425280429877057,
+          "directionalCi": {
+            "lower": 0.5978260869565217,
+            "median": 0.6630434782608695,
+            "upper": 0.7282608695652174,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 2,
+        "metrics": {
+          "n": 183,
+          "directionalAccuracy": 0.546448087431694,
+          "brierScore": 0.25851183448956916,
+          "ciCoverage": 0.9890710382513661,
+          "meanEdge": -0.007960871580548297,
+          "sharpness": 0.2110137587011103,
+          "avgConfidence": 0.33053247350341,
+          "directionalCi": {
+            "lower": 0.48633879781420764,
+            "median": 0.5519125683060109,
+            "upper": 0.6229508196721312,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 3,
+        "metrics": {
+          "n": 183,
+          "directionalAccuracy": 0.4972677595628415,
+          "brierScore": 0.2633169938418876,
+          "ciCoverage": 0.9781420765027322,
+          "meanEdge": -0.007743644730973829,
+          "sharpness": 0.2493721726748401,
+          "avgConfidence": 0.33701771030249106,
+          "directionalCi": {
+            "lower": 0.4262295081967213,
+            "median": 0.4972677595628415,
+            "upper": 0.5737704918032787,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 7,
+        "metrics": {
+          "n": 182,
+          "directionalAccuracy": 0.4945054945054945,
+          "brierScore": 0.2597604450968687,
+          "ciCoverage": 0.9725274725274725,
+          "meanEdge": -0.008710010962793079,
+          "sharpness": 0.34953496818006574,
+          "avgConfidence": 0.3596083252899021,
+          "directionalCi": {
+            "lower": 0.4230769230769231,
+            "median": 0.5,
+            "upper": 0.5714285714285714,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 14,
+        "metrics": {
+          "n": 179,
+          "directionalAccuracy": 0.5251396648044693,
+          "brierScore": 0.2491563165896791,
+          "ciCoverage": 0.9608938547486033,
+          "meanEdge": -0.0017935046674865378,
+          "sharpness": 0.47451768353112533,
+          "avgConfidence": 0.3832167875816895,
+          "directionalCi": {
+            "lower": 0.45251396648044695,
+            "median": 0.5307262569832403,
+            "upper": 0.6033519553072626,
+            "nResamples": 500
+          }
+        }
+      },
+      {
+        "horizon": 30,
+        "metrics": {
+          "n": 174,
+          "directionalAccuracy": 0.4827586206896552,
+          "brierScore": 0.2514293096110876,
+          "ciCoverage": 0.9367816091954023,
+          "meanEdge": 0.007243902824659102,
+          "sharpness": 0.6622557589911521,
+          "avgConfidence": 0.2525925844379282,
+          "directionalCi": {
+            "lower": 0.40804597701149425,
+            "median": 0.4827586206896552,
+            "upper": 0.5574712643678161,
+            "nResamples": 500
+          }
+        }
+      }
+    ]
+  },
+  "delta": [
+    {
+      "horizon": 1,
+      "n": 184,
+      "directionalAccuracyDelta": 0.05434782608695643,
+      "brierScoreDelta": 0.0008044801501860266,
+      "ciCoverageDelta": 0,
+      "meanEdgeDelta": -0.00008753051529084271,
+      "sharpnessDelta": -0.015376384014016115
+    },
+    {
+      "horizon": 2,
+      "n": 183,
+      "directionalAccuracyDelta": 0.005464480874316946,
+      "brierScoreDelta": 0.0036648778879204147,
+      "ciCoverageDelta": 0.005464480874316946,
+      "meanEdgeDelta": 0.00029390168045309063,
+      "sharpnessDelta": -0.01772159489990674
+    },
+    {
+      "horizon": 3,
+      "n": 183,
+      "directionalAccuracyDelta": -0.08196721311475408,
+      "brierScoreDelta": 0.005434749608143552,
+      "ciCoverageDelta": -0.016393442622950838,
+      "meanEdgeDelta": -0.0009530551090204667,
+      "sharpnessDelta": -0.02040824619125539
+    },
+    {
+      "horizon": 7,
+      "n": 182,
+      "directionalAccuracyDelta": -0.005494505494505475,
+      "brierScoreDelta": -0.000003645056534162805,
+      "ciCoverageDelta": -0.016483516483516536,
+      "meanEdgeDelta": 0.003917117832508383,
+      "sharpnessDelta": -0.013473196229052853
+    },
+    {
+      "horizon": 14,
+      "n": 179,
+      "directionalAccuracyDelta": 0.03910614525139666,
+      "brierScoreDelta": -0.014019389350790251,
+      "ciCoverageDelta": -0.022346368715083775,
+      "meanEdgeDelta": 0.009408910295181814,
+      "sharpnessDelta": -0.0185937092220258
+    },
+    {
+      "horizon": 30,
+      "n": 174,
+      "directionalAccuracyDelta": 0.04022988505747127,
+      "brierScoreDelta": -0.021332724552072413,
+      "ciCoverageDelta": -0.02298850574712641,
+      "meanEdgeDelta": 0.007553733457603963,
+      "sharpnessDelta": -0.02790591732298131
+    }
+  ]
+}

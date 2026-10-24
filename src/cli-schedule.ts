@@ -13,6 +13,9 @@ import { homedir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 import { Agent } from './agent/agent.js';
 import type { AgentEvent } from './agent/types.js';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER } from './model/llm.js';
+import { getSetting } from './utils/config.js';
+import { getDefaultModelForProvider } from './utils/model.js';
 import { createReplayHistoryLoader } from './cli-replay-label.js';
 import { assertForecastLabProfileId } from './experiments/forecast-lab/profiles.js';
 import { runForecastLab } from './experiments/forecast-lab/runner.js';
@@ -22,6 +25,7 @@ import {
   toReplayLabelBenchmarkReportPath,
   type ReplayLabelBenchmarkPipelineResult,
 } from './tools/finance/backtest/replay-label-benchmark-pipeline.js';
+import { assertNoCanonicalPathCollision } from './tools/finance/backtest/path-collision-guard.js';
 import {
   toReplayLabelBatchReportPath,
   type ReplayTickerHistoryLoader,
@@ -106,7 +110,7 @@ export interface ScheduleCommandOptions {
   write?: (message: string) => void;
   exit?: (code: number) => void;
   now?: () => Date;
-  createAgent?: () => Promise<AgentLike>;
+  createAgent?: (config: { model: string }) => Promise<AgentLike>;
   runLab?: (options: ForecastLabRunOptions) => Promise<ForecastLabRunResult>;
   runReplayLabelPipeline?: (params: {
     inputPath?: string;
@@ -167,14 +171,53 @@ async function loadJobs(options: ScheduleCommandOptions): Promise<ScheduleJob[]>
     return [];
   }
   const raw = await readFile(schedulesPath, 'utf-8');
-  return JSON.parse(raw) as ScheduleJob[];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    error(`Invalid schedules config at ${schedulesPath}: not valid JSON.`);
+    exit(1);
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    error(`Invalid schedules config at ${schedulesPath}: expected an array of jobs.`);
+    exit(1);
+    return [];
+  }
+  const invalidJob = parsed.map(scheduleJobValidationError).find((entry) => entry !== null);
+  if (invalidJob) {
+    error(`Invalid schedules config at ${schedulesPath}: ${invalidJob}.`);
+    exit(1);
+    return [];
+  }
+  return parsed as ScheduleJob[];
+}
+
+const KNOWN_JOB_KINDS: ReadonlySet<string> = new Set(['agent', 'forecast_lab', 'replay_label']);
+
+function scheduleJobValidationError(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'each job must be an object';
+  }
+  const job = value as Record<string, unknown>;
+  if (typeof job.id !== 'string') {
+    return 'each job must have a string "id"';
+  }
+  if (job.kind !== undefined && (typeof job.kind !== 'string' || !KNOWN_JOB_KINDS.has(job.kind))) {
+    return `unknown kind ${JSON.stringify(job.kind)} for job ${JSON.stringify(job.id)}`;
+  }
+  return null;
+}
+
+function localIsoDate(date: Date): string {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
 }
 
 function resolveOutputPath(template: string, options: ScheduleCommandOptions): string {
   const { homeDir, cwd, allowedOutputRoots } = getPaths(options);
   const now = options.now ?? (() => new Date());
-  const date = now().toISOString().slice(0, 10);
-  const expanded = template.replace('{date}', date).replace(/^~(?=$|\/)/, homeDir);
+  const date = localIsoDate(now());
+  const expanded = template.replaceAll('{date}', date).replace(/^~(?=$|\/)/, homeDir);
   // Resolve relative paths against cwd, then normalise to eliminate `..` segments.
   const resolved = resolve(cwd, expanded);
 
@@ -208,17 +251,18 @@ function assertReplayLabelInputPathAllowed(inputPath: string, options: ScheduleC
 
 async function runAgentJob(job: AgentScheduleJob, options: ScheduleCommandOptions): Promise<void> {
   const log = options.log ?? console.log;
-  const error = options.error ?? console.error;
   const write = options.write ?? ((message: string) => process.stdout.write(message));
   const now = options.now ?? (() => new Date());
-  const createAgent = options.createAgent ?? (() => Agent.create());
+  const createAgent = options.createAgent ?? ((config) => Agent.create(config));
 
   log(`\n▶ Running job "${job.id}": ${job.description}`);
   const outPath = resolveOutputPath(job.outputFile, options);
   const outDir = dirname(outPath);
   if (outDir) await mkdir(outDir, { recursive: true });
 
-  const agent = await createAgent();
+  const provider = getSetting('provider', DEFAULT_PROVIDER);
+  const model = getSetting('modelId', null) ?? getDefaultModelForProvider(provider) ?? DEFAULT_MODEL;
+  const agent = await createAgent({ model });
   let answer = '';
 
   for await (const event of agent.run(job.query)) {
@@ -234,8 +278,7 @@ async function runAgentJob(job: AgentScheduleJob, options: ScheduleCommandOption
   }
 
   if (!answer) {
-    error(`✗ Job "${job.id}" produced no answer.`);
-    return;
+    throw new Error(`✗ Job "${job.id}" produced no answer.`);
   }
 
   const header = `# ${job.description}\n_Generated by Cramer-Short — ${now().toISOString()}_\n\n`;
@@ -288,6 +331,18 @@ async function runReplayLabelJob(job: ReplayLabelScheduleJob, options: ScheduleC
     options,
   );
   const summaryOutputPath = job.outputFile ? resolveOutputPath(job.outputFile, options) : undefined;
+  if (summaryOutputPath) {
+    assertNoCanonicalPathCollision(
+      'schedule replay-label',
+      'the summary output file must not overwrite the labeled output file.',
+      { outputPath, outputFile: summaryOutputPath },
+    );
+  }
+  if (loaderMode !== 'fixture' && !loaderMode.startsWith('local:')) {
+    throw new Error(
+      `replay-label: unknown --loader mode "${loaderMode}". Supported modes: fixture, local:<path>`,
+    );
+  }
   const loaderFactory = options.replayLabelLoaderFactory ?? createReplayHistoryLoader;
   const loadHistory = loaderFactory(loaderMode);
   const runReplayLabelPipeline = options.runReplayLabelPipeline ?? runReplayLabelBenchmarkPipelineFromFile;

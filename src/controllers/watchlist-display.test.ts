@@ -160,12 +160,36 @@ describe('calcAllocations()', () => {
     expect(allocs.get('MSFT')).toBeCloseTo(100, 4);
   });
 
-  it('returns empty map when totals.totalCurrent is 0', () => {
+  it('returns empty map when there is no priced share entry', () => {
     const entries = [makeEntry('AAPL', 100, 10)];
     const prices = new Map<string, PriceSnapshot>();
     const totals = calcPortfolioTotals(entries, prices);
     const allocs = calcAllocations(entries, prices, totals);
     expect(allocs.size).toBe(0);
+  });
+
+  it('includes shares-without-costBasis entries in the denominator so allocations sum to 100', () => {
+    const entries = [makeEntry('AAPL', 100, 10), makeEntry('MSFT', undefined, 10)];
+    const prices = new Map([
+      ['AAPL', makeSnap('AAPL', 100, 0)],
+      ['MSFT', makeSnap('MSFT', 100, 0)],
+    ]);
+    const totals = calcPortfolioTotals(entries, prices);
+    const allocs = calcAllocations(entries, prices, totals);
+
+    expect(allocs.get('AAPL')).toBeCloseTo(50, 4);
+    expect(allocs.get('MSFT')).toBeCloseTo(50, 4);
+    const sum = [...allocs.values()].reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(100, 4);
+  });
+
+  it('allocates 100% when the only share entry has no cost basis', () => {
+    const entries = [makeEntry('MSFT', undefined, 10)];
+    const prices = new Map([['MSFT', makeSnap('MSFT', 100, 0)]]);
+    const totals = calcPortfolioTotals(entries, prices);
+    const allocs = calcAllocations(entries, prices, totals);
+
+    expect(allocs.get('MSFT')).toBeCloseTo(100, 4);
   });
 });
 

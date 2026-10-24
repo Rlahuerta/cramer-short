@@ -1,10 +1,9 @@
 """Backtest metrics: Brier score, directional accuracy, CI coverage, bootstrap CIs."""
 
 from __future__ import annotations
-
-import math
 from typing import TYPE_CHECKING, TypedDict
 
+import math
 import numpy as np
 
 if TYPE_CHECKING:
@@ -100,51 +99,43 @@ def sharpe_of_returns(steps: list[BacktestStep]) -> float:
     return float(mean_r / std_r * math.sqrt(252)) if std_r > 0 else 0.0
 
 
-def bootstrap_directional_ci(
+def bootstrap_ci(
     steps: list[BacktestStep],
+    metric_fn: object,
     n_bootstrap: int = 1000,
     confidence: float = 0.95,
 ) -> dict[str, float]:
-    """Bootstrap confidence interval for directional accuracy.
+    """Bootstrap confidence interval for an arbitrary metric function.
 
-    Returns lower and upper bounds of the bootstrap distribution.
+    Parameters
+    ----------
+    steps : list[BacktestStep]
+        Backtest steps to resample.
+    metric_fn : callable
+        Metric function accepting ``list[BacktestStep]`` and returning a float.
+    n_bootstrap : int
+        Number of bootstrap resamples.
+    confidence : float
+        Confidence level for the percentile interval.
+
+    Returns
+    -------
+    dict[str, float]
+        ``{"lower": ..., "upper": ..., "mean": ...}``.
     """
     if not steps:
         return {"lower": 0.0, "upper": 0.0, "mean": 0.0}
 
-    accuracies = []
+    values = []
     n = len(steps)
     for _ in range(n_bootstrap):
         sample = np.random.choice(steps, size=n, replace=True)
-        acc = directional_accuracy(sample.tolist())
-        accuracies.append(acc)
+        values.append(metric_fn(sample.tolist()))
 
     alpha = 1 - confidence
-    lower = float(np.percentile(accuracies, 100 * alpha / 2))
-    upper = float(np.percentile(accuracies, 100 * (1 - alpha / 2)))
-    mean = float(np.mean(accuracies))
-    return {"lower": lower, "upper": upper, "mean": mean}
-
-
-def bootstrap_brier_ci(
-    steps: list[BacktestStep],
-    n_bootstrap: int = 1000,
-    confidence: float = 0.95,
-) -> dict[str, float]:
-    """Bootstrap confidence interval for Brier score."""
-    if not steps:
-        return {"lower": 0.0, "upper": 0.0, "mean": 0.0}
-
-    scores = []
-    n = len(steps)
-    for _ in range(n_bootstrap):
-        sample = np.random.choice(steps, size=n, replace=True)
-        scores.append(brier_score(sample.tolist()))
-
-    alpha = 1 - confidence
-    lower = float(np.percentile(scores, 100 * alpha / 2))
-    upper = float(np.percentile(scores, 100 * (1 - alpha / 2)))
-    mean = float(np.mean(scores))
+    lower = float(np.percentile(values, 100 * alpha / 2))
+    upper = float(np.percentile(values, 100 * (1 - alpha / 2)))
+    mean = float(np.mean(values))
     return {"lower": lower, "upper": upper, "mean": mean}
 
 
@@ -161,7 +152,11 @@ def calibration_table(steps: list[BacktestStep], bins: int = 5) -> list[dict]:
     for i in range(bins):
         lo = bin_edges[i]
         hi = bin_edges[i + 1]
-        subset = [s for s in steps if lo <= s.predicted_prob < hi]
+        is_last = i == bins - 1
+        if is_last:
+            subset = [s for s in steps if lo <= s.predicted_prob <= hi]
+        else:
+            subset = [s for s in steps if lo <= s.predicted_prob < hi]
         if subset:
             observed = float(np.mean([1.0 if s.realised_return > 0 else 0.0 for s in subset]))
             results.append(

@@ -3,7 +3,8 @@
  */
 
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, afterEach, beforeEach, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, spyOn, afterEach, beforeEach, setSystemTime } from 'bun:test';
+import { useNoNetwork } from '../../utils/test-no-network.js';
 import { integrationIt } from '../../utils/test-guards.js';
 import {
   classifyRegimeState,
@@ -69,6 +70,9 @@ import {
 } from './markov-distribution.js';
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 import { MS_PER_DAY } from '../../utils/time.js';
+import * as polymarket from './polymarket.js';
+
+useNoNetwork();
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -514,6 +518,11 @@ describe('markov_distribution tool output envelope', () => {
   });
 
   it('returns abstain payload when anchors or validation are insufficient', async () => {
+    // Empty polymarketMarkets triggers a live anchor fetch: stub it to find nothing.
+    const anchorSpies = [
+      spyOn(polymarket, 'fetchPolymarketAnchorMarkets').mockResolvedValue([]),
+      spyOn(polymarket, 'fetchPolymarketAnchorMarketsWithQueries').mockResolvedValue([]),
+    ];
     const result = await markovDistributionTool.func({
       ticker: 'SPY',
       horizon: 7,
@@ -521,7 +530,7 @@ describe('markov_distribution tool output envelope', () => {
       historicalPrices: Array.from({ length: 40 }, (_, i) => 100 + i * 0.5),
       polymarketMarkets: [],
       trajectory: false,
-    });
+    }).finally(() => anchorSpies.forEach((spy) => spy.mockRestore()));
 
     const parsed = JSON.parse(result);
     expect(parsed.data._tool).toBe('markov_distribution');
@@ -1144,11 +1153,13 @@ describe('markov_distribution tool output envelope', () => {
       }));
 
       const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
-      // Deterministic alternating prices produce poor out-of-sample R^2 without
-      // making this regression depend on deterministicRandom().
-      const prices = Array.from({ length: 80 }, (_, i) => (
-        Math.round((65000 + (i % 2 === 0 ? 2000 : -2000) + (i % 5) * 10) * 100) / 100
-      ));
+      // Deterministic LCG noise (±4%/day) has no predictable structure, so out-of-sample
+      // R^2 is poor without depending on deterministicRandom(). (A strict alternating
+      // series is no longer a valid fixture: path-integrated drift predicts it well.)
+      let lcg = 2024;
+      const noise = () => (lcg = (lcg * 1664525 + 1013904223) % 4294967296) / 4294967296;
+      const prices = [65000];
+      for (let i = 1; i < 80; i++) prices.push(Math.round(prices[i - 1] * (1 + (noise() - 0.5) * 0.08) * 100) / 100);
 
       const result = await freshTool.func({
         ticker: 'BTC-USD',
@@ -1413,6 +1424,15 @@ describe('markov_distribution tool output envelope', () => {
       predictionConfidenceMode: 'rebalanced',
       enableSoftRegimeWeighting: true,
     });
+    const disabledTrend = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: trendPrices[trendPrices.length - 1],
+      historicalPrices: trendPrices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: false,
+    });
 
     const softChoppy = getSoftRegimeMetadata(enabledChoppy.metadata);
     const softTrend = getSoftRegimeMetadata(enabledTrend.metadata);
@@ -1440,15 +1460,18 @@ describe('markov_distribution tool output envelope', () => {
     expect(Object.values(softChoppy!.currentRegimeMixture ?? {}).reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
     expect(Object.values(softChoppy!.forecastRegimeMixture ?? {}).reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 6);
     expect(softChoppy!.transitionBlendWeight).toBeGreaterThan(0);
-    expect(softChoppy!.ciScale).toBeGreaterThan(1);
-    expect(softChoppy!.confidenceMultiplier).toBeLessThan(1);
-    expect(enabledChoppy.predictionConfidence).toBeLessThan(disabled.predictionConfidence);
-    expect(
-      Math.abs(enabledChoppy.actionSignal.expectedReturn - disabled.actionSignal.expectedReturn),
-    ).toBeGreaterThan(1e-4);
     expect(softTrend).toBeDefined();
-    expect(softTrend!.posteriorEntropy).toBeLessThanOrEqual(softChoppy!.posteriorEntropy);
-    expect(softTrend!.ciScale).toBeLessThanOrEqual(softChoppy!.ciScale);
+    // The deterministic alternating fixture fits with near-zero posterior entropy
+    // (soft weighting is a mathematical no-op there), so the material soft-weighting
+    // effect is asserted on the more ambiguous trend fixture.
+    expect(softTrend!.ciScale).toBeGreaterThan(1);
+    expect(softTrend!.confidenceMultiplier).toBeLessThan(1);
+    expect(enabledTrend.predictionConfidence).toBeLessThan(disabledTrend.predictionConfidence);
+    expect(
+      Math.abs(enabledTrend.actionSignal.expectedReturn - disabledTrend.actionSignal.expectedReturn),
+    ).toBeGreaterThan(1e-4);
+    expect(softChoppy!.posteriorEntropy).toBeLessThanOrEqual(softTrend!.posteriorEntropy);
+    expect(softChoppy!.ciScale).toBeLessThanOrEqual(softTrend!.ciScale);
   });
 
   it('lets soft regime entropy coefficients be tuned explicitly without changing explicit defaults', async () => {
@@ -1514,6 +1537,306 @@ describe('markov_distribution tool output envelope', () => {
     expect(aggressive.metadata.softRegime?.hmmWeightEntropyWeight).toBeCloseTo(0.7, 10);
   });
 
+  it('skips HMM soft-regime overlay when the optional HMM does not converge', async () => {
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: () => ({
+        params: {
+          nStates: 3,
+          pi: [1 / 3, 1 / 3, 1 / 3],
+          A: [
+            [0.70, 0.20, 0.10],
+            [0.20, 0.60, 0.20],
+            [0.10, 0.20, 0.70],
+          ],
+          means: [-0.20, 0.0, 0.20],
+          stds: [0.01, 0.01, 0.01],
+        },
+        logLikelihood: -123,
+        iterations: 50,
+        converged: false,
+      }),
+      predict: () => {
+        throw new Error('predict should not run for non-converged fit');
+      },
+    }));
+
+    const returns = Array.from({ length: 160 }, (_, i) => [0, 0.012, -0.010, 0.002][i % 4]);
+    const prices = [100];
+    for (const ret of returns) prices.push(prices[prices.length - 1] * Math.exp(ret));
+
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+    });
+
+    expect(result.metadata.hmm?.converged).toBe(false);
+    expect(result.metadata.softRegime).toBeUndefined();
+    expect(result.rawDistribution.length).toBeGreaterThan(0);
+  });
+
+  it('skips HMM confidence/calibration/soft-regime boosts when forecast volatility is non-finite', async () => {
+    const returns = Array.from({ length: 160 }, (_, i) => [0, 0.012, -0.010, 0.002][i % 4]);
+    const prices = [100];
+    for (const ret of returns) prices.push(prices[prices.length - 1] * Math.exp(ret));
+
+    const runForecast = () => computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+      trajectory: true,
+      trajectoryDays: 7,
+    });
+
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: (_observations: number[], nStates: number) => ({
+        params: {
+          nStates,
+          pi: Array.from({ length: nStates }, () => 1 / nStates),
+          A: Array.from({ length: nStates }, () =>
+            Array.from({ length: nStates }, () => 1 / nStates),
+          ),
+          means: nStates === 3 ? [-0.02, 0.0, 0.02] : [0.01, 0.02],
+          stds: Array.from({ length: nStates }, () => 0.01),
+        },
+        logLikelihood: -123,
+        iterations: 4,
+        converged: true,
+      }),
+      predict: (_observations: number[], params: { nStates: number }) => ({
+        currentState: params.nStates === 3 ? 1 : 0,
+        stateProbabilities: [],
+        currentStateProbabilities: params.nStates === 3 ? [0.1, 0.8, 0.1] : [0.7, 0.3],
+        forecastProbabilities: params.nStates === 3 ? [0.1, 0.8, 0.1] : [0.7, 0.3],
+        expectedReturn: params.nStates === 3 ? 0.004 : 0.01,
+        expectedVolatility: params.nStates === 3 ? Number.POSITIVE_INFINITY : 0.01,
+      }),
+    }));
+
+    const result = await runForecast();
+
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: () => ({
+        params: {
+          nStates: 3,
+          pi: [1 / 3, 1 / 3, 1 / 3],
+          A: [
+            [0.70, 0.20, 0.10],
+            [0.20, 0.60, 0.20],
+            [0.10, 0.20, 0.70],
+          ],
+          means: [-0.20, 0.0, 0.20],
+          stds: [0.01, 0.01, 0.01],
+        },
+        logLikelihood: -123,
+        iterations: 50,
+        converged: false,
+      }),
+      predict: () => {
+        throw new Error('predict should not run for non-converged fit');
+      },
+    }));
+    const baseResult = await runForecast();
+
+    expect(result.metadata.hmm?.converged).toBe(true);
+    expect(baseResult.metadata.hmm?.converged).toBe(false);
+    expect(result.metadata.confidence?.components.hmmConvergence).toBe(0);
+    expect(result.metadata.softRegime).toBeUndefined();
+    expect(result.predictionConfidence).toBeCloseTo(baseResult.predictionConfidence, 10);
+    expect(interpolateSurvival(result.distribution, result.currentPrice)).toBeCloseTo(
+      interpolateSurvival(baseResult.distribution, baseResult.currentPrice),
+      10,
+    );
+    expect(result.rawDistribution.length).toBeGreaterThan(0);
+    for (const point of result.rawDistribution) {
+      expect(Number.isFinite(point.price)).toBe(true);
+      expect(Number.isFinite(point.probability)).toBe(true);
+      expect(Number.isFinite(point.lowerBound)).toBe(true);
+      expect(Number.isFinite(point.upperBound)).toBe(true);
+    }
+    expect(result.trajectory).toBeDefined();
+    for (const point of result.trajectory ?? []) {
+      expect(Number.isFinite(point.expectedPrice)).toBe(true);
+      expect(Number.isFinite(point.lowerBound)).toBe(true);
+      expect(Number.isFinite(point.upperBound)).toBe(true);
+      expect(Number.isFinite(point.pUp)).toBe(true);
+    }
+  });
+
+  it('skips HMM confidence/calibration/soft-regime boosts when vol-HMM scale is non-finite', async () => {
+    const returns = Array.from({ length: 160 }, (_, i) => [0, 0.012, -0.010, 0.002][i % 4]);
+    const prices = [100];
+    for (const ret of returns) prices.push(prices[prices.length - 1] * Math.exp(ret));
+
+    const runForecast = () => computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+    });
+
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: (_observations: number[], nStates: number) => ({
+        params: {
+          nStates,
+          pi: Array.from({ length: nStates }, () => 1 / nStates),
+          A: Array.from({ length: nStates }, () =>
+            Array.from({ length: nStates }, () => 1 / nStates),
+          ),
+          means: nStates === 3 ? [-0.02, 0.0, 0.02] : [0.01, 0.02],
+          stds: Array.from({ length: nStates }, () => 0.01),
+        },
+        logLikelihood: -123,
+        iterations: 4,
+        converged: true,
+      }),
+      predict: (_observations: number[], params: { nStates: number }) => ({
+        currentState: params.nStates === 3 ? 1 : 0,
+        stateProbabilities: [],
+        currentStateProbabilities: params.nStates === 3 ? [0.1, 0.8, 0.1] : [0.7, 0.3],
+        forecastProbabilities: params.nStates === 3 ? [0.1, 0.8, 0.1] : [0.7, 0.3],
+        expectedReturn: params.nStates === 3 ? 0.004 : Number.NaN,
+        expectedVolatility: 0.01,
+      }),
+    }));
+
+    const result = await runForecast();
+
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: () => ({
+        params: {
+          nStates: 3,
+          pi: [1 / 3, 1 / 3, 1 / 3],
+          A: [
+            [0.70, 0.20, 0.10],
+            [0.20, 0.60, 0.20],
+            [0.10, 0.20, 0.70],
+          ],
+          means: [-0.20, 0.0, 0.20],
+          stds: [0.01, 0.01, 0.01],
+        },
+        logLikelihood: -123,
+        iterations: 50,
+        converged: false,
+      }),
+      predict: () => {
+        throw new Error('predict should not run for non-converged fit');
+      },
+    }));
+    const baseResult = await runForecast();
+
+    expect(result.metadata.hmm?.converged).toBe(true);
+    expect(result.metadata.hmm?.volRegimeConverged).toBe(true);
+    expect(result.metadata.confidence?.components.hmmConvergence).toBe(0);
+    expect(result.metadata.softRegime).toBeUndefined();
+    expect(result.predictionConfidence).toBeCloseTo(baseResult.predictionConfidence, 10);
+    expect(interpolateSurvival(result.distribution, result.currentPrice)).toBeCloseTo(
+      interpolateSurvival(baseResult.distribution, baseResult.currentPrice),
+      10,
+    );
+  });
+
+  it('records recoverable HMM overlay failures while preserving base output', async () => {
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: () => {
+        throw new Error('HMM covariance failure');
+      },
+    }));
+
+    const returns = Array.from({ length: 160 }, (_, i) => [0, 0.012, -0.010, 0.002][i % 4]);
+    const prices = [100];
+    for (const ret of returns) prices.push(prices[prices.length - 1] * Math.exp(ret));
+
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+    });
+
+    const hmmMetadata = result.metadata.hmm;
+    expect(hmmMetadata?.converged).toBe(false);
+    expect(hmmMetadata?.failureReason).toContain('HMM covariance failure');
+    expect(Number.isFinite(hmmMetadata?.logLikelihood)).toBe(true);
+
+    const roundTrippedMetadata = JSON.parse(JSON.stringify(result.metadata));
+    expect(typeof roundTrippedMetadata.hmm.logLikelihood).toBe('number');
+    expect(Number.isFinite(roundTrippedMetadata.hmm.logLikelihood)).toBe(true);
+    expect(result.metadata.softRegime).toBeUndefined();
+    expect(result.rawDistribution.length).toBeGreaterThan(0);
+  });
+
+  it('sanitizes non-finite HMM logLikelihood on successful metadata paths', async () => {
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: () => ({
+        params: {
+          nStates: 3,
+          pi: [1 / 3, 1 / 3, 1 / 3],
+          A: [
+            [0.70, 0.20, 0.10],
+            [0.20, 0.60, 0.20],
+            [0.10, 0.20, 0.70],
+          ],
+          means: [-0.02, 0.0, 0.02],
+          stds: [0.01, 0.01, 0.01],
+        },
+        logLikelihood: Number.NEGATIVE_INFINITY,
+        iterations: 4,
+        converged: true,
+      }),
+      predict: () => ({
+        currentState: 1,
+        stateProbabilities: [],
+        currentStateProbabilities: [0.1, 0.8, 0.1],
+        forecastProbabilities: [0.1, 0.8, 0.1],
+        expectedReturn: 0.004,
+        expectedVolatility: 0.012,
+      }),
+    }));
+
+    const returns = Array.from({ length: 60 }, (_, i) => [0, 0.012, -0.010, 0.002][i % 4]);
+    const prices = [100];
+    for (const ret of returns) prices.push(prices[prices.length - 1] * Math.exp(ret));
+
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      predictionConfidenceMode: 'rebalanced',
+      enableSoftRegimeWeighting: true,
+    });
+
+    expect(result.metadata.hmm?.converged).toBe(true);
+    expect(Number.isFinite(result.metadata.hmm?.logLikelihood)).toBe(true);
+
+    const roundTrippedMetadata = JSON.parse(JSON.stringify(result.metadata));
+    expect(typeof roundTrippedMetadata.hmm.logLikelihood).toBe('number');
+    expect(Number.isFinite(roundTrippedMetadata.hmm.logLikelihood)).toBe(true);
+  });
+
   it('pushes the raw forecast path toward the soft forecast regime mixture only when enabled', async () => {
     mock.module('./hmm.js', () => ({
       ...realHmmModule,
@@ -1531,7 +1854,7 @@ describe('markov_distribution tool output envelope', () => {
         },
         logLikelihood: -123,
         iterations: 3,
-        converged: false,
+        converged: true,
       }),
       predict: () => ({
         currentState: 1,
@@ -2737,6 +3060,8 @@ describe('markov_distribution tool output envelope', () => {
     });
 
     it('auto-fetches the 252d BTC live-policy history for short horizons', async () => {
+      // Crypto history tries Binance via global fetch first; fail it so the api.js mock below is used.
+      const fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline'));
       mock.module('./polymarket.js', () => ({
         ...realPolymarketModule,
         fetchPolymarketMarkets: async () => [],
@@ -2769,7 +3094,7 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 2,
         polymarketMarkets: [],
         trajectory: false,
-      });
+      }).finally(() => fetchSpy.mockRestore());
 
       const parsed = JSON.parse(result);
       expect(parsed.data.canonical.diagnostics.historicalDays).toBe(251);

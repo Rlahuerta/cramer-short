@@ -1,6 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { MS_PER_DAY } from '../../utils/time.js';
-import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, afterAll, setSystemTime, spyOn } from 'bun:test';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import {
   createPolymarketForecastTool,
@@ -18,6 +18,12 @@ import {
 } from './polymarket-forecast.js';
 import type { PolymarketMarketResult } from './polymarket.js';
 import type { ArbiterReplayBundle, RawPolymarketReplayRow } from './arbiter-replay.js';
+import * as arbiterReplay from './arbiter-replay.js';
+
+// Tools built without recordReplayPolymarketCapture append to .cramer-short/cache/arbiter-replay/;
+// keep those writes out of the working tree.
+const replayCaptureSpy = spyOn(arbiterReplay, 'appendReplayCachePolymarketCapture').mockImplementation(() => {});
+afterAll(() => replayCaptureSpy.mockRestore());
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);

@@ -1,10 +1,23 @@
-import { describe, test, expect, beforeEach, spyOn } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { getQuotaStatus } from '../../utils/finance/fmp-quota.js';
+import { useTempCramerShortDir } from '../../utils/test-cramer-short-dir.js';
 
 // ---------------------------------------------------------------------------
 // FMP_API_KEY must be set before the module is loaded so getFmpApiKey() does
-// not throw during tool creation.
+// not throw during tool creation. Restored afterAll so it can't leak into later files.
 // ---------------------------------------------------------------------------
+const originalFmpApiKey = process.env.FMP_API_KEY;
 process.env.FMP_API_KEY = 'test-fmp-key';
+afterAll(() => {
+  if (originalFmpApiKey === undefined) delete process.env.FMP_API_KEY;
+  else process.env.FMP_API_KEY = originalFmpApiKey;
+});
+
+// fmpApi.get records quota in .cramer-short/fmp-quota.json; keep it out of the working tree.
+useTempCramerShortDir();
 
 const fmpModulePath: string = './fmp.js?fmp-unit';
 const { fmpApi, getFmpIncomeStatements, getFmpBalanceSheets, getFmpCashFlowStatements, FMP_PREMIUM_REQUIRED } =
@@ -340,5 +353,39 @@ describe('fmpApi premium detection', () => {
 
     expect(typeof result.data.error).toBe('string');
     expect((result.data.error as string)).toContain(FMP_PREMIUM_REQUIRED);
+  });
+});
+
+// ===========================================================================
+// fmpApi.get — FMP quota tracking
+// ===========================================================================
+
+describe('fmpApi.get quota tracking', () => {
+  let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, 'fetch'>>;
+  let originalCwd: string;
+  let testDir: string;
+
+  beforeEach(async () => {
+    mock.restore();
+    originalCwd = process.cwd();
+    testDir = await mkdtemp(join(tmpdir(), 'fmp-quota-'));
+    process.chdir(testDir);
+    fetchSpy = spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve([{ date: '2024-12-31', symbol: 'AAPL' }]),
+    } as Response);
+  });
+
+  afterEach(async () => {
+    fetchSpy.mockRestore();
+    process.chdir(originalCwd);
+    await rm(testDir, { recursive: true, force: true });
+  });
+
+  test('decrements the FMP daily quota on a successful request', async () => {
+    await fmpApi.get('/income-statement', { symbol: 'AAPL', period: 'annual', limit: 1 });
+    expect(getQuotaStatus().used).toBe(1);
   });
 });

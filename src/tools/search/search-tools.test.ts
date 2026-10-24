@@ -1,5 +1,15 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { mock, describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { mock, describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, setSystemTime } from 'bun:test';
+
+// exa.ts requires a key before it builds the (mocked) client; don't depend on a local .env.
+const originalExaKey = process.env.EXASEARCH_API_KEY;
+beforeAll(() => {
+  process.env.EXASEARCH_API_KEY = 'test-exa-key';
+});
+afterAll(() => {
+  if (originalExaKey === undefined) delete process.env.EXASEARCH_API_KEY;
+  else process.env.EXASEARCH_API_KEY = originalExaKey;
+});
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -13,6 +23,17 @@ afterEach(() => {
 const mockExaInvoke = mock(() =>
   Promise.resolve({ results: [{ url: 'https://example.com', text: 'content' }] })
 );
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realExaJsModule = { ...(await import('exa-js')) };
+const realExaModule = { ...(await import('@langchain/exa')) };
+const realTavilyModule = { ...(await import('@langchain/tavily')) };
+afterAll(() => {
+  mock.module('exa-js', () => realExaJsModule);
+  mock.module('@langchain/exa', () => realExaModule);
+  mock.module('@langchain/tavily', () => realTavilyModule);
+});
 
 mock.module('exa-js', () => ({
   default: class Exa {

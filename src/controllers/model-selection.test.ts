@@ -10,6 +10,8 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as ollamaUtils from '../utils/ollama.js';
 import * as configModule from '../utils/config.js';
+import { getModelDisplayName } from '../utils/model.js';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER } from '../model/llm.js';
 import { ModelSelectionController } from './model-selection.js';
 
 // ---------------------------------------------------------------------------
@@ -439,5 +441,33 @@ describe('ModelSelectionController — handleModelInputSubmit (Ollama validation
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Canonical default model (fresh install)
+// ---------------------------------------------------------------------------
+
+describe('ModelSelectionController — canonical default model', () => {
+  it('exposes the Ollama Cloud deepseek flash default constants', () => {
+    expect(DEFAULT_MODEL).toBe('ollama:deepseek-v4.1-flash:cloud');
+    expect(DEFAULT_PROVIDER).toBe('ollama');
+  });
+
+  it('fresh controller with no saved settings resolves the Ollama Cloud default', () => {
+    const getSettingSpy = spyOn(configModule, 'getSetting').mockImplementation(
+      <T>(_key: string, defaultValue: T): T => defaultValue,
+    );
+    try {
+      const { ctrl } = makeController();
+      expect(ctrl.provider).toBe('ollama');
+      expect(ctrl.model).toBe('ollama:deepseek-v4.1-flash:cloud');
+    } finally {
+      getSettingSpy.mockRestore();
+    }
+  });
+
+  it('displays the default model without the provider prefix', () => {
+    expect(getModelDisplayName('ollama:deepseek-v4.1-flash:cloud')).toBe('deepseek-v4.1-flash:cloud');
   });
 });

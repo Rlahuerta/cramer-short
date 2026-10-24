@@ -7,7 +7,7 @@
  * Computes simple model-free baselines that any non-trivial forecast head
  * must beat:
  *   - Coin-flip:    always P(up)=0.5, recommends HOLD
- *   - Last-period:  P(up)=1 if previous step was up, recommends BUY/SELL
+ *   - Last-period:  P(up)=0.65 if the latest realized step was up, recommends BUY/SELL
  *
  * Returned metrics use the same {@link BacktestStep} shape so they can be
  * compared head-to-head with `directionalAccuracy`/`brierScore` from
@@ -63,27 +63,26 @@ export function computeCoinFlipBaseline(steps: BacktestStep[]): BaselineMetricBl
 }
 
 /**
- * "Last period" baseline: predicts the direction of the *previous*
- * realized return continues. For the first step (no prior), it falls
- * back to the coin-flip prior (P=0.5, HOLD).
+ * "Last period" baseline: predicts the direction of the latest return
+ * already *realized* at the step's origin — step j's outcome is known only
+ * once t_j + horizon ≤ t. With stride < horizon the immediately preceding
+ * step has not resolved yet, and using it leaks overlapping future returns.
+ * Until any outcome is realized it falls back to the coin-flip prior (P=0.5, HOLD).
  *
  * For probability assignment we use a confident-but-not-degenerate value
  * (0.65 / 0.35) — picking 1.0 / 0.0 would hand the baseline an unfair
  * Brier score (0 when right, 1 when wrong, dominated by the 50%
  * directional accuracy seen on random walks).
  */
-export function computeLastPeriodBaseline(steps: BacktestStep[]): BaselineMetricBlock {
+export function computeLastPeriodBaseline(steps: BacktestStep[], horizon: number): BaselineMetricBlock {
   if (steps.length === 0) return { n: 0, brierScore: 1, directionalAccuracy: 0 };
-  let prevReturn = 0;
-  const synthetic: BacktestStep[] = steps.map((step, i) => {
-    if (i === 0) {
-      prevReturn = step.actualReturn;
-      return synth(step, 0.5, 'HOLD');
-    }
-    const predUp = prevReturn > 0;
+  let observed = -1; // latest step whose outcome is realized by the current origin
+  const synthetic: BacktestStep[] = steps.map((step) => {
+    while (observed + 1 < steps.length && steps[observed + 1].t + horizon <= step.t) observed++;
+    if (observed < 0) return synth(step, 0.5, 'HOLD');
+    const predUp = steps[observed].actualReturn > 0;
     const predictedProb = predUp ? 0.65 : 0.35;
     const recommendation = predUp ? 'BUY' : 'SELL';
-    prevReturn = step.actualReturn;
     return synth(step, predictedProb, recommendation);
   });
   return {
@@ -93,10 +92,10 @@ export function computeLastPeriodBaseline(steps: BacktestStep[]): BaselineMetric
   };
 }
 
-export function computeNaiveBaselines(steps: BacktestStep[]): NaiveBaselineReport {
+export function computeNaiveBaselines(steps: BacktestStep[], horizon: number): NaiveBaselineReport {
   return {
     coinFlip: computeCoinFlipBaseline(steps),
-    lastPeriod: computeLastPeriodBaseline(steps),
+    lastPeriod: computeLastPeriodBaseline(steps, horizon),
   };
 }
 
@@ -105,15 +104,17 @@ export function computeNaiveBaselines(steps: BacktestStep[]): NaiveBaselineRepor
  * good as the better of the two naive baselines, minus a slack.
  *
  * @param armSteps      — steps from the candidate arm
+ * @param horizon       — forecast horizon of the steps (outcome of step t is known at t + horizon)
  * @param slack         — pp slack absorbed (default 0.02)
  * @returns             — {passes, armDirAcc, baselineDirAcc, gap}
  */
 export function naiveBaselineGuard(
   armSteps: BacktestStep[],
+  horizon: number,
   slack = 0.02,
 ): { passes: boolean; armDirAcc: number; baselineDirAcc: number; gap: number } {
   const armDirAcc = directionalAccuracy(armSteps);
-  const baselines = computeNaiveBaselines(armSteps);
+  const baselines = computeNaiveBaselines(armSteps, horizon);
   const baselineDirAcc = Math.max(
     baselines.coinFlip.directionalAccuracy,
     baselines.lastPeriod.directionalAccuracy,

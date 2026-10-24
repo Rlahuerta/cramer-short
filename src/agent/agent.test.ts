@@ -5,7 +5,10 @@
  * Bun module-registry contamination (never mocks llm.js directly).
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime, spyOn } from 'bun:test';
+import { useNoNetwork } from '../utils/test-no-network.js';
+import * as polymarket from '../tools/finance/polymarket.js';
+import * as embeddings from '../memory/embeddings.js';
 import { rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -24,6 +27,21 @@ import type { ChatResult } from '@langchain/core/outputs';
 import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
 import { z } from 'zod';
 import type { ToolCallRecord } from './scratchpad.js';
+
+useNoNetwork();
+
+// Agent.run() injects live Polymarket context, and memory search would embed
+// via OpenAI with the stub key: keep both offline.
+let offlineSpies: Array<{ mockRestore: () => void }> = [];
+beforeEach(() => {
+  offlineSpies = [
+    spyOn(polymarket, 'fetchPolymarketMarkets').mockResolvedValue([]),
+    spyOn(embeddings, 'createEmbeddingClient').mockReturnValue(null),
+  ];
+});
+afterEach(() => {
+  for (const spy of offlineSpies) spy.mockRestore();
+});
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -407,9 +425,15 @@ function getMutableAgentToolMap(agent: AgentInstance): Map<string, StructuredToo
   return value as Map<string, StructuredToolInterface>;
 }
 
-function replaceAgentToolExecutor(agent: AgentInstance, toolMap: Map<string, StructuredToolInterface>): void {
+type ApprovalFn = ConstructorParameters<typeof AgentToolExecutor>[2];
+
+function replaceAgentToolExecutor(
+  agent: AgentInstance,
+  toolMap: Map<string, StructuredToolInterface>,
+  requestToolApproval?: ApprovalFn,
+): void {
   Object.defineProperty(agent, 'toolExecutor', {
-    value: new AgentToolExecutor(toolMap),
+    value: new AgentToolExecutor(toolMap, undefined, requestToolApproval),
     configurable: true,
   });
 }
@@ -432,15 +456,16 @@ function installFixtureTools(
     name: string;
     invoke: (input: Record<string, unknown>) => Promise<string> | string;
   }>,
+  requestToolApproval?: ApprovalFn,
 ): void {
   const toolMap = getMutableAgentToolMap(agent);
   for (const tool of tools) {
     toolMap.set(tool.name, createJsonFixtureTool(tool.name, tool.invoke));
   }
-  replaceAgentToolExecutor(agent, toolMap);
+  replaceAgentToolExecutor(agent, toolMap, requestToolApproval);
 }
 
-function installForecastLabTool(agent: AgentInstance): void {
+function installForecastLabTool(agent: AgentInstance, requestToolApproval?: ApprovalFn): void {
   installFixtureTools(agent, [{
     name: 'forecast_lab_run',
     invoke: async (input: Record<string, unknown>) => {
@@ -465,7 +490,7 @@ function installForecastLabTool(agent: AgentInstance): void {
       }
       return forecastLabMockState.guidedImproveResult;
     },
-  }]);
+  }], requestToolApproval);
 }
 
 // ---------------------------------------------------------------------------
@@ -697,11 +722,14 @@ describe('Agent', () => {
         answer: 'Forecast-lab guided improvement finished. Approval required before promotion. Reply "approve forecast-lab promotion for btc-markov-ultra-short-horizon run btc-markov-ultra-short-horizon.keep-1" to continue.',
         summary: null,
       });
+      // promote-approved / reset-live mutate live forecast state, so they pass the approval gate.
+      const approve = mock(async () => 'allow-once' as const);
       const agent = await Agent.create({ maxIterations: 3 });
-      installForecastLabTool(agent);
+      installForecastLabTool(agent, approve);
       const events = await collectEvents(
         agent.run('Yes, approve forecast-lab promotion for that kept run.', history),
       );
+      expect(approve).toHaveBeenCalledTimes(1);
 
       const toolStarts = events.filter((event) => event.type === 'tool_start');
       const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
@@ -726,11 +754,14 @@ describe('Agent', () => {
         answer: 'Promotion completed for btc-markov-ultra-short-horizon from kept run btc-markov-ultra-short-horizon.keep-1. Promoted parameters are now live for normal forecasts. Active baseline: .cramer-short/experiments/active-promotions/btc-markov-ultra-short-horizon.json',
         summary: null,
       });
+      // promote-approved / reset-live mutate live forecast state, so they pass the approval gate.
+      const approve = mock(async () => 'allow-once' as const);
       const agent = await Agent.create({ maxIterations: 3 });
-      installForecastLabTool(agent);
+      installForecastLabTool(agent, approve);
       const events = await collectEvents(
         agent.run('Reset the forecast-lab active baseline for btc-markov-ultra-short-horizon back to shipped defaults.', history),
       );
+      expect(approve).toHaveBeenCalledTimes(1);
 
       const toolStarts = events.filter((event) => event.type === 'tool_start');
       const done = events.find((event) => event.type === 'done') as DoneEvent | undefined;
@@ -1891,6 +1922,7 @@ describe('Agent', () => {
       expect(isCryptoForecastQuery('What is the market cap of BTC?')).toBe(false);
       expect(isCryptoForecastQuery('What is the probability distribution for BTC-USD in 7 days?')).toBe(false);
       expect(isCryptoForecastQuery('Provide an AAPL forecast for the next 7 days')).toBe(false);
+      expect(isCryptoForecastQuery('SOLUSD 24h forecast. SOLUSD only.')).toBe(true);
       expect(
         isCryptoForecastQuery(
           'BTC-USD 24h forecast. Live GOLD quote first, then sentiment, on-chain, Markov, Polymarket, rates, arbitrator. GOLD only.',
@@ -1934,6 +1966,22 @@ describe('Agent', () => {
       ).toBeNull();
       expect(detectForecastLabPromotionApproval('How do I promote these improvements?', history)).toBeNull();
       expect(detectForecastLabPromotionApproval('What is BTC doing next week?', history)).toBeNull();
+      expect(
+        detectForecastLabPromotionApproval('Approve run btc-markov-ultra-short-horizon.keep-1.', history),
+      ).toEqual({
+        profileId: 'btc-markov-ultra-short-horizon',
+        sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+      });
+      for (const rejected of [
+        "No, don't promote it.",
+        'Do not approve forecast-lab promotion for that kept run.',
+        "I don't want to approve forecast-lab promotion yet.",
+        'Should I approve forecast-lab promotion for that kept run?',
+        'Yes, go ahead.',
+        'Promote it.',
+      ]) {
+        expect(detectForecastLabPromotionApproval(rejected, history)).toBeNull();
+      }
     });
 
     it('detects explicit forecast-lab reset requests from history context', () => {
@@ -1967,6 +2015,14 @@ describe('Agent', () => {
         mode: 'defaults',
       });
       expect(detectForecastLabResetRequest('Reset BTC to defaults.')).toBeNull();
+      for (const rejected of [
+        "Please don't reset btc-markov-ultra-short-horizon to defaults.",
+        'Do not restore the last known good baseline.',
+        'Should I reset BTC to defaults?',
+        'No, never roll back to the previous baseline.',
+      ]) {
+        expect(detectForecastLabResetRequest(rejected, history)).toBeNull();
+      }
     });
 
     it('detects current-best vs shipped-baseline comparison requests from history context', () => {
@@ -2312,6 +2368,45 @@ describe('Agent', () => {
         horizon_days: 7,
         current_price: 73300,
         sentiment_score: 0.42,
+      });
+    });
+
+    it('uses Fear & Greed as the crypto sentiment score when no social posts are available', () => {
+      const toolCalls = [
+        {
+          tool: 'get_market_data',
+          args: { query: 'Current crypto price snapshot for SOL' },
+          result: JSON.stringify({
+            data: {
+              get_crypto_price_snapshot_SOL: {
+                ticker: 'SOL',
+                price: 81.72,
+              },
+            },
+          }),
+        },
+        {
+          tool: 'social_sentiment',
+          args: { ticker: 'SOL', include_fear_greed: true, limit: 25 },
+          result: JSON.stringify({
+            data: {
+              result: [
+                '📊 **Social Sentiment: SOL**',
+                '_No Reddit/X posts found in the past 7 days._',
+                '',
+                '## Crypto Fear & Greed Index',
+                '███░░░░░░░ **26/100** — Fear',
+              ].join('\n'),
+            },
+          }),
+        },
+      ];
+
+      expect(buildForcedPolymarketForecastArgs('SOLUSD 24h forecast. SOLUSD only.', toolCalls)).toEqual({
+        ticker: 'SOL',
+        horizon_days: 1,
+        current_price: 81.72,
+        sentiment_score: -0.48,
       });
     });
 

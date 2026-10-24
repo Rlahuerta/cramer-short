@@ -6,7 +6,7 @@
  *   2. A concrete fix hint (what to do next)
  */
 import { describe, it, expect } from 'bun:test';
-import { formatUserFacingError, isTimeoutError } from './errors.js';
+import { formatUserFacingError, isNonRetryableError, isTimeoutError } from './errors.js';
 
 // ---------------------------------------------------------------------------
 // Rate limit
@@ -114,6 +114,58 @@ describe('formatUserFacingError — overloaded', () => {
   it('tells the user to wait or switch', () => {
     const msg = formatUserFacingError('overloaded');
     expect(msg).toMatch(/wait|\/model/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isNonRetryableError — aborts and hard timeouts must never be replayed
+// ---------------------------------------------------------------------------
+describe('isNonRetryableError — abort & timeout', () => {
+  it('treats an AbortError message as non-retryable', () => {
+    const err = new Error('aborted');
+    err.name = 'AbortError';
+    expect(isNonRetryableError(err.message)).toBe(true);
+  });
+
+  it('treats "This operation was aborted" as non-retryable', () => {
+    expect(isNonRetryableError('This operation was aborted')).toBe(true);
+  });
+
+  it('treats "signal is aborted without reason" as non-retryable', () => {
+    expect(isNonRetryableError('signal is aborted without reason')).toBe(true);
+  });
+
+  it('treats the withTimeout abort error as non-retryable', () => {
+    expect(
+      isNonRetryableError(
+        'Ollama call (ollama:qwen3:4b) timed out after 120s. The model may be slow or unavailable.',
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps 429 rate-limit errors retryable', () => {
+    expect(isNonRetryableError('429 Too Many Requests')).toBe(false);
+    expect(isNonRetryableError('rate limit exceeded')).toBe(false);
+  });
+
+  it('keeps network timeouts retryable', () => {
+    expect(isNonRetryableError('connect ETIMEDOUT 1.2.3.4:443')).toBe(false);
+  });
+
+  it('keeps generic timeouts retryable (scope is the withTimeout signature only)', () => {
+    expect(isNonRetryableError('request timed out')).toBe(false);
+    expect(isNonRetryableError('deadline exceeded')).toBe(false);
+  });
+
+  it('keeps overloaded / 5xx errors retryable', () => {
+    expect(isNonRetryableError('503 Service Unavailable')).toBe(false);
+    expect(isNonRetryableError('overloaded_error')).toBe(false);
+  });
+
+  it('still marks context overflow / billing / auth as non-retryable', () => {
+    expect(isNonRetryableError('context length exceeded')).toBe(true);
+    expect(isNonRetryableError('insufficient credits')).toBe(true);
+    expect(isNonRetryableError('HTTP 401 Unauthorized')).toBe(true);
   });
 });
 

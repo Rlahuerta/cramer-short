@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
@@ -26,6 +27,23 @@ export async function atomicWriteFile(
   } catch (error) {
     try {
       await unlink(tmpPath);
+    } catch {
+      // Ignore cleanup failures; preserve the original write/rename error.
+    }
+    throw error;
+  }
+}
+
+export function atomicWriteFileSync(filePath: string, contents: string): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+
+  const tmpPath = `${filePath}.${randomBytes(3).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tmpPath, contents);
+    renameSync(tmpPath, filePath);
+  } catch (error) {
+    try {
+      unlinkSync(tmpPath);
     } catch {
       // Ignore cleanup failures; preserve the original write/rename error.
     }

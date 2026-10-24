@@ -212,3 +212,39 @@ describe('hybridSearch — explanation field', () => {
     expect(explanation).toMatch(/keyword|vector|both/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #10 — id-aligned result loading (missing candidate ids must not shift details)
+// ---------------------------------------------------------------------------
+
+describe('hybridSearch — id-aligned result loading', () => {
+  it('pairs each candidate score with the detail of the same id', async () => {
+    const detailsById = new Map<number, Record<string, unknown>>([
+      [1, { id: 1, snippet: 'chunk one', path: 'a.md', startLine: 1, endLine: 1, score: 0, source: 'keyword', contentSource: 'memory', updatedAt: 0, tickers: [] }],
+      [3, { id: 3, snippet: 'chunk three', path: 'c.md', startLine: 1, endLine: 1, score: 0, source: 'keyword', contentSource: 'memory', updatedAt: 0, tickers: [] }],
+    ]);
+
+    const fakeDb = {
+      searchVector: () => [],
+      searchKeyword: () => [
+        { chunkId: 1, score: 0.9 },
+        { chunkId: 999, score: 0.8 },
+        { chunkId: 3, score: 0.7 },
+      ],
+      loadResultsByIds: (ids: number[]) =>
+        ids.filter((id) => detailsById.has(id)).map((id) => detailsById.get(id)!),
+    } as unknown as MemoryDatabase;
+
+    const results = await hybridSearch({
+      db: fakeDb,
+      embeddingClient: null,
+      query: 'anything',
+      defaults: { maxResults: 5, minScore: 0, vectorWeight: 0.7, textWeight: 0.3 },
+    });
+
+    const three = results.find((result) => result.snippet.includes('chunk three'));
+    const one = results.find((result) => result.snippet.includes('chunk one'));
+    expect(one?.score).toBeCloseTo(0.9, 5);
+    expect(three?.score).toBeCloseTo(0.7, 5);
+  });
+});

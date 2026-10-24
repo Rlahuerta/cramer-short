@@ -35,7 +35,7 @@ function marketTargetTimeMs(
   market: ArbiterReplayPolymarketMarket,
   bundle: ArbiterReplayBundle,
 ): number {
-  const marketEndMs = Date.parse(market.endDate);
+  const marketEndMs = market.endDate ? Date.parse(market.endDate) : Number.NaN;
   return Number.isFinite(marketEndMs) ? marketEndMs : forecastTargetTimeMs(bundle);
 }
 

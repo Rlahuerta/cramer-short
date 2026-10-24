@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'bun:test';
-import { NUM_STATES, STATE_INDEX } from './core.js';
+import { NUM_STATES, STATE_INDEX, type RegimeState } from './core.js';
 import { classifyRegimeState } from './regime.js';
-import { adjustTransitionMatrix, buildDefaultMatrix, estimateTransitionMatrix, matMul, matPow, normalizeRows, secondLargestEigenvalue } from './transition.js';
+import {
+  adjustTransitionMatrix,
+  buildDefaultMatrix,
+  estimateConditionalTransitionMatrices,
+  estimateTransitionMatrix,
+  isIrreducible,
+  matMul,
+  matPow,
+  normalizeRows,
+  secondLargestEigenvalue,
+  stationaryDistribution,
+} from './transition.js';
 
 function rowSums(m: number[][]): number[] {
   return m.map(row => row.reduce((s, v) => s + v, 0));
@@ -85,6 +96,137 @@ describe('estimateTransitionMatrix', () => {
     // bull→bull should be > 0.8 (59 bull→bull transitions out of 59 total + 5×4 prior cells)
     expect(m[bullIdx][bullIdx]).toBeGreaterThan(0.8);
   });
+
+  it('stickiness shrinkage opt-in shrinks sticky rows toward the default matrix', () => {
+    const states = repeatStates(['bull'], 60);
+    const m = estimateTransitionMatrix(states, 0.1, 0, 1.0, true);
+    const def = buildDefaultMatrix();
+    const bullIdx = STATE_INDEX['bull'];
+    const rawBullCount = states.length - 1;
+    const unsmoothedBullDiag = (rawBullCount + 0.1) / (rawBullCount + NUM_STATES * 0.1);
+    const stickiness = ((unsmoothedBullDiag - 0.8) / (1.0 - 0.8)) ** 2;
+    const priorStrength = 10.0 * (1.0 + 9.0 * stickiness);
+    const lambda = rawBullCount / (rawBullCount + priorStrength);
+    const expectedBullDiag = lambda * unsmoothedBullDiag + (1.0 - lambda) * def[bullIdx][bullIdx];
+
+    expect(m[bullIdx][bullIdx]).toBeCloseTo(expectedBullDiag, 12);
+    expect(m[bullIdx][bullIdx]).toBeLessThan(unsmoothedBullDiag);
+    expect(m[STATE_INDEX['bear']][STATE_INDEX['bear']]).toBeCloseTo(
+      def[STATE_INDEX['bear']][STATE_INDEX['bear']],
+      12,
+    );
+  });
+
+  it('stickiness shrinkage uses base prior strength below the diagonal threshold', () => {
+    const states = repeatStates(['bull', 'bear'], 60);
+    const m = estimateTransitionMatrix(states, 0.1, 0, 1.0, true);
+    const def = buildDefaultMatrix();
+    const bullIdx = STATE_INDEX['bull'];
+    const bearIdx = STATE_INDEX['bear'];
+    const rawBullCount = 30;
+    const unsmoothedBullToBear = (rawBullCount + 0.1) / (rawBullCount + NUM_STATES * 0.1);
+    const lambda = rawBullCount / (rawBullCount + 10.0);
+    const expectedBullToBear = lambda * unsmoothedBullToBear
+      + (1.0 - lambda) * def[bullIdx][bearIdx];
+
+    expect(m[bullIdx][bearIdx]).toBeCloseTo(expectedBullToBear, 12);
+  });
+});
+describe('estimateConditionalTransitionMatrices', () => {
+  it('conditional matrices raise on length mismatch', () => {
+    expect(() => estimateConditionalTransitionMatrices(['bull', 'bear'], ['low_volume'], 0.1, 1.0))
+      .toThrow(/Length mismatch/);
+  });
+
+  it('conditional matrices use pooled matrix for sparse environments', () => {
+    const states = repeatStates(['bull', 'bear'], 40);
+    const environments = ['thin', ...Array(states.length - 1).fill('pooled')];
+
+    const matrices = estimateConditionalTransitionMatrices(states, environments, 0.1, 1.0);
+    const pooled = estimateTransitionMatrix(states, 0.1, undefined, 1.0);
+
+    for (let i = 0; i < NUM_STATES; i++) {
+      for (let j = 0; j < NUM_STATES; j++) {
+        expect(matrices.thin[i][j]).toBeCloseTo(pooled[i][j], 12);
+      }
+    }
+  });
+
+  it('conditional matrices are distinct for environments with enough data', () => {
+    const states = [...repeatStates(['bull'], 20), ...repeatStates(['bear'], 20)];
+    const environments = [...Array(20).fill('low_uncertainty'), ...Array(20).fill('high_uncertainty')];
+
+    const matrices = estimateConditionalTransitionMatrices(states, environments, 0.1, 1.0);
+
+    expect(Object.keys(matrices).sort()).toEqual(['high_uncertainty', 'low_uncertainty']);
+    expect(matrices.low_uncertainty[STATE_INDEX['bull']][STATE_INDEX['bull']]).toBeGreaterThan(0.8);
+    expect(matrices.high_uncertainty[STATE_INDEX['bear']][STATE_INDEX['bear']]).toBeGreaterThan(0.8);
+    expect(matrices.low_uncertainty[STATE_INDEX['bull']][STATE_INDEX['bull']])
+      .not.toBeCloseTo(matrices.high_uncertainty[STATE_INDEX['bull']][STATE_INDEX['bull']], 12);
+  });
+
+  /** Alternating transitions: env A owns the even (bull→bear) pairs, env B the odd (bear→bull) ones. */
+  function interleavedPairs(pairsPerEnv: number): { states: RegimeState[]; environments: string[] } {
+    const states: RegimeState[] = Array.from(
+      { length: 2 * pairsPerEnv + 1 },
+      (_, i) => (i % 2 === 0 ? 'bull' : 'bear'),
+    );
+    const environments = Array.from(
+      { length: 2 * pairsPerEnv + 1 },
+      (_, i) => (i % 2 === 0 ? 'A' : 'B'),
+    );
+    return { states, environments };
+  }
+
+  it('counts only each environment\'s own pairs — no spurious pair-boundary transitions', () => {
+    // Flattening each environment's pairs into a state sequence (the previous
+    // implementation) manufactured bear→bull edges inside A and bull→bear
+    // edges inside B across pair boundaries.
+    const pairsPerEnv = 16; // 2 entries per pair keeps this above transitionMinObservations (30)
+    const { states, environments } = interleavedPairs(pairsPerEnv);
+
+    const matrices = estimateConditionalTransitionMatrices(states, environments, 0.1, 1.0);
+
+    const bull = STATE_INDEX['bull'];
+    const bear = STATE_INDEX['bear'];
+    const prior = 1 / NUM_STATES;
+    const observed = (pairsPerEnv + 0.1) / (pairsPerEnv + 0.3);
+
+    // Environment A saw only bull→bear transitions.
+    expect(matrices.A[bull][bear]).toBeCloseTo(observed, 12);
+    expect(matrices.A[bull][bull]).toBeCloseTo(0.1 / (pairsPerEnv + 0.3), 12);
+    // No bear→bull / bear→bear evidence in A (spurious under pair flattening).
+    expect(matrices.A[bear][bull]).toBeCloseTo(prior, 12);
+    expect(matrices.A[bear][bear]).toBeCloseTo(prior, 12);
+
+    // Environment B saw only bear→bull transitions.
+    expect(matrices.B[bear][bull]).toBeCloseTo(observed, 12);
+    expect(matrices.B[bull][bear]).toBeCloseTo(prior, 12);
+    expect(matrices.B[bull][bull]).toBeCloseTo(prior, 12);
+  });
+
+  it('weights each counted pair by recency (per-pair decay, same scheme as estimateTransitionMatrix)', () => {
+    const pairsPerEnv = 16;
+    const { states, environments } = interleavedPairs(pairsPerEnv);
+
+    const decayRate = 0.5;
+    const matrices = estimateConditionalTransitionMatrices(states, environments, 0.1, decayRate);
+
+    // Most recent pair weight 1, each step back multiplies by decayRate.
+    const weighted = Array.from(
+      { length: pairsPerEnv },
+      (_, k) => Math.pow(decayRate, pairsPerEnv - 1 - k),
+    ).reduce((sum, w) => sum + w, 0);
+
+    const bull = STATE_INDEX['bull'];
+    const bear = STATE_INDEX['bear'];
+    const observed = (0.1 + weighted) / (0.1 + weighted + 0.2);
+
+    expect(matrices.A[bull][bear]).toBeCloseTo(observed, 12);
+    expect(matrices.B[bear][bull]).toBeCloseTo(observed, 12);
+    // Unobserved cells stay at the Dirichlet prior.
+    expect(matrices.A[bear][bull]).toBeCloseTo(1 / NUM_STATES, 12);
+  });
 });
 describe('adjustTransitionMatrix', () => {
   const baseMatrix = buildDefaultMatrix();
@@ -149,25 +291,102 @@ describe('secondLargestEigenvalue', () => {
     expect(rho).toBeLessThanOrEqual(1);
   });
 
-  it('identity matrix has second eigenvalue close to 1 (no mixing)', () => {
+  it('identity matrix has second eigenvalue 1 (no mixing)', () => {
     const identity: number[][] = Array.from({ length: NUM_STATES }, (_, i) =>
       Array.from({ length: NUM_STATES }, (_, j) => (i === j ? 1 : 0)),
     );
     const rho = secondLargestEigenvalue(identity);
-    // Identity matrix: all eigenvalues = 1. The second eigenvalue is degenerate
-    // (any orthonormal vector is an eigenvector). The uniform starting vector is
-    // orthogonal to the first eigenvector's basis, so the deflated power iteration
-    // lands at zero → returns 0. This is correct behavior for a pathological matrix.
-    // A well-conditioned near-identity matrix would return ~1.
-    expect(rho).toBe(0);
+    // All |λ| = 1; np.linalg.eigvals' second-largest magnitude is 1. The old
+    // deflated power iteration returned 0 here, which the previous expectation
+    // encoded as "correct behavior for a pathological matrix".
+    expect(rho).toBeCloseTo(1, 12);
   });
 
-  it('uniform row matrix has second eigenvalue close to 0 (instant mixing)', () => {
+  it('uniform row matrix has second eigenvalue 0 (instant mixing)', () => {
     const uniform: number[][] = Array.from({ length: NUM_STATES }, () =>
       Array(NUM_STATES).fill(1 / NUM_STATES),
     );
     const rho = secondLargestEigenvalue(uniform);
-    expect(rho).toBeLessThan(0.1);
+    expect(rho).toBeCloseTo(0, 12);
+  });
+
+  it('default doubly-stochastic matrix has second eigenvalue 0.4 (regression)', () => {
+    // P = 0.6·I + 0.2·J → eigenvalues {1, 0.4, 0.4}. The old deflated power
+    // iteration started from the uniform vector, which is already the stationary
+    // eigenvector of any doubly-stochastic matrix, so deflation collapsed the
+    // iterate to 0 → computeMixingWeight = 1 → Markov anchors silently ignored.
+    const rho = secondLargestEigenvalue(buildDefaultMatrix());
+    expect(Math.abs(rho - 0.4)).toBeLessThan(1e-6);
+  });
+
+  it('non-doubly-stochastic 3×3 matches the eigvals oracle', () => {
+    // Stationary distribution ≠ uniform, so the old uniform-start deflation also
+    // biased this case; expected value from np.linalg.eigvals.
+    const P = [
+      [0.5, 0.5, 0.0],
+      [0.5, 0.3, 0.2],
+      [0.0, 0.2, 0.8],
+    ];
+    expect(secondLargestEigenvalue(P)).toBeCloseTo(0.7358898943540673, 9);
+  });
+
+  it('uses eigenvalue magnitude for a cyclic chain (complex pair)', () => {
+    // Eigenvalues 0.1 + 0.9·ω (complex pair); |λ| = sqrt(0.73). A deflated power
+    // iteration cannot represent the complex pair, so this locks the analytic path.
+    const P = [
+      [0.1, 0.9, 0.0],
+      [0.0, 0.1, 0.9],
+      [0.9, 0.0, 0.1],
+    ];
+    expect(secondLargestEigenvalue(P)).toBeCloseTo(0.854400374531753, 9);
+  });
+});
+describe('stationaryDistribution', () => {
+  function vectorMatMul(v: number[], P: number[][]): number[] {
+    return P[0].map((_, j) => v.reduce((sum, x, i) => sum + x * P[i][j], 0));
+  }
+
+  it('stationary distribution converges for a primitive 3×3 chain', () => {
+    const P = [
+      [0.7, 0.2, 0.1],
+      [0.1, 0.8, 0.1],
+      [0.2, 0.3, 0.5],
+    ];
+    const pi = stationaryDistribution(P);
+    const piP = vectorMatMul(pi, P);
+
+    for (let i = 0; i < pi.length; i++) {
+      expect(piP[i]).toBeCloseTo(pi[i], 10);
+    }
+  });
+
+  it('sums stationary distribution probabilities to 1', () => {
+    const pi = stationaryDistribution(buildDefaultMatrix());
+    expect(pi.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12);
+  });
+
+  it('raises for a reducible matrix', () => {
+    expect(() => stationaryDistribution([
+      [0.9, 0.1, 0],
+      [0.1, 0.9, 0],
+      [0, 0, 1],
+    ])).toThrow(/irreducible/);
+  });
+});
+describe('isIrreducible', () => {
+  it('returns true for strongly connected chains', () => {
+    expect(isIrreducible([
+      [0, 1],
+      [1, 0],
+    ])).toBe(true);
+  });
+
+  it('returns false when one state cannot reach the others', () => {
+    expect(isIrreducible([
+      [0.9, 0.1, 0],
+      [0.1, 0.9, 0],
+      [0, 0, 1],
+    ])).toBe(false);
   });
 });
 describe('matPow', () => {

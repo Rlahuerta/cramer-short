@@ -1,5 +1,6 @@
 import { afterAll, afterEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createReplayHistoryLoader, runReplayLabelCommand } from './cli-replay-label.js';
@@ -21,7 +22,7 @@ import { toReplayLabelBenchmarkReportPath } from './tools/finance/backtest/repla
 import type { ReplayFixturePriceStore } from './tools/finance/backtest/replay-price-history-adapter.js';
 import type { ReplayLabelReadinessReport } from './tools/finance/backtest/replay-label-readiness.js';
 
-const SCRATCH_ROOT = join('.cramer-short', 'cli-replay-label-test');
+const SCRATCH_ROOT = mkdtempSync(join(tmpdir(), 'cli-replay-label-test-'));
 const scratchDirs: string[] = [];
 
 function makeScratchDir(): string {

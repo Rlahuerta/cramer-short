@@ -14,7 +14,10 @@ from research.models.markov import (
     _default_matrix,
     NUM_STATES,
     STATE_INDEX,
+    compute_regime_up_rates,
 )
+from research.models.markov.transition import estimate_conditional_transition_matrices
+from research.models.markov.forecast import _compute_horizon_drift_vol, compute_path_integrated_drift
 from research.models.soft_regime import one_hot_regime_mixture
 
 
@@ -112,6 +115,153 @@ def test_estimate_transition_matrix_self_persistence():
     bull_idx = STATE_INDEX["bull"]
     # bull→bull should be > 0.8
     assert m[bull_idx][bull_idx] > 0.8
+
+
+def test_estimate_transition_matrix_decay_weights_match_hand_count():
+    states = ["bull", "bear", "bull", "sideways"]
+    alpha = 0.1
+    decay_rate = 0.5
+    m = estimate_transition_matrix(
+        states,
+        alpha=alpha,
+        min_observations=0,
+        decay_rate=decay_rate,
+    )
+
+    expected_counts = np.full((NUM_STATES, NUM_STATES), alpha, dtype=float)
+    expected_counts[STATE_INDEX["bull"]][STATE_INDEX["bear"]] += decay_rate**2
+    expected_counts[STATE_INDEX["bear"]][STATE_INDEX["bull"]] += decay_rate
+    expected_counts[STATE_INDEX["bull"]][STATE_INDEX["sideways"]] += 1.0
+    expected = expected_counts / expected_counts.sum(axis=1, keepdims=True)
+
+    np.testing.assert_allclose(m, expected, atol=1e-12)
+
+
+def test_estimate_transition_matrix_stickiness_shrinkage_opt_in():
+    states = ["bull"] * 60
+    m = estimate_transition_matrix(
+        states,
+        alpha=0.1,
+        min_observations=0,
+        decay_rate=1.0,
+        stickiness_shrinkage=True,
+    )
+    default = _default_matrix()
+    bull_idx = STATE_INDEX["bull"]
+    raw_bull_count = len(states) - 1
+    unsmoothed_bull_diag = (raw_bull_count + 0.1) / (raw_bull_count + NUM_STATES * 0.1)
+    stickiness = ((unsmoothed_bull_diag - 0.8) / (1.0 - 0.8)) ** 2
+    prior_strength = 10.0 * (1.0 + 9.0 * stickiness)
+    lambda_i = raw_bull_count / (raw_bull_count + prior_strength)
+    expected_bull_diag = lambda_i * unsmoothed_bull_diag + (1.0 - lambda_i) * default[bull_idx][bull_idx]
+
+    assert m[bull_idx][bull_idx] == pytest.approx(expected_bull_diag, abs=1e-12)
+    assert m[bull_idx][bull_idx] < unsmoothed_bull_diag
+    assert m[STATE_INDEX["bear"]][STATE_INDEX["bear"]] == pytest.approx(
+        default[STATE_INDEX["bear"]][STATE_INDEX["bear"]],
+        abs=1e-12,
+    )
+
+
+def test_estimate_transition_matrix_stickiness_uses_base_prior_below_threshold():
+    states = ["bull", "bear"] * 30
+    m = estimate_transition_matrix(
+        states,
+        alpha=0.1,
+        min_observations=0,
+        decay_rate=1.0,
+        stickiness_shrinkage=True,
+    )
+    default = _default_matrix()
+    bull_idx = STATE_INDEX["bull"]
+    bear_idx = STATE_INDEX["bear"]
+    raw_bull_count = 30
+    unsmoothed_bull_to_bear = (raw_bull_count + 0.1) / (raw_bull_count + NUM_STATES * 0.1)
+    lambda_i = raw_bull_count / (raw_bull_count + 10.0)
+    expected_bull_to_bear = (
+        lambda_i * unsmoothed_bull_to_bear + (1.0 - lambda_i) * default[bull_idx][bear_idx]
+    )
+
+    assert m[bull_idx][bear_idx] == pytest.approx(expected_bull_to_bear, abs=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# estimate_conditional_transition_matrices
+# ---------------------------------------------------------------------------
+
+def test_conditional_transition_matrices_raise_on_length_mismatch():
+    with pytest.raises(ValueError, match="Length mismatch"):
+        estimate_conditional_transition_matrices(["bull", "bear"], ["low_volume"], alpha=0.1, decay_rate=1.0)
+
+
+def test_conditional_transition_matrices_sparse_environment_falls_back_to_pooled_matrix():
+    states = ["bull", "bear"] * 20
+    environments = ["thin"] + ["pooled"] * (len(states) - 1)
+
+    matrices = estimate_conditional_transition_matrices(states, environments, alpha=0.1, decay_rate=1.0)
+    pooled = estimate_transition_matrix(states, alpha=0.1, decay_rate=1.0)
+
+    np.testing.assert_allclose(matrices["thin"], pooled, atol=1e-12)
+
+
+def test_conditional_transition_matrices_distinct_environments_with_enough_data_are_distinct():
+    states = ["bull"] * 20 + ["bear"] * 20
+    environments = ["low_uncertainty"] * 20 + ["high_uncertainty"] * 20
+
+    matrices = estimate_conditional_transition_matrices(states, environments, alpha=0.1, decay_rate=1.0)
+
+    assert matrices.keys() == {"low_uncertainty", "high_uncertainty"}
+    assert matrices["low_uncertainty"][STATE_INDEX["bull"]][STATE_INDEX["bull"]] > 0.8
+    assert matrices["high_uncertainty"][STATE_INDEX["bear"]][STATE_INDEX["bear"]] > 0.8
+    assert not np.allclose(matrices["low_uncertainty"], matrices["high_uncertainty"], atol=1e-12)
+
+
+def _interleaved_pairs(pairs_per_env: int) -> tuple[list[str], list[str]]:
+    """Alternating transitions: env A owns even (bull→bear) pairs, env B odd (bear→bull) ones."""
+    states = ["bull" if i % 2 == 0 else "bear" for i in range(2 * pairs_per_env + 1)]
+    environments = ["A" if i % 2 == 0 else "B" for i in range(2 * pairs_per_env + 1)]
+    return states, environments
+
+
+def test_conditional_transition_matrices_count_only_own_pairs():
+    # Flattening each environment's pairs into a state sequence (the previous
+    # implementation) manufactured bear→bull edges inside A and bull→bear
+    # edges inside B across pair boundaries.
+    pairs_per_env = 16  # 2 entries per pair keeps this above transitionMinObservations (30)
+    states, environments = _interleaved_pairs(pairs_per_env)
+
+    matrices = estimate_conditional_transition_matrices(states, environments, alpha=0.1, decay_rate=1.0)
+
+    bull = STATE_INDEX["bull"]
+    bear = STATE_INDEX["bear"]
+    prior = 1 / NUM_STATES
+    observed = (pairs_per_env + 0.1) / (pairs_per_env + 0.3)
+
+    assert matrices["A"][bull][bear] == pytest.approx(observed, abs=1e-12)
+    assert matrices["A"][bull][bull] == pytest.approx(0.1 / (pairs_per_env + 0.3), abs=1e-12)
+    assert matrices["A"][bear][bull] == pytest.approx(prior, abs=1e-12)
+    assert matrices["A"][bear][bear] == pytest.approx(prior, abs=1e-12)
+
+    assert matrices["B"][bear][bull] == pytest.approx(observed, abs=1e-12)
+    assert matrices["B"][bull][bear] == pytest.approx(prior, abs=1e-12)
+    assert matrices["B"][bull][bull] == pytest.approx(prior, abs=1e-12)
+
+
+def test_conditional_transition_matrices_weight_pairs_by_recency():
+    pairs_per_env = 16
+    states, environments = _interleaved_pairs(pairs_per_env)
+
+    matrices = estimate_conditional_transition_matrices(states, environments, alpha=0.1, decay_rate=0.5)
+
+    # Most recent pair weight 1, each step back multiplies by decay_rate.
+    weighted = sum(0.5 ** (pairs_per_env - 1 - k) for k in range(pairs_per_env))
+    bull = STATE_INDEX["bull"]
+    bear = STATE_INDEX["bear"]
+    observed = (0.1 + weighted) / (0.1 + weighted + 0.2)
+
+    assert matrices["A"][bull][bear] == pytest.approx(observed, abs=1e-12)
+    assert matrices["B"][bear][bull] == pytest.approx(observed, abs=1e-12)
+    assert matrices["A"][bear][bull] == pytest.approx(1 / NUM_STATES, abs=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +380,25 @@ def test_compute_markov_forecast_from_each_state():
         assert forecast[state] == pytest.approx(P[idx][idx], abs=1e-10)
 
 
+def test_compute_markov_forecast_horizon_zero_returns_current_state():
+    P = np.array([[0.5, 0.3, 0.2], [0.2, 0.6, 0.2], [0.2, 0.3, 0.5]])
+    forecast = compute_markov_forecast(P, "bear", 0)
+    assert forecast == pytest.approx({"bull": 0.0, "bear": 1.0, "sideways": 0.0}, abs=1e-12)
+
+
+def test_compute_markov_forecast_matches_matrix_power_for_soft_start():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    start = {"bull": 0.25, "bear": 0.5, "sideways": 0.25}
+    forecast = compute_markov_forecast(P, "bull", 3, start_mixture=start)
+
+    start_vector = np.array([start["bull"], start["bear"], start["sideways"]])
+    expected = start_vector @ np.linalg.matrix_power(P, 3)
+
+    assert forecast["bull"] == pytest.approx(expected[0], abs=1e-12)
+    assert forecast["bear"] == pytest.approx(expected[1], abs=1e-12)
+    assert forecast["sideways"] == pytest.approx(expected[2], abs=1e-12)
+
+
 def test_compute_markov_forecast_supports_soft_start_mixture():
     P = np.array([[0.7, 0.2, 0.1], [0.2, 0.7, 0.1], [0.25, 0.25, 0.5]])
     hard = compute_markov_forecast(P, "bull", 1)
@@ -256,6 +425,94 @@ def test_compute_markov_forecast_supports_soft_forecast_blend():
     )
     assert sum(blended.values()) == pytest.approx(1.0, abs=1e-10)
     assert blended["sideways"] > base["sideways"]
+
+
+# ---------------------------------------------------------------------------
+# compute_path_integrated_drift
+# ---------------------------------------------------------------------------
+
+def test_compute_path_integrated_drift_rejects_negative_horizon():
+    P = np.eye(NUM_STATES)
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    with pytest.raises(ValueError, match="horizon must be non-negative"):
+        compute_path_integrated_drift(-1, P, regime_stats, "bull")
+
+
+def test_compute_path_integrated_drift_zero_horizon_returns_zero():
+    P = np.eye(NUM_STATES)
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    assert compute_path_integrated_drift(0, P, regime_stats, "bull") == 0.0
+
+
+def test_compute_path_integrated_drift_horizon_one_matches_single_step_terminal_drift():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    result = compute_path_integrated_drift(1, P, regime_stats, "bull")
+    expected = 0.7 * 0.02 + 0.2 * -0.01 + 0.1 * 0.004
+
+    assert result == pytest.approx(expected, abs=1e-12)
+
+
+def test_compute_path_integrated_drift_differs_from_terminal_snapshot_for_non_degenerate_chain():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    result = compute_path_integrated_drift(3, P, regime_stats, "bull")
+    means = np.array([regime_stats[state]["meanReturn"] for state in ("bull", "bear", "sideways")])
+    expected = sum(float(np.array([1.0, 0.0, 0.0]) @ np.linalg.matrix_power(P, d) @ means) for d in range(1, 4))
+    terminal_snapshot = 3 * float(np.array([1.0, 0.0, 0.0]) @ np.linalg.matrix_power(P, 3) @ means)
+
+    assert result == pytest.approx(expected, abs=1e-12)
+    assert result != pytest.approx(terminal_snapshot, abs=1e-6)
+
+
+def test_compute_path_integrated_drift_supports_soft_start_mixture():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+    start = {"bull": 0.25, "bear": 0.5, "sideways": 0.25}
+
+    result = compute_path_integrated_drift(2, P, regime_stats, "bull", start)
+    means = np.array([regime_stats[state]["meanReturn"] for state in ("bull", "bear", "sideways")])
+    start_vector = np.array([start["bull"], start["bear"], start["sideways"]])
+    expected = sum(float(start_vector @ np.linalg.matrix_power(P, d) @ means) for d in range(1, 3))
+
+    assert result == pytest.approx(expected, abs=1e-12)
+
+
+def test_compute_horizon_drift_vol_uses_path_integrated_drift():
+    P = np.array([[0.7, 0.2, 0.1], [0.1, 0.8, 0.1], [0.25, 0.25, 0.5]])
+    regime_stats = {
+        "bull": {"meanReturn": 0.02, "stdReturn": 0.01},
+        "bear": {"meanReturn": -0.01, "stdReturn": 0.015},
+        "sideways": {"meanReturn": 0.004, "stdReturn": 0.005},
+    }
+
+    result = _compute_horizon_drift_vol(5, P, regime_stats, "bull")
+
+    assert result["mu_n"] == pytest.approx(compute_path_integrated_drift(5, P, regime_stats, "bull"), abs=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -776,3 +1033,340 @@ class TestBtcShortHorizonGuards:
             0.54,
             0.02,
         ) is True
+
+
+# ---------------------------------------------------------------------------
+# compute_regime_up_rates
+# ---------------------------------------------------------------------------
+
+class TestComputeRegimeUpRates:
+    def test_h1_matches_daily_positive_fraction(self):
+        """At horizon=1, cumulative log return = single log return, so the
+        regime up-rate should equal the daily positive fraction."""
+        regimes = ["bull", "bull", "bear", "sideways", "bull"]
+        log_returns = np.array([0.01, 0.02, -0.01, 0.00, 0.015])
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=1)
+        # max_start = 5 - 1 = 4
+        # i=0 (bull): log_ret[1] = 0.02 > 0 → up
+        # i=1 (bull): log_ret[2] = -0.01 < 0 → down
+        # i=2 (bear): log_ret[3] = 0.00 → down
+        # i=3 (sideways): log_ret[4] = 0.015 > 0 → up
+        # bull: 1 up / 2 = 0.5, bear: 0/1 = 0.0, sideways: 1/1 = 1.0
+        assert rates["bull"] == pytest.approx(0.5, abs=1e-10)
+        assert rates["bear"] == pytest.approx(0.0, abs=1e-10)
+        assert rates["sideways"] == pytest.approx(1.0, abs=1e-10)
+
+    def test_h2_cumulative_vs_daily(self):
+        """At horizon=2, the cumulative log return over 2 days determines the
+        up-rate, which can differ from the daily positive fraction."""
+        regimes = ["bull", "bull", "bear", "sideways", "bull"]
+        log_returns = np.array([0.01, 0.02, -0.01, 0.00, 0.015])
+        # max_start = 5 - 2 = 3
+        # i=0 (bull): cum = 0.02 + (-0.01) = 0.01 > 0 → up
+        # i=1 (bull): cum = -0.01 + 0.00 = -0.01 < 0 → down
+        # i=2 (bear): cum = 0.00 + 0.015 = 0.015 > 0 → up
+        # i=3 (sideways): not reached (max_start=3)
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=2)
+        assert rates["bull"] == pytest.approx(0.5, abs=1e-10)
+        assert rates["bear"] == pytest.approx(1.0, abs=1e-10)
+        assert rates["sideways"] == pytest.approx(0.5, abs=1e-10)
+
+    def test_no_data_returns_uninformative(self):
+        """When a regime never appears, up-rate defaults to 0.5."""
+        regimes = ["bull", "bull", "bull"]
+        log_returns = np.array([0.01, 0.02, 0.03])
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=1)
+        # max_start = 3 - 1 = 2
+        # i=0 (bull): log_ret[1] = 0.02 > 0 → up
+        # i=1 (bull): log_ret[2] = 0.03 > 0 → up
+        # bull: 2/2 = 1.0
+        assert rates["bull"] == pytest.approx(1.0, abs=1e-10)
+        assert rates["bear"] == pytest.approx(0.5, abs=1e-10)
+        assert rates["sideways"] == pytest.approx(0.5, abs=1e-10)
+
+    def test_decay_rate_weights_recent(self):
+        """With decay_rate < 1, recent observations should dominate."""
+        regimes = ["bull"] * 4
+        log_returns = np.array([0.01, 0.01, -0.01, -0.01, 0.00])
+        # max_start = min(4,5) - 2 = 2
+        # i=0 (bull): cum = 0.01 + (-0.01) = 0.00 → down (weight = 0.5^1 = 0.50)
+        # i=1 (bull): cum = -0.01 + (-0.01) = -0.02 < 0 → down (weight = 0.5^0 = 1.00)
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=2, decay_rate=0.5)
+        # total weight = 0.50 + 1.00 = 1.50
+        # up weight = 0
+        assert rates["bull"] == pytest.approx(0.0, abs=1e-10)
+
+    def test_insufficient_data_for_horizon(self):
+        """When len(data) < horizon, max_start is 0 and all rates default to 0.5."""
+        regimes = ["bull", "bear"]
+        log_returns = np.array([0.01, -0.01])
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=5)
+        assert rates["bull"] == pytest.approx(0.5, abs=1e-10)
+        assert rates["bear"] == pytest.approx(0.5, abs=1e-10)
+        assert rates["sideways"] == pytest.approx(0.5, abs=1e-10)
+
+    def test_mixed_regimes_per_state_isolation(self):
+        """Counts are per-regime, not global."""
+        regimes = ["bull", "bear", "sideways", "bull", "bear"]
+        log_returns = np.array([0.02, -0.01, 0.00, 0.03, -0.02])
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=1)
+        # bull: i=0 → +2% up, i=3 → +3% up → 2/2 = 1.0
+        assert rates["bull"] == pytest.approx(1.0, abs=1e-10)
+        # bear: i=1 → -1% down, i=4 → -2% down → 0/2 = 0.0
+        assert rates["bear"] == pytest.approx(0.0, abs=1e-10)
+        # sideways: i=2 → 0% (strict > 0) → 0/1 = 0.0
+        assert rates["sideways"] == pytest.approx(0.0, abs=1e-10)
+
+    def test_long_horizon_all_positive(self):
+        """h=3 with all positive returns → cum always > 0 → rate = 1.0."""
+        regimes = ["bull"] * 7
+        log_returns = np.full(7, 0.01)
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=3)
+        # max_start = 7 - 3 = 4, i=0..3, each cum = 0.03 > 0
+        assert rates["bull"] == pytest.approx(1.0, abs=1e-10)
+
+    def test_log_vs_simple_return_consistency(self):
+        """Verify that log returns produce correct cumulative sign."""
+        regimes = ["bull"] * 3
+        # Simple returns: +10%, -5%, +10%
+        # Log returns approximate: ln(1.10) ≈ 0.0953, ln(0.95) ≈ -0.0513
+        log_returns = np.array([0.0953, -0.0513, 0.0953])
+        # h=2: cum log return = 0.0953 - 0.0513 = 0.0440 > 0
+        # The sign matches the simple-return cumulative:
+        #   (1.10 * 0.95) - 1 = 1.045 - 1 = +4.5%
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=2)
+        assert rates["bull"] == pytest.approx(1.0, abs=1e-3)
+
+    def test_weighting_formula_matches_ts(self):
+        """Weight formula matches TS: decay^(max_start - 1 - i)."""
+        regimes = ["bull"] * 4
+        log_returns = np.array([0.01, -0.01, 0.01, -0.01])
+        decay_rate = 0.97
+        # max_start = 4 - 1 = 3
+        # i=0: weight = 0.97^(3-1-0) = 0.97^2 = 0.9409
+        # i=1: weight = 0.97^(3-1-1) = 0.97^1 = 0.97
+        # i=2: weight = 0.97^(3-1-2) = 0.97^0 = 1.0
+        # up at i=0,2; down at i=1
+        expected_rate = (0.9409 + 1.0) / (0.9409 + 0.97 + 1.0)
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=1, decay_rate=decay_rate)
+        assert rates["bull"] == pytest.approx(expected_rate, abs=1e-4)
+
+    def test_ts_docstring_example(self):
+        """Reproduce the TS docstring example: five regimes, mixed returns."""
+        regimes = ["bull", "bull", "bear", "sideways", "bull"]
+        log_returns = np.array([0.01, 0.02, -0.01, 0.00, 0.015])
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=2)
+        # bull at i=0: cum = 0.01 + 0.02 = 0.03 > 0 (up)
+        # bull at i=4 not reachable (max_start = 5 - 2 = 3, i=0..2)
+        # bull count: 1 up / 1 total = 1.0
+        assert rates["bull"] == pytest.approx(1.0, abs=1e-10)
+        # bear at i=2: cum = -0.01 + 0.00 = -0.01 < 0 (down)
+        assert rates["bear"] == pytest.approx(0.0, abs=1e-10)
+        # sideways at i=3 not reachable (max_start = 3)
+        assert rates["sideways"] == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# compute_regime_up_rates
+# ---------------------------------------------------------------------------
+
+class TestComputeRegimeUpRates:
+    def test_h1_matches_daily_positive_fraction(self):
+        """At horizon=1, cumulative log return = single log return, so the
+        regime up-rate should equal the daily positive fraction."""
+        regimes = ["bull", "bull", "bear"]
+        log_returns = np.array([0.01, 0.02, 0.03])
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=1)
+        # i=0 (bull): log_returns[1] = 0.02 > 0 -> up
+        # i=1 (bull): log_returns[2] = 0.03 > 0 -> up
+        # i=2 (bear): excluded (needs log_returns[3])
+        assert rates["bull"] == pytest.approx(1.0, abs=1e-10)
+        assert rates["bear"] == pytest.approx(0.5)
+        assert rates["sideways"] == pytest.approx(0.5)
+
+    def test_h2_cumulative_vs_daily(self):
+        """At horizon=2, the cumulative log return over 2 days determines the
+        up-rate, which can differ from the daily positive fraction."""
+        regimes = ["bull", "bull", "sideways"]
+        log_returns = np.array([0.02, 0.01, -0.03])
+        # h=1: max_start = 3 - 1 = 2
+        #   i=0 (bull): log_returns[1] = 0.01 > 0 -> up
+        #   i=1 (bull): log_returns[2] = -0.03 < 0 -> down
+        #   bull rate = 1/2 = 0.5
+        rates_h1 = compute_regime_up_rates(regimes, log_returns, horizon=1)
+        assert rates_h1["bull"] == pytest.approx(0.5, abs=1e-10)
+
+        # h=2: max_start = 3 - 2 = 1
+        #   i=0 (bull): log_returns[1:3] = [0.01, -0.03] -> cum = -0.02 < 0 -> down
+        #   bull rate = 0/1 = 0.0
+        rates_h2 = compute_regime_up_rates(regimes, log_returns, horizon=2)
+        assert rates_h2["bull"] == pytest.approx(0.0, abs=1e-10)
+
+        # sideways at i=2 excluded for both h=1 and h=2
+        assert rates_h1["sideways"] == pytest.approx(0.5)
+        assert rates_h2["sideways"] == pytest.approx(0.5)
+
+    def test_no_data_returns_uninformative(self):
+        """When a regime never appears, up-rate defaults to 0.5."""
+        regimes = ["bull", "bull", "bull"]
+        log_returns = np.array([0.01, 0.02, 0.03])
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=1)
+        assert rates["bull"] == pytest.approx(1.0, abs=1e-10)
+        assert rates["bear"] == pytest.approx(0.5, abs=1e-10)
+        assert rates["sideways"] == pytest.approx(0.5, abs=1e-10)
+
+    def test_decay_rate_weights_recent(self):
+        """With decay_rate < 1, recent observations should dominate."""
+        regimes = ["bull", "bull", "bull"]
+        # Older: down, Recent: up
+        log_returns = np.array([0.01, -0.01, 0.01])
+        # h=1, max_start = 3 - 1 = 2
+        # i=0: cum = log_returns[1] = -0.01 < 0 -> down (weight = 0.5^1 = 0.5)
+        # i=1: cum = log_returns[2] = 0.01 > 0 -> up (weight = 0.5^0 = 1.0)
+        # weighted_up = 1.0, weighted_total = 0.5 + 1.0 = 1.5
+        # rate = 1.0 / 1.5 = 0.667
+        rates_decay = compute_regime_up_rates(
+            regimes, log_returns, horizon=1, decay_rate=0.5
+        )
+        assert rates_decay["bull"] == pytest.approx(1.0 / 1.5, abs=1e-10)
+
+        # Without decay: uniform weighting
+        # i=0: down, i=1: up -> 1 up / 2 total = 0.5
+        rates_uniform = compute_regime_up_rates(
+            regimes, log_returns, horizon=1, decay_rate=None
+        )
+        assert rates_uniform["bull"] == pytest.approx(0.5, abs=1e-10)
+
+    def test_insufficient_data_for_horizon(self):
+        """When len(data) < horizon, max_start is 0 and all rates default to 0.5."""
+        regimes = ["bull", "bear"]
+        log_returns = np.array([0.01, -0.01])
+        rates = compute_regime_up_rates(regimes, log_returns, horizon=5)
+        assert rates["bull"] == pytest.approx(0.5, abs=1e-10)
+        assert rates["bear"] == pytest.approx(0.5, abs=1e-10)
+        assert rates["sideways"] == pytest.approx(0.5, abs=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# transition diagnostics
+# ---------------------------------------------------------------------------
+
+class TestStationaryDistribution:
+    def test_uniform_for_default_matrix(self):
+        """A symmetric default matrix (equal off-diagonals) should have a
+        uniform stationary distribution."""
+        from research.models.markov.transition import _default_matrix, stationary_distribution
+        P = _default_matrix(diagonal=0.6)
+        pi = stationary_distribution(P)
+        assert np.sum(pi) == pytest.approx(1.0, abs=1e-10)
+        assert pi == pytest.approx(np.full(3, 1.0 / 3), abs=1e-6)
+
+    def test_converges_for_ergodic_chain(self):
+        """A non-symmetric but ergodic chain should converge to a stable π."""
+        from research.models.markov.transition import stationary_distribution
+        P = np.array([[0.9, 0.1, 0.0],
+                      [0.1, 0.8, 0.1],
+                      [0.0, 0.2, 0.8]], dtype=float)
+        pi = stationary_distribution(P)
+        assert np.sum(pi) == pytest.approx(1.0, abs=1e-10)
+        # πP should equal π
+        assert pi @ P == pytest.approx(pi, abs=1e-8)
+
+    def test_reducible_matrix_raises(self):
+        """Stationary distribution requires an irreducible transition matrix."""
+        from research.models.markov.transition import stationary_distribution
+        P = np.array([[0.9, 0.1, 0.0],
+                      [0.1, 0.9, 0.0],
+                      [0.0, 0.0, 1.0]], dtype=float)
+        with pytest.raises(ValueError, match="irreducible"):
+            stationary_distribution(P)
+
+
+class TestSecondLargestEigenvalue:
+    def test_default_matrix_value(self):
+        """For a 3x3 default matrix with diagonal 0.6, the second-largest
+        eigenvalue should be 0.4 (diagonal minus off-diagonal mass)."""
+        from research.models.markov.transition import _default_matrix, second_largest_eigenvalue
+        P = _default_matrix(diagonal=0.6)
+        rho = second_largest_eigenvalue(P)
+        assert rho == pytest.approx(0.4, abs=1e-6)
+
+    def test_nearly_identity_matrix(self):
+        """As the diagonal approaches 1, the second eigenvalue also approaches 1,
+        because the chain becomes nearly absorbing and mixes very slowly."""
+        from research.models.markov.transition import _default_matrix, second_largest_eigenvalue
+        P = _default_matrix(diagonal=0.99)
+        rho = second_largest_eigenvalue(P)
+        assert 0.0 <= rho <= 1.0
+        assert rho > 0.95  # Close to 1 = very slow mixing
+
+    def test_range_in_zero_one(self):
+        """The returned value must always be in [0, 1]."""
+        from research.models.markov.transition import second_largest_eigenvalue
+        P = np.array([[0.5, 0.5, 0.0],
+                      [0.5, 0.3, 0.2],
+                      [0.0, 0.2, 0.8]], dtype=float)
+        rho = second_largest_eigenvalue(P)
+        assert 0.0 <= rho <= 1.0
+
+    def test_matches_numpy_oracle_for_cyclic_chain(self):
+        """Cyclic chains can have complex eigenvalues; use magnitude, not a
+        single real Rayleigh quotient."""
+        from research.models.markov.transition import second_largest_eigenvalue
+        P = np.array([[0.1, 0.9, 0.0],
+                      [0.0, 0.1, 0.9],
+                      [0.9, 0.0, 0.1]], dtype=float)
+        expected = sorted(abs(np.linalg.eigvals(P)))[-2]
+        rho = second_largest_eigenvalue(P)
+        assert rho == pytest.approx(expected, abs=1e-10)
+
+
+class TestIsIrreducible:
+    def test_default_matrix_is_irreducible(self):
+        """The default matrix has no zero entries, so it is irreducible."""
+        from research.models.markov.transition import _default_matrix, is_irreducible
+        P = _default_matrix()
+        assert is_irreducible(P) is True
+
+    def test_periodic_flip_chain_is_irreducible(self):
+        """Strong connectivity is independent of periodicity."""
+        from research.models.markov.transition import is_irreducible
+        P = np.array([[0.0, 1.0],
+                      [1.0, 0.0]], dtype=float)
+        assert is_irreducible(P) is True
+
+    def test_absorbing_state_is_reducible(self):
+        """A chain with an absorbing state (self-loop probability 1) is not
+        irreducible because once you enter that state you can never leave."""
+        from research.models.markov.transition import is_irreducible
+        P = np.array([[0.5, 0.5, 0.0],
+                      [0.5, 0.5, 0.0],
+                      [0.0, 0.0, 1.0]], dtype=float)
+        assert is_irreducible(P) is False
+
+
+class TestMixingTimeScale:
+    def test_returns_float_in_unit_interval(self):
+        """Mixing time scale must return a float in [0, 1]."""
+        from research.models.markov.transition import _default_matrix, mixing_time_scale
+        P = _default_matrix(diagonal=0.6)
+        scale = mixing_time_scale(P, horizon=30)
+        assert isinstance(scale, float)
+        assert 0.0 <= scale <= 1.0
+
+    def test_shorter_horizon_closer_to_one(self):
+        """With a shorter horizon, the chain has had less time to mix, so the
+        scale factor should be closer to 1."""
+        from research.models.markov.transition import _default_matrix, mixing_time_scale
+        P = _default_matrix(diagonal=0.6)
+        short = mixing_time_scale(P, horizon=1)
+        long = mixing_time_scale(P, horizon=100)
+        assert short > long
+
+    def test_slow_mixing_chain_retains_more_initial_weight(self):
+        """A nearly absorbing chain should retain more initial-state influence
+        than a chain that mixes in one step."""
+        from research.models.markov.transition import _default_matrix, mixing_time_scale
+        slow = _default_matrix(diagonal=0.99)
+        fast = np.full((3, 3), 1.0 / 3.0, dtype=float)
+        assert mixing_time_scale(slow, horizon=10) > mixing_time_scale(fast, horizon=10)

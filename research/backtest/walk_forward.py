@@ -1,65 +1,42 @@
-"""Walk-forward backtest harness.
+"""Walk-forward backtest harness for the Markov regime forecast tool.
 
-Slides a window over historical prices, estimates the Markov model at each
-step, records predictions vs realised outcomes, and aggregates results.
+Slides a rolling window across historical price data, generates a Markov
+forecast at each position, and scores every prediction against the known
+realised outcome.
+
+Architecture
+------------
+The module delegates heavy computation to two sub-modules and one shared
+config layer so the orchestrator stays focused on window-sliding and step
+recording:
+
+    research/backtest/walk_forward.py       ← this file (orchestrator)
+    research/backtest/_config.py            → BacktestStep, WalkForwardResult
+    research/backtest/_window_forecaster.py → per-window Markov → trajectory
+        (including structural-break and entropy CI scaling)
+
+Optional features activated by boolean flags include HMM blending
+(``use_hmm``), GARCH volatility scaling (``enable_garch_vol``), and
+transition-entropy CI modulation (``enable_entropy_ci_modulation``).
+
+This module is a Python mirror of the TypeScript engine at
+``src/tools/finance/backtest/walk-forward.ts``.  The two implementations
+produce comparable results on the same price fixtures.
 """
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
-
-import numpy as np
-
-from research.data.prices import fetch_historical_prices
+from research.backtest._config import BacktestStep, WalkForwardResult
+from research.backtest._window_forecaster import compute_window_forecast
 from research.models.markov import (
-    classify_regime_series,
-    detect_structural_break,
-    estimate_transition_matrix,
-    compute_markov_forecast,
     get_btc_short_horizon_live_policy,
+    resolve_forecast_lab_markov_parameter_defaults,
 )
-from research.models.garch_scales import GarchClampOptions, compute_garch_scales
-from research.models.hmm import ASSET_PROFILES, baum_welch, fit_volatility_hmm, predict
-from research.models.transition_entropy import (
-    EntropyZScoreTracker,
-    compute_transition_entropy,
-    entropy_z_to_ci_scale,
-)
-from research.models.trajectory import compute_trajectory, RegimeStats
+from research.models.transition_entropy import EntropyZScoreTracker, entropy_z_to_ci_scale
 from research.utils.forecast_lab_runtime_defaults import (
     forecast_lab_runtime_asset_scope,
     resolve_forecast_lab_runtime_asset_scope_for_ticker,
 )
-
-
-@dataclass
-class BacktestStep:
-    start_idx: int
-    predicted_prob: float
-    predicted_return: float
-    ci_lower: float
-    ci_upper: float
-    realised_return: float
-    realised_price: float
-    direction_correct: bool
-    in_ci: bool
-    garch_vol_applied: bool | None = None
-    transition_entropy: float | None = None
-    transition_entropy_norm: float | None = None
-    transition_entropy_z: float | None = None
-    entropy_ci_scale: float | None = None
-    entropy_ci_modulation_applied: bool | None = None
-    structural_break_detected: bool | None = None
-    structural_break_rerun_triggered: bool | None = None
-    original_structural_break_detected: bool | None = None
-    original_structural_break_divergence: float | None = None
-
-
-@dataclass
-class WalkForwardResult:
-    steps: list[BacktestStep] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
 
 
 def walk_forward(
@@ -69,7 +46,7 @@ def walk_forward(
     stride: int = 10,
     ticker: str | None = None,
     return_threshold_multiplier: float = 0.5,
-    decay_rate: float = 0.97,
+    decay_rate: float | None = None,
     break_divergence_threshold: float = 0.05,
     btc_break_divergence_threshold: float | None = None,
     post_break_short_window: bool | None = None,
@@ -83,32 +60,111 @@ def walk_forward(
     enable_entropy_ci_modulation: bool = False,
     entropy_window_size: int = 60,
     entropy_kappa: float = 0.15,
+    use_empirical_up_rates: bool | None = None,
+    abstention_threshold: float = 0.0,
+    random_state: int | None = None,
+    use_meta_regime: bool = False,
+    use_conditional_transitions: bool = False,
+    use_path_integrated_drift: bool = False,
 ) -> WalkForwardResult:
     """Run a walk-forward backtest on a price series.
 
     Parameters
     ----------
     prices : list[float]
-        Historical close prices (oldest first).
+        Historical close prices, oldest first.
     horizon : int
-        Forecast horizon in days.
+        Forecast horizon in trading days (default 7).
     warmup : int
-        Minimum history for regime estimation.
+        Minimum history in days before the first prediction (default 120).
     stride : int
-        Days between consecutive test windows.
+        Days between consecutive test windows (default 10).
+    ticker : str or None
+        Ticker label used for live-policy selection and runtime defaults.
     return_threshold_multiplier : float
-        Adaptive threshold multiplier for regime classification.
-    decay_rate : float
-        Exponential decay for transition matrix weighting.
+        Multiplier on median absolute return for regime classification
+        (default 0.5).
+    decay_rate : float or None
+        Exponential decay weight for transition matrix counts. When None,
+        resolves the asset-scoped Markov runtime default transition decay
+        inside the active runtime scope.
+    break_divergence_threshold : float
+        Frobenius-divergence threshold for structural-break detection
+        (default 0.05).
+    btc_break_divergence_threshold : float or None
+        BTC-specific override for the break detection threshold.  When
+        provided, it takes precedence over ``break_divergence_threshold``
+        and any live-policy default.
+    post_break_short_window : bool or None
+        When True (and a break is detected), rerun the forecast on a
+        shorter recent window.  When None, inherits from the live policy.
+    post_break_window_size : int or None
+        Window size in days for the post-break rerun.  When None,
+        inherits from the live policy (defaults to 60).
+    use_live_btc_short_horizon_policy : bool
+        Apply mirrored BTC short-horizon parameter defaults that override
+        warmup, break thresholds, and rerun settings (default False).
     use_hmm : bool
-        Whether to blend HMM predictions into the forecast.
+        Blend a 3-state Gaussian HMM (Baum-Welch) into the trajectory
+        drift and volatility (default False).
     asset_profile : str
-        Asset profile key (etf, equity, crypto, commodity) for HMM weight tuning.
+        HMM weight profile: ``"etf"``, ``"equity"``, ``"crypto"``, or
+        ``"commodity"`` (default ``"crypto"``).
+    enable_garch_vol : bool
+        Apply GARCH(1,1) volatility scaling in the trajectory Monte Carlo
+        (default False).
+    garch_horizon_cap : int or None
+        Beyond this day count the GARCH scalar soft-blends toward 1.0
+        (default None — no cap).
+    garch_regime_ceiling : tuple[float, float] or None
+        ``(calm_ceiling, turbulent_ceiling)`` caps for the GARCH scalar.
+        None means the static 3.0 cap is used.
+    enable_entropy_ci_modulation : bool
+        Scale confidence intervals by a rolling z-score of the transition
+        entropy (default False).
+    entropy_window_size : int
+        Rolling history size for the entropy z-score tracker (default 60).
+    entropy_kappa : float
+        Sensitivity of CI width to the entropy z-score (default 0.15).
+    use_empirical_up_rates : bool or None
+        When True, derive ``p_up`` from empirical regime up-rates. When False,
+        use the trajectory/distribution-style ``p_up`` from the shared Monte
+        Carlo path. ``None`` keeps the legacy default (True) except on
+        BTC live-policy runs, where the tuned path defaults to False so Python
+        mirrors the TypeScript live-policy scorer.
 
     Returns
     -------
     WalkForwardResult
-        Steps and any errors encountered.
+        Collected ``BacktestStep`` records and any errors encountered.
+
+    Notes
+    -----
+    The pipeline inside the loop has four phases:
+
+    1. **Forecast** — ``_window_forecaster.compute_window_forecast`` runs
+       the full Markov pipeline (regime, transition, trajectory).
+    2. **Break rerun** — if a structural break is detected and
+       ``post_break_short_window`` is active, the forecast is rerun on a
+       shorter recent window.
+    3. **Shared uncertainty scaling** — structural-break and entropy-driven
+       CI widening is computed inside ``compute_window_forecast`` and applied
+       once inside the shared trajectory engine.
+    4. **Scoring** — the forecast is compared against the realised
+       outcome and recorded as a ``BacktestStep``.
+
+    Error handling
+    --------------
+    Each window step is wrapped in try/except.  Unhandled exceptions are
+    appended to ``WalkForwardResult.errors`` with the failing step index.
+    The loop continues to the next window — a single bad step does not
+    abort the full backtest.
+
+    Examples
+    --------
+    >>> result = walk_forward(prices, horizon=7, warmup=120, stride=10)
+    >>> assert len(result.errors) == 0
+    >>> print(f"{len(result.steps)} steps, Brier={brier_score(result.steps):.3f}")
     """
     runtime_asset_scope = resolve_forecast_lab_runtime_asset_scope_for_ticker(ticker or "")
 
@@ -120,225 +176,127 @@ def walk_forward(
             if use_live_btc_short_horizon_policy
             else None
         )
-        effective_warmup = btc_live_policy.history_days if btc_live_policy else warmup
-        effective_break_divergence_threshold = (
-            btc_break_divergence_threshold
-            if btc_break_divergence_threshold is not None
-            else (
-                btc_live_policy.break_divergence_threshold
-                if btc_live_policy
-                else break_divergence_threshold
-            )
-        )
-        effective_post_break_short_window = (
-            post_break_short_window
-            if post_break_short_window is not None
-            else (btc_live_policy.rerun_on_break if btc_live_policy else False)
-        )
-        effective_post_break_window_size = (
-            post_break_window_size
-            if post_break_window_size is not None
-            else (
-                btc_live_policy.rerun_window_days
-                if btc_live_policy and btc_live_policy.rerun_window_days is not None
-                else 60
-            )
+        effective_decay_rate = float(
+            decay_rate
+            if decay_rate is not None
+            else resolve_forecast_lab_markov_parameter_defaults()["transitionDecay"]
         )
 
-        if len(prices) < effective_warmup + horizon + 10:
-            result.errors.append(
-                f"Insufficient data: {len(prices)} prices, need {effective_warmup + horizon + 10}"
-            )
+        effective = _resolve_effective_config(
+            btc_break_divergence_threshold=btc_break_divergence_threshold,
+            break_divergence_threshold=break_divergence_threshold,
+            post_break_short_window=post_break_short_window,
+            post_break_window_size=post_break_window_size,
+            warmup=warmup,
+            btc_live_policy=btc_live_policy,
+        )
+        effective_use_empirical_up_rates = _resolve_effective_use_empirical_up_rates(
+            use_live_btc_short_horizon_policy=use_live_btc_short_horizon_policy,
+            use_empirical_up_rates=use_empirical_up_rates,
+        )
+
+        if len(prices) < effective["warmup"] + horizon + 10:
+            msg_err = f"Insufficient data: {len(prices)} prices, need {effective['warmup'] + horizon + 10}"
+            result.errors.append(msg_err)
             return result
 
-        returns = [
-            (prices[i] - prices[i - 1]) / prices[i - 1] for i in range(1, len(prices))
-        ]
-
-        def _compute_window_forecast(window_prices: list[float]) -> dict[str, object]:
-            active_returns = np.array(
-                [
-                    (window_prices[i] - window_prices[i - 1]) / window_prices[i - 1]
-                    for i in range(1, len(window_prices))
-                ]
-            )
-            regimes = classify_regime_series(
-                active_returns, return_threshold_multiplier=return_threshold_multiplier
-            )
-            P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
-            break_result = detect_structural_break(
-                regimes,
-                divergence_threshold=effective_break_divergence_threshold,
-                decay_rate=decay_rate,
-            )
-            current_regime = regimes[-1] if regimes else "sideways"
-            forecast = compute_markov_forecast(P, current_regime, horizon)
-
-            regime_stats: dict[str, RegimeStats] = {}
-            for state in ["bull", "bear", "sideways"]:
-                mask = [r == state for r in regimes]
-                if any(mask):
-                    state_returns = active_returns[mask]
-                    regime_stats[state] = RegimeStats(
-                        mean_return=float(np.mean(state_returns)),
-                        std_return=float(np.std(state_returns, ddof=1))
-                        if len(state_returns) > 1
-                        else 0.01,
-                    )
-                else:
-                    regime_stats[state] = RegimeStats(mean_return=0.0, std_return=0.01)
-
-            up_rates: dict[str, float] = {}
-            for state in ["bull", "bear", "sideways"]:
-                mask = [r == state for r in regimes]
-                if any(mask):
-                    state_returns = active_returns[mask]
-                    up_rates[state] = float(np.mean(state_returns > 0))
-                else:
-                    up_rates[state] = 0.5
-
-            p_up = sum(
-                forecast[state] * up_rates[state]
-                for state in ["bull", "bear", "sideways"]
-            )
-
-            hmm_override: dict[str, float] | None = None
-            if use_hmm:
-                hmm_result = baum_welch(
-                    active_returns,
-                    n_states=3,
-                    max_iterations=50,
-                    tolerance=1e-3,
-                )
-                if hmm_result.converged:
-                    hmm_pred = predict(
-                        active_returns, hmm_result.params, forecast_horizon=horizon
-                    )
-                    vol_scale = fit_volatility_hmm(
-                        active_returns, vol_window=5, n_states=2
-                    )
-                    profile = ASSET_PROFILES.get(asset_profile, ASSET_PROFILES["crypto"])
-                    hmm_weight = np.clip(profile.hmm_weight_multiplier * 0.5, 0.0, 1.0)
-                    hmm_override = {
-                        "drift": hmm_pred.expected_return,
-                        "vol": hmm_pred.expected_volatility * vol_scale,
-                        "weight": float(hmm_weight),
-                    }
-                else:
-                    result.errors.append(
-                        "HMM did not converge for one walk-forward window; using pure Markov forecast"
-                    )
-
-            garch_scales: list[float] | None = None
-            garch_vol_applied = False
-            if enable_garch_vol:
-                log_returns = [
-                    math.log(window_prices[i] / window_prices[i - 1])
-                    for i in range(1, len(window_prices))
-                ]
-                opts: GarchClampOptions | None = None
-                if garch_horizon_cap is not None or garch_regime_ceiling is not None:
-                    opts = GarchClampOptions(
-                        horizon_cap=garch_horizon_cap,
-                        ceiling=garch_regime_ceiling or (1.5, 3.0),
-                    )
-                scales = compute_garch_scales(log_returns, horizon, opts)
-                if scales:
-                    garch_scales = scales
-                    garch_vol_applied = True
-
-            traj = compute_trajectory(
-                window_prices[-1],
-                horizon,
-                P,
-                regime_stats,
-                current_regime,
-                hmm_override=hmm_override,
-                n_samples=500,
-                garch_scales=garch_scales,
-            )
-            horizon_point = traj[-1]
-            predicted_return = (
-                horizon_point.expected_price - window_prices[-1]
-            ) / window_prices[-1]
-
-            return {
-                "p_up": float(p_up),
-                "predicted_return": float(predicted_return),
-                "ci_lower": float(horizon_point.lower_bound),
-                "ci_upper": float(horizon_point.upper_bound),
-                "garch_vol_applied": bool(garch_vol_applied),
-                "entropy": compute_transition_entropy(P),
-                "break_result": break_result,
-            }
-
-        for start in range(effective_warmup, len(prices) - horizon, stride):
+        for start_i in range(effective["warmup"], len(prices) - horizon, stride):
             try:
-                current_price = prices[start]
-                realised_price = prices[start + horizon]
-                realised_return = (realised_price - current_price) / current_price
-                window_prices = prices[start - effective_warmup : start + 1]
-                forecast_payload = _compute_window_forecast(window_prices)
-                original_break_result = forecast_payload["break_result"]
-                original_structural_break_detected = bool(original_break_result["detected"])
-                original_structural_break_divergence = float(original_break_result["divergence"])
+                current_price_i = prices[start_i]
+                realised_price_i = prices[start_i + horizon]
+                realised_return_i = (realised_price_i - current_price_i) / current_price_i
+                window_prices_i = prices[start_i - effective["warmup"] : start_i + 1]
+
+                wf_i = compute_window_forecast(
+                    window_prices_i,
+                    horizon=horizon,
+                    return_threshold_multiplier=return_threshold_multiplier,
+                    decay_rate=effective_decay_rate,
+                    break_divergence_threshold=effective["break_divergence"],
+                    use_hmm=use_hmm,
+                    asset_profile=asset_profile,
+                    enable_garch_vol=enable_garch_vol,
+                    garch_horizon=garch_horizon_cap,
+                    garch_ceiling=garch_regime_ceiling,
+                    entropy_tracker=entropy_tracker if enable_entropy_ci_modulation else None,
+                    entropy_kappa=entropy_kappa,
+                    use_empirical_up_rates=effective_use_empirical_up_rates,
+                    random_state=random_state,
+                    use_meta_regime=use_meta_regime,
+                    use_conditional_transitions=use_conditional_transitions,
+                    use_path_integrated_drift=use_path_integrated_drift,
+                )
+
+                original_structural_break_detected = bool(wf_i["original_break_result"]["detected"])
+                original_structural_break_divergence = float(wf_i["original_break_result"]["divergence"])
                 structural_break_rerun_triggered = False
 
                 if (
-                    effective_post_break_short_window
+                    effective["post_break_short_window"]
                     and original_structural_break_detected
-                    and len(window_prices) > max(30, effective_post_break_window_size)
+                    and len(window_prices_i) > max(30, effective["post_break_window_size"])
                 ):
                     structural_break_rerun_triggered = True
-                    forecast_payload = _compute_window_forecast(
-                        window_prices[-max(30, effective_post_break_window_size) :]
+                    wf_i = compute_window_forecast(
+                        window_prices_i[-max(30, effective["post_break_window_size"]):],
+                        horizon=horizon,
+                        return_threshold_multiplier=return_threshold_multiplier,
+                        decay_rate=effective_decay_rate,
+                        break_divergence_threshold=effective["break_divergence"],
+                        use_hmm=use_hmm,
+                        asset_profile=asset_profile,
+                        enable_garch_vol=enable_garch_vol,
+                        garch_horizon=garch_horizon_cap,
+                        garch_ceiling=garch_regime_ceiling,
+                        entropy_tracker=entropy_tracker if enable_entropy_ci_modulation else None,
+                        entropy_kappa=entropy_kappa,
+                        use_empirical_up_rates=effective_use_empirical_up_rates,
+                        random_state=random_state,
+                        use_meta_regime=use_meta_regime,
+                        use_conditional_transitions=use_conditional_transitions,
+                        use_path_integrated_drift=use_path_integrated_drift,
                     )
+                    wf_i["break_rerun_triggered"] = True
 
-                break_result = forecast_payload["break_result"]
-                entropy = forecast_payload["entropy"]
-                entropy_z: float | None = None
+                break_result = wf_i["break_result"]
+                entropy = wf_i["entropy"]
+                entropy_z = None
                 entropy_ci_scale = 1.0
-                if enable_entropy_ci_modulation:
-                    entropy_z = entropy_tracker.z_score(entropy.entropy_norm)
-                    if entropy_z is not None:
-                        entropy_ci_scale = entropy_z_to_ci_scale(entropy_z, entropy_kappa)
-                p_up = float(forecast_payload["p_up"])
-                predicted_return = float(forecast_payload["predicted_return"])
-                ci_lower = float(forecast_payload["ci_lower"])
-                ci_upper = float(forecast_payload["ci_upper"])
-                if bool(break_result["detected"]):
-                    center = (ci_lower + ci_upper) / 2.0
-                    half_width = (ci_upper - ci_lower) / 2.0 * 1.5
-                    ci_lower = center - half_width
-                    ci_upper = center + half_width
-                if entropy_ci_scale != 1.0:
-                    center = (ci_lower + ci_upper) / 2.0
-                    half_width = (ci_upper - ci_lower) / 2.0
-                    ci_lower = center - half_width * entropy_ci_scale
-                    ci_upper = center + half_width * entropy_ci_scale
 
-                direction_correct = (p_up > 0.5 and realised_return > 0) or (
-                    p_up <= 0.5 and realised_return <= 0
+                # Phase 4 — structural-break/entropy scale now applied inside compute_trajectory.
+                # Extract metadata from the same pre-push tracker state used by compute_window_forecast.
+                if enable_entropy_ci_modulation:
+                    if entropy_tracker.size() >= 5:
+                        entropy_z = entropy_tracker.z_score(entropy.entropy_norm)
+                        if entropy_z is not None:
+                            entropy_ci_scale = entropy_z_to_ci_scale(entropy_z, entropy_kappa)
+
+                decisiveness = abs(wf_i["p_up"] - 0.5) * 2
+                abstained = abstention_threshold > 0 and decisiveness < abstention_threshold
+
+                direction_correct = (
+                    (wf_i["p_up"] > 0.5 and realised_return_i > 0) or (wf_i["p_up"] <= 0.5 and realised_return_i <= 0)
                 )
-                in_ci = ci_lower <= realised_price <= ci_upper
+                in_ci = wf_i["ci_lower"] <= realised_price_i <= wf_i["ci_upper"]
 
                 result.steps.append(
                     BacktestStep(
-                        start_idx=start,
-                        predicted_prob=float(p_up),
-                        predicted_return=float(predicted_return),
-                        ci_lower=float(ci_lower),
-                        ci_upper=float(ci_upper),
-                        realised_return=float(realised_return),
-                        realised_price=float(realised_price),
+                        start_idx=start_i,
+                        predicted_prob=float(wf_i["p_up"]),
+                        predicted_return=float(wf_i["predicted_return"]),
+                        ci_lower=float(wf_i["ci_lower"]),
+                        ci_upper=float(wf_i["ci_upper"]),
+                        realised_return=float(realised_return_i),
+                        realised_price=float(realised_price_i),
                         direction_correct=bool(direction_correct),
                         in_ci=bool(in_ci),
-                        garch_vol_applied=bool(forecast_payload["garch_vol_applied"]),
+                        abstained=bool(abstained),
+                        garch_vol_applied=bool(wf_i["garch_vol_applied"]),
                         transition_entropy=float(entropy.entropy_nats),
                         transition_entropy_norm=float(entropy.entropy_norm),
                         transition_entropy_z=None if entropy_z is None else float(entropy_z),
                         entropy_ci_scale=float(entropy_ci_scale),
-                        entropy_ci_modulation_applied=bool(abs(entropy_ci_scale - 1.0) > 1e-12),
+                        entropy_ci_modulation_applied=enable_entropy_ci_modulation and entropy_tracker.size() >= 5,
                         structural_break_detected=bool(break_result["detected"]),
                         structural_break_rerun_triggered=bool(structural_break_rerun_triggered),
                         original_structural_break_detected=bool(original_structural_break_detected),
@@ -346,7 +304,85 @@ def walk_forward(
                     )
                 )
                 entropy_tracker.push(entropy.entropy_norm)
+
             except Exception as e:
-                result.errors.append(f"Step {start}: {e}")
+                result.errors.append(f"Step {start_i}: {e}")
 
         return result
+
+
+def _resolve_effective_use_empirical_up_rates(
+    use_live_btc_short_horizon_policy: bool,
+    use_empirical_up_rates: bool | None,
+) -> bool:
+    """Resolve the p_up source with BTC live-policy parity defaults.
+
+    Explicit caller values always win. When the caller leaves the option unset,
+    the default remains empirical up-rates on the regular path, but flips to
+    trajectory/distribution-style ``p_up`` on BTC live-policy runs to mirror TS.
+    """
+    if use_empirical_up_rates is not None:
+        return use_empirical_up_rates
+    return not use_live_btc_short_horizon_policy
+
+
+def _resolve_effective_config(
+    btc_break_divergence_threshold: float | None,
+    break_divergence_threshold: float,
+    post_break_short_window: bool | None,
+    post_break_window_size: int | None,
+    warmup: int,
+    btc_live_policy: object | None,
+) -> dict:
+    """Resolve effective backtest parameters from explicit args and live policy.
+
+    Parameters follow a precedence chain: explicit argument > live-policy
+    default > hard-coded fallback.
+
+    Parameters
+    ----------
+    btc_break_divergence_threshold : float or None
+        Explicit BTC break-threshold override.
+    break_divergence_threshold : float
+        Default break threshold when no override is active.
+    post_break_short_window : bool or None
+        Explicit toggle for post-break short-window reruns.
+    post_break_window_size : int or None
+        Explicit short-window size.
+    warmup : int
+        Default warmup window length.
+    btc_live_policy : object or None
+        BTC live-policy dataclass with ``history_days``,
+        ``break_divergence_threshold``, ``rerun_on_break``, and
+        ``rerun_window_days`` attributes; ``None`` when the flag is off.
+
+    Returns
+    -------
+    dict
+        Keys: ``warmup``, ``break_divergence``, ``post_break_short_window``,
+        ``post_break_window_size``.
+    """
+    effective_warmup = btc_live_policy.history_days if btc_live_policy else warmup
+    effective_break_divergence = (
+        btc_break_divergence_threshold
+        if btc_break_divergence_threshold is not None
+        else (btc_live_policy.break_divergence_threshold if btc_live_policy else break_divergence_threshold)
+    )
+    effective_post_break_short_window = (
+        post_break_short_window
+        if post_break_short_window is not None
+        else (btc_live_policy.rerun_on_break if btc_live_policy else False)
+    )
+    effective_post_break_window_size = (
+        post_break_window_size
+        if post_break_window_size is not None
+        else (btc_live_policy.rerun_window_days
+              if btc_live_policy and btc_live_policy.rerun_window_days is not None
+              else 60)
+    )
+    return {
+        "warmup": effective_warmup,
+        "break_divergence": effective_break_divergence,
+        "post_break_short_window": effective_post_break_short_window,
+        "post_break_window_size": effective_post_break_window_size,
+    }

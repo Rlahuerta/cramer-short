@@ -1,14 +1,9 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { join } from 'node:path';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { useTempCramerShortDir } from '../test-cramer-short-dir.js';
 
-// Isolate from mock contamination: other tests (e.g. error-logger.test.ts)
-// mutate paths.js mocks and leave mockDir='' in afterEach, breaking
-// cramerShortPath for all subsequent tests in the same Bun worker.
-mock.module('../paths.js', () => ({
-  cramerShortPath: (...segments: string[]) => join('.cramer-short', ...segments),
-  getCramerShortDir: () => '.cramer-short',
-}));
+// Default export dir resolves under a temp .cramer-short, never the working tree's.
+useTempCramerShortDir();
 
 const { exportToMarkdown, exportToJson, exportToCsv, exportSession } =
   await import(`./export.js?t=${nextTestId('module')}`) as typeof import('./export.js');

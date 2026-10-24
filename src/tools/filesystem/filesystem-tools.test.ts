@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { editFileTool } from './edit-file.js';
-import { readFileTool } from './read-file.js';
+import { isSecretPath, readFileTool } from './read-file.js';
 import { assertSandboxPath, resolveSandboxPath } from './sandbox.js';
 import { expandPath, resolveReadPath, resolveToCwd } from './utils/path-utils.js';
 
@@ -246,6 +246,22 @@ describe('read_file tool', () => {
 
   it('throws when path escapes sandbox', async () => {
     await expect(readFileTool.invoke({ path: '../../etc/passwd' })).rejects.toThrow(/sandbox/i);
+  });
+
+  it('refuses to read secret-bearing files inside the sandbox', async () => {
+    for (const name of ['.env', '.env.local', 'server.pem', 'id.KEY']) {
+      await writeFile(tmpFile(name), 'SECRET=1');
+      await expect(readFileTool.invoke({ path: relPath(name) })).rejects.toThrow(/secrets/i);
+    }
+  });
+
+  it('isSecretPath flags cramer-short settings and credentials', () => {
+    expect(isSecretPath('.cramer-short/settings.json')).toBe(true);
+    expect(isSecretPath('.cramer-short/credentials/token.json')).toBe(true);
+    expect(isSecretPath('.ENV')).toBe(true);
+    expect(isSecretPath('sub\\dir\\.env.production')).toBe(true);
+    expect(isSecretPath('.cramer-short/memory/notes.md')).toBe(false);
+    expect(isSecretPath('src/environment.ts')).toBe(false);
   });
 
   it('appends truncation hint when content exceeds line limit (2000 lines)', async () => {

@@ -23,7 +23,7 @@
     "test:full": "bun run test:unit && bun run test:integration && bun run test:e2e",
     "test:all": "bun run test:unit && bun run test:integration && bun run test:e2e",
     "test:watch": "bun test --watch",
-    "postinstall": "node patches/pi-tui-terminal-fix.js && playwright install chromium"
+    "postinstall": "node patches/pi-tui-terminal-fix.cjs && playwright install chromium"
   },
   "dependencies": {
     "@langchain/anthropic": "^1.1.3",

@@ -5,6 +5,24 @@ import type { WhatsAppInboundMessage } from './types.js';
 import type { ReconnectPolicy } from './reconnect.js';
 import { computeBackoff, DEFAULT_RECONNECT_POLICY } from './reconnect.js';
 
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export async function monitorWhatsAppChannel(params: {
   accountId: string;
   authDir: string;
@@ -99,7 +117,7 @@ export async function monitorWhatsAppChannel(params: {
       if (reconnectPolicy.maxAttempts > 0 && reconnectAttempts >= reconnectPolicy.maxAttempts) {
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await sleep(delayMs, params.abortSignal);
     } catch (error) {
       if (heartbeat) {
         clearInterval(heartbeat);
@@ -114,7 +132,7 @@ export async function monitorWhatsAppChannel(params: {
       if (reconnectPolicy.maxAttempts > 0 && reconnectAttempts >= reconnectPolicy.maxAttempts) {
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await sleep(delayMs, params.abortSignal);
     }
   }
   setActiveWebListener(params.accountId, null);

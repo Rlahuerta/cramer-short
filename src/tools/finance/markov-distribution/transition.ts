@@ -30,6 +30,7 @@ export function estimateTransitionMatrix(
   alpha?: number,     // Dirichlet smoothing constant (auto-tuned if omitted)
   minObservations = resolveForecastLabMarkovParameterDefaults().transitionMinObservations,
   decayRate = resolveForecastLabMarkovParameterDefaults().transitionDecay,   // Exponential decay: recent transitions weighted more (1.0 = no decay)
+  stickinessShrinkage = false,
 ): TransitionMatrix {
   if (states.length < minObservations) {
     return buildDefaultMatrix();
@@ -50,6 +51,98 @@ export function estimateTransitionMatrix(
     const from = STATE_INDEX[states[i]];
     const to   = STATE_INDEX[states[i + 1]];
     const age  = n - 1 - i; // 0 = most recent, n-1 = oldest
+    counts[from][to] += Math.pow(decayRate, age);
+  }
+
+  const result = normalizeRows(counts);
+
+  if (stickinessShrinkage) {
+    const maxDiag = Math.max(...result.map((row, i) => row[i]));
+    const dStart = 0.8;
+    const s = Math.max(0, (maxDiag - dStart) / (1.0 - dStart)) ** 2;
+    const priorStrength = 10.0 * (1.0 + 9.0 * s);
+    const def = buildDefaultMatrix();
+
+    for (let i = 0; i < NUM_STATES; i++) {
+      const rawRowSum = Math.max(
+        0,
+        counts[i].reduce((sum, v) => sum + v, 0) - NUM_STATES * effectiveAlpha,
+      );
+      const lambda = rawRowSum / (rawRowSum + priorStrength);
+      result[i] = result[i].map((v, j) => lambda * v + (1.0 - lambda) * def[i][j]);
+    }
+  }
+
+  for (const row of result) {
+    const sum = row.reduce((acc, v) => acc + v, 0);
+    if (Math.abs(sum - 1.0) > 1e-10) throw new Error('Transition matrix rows must sum to 1');
+    if (row.some(v => v < -1e-12)) throw new Error('Transition matrix entries must be nonnegative');
+  }
+
+  return result;
+}
+
+export function estimateConditionalTransitionMatrices(
+  regimeSequence: RegimeState[],
+  environmentSequence: string[],
+  alpha?: number,
+  decayRate?: number,
+): Record<string, TransitionMatrix> {
+  if (regimeSequence.length !== environmentSequence.length) {
+    throw new Error('Length mismatch');
+  }
+
+  const pooled = regimeSequence.length >= 2
+    ? estimateTransitionMatrix(regimeSequence, alpha, undefined, decayRate)
+    : buildDefaultMatrix();
+  const defaults = resolveForecastLabMarkovParameterDefaults();
+  const sparseObservationCount = Math.max(2, Math.trunc(defaults.transitionMinObservations));
+
+  const pairsByEnv: Record<string, Array<[RegimeState, RegimeState]>> = {};
+  for (const env of environmentSequence) {
+    pairsByEnv[env] = [];
+  }
+  for (let i = 0; i < regimeSequence.length - 1; i++) {
+    const env = environmentSequence[i];
+    pairsByEnv[env] ??= [];
+    pairsByEnv[env].push([regimeSequence[i], regimeSequence[i + 1]]);
+  }
+
+  const matrices: Record<string, TransitionMatrix> = {};
+  for (const [env, envPairs] of Object.entries(pairsByEnv)) {
+    // Sparse gate unchanged: a pair used to occupy two entries in the old
+    // flattened state sequence.
+    matrices[env] = envPairs.length * 2 < sparseObservationCount
+      ? pooled
+      : estimateTransitionMatrixFromPairs(envPairs, alpha, decayRate);
+  }
+  return matrices;
+}
+
+/**
+ * Estimate a matrix from ordered (from, to) pair observations.
+ *
+ * Equivalent to `estimateTransitionMatrix` over the pair sequence itself:
+ * Dirichlet prior in every cell, each pair weighted by
+ * `decayRate^(distance from the end)` (most recent pair weight 1), then the
+ * same row normalization. Counting pairs directly is what prevents spurious
+ * transitions across pair boundaries.
+ */
+function estimateTransitionMatrixFromPairs(
+  pairs: ReadonlyArray<readonly [RegimeState, RegimeState]>,
+  alpha?: number,
+  decayRate = resolveForecastLabMarkovParameterDefaults().transitionDecay,
+): TransitionMatrix {
+  const effectiveAlpha = alpha ?? Math.max(0.01, 5.0 / pairs.length);
+  const counts: number[][] = Array.from({ length: NUM_STATES }, () =>
+    Array(NUM_STATES).fill(effectiveAlpha),
+  );
+
+  const n = pairs.length;
+  for (let k = 0; k < n; k++) {
+    const from = STATE_INDEX[pairs[k][0]];
+    const to = STATE_INDEX[pairs[k][1]];
+    const age = n - 1 - k; // 0 = most recent, n-1 = oldest
     counts[from][to] += Math.pow(decayRate, age);
   }
 
@@ -126,9 +219,10 @@ export function adjustTransitionMatrix(
 
 /** Matrix multiplication A × B. */
 export function matMul(A: number[][], B: number[][]): number[][] {
-  const n = A.length;
-  return Array.from({ length: n }, (_, i) =>
-    Array.from({ length: n }, (_, j) =>
+  const rows = A.length;
+  const cols = B[0]?.length ?? 0;
+  return Array.from({ length: rows }, (_, i) =>
+    Array.from({ length: cols }, (_, j) =>
       A[i].reduce((s, _, k) => s + A[i][k] * B[k][j], 0),
     ),
   );
@@ -147,54 +241,115 @@ export function matPow(P: TransitionMatrix, n: number): TransitionMatrix {
   return matMul(P, matPow(P, n - 1));
 }
 
+function validateTransitionMatrix(P: number[][]): void {
+  const n = P.length;
+  if (n === 0 || P.some(row => row.length !== n)) {
+    throw new Error('Transition matrix must be square');
+  }
+  for (const row of P) {
+    const sum = row.reduce((acc, v) => acc + v, 0);
+    if (Math.abs(sum - 1.0) > 1e-10) throw new Error('Transition matrix rows must sum to 1');
+    if (row.some(v => v < -1e-12)) throw new Error('Transition matrix entries must be nonnegative');
+  }
+}
+
+export function isIrreducible(P: TransitionMatrix, tol = 1e-12): boolean {
+  const n = P.length;
+  if (n === 0 || P.some(row => row.length !== n)) {
+    throw new Error('Transition matrix must be square');
+  }
+
+  const reachable = P.map((row, i) => row.map((v, j) => i === j || v > tol));
+  for (let k = 0; k < n; k++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        reachable[i][j] = reachable[i][j] || (reachable[i][k] && reachable[k][j]);
+      }
+    }
+  }
+  return reachable.every(row => row.every(Boolean));
+}
+
+export function stationaryDistribution(
+  P: TransitionMatrix,
+  maxIterations = 1000,
+  tolerance = 1e-10,
+): number[] {
+  validateTransitionMatrix(P);
+  if (!isIrreducible(P)) {
+    throw new Error('Transition matrix must be irreducible');
+  }
+
+  const n = P.length;
+  let pi = Array(n).fill(1 / n);
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    const nextPi = matMul([pi], P)[0];
+    const delta = nextPi.reduce((sum, v, i) => sum + Math.abs(v - pi[i]), 0);
+    if (delta < tolerance) return nextPi;
+    pi = nextPi;
+  }
+
+  throw new Error(`Stationary distribution did not converge in ${maxIterations} iterations`);
+}
+
 /**
- * Compute the second-largest absolute eigenvalue of the transition matrix
- * using the power iteration method with deflation.
+ * Compute the second-largest absolute eigenvalue (magnitude) of a
+ * row-stochastic transition matrix.
+ *
+ * Matches the Python reference (`np.linalg.eigvals`, second-largest magnitude)
+ * for 2×2 and 3×3 matrices:
+ *  - 2×2: closed-form quadratic on trace/determinant.
+ *  - 3×3: λ = 1 is known (rows sum to 1), so factor (λ − 1) out of the
+ *    characteristic polynomial and solve the remaining quadratic exactly.
+ * This replaces a deflated power iteration that returned 0 for every
+ * doubly-stochastic matrix: its uniform start vector is already the stationary
+ * eigenvector, so the projection cancelled the iterate immediately (the
+ * default matrix's true ρ = 0.4 came back as 0).
  *
  * ρ determines mixing time: exp(−ρ×n) is how quickly the chain forgets its
  * initial state. Small ρ → fast mixing, Markov signal decays quickly.
  *
  * Returns a value in [0, 1].
  */
-export function secondLargestEigenvalue(P: TransitionMatrix, iterations = 100): number {
+export function secondLargestEigenvalue(P: TransitionMatrix): number {
+  const magnitudes = eigenvalueMagnitudes(P);
+  if (magnitudes.length < 2) return 0;
+  magnitudes.sort((a, b) => b - a);
+  return Math.min(1, Math.max(0, magnitudes[1]));
+}
+
+function eigenvalueMagnitudes(P: TransitionMatrix): number[] {
   const n = P.length;
-
-  // First eigenvector (stationary distribution) via power iteration
-  let v = Array(n).fill(1 / n);
-  for (let iter = 0; iter < iterations; iter++) {
-    const next = Array(n).fill(0);
-    for (let i = 0; i < n; i++)
-      for (let j = 0; j < n; j++) next[j] += v[i] * P[i][j];
-    const norm = next.reduce((s, x) => s + x, 0);
-    v = next.map(x => x / norm);
+  if (n <= 1) return n === 1 ? [Math.abs(P[0][0])] : [];
+  if (n === 2) {
+    const tr = P[0][0] + P[1][1];
+    const det = P[0][0] * P[1][1] - P[0][1] * P[1][0];
+    const disc = tr * tr - 4 * det;
+    if (disc < 0) {
+      const mag = Math.sqrt(Math.max(0, det));
+      return [mag, mag];
+    }
+    const root = Math.sqrt(disc);
+    return [Math.abs((tr + root) / 2), Math.abs((tr - root) / 2)];
   }
-  // L2-normalize v for use in deflation (required for correct orthogonal projection)
-  const vL2 = v.reduce((s, x) => s + x * x, 0) ** 0.5;
-  const vUnit = vL2 < 1e-12 ? v : v.map(x => x / vL2);
-
-  // Deflate: remove first eigenvector component, find second via power iteration.
-  // Use uniform starting vector to avoid biasing toward any particular state.
-  let w: number[] = Array.from({ length: n }, () => 1 / n);
-  const wNorm = w.reduce((s, x) => s + x * x, 0) ** 0.5;
-  w = w.map(x => x / wNorm);
-
-  for (let iter = 0; iter < iterations; iter++) {
-    const next = Array(n).fill(0);
-    for (let i = 0; i < n; i++)
-      for (let j = 0; j < n; j++) next[j] += w[i] * P[i][j];
-    // Deflate: subtract L2-normalized component along stationary eigenvector
-    const dot = next.reduce((s, x, i) => s + x * vUnit[i], 0);
-    const deflated = next.map((x, i) => x - dot * vUnit[i]);
-    const norm = deflated.reduce((s, x) => s + x * x, 0) ** 0.5;
-    // deflated≈0 means second eigenvalue is ≈0 (e.g. uniform matrix has instant mixing)
-    if (norm < 1e-10) return 0;
-    w = deflated.map(x => x / norm);
+  if (n === 3) {
+    const tr = P[0][0] + P[1][1] + P[2][2];
+    const det =
+      P[0][0] * (P[1][1] * P[2][2] - P[1][2] * P[2][1]) -
+      P[0][1] * (P[1][0] * P[2][2] - P[1][2] * P[2][0]) +
+      P[0][2] * (P[1][0] * P[2][1] - P[1][1] * P[2][0]);
+    const b = tr - 1;
+    const c = det;
+    const disc = b * b - 4 * c;
+    if (disc < 0) {
+      const mag = Math.sqrt(Math.max(0, c));
+      return [1, mag, mag];
+    }
+    const root = Math.sqrt(disc);
+    const mu1 = b >= 0 ? (b + root) / 2 : (b - root) / 2;
+    const mu2 = mu1 !== 0 ? c / mu1 : 0;
+    return [1, Math.abs(mu1), Math.abs(mu2)];
   }
-
-  const Pw = Array(n).fill(0);
-  for (let i = 0; i < n; i++)
-    for (let j = 0; j < n; j++) Pw[j] += w[i] * P[i][j];
-
-  const lambda2 = w.reduce((s, x, i) => s + x * Pw[i], 0);
-  return Math.min(1, Math.max(0, Math.abs(lambda2)));
+  throw new Error('secondLargestEigenvalue supports matrices up to 3×3');
 }

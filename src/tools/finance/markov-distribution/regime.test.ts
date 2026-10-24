@@ -157,14 +157,14 @@ describe('computeRegimeUpRates', () => {
     const regimeSeq: RegimeState[] = ['bull', 'bull', 'bull', 'bear', 'bear', 'bear'];
     const returns = [0.02, 0.01, 0.03, -0.02, -0.01, -0.03];
     const rates = computeRegimeUpRates(regimeSeq, returns, 1);
-    // maxStart = 6 - 1 + 1 = 6, so i goes 0..5.
+    // maxStart = 6 - 1 = 5, so i goes 0..4.
     // i=0 (bull): look at returns[1]=0.01 → up
     // i=1 (bull): look at returns[2]=0.03 → up
     // i=2 (bull): look at returns[3]=-0.02 → down
     // i=3 (bear): look at returns[4]=-0.01 → down
     // i=4 (bear): look at returns[5]=-0.03 → down
-    // i=5 (bear): maxStart=6 → not in loop (i goes 0..5 only)
-    // bull: 2 up / 3 total = 2/3, bear: 0 up / 3 total = 0.0
+    // i=5 (bear): terminal state has no full future horizon and is not counted.
+    // bull: 2 up / 3 total = 2/3, bear: 0 up / 2 total = 0.0
     expect(rates.bull).toBeCloseTo(2 / 3, 5);
     expect(rates.bear).toBeLessThan(0.1);
   });
@@ -175,12 +175,12 @@ describe('computeRegimeUpRates', () => {
     // Returns: +1%, -1%, -1%, +1%
     const returns = [0.01, -0.01, -0.01, 0.01];
     const horizon = 1;
-    // maxStart = 4 - 1 + 1 = 4, so i goes 0..3.
-    // i=0: look at returns[1]=-0.01 → DOWN. weight = 0.5^(3-0)=0.125
-    // i=1: look at returns[2]=-0.01 → DOWN. weight = 0.5^(3-1)=0.25
-    // i=2: look at returns[3]=+0.01 → UP.   weight = 0.5^(3-2)=0.5
-    // i=3: maxStart=4 → not in loop (j=4 out of bounds)
-    // Total weight = 0.125+0.25+0.5 = 0.875. Up weight = 0.5. P(up) = 0.5/0.875 = 4/7
+    // maxStart = 4 - 1 = 3, so i goes 0..2.
+    // i=0: look at returns[1]=-0.01 → DOWN. weight = 0.5^(3-1-0)=0.25
+    // i=1: look at returns[2]=-0.01 → DOWN. weight = 0.5^(3-1-1)=0.5
+    // i=2: look at returns[3]=+0.01 → UP.   weight = 0.5^(3-1-2)=1
+    // i=3: terminal state has no full future horizon and is not counted.
+    // Total weight = 0.25+0.5+1 = 1.75. Up weight = 1. P(up) = 1/1.75 = 4/7
     const rates = computeRegimeUpRates(regimeSeq, returns, horizon, 0.5);
     expect(rates.bull).toBeCloseTo(4 / 7, 5);
   });
@@ -190,14 +190,23 @@ describe('computeRegimeUpRates', () => {
     // Returns: +1%, -1%, -1%, +1%. With i+1 offset: i=3 looks at out-of-bounds.
     const returns = [0.01, -0.01, -0.01, 0.01];
     const horizon = 1;
-    // maxStart = 4 - 1 + 1 = 4. i=0..3.
+    // maxStart = 4 - 1 = 3. i=0..2.
     // i=0: look at returns[1]=-0.01 → DOWN (weight=1)
     // i=1: look at returns[2]=-0.01 → DOWN (weight=1)
     // i=2: look at returns[3]=+0.01 → UP (weight=1)
-    // i=3: j=4 out of bounds → not counted
+    // i=3: terminal state has no full future horizon and is not counted.
     // Total weight = 3. Up weight = 1. P(up) = 1/3
     const rates = computeRegimeUpRates(regimeSeq, returns, horizon);
     expect(rates.bull).toBeCloseTo(1 / 3, 5);
+  });
+
+  it('does not condition on terminal regime states without a full future horizon', () => {
+    const regimeSeq: RegimeState[] = ['bear', 'bull', 'bull'];
+    const logReturns = [0.0, -0.10, 0.10];
+    const rates = computeRegimeUpRates(regimeSeq, logReturns, 1);
+
+    expect(rates.bear).toBe(0);
+    expect(rates.bull).toBe(1);
   });
 
   it('handles sparse recent regimes correctly with decayRate', () => {

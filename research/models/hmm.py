@@ -190,6 +190,81 @@ def baum_welch(
     )
 
 
+def select_num_states(
+    returns: np.ndarray,
+    max_states: int = 5,
+    criterion: str = "bic",
+    min_observations_per_state: int = 50,
+) -> dict:
+    """Select optimal number of HMM states via BIC or AIC.
+
+    Fits Gaussian HMMs for k = 2..max_states and selects the k that
+    minimizes the information criterion. Falls back to ``max(2, min(3, max_states))``
+    if insufficient data or no models converge.
+    """
+    n = len(returns)
+    if n < min_observations_per_state * 2:
+        fallback = max(2, min(3, max_states))
+        return {
+            "selected_states": fallback,
+            "bic_values": None,
+            "aic_values": None,
+            "criterion_used": criterion,
+            "warning": f"Only {n} observations, need >= {min_observations_per_state * 2}",
+        }
+
+    bic_values: list[float] = []
+    aic_values: list[float] = []
+    hqc_values: list[float] = []
+    valid_ks: list[int] = []
+
+    for k in range(2, max_states + 1):
+        n_params = k * k + 2 * k - 1
+
+        try:
+            result = baum_welch(returns, n_states=k, max_iterations=100, tolerance=1e-4)
+            if not result.converged:
+                continue
+
+            log_lik = result.log_likelihood
+            bic = -2 * log_lik + n_params * math.log(n)
+            aic = -2 * log_lik + 2 * n_params
+            hqc = -2 * log_lik + 2 * n_params * math.log(math.log(max(n, 3)))
+
+            bic_values.append(bic)
+            aic_values.append(aic)
+            hqc_values.append(hqc)
+            valid_ks.append(k)
+        except Exception:
+            continue
+
+    if not valid_ks:
+        fallback = max(2, min(3, max_states))
+        return {
+            "selected_states": fallback,
+            "bic_values": None,
+            "aic_values": None,
+            "hqc_values": None,
+            "criterion_used": criterion,
+            "warning": "No models converged",
+        }
+
+    if criterion == "aic":
+        best_idx = int(np.argmin(aic_values))
+    elif criterion == "hqc":
+        best_idx = int(np.argmin(hqc_values))
+    else:
+        best_idx = int(np.argmin(bic_values))
+
+    return {
+        "selected_states": valid_ks[best_idx],
+        "bic_values": bic_values,
+        "aic_values": aic_values,
+        "hqc_values": hqc_values,
+        "criterion_used": criterion,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Viterbi decoding
 # ---------------------------------------------------------------------------

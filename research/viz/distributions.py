@@ -1,4 +1,19 @@
-"""Visualization helpers for forecast distributions and trajectories."""
+"""Visualization helpers for forecast distributions and trajectories.
+
+Public API
+----------
+``plot_survival_curve(distribution, current_price, ...)``
+    Render a survival curve showing P(price > X) for each price level.
+    Includes vertical markers for the current price and CI bounds.
+
+``plot_trajectory(trajectory, ...)``
+    Plot the expected price path over the forecast horizon with shaded
+    confidence bands (p5–p95).
+
+``plot_regime_sequence(regimes, ...)``
+    Display the regime classification sequence over a historical window
+    with color-coded bull/bear/sideways bands.
+"""
 
 from __future__ import annotations
 
@@ -32,11 +47,13 @@ def plot_survival_curve(
     -------
     plt.Figure
         Matplotlib figure.
-    """
-    prices = sorted([float(k) for k in distribution.keys()])
-    probs = [distribution[str(p)] for p in prices]
 
-    fig, ax = plt.subplots(figsize=figsize)
+    Notes
+    -----
+    Edge cases: an empty DataFrame or missing ``"day"``/``"expected"``/``"lower"``/
+    ``"upper"`` columns raise a ``KeyError``. NaN values in the CI columns produce
+    gaps in the shaded ribbon.
+    """
     ax.plot(prices, probs, marker="o", markersize=3, linewidth=2)
     ax.axvline(current_price, color="red", linestyle="--", label=f"Current: ${current_price:,.2f}")
     ax.set_xlabel("Price")

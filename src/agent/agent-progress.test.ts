@@ -8,7 +8,10 @@
  * - Iterates do not exceed maxIterations
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll, setSystemTime } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll, setSystemTime, spyOn } from 'bun:test';
+import { useNoNetwork } from '../utils/test-no-network.js';
+import * as polymarket from '../tools/finance/polymarket.js';
+import * as embeddings from '../memory/embeddings.js';
 import { rmSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,6 +19,21 @@ import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { BaseMessage } from '@langchain/core/messages';
 import { AIMessage } from '@langchain/core/messages';
 import { _setModelFactory } from '../model/llm.js';
+
+useNoNetwork();
+
+// Agent.run() injects live Polymarket context, and memory search would embed
+// via OpenAI with the stub key: keep both offline.
+let offlineSpies: Array<{ mockRestore: () => void }> = [];
+beforeEach(() => {
+  offlineSpies = [
+    spyOn(polymarket, 'fetchPolymarketMarkets').mockResolvedValue([]),
+    spyOn(embeddings, 'createEmbeddingClient').mockReturnValue(null),
+  ];
+});
+afterEach(() => {
+  for (const spy of offlineSpies) spy.mockRestore();
+});
 
 // ---------------------------------------------------------------------------
 // Isolation: each test gets its own tmp dir for Scratchpad persistence
@@ -73,12 +91,16 @@ async function collectEvents(gen: AsyncGenerator<AgentEvent>): Promise<AgentEven
   return events;
 }
 
+function createProgressTestAgent(maxIterations: number) {
+  return Agent.create({ model: 'gpt-5.4', maxIterations, memoryEnabled: false });
+}
+
 // ---------------------------------------------------------------------------
 // ProgressEvent tests
 // ---------------------------------------------------------------------------
 describe('Agent — ProgressEvent emission', () => {
   it('emits a progress event at the start of each iteration', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3 });
+    const agent = await createProgressTestAgent(3);
     const events = await collectEvents(agent.run('What is 1 + 1?'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];
@@ -86,7 +108,7 @@ describe('Agent — ProgressEvent emission', () => {
   });
 
   it('progress event contains the current iteration number starting at 1', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 3 });
+    const agent = await createProgressTestAgent(3);
     const events = await collectEvents(agent.run('Simple test query'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];
@@ -94,7 +116,7 @@ describe('Agent — ProgressEvent emission', () => {
   });
 
   it('progress event iteration increments each loop', async () => {
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations: 5 });
+    const agent = await createProgressTestAgent(5);
     const events = await collectEvents(agent.run('Query that may need multiple iterations'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];
@@ -105,7 +127,7 @@ describe('Agent — ProgressEvent emission', () => {
 
   it('progress event contains maxIterations from config', async () => {
     const maxIterations = 7;
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations });
+    const agent = await createProgressTestAgent(maxIterations);
     const events = await collectEvents(agent.run('Test query'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];
@@ -115,7 +137,7 @@ describe('Agent — ProgressEvent emission', () => {
 
   it('does not emit more progress events than maxIterations', async () => {
     const maxIterations = 4;
-    const agent = await Agent.create({ model: 'gpt-5.4', maxIterations });
+    const agent = await createProgressTestAgent(maxIterations);
     const events = await collectEvents(agent.run('Test bounded query'));
 
     const progressEvents = events.filter((e) => e.type === 'progress') as ProgressEvent[];

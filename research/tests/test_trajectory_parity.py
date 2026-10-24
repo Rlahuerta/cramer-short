@@ -9,6 +9,7 @@ from research.models.trajectory import (
     RegimeStats,
     compute_trajectory,
     compute_horizon_drift_vol,
+    compute_mixing_weight,
     interpolate_distribution,
     compute_scenario_probabilities,
     normal_cdf,
@@ -69,6 +70,49 @@ def test_compute_horizon_drift_vol_default():
     dv = compute_horizon_drift_vol(7, P, regime_stats, "bull")
     assert dv["mu_n"] > 0  # bull regime has positive drift
     assert dv["sigma_n"] > 0
+
+
+def _review_chain():
+    P = np.array([[0.9, 0.05, 0.05], [0.05, 0.9, 0.05], [0.05, 0.05, 0.9]])
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.015, std_return=0.02),
+        "bear": RegimeStats(mean_return=-0.015, std_return=0.02),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.01),
+    }
+    return P, regime_stats
+
+
+def test_compute_horizon_drift_vol_is_path_integrated():
+    # Mirrors confidence-intervals.test.ts: sum_d 0.015 * 0.85^d ≈ 8.43% (h·terminal mean was 0.34%).
+    P, regime_stats = _review_chain()
+    dv = compute_horizon_drift_vol(30, P, regime_stats, "bull")
+    expected = sum(0.015 * 0.85 ** d for d in range(1, 31))
+    assert dv["mu_n"] == pytest.approx(expected, abs=1e-12)
+
+
+def test_compute_horizon_drift_vol_scales_momentum_under_hmm_override():
+    P, regime_stats = _review_chain()
+    base = compute_horizon_drift_vol(10, P, regime_stats, "bull")["mu_n"]
+    dv = compute_horizon_drift_vol(
+        10, P, regime_stats, "bull", momentum_adjustment=0.004,
+        hmm_override={"drift": 0.001, "vol": 0.02, "weight": 0.75},
+    )
+    assert dv["mu_n"] == pytest.approx(0.75 * 10 * 0.001 + 0.25 * (base + 10 * 0.004), abs=1e-12)
+
+
+def test_compute_horizon_drift_vol_terminal_override_shifts_daily_drift():
+    P, regime_stats = _review_chain()
+    chain = compute_horizon_drift_vol(10, P, regime_stats, "bull")["mu_n"]
+    dv = compute_horizon_drift_vol(10, P, regime_stats, "bull", terminal_state_weights=[0.6, 0.1, 0.3])
+    p_bull = 1 / 3 + (2 / 3) * 0.85 ** 10
+    p_bear = 1 / 3 - (1 / 3) * 0.85 ** 10
+    shift = (0.6 - 0.1) * 0.015 - (p_bull - p_bear) * 0.015
+    assert dv["mu_n"] == pytest.approx(chain + 10 * shift, abs=1e-12)
+
+
+def test_compute_mixing_weight_is_power_of_rho():
+    assert compute_mixing_weight(0.85, 7) == pytest.approx(0.85 ** 7, abs=1e-12)
+    assert compute_mixing_weight(-0.5, 2) == pytest.approx(0.25, abs=1e-12)
 
 
 def test_compute_horizon_drift_vol_horizon_scaling():
@@ -139,6 +183,20 @@ def test_compute_trajectory_p_up_in_range():
     traj = compute_trajectory(100, 7, P, regime_stats, "bull", n_samples=500)
     for pt in traj:
         assert 0 <= pt.p_up <= 1
+
+
+def test_compute_trajectory_seed_makes_ci_reproducible():
+    P, regime_stats = _make_fixture()
+    first = compute_trajectory(100, 10, P, regime_stats, "bull", n_samples=1000, random_state=42)
+    second = compute_trajectory(100, 10, P, regime_stats, "bull", n_samples=1000, random_state=42)
+    different = compute_trajectory(100, 10, P, regime_stats, "bull", n_samples=1000, random_state=43)
+
+    first_ci = [(pt.lower_bound, pt.expected_price, pt.upper_bound) for pt in first]
+    second_ci = [(pt.lower_bound, pt.expected_price, pt.upper_bound) for pt in second]
+    different_ci = [(pt.lower_bound, pt.expected_price, pt.upper_bound) for pt in different]
+
+    assert second_ci == first_ci
+    assert different_ci != first_ci
 
 
 def test_compute_trajectory_cumulative_return_format():
@@ -262,6 +320,85 @@ def test_compute_trajectory_keeps_analytical_mean_under_empirical_vol_floor():
         n_samples=200,
     )
     assert trajectory[0].expected_price == pytest.approx(round(100.0 * math.exp(0.01), 2))
+
+
+def test_compute_trajectory_treats_hmm_override_drift_as_per_day_quantity():
+    P = np.eye(3)
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.0, std_return=0.001),
+        "bear": RegimeStats(mean_return=0.0, std_return=0.001),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.001),
+    }
+    trajectory = compute_trajectory(
+        100.0,
+        3,
+        P,
+        regime_stats,
+        "bull",
+        hmm_override={"drift": 0.01, "vol": 0.001, "weight": 1.0},
+        n_samples=200,
+    )
+
+    assert trajectory[-1].expected_price == pytest.approx(round(100.0 * math.exp(0.03), 2))
+
+
+def test_compute_trajectory_uncertainty_scale_widens_ci_monotonically():
+    """Uncertainty CI scale widens intervals around expected_price while
+    keeping expected_price unchanged. Used by callers to propagate
+    structural-break and/or transition-entropy uncertainty."""
+    P, regime_stats = _make_fixture()
+    np.random.seed(12345)
+    baseline = compute_trajectory(100, 5, P, regime_stats, "bull", n_samples=500)
+    np.random.seed(12345)
+    widened = compute_trajectory(
+        100,
+        5,
+        P,
+        regime_stats,
+        "bull",
+        n_samples=500,
+        uncertainty_ci_scale=1.5,
+    )
+
+    for base, wide in zip(baseline, widened, strict=True):
+        assert wide.expected_price == pytest.approx(base.expected_price)
+        assert wide.p_up == pytest.approx(base.p_up)
+        assert wide.lower_bound <= base.lower_bound
+        assert wide.upper_bound >= base.upper_bound
+        base_width = base.upper_bound - base.lower_bound
+        wide_width = wide.upper_bound - wide.lower_bound
+        assert wide_width >= base_width
+    assert widened[-1].upper_bound - widened[-1].lower_bound > (
+        baseline[-1].upper_bound - baseline[-1].lower_bound
+    )
+
+
+def test_compute_trajectory_uncertainty_scale_contains_skewed_baseline_ci():
+    P = np.eye(3)
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.08, std_return=0.20),
+        "bear": RegimeStats(mean_return=-0.01, std_return=0.02),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.01),
+    }
+
+    np.random.seed(202405)
+    baseline = compute_trajectory(100, 3, P, regime_stats, "bull", n_samples=2000)
+    np.random.seed(202405)
+    widened = compute_trajectory(
+        100,
+        3,
+        P,
+        regime_stats,
+        "bull",
+        n_samples=2000,
+        uncertainty_ci_scale=1.4,
+    )
+
+    for base, wide in zip(baseline, widened, strict=True):
+        assert wide.expected_price == pytest.approx(base.expected_price)
+        assert wide.p_up == pytest.approx(base.p_up)
+        assert wide.lower_bound <= base.lower_bound
+        assert wide.upper_bound >= base.upper_bound
 
 
 def test_compute_horizon_drift_vol_supports_regime_specific_sigma_and_garch():

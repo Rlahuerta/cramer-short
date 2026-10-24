@@ -16,6 +16,11 @@ import {
   makeForecastLabPromotionBranch,
   withForecastLabCandidateWorkspace,
 } from './git.js';
+import { getExperimentsDir } from '../../utils/paths.js';
+import { useTempCramerShortDir } from '../../utils/test-cramer-short-dir.js';
+
+// Candidate/promotion worktrees live under .cramer-short/experiments/worktrees; use a temp one.
+useTempCramerShortDir();
 
 const WORKTREE_RUN_IDS = [
   'git-test-safe-path',
@@ -116,12 +121,12 @@ describe('forecast-lab git helpers', () => {
   it('returns safe worktree paths under .cramer-short/experiments/worktrees', () => {
     const worktreePath = getForecastLabCandidateWorktreePath('git-test-safe-path');
 
-    expect(worktreePath).toBe(resolve('.cramer-short', 'experiments', 'worktrees', 'git-test-safe-path'));
+    expect(worktreePath).toBe(resolve(getExperimentsDir(), 'worktrees', 'git-test-safe-path'));
     expect(() => assertSafeForecastLabWorktreePath(worktreePath)).not.toThrow();
-    expect(() => assertSafeForecastLabWorktreePath(resolve('.cramer-short', 'experiments', 'runs', 'git-test-safe-path'))).toThrow(
+    expect(() => assertSafeForecastLabWorktreePath(resolve(getExperimentsDir(), 'runs', 'git-test-safe-path'))).toThrow(
       /Unsafe forecast-lab worktree path/,
     );
-    expect(() => assertSafeForecastLabWorktreePath(resolve('.cramer-short', 'experiments', 'worktrees'))).toThrow(
+    expect(() => assertSafeForecastLabWorktreePath(resolve(getExperimentsDir(), 'worktrees'))).toThrow(
       /Unsafe forecast-lab worktree path/,
     );
   });
@@ -131,7 +136,7 @@ describe('forecast-lab git helpers', () => {
 
     expect(makeForecastLabPromotionBranch(runId)).toBe('topic/forecast-lab-promote-git-test-promotion-safe-path');
     expect(getForecastLabPromotionWorktreePath(runId)).toBe(
-      resolve('.cramer-short', 'experiments', 'worktrees', 'promote-git-test-promotion-safe-path'),
+      resolve(getExperimentsDir(), 'worktrees', 'promote-git-test-promotion-safe-path'),
     );
   });
 

@@ -1,5 +1,8 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { describe, test, expect, mock, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { describe, test, expect, mock, type Mock, beforeEach, afterEach, setSystemTime, spyOn } from 'bun:test';
+import { ChatOllama } from '@langchain/ollama';
+import { resolveProvider } from '../providers.js';
+import * as configModule from '@/utils/config.js';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -9,14 +12,7 @@ afterEach(() => {
   setSystemTime();
 });
 
-const actualConfig = await import('@/utils/config.js');
-
-const mockGetSetting = mock((_key: string, defaultValue: unknown) => defaultValue);
-
-mock.module('@/utils/config.js', () => ({
-  ...actualConfig,
-  getSetting: mockGetSetting,
-}));
+let mockGetSetting: Mock<(...args: any[]) => any>;
 
 const {
   isThinkingModel,
@@ -25,12 +21,19 @@ const {
   getLlmCallTimeoutMs,
   DEFAULT_LLM_CALL_TIMEOUT_MS,
   streamCallLlm,
+  resolveOllamaTarget,
   _setModelFactory,
 } = await import('./llm.js');
 
 beforeEach(() => {
-  mockGetSetting.mockImplementation((_key: string, defaultValue: unknown) => defaultValue);
+  mockGetSetting = spyOn(configModule, 'getSetting').mockImplementation(
+    <T>(_key: string, defaultValue: T): T => defaultValue,
+  );
   _setModelFactory(null);
+});
+
+afterEach(() => {
+  mockGetSetting.mockRestore();
 });
 
 // ===========================================================================
@@ -97,6 +100,80 @@ describe('getChatModel — Ollama think flag', () => {
   test('strips ollama: prefix before passing model to ChatOllama', () => {
     const model = getChatModel('ollama:qwen3:4b') as { model?: string };
     expect(model.model).toBe('qwen3:4b');
+  });
+});
+
+describe('resolveOllamaTarget', () => {
+  const OLLAMA_ENV_KEYS = ['OLLAMA_BASE_URL', 'OLLAMA_API_KEY'] as const;
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of OLLAMA_ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of OLLAMA_ENV_KEYS) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key];
+      }
+    }
+  });
+
+  test('no envs → localhost default keeps the :cloud tag', () => {
+    expect(resolveOllamaTarget('ollama:deepseek-v4.1-flash:cloud')).toEqual({
+      model: 'deepseek-v4.1-flash:cloud',
+    });
+  });
+
+  test('OLLAMA_API_KEY only → direct Ollama Cloud with Bearer header and stripped :cloud', () => {
+    process.env.OLLAMA_API_KEY = 'cloud-key';
+    expect(resolveOllamaTarget('ollama:deepseek-v4.1-flash:cloud')).toEqual({
+      model: 'deepseek-v4.1-flash',
+      baseUrl: 'https://ollama.com',
+      headers: { Authorization: 'Bearer cloud-key' },
+    });
+  });
+
+  test('OLLAMA_BASE_URL only → explicit URL wins and the full name is kept', () => {
+    process.env.OLLAMA_BASE_URL = 'http://localhost:11434';
+    expect(resolveOllamaTarget('ollama:deepseek-v4.1-flash:cloud')).toEqual({
+      model: 'deepseek-v4.1-flash:cloud',
+      baseUrl: 'http://localhost:11434',
+    });
+  });
+
+  test('both set → explicit baseUrl wins and the Bearer header is attached', () => {
+    process.env.OLLAMA_BASE_URL = 'http://localhost:11434';
+    process.env.OLLAMA_API_KEY = 'cloud-key';
+    expect(resolveOllamaTarget('ollama:deepseek-v4.1-flash:cloud')).toEqual({
+      model: 'deepseek-v4.1-flash:cloud',
+      baseUrl: 'http://localhost:11434',
+      headers: { Authorization: 'Bearer cloud-key' },
+    });
+  });
+});
+
+// ===========================================================================
+// Default model routing + thinking detection
+// ===========================================================================
+
+describe('default model regression lock', () => {
+  test('resolveProvider routes the default model to the ollama provider', () => {
+    expect(resolveProvider('ollama:deepseek-v4.1-flash:cloud').id).toBe('ollama');
+  });
+
+  test('isThinkingModel detects the default model as thinking-capable', () => {
+    expect(isThinkingModel('ollama:deepseek-v4.1-flash:cloud')).toBe(true);
+  });
+
+  test('getChatModel returns a ChatOllama for the default model', () => {
+    expect(getChatModel('ollama:deepseek-v4.1-flash:cloud')).toBeInstanceOf(ChatOllama);
   });
 });
 
@@ -343,5 +420,43 @@ describe('streamCallLlm', () => {
     expect(factory).toHaveBeenCalledTimes(1);
     expect(factory.mock.calls[0]?.[1]).toMatchObject({ streaming: true });
     expect(chunks.join('')).toBe('STREAM_OK');
+  });
+});
+
+// ===========================================================================
+// callLlm — aborted calls are never retried (TDD lock)
+// ===========================================================================
+
+describe('callLlm — abort retry policy', () => {
+  test('an AbortError is attempted exactly once and rethrown', async () => {
+    let attempts = 0;
+    const invoke = mock(async () => {
+      attempts++;
+      const err = new Error('This operation was aborted');
+      err.name = 'AbortError';
+      throw err;
+    });
+    _setModelFactory((() => ({ invoke })) as any);
+
+    await expect(
+      callLlm('Reply with ABORT.', { model: 'ollama:llama3.1:8b', timeoutMs: 30_000 }),
+    ).rejects.toThrow(/abort/i);
+
+    expect(attempts).toBe(1);
+  });
+
+  test('a 429 rate-limit error still retries three times', async () => {
+    let attempts = 0;
+    const invoke = mock(async () => {
+      attempts++;
+      throw new Error('429 Too Many Requests: rate limit exceeded');
+    });
+    _setModelFactory((() => ({ invoke })) as any);
+
+    await expect(
+      callLlm('Reply with RATE.', { model: 'ollama:llama3.1:8b', timeoutMs: 30_000 }),
+    ).rejects.toThrow(/429|rate limit/i);
+
+    expect(attempts).toBe(3);
   });
 });

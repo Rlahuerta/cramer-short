@@ -3,7 +3,7 @@ import { createEmbeddingClient } from './embeddings.js';
 import { MemoryIndexer } from './indexer.js';
 import { hybridSearch } from './search.js';
 import { MemoryStore } from './store.js';
-import { FinancialMemoryStore } from './financial-store.js';
+import { FinancialMemoryStore, isInsightRowExpired } from './financial-store.js';
 import { estimateTokens } from '../utils/tokens.js';
 import type {
   MemoryReadOptions,
@@ -60,14 +60,23 @@ function resolveConfig(): MemoryRuntimeConfig {
 
 export class MemoryManager {
   private static instance: MemoryManager | null = null;
+  private static init: Promise<MemoryManager> | null = null;
 
-  static async get(): Promise<MemoryManager> {
-    if (!MemoryManager.instance) {
-      const instance = new MemoryManager(resolveConfig());
-      await instance.initialize();
-      MemoryManager.instance = instance;
+  static get(): Promise<MemoryManager> {
+    if (MemoryManager.instance) {
+      return Promise.resolve(MemoryManager.instance);
     }
-    return MemoryManager.instance;
+    if (!MemoryManager.init) {
+      MemoryManager.init = (async () => {
+        const instance = new MemoryManager(resolveConfig());
+        await instance.initialize();
+        MemoryManager.instance = instance;
+        return instance;
+      })().finally(() => {
+        MemoryManager.init = null;
+      });
+    }
+    return MemoryManager.init;
   }
 
   private readonly store = new MemoryStore();
@@ -220,7 +229,7 @@ export class MemoryManager {
 
     if (!this.db) return base;
 
-    const recentInsights = this.db.loadRecentInsights(10);
+    const recentInsights = this.db.loadRecentInsights(10).filter((row) => !isInsightRowExpired(row));
     if (recentInsights.length === 0) return base;
 
     const lines = recentInsights.map((r) => {

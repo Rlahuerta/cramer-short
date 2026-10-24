@@ -96,6 +96,21 @@ NO_TRADE — wait for a cleaner entry/stop setup.
     expect(isRetryableE2EExternalModelError(answer)).toBe(false);
   });
 
+  it('does not classify valid GOLD Markov-abstention prose as external model error', () => {
+    const answer = `
+## Gold (GLD) 30-Day Forecast
+
+**Markov distribution abstained** — no calibrated scenario probabilities available.
+
+**Why Markov abstained:**
+- Model-only synthesis is forbidden when anchor coverage is this weak.
+- The model lacks sufficient anchor support to emit probability buckets.
+`;
+
+    expect(isE2EExternalModelError(answer)).toBe(false);
+    expect(isRetryableE2EExternalModelError(answer)).toBe(false);
+  });
+
   it('still classifies provider model-unavailability failures as external model errors', () => {
     const error = new Error('Ollama provider model is unavailable');
 

@@ -253,13 +253,16 @@ export class ChatLogComponent extends Container {
     existing.setDenied(path, tool);
   }
 
-  finalizeAnswer(text: string) {
+  finalizeAnswer(text: string): AnswerBoxComponent {
     if (!this.activeAnswer) {
-      this.addChild(new AnswerBoxComponent(text));
-      return;
+      const component = new AnswerBoxComponent(text);
+      this.addChild(component);
+      return component;
     }
     this.activeAnswer.setText(text);
+    const component = this.activeAnswer;
     this.activeAnswer = null;
+    return component;
   }
 
   addContextCleared(clearedCount: number, keptCount: number) {

@@ -136,6 +136,21 @@ export function hasCryptoPolymarketForecastCoverage(query: string, toolCalls: To
   return desired !== null && hasPolymarketForecastCoverage(toolCalls, desired);
 }
 
+/**
+ * True when a polymarket_forecast call for the query's resolved ticker has been
+ * attempted (success OR error, horizon-lenient). Used to gate the forced
+ * arbitrator so it never fires before Polymarket has been attempted — which
+ * previously produced a `polymarket: null` arbitrator payload on briefing
+ * prompts.
+ */
+export function hasAttemptedPolymarketForecastForQuery(query: string, toolCalls: ToolCallRecord[]): boolean {
+  const desiredTicker = inferDistributionTicker(query);
+  return toolCalls.some((call) =>
+    call.tool === 'polymarket_forecast'
+    && matchesTickerAndOptionalHorizon(call.args, desiredTicker, 'horizon_days', null),
+  );
+}
+
 function hasPolymarketForecastWithMarkovReturn(toolCalls: ToolCallRecord[]): boolean {
   return toolCalls.some((call) => call.tool === 'polymarket_forecast'
     && isFiniteNumber(call.args['markov_return']));

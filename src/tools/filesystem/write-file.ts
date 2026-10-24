@@ -1,7 +1,7 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname } from 'node:path';
+import { dirname, relative } from 'node:path';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { assertSandboxPath } from './sandbox.js';
@@ -50,6 +50,21 @@ export const writeFileTool = new DynamicStructuredTool({
       cwd,
       root,
     });
+
+    // Narrow ~/ writes to allowed subdirectories only: ~/reports/ and ~/.cramer-short/.
+    // Prevents overwriting dotfiles (~/.bashrc, ~/.ssh/authorized_keys) even if
+    // the approval gate is bypassed. CWD-relative writes are unaffected.
+    if (isHomePath) {
+      const ALLOWED_HOME_SUBDIRS = ['reports', '.cramer-short'];
+      const rel = relative(homedir(), resolved);
+      const firstSegment = rel.split(/[\\/]/).filter(Boolean)[0] ?? '';
+      if (!ALLOWED_HOME_SUBDIRS.includes(firstSegment)) {
+        throw new Error(
+          `Path outside allowed home directories: ~/reports/ and ~/.cramer-short/ are the only writable home paths. Got: ${input.path}`,
+        );
+      }
+    }
+
     const dir = dirname(resolved);
     await mkdir(dir, { recursive: true });
     await writeFile(resolved, input.content, 'utf-8');

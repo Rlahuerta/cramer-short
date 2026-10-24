@@ -17,7 +17,9 @@
  * Manual trigger: `/dream` (or `/dream force` to bypass conditions).
  */
 
+import { join } from 'node:path';
 import type { DreamMeta } from './types.js';
+import { atomicWriteFile } from '../utils/atomic-write.js';
 import type { MemoryStore } from './store.js';
 import { extractTickers } from './ticker-extractor.js';
 import { callLlm as realCallLlm } from '../model/llm.js';
@@ -113,40 +115,6 @@ async function defaultCallLlm(
     return { content: text };
   }
   return { content: '' };
-}
-
-// ---------------------------------------------------------------------------
-// Deduplication helpers (pure, exported for testing)
-// ---------------------------------------------------------------------------
-
-function normalizeInsight(line: string): string {
-  return line
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '') // strip punctuation
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/**
- * Remove lines from newContent that are semantically identical to lines
- * already present in existingContent. Comparison is normalized:
- * lowercase, punctuation stripped, whitespace collapsed.
- */
-export function deduplicateInsights(newContent: string, existingContent: string): string {
-  const existingNorms = new Set(
-    existingContent
-      .split('\n')
-      .map(normalizeInsight)
-      .filter((s) => s.length > 0),
-  );
-
-  return newContent
-    .split('\n')
-    .filter((line) => {
-      const norm = normalizeInsight(line);
-      return norm.length === 0 || !existingNorms.has(norm); // keep blank lines, keep novel lines
-    })
-    .join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -321,18 +289,19 @@ async function consolidate(
     );
   }
 
-  // Phase 4: read existing files, dedup, then write consolidated files.
+  // Phase 4: back up the existing files, then overwrite them with the LLM output
+  // (which already is the full consolidated file, existing content included).
   throwIfAborted(abortSignal);
-  const [existingMemory, existingFinance] = await Promise.all([
-    store.readMemoryFile('MEMORY.md').catch(() => ''),
-    store.readMemoryFile('FINANCE.md').catch(() => ''),
-  ]);
-
-  const dedupedMemory = deduplicateInsights(parsed.memory, existingMemory);
-  const dedupedFinance = deduplicateInsights(parsed.finance, existingFinance);
-
-  await store.writeMemoryFile('MEMORY.md', dedupedMemory + '\n');
-  await store.writeMemoryFile('FINANCE.md', dedupedFinance + '\n');
+  for (const [filename, content] of [
+    ['MEMORY.md', parsed.memory],
+    ['FINANCE.md', parsed.finance],
+  ] as const) {
+    const existing = await store.readMemoryFile(filename);
+    if (existing) {
+      await atomicWriteFile(join(store.getMemoryDir(), `${filename}.bak`), existing);
+    }
+    await store.writeMemoryFile(filename, content + '\n');
+  }
 
   // Archive processed daily files (moves to archive/ subdirectory).
   const archivedFiles: string[] = [];

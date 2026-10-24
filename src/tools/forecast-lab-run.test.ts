@@ -1,5 +1,9 @@
 import { describe, expect, it, mock } from 'bun:test';
 import { createForecastLabRunTool, parseForecastLabRunToolPayload } from './forecast-lab-run.js';
+import { useTempCramerShortDir } from '../utils/test-cramer-short-dir.js';
+
+// Tools built with default dependencies create .cramer-short/experiments; keep it out of the working tree.
+useTempCramerShortDir();
 
 function makeRunResult(overrides: Record<string, unknown> = {}) {
   return {

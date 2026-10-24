@@ -6,7 +6,7 @@ import {
   inferBtcShortHorizonForecastHorizon,
 } from './distribution.js';
 import {
-  isCryptoForecastQuery,
+  isCryptoForecastPipelineQuery,
   isNonCryptoForecastQuery,
 } from './classification.js';
 import type { ForcedNonCryptoPolymarketForecastArgs } from './types.js';
@@ -31,7 +31,7 @@ export function buildForcedPolymarketForecastArgs(query: string, toolCalls: Tool
   sentiment_score?: number;
   markov_return?: number;
 } | null {
-  if (!isCryptoForecastQuery(query)) return null;
+  if (!isCryptoForecastPipelineQuery(query)) return null;
 
   const detected = detectAssetType(query);
   if (detected.type !== 'crypto' || !detected.ticker) return null;
@@ -106,7 +106,7 @@ export function buildForcedCryptoForecastMarkovArgs(query: string): {
   trajectory: true;
   trajectoryDays: number;
 } | null {
-  if (!isCryptoForecastQuery(query)) return null;
+  if (!isCryptoForecastPipelineQuery(query)) return null;
 
   const ticker = inferDistributionTicker(query);
   let horizon = inferDistributionHorizon(query);

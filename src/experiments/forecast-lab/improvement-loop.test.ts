@@ -85,4 +85,28 @@ describe('forecast-lab improvement loop', () => {
     expect(result.iterationsRun).toBe(1);
     expect(evaluate).toHaveBeenCalledTimes(4);
   });
+
+  it('never evaluates two candidates concurrently (evaluators share a process-global override map)', async () => {
+    const seedA = findMutation('hype-markov-short-horizon', 'markov-shorter-reactive-window');
+    const seedB = findMutation('hype-markov-short-horizon', 'markov-lower-confidence-trend-penalty');
+    const trials = [1, 2, 3].map((n) => ({ ...seedB, id: `trial-${n}`, patchSummary: [`trial-${n}`] }));
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    await runForecastLabImprovementSearch({
+      seedCandidates: [seedA, seedB],
+      maxIterations: 1,
+      buildTrials: () => trials,
+      evaluate: async (mutation) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        inFlight -= 1;
+        const objectiveScore = mutation.id === 'trial-3' ? 20 : 10;
+        return { objectiveScore, primaryScore: 0.5, keepSatisfied: 4, keepTotal: 8, decision: 'drop', metrics: {}, summary: mutation.id };
+      },
+    });
+
+    expect(maxInFlight).toBe(1);
+  });
 });

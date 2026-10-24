@@ -17,6 +17,7 @@ from research.models.hmm import (
     initialize_hmm,
     mat_pow,
     predict,
+    select_num_states,
     viterbi,
 )
 from research.models.trajectory import (
@@ -139,6 +140,40 @@ def test_baum_welch_non_convergence():
     result = baum_welch(obs, n_states=3, max_iterations=5, tolerance=1e-6)
     # Should either not converge or handle gracefully
     assert result.converged is False or result.iterations == 5
+
+
+def test_select_num_states_falls_back_with_warning_for_short_series():
+    result = select_num_states(np.array([0.01, -0.01, 0.02]), max_states=5, criterion="bic")
+    assert result["selected_states"] == 3
+    assert result["bic_values"] is None
+    assert result["aic_values"] is None
+    assert result["criterion_used"] == "bic"
+    assert "Only 3 observations" in result["warning"]
+
+
+def test_select_num_states_uses_hqc_and_xiphos_parameter_count():
+    rng = np.random.default_rng(4242)
+    obs = np.concatenate([
+        rng.normal(-0.015, 0.01, 180),
+        rng.normal(0.015, 0.01, 180),
+    ])
+    result = select_num_states(obs, max_states=3, criterion="hqc", min_observations_per_state=20)
+
+    assert result["warning"] is None if "warning" in result else True
+    assert 2 <= result["selected_states"] <= 3
+    assert len(result["bic_values"]) == 2
+    assert len(result["aic_values"]) == 2
+    assert len(result["hqc_values"]) == 2
+    assert result["criterion_used"] == "hqc"
+    assert result["selected_states"] == int(np.argmin(result["hqc_values"])) + 2
+
+    for k in range(2, 4):
+        n_params = k * k + 2 * k - 1
+        idx = k - 2
+        assert result["bic_values"][idx] - result["aic_values"][idx] == pytest.approx(
+            n_params * (math.log(len(obs)) - 2),
+            abs=1e-8,
+        )
 
 
 # ---------------------------------------------------------------------------

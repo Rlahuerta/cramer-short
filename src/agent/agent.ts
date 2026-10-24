@@ -1,6 +1,6 @@
 import { AIMessage } from '@langchain/core/messages';
 import { StructuredToolInterface } from '@langchain/core/tools';
-import { callLlm, streamCallLlm, getLlmCallTimeoutMs } from '../model/llm.js';
+import { callLlm, streamCallLlm, getLlmCallTimeoutMs, DEFAULT_MODEL } from '../model/llm.js';
 import { getSetting, loadConfig } from '../utils/config.js';
 import { logger } from '../utils/logger.js';
 import { buildToolDescriptions, getTools } from '../tools/registry.js';
@@ -42,7 +42,9 @@ import {
   hasPrematureForecastArbitratorCall,
   isAcceptedFirstPlanningToolCall,
   normalizeExplicitGoldCombinedToolCalls,
+  normalizeForecastToolTickers,
 } from './planning-tool-calls.js';
+import { partitionRepeatedFailingToolCalls } from './repeated-tool-failure.js';
 import {
   buildAbstainingBtcShortHorizonForecastAnswer,
   buildDistributionWarningPrefix,
@@ -59,6 +61,7 @@ import {
   buildForcedForecastArbiterArgs,
   buildForcedGoldCombinedForecastArbiterArgs,
   buildForcedMarkovArgs,
+  buildNextForcedMarkovArgs,
   buildForcedMarketDataArgs,
   buildForcedNonCryptoMarketDataArgs,
   buildForcedNonCryptoPolymarketForecastArgs,
@@ -174,7 +177,6 @@ export {
   shouldRerunPolymarketForecastWithMarkov,
 } from './query-router.js';
 
-const DEFAULT_MODEL = 'gpt-5.4';
 export const DEFAULT_MAX_ITERATIONS = 25;
 const MAX_OVERFLOW_RETRIES = 2;
 /** Flush memory to disk every N iterations regardless of context size. */
@@ -237,6 +239,7 @@ export class Agent {
     const registryOptions = {
       watchlistEntries: config.watchlistEntries,
       memoryEnabled,
+      excludeTools: config.excludeTools,
     };
     const tools = config.tools ?? getTools(model, registryOptions);
     const soulContentPromise = loadSoulDocument();
@@ -624,6 +627,12 @@ export class Agent {
         ctx.scratchpad.getToolCallRecords(),
       );
 
+      // Correct a stray forecast-tool ticker that conflicts with an explicit
+      // single-asset scope (e.g. markov_distribution(ticker="PLAN") on a
+      // "BTC-USD only" query) before executing, so a wrong ticker can't fail
+      // and trap the agent in a re-emit loop.
+      normalizeForecastToolTickers(response as AIMessage, query);
+
       // Count sequential_thinking calls before executing tools (needed for nudge below).
       const toolCalls = (response as AIMessage).tool_calls ?? [];
       if (hasPrematureForecastArbitratorCall(response as AIMessage, query, ctx.scratchpad.getToolCallRecords())) {
@@ -640,6 +649,21 @@ export class Agent {
 
       const stCallsThisIteration = toolCalls.filter((tc) => tc.name === 'sequential_thinking').length;
       runState.sequentialThinkingCallCount += stCallsThisIteration;
+
+      // Loop-breaker: drop tool calls that exactly repeat an earlier call which
+      // already failed with the same arguments — re-running them cannot make
+      // progress. If nothing else remains this turn, stop looping and
+      // synthesize from the data already gathered instead of burning iterations.
+      const { executable: executableToolCalls, skipped: skippedToolCalls } =
+        partitionRepeatedFailingToolCalls(response as AIMessage, ctx.scratchpad.getToolCallRecords());
+      let repeatedFailureSkipped = false;
+      if (skippedToolCalls.length > 0) {
+        (response as AIMessage).tool_calls = executableToolCalls;
+        if (executableToolCalls.length === 0) {
+          break;
+        }
+        repeatedFailureSkipped = true;
+      }
 
       // Execute tools and add results to scratchpad (response is AIMessage here)
       for await (const event of this.toolExecutor.executeAll(response, ctx)) {
@@ -667,6 +691,10 @@ export class Agent {
         ctx.scratchpad.formatToolUsageForPrompt(),
         forecastLabRoutingHint,
       );
+
+      if (repeatedFailureSkipped) {
+        currentPrompt += '\n\n[SYSTEM NOTE: One or more tool calls exactly repeated a call that already failed with the same arguments and were skipped. Do NOT repeat an identical failing call — change the arguments (e.g. correct the ticker or horizon) or synthesize your answer from the data already gathered.]';
+      }
 
       // After the cap is hit, redirect the model to stop planning and start
       // using research tools. Only inject the nudge once (at the boundary).
@@ -1023,7 +1051,8 @@ export class Agent {
   private async *forceMarkovDistribution(
     ctx: RunContext,
   ): AsyncGenerator<AgentEvent, ForcedToolRouteStatus> {
-    const args = buildForcedMarkovArgs(ctx.query);
+    const args = buildNextForcedMarkovArgs(ctx.query, ctx.scratchpad.getToolCallRecords())
+      ?? buildForcedMarkovArgs(ctx.query);
     if (!args) return 'idle';
 
     return yield* this.executeForcedTool(ctx, 'markov_distribution', args);

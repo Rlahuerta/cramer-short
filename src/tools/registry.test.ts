@@ -70,6 +70,9 @@ describe('getToolRegistry core tools', () => {
       'memory_update',
       'recall_financial_context',
       'store_financial_insight',
+      'dcf_valuation',
+      'reverse_dcf',
+      'rim_valuation',
     ]));
   });
 
@@ -85,6 +88,19 @@ describe('getToolRegistry core tools', () => {
       'sequential_thinking',
       'web_fetch',
       'read_file',
+    ]));
+  });
+
+  it('always registers dcf_valuation, reverse_dcf, and rim_valuation regardless of memory flag', () => {
+    expect(namesWithMemoryDisabled()).toEqual(expect.arrayContaining([
+      'dcf_valuation',
+      'reverse_dcf',
+      'rim_valuation',
+    ]));
+    expect(names()).toEqual(expect.arrayContaining([
+      'dcf_valuation',
+      'reverse_dcf',
+      'rim_valuation',
     ]));
   });
 
@@ -108,6 +124,17 @@ describe('getToolRegistry core tools', () => {
     expect(descriptions).toContain('### sequential_thinking');
     expect(descriptions).toContain('### x_search');
     expect(descriptions).toContain('### skill');
+  });
+});
+
+describe('getToolRegistry excludeTools', () => {
+  it('omits excluded tools from both the tool list and prompt descriptions', () => {
+    const options = { discoverSkills: () => availableSkills, excludeTools: ['read_file', 'browser'] };
+    const names = getToolRegistry('gpt-5.4', options).map((entry) => entry.name);
+    expect(names).not.toContain('read_file');
+    expect(names).not.toContain('browser');
+    expect(names).toContain('web_fetch');
+    expect(buildToolDescriptions('gpt-5.4', options)).not.toContain('### read_file');
   });
 });
 

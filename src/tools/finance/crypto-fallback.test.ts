@@ -9,7 +9,7 @@ afterEach(() => {
   setSystemTime();
 });
 
-const realApi = await import('./api.js');
+const realApi = { ...(await import('./api.js')) };
 
 const mockGet = mock(() => Promise.reject(new Error('FD unavailable')));
 

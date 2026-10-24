@@ -8,6 +8,7 @@ import { buildHeartbeatQuery } from './prompt.js';
 import { evaluateSuppression, type SuppressionState } from './suppression.js';
 import { cramerShortPath } from '../../utils/paths.js';
 import { getSetting } from '../../utils/config.js';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER } from '../../model/llm.js';
 
 const LOG_PATH = cramerShortPath('gateway-debug.log');
 
@@ -136,7 +137,11 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
 
       // Verify outbound is allowed
       try {
-        assertOutboundAllowed({ to: session.lastTo, accountId: session.lastAccountId });
+        assertOutboundAllowed({
+          to: session.lastTo,
+          accountId: session.lastAccountId,
+          configPath: params.configPath,
+        });
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         debugLog(`[heartbeat] outbound BLOCKED: ${msg}`);
@@ -152,8 +157,8 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
 
       // Run agent
       debugLog(`[heartbeat] running agent for session=${session.sessionKey}`);
-      const model = heartbeatCfg.model ?? getSetting('modelId', 'gpt-5.4') as string;
-      const modelProvider = heartbeatCfg.modelProvider ?? getSetting('provider', 'openai') as string;
+      const model = heartbeatCfg.model ?? getSetting('modelId', DEFAULT_MODEL) as string;
+      const modelProvider = heartbeatCfg.modelProvider ?? getSetting('provider', DEFAULT_PROVIDER) as string;
       const answer = await runAgentForMessage({
         sessionKey: session.sessionKey,
         query,
@@ -178,6 +183,7 @@ export function startHeartbeatRunner(params: { configPath?: string }): Heartbeat
           body: cleaned,
           accountId: session.lastAccountId,
           signal,
+          configPath: params.configPath,
         });
         debugLog(`[heartbeat] sent message to ${session.lastTo}`);
 

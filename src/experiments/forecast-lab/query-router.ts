@@ -83,6 +83,11 @@ const FORECAST_LAB_APPROVAL_PATTERNS = [
   /^\s*do it\b/i,
 ] as const;
 
+// Promotion and reset mutate live forecast parameters, so a negated or questioning
+// message ("No, don't promote it", "should I reset?") must never trigger them.
+const FORECAST_LAB_NEGATION_OR_QUESTION = /\b(?:no|not|never|cancel|stop|wait|hold off)\b|n['’]t\b|\bdo not\b|\?/i;
+const FORECAST_LAB_EXPLICIT_APPROVAL_PHRASE = /\bapprove\s+(?:the\s+)?forecast-lab\s+promotion\b/i;
+
 const FORECAST_LAB_RESET_PATTERNS = [
   /\breset\b/i,
   /\brestore\b/i,
@@ -130,7 +135,7 @@ function extractForecastLabProfileId(text: string): string | undefined {
 
 function extractForecastLabSourceRunId(text: string): string | undefined {
   const match = text.match(new RegExp(`(?:source\\s+run|run)\\s+(${SAFE_FORECAST_LAB_RUN_ID.source})`, 'i'));
-  const candidate = match?.[1];
+  const candidate = match?.[1]?.replace(/[.,!?;:]+$/, '');
   if (!candidate) {
     return undefined;
   }
@@ -146,13 +151,21 @@ function isForecastLabApprovalIntent(query: string): boolean {
     || /\bhow\s+to\s+(?:approve|promote)\b/i.test(query)
     || /\bwhat(?:'s| is)\b[\s\S]{0,40}\b(?:approve|promote)\b/i.test(query)
     || /\bwhich\s+command\b[\s\S]{0,40}\b(?:approve|promote)\b/i.test(query)
+    || FORECAST_LAB_NEGATION_OR_QUESTION.test(query)
   ) {
+    return false;
+  }
+  // A bare "yes" / "go ahead" is not enough: require the explicit approval phrase or the run id.
+  if (!FORECAST_LAB_EXPLICIT_APPROVAL_PHRASE.test(query) && !extractForecastLabSourceRunId(query)) {
     return false;
   }
   return FORECAST_LAB_APPROVAL_PATTERNS.some((pattern) => pattern.test(query));
 }
 
 function isForecastLabResetIntent(query: string): boolean {
+  if (FORECAST_LAB_NEGATION_OR_QUESTION.test(query)) {
+    return false;
+  }
   return FORECAST_LAB_RESET_PATTERNS.some((pattern) => pattern.test(query));
 }
 

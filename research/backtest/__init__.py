@@ -5,7 +5,7 @@ from research.backtest.metrics import (
     brier_score,
     directional_accuracy,
     ci_coverage,
-    bootstrap_directional_ci,
+    bootstrap_ci,
 )
 
 __all__ = [
@@ -15,5 +15,5 @@ __all__ = [
     "brier_score",
     "directional_accuracy",
     "ci_coverage",
-    "bootstrap_directional_ci",
+    "bootstrap_ci",
 ]

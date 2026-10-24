@@ -1,7 +1,8 @@
 import { MS_PER_DAY } from './time.js';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { existsSync, readFileSync, renameSync } from 'fs';
 import { cramerShortPath } from './paths.js';
+import { resolveProvider } from '../providers.js';
+import { atomicWriteFileSync } from './atomic-write.js';
 import { ConfigSchema, type Config } from '../schemas/config.js';
 
 export { ConfigSchema, type Config } from '../schemas/config.js';
@@ -112,9 +113,17 @@ export function loadConfig(): Config {
       parsed = JSON.parse(content);
     } catch (parseErr) {
       const msg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      // Move the bad file aside so a later saveConfig() cannot overwrite the user's settings.
+      // If the move fails, saveConfig() refuses to write over an unparseable file.
+      const corruptPath = `${SETTINGS_FILE}.corrupt-${now}`;
+      let badFile = SETTINGS_FILE;
+      try {
+        renameSync(SETTINGS_FILE, corruptPath);
+        badFile = corruptPath;
+      } catch { /* keep in place */ }
       console.warn(
         `[cramer-short] settings.json contains invalid JSON (${msg}). ` +
-          `Falling back to defaults. Fix syntax in ${SETTINGS_FILE} to restore your settings.`,
+          `Falling back to defaults. Fix syntax in ${badFile} and save it as ${SETTINGS_FILE} to restore your settings.`,
       );
       configCache = { data: {}, loadedAt: now };
       return {};
@@ -139,12 +148,18 @@ export function loadConfig(): Config {
 }
 
 export function saveConfig(config: Config): boolean {
-  try {
-    const dir = dirname(SETTINGS_FILE);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+  // Never overwrite a settings file we cannot read and parse (the in-memory config would be
+  // defaults, not the user's settings).
+  if (existsSync(SETTINGS_FILE)) {
+    try {
+      JSON.parse(readFileSync(SETTINGS_FILE, 'utf-8'));
+    } catch {
+      console.warn(`[cramer-short] not saving settings: ${SETTINGS_FILE} is unreadable or invalid.`);
+      return false;
     }
-    writeFileSync(SETTINGS_FILE, JSON.stringify(config, null, 2));
+  }
+  try {
+    atomicWriteFileSync(SETTINGS_FILE, JSON.stringify(config, null, 2));
     configCache = null;
     return true;
   } catch {
@@ -164,13 +179,13 @@ function migrateModelToProvider(config: Config): Config {
 
   // If has legacy model setting, convert to provider
   if (config.model) {
-    const providerId = MODEL_TO_PROVIDER_MAP[config.model];
-    if (providerId) {
-      config.provider = providerId;
-      delete config.model;
-      // Save the migrated config
-      saveConfig(config);
+    config.provider = MODEL_TO_PROVIDER_MAP[config.model] ?? resolveProvider(config.model).id;
+    if (!config.modelId) {
+      config.modelId = config.model;
     }
+    delete config.model;
+    // Save the migrated config
+    saveConfig(config);
   }
 
   return config;

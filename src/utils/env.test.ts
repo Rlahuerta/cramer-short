@@ -34,6 +34,14 @@ afterAll(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock @/providers (project-internal alias — safe to mock per file)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realProvidersModule = { ...(await import('@/providers')) };
+afterAll(() => {
+  mock.module('@/providers', () => realProvidersModule);
+});
+
 mock.module('@/providers', () => ({
   getProviderById: (id: string) => {
     const providers: Record<string, { apiKeyEnvVar?: string; displayName: string }> = {
@@ -201,5 +209,23 @@ describe('saveApiKeyToEnv', () => {
     const ok = saveApiKeyToEnv('OPENAI_API_KEY', 'sk-new');
     expect(ok).toBe(false);
     rmSync(join(tempDir, '.env'), { recursive: true });
+  });
+
+  test('rejects API key values containing newlines', () => {
+    const ok = saveApiKeyToEnv('OPENAI_API_KEY', 'sk-real\nINJECTED=evil');
+    expect(ok).toBe(false);
+  });
+
+  test('rejects API key values containing carriage returns', () => {
+    const ok = saveApiKeyToEnv('OPENAI_API_KEY', 'sk-real\rINJECTED=evil');
+    expect(ok).toBe(false);
+  });
+
+  test('does not write anything to .env when rejecting newline values', () => {
+    writeEnvFile('OPENAI_API_KEY=sk-original\n');
+    saveApiKeyToEnv('OPENAI_API_KEY', 'sk-real\nINJECTED=evil');
+    const written = readWrittenEnv();
+    expect(written).toContain('sk-original');
+    expect(written).not.toContain('INJECTED');
   });
 });

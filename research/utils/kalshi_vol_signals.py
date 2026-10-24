@@ -1,4 +1,21 @@
-"""Kalshi macro volatility signals — Python mirror of the TypeScript helper."""
+"""Kalshi macro volatility signals — event-based volatility covariates.
+
+Extracts forward-looking volatility information from Kalshi prediction
+markets by tracking the intensity of event-based trading activity:
+
+- Federal Reserve decisions and FOMC minutes
+- CPI / PPI / employment reports
+- GDP releases and other macro announcements
+- Geopolitical event markets
+
+Builds a ``KalshiVolatilityCovariate`` that augments the Markov model's
+volatility estimates with market-implied uncertainty around scheduled events.
+
+Requires ``KALSHI_API_KEY`` in the environment.  Raises
+``KalshiUnconfiguredError`` when the key is absent.
+
+Mirrors ``src/tools/finance/kalshi-vol-signals.ts``.
+"""
 
 from __future__ import annotations
 

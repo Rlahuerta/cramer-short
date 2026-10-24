@@ -57,7 +57,7 @@ export const TICKER_STOP_WORDS = new Set([
   'WACC',
   'YOY', 'YTD',
   // Common trade direction words
-  'BUY', 'HOLD',
+  'BUY', 'HOLD', 'PLAN',
 ]);
 
 // $TICKER — dollar sign prefix is an unambiguous ticker marker (exchange convention)

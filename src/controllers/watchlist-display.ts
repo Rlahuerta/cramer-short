@@ -81,8 +81,10 @@ export function calcReturn(entry: WatchlistEntry, price: number): number | undef
 }
 
 /**
- * Aggregates portfolio totals across all entries that have both costBasis and shares
- * and have a matching price in the prices map.
+ * Aggregates portfolio totals. `totalInvested`, `totalPnl`, and `totalReturnPct`
+ * cover entries that have both costBasis and shares; `totalCurrent` covers every
+ * entry with shares and a matching price, so allocation percentages divide by the
+ * same portfolio value their numerators are drawn from.
  */
 export function calcPortfolioTotals(
   entries: WatchlistEntry[],
@@ -90,17 +92,22 @@ export function calcPortfolioTotals(
 ): PortfolioTotals {
   let totalInvested = 0;
   let totalCurrent = 0;
+  let investedCurrent = 0;
 
   for (const e of entries) {
-    if (e.costBasis === undefined || e.shares === undefined) continue;
+    if (e.shares === undefined) continue;
     const snap = prices.get(e.ticker);
     if (!snap) continue;
-    totalInvested += e.costBasis * e.shares;
-    totalCurrent += snap.price * e.shares;
+    const value = snap.price * e.shares;
+    totalCurrent += value;
+    if (e.costBasis !== undefined) {
+      totalInvested += e.costBasis * e.shares;
+      investedCurrent += value;
+    }
   }
 
-  const totalPnl = totalCurrent - totalInvested;
-  const totalReturnPct = totalInvested > 0 ? (totalCurrent / totalInvested - 1) * 100 : 0;
+  const totalPnl = investedCurrent - totalInvested;
+  const totalReturnPct = totalInvested > 0 ? (investedCurrent / totalInvested - 1) * 100 : 0;
 
   return { totalInvested, totalCurrent, totalPnl, totalReturnPct, positionCount: entries.length };
 }

@@ -1,0 +1,552 @@
+"""Per-window Markov forecaster: regime -> transition -> trajectory -> forecast.
+
+This module owns the single-window forecasting stage used by the
+walk-forward harness.  It treats recent price returns as observations of a
+finite-state Markov process, classifies each return into a bull/bear/sideways
+regime, estimates an exponentially weighted transition matrix, and propagates
+that transition structure through the Monte Carlo trajectory engine.  The
+returned ``p_up``, expected return, and confidence interval therefore come from
+the same terminal trajectory distribution rather than from separate probability
+and interval estimators.
+
+The Markov-probability literature review under ``references/markov-probability``
+motivates three design cautions reflected here: transition matrices are
+estimates rather than exact probabilities, latent-state models such as HMMs
+should be treated as optional noisy-emission overlays, and nonstationarity or
+structural breaks must be surfaced as diagnostics rather than hidden behind a
+single point forecast.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from typing import TypedDict
+
+import numpy as np
+
+from research.models.markov import (
+    NUM_STATES,
+    STATE_INDEX,
+    classify_regime_series,
+    compute_markov_forecast,
+    compute_regime_expected_returns,
+    compute_regime_up_rates,
+    detect_structural_break,
+    estimate_regime_stats,
+    estimate_transition_matrix,
+)
+from research.models.garch_scales import GarchClampOptions, compute_garch_scales
+from research.models.hmm import ASSET_PROFILES, baum_welch, fit_volatility_hmm, predict
+from research.models.markov.transition import estimate_conditional_transition_matrices
+from research.models.meta_regime import MetaRegimeDetector
+from research.models.transition_entropy import compute_transition_entropy
+from research.models.trajectory import RegimeStats, compute_trajectory
+from research.models.transition_entropy import EntropyZScoreTracker, entropy_z_to_ci_scale
+
+HMM_OPTIONAL_ERRORS = (FloatingPointError, RuntimeError, ValueError, np.linalg.LinAlgError)
+HMM_OPTIONAL_ERROR_PATTERN = re.compile(
+    r"\b(hmm|hidden markov|baum[- ]?welch|transition matrix|covariance)\b",
+    re.IGNORECASE,
+)
+
+# Multi-horizon ensemble: compute p_up at each horizon and blend.
+# Short horizons capture momentum; long horizons capture regime persistence.
+HORIZON_ENSEMBLE = [1, 3, 7, 14, 30]
+HORIZON_WEIGHTS = [0.10, 0.15, 0.30, 0.25, 0.20]
+
+# Adaptive weight profiles for CUSUM-adaptive horizon blending.
+# When regime is stable, bias toward long horizons (persistence).
+# When regime is changing, bias toward short horizons (responsiveness).
+STABLE_WEIGHTS = [0.05, 0.10, 0.25, 0.30, 0.30]
+UNSTABLE_WEIGHTS = [0.25, 0.30, 0.25, 0.15, 0.05]
+
+
+def _compute_adaptive_weights(
+    regimes: list[str],
+    lookback: int = 20,
+) -> list[float]:
+    """Compute adaptive horizon weights based on regime stability.
+
+    Measures how often the regime changed in the recent past. Stable
+    regimes get more long-horizon weight (persistence); unstable regimes
+    get more short-horizon weight (responsiveness to potential change).
+    """
+    n = min(lookback, len(regimes) - 1)
+    if n < 2:
+        return list(HORIZON_WEIGHTS)
+
+    same_count = sum(
+        1 for i in range(len(regimes) - 1, len(regimes) - 1 - n, -1)
+        if regimes[i] == regimes[i - 1]
+    )
+    stability = max(0.0, min(1.0, same_count / n))
+
+    blended = [
+        stability * s + (1.0 - stability) * u
+        for s, u in zip(STABLE_WEIGHTS, UNSTABLE_WEIGHTS)
+    ]
+    total = sum(blended)
+    return [w / total for w in blended]
+
+
+def _compute_gmm_start_mixture(
+    log_returns: np.ndarray,
+) -> dict[str, float] | None:
+    """Fit a 3-component GMM on multi-feature data and return soft regime
+    probabilities for the most recent observation.
+
+    Features: z-scored return, 5-day momentum (vol-scaled), and the ratio
+    of short-term to long-term volatility. Using multiple features instead
+    of a single return threshold captures more of the market's state.
+
+    Returns None if there is insufficient data (< 20 obs) or if the GMM
+    does not converge.
+    """
+    from sklearn.mixture import GaussianMixture
+
+    n = len(log_returns)
+    if n < 20:
+        return None
+
+    ret = log_returns[-1]
+    vol_5d = float(np.std(log_returns[-5:])) if n >= 5 else float(np.std(log_returns))
+    vol_20d = float(np.std(log_returns[-20:]))
+    momentum_5d = float(np.sum(log_returns[-5:])) if n >= 5 else ret * 5
+
+    vol_floor = max(vol_20d, 1e-8)
+    features = np.column_stack([
+        log_returns / vol_floor,
+        np.concatenate([np.full(n - 5, np.nan), np.full(5, momentum_5d / (vol_floor * np.sqrt(5)))]),
+        np.concatenate([np.full(n - 5, np.nan), np.full(5, vol_5d / vol_floor if vol_floor > 1e-10 else 1.0)]),
+    ])
+    valid = np.all(np.isfinite(features), axis=1)
+    if valid.sum() < 10:
+        return None
+
+    try:
+        gmm = GaussianMixture(n_components=3, covariance_type="full",
+                              max_iter=50, n_init=3, random_state=0)
+        gmm.fit(features[valid])
+    except (ValueError, FloatingPointError):
+        return None
+
+    # Map GMM components to regimes based on the first feature (return)
+    # Component with highest mean return → bull, lowest → bear, middle → sideways
+    ret_means = gmm.means_[:, 0]
+    order = np.argsort(ret_means)
+    mapping = {order[0]: "bear", order[1]: "sideways", order[2]: "bull"}
+
+    posterior = gmm.predict_proba(features[valid][-1:])[0]
+    return {mapping[k]: float(posterior[k]) for k in range(3)}
+
+
+class WindowForecast(TypedDict):
+    """Forecast payload emitted for one rolling backtest window.
+
+    Fields carry both the tradable forecast outputs and the diagnostics needed
+    by the orchestrator.  ``p_up`` is the horizon probability of a positive
+    return, ``predicted_return`` is the horizon expected return from the
+    simulated trajectory, and ``ci_lower``/``ci_upper`` are price-level bounds.
+    ``entropy`` summarizes transition-matrix uncertainty, while
+    ``break_result`` and ``original_break_result`` preserve structural-break
+    metadata for any downstream confidence-interval widening or short-window
+    rerun.
+    """
+
+    p_up: float
+    predicted_return: float
+    ci_lower: float
+    ci_upper: float
+    garch_vol_applied: bool
+    entropy: object
+    break_result: object
+    break_rerun_triggered: bool
+    original_break_result: object
+    hmm_status: str
+
+
+def _positive_window_std_floor(log_returns: np.ndarray) -> float:
+    finite_returns = log_returns[np.isfinite(log_returns)]
+    if finite_returns.size >= 2:
+        window_std = float(np.std(finite_returns))
+        if math.isfinite(window_std) and window_std > 0:
+            return window_std
+    return 1e-6
+
+
+def _adapt_sparse_regime_stats(
+    raw_stats: dict[str, dict[str, float]],
+    log_returns: np.ndarray,
+) -> dict[str, RegimeStats]:
+    std_fallback = _positive_window_std_floor(log_returns)
+    regime_stats: dict[str, RegimeStats] = {}
+    for state in ["bull", "bear", "sideways"]:
+        std_return = float(raw_stats[state]["stdReturn"])
+        if not math.isfinite(std_return) or std_return <= 0:
+            std_return = std_fallback
+        regime_stats[state] = RegimeStats(
+            mean_return=raw_stats[state]["meanReturn"],
+            std_return=std_return,
+        )
+    return regime_stats
+
+
+def _usable_hmm_overlay_components(
+    drift: float,
+    volatility: float,
+    scale: float,
+    weight: float,
+) -> bool:
+    return (
+        math.isfinite(drift)
+        and math.isfinite(volatility)
+        and volatility >= 0
+        and math.isfinite(scale)
+        and scale > 0
+        and math.isfinite(volatility * scale)
+        and math.isfinite(weight)
+        and 0 <= weight <= 1
+    )
+
+
+def _is_recoverable_hmm_overlay_error(exc: BaseException) -> bool:
+    if not isinstance(exc, HMM_OPTIONAL_ERRORS):
+        return False
+    return bool(HMM_OPTIONAL_ERROR_PATTERN.search(str(exc)))
+
+
+def _combine_uncertainty_ci_scale(
+    structural_scale: float = 1.0,
+    entropy_scale: float = 1.0,
+) -> float:
+    """Combine CI scales without letting entropy undo required widening."""
+    if not math.isfinite(structural_scale) or structural_scale <= 0:
+        structural_scale = 1.0
+    if not math.isfinite(entropy_scale) or entropy_scale <= 0:
+        entropy_scale = 1.0
+    combined = structural_scale * entropy_scale
+    return max(1.0, structural_scale, combined)
+
+
+def compute_window_forecast(
+    window_prices: list[float],
+    horizon: int,
+    return_threshold_multiplier: float,
+    decay_rate: float,
+    break_divergence_threshold: float,
+    use_hmm: bool,
+    asset_profile: str,
+    enable_garch_vol: bool,
+    garch_horizon: int | None,
+    garch_ceiling: tuple[float, float] | None,
+    entropy_tracker: EntropyZScoreTracker | None = None,
+    entropy_kappa: float = 0.15,
+    use_empirical_up_rates: bool = True,
+    random_state: int | None = None,
+    use_meta_regime: bool = False,
+    use_conditional_transitions: bool = False,
+    use_path_integrated_drift: bool = False,
+) -> WindowForecast:
+    """Compute one horizon forecast from a rolling price window.
+
+    Parameters
+    ----------
+    window_prices : list[float]
+        Ordered price history for the current backtest window.  The final
+        element is the forecast origin price used to convert trajectory output
+        into ``predicted_return``.
+    horizon : int
+        Number of future bars/days to project the Markov state distribution and
+        price trajectory.
+    return_threshold_multiplier : float
+        Multiplier passed to regime classification.  It controls how large a
+        return must be, relative to the rolling return scale, before it is
+        labeled bull or bear rather than sideways.
+    decay_rate : float
+        Exponential decay factor for transition counts and empirical up-rates.
+        Values closer to 1.0 preserve more long-window history; lower values
+        emphasize the most recent regime transitions.
+    break_divergence_threshold : float
+        Divergence threshold for detecting a structural break between recent
+        and longer-window transition behavior.
+    use_hmm : bool
+        When True, fit a 3-state Gaussian HMM with Baum-Welch and blend its
+        drift/volatility forecast into the trajectory if the fit converges.
+    asset_profile : str
+        Asset profile key used to scale the optional HMM overlay weight.
+    enable_garch_vol : bool
+        When True, apply GARCH-derived volatility scaling to the Monte Carlo
+        trajectory.
+    garch_horizon : int or None
+        Optional cap after which GARCH scaling soft-blends back toward 1.0.
+    garch_ceiling : tuple[float, float] or None
+        Optional calm/turbulent ceiling pair for GARCH volatility scaling.
+    entropy_tracker : EntropyZScoreTracker or None
+        Optional rolling entropy tracker from walk-forward orchestrator.
+        When provided, enables CI modulation via entropy z-score.
+    entropy_kappa : float
+        Sensitivity of CI width to the entropy z-score (default 0.15).
+
+    Returns
+    -------
+    WindowForecast
+        Horizon probability, expected return, price confidence interval, and
+        diagnostics for transition entropy and structural breaks.
+
+    Notes
+    -----
+    The forecast uses a finite-state Markov abstraction: once returns are
+    classified into regimes, the current regime and estimated transition matrix
+    drive the n-step state distribution.  The returned confidence interval is a
+    simulation product, not a posterior credible interval over the transition
+    matrix itself; callers should use the entropy and structural-break metadata
+    when interpreting forecast reliability.
+    """
+    # Single setup path: compute simple returns for regime classification,
+    # log returns for stats/up-rate/trajectory consistency
+    active_returns = np.array(
+        [(window_prices[i] - window_prices[i - 1]) / window_prices[i - 1]
+         for i in range(1, len(window_prices))]
+    )
+    log_returns = np.log(1.0 + active_returns)
+
+    # Classify regimes once
+    regimes = classify_regime_series(active_returns, return_threshold_multiplier=return_threshold_multiplier)
+    current_regime = regimes[-1] if regimes else "sideways"
+
+    # Estimate transition matrix once
+    if use_meta_regime and use_conditional_transitions:
+        meta_fit = MetaRegimeDetector().fit(active_returns)
+        conditional_matrices = estimate_conditional_transition_matrices(
+            regimes,
+            meta_fit["environment_sequence"],
+            decay_rate=decay_rate,
+        )
+        current_environment = meta_fit["current_environment"]
+        if current_environment is not None:
+            P = conditional_matrices[current_environment]
+        else:
+            P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
+    else:
+        P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
+
+    # Apply semi-Markov dwell-time adjustment: the longer the market has
+    # been in the current regime, the more persistent it becomes. This
+    # captures the empirical pattern that bull markets lasting months are
+    # more likely to continue than a single random up day.
+    dwell_time = 1
+    for i in range(len(regimes) - 1, 0, -1):
+        if regimes[i] == regimes[i - 1]:
+            dwell_time += 1
+        else:
+            break
+    if dwell_time > 1:
+        dampen = math.exp(-0.05 * dwell_time)
+        idx = STATE_INDEX[current_regime]
+        for j in range(NUM_STATES):
+            if j != idx:
+                P[idx, j] *= dampen
+        row_sum = float(np.sum(P[idx]))
+        if row_sum > 0:
+            P[idx] /= row_sum
+
+    # Detect structural break once
+    break_result = detect_structural_break(
+        regimes,
+        divergence_threshold=break_divergence_threshold,
+        decay_rate=decay_rate,
+    )
+
+    # Compute Markov forecast once
+    # forecast = compute_markov_forecast(P, current_regime, horizon)
+
+    # Use robust estimate_regime_stats with log returns
+    raw_stats = estimate_regime_stats(log_returns, regimes, min_obs_per_state=1)
+    regime_stats = _adapt_sparse_regime_stats(raw_stats, log_returns)
+
+    hmm_override: dict[str, float] | None = None
+    hmm_status = "disabled"
+
+    if use_hmm:
+        hmm_status = "not_attempted"
+        try:
+            hmm_result = baum_welch(
+                log_returns,
+                n_states=3,
+                max_iterations=50,
+                tolerance=1e-3,
+            )
+        except HMM_OPTIONAL_ERRORS as exc:
+            if not _is_recoverable_hmm_overlay_error(exc):
+                raise
+            hmm_status = f"error:{type(exc).__name__}"
+
+        else:
+            hmm_status = "non_converged"
+            if not hmm_result.converged:
+                import warnings
+                warnings.warn(
+                    f"HMM did not converge in {hmm_result.iterations if hasattr(hmm_result, 'iterations') else 'unknown'} iterations. "
+                    "Falling back to pure Markov forecast without HMM overlay.",
+                    RuntimeWarning,
+                )
+
+            if hmm_result.converged:
+                try:
+                    hmm_pred = predict(
+                        log_returns, hmm_result.params, forecast_horizon=horizon
+                    )
+                    vol_scale = fit_volatility_hmm(
+                        log_returns, vol_window=5, n_states=2
+                    )
+                except HMM_OPTIONAL_ERRORS as exc:
+                    if not _is_recoverable_hmm_overlay_error(exc):
+                        raise
+                    hmm_status = f"error:{type(exc).__name__}"
+                else:
+                    profile = ASSET_PROFILES.get(asset_profile, ASSET_PROFILES["crypto"])
+                    hmm_weight = float(np.clip(profile.hmm_weight_multiplier * 0.5, 0.0, 1.0))
+                    if _usable_hmm_overlay_components(
+                        hmm_pred.expected_return,
+                        hmm_pred.expected_volatility,
+                        vol_scale,
+                        hmm_weight,
+                    ):
+                        # HMM predict returns per-step emission values (daily drift/vol)
+                        hmm_override = {
+                            "drift": hmm_pred.expected_return,
+                            "vol": hmm_pred.expected_volatility * vol_scale,
+                            "weight": hmm_weight,
+                        }
+                        hmm_status = "override_applied"
+                    else:
+                        hmm_status = "non_finite"
+
+    garch_scales: list[float] | None = None
+    garch_vol_applied = False
+
+    if enable_garch_vol:
+        log_returns_for_garch = [
+            math.log(window_prices[i] / window_prices[i - 1])
+            for i in range(1, len(window_prices))
+        ]
+        opts: GarchClampOptions | None = None
+        if garch_horizon is not None or garch_ceiling is not None:
+            opts = GarchClampOptions(horizon_cap=garch_horizon, ceiling=garch_ceiling or (1.5, 3.0),)
+
+        scales = compute_garch_scales(log_returns_for_garch, horizon, opts)
+        if scales:
+            garch_scales = scales
+            garch_vol_applied = True
+
+    # Phase 4 — derive combined uncertainty CI scale from structural break
+    # divergence and transition entropy z-score. This scale will be passed
+    # directly into compute_trajectory to widen CIs at source, avoiding
+    # double-widening in walk_forward.py.
+    transition_entropy_result = compute_transition_entropy(P)
+    structural_scale = 1.0
+    if break_result["detected"]:
+        # Structural break contributes monotonic widening based on divergence.
+        # Formula: clamp(1 + divergence * 2.5, 1.0, 1.5) maps threshold 0.05 → 1.125, 0.20 → 1.5.
+        # This matches legacy widen_for_structural_break (1.5x) at high divergence.
+        divergence = float(break_result["divergence"])
+        structural_scale = max(1.0, min(1.5, 1.0 + divergence * 2.5))
+
+    entropy_scale = 1.0
+    if entropy_tracker is not None:
+        # Entropy z-score contributes via entropy_z_to_ci_scale (bounded [0.7, 1.4]).
+        # Uses rolling z-score from orchestrator's history tracker.
+        entropy_z = entropy_tracker.z_score(transition_entropy_result.entropy_norm)
+        if entropy_z is not None:
+            entropy_scale = entropy_z_to_ci_scale(entropy_z, kappa=entropy_kappa)
+
+    uncertainty_ci_scale = _combine_uncertainty_ci_scale(
+        structural_scale=structural_scale,
+        entropy_scale=entropy_scale,
+    )
+
+    traj = compute_trajectory(
+        window_prices[-1],
+        horizon,
+        P,
+        regime_stats,
+        current_regime,
+        hmm_override=hmm_override,
+        n_samples=500,
+        garch_scales=garch_scales,
+        uncertainty_ci_scale=uncertainty_ci_scale,
+        random_state=random_state,
+    )
+    horizon_point = traj[-1]
+
+    predicted_return = (horizon_point.expected_price - window_prices[-1]) / window_prices[-1]
+
+    # Use trajectory's p_up directly for probability coherence
+    p_up = horizon_point.p_up
+
+    # When empirical up-rates are requested, compute p_up as an ensemble
+    # across multiple horizons, optionally using a GMM soft-start-mixture
+    # to smooth the regime forecast at the origin.
+    if use_empirical_up_rates and len(regimes) >= max(HORIZON_ENSEMBLE):
+        gmm_mixture = _compute_gmm_start_mixture(log_returns)
+        adaptive_weights = _compute_adaptive_weights(regimes)
+        p_up_ensemble = 0.0
+        for h, w in zip(HORIZON_ENSEMBLE, adaptive_weights):
+            regime_up_rates = compute_regime_up_rates(
+                regimes, log_returns, h, decay_rate=decay_rate,
+            )
+            forecast = compute_markov_forecast(
+                P, current_regime, h, start_mixture=gmm_mixture,
+            )
+            p_up_h = sum(
+                forecast[state] * regime_up_rates[state]
+                for state in ["bull", "bear", "sideways"]
+            )
+            p_up_ensemble += w * p_up_h
+        p_up = float(p_up_ensemble)
+    elif use_empirical_up_rates:
+        # Fallback: not enough data for ensemble, use original horizon
+        gmm_mixture = _compute_gmm_start_mixture(log_returns)
+        regime_up_rates = compute_regime_up_rates(
+            regimes, log_returns, horizon, decay_rate=decay_rate,
+        )
+        forecast = compute_markov_forecast(
+            P, current_regime, horizon, start_mixture=gmm_mixture,
+        )
+        empirical_p_up = sum(
+            forecast[state] * regime_up_rates[state]
+            for state in ["bull", "bear", "sideways"]
+        )
+        p_up = float(empirical_p_up)
+
+    # When empirical up-rates are active, replace the trajectory-based
+    # predicted_return with the empirical expected cumulative return per
+    # regime, blended via the same Markov forecast weights. This makes
+    # predicted_return consistent with p_up instead of relying on noisy
+    # per-regime mean estimates from the trajectory simulation.
+    if use_empirical_up_rates and len(regimes) >= horizon:
+        regime_expected = compute_regime_expected_returns(
+            regimes, log_returns, horizon, decay_rate=decay_rate,
+        )
+        forecast = compute_markov_forecast(
+            P, current_regime, horizon, start_mixture=gmm_mixture,
+        )
+        empirical_log_return = sum(
+            forecast[state] * regime_expected[state]
+            for state in ["bull", "bear", "sideways"]
+        )
+        predicted_return = float(math.expm1(empirical_log_return))
+
+    return {
+        "p_up": float(p_up),
+        "predicted_return": float(predicted_return),
+        "ci_lower": float(horizon_point.lower_bound),
+        "ci_upper": float(horizon_point.upper_bound),
+        "garch_vol_applied": bool(garch_vol_applied),
+        "entropy": transition_entropy_result,
+        "break_result": break_result,
+        "break_rerun_triggered": False,
+        "original_break_result": break_result,
+        "hmm_status": hmm_status,
+    }

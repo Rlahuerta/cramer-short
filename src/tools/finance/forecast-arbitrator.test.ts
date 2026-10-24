@@ -486,6 +486,50 @@ describe('forecast arbitrator', () => {
     expect(parsed.data.result.rawEvidence.whale?.direction).toBe('neutral');
   });
 
+  it('normalizes percentage-style nested probability and confidence inputs before schema validation', async () => {
+    const payload = {
+      ticker: 'BTC',
+      horizon_days: '1',
+      current_price: '64406.73',
+      leverage: '1',
+      markov: {
+        forecast_return: '0.00408',
+        p_up: '55',
+        confidence: '27.4',
+        structural_break: 'true',
+        flat_probability: '82.8',
+        ci_low: '62000',
+        ci_high: '68000',
+      },
+      polymarket: {
+        forecast_return: '-0.0121',
+        quality_score: '83',
+        markets: [
+          {
+            question: 'Will Bitcoin dip to $64,000 tomorrow?',
+            probability: '100',
+          },
+        ],
+      },
+      whale: {
+        direction: 'neutral',
+        confidence: '35',
+        summary: 'No whale transactions detected.',
+      },
+    };
+
+    const raw = await forecastArbitratorTool.invoke(payload);
+    const parsed = parseToolResult(raw);
+
+    expect(parsed.data.result.rawEvidence.markov?.p_up).toBe(0.55);
+    expect(parsed.data.result.rawEvidence.markov?.confidence).toBeCloseTo(0.274, 12);
+    expect(parsed.data.result.rawEvidence.markov?.flat_probability).toBe(0.828);
+    expect(parsed.data.result.rawEvidence.polymarket?.quality_score).toBe(83);
+    expect(parsed.data.result.rawEvidence.polymarket?.markets?.[0]?.question).toBe('Will Bitcoin dip to $64,000 tomorrow?');
+    expect(parsed.data.result.rawEvidence.polymarket?.markets?.[0]?.probability).toBe(1);
+    expect(parsed.data.result.rawEvidence.whale?.confidence).toBe(0.35);
+  });
+
   it('records a normalized replay bundle when the real tool entrypoint is invoked', async () => {
     const captures: Array<{
       ticker: string;

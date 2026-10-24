@@ -5,6 +5,8 @@ import { createProgressChannel } from '../utils/progress-channel.js';
 import { loadCacheFromDisk, saveCacheToDisk } from '../utils/cross-session-cache.js';
 import { getExperimentsDir } from '../utils/paths.js';
 import { getSetting } from '../utils/config.js';
+import { assertAssetConsistency, resolveAssetIntent } from '../tools/finance/asset-resolver.js';
+import { resolveForecastToolTicker } from './query-router/forecast-ticker.js';
 import type {
   ApprovalDecision,
   ToolApprovalEvent,
@@ -16,6 +18,7 @@ import type {
   ToolStartEvent,
 } from './types.js';
 import type { RunContext } from './run-context.js';
+import { hasErrorLikeToolResult } from './query-router/types.js';
 
 type ToolExecutionEvent =
   | ToolStartEvent
@@ -27,7 +30,31 @@ type ToolExecutionEvent =
   | ToolLimitEvent;
 
 const TOOLS_REQUIRING_APPROVAL = ['write_file', 'edit_file'] as const;
+/** Tools whose listed `action` values mutate persistent state and need approval. */
+const ACTIONS_REQUIRING_APPROVAL: Record<string, readonly string[]> = {
+  heartbeat: ['update'],
+  forecast_lab_run: ['promote-approved', 'reset-live'],
+};
+/**
+ * Pure data-fetch/compute tools whose results may be cached in-session and on
+ * disk. Allowlist (not denylist) so new stateful or side-effecting tools
+ * (memory, filesystem, heartbeat, forecast-lab, browser) are never cached.
+ */
+const CACHEABLE_TOOLS = new Set([
+  'financial_search', 'get_financials', 'get_market_data', 'get_robinhood_quote',
+  'get_robinhood_fundamentals', 'read_filings', 'stock_screener', 'portfolio_risk',
+  'wacc_inputs', 'polymarket_search', 'polymarket_forecast', 'forecast_arbitrator',
+  'price_distribution_chart', 'markov_distribution', 'bitmex_market', 'social_sentiment',
+  'trump_pressure_index', 'geopolitics_search', 'get_fixed_income', 'get_options_chain',
+  'get_earnings_transcript', 'get_onchain_crypto', 'web_fetch', 'web_search', 'x_search',
+  'dcf_valuation', 'reverse_dcf', 'rim_valuation',
+]);
 const FORECAST_LAB_GUARDED_TOOLS = new Set(['write_file', 'edit_file', 'create_file']);
+// Forecast tools whose ticker must stay consistent with the query's resolved
+// asset intent (defense-in-depth behind the pre-execution ticker normalizer).
+const ASSET_CONSISTENCY_GUARDED_TOOLS = new Set([
+  'markov_distribution', 'polymarket_forecast', 'forecast_arbitrator',
+]);
 
 /** Max entries in the in-session request result cache. LRU eviction on overflow. */
 export const REQUEST_CACHE_MAX_SIZE = 256;
@@ -87,8 +114,7 @@ export class AgentToolExecutor {
    *
    * Bounded to REQUEST_CACHE_MAX_SIZE entries; least-recently-used entry is
    * evicted on overflow.
-   * Tools that are stateful, produce side-effects, or are intentionally
-   * non-deterministic are excluded — see UNCACHEABLE_TOOLS below.
+   * Only tools in CACHEABLE_TOOLS are cached; error-like results never are.
    */
   private readonly requestCache = new Map<string, string>();
 
@@ -125,7 +151,8 @@ export class AgentToolExecutor {
     // Pre-populate in-session cache from disk (fire-and-forget)
     loadCacheFromDisk().then((diskCache) => {
       for (const [k, v] of diskCache) {
-        if (!this.requestCache.has(k)) setBoundedLru(this.requestCache, k, v, this.requestCacheMaxSize);
+        const cacheable = CACHEABLE_TOOLS.has(k.slice(0, k.indexOf(':'))) && !hasErrorLikeToolResult(v);
+        if (cacheable && !this.requestCache.has(k)) setBoundedLru(this.requestCache, k, v, this.requestCacheMaxSize);
       }
     }).catch((err) => {
       // Auto-store failures are logged but don't block agent execution
@@ -225,6 +252,18 @@ export class AgentToolExecutor {
     toolArgs: Record<string, unknown>,
     ctx: RunContext
   ): AsyncGenerator<ToolExecutionEvent, void> {
+    // Auto-correct a forecast tool's ticker to the query's resolved asset BEFORE
+    // anything else runs. executeSingle is the single choke point every call path
+    // flows through — model calls (executeAll) and forced/pre-executed calls
+    // (executeTool) — so a stray ticker (e.g. "PLAN") can never reach the tool
+    // and exhaust the iteration budget, regardless of which path emitted it.
+    if (ASSET_CONSISTENCY_GUARDED_TOOLS.has(toolName) && ctx.query && typeof toolArgs.ticker === 'string') {
+      const canonical = resolveForecastToolTicker(ctx.query, toolName);
+      if (canonical && toolArgs.ticker.toUpperCase() !== canonical.toUpperCase()) {
+        toolArgs = { ...toolArgs, ticker: canonical };
+      }
+    }
+
     const toolQuery = this.extractQueryFromArgs(toolArgs);
     const toolPath = typeof toolArgs.path === 'string' ? toolArgs.path : null;
 
@@ -243,7 +282,23 @@ export class AgentToolExecutor {
       }
     }
 
-    if (this.requiresApproval(toolName) && !this.sessionApprovedTools.has(toolName)) {
+    if (
+      ASSET_CONSISTENCY_GUARDED_TOOLS.has(toolName)
+      && typeof toolArgs.ticker === 'string'
+      && ctx.query
+    ) {
+      try {
+        assertAssetConsistency(resolveAssetIntent(ctx.query), toolName, toolArgs.ticker);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        yield { type: 'tool_error', tool: toolName, error };
+        ctx.scratchpad.recordToolCall(toolName, toolQuery);
+        ctx.scratchpad.addToolResult(toolName, toolArgs, error);
+        return;
+      }
+    }
+
+    if (this.requiresApproval(toolName, toolArgs) && !this.sessionApprovedTools.has(toolName)) {
       const decision = (await this.requestToolApproval?.({ tool: toolName, args: toolArgs })) ?? 'deny';
       yield { type: 'tool_approval', tool: toolName, args: toolArgs, approved: decision };
       if (decision === 'deny') {
@@ -251,7 +306,8 @@ export class AgentToolExecutor {
         return;
       }
       if (decision === 'allow-session') {
-        for (const name of TOOLS_REQUIRING_APPROVAL) {
+        const isFileTool = (TOOLS_REQUIRING_APPROVAL as readonly string[]).includes(toolName);
+        for (const name of isFileTool ? TOOLS_REQUIRING_APPROVAL : [toolName]) {
           this.sessionApprovedTools.add(name);
         }
       }
@@ -282,15 +338,8 @@ export class AgentToolExecutor {
         throw new Error(`Tool '${toolName}' not found`);
       }
 
-      // --- In-session request cache ---
-      // Skip cache for tools that are stateful, have side-effects, or are
-      // intentionally non-deterministic.
-      const UNCACHEABLE_TOOLS = new Set([
-        'browser', 'skill', 'sequential_thinking',
-        'write_file', 'edit_file', 'create_file', 'memory_store', 'forecast_lab_run',
-      ]);
-      const isCacheable = !UNCACHEABLE_TOOLS.has(toolName);
-      cacheKey = isCacheable
+      // --- In-session request cache (allowlisted pure data-fetch tools only) ---
+      cacheKey = CACHEABLE_TOOLS.has(toolName)
         ? `${toolName}:${JSON.stringify(Object.fromEntries(Object.entries(toolArgs).sort()))}`
         : null;
 
@@ -364,9 +413,11 @@ export class AgentToolExecutor {
         if (trackedPendingPromise && this.pendingRequests.get(cacheKey) === trackedPendingPromise) {
           this.pendingRequests.delete(cacheKey);
         }
-        setBoundedLru(this.requestCache, cacheKey, result, this.requestCacheMaxSize);
-        const ttlMs = getSetting('cacheTtlMs', 900000);
-        saveCacheToDisk(cacheKey, result, toolName, ttlMs);
+        if (!hasErrorLikeToolResult(result)) {
+          setBoundedLru(this.requestCache, cacheKey, result, this.requestCacheMaxSize);
+          const ttlMs = getSetting('cacheTtlMs', 900000);
+          saveCacheToDisk(cacheKey, result, toolName, ttlMs);
+        }
       }
 
       yield { type: 'tool_end', tool: toolName, args: toolArgs, result, duration };
@@ -406,7 +457,9 @@ export class AgentToolExecutor {
     return undefined;
   }
 
-  private requiresApproval(toolName: string): boolean {
-    return (TOOLS_REQUIRING_APPROVAL as readonly string[]).includes(toolName);
+  private requiresApproval(toolName: string, args: Record<string, unknown>): boolean {
+    if ((TOOLS_REQUIRING_APPROVAL as readonly string[]).includes(toolName)) return true;
+    const action = typeof args.action === 'string' ? args.action : '';
+    return ACTIONS_REQUIRING_APPROVAL[toolName]?.includes(action) ?? false;
   }
 }

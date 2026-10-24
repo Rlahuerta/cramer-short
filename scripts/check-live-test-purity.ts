@@ -3,6 +3,8 @@ const LIVE_GLOBS = [
   'src/**/*.e2e.test.ts',
 ];
 
+export {};
+
 function stripComments(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, '')

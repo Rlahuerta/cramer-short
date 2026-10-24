@@ -11,9 +11,15 @@
  *   RUN_INTEGRATION=1 bun test --filter integration
  */
 
-import { describe, expect } from 'bun:test';
+import { beforeAll, describe, expect } from 'bun:test';
 import { integrationIt } from '@/utils/test-guards.js';
 import { getOllamaModels } from '@/utils/ollama.js';
+import {
+  getOllamaTestPreflight,
+  skipWhenNoCloudModel,
+  skipWhenOllamaUnreachable,
+  type OllamaTestPreflight,
+} from '@/utils/ollama-test-preflight.js';
 import { resolveProvider } from '@/providers.js';
 import { isThinkingModel, getFastModel } from '@/model/llm.js';
 
@@ -62,22 +68,31 @@ describe('Ollama provider routing', () => {
 // ---------------------------------------------------------------------------
 
 describe('Ollama model discovery', () => {
-  integrationIt('getOllamaModels returns a non-empty array of model names', async () => {
-    const models = await getOllamaModels();
+  let preflight: OllamaTestPreflight;
+
+  beforeAll(async () => {
+    preflight = await getOllamaTestPreflight();
+  });
+
+  integrationIt('getOllamaModels returns a non-empty array of model names', () => {
+    if (skipWhenOllamaUnreachable(preflight, 'getOllamaModels returns a non-empty array of model names')) return;
+    const models = preflight.models;
     expect(Array.isArray(models)).toBe(true);
     expect(models.length).toBeGreaterThan(0);
     expect(models.every((m: string) => typeof m === 'string')).toBe(true);
   });
 
-  integrationIt('at least one cloud model is available', async () => {
-    const models = await getOllamaModels();
-    const cloudModels = models.filter((m: string) => m.includes(':cloud'));
+  integrationIt('at least one cloud model is available', () => {
+    if (skipWhenOllamaUnreachable(preflight, 'at least one cloud model is available')) return;
+    if (skipWhenNoCloudModel(preflight, 'at least one cloud model is available')) return;
+    const cloudModels = preflight.models.filter((m: string) => m.includes(':cloud'));
     expect(cloudModels.length).toBeGreaterThan(0);
   });
 
   // Conditional test — only run if nemotron is installed
-  integrationIt('nemotron-3-super:cloud is listed in available models', async () => {
-    const models = await getOllamaModels();
+  integrationIt('nemotron-3-super:cloud is listed in available models', () => {
+    if (skipWhenOllamaUnreachable(preflight, 'nemotron-3-super:cloud is listed in available models')) return;
+    const models = preflight.models;
     const hasNemotron = models.some((m: string) => m.includes('nemotron-3-super'));
     if (!hasNemotron) {
       // Skip gracefully if model not installed

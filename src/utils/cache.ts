@@ -8,7 +8,7 @@
  * Cache files live in .cramer-short/cache/ (already gitignored via .cramer-short/*).
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve, sep } from 'path';
 import { createHash } from 'crypto';
 import { logger } from './logger.js';
 import { cramerShortPath } from './paths.js';
@@ -34,6 +34,37 @@ const CACHE_DIR = cramerShortPath('cache');
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Components interpolated into cache file paths must match this shape.
+ * '.' is allowed so valid tickers like 'BRK.B' keep their historical filenames.
+ */
+const SAFE_PATH_COMPONENT = /^[A-Za-z0-9._-]{1,32}$/;
+
+/**
+ * Sanitize a single path component (endpoint segment or ticker prefix).
+ * Valid components pass through untouched; everything else is slugged to
+ * [A-Za-z0-9._-], consecutive-dot runs collapse so '..' can never survive,
+ * and the result is capped at 32 chars — so lookups still cache safely.
+ */
+function sanitizePathComponent(component: string): string {
+  if (SAFE_PATH_COMPONENT.test(component) && !component.includes('..')) {
+    return component;
+  }
+  return (
+    component
+      .replace(/[^A-Za-z0-9._-]/g, '_')
+      .replace(/\.{2,}/g, '_')
+      .slice(0, 32) || '_'
+  );
+}
+
+/** Defense in depth: true when `filepath` resolves inside the cache root. */
+function isInsideCacheDir(filepath: string): boolean {
+  const root = resolve(CACHE_DIR);
+  const resolved = resolve(filepath);
+  return resolved === root || resolved.startsWith(root + sep);
+}
 
 /**
  * Build a human-readable label for log messages.
@@ -78,13 +109,15 @@ export function buildCacheKey(
   const hash = createHash('md5').update(raw).digest('hex').slice(0, 12);
 
   // Turn "/prices/" → "prices"
-  const cleanEndpoint = endpoint
-    .replace(/^\//, '')
-    .replace(/\/$/, '')
-    .replace(/\//g, '_');
+  const cleanEndpoint = sanitizePathComponent(
+    endpoint
+      .replace(/^\//, '')
+      .replace(/\/$/, '')
+      .replace(/\//g, '_')
+  );
 
   // Prefix with ticker when available for human-readable filenames (optional)
-  const ticker = typeof params.ticker === 'string' ? params.ticker.toUpperCase() : null;
+  const ticker = typeof params.ticker === 'string' ? sanitizePathComponent(params.ticker.toUpperCase()) : null;
   const prefix = ticker ? `${ticker}_` : '';
 
   return `${cleanEndpoint}/${prefix}${hash}.json`;
@@ -134,6 +167,11 @@ export function readCache(
   const filepath = join(CACHE_DIR, cacheKey);
   const label = describeRequest(endpoint, params);
 
+  if (!isInsideCacheDir(filepath)) {
+    logger.warn(`Cache path escapes cache directory — skipping read: ${label}`, { filepath });
+    return null;
+  }
+
   if (!existsSync(filepath)) {
     return null;
   }
@@ -173,6 +211,11 @@ export function writeCache(
   const cacheKey = buildCacheKey(endpoint, params);
   const filepath = join(CACHE_DIR, cacheKey);
   const label = describeRequest(endpoint, params);
+
+  if (!isInsideCacheDir(filepath)) {
+    logger.warn(`Cache path escapes cache directory — skipping write: ${label}`, { filepath });
+    return;
+  }
 
   const entry: CacheEntry = {
     endpoint,

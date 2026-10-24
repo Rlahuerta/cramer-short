@@ -81,6 +81,11 @@ export function checkApiKeyExists(apiKeyName: string): boolean {
 }
 
 export function saveApiKeyToEnv(apiKeyName: string, apiKeyValue: string): boolean {
+  // Reject values containing newlines or carriage returns — these would corrupt
+  // the .env file format and allow arbitrary env-var injection on next load.
+  if (/[\n\r]/.test(apiKeyValue)) {
+    return false;
+  }
   try {
     let lines: string[] = [];
     let keyUpdated = false;

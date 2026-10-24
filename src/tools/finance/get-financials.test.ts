@@ -1,8 +1,14 @@
-import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
+import { useNoNetwork } from '../../utils/test-no-network.js';
+import * as apiRoutingCache from '../../utils/api-routing-cache.js';
+import { getAnalystEstimates } from './estimates.js';
+import { getYahooAnalystTargets } from './yahoo-finance.js';
 import { AIMessage } from '@langchain/core/messages';
 
+useNoNetwork();
+
 // Capture real module before mocking so afterAll can restore
-const realLlm = await import('../../model/llm.js');
+const realLlm = { ...(await import('../../model/llm.js')) };
 
 // ---------------------------------------------------------------------------
 // Mock callLlm BEFORE importing the module under test
@@ -18,8 +24,20 @@ mock.module('../../model/llm.js', () => ({
   callLlm: mockCallLlm,
 }));
 
+// The routing cache lives in .cramer-short/api-routing.json: don't read a local copy or write one.
+const routingSpies = [
+  spyOn(apiRoutingCache, 'getPreferredApi').mockResolvedValue(null),
+  spyOn(apiRoutingCache, 'setPreferredApi').mockResolvedValue(undefined),
+];
+
+// These tests only check routing: keep the routed sub-tools off financialdatasets.ai and Yahoo.
+const subToolSpies = [getAnalystEstimates, getYahooAnalystTargets].map((subTool) =>
+  spyOn(subTool, 'invoke').mockResolvedValue(JSON.stringify({ data: {}, sourceUrls: [] })),
+);
+
 afterAll(() => {
   mock.module('../../model/llm.js', () => realLlm);
+  for (const spy of [...routingSpies, ...subToolSpies]) spy.mockRestore();
 });
 
 // ---------------------------------------------------------------------------

@@ -8,4 +8,8 @@
 #   bun run test:integration  → integration tests (separate process)
 #   bun run test:e2e          → E2E tests (each file in its own process)
 #   bun run test:all          → all tiers in order
-pathIgnorePatterns = ["*.integration.test.ts", "*.e2e.test.ts"]
+#
+# `**/` is required to match files in subdirectories. It also ignores files
+# named explicitly on the command line, so scripts/run-isolated-bun-tests.ts
+# passes an empty --path-ignore-patterns (CLI replaces this list) to run them.
+pathIgnorePatterns = ["**/*.integration.test.ts", "**/*.e2e.test.ts"]

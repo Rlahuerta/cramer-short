@@ -418,6 +418,42 @@ describe('cancelExecution — with pending approval', () => {
 
 // ─── cancelExecution — triggerCancellation path ──────────────────────────────
 
+// ─── runQuery — double-submit guard ──────────────────────────────────────────
+
+describe('runQuery — double-submit guard', () => {
+  it('ignores a second runQuery while the first is still processing', async () => {
+    let unblock!: () => void;
+    fakeState.stallPromise = new Promise<void>((res) => (unblock = res));
+    fakeState.events = [{ type: 'done', answer: 'first answer', totalTime: 100, toolCalls: [] }];
+
+    const { ctrl } = makeController();
+    const first = ctrl.runQuery('first query');
+    // Second call must bail out synchronously — the first has already marked
+    // the history item as processing by the time this line runs.
+    const second = ctrl.runQuery('second query');
+
+    expect(fakeCreateAgent).toHaveBeenCalledTimes(1);
+    expect(ctrl.history).toHaveLength(1);
+
+    unblock();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult?.answer).toBe('first answer');
+    expect(secondResult).toBeUndefined();
+    expect(ctrl.history).toHaveLength(1);
+  });
+
+  it('allows a new runQuery after the previous one completes', async () => {
+    fakeState.events = [{ type: 'done', answer: 'one', totalTime: 50, toolCalls: [] }];
+    const { ctrl } = makeController();
+
+    await ctrl.runQuery('first');
+    const second = await ctrl.runQuery('second');
+
+    expect(second?.answer).toBe('one');
+    expect(ctrl.history).toHaveLength(2);
+  });
+});
+
 describe('cancelExecution — triggerCancellation', () => {
   it('calls triggerCancellation if set', () => {
     const { ctrl } = makeController();
@@ -433,5 +469,28 @@ describe('cancelExecution — triggerCancellation', () => {
     const { ctrl } = makeController();
     (ctrl as unknown as { triggerCancellation: null }).triggerCancellation = null;
     expect(() => ctrl.cancelExecution()).not.toThrow();
+  });
+});
+
+describe('requestToolApproval override (headless callers)', () => {
+  it('passes the injected approval policy to the agent instead of the interactive prompt', async () => {
+    const deny = mock(async () => 'deny' as const);
+    let received: ((r: { tool: string; args: Record<string, unknown> }) => Promise<string>) | undefined;
+    fakeState.createOverride = async () => ({ run: (_q: string, _h: unknown) => makeStream([], null) });
+    const createAgent = mock(async (config: { requestToolApproval?: typeof received }) => {
+      received = config.requestToolApproval;
+      return fakeCreateAgent();
+    });
+    const ctrl = new AgentRunnerController({ model: undefined }, makeFakeChatHistory(), undefined, {
+      createAgent: createAgent as never,
+      autoStoreFromRun: fakeAutoStoreFromRun as never,
+      requestToolApproval: deny,
+    });
+
+    await ctrl.runQuery('q');
+
+    expect(received).toBe(deny);
+    expect(await received?.({ tool: 'write_file', args: {} })).toBe('deny');
+    expect(getPendingApproval(ctrl)).toBeNull();
   });
 });

@@ -8,7 +8,6 @@ import {
   getExperimentsDir,
 } from '../../utils/paths.js';
 import { loadConfig, type Config } from '../../utils/config.js';
-import { getEnvironment } from '../../utils/env.js';
 import {
   appendLedgerEntry,
   findLatestKeptLedgerEntry,
@@ -260,7 +259,7 @@ interface StructuredMutationCatalogState {
 
 type ForecastingConfig = Config['forecasting'];
 
-const UNSAFE_SHELL_COMMAND_PATTERN = /[;&|`<>]|\$\(/;
+const UNSAFE_SHELL_COMMAND_PATTERN = /[;&|`<>\n\r]|\$\(|\$\{|\$\w/;
 const UNSAFE_GIT_COMMAND_PATTERN = /\bgit\s+(?:add|commit|push|reset|checkout|clean)\b/;
 const SAFE_PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const FORECAST_LAB_ACTIVE_STATE_DIR = 'active-promotions';
@@ -686,6 +685,37 @@ function assertSafeProfileCommand(command: ForecastLabCommand): void {
 }
 
 /**
+ * Allowlist of environment variables passed to forecast-lab subprocesses.
+ * Excludes API keys and other secrets to prevent accidental leakage via
+ * subprocess stdout or stderr. PATH is required for `bun`, `git`, etc.
+ */
+const SAFE_SUBPROCESS_ENV_KEYS = [
+  'PATH',
+  'HOME',
+  'USER',
+  'LANG',
+  'LC_ALL',
+  'TERM',
+  'SHELL',
+  'PWD',
+  'TZ',
+  'TMPDIR',
+  'BUN_INSTALL',
+  'NODE_ENV',
+  'PYTHONPATH',
+];
+
+function getSafeSubprocessEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const key of SAFE_SUBPROCESS_ENV_KEYS) {
+    if (process.env[key] !== undefined) {
+      env[key] = process.env[key];
+    }
+  }
+  return env;
+}
+
+/**
  * Create a forecast-lab command runner using the provided spawn function.
  *
  * **SECURITY NOTE**: The runner uses `shell: true` for the repo-owned profile
@@ -734,7 +764,7 @@ export function createForecastLabCommandRunner(spawnProcess: typeof spawn): Fore
       try {
         child = spawnProcess(command.command, {
           cwd: context.cwd ?? process.cwd(),
-          env: { ...getEnvironment(), ...(command.env ?? {}) },
+          env: { ...getSafeSubprocessEnv(), ...(command.env ?? {}) },
           shell: true,
           stdio: ['ignore', 'pipe', 'pipe'],
         });

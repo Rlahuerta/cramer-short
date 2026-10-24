@@ -5,11 +5,8 @@ import math
 import numpy as np
 import pytest
 
-from research.backtest.walk_forward import (
-    BacktestStep,
-    WalkForwardResult,
-    walk_forward,
-)
+from research.backtest._config import BacktestStep, WalkForwardResult
+from research.backtest.walk_forward import walk_forward
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +138,11 @@ def test_walk_forward_entropy_records_metadata_and_modulates_ci():
     assert all(s.transition_entropy_norm is not None for s in result.steps)
     assert any(s.transition_entropy_z is not None for s in result.steps)
     assert any(s.entropy_ci_scale is not None and abs(s.entropy_ci_scale - 1.0) > 1e-6 for s in result.steps)
+    first_z_idx = next(
+        i for i, step in enumerate(result.steps) if step.transition_entropy_z is not None
+    )
+    assert first_z_idx >= 5
+    assert not any(step.entropy_ci_modulation_applied for step in result.steps[:5])
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +181,13 @@ def test_walk_forward_hmm_vs_base_same_count():
 
 
 def test_walk_forward_hmm_different_predictions():
-    """HMM variant should produce different predictions than base."""
+    """HMM variant should produce different p_up or CI bounds than base.
+
+    With empirical up-rates enabled (default), predicted_return comes from
+    empirical expected returns rather than the trajectory, so HMM does not
+    affect predicted_return. It still affects CI bounds through the
+    trajectory's volatility blending.
+    """
     rng = np.random.default_rng(202)
     returns = rng.normal(0.0, 0.02, 250)
     prices = [100.0]
@@ -189,8 +197,9 @@ def test_walk_forward_hmm_different_predictions():
     result_base = walk_forward(prices, horizon=7, warmup=120, stride=20, use_hmm=False)
     result_hmm = walk_forward(prices, horizon=7, warmup=120, stride=20, use_hmm=True)
 
-    diffs = [abs(b.predicted_return - h.predicted_return) for b, h in zip(result_base.steps, result_hmm.steps)]
-    assert any(d > 1e-6 for d in diffs), "HMM predictions are identical to base"
+    # HMM should still affect CI bounds via trajectory volatility blending
+    ci_diffs = [abs(b.ci_upper - h.ci_upper) for b, h in zip(result_base.steps, result_hmm.steps)]
+    assert any(d > 1e-6 for d in ci_diffs), "HMM CI bounds are identical to base"
 
 
 def test_walk_forward_with_asset_profile():

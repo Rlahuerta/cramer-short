@@ -1,4 +1,18 @@
-"""Python mirror of the TypeScript anchor-trust policy helper."""
+"""Anchor-to-Polymarket trust policy — decides when to trust market anchors.
+
+The Markov forecaster can blend Polymarket prediction-market prices as
+probability anchors.  This module evaluates whether a given anchor is
+trustworthy based on:
+
+- Trading volume and market maturity
+- Whether the horizon is too short for the anchor to be informative
+- Whether the anchor is near target resolution (prices collapse to 0/1)
+
+When trust is low, the forecaster falls back to pure Markov-model
+probabilities instead of blending in the anchor signal.
+
+Mirrors ``src/tools/finance/markov-distribution.ts`` (anchor-trust section).
+"""
 
 from __future__ import annotations
 

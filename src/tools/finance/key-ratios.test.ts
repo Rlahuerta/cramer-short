@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, spyOn, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
 
 // ---------------------------------------------------------------------------
 // Mock ../search/tavily.js BEFORE importing key-ratios.js
@@ -7,6 +7,14 @@ import { describe, test, expect, mock, spyOn, beforeEach } from 'bun:test';
 const mockTavilyInvoke = mock(async (_input: unknown): Promise<string> =>
   JSON.stringify({ data: { result: 'AAPL P/E: 28x' }, sourceUrls: [] }),
 );
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realTavilyModule = { ...(await import('../search/tavily.js')) };
+afterAll(() => {
+  mock.module('../search/tavily.js', () => realTavilyModule);
+});
+
 mock.module('../search/tavily.js', () => ({
   tavilySearch: { invoke: mockTavilyInvoke, name: 'web_search' },
 }));

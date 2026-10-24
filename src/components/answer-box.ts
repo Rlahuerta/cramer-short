@@ -4,6 +4,7 @@ import { markdownTheme } from '../theme.js';
 
 export class AnswerBoxComponent extends Container {
   private readonly body: Markdown;
+  private value = '';
 
   constructor(initialText = '') {
     super();
@@ -14,8 +15,13 @@ export class AnswerBoxComponent extends Container {
   }
 
   setText(text: string) {
+    this.value = text;
     const rendered = formatResponseTui(text);
     const normalized = rendered.replace(/^\n+/, '');
     this.body.setText(normalized);
+  }
+
+  appendText(chunk: string) {
+    this.setText(this.value + chunk);
   }
 }

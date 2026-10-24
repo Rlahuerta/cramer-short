@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import { classifyRegimeState } from './regime.js';
 import { buildDefaultMatrix } from './transition.js';
-import { computeHorizonDriftVol, computeMixingWeight, computeStartStateMixture, computeTrajectory, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
-import { computeMarkovDistribution } from '../markov-distribution.js';
+import { computeHorizonDriftVol, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
+import { combineUncertaintyCiScale, computeMarkovDistribution } from '../markov-distribution.js';
 import type { MarkovDistributionPoint, RegimeState } from './core.js';
 
 function seedRng(seed: number): () => number {
@@ -94,10 +94,9 @@ describe('interpolateDistribution', () => {
 
   it('source=polymarket for nearby high-trust anchor at short horizon', () => {
     const anchors = [{ price: 100, rawProbability: 0.5, probability: 0.475, trustScore: 'high' as const, source: 'polymarket' as const }];
-    // Low second eigenvalue → Markov dominant
+    // Low second eigenvalue → fast mixing, anchor dominant (markovWeight = 0.01² = 1e-4)
     const dist = interpolateDistribution(100, 2, P, regimeStats, 'sideways', anchors, 0.01);
     const point = dist.find(d => Math.abs(d.price - 100) < 5);
-    // With very low ρ, markovWeight ≈ exp(-0.01×2) ≈ 0.98 → should be 'markov' or 'blend'
     expect(['markov', 'blend', 'polymarket']).toContain(point?.source as string);
   });
 });
@@ -110,8 +109,14 @@ describe('computeMixingWeight', () => {
     expect(computeMixingWeight(0.9, 100)).toBeLessThan(0.001);
   });
 
-  it('Fix 7: at long horizon with ρ≈0, weight stays near 1', () => {
-    expect(computeMixingWeight(0.001, 90)).toBeGreaterThan(0.9);
+  it('weight is |ρ|^h, matching Python compute_mixing_weight', () => {
+    expect(computeMixingWeight(0.85, 7)).toBeCloseTo(0.85 ** 7, 12); // ≈ 0.32, was exp(-0.85·7) ≈ 0.0026
+    expect(computeMixingWeight(-0.5, 2)).toBeCloseTo(0.25, 12);
+  });
+
+  it('fast-mixing chain (ρ≈0) hands over to anchors; slow-mixing chain keeps Markov', () => {
+    expect(computeMixingWeight(0.001, 3)).toBeLessThan(1e-6);
+    expect(computeMixingWeight(0.999, 90)).toBeGreaterThan(0.9);
   });
 });
 describe('estimateRegimeStats', () => {
@@ -319,6 +324,124 @@ describe('computeTrajectory', () => {
     expect(hmmFinal).toBeGreaterThan(noHmmFinal);
   });
 
+  it('treats HMM override drift as a per-day quantity', () => {
+    const flatStats = {
+      bull: { meanReturn: 0, stdReturn: 0.001 },
+      bear: { meanReturn: 0, stdReturn: 0.001 },
+      sideways: { meanReturn: 0, stdReturn: 0.001 },
+    };
+    const identityP = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+    const traj = computeTrajectory(
+      100,
+      3,
+      identityP,
+      flatStats,
+      'bull',
+      0,
+      { drift: 0.01, vol: 0.001, weight: 1 },
+      200,
+    );
+
+    expect(traj[2].expectedPrice).toBe(Math.round(100 * Math.exp(0.03) * 100) / 100);
+  });
+
+  it(
+    'shared structural-break/entropy uncertainty scale widens computeTrajectory CIs monotonically',
+    () => {
+      randomSpy?.mockRestore();
+      randomSpy = spyOn(Math, 'random').mockImplementation(seedRng(54321));
+      const baseline = computeTrajectory(100, 5, P, regimeStats, 'bull', 0, undefined, 500);
+
+      randomSpy?.mockRestore();
+      randomSpy = spyOn(Math, 'random').mockImplementation(seedRng(54321));
+      // uncertainty_ci_scale is the 14th positional parameter
+      const widened = computeTrajectory(
+        100,
+        5,
+        P,
+        regimeStats,
+        'bull',
+        0,
+        undefined,
+        500,
+        5,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        1.5,
+      );
+
+      for (const [index, base] of baseline.entries()) {
+        const wide = widened[index];
+        expect(wide.expectedPrice).toBe(base.expectedPrice);
+        expect(wide.pUp).toBe(base.pUp);
+        expect(wide.lowerBound).toBeLessThanOrEqual(base.lowerBound);
+        expect(wide.upperBound).toBeGreaterThanOrEqual(base.upperBound);
+        expect(wide.upperBound - wide.lowerBound).toBeGreaterThanOrEqual(base.upperBound - base.lowerBound);
+      }
+      expect(widened[4].upperBound - widened[4].lowerBound)
+        .toBeGreaterThan(baseline[4].upperBound - baseline[4].lowerBound);
+    },
+  );
+
+  it('uncertainty widening contains skewed asymmetric baseline intervals', () => {
+    const identityP = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+    const skewedStats = {
+      bull: { meanReturn: 0.08, stdReturn: 0.20 },
+      bear: { meanReturn: -0.01, stdReturn: 0.02 },
+      sideways: { meanReturn: 0, stdReturn: 0.01 },
+    };
+
+    randomSpy?.mockRestore();
+    randomSpy = spyOn(Math, 'random').mockImplementation(seedRng(202405));
+    const baseline = computeTrajectory(100, 3, identityP, skewedStats, 'bull', 0, undefined, 2000);
+
+    randomSpy?.mockRestore();
+    randomSpy = spyOn(Math, 'random').mockImplementation(seedRng(202405));
+    const widened = computeTrajectory(
+      100,
+      3,
+      identityP,
+      skewedStats,
+      'bull',
+      0,
+      undefined,
+      2000,
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1.4,
+    );
+
+    for (const [index, base] of baseline.entries()) {
+      const wide = widened[index];
+      expect(wide.expectedPrice).toBe(base.expectedPrice);
+      expect(wide.pUp).toBe(base.pUp);
+      expect(wide.lowerBound).toBeLessThanOrEqual(base.lowerBound);
+      expect(wide.upperBound).toBeGreaterThanOrEqual(base.upperBound);
+    }
+  });
+
+  it('keeps combined structural-break uncertainty scale at or above the structural floor', () => {
+    expect(combineUncertaintyCiScale({ structuralScale: 1.5, entropyScale: 0.7 }))
+      .toBeCloseTo(1.5, 10);
+    expect(combineUncertaintyCiScale({ structuralScale: 1.0, entropyScale: 0.7 }))
+      .toBeCloseTo(1.0, 10);
+    expect(combineUncertaintyCiScale({ structuralScale: 1.25, entropyScale: 1.2 }))
+      .toBeCloseTo(1.5, 10);
+  });
+
   it('keeps expectedPrice mean-based when empiricalDailyVol widens the interval', () => {
     const baseline = computeTrajectory(100, 14, P, regimeStats, 'bull', 0, undefined, 4000, 5);
     const widened = computeTrajectory(100, 14, P, regimeStats, 'bull', 0, undefined, 4000, 5, 0.25);
@@ -326,6 +449,69 @@ describe('computeTrajectory', () => {
     expect(widened[13].expectedPrice).toBe(baseline[13].expectedPrice);
     expect(widened[13].upperBound - widened[13].lowerBound)
       .toBeGreaterThan(baseline[13].upperBound - baseline[13].lowerBound);
+  });
+
+  it('seeded randomState makes computeTrajectory CIs reproducible', () => {
+    randomSpy?.mockRestore();
+    const first = computeTrajectory(
+      100,
+      10,
+      P,
+      regimeStats,
+      'bull',
+      0,
+      undefined,
+      1000,
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1.0,
+      42,
+    );
+    const second = computeTrajectory(
+      100,
+      10,
+      P,
+      regimeStats,
+      'bull',
+      0,
+      undefined,
+      1000,
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1.0,
+      42,
+    );
+    const different = computeTrajectory(
+      100,
+      10,
+      P,
+      regimeStats,
+      'bull',
+      0,
+      undefined,
+      1000,
+      5,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      1.0,
+      43,
+    );
+
+    const ciTriples = (trajectory: typeof first) => trajectory.map(({ lowerBound, expectedPrice, upperBound }) => [
+      lowerBound,
+      expectedPrice,
+      upperBound,
+    ]);
+    expect(ciTriples(second)).toEqual(ciTriples(first));
+    expect(ciTriples(different)).not.toEqual(ciTriples(first));
   });
 });
 describe('winsorize', () => {
@@ -534,7 +720,6 @@ describe('computeHorizonDriftVol — regime-specific sigma', () => {
     // With flag on but threshold=0.99 (not exceeded), should still use mixture sigma
     expect(mixture.sigma_n).toBeCloseTo(regimeMode.sigma_n, 10);
   });
-
   it('uses dominant regime sigma when threshold is exceeded and flag is on', () => {
     // With a near-identity matrix, after 1 step from bull, weights ≈ [0.6, 0.2, 0.2]
     // max weight = 0.6, which exceeds threshold 0.55 but not 0.70
@@ -577,5 +762,95 @@ describe('computeHorizonDriftVol — regime-specific sigma', () => {
     const mixture = computeHorizonDriftVol(100, P, bullDominantStats, 'bull', 0);
     const regimeMode = computeHorizonDriftVol(100, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.55);
     expect(regimeMode.sigma_n).toBeCloseTo(mixture.sigma_n, 10);
+  });
+});
+
+describe('computePathIntegratedDrift', () => {
+  const P = [
+    [0.7, 0.2, 0.1],
+    [0.1, 0.8, 0.1],
+    [0.25, 0.25, 0.5],
+  ];
+  const regimeStats = {
+    bull: { meanReturn: 0.02, stdReturn: 0.01 },
+    bear: { meanReturn: -0.01, stdReturn: 0.015 },
+    sideways: { meanReturn: 0.004, stdReturn: 0.005 },
+  };
+
+  it('path integrated drift rejects negative horizons', () => {
+    expect(() => computePathIntegratedDrift(-1, P, regimeStats, 'bull')).toThrow('horizon must be non-negative');
+  });
+
+  it('path integrated drift returns zero at horizon zero', () => {
+    expect(computePathIntegratedDrift(0, P, regimeStats, 'bull')).toBe(0);
+  });
+
+  it('path integrated drift at H=1 matches single-step terminal drift', () => {
+    const result = computePathIntegratedDrift(1, P, regimeStats, 'bull');
+    const expected = 0.7 * 0.02 + 0.2 * -0.01 + 0.1 * 0.004;
+
+    expect(result).toBeCloseTo(expected, 12);
+  });
+
+  it('path integrated drift differs from terminal snapshot for H>1 on a non-degenerate chain', () => {
+    const result = computePathIntegratedDrift(3, P, regimeStats, 'bull');
+    const expected = 0.0124 + 0.00801 + 0.005444;
+    const terminalSnapshot = 3 * 0.005444;
+
+    expect(result).toBeCloseTo(expected, 12);
+    expect(result).not.toBeCloseTo(terminalSnapshot, 6);
+  });
+
+  it('path integrated drift supports soft start mixtures', () => {
+    const result = computePathIntegratedDrift(
+      2,
+      P,
+      regimeStats,
+      'bull',
+      { bull: 0.25, bear: 0.5, sideways: 0.25 },
+    );
+    const expected = 0.001425 + 0.001595;
+
+    expect(result).toBeCloseTo(expected, 12);
+  });
+});
+
+describe('computeHorizonDriftVol — path-integrated drift', () => {
+  // Review repro: diagonal 0.9, regime means ±1.5%. Terminal-weighted h·μ gives 0.34% at h=30.
+  const P = [
+    [0.9, 0.05, 0.05],
+    [0.05, 0.9, 0.05],
+    [0.05, 0.05, 0.9],
+  ];
+  const regimeStats = {
+    bull: { meanReturn: 0.015, stdReturn: 0.02 },
+    bear: { meanReturn: -0.015, stdReturn: 0.02 },
+    sideways: { meanReturn: 0, stdReturn: 0.01 },
+  };
+
+  it('mu_n sums each day\'s regime-weighted drift instead of h × terminal drift', () => {
+    const { mu_n } = computeHorizonDriftVol(30, P, regimeStats, 'bull');
+    expect(mu_n).toBeCloseTo(computePathIntegratedDrift(30, P, regimeStats, 'bull'), 12);
+    expect(mu_n).toBeCloseTo(0.0843, 3);
+  });
+
+  it('a terminal-weight override shifts each day\'s drift by its deviation from the chain mix', () => {
+    const override = [0.6, 0.1, 0.3];
+    const { mu_n } = computeHorizonDriftVol(10, P, regimeStats, 'bull', 0, undefined, undefined, undefined, undefined, undefined, override);
+    const chain = computeHorizonDriftVol(10, P, regimeStats, 'bull');
+    const p10Bull = 1 / 3 + (2 / 3) * 0.85 ** 10;
+    const p10Bear = 1 / 3 - (1 / 3) * 0.85 ** 10;
+    const shift = (0.6 - 0.1) * 0.015 - (p10Bull - p10Bear) * 0.015;
+    expect(mu_n).toBeCloseTo(chain.mu_n + 10 * shift, 12);
+  });
+
+  it('momentum is scaled by (1 − w) under the HMM override', () => {
+    const hmm = { drift: 0.001, vol: 0.02, weight: 0.75 };
+    const { mu_n } = computeHorizonDriftVol(10, P, regimeStats, 'bull', 0.004, hmm);
+    const markovArm = computePathIntegratedDrift(10, P, regimeStats, 'bull') + 10 * 0.004;
+    expect(mu_n).toBeCloseTo(0.75 * 10 * 0.001 + 0.25 * markovArm, 12);
+
+    const fullOverride = computeHorizonDriftVol(10, P, regimeStats, 'bull', 0.004, { ...hmm, weight: 1 });
+    expect(fullOverride.mu_n).toBeCloseTo(10 * 0.001, 12);
   });
 });

@@ -19,7 +19,7 @@ export class ApprovalPromptComponent extends Container {
     this.selector = createApprovalSelector((decision) => this.onSelect?.(decision));
     const width = Math.max(20, process.stdout.columns ?? 80);
     const border = theme.warning('─'.repeat(width));
-    const path = (args.path as string) || '<unknown>';
+    const path = (args.path as string) || (args.action as string) || '<unknown>';
 
     // Show a short content preview so users can make an informed approval decision
     const rawContent =

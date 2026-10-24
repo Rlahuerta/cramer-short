@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach, spyOn } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, spyOn, afterAll } from 'bun:test';
 
 // ---------------------------------------------------------------------------
 // Mock ./yahoo-finance.js before importing modules under test.
@@ -7,6 +7,13 @@ import { describe, test, expect, mock, beforeEach, spyOn } from 'bun:test';
 // ---------------------------------------------------------------------------
 
 const mockYahooInvoke = mock(async (_input: unknown): Promise<string> => '{}');
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realYahooFinanceModule = { ...(await import('./yahoo-finance.js')) };
+afterAll(() => {
+  mock.module('./yahoo-finance.js', () => realYahooFinanceModule);
+});
 
 mock.module('./yahoo-finance.js', () => ({
   getYahooAnalystTargets: {

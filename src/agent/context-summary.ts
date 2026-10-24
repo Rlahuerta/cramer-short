@@ -135,7 +135,16 @@ export function buildContextSummaryText(
 
   // Merge into the existing summary rather than appending a second block.
   if (existingSummary) {
-    return `${existingSummary}\n\n---\n${newSummary}`;
+    return capContextSummary(`${existingSummary}\n\n---\n${newSummary}`);
   }
   return newSummary;
+}
+
+export const MAX_CONTEXT_SUMMARY_CHARS = 8_000;
+
+export function capContextSummary(summary: string, maxChars = MAX_CONTEXT_SUMMARY_CHARS): string {
+  if (summary.length <= maxChars) return summary;
+  const tail = summary.slice(summary.length - (maxChars - 1));
+  const firstBreak = tail.indexOf('\n');
+  return `…${firstBreak >= 0 && firstBreak < tail.length - 1 ? tail.slice(firstBreak + 1) : tail}`;
 }

@@ -25,6 +25,8 @@ export {
   inferMarkovQueryHorizon,
   isBtcShortHorizonForecastQuery,
   buildForcedMarkovArgs,
+  buildForcedMarkovArgCandidates,
+  buildNextForcedMarkovArgs,
   shouldForceMarkovDistribution,
   shouldInjectBtcShortHorizonMixedEvidencePrompt,
   shouldInjectBtcShortHorizonLowConfidencePrompt,

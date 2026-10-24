@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'bun:test';
 import type {
   ForecastLabProfile,
@@ -71,7 +73,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
     commands: [
       {
         id: 'walk-forward-sol-short-horizon',
-        command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.test.ts --timeout 480000',
+        command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.integration.test.ts --timeout 480000',
         env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
         timeoutMs: 480_000,
       },
@@ -82,7 +84,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
     commands: [
       {
         id: 'walk-forward-hype-short-horizon',
-        command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.test.ts --timeout 480000',
+        command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.integration.test.ts --timeout 480000',
         env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
         timeoutMs: 480_000,
       },
@@ -352,6 +354,16 @@ describe('forecast-lab profiles', () => {
     }
   });
 
+  it('points every baseline command at a test file that exists', () => {
+    for (const profile of listForecastLabProfiles()) {
+      for (const { command } of profile.baselineCommands) {
+        const testPath = command.match(/^bun test (\S+)/)?.[1];
+        expect(testPath).toBeDefined();
+        expect(existsSync(join(import.meta.dir, '../../..', testPath!))).toBe(true);
+      }
+    }
+  });
+
   it('does not reference unrelated fixed harnesses', () => {
     const commandHarnessPairs = [
       {
@@ -367,11 +379,11 @@ describe('forecast-lab profiles', () => {
         harness: 'src/tools/finance/backtest/walk-forward.ts',
       },
       {
-        commandNeedle: 'walk-forward-sol-short-horizon.test.ts',
+        commandNeedle: 'walk-forward-sol-short-horizon.integration.test.ts',
         harness: 'src/tools/finance/backtest/walk-forward.ts',
       },
       {
-        commandNeedle: 'walk-forward-hype-short-horizon.test.ts',
+        commandNeedle: 'walk-forward-hype-short-horizon.integration.test.ts',
         harness: 'src/tools/finance/backtest/walk-forward.ts',
       },
       {
