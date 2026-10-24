@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from research.models.markov import (
     FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
     resolve_forecast_lab_markov_parameter_defaults,
 )
+from research.models.trajectory import student_t_survival
 from research.utils.forecast_lab_runtime_defaults import (
     create_forecast_lab_asset_scoped_runtime_defaults,
     resolve_forecast_lab_runtime_asset_scope_for_ticker,
@@ -204,6 +206,7 @@ def test_walk_forward_uses_runtime_scoped_decay_rate_for_break_reruns(
             "p_up": 0.6,
             "predicted_return": 0.01,
             "median_price": window_prices[-1],
+            "sigma_n": 0.01,
             "ci_lower": window_prices[-1] * 0.99,
             "ci_upper": window_prices[-1] * 1.01,
             "garch_vol_applied": False,
@@ -243,22 +246,25 @@ def test_walk_forward_uses_runtime_scoped_decay_rate_for_break_reruns(
     ]
 
 
-def test_walk_forward_break_rerun_keeps_full_window_spread(monkeypatch):
+@pytest.mark.parametrize("use_empirical_up_rates", [False, True])
+def test_walk_forward_break_rerun_keeps_full_window_spread(monkeypatch, use_empirical_up_rates):
     # Mirrors keepFullWindowSpread() in markov-distribution.ts: the rerun sets
-    # the median, the full window sets the spread (rescaled to that median).
+    # the median, the full window sets the spread (rescaled to that median),
+    # and P(up) is read off that rescaled distribution.
     entropy = SimpleNamespace(entropy_nats=0.0, entropy_norm=0.0)
     calls: list[int] = []
 
     def fake_compute_window_forecast(window_prices, **_kwargs):
         calls.append(len(window_prices))
         full_window = len(calls) == 1
-        median = 100.0 if full_window else 105.0
+        price = window_prices[-1]
         return {
             "p_up": 0.55 if full_window else 0.7,
             "predicted_return": 0.0 if full_window else 0.05,
-            "median_price": median,
-            "ci_lower": 90.0 if full_window else 103.0,
-            "ci_upper": 110.0 if full_window else 107.0,
+            "median_price": price if full_window else price * 1.05,
+            "sigma_n": 0.05 if full_window else 0.01,
+            "ci_lower": price * (0.9 if full_window else 1.03),
+            "ci_upper": price * (1.1 if full_window else 1.07),
             "garch_vol_applied": False,
             "entropy": entropy,
             "break_result": {"detected": not full_window, "divergence": 0.0},
@@ -270,27 +276,36 @@ def test_walk_forward_break_rerun_keeps_full_window_spread(monkeypatch):
     monkeypatch.setattr(
         walk_forward_module, "compute_window_forecast", fake_compute_window_forecast
     )
+    prices = _make_prices(131)
+    price = prices[120]
 
     result = walk_forward(
-        _make_prices(131),
+        prices,
         ticker="BTC-USD",
         horizon=1,
         warmup=120,
         stride=40,
         post_break_short_window=True,
         post_break_window_size=60,
+        use_empirical_up_rates=use_empirical_up_rates,
     )
 
     assert not result.errors
     assert calls == [121, 60]
     step = result.steps[0]
     assert step.structural_break_rerun_triggered is True
-    # Full-window spread (90..110 around 100) re-centred on the rerun's median.
-    assert step.ci_lower == pytest.approx(94.5)
-    assert step.ci_upper == pytest.approx(115.5)
-    assert (step.ci_upper - step.ci_lower) / 105.0 == pytest.approx(20.0 / 100.0)
-    assert step.predicted_prob == pytest.approx(0.7)
+    # Full-window spread (0.9..1.1 around the price) re-centred on the rerun's median.
+    assert step.ci_lower == pytest.approx(price * 0.945)
+    assert step.ci_upper == pytest.approx(price * 1.155)
     assert step.predicted_return == pytest.approx(0.05)
+    if use_empirical_up_rates:
+        # Empirical up-rates are not read off the distribution, so the rerun's stays.
+        assert step.predicted_prob == pytest.approx(0.7)
+    else:
+        assert step.predicted_prob == pytest.approx(
+            student_t_survival(price, price, math.log(1.05), 0.05)
+        )
+        assert step.predicted_prob < 0.9  # the rerun's sigma (0.01) would give ~1.0
 
 
 def test_walk_forward_sol_and_hype_runtime_scopes_produce_steps():

@@ -196,6 +196,7 @@ def compute_trajectory(
                 p_up=round(p_up, 3),
                 cumulative_return=cumulative_return,
                 regime=regime,
+                sigma_n=sigma_n,
             )
         )
 
