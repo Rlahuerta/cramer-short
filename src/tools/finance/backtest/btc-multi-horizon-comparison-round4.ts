@@ -1,9 +1,11 @@
 /**
- * Multi-horizon BTC backtest (Round-4): adds a fourth arm wiring the three
+ * Multi-horizon BTC backtest (Round-4): adds a fourth arm wiring two
  * side-effect-free R4 feature flags on top of the Round-2 baseline:
  *   - enableGarchVol   (GARCH(1,1) per-day volatility scalar)
  *   - enableKswinTrim  (KSWIN variance-aware history trim)
- *   - enableCrossAssetBias  (cross-asset Lasso drift bias from SPY/GLD/QQQ)
+ *
+ * enableCrossAssetBias (cross-asset Lasso drift bias) is off: once it reached
+ * the forecast drift it worsened Brier at h >= 7 on this fixture.
  *
  * NOTE: Regime-conditional Platt (R4 Idea 3) requires pre-fitted calibration
  * samples from a separate validation pass (to avoid lookahead) and is therefore
@@ -13,11 +15,7 @@
  *   - baseline:      defaults only
  *   - improved:      all W2/W3 Round-1 toggles ON
  *   - improvedHA:    improved + ADWIN trim + Hawkes intensity (Round-2)
- *   - improvedR4:    improvedHA + GARCH vol + KSWIN trim + cross-asset Lasso
- *
- * Peer assets for cross-asset Lasso: SPY, GLD, QQQ — all present in the
- * BTC daily-close fixture (2024-01-01 → 2025-12-31).  Daily log-returns are
- * computed from the fixture closes and aligned to BTC.
+ *   - improvedR4:    improvedHA + GARCH vol + KSWIN trim
  */
 
 import { readFileSync } from 'fs';
@@ -44,7 +42,6 @@ interface FixtureData {
 }
 
 const TICKER = 'BTC-USD';
-const PEER_TICKERS = ['SPY', 'GLD', 'QQQ'] as const;
 const HORIZONS = [1, 2, 3, 7, 14, 30] as const;
 const WARMUP = 180;
 const STRIDE = 3;
@@ -118,16 +115,12 @@ function renderMarkdown(art: BtcMultiHorizonRound4Artifact): string {
   lines.push('- **baseline:** default flags only.');
   lines.push('- **improved:** all Round-1 W2/W3 toggles: `sidewaysSplit`, `matureBullCalibration`, `startStateMixture`, `postBreakShortWindow`, `trendPenaltyOnlyBreakConfidence`, `divergenceWeightedBreakConfidence`, `regimeSpecificSigma`, `pr3gCryptoShortHorizonRecencyWeighting`, `pr3fCryptoShortHorizonDisagreementPrior`.');
   lines.push('- **improved+HA:** improved + W3R2 wirings: `enableAdwinTrim` (δ=0.05), `enableHawkesIntensity` (σ=3.0).');
-  lines.push('- **improved+R4:** improved+HA + Round-4: `enableGarchVol`, `enableKswinTrim` (α=0.005), `enableCrossAssetBias` (peers: SPY/GLD/QQQ, λ=0.005).');
+  lines.push('- **improved+R4:** improved+HA + Round-4: `enableGarchVol`, `enableKswinTrim` (α=0.005).');
   lines.push('');
   lines.push('> **Note on Regime Platt (R4 Idea 3):** omitted from this single-pass walk-forward');
   lines.push('> because fitting the recalibrator requires a separate validation set of');
   lines.push('> (pUp, regime, realized) triples — unavailable without a two-pass approach. The');
   lines.push('> unit tests verify its correctness; production use fits on a prior window.');
-  lines.push('');
-  lines.push('> **Cross-asset Lasso peers:** SPY (US equities), GLD (gold), QQQ (tech).  Daily');
-  lines.push('> log-returns are computed from the same fixture and passed alongside BTC closes.');
-  lines.push('> The Lasso λ=0.005 regularises away noise so only genuine co-movement survives.');
   lines.push('');
   lines.push('## Baseline (defaults)');
   lines.push('');
@@ -141,7 +134,7 @@ function renderMarkdown(art: BtcMultiHorizonRound4Artifact): string {
   lines.push('');
   for (const l of renderArmMetricTable(art.improvedHA)) lines.push(l);
   lines.push('');
-  lines.push('## Improved + R4 flags (GARCH + KSWIN + Lasso)');
+  lines.push('## Improved + R4 flags (GARCH + KSWIN)');
   lines.push('');
   for (const l of renderArmMetricTable(art.improvedR4)) lines.push(l);
   lines.push('');
@@ -167,7 +160,6 @@ function renderMarkdown(art: BtcMultiHorizonRound4Artifact): string {
   lines.push('- `polymarketMarkets` is empty so Hawkes fires only on endogenous 3σ BTC returns.');
   lines.push('- GARCH: `fitGarch11` on the history window; per-day scalar clamped [0.33, 3.0].');
   lines.push('- KSWIN: operates on |log-return| (variance proxy) at α=0.005; runs after ADWIN.');
-  lines.push('- Cross-asset Lasso: per-day bias clipped to [-0.05, +0.05] so no single peer dominates.');
   lines.push('- A neutral or negative Δ on the R4 arm is informative: it means these flags need');
   lines.push('  different defaults or the fixture period lacks the regimes where they help most.');
   return lines.join('\n');
@@ -180,42 +172,11 @@ async function main(): Promise<void> {
   if (!btcData) throw new Error(`No fixture data for ${TICKER}`);
   console.log(`Loaded ${btcData.closes.length} BTC closes (${raw.startDate} → ${raw.endDate})`);
 
-  // Build peer return series aligned to BTC by date.
-  // Equities have ~501 closes (trading days only); BTC has 731 (including weekends).
-  // We align by date: for each BTC calendar day with a return, look up the peer
-  // return for that same date (0 if the peer doesn't trade that day).
-  const btcDates = btcData.dates ?? [];
-  const peerLogReturns: Record<string, number[]> = {};
-  for (const peer of PEER_TICKERS) {
-    const pdata = raw.tickers[peer];
-    if (!pdata || !pdata.dates) {
-      console.warn(`  peer ${peer}: no data or no dates, skipping`);
-      continue;
-    }
-    // Build a date → 1-day log-return map for the peer.
-    const peerRetByDate = new Map<string, number>();
-    for (let i = 1; i < pdata.closes.length; i++) {
-      const ret = Math.log(pdata.closes[i] / pdata.closes[i - 1]);
-      peerRetByDate.set(pdata.dates[i], ret);
-    }
-    // For each BTC date (starting from index 1, matching BTC return index), look up peer.
-    const aligned: number[] = [];
-    for (let i = 1; i < btcDates.length; i++) {
-      aligned.push(peerRetByDate.get(btcDates[i]) ?? 0);
-    }
-    peerLogReturns[peer] = aligned;
-    const nonZero = aligned.filter(r => r !== 0).length;
-    console.log(`  peer ${peer}: ${aligned.length} aligned returns, ${nonZero} trading days`);
-  }
-
   const improvedR4Flags: Partial<WalkForwardConfig> = {
     ...improvedHAFlags,
     enableGarchVol: true,
     enableKswinTrim: true,
     kswinAlpha: 0.005,
-    enableCrossAssetBias: true,
-    crossAssetReturns: peerLogReturns,
-    crossAssetLassoLambda: 0.005,
   };
 
   console.log('\n— BASELINE —');
@@ -224,7 +185,7 @@ async function main(): Promise<void> {
   const improved = await runMultiHorizonArm('improved', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedFlags });
   console.log('\n— IMPROVED + HAWKES + ADWIN (Round-2) —');
   const improvedHA = await runMultiHorizonArm('improvedHA', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedHAFlags });
-  console.log('\n— IMPROVED + R4 FLAGS (GARCH + KSWIN + Lasso) —');
+  console.log('\n— IMPROVED + R4 FLAGS (GARCH + KSWIN) —');
   const improvedR4 = await runMultiHorizonArm('improvedR4', { ticker: TICKER, prices: btcData.closes, horizons: HORIZONS, warmup: WARMUP, stride: STRIDE, flags: improvedR4Flags });
 
   const artifact: BtcMultiHorizonRound4Artifact = {
