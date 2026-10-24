@@ -181,6 +181,7 @@ function buildBtcUltraShortMetrics(params?: {
   h1RerunRate?: number;
   h2DirectionalAccuracy?: number;
   h3DirectionalAccuracy?: number;
+  h1AbstainRate?: number;
 }): Record<string, Record<string, number>> {
   return {
     h1: {
@@ -188,18 +189,21 @@ function buildBtcUltraShortMetrics(params?: {
       brierScore: params?.h1BrierScore ?? 0.252,
       ciCoverage: 0.972,
       rerunRate: params?.h1RerunRate ?? 0.75,
+      abstainRate: params?.h1AbstainRate ?? 0.32,
     },
     h2: {
       directionalAccuracy: params?.h2DirectionalAccuracy ?? 0.52,
       brierScore: 0.254,
       ciCoverage: 0.989,
       rerunRate: 0,
+      abstainRate: 0.32,
     },
     h3: {
       directionalAccuracy: params?.h3DirectionalAccuracy ?? 0.56,
       brierScore: 0.261,
       ciCoverage: 0.978,
       rerunRate: 0.30,
+      abstainRate: 0.27,
     },
   };
 }
@@ -238,16 +242,19 @@ function buildGoldShortMetrics(params?: {
       directionalAccuracy: params?.h1DirectionalAccuracy ?? 0.58,
       brierScore: params?.h1BrierScore ?? 0.248,
       ciCoverage: 0.964,
+      abstainRate: 0,
     },
     h2: {
       directionalAccuracy: params?.h2DirectionalAccuracy ?? 0.55,
       brierScore: params?.h2BrierScore ?? 0.251,
       ciCoverage: 0.972,
+      abstainRate: 0,
     },
     h3: {
       directionalAccuracy: params?.h3DirectionalAccuracy ?? 0.57,
       brierScore: params?.h3BrierScore ?? 0.256,
       ciCoverage: 0.975,
+      abstainRate: 0,
     },
     h7: {
       directionalAccuracy: params?.h7DirectionalAccuracy ?? 0.64,
@@ -798,6 +805,29 @@ describe('forecast-lab runner', () => {
       runId: 'runner-test-failed-candidate',
       decision: 'drop',
     });
+  });
+
+  it('drops a BTC candidate that buys its accuracy gain by abstaining more', async () => {
+    const result = await runForecastLab({
+      profileId: 'btc-markov-ultra-short-horizon',
+      dryRun: true,
+      runId: 'runner-test-btc-abstain-gate',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: btcMetricsRunner([], {
+        baseline: buildBtcUltraShortMetrics({ h1AbstainRate: 0.32 }),
+        // Same as the kept candidate in the test below, but abstaining 10pp more at 1d.
+        candidate: buildBtcUltraShortMetrics({
+          h1DirectionalAccuracy: 0.64,
+          h1BrierScore: 0.247,
+          h1RerunRate: 0.78,
+          h2DirectionalAccuracy: 0.51,
+          h3DirectionalAccuracy: 0.55,
+          h1AbstainRate: 0.42,
+        }),
+      }),
+    });
+
+    expect(result.decision.decision).toBe('drop');
   });
 
   it('uses parsed BTC harness metrics for the ultra-short-horizon keep/drop decision', async () => {
