@@ -2216,6 +2216,15 @@ describe('markov_distribution tool output envelope', () => {
     });
     expect(longHorizon.metadata.kswinTrim).toBeUndefined();
 
+    // The trimmed history only moves the location: the full-window
+    // distribution, rescaled to the trimmed fit's median, keeps the spread.
+    const scale = enabled.distribution[0].price / disabled.distribution[0].price;
+    expect(enabled.distribution).toHaveLength(disabled.distribution.length);
+    for (let i = 0; i < disabled.distribution.length; i++) {
+      expect(enabled.distribution[i].price / disabled.distribution[i].price).toBeCloseTo(scale, 9);
+      expect(enabled.distribution[i].probability).toBeCloseTo(disabled.distribution[i].probability, 9);
+    }
+
     // A short calm suffix would otherwise leave ~70 prices; the trim keeps at least 120.
     const shortCalm = makePriceSeries([
       ...Array.from({ length: 200 }, () => randn(rng) * 0.04),

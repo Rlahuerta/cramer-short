@@ -3400,20 +3400,31 @@ export async function computeMarkovDistribution(params: {
   // KSWIN_MAX_HORIZON: on the BTC walk-forward the shortened window helped
   // Brier only at h<=2 and regressed it at h=3 and h>=7.  Keeping at least
   // KSWIN_MIN_KEEP_PRICES improved h=1,2 Brier further.
-  let kswinTrimMeta: { droppedPrices: number; keptPrices: number; maxD: number; criticalD: number } | undefined;
+  // The trimmed fit only sets the location: scanning every split point, the
+  // KS test fires on every BTC walk-forward window, and a sigma fitted on the
+  // short suffix cut h=2 central-90 coverage from 0.874 to 0.836.  The
+  // full-window spread is kept, as for the post-break rerun.
   if (enableKswinTrim === true && horizon <= KSWIN_MAX_HORIZON && Array.isArray(historicalPrices) && historicalPrices.length > 60) {
     const { trimmedPrices, result } = applyKswinTrim(historicalPrices, {
       alpha: kswinAlpha,
       minKeep: KSWIN_MIN_KEEP_PRICES,
     });
     if (result.trimmed) {
-      historicalPrices = trimmedPrices;
-      kswinTrimMeta = {
+      const fullWindow = await computeMarkovDistribution({ ...params, enableKswinTrim: false });
+      const blended = keepFullWindowSpread(fullWindow, await computeMarkovDistribution({
+        ...params,
+        historicalPrices: trimmedPrices,
+        enableAdwinTrim: false,
+        enableKswinTrim: false,
+      }));
+      blended.metadata.adwinTrim = fullWindow.metadata.adwinTrim;
+      blended.metadata.kswinTrim = {
         droppedPrices: result.droppedPrices,
         keptPrices: trimmedPrices.length,
         maxD: result.maxD,
         criticalD: result.criticalD,
       };
+      return blended;
     }
   }
 
@@ -4626,7 +4637,6 @@ export async function computeMarkovDistribution(params: {
       confidence: confidenceBreakdown,
       ...(softRegimeMeta ? { softRegime: softRegimeMeta } : {}),
       ...(coefficientClusteringMeta ? { coefficientClustering: coefficientClusteringMeta } : {}),
-      kswinTrim: kswinTrimMeta,
       hawkes: hawkesMeta,
       crossAssetBias: crossAssetBiasMeta,
     }
