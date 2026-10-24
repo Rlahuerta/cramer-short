@@ -140,3 +140,23 @@ describe('iteration prompts keep the initial context', () => {
     expect(script.streamPrompts[0]).toContain('Zephyrcorp');
   });
 });
+
+describe('failed model calls', () => {
+  it('flags the done event as an error', async () => {
+    script.fallback = new Error('provider exploded');
+    const agent = await Agent.create({ maxIterations: 3, memoryEnabled: false });
+
+    const done = doneOf(await collect(agent.run('what is up')));
+
+    expect(done.error).toBe(true);
+    expect(done.answer).toStartWith('Error:');
+  });
+
+  it('leaves the error flag off a normal answer', async () => {
+    const agent = await Agent.create({ maxIterations: 3, memoryEnabled: false });
+
+    const done = doneOf(await collect(agent.run('what is up')));
+
+    expect(done.error).toBeUndefined();
+  });
+});

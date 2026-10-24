@@ -218,6 +218,38 @@ describe('runQuery — success path', () => {
   });
 });
 
+describe('runQuery — failed model call', () => {
+  function erroredDone() {
+    return { type: 'done', answer: 'Error: provider down', error: true, totalTime: 10, toolCalls: [] };
+  }
+
+  it('does not save the error answer to chat history', async () => {
+    fakeState.events = [erroredDone()];
+    const chatHistory = makeFakeChatHistory();
+    const ctrl = new AgentRunnerController({ model: undefined }, chatHistory, undefined, {
+      createAgent: fakeCreateAgent as never,
+      autoStoreFromRun: fakeAutoStoreFromRun as never,
+    });
+    await ctrl.runQuery('Is AAPL cheap?');
+    expect((chatHistory.saveAnswer as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
+
+  it('does not auto-store the error answer as an insight', async () => {
+    fakeState.events = [erroredDone()];
+    const { ctrl } = makeController();
+    await ctrl.runQuery('Is AAPL cheap?');
+    expect(fakeAutoStoreFromRun).not.toHaveBeenCalled();
+  });
+
+  it('marks the history item as an error and keeps the message visible', async () => {
+    fakeState.events = [erroredDone()];
+    const { ctrl } = makeController();
+    await ctrl.runQuery('Is AAPL cheap?');
+    expect(ctrl.history[0].status).toBe('error');
+    expect(ctrl.history[0].answer).toBe('Error: provider down');
+  });
+});
+
 // ─── runQuery — error paths ───────────────────────────────────────────────────
 
 describe('runQuery — non-abort error', () => {

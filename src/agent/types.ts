@@ -244,6 +244,8 @@ export interface ProgressEvent {
 export interface DoneEvent {
   type: 'done';
   answer: string;
+  /** Set when the run ended on a failed model call; `answer` then holds the error message. */
+  error?: true;
   toolCalls: Array<{ tool: string; args: Record<string, unknown>; result: string }>;
   iterations: number;
   totalTime: number;

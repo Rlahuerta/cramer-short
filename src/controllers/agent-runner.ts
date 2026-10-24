@@ -244,7 +244,7 @@ export class AgentRunnerController {
 
       // Auto-persist financial context when the LLM didn't call
       // store_financial_insight itself. Fire-and-forget — never block the UI.
-      if (doneEvent) {
+      if (doneEvent && !doneEvent.error) {
         void this.autoStoreFromRun(query, doneEvent.answer, doneEvent.toolCalls);
       }
 
@@ -406,7 +406,7 @@ export class AgentRunnerController {
       }
       case 'done': {
         const done = event as DoneEvent;
-        if (done.answer) {
+        if (done.answer && !done.error) {
           await this.inMemoryChatHistory.saveAnswer(done.answer).catch((err) => {
             // Answer persistence error - log but don't block UI
             console.warn('[agent-runner] Failed to save answer to history:', err);
@@ -415,7 +415,7 @@ export class AgentRunnerController {
         this.updateLastItem((last) => ({
           ...last,
           answer: done.answer,
-          status: 'complete',
+          status: done.error ? 'error' : 'complete',
           duration: done.totalTime,
           tokenUsage: done.tokenUsage,
           tokensPerSecond: done.tokensPerSecond,
