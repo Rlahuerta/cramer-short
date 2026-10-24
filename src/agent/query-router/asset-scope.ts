@@ -1,4 +1,5 @@
 import { extractTickers } from '../../memory/ticker-extractor.js';
+import { extractCryptoQuotePairTickers } from '../../tools/finance/asset-resolver.js';
 
 /**
  * Conservative multi-asset detector for the forecast-tool ticker normalizer.
@@ -51,7 +52,8 @@ export function collectDistinctAssetRoots(query: string): Set<string> {
     if (pattern.test(stripped)) roots.add(canonical);
   }
 
-  for (const ticker of extractTickers(stripped)) {
+  // Quote-pair tickers (SOLUSD, HYPEUSDT) are too long for extractTickers.
+  for (const ticker of [...extractTickers(stripped), ...extractCryptoQuotePairTickers(stripped)]) {
     roots.add(canonicalizeAssetRoot(ticker));
   }
 

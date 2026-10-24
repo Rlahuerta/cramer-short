@@ -43,6 +43,14 @@ describe('referencesMultipleDistinctAssets', () => {
     expect(referencesMultipleDistinctAssets('gold via GLD proxy, 7 day forecast')).toBe(false);
   });
 
+  it('is true for two crypto quote-pair tickers (SOLUSD and HYPEUSDT)', () => {
+    expect(referencesMultipleDistinctAssets('Markov forecast for SOLUSD and HYPEUSDT over the next 1 to 3 days.')).toBe(true);
+  });
+
+  it('treats a quote-pair ticker and its root as the same asset (SOLUSD vs SOL)', () => {
+    expect(referencesMultipleDistinctAssets('SOL outlook: Markov forecast for SOLUSD over 3 days.')).toBe(false);
+  });
+
   it('is false for a macro query with no assets', () => {
     expect(referencesMultipleDistinctAssets('How is the market doing today?')).toBe(false);
   });
