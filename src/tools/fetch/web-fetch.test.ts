@@ -1,13 +1,10 @@
 import { afterEach, beforeEach, describe, test, expect, spyOn } from 'bun:test';
-import { useNoNetwork } from '../../utils/test-no-network.js';
 import { webFetchTool } from './web-fetch.js';
 import { _setDnsLookupForTest } from './url-guard.js';
 import { extractText as extractPdfText } from 'unpdf';
 // Warm the HTML extractor's dynamic imports outside individual test timers.
 import '@mozilla/readability';
 import 'linkedom';
-
-useNoNetwork();
 
 // The url-guard resolves hostnames before fetching: fail any lookup a test did not stub.
 beforeEach(() => {
