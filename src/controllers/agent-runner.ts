@@ -198,6 +198,7 @@ export class AgentRunnerController {
     this.triggerCancellation = null;
     this.abortController = new AbortController();
     let finalAnswer: string | undefined;
+    let stream: AsyncGenerator<AgentEvent> | undefined;
 
     const startTime = Date.now();
     const item: HistoryItem = {
@@ -229,7 +230,7 @@ export class AgentRunnerController {
 
       // Drive the stream manually so each next() can be raced against
       // triggerCancellation — Ollama cloud endpoints don't honour AbortSignal.
-      const stream = agent.run(query, this.inMemoryChatHistory);
+      stream = agent.run(query, this.inMemoryChatHistory);
       let doneEvent: DoneEvent | null = null;
       while (true) {
         const nextResult = await this.makeCancellable(stream.next());
@@ -264,6 +265,9 @@ export class AgentRunnerController {
       this.emitChange();
       return undefined;
     } finally {
+      // Close the agent generator so its finally blocks run after a cancel or error.
+      // Not awaited: return() queues behind a stream.next() that may never settle.
+      void stream?.return(undefined).catch(() => {});
       this.abortController = null;
       this.triggerCancellation = null;
     }

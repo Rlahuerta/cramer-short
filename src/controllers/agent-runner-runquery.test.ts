@@ -385,6 +385,36 @@ describe('makeCancellable — cancellation race', () => {
   });
 });
 
+describe('cancelExecution — closes the agent stream', () => {
+  it("runs the agent generator's finally block after a cancel", async () => {
+    let unblock!: () => void;
+    const stall = new Promise<void>((res) => (unblock = res));
+    let closed = false;
+    fakeState.createOverride = async () => ({
+      run: async function* () {
+        try {
+          yield { type: 'thinking', content: 'working' };
+          await stall;
+          yield { type: 'done', answer: 'late answer', totalTime: 1, toolCalls: [] };
+        } finally {
+          closed = true;
+        }
+      },
+    });
+
+    const { ctrl } = makeController();
+    const runPromise = ctrl.runQuery('slow query');
+    await new Promise((res) => setTimeout(res, 0));
+
+    ctrl.cancelExecution();
+    expect(await runPromise).toBeUndefined();
+    unblock();
+    await new Promise((res) => setTimeout(res, 0));
+
+    expect(closed).toBe(true);
+  });
+});
+
 // ─── requestToolApproval (lines 234–239) ────────────────────────────────────
 
 describe('requestToolApproval (private)', () => {
