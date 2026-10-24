@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import {
+  abstainRate,
   balancedDirectionalAccuracy,
   brierScore,
   bucketByAnchorQuality,
@@ -254,12 +255,38 @@ describe('directionalAccuracy', () => {
     expect(directionalAccuracy(steps)).toBeCloseTo(0.0);
   });
 
-  it('HOLD is correct when |return| < threshold', () => {
+  it('scores traded steps only — always-HOLD earns nothing however quiet the market', () => {
     const steps = [
       makeStep({ recommendation: 'HOLD', actualReturn:  0.02 }),
       makeStep({ recommendation: 'HOLD', actualReturn: -0.01 }),
     ];
-    expect(directionalAccuracy(steps, 0.03)).toBeCloseTo(1.0);
+    expect(directionalAccuracy(steps)).toBe(0);
+  });
+
+  it('abstaining on quiet steps does not inflate accuracy', () => {
+    const steps = [
+      makeStep({ recommendation: 'BUY',  actualReturn:  0.01 }),
+      makeStep({ recommendation: 'SELL', actualReturn:  0.01 }),
+      makeStep({ recommendation: 'HOLD', actualReturn:  0.001 }),
+      makeStep({ recommendation: 'HOLD', actualReturn: -0.001 }),
+    ];
+    expect(directionalAccuracy(steps)).toBeCloseTo(0.5, 10);
+  });
+});
+
+describe('abstainRate', () => {
+  it('is the fraction of HOLD steps', () => {
+    const steps = [
+      makeStep({ recommendation: 'BUY' }),
+      makeStep({ recommendation: 'HOLD' }),
+      makeStep({ recommendation: 'HOLD' }),
+      makeStep({ recommendation: 'SELL' }),
+    ];
+    expect(abstainRate(steps)).toBeCloseTo(0.5, 10);
+  });
+
+  it('returns 0 for empty input', () => {
+    expect(abstainRate([])).toBe(0);
   });
 });
 
@@ -574,6 +601,18 @@ describe('mixtureCrps', () => {
 
   it('returns 0 for empty input', () => {
     expect(mixtureCrps([])).toBe(0);
+  });
+
+  it('matches the exact CRPS of a uniform forecast on [0, 100]', () => {
+    // CRPS(U[0,100], y) = (y³ + (100 − y)³) / (3·100²)
+    const uniform = [
+      { price: 0, probability: 1 },
+      { price: 100, probability: 0 },
+    ];
+    for (const y of [5, 50, 95]) {
+      const exact = (y ** 3 + (100 - y) ** 3) / (3 * 100 ** 2);
+      expect(mixtureCrps([makeStep({ realizedPrice: y, forecastDistribution: uniform })])).toBeCloseTo(exact, 9);
+    }
   });
 });
 

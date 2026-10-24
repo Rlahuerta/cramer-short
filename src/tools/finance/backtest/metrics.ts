@@ -614,13 +614,16 @@ function stepMixtureCrps(step: BacktestStep): number {
   );
   if (nodes.length < 2) return stepCrps(step);
 
+  // y is a node, so the indicator 1{x ≥ y} is constant on each segment and F − 1 is
+  // linear there: ∫ (linear)² = (a² + ab + b²)/3 · width is exact.
   let area = 0;
   for (let index = 0; index < nodes.length - 1; index++) {
     const left = nodes[index];
     const right = nodes[index + 1];
-    const leftDiff = mixtureCdf(distribution, left) - (left >= step.realizedPrice ? 1 : 0);
-    const rightDiff = mixtureCdf(distribution, right) - (right >= step.realizedPrice ? 1 : 0);
-    area += 0.5 * ((leftDiff * leftDiff) + (rightDiff * rightDiff)) * (right - left);
+    const indicator = left >= step.realizedPrice ? 1 : 0;
+    const leftDiff = mixtureCdf(distribution, left) - indicator;
+    const rightDiff = mixtureCdf(distribution, right) - indicator;
+    area += ((leftDiff * leftDiff) + (leftDiff * rightDiff) + (rightDiff * rightDiff)) / 3 * (right - left);
   }
 
   return Number.isFinite(area) ? Math.max(0, area) : stepCrps(step);
@@ -879,19 +882,22 @@ export function murphyWinklerScore(steps: BacktestStep[], alpha = 0.10): number 
 // ---------------------------------------------------------------------------
 
 /**
- * Fraction of steps where recommendation matches actual direction.
- * BUY is correct if actualReturn > 0, SELL if actualReturn < 0.
- * HOLD is correct if |actualReturn| < 3% (roughly within noise).
+ * Hit rate over traded (BUY/SELL) steps: BUY is correct if actualReturn > 0,
+ * SELL if actualReturn < 0. HOLD steps are abstentions and are not scored —
+ * a fixed |r| < 3% HOLD band let always-HOLD score ~78% at h=1. Pair with
+ * {@link abstainRate}; a model that trades nothing scores 0.
  */
-export function directionalAccuracy(steps: BacktestStep[], holdThreshold = 0.03): number {
+export function directionalAccuracy(steps: BacktestStep[]): number {
+  const traded = steps.filter(s => s.recommendation !== 'HOLD');
+  if (traded.length === 0) return 0;
+  const correct = traded.filter(s => (s.recommendation === 'BUY' ? s.actualReturn > 0 : s.actualReturn < 0));
+  return correct.length / traded.length;
+}
+
+/** Fraction of steps that abstained (HOLD). */
+export function abstainRate(steps: BacktestStep[]): number {
   if (steps.length === 0) return 0;
-  const correct = steps.filter(s => {
-    if (s.recommendation === 'BUY')  return s.actualReturn > 0;
-    if (s.recommendation === 'SELL') return s.actualReturn < 0;
-    // HOLD is correct if price didn't move much
-    return Math.abs(s.actualReturn) < holdThreshold;
-  });
-  return correct.length / steps.length;
+  return steps.filter(s => s.recommendation === 'HOLD').length / steps.length;
 }
 
 const UNKNOWN_LABEL = 'unknown';
@@ -927,7 +933,7 @@ function bucketRow(
     label,
     count: bucketSteps.length,
     fraction: totalSteps > 0 ? bucketSteps.length / totalSteps : 0,
-    directionalAccuracy: directionalAccuracy(bucketSteps, holdThreshold),
+    directionalAccuracy: directionalAccuracy(bucketSteps),
     balancedDirectionalAccuracy: balancedDirectionalAccuracy(bucketSteps, holdThreshold),
     brierScore: brierScore(bucketSteps),
     ciCoverage: ciCoverage(bucketSteps),

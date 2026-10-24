@@ -2,7 +2,7 @@ import { describe, beforeAll, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
-import { MARKOV_PHASE0_BASELINES } from './markov-phase-baselines.js';
+import { BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS, MARKOV_PHASE0_BASELINES } from './markov-phase-baselines.js';
 import { getBtcShortHorizonLivePolicy } from '../markov-distribution.js';
 import { walkForward, type WalkForwardResult } from './walk-forward.js';
 import { brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
@@ -117,14 +117,14 @@ describe('Walk-forward BTC ultra-short-horizon live policy', () => {
         expect(metrics.rerunOnBreak).toBe(true);
         expect(metrics.rerunWindowDays).toBe(120);
         expect(metrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h2.abstainCount);
-        expect(metrics.directionalAccuracy).toBeGreaterThan(MARKOV_PHASE0_BASELINES.btc.h2.directionalAccuracy);
+        expect(metrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h2);
       }
 
       if (horizon === 3) {
         expect(metrics.rerunOnBreak).toBe(true);
         expect(metrics.rerunWindowDays).toBe(45);
         expect(metrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h3.abstainCount);
-        expect(metrics.directionalAccuracy).toBeGreaterThanOrEqual(MARKOV_PHASE0_BASELINES.btc.h3.directionalAccuracy);
+        expect(metrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h3);
       }
 
       if (horizon === 14) {
@@ -132,7 +132,7 @@ describe('Walk-forward BTC ultra-short-horizon live policy', () => {
         expect(metrics.rerunWindowDays).toBeNull();
         expect(metrics.breakDivergenceThreshold).toBeCloseTo(0.08);
         expect(metrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h14.abstainCount);
-        expect(metrics.directionalAccuracy).toBeGreaterThanOrEqual(MARKOV_PHASE0_BASELINES.btc.h14.directionalAccuracy);
+        expect(metrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h14);
       }
 
     }

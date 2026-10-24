@@ -1,10 +1,9 @@
 import { fetchBitmexDailyCloses } from '../../tools/finance/bitmex.js';
 import { walkForward } from '../../tools/finance/backtest/walk-forward.js';
-import { brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from '../../tools/finance/backtest/metrics.js';
+import { abstainRate, brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from '../../tools/finance/backtest/metrics.js';
 import {
   getForecastLabProfile,
   listForecastLabStructuredMutations,
-  type ForecastLabKeepDropRule,
   type ForecastLabProfile,
 } from './profiles.js';
 import type {
@@ -25,6 +24,7 @@ import {
   setForecastLabRegimeCalibratorRuntimeDefaults,
 } from '../../tools/finance/regime-calibrator.js';
 import type { ForecastLabRuntimeAssetScope } from './runner.js';
+import { decideRun, evaluateCriterion } from './decision.js';
 
 export interface ForecastLabImprovementHorizonMetrics {
   readonly directionalAccuracy: number;
@@ -32,6 +32,9 @@ export interface ForecastLabImprovementHorizonMetrics {
   readonly ciCoverage: number;
   readonly structuralBreakCount: number;
   readonly abstainCount: number;
+  readonly abstainRate: number;
+  readonly stepCount: number;
+  readonly errorCount: number;
 }
 
 export interface ForecastLabImprovementMetrics {
@@ -149,6 +152,9 @@ function emptyImprovementMetrics(): MutableImprovementMetrics {
     ciCoverage: 0,
     structuralBreakCount: 0,
     abstainCount: 0,
+    abstainRate: 0,
+    stepCount: 0,
+    errorCount: 0,
   };
   return {
     h1: emptyHorizonMetrics,
@@ -445,6 +451,9 @@ async function benchmarkProfileMetrics(
         ciCoverage: walkForwardResult.steps.length > 0 ? ciCoverage(walkForwardResult.steps) : 0,
         structuralBreakCount: countStructuralBreaks(walkForwardResult.steps),
         abstainCount: countAbstains(walkForwardResult.steps),
+        abstainRate: abstainRate(walkForwardResult.steps),
+        stepCount: walkForwardResult.steps.length,
+        errorCount: walkForwardResult.errors.length,
       };
     }));
 
@@ -452,67 +461,29 @@ async function benchmarkProfileMetrics(
   });
 }
 
-function getPathNumber(root: unknown, path: string): number | undefined {
-  let current: unknown = root;
-  for (const segment of path.split('.')) {
-    if (!current || typeof current !== 'object' || !(segment in current)) {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return typeof current === 'number' && Number.isFinite(current) ? current : undefined;
+/** A benchmark arm fails (exit 1) when any horizon raised errors or produced no steps. */
+function benchmarkExitCode(metrics: ForecastLabImprovementMetrics): number {
+  return Object.values(metrics).some((horizon) => horizon.errorCount > 0 || horizon.stepCount === 0) ? 1 : 0;
 }
 
-function evaluateCriterion(
-  criterion: ForecastLabKeepDropRule['keepWhen']['all'][number],
-  metrics: readonly { readonly name: string; readonly candidate: number; readonly delta: number }[],
-): boolean {
-  const metric = metrics.find((candidateMetric) => candidateMetric.name === criterion.metric);
-  if (!metric) {
-    return false;
-  }
-  switch (criterion.operator) {
-    case 'candidate-delta-gte':
-      return metric.delta >= criterion.value;
-    case 'candidate-delta-lte':
-      return metric.delta <= criterion.value;
-    case 'candidate-value-gte':
-      return metric.candidate >= criterion.value;
-    case 'candidate-value-lte':
-      return metric.candidate <= criterion.value;
-  }
-}
-
-function scoreCandidateAgainstProfile(
+export function scoreCandidateAgainstProfile(
   profile: ForecastLabProfile,
   baselineMetrics: ForecastLabImprovementMetrics,
   candidateMetrics: ForecastLabImprovementMetrics,
 ): Omit<ForecastLabImprovementEvaluation, 'metrics'> {
-  const metricRoot = {
-    baseline: {
-      exitCode: 0,
-      metrics: baselineMetrics,
-    },
-    candidate: {
-      exitCode: 0,
-      metrics: candidateMetrics,
-    },
-  };
-
-  const metricEvaluations = profile.minimumMetrics.map((metric) => {
-    const baseline = getPathNumber(metricRoot, metric.baselinePath) ?? 0;
-    const candidate = getPathNumber(metricRoot, metric.candidatePath) ?? 0;
-    return {
-      name: metric.name,
-      candidate,
-      delta: candidate - baseline,
-    };
-  });
-
-  const keepSatisfied = profile.keepDropRule.keepWhen.all.filter((criterion) => evaluateCriterion(criterion, metricEvaluations)).length;
+  const outcome = decideRun(
+    profile,
+    { exitCode: benchmarkExitCode(baselineMetrics), metrics: baselineMetrics },
+    { exitCode: benchmarkExitCode(candidateMetrics), metrics: candidateMetrics },
+  );
+  const complete = outcome.metrics.length === profile.minimumMetrics.length;
+  const keepSatisfied = complete
+    ? profile.keepDropRule.keepWhen.all.filter((criterion) => evaluateCriterion(criterion, outcome.metrics)).length
+    : 0;
   const keepTotal = profile.keepDropRule.keepWhen.all.length;
-  const dropTriggered = profile.keepDropRule.dropWhen.any.some((criterion) => evaluateCriterion(criterion, metricEvaluations));
-  const decision = !dropTriggered && keepSatisfied === keepTotal ? 'keep' : 'drop';
+  const dropTriggered = !complete
+    || profile.keepDropRule.dropWhen.any.some((criterion) => evaluateCriterion(criterion, outcome.metrics));
+  const decision = outcome.decision;
   const config = getShortHorizonProfileConfig(profile.id);
   const primaryScore =
     candidateMetrics.h1.directionalAccuracy * config.primaryWeights.h1
@@ -528,7 +499,7 @@ function scoreCandidateAgainstProfile(
     decision,
     summary: decision === 'keep'
       ? `keep-ready (${keepSatisfied}/${keepTotal} gate checks satisfied)`
-      : `${keepSatisfied}/${keepTotal} keep checks satisfied`,
+      : `${keepSatisfied}/${keepTotal} keep checks satisfied; ${outcome.reason}`,
   };
 }
 

@@ -104,8 +104,8 @@ verified gain), and `break_ci_slope`/`break_ci_max` have no cramer-short equival
 
 | TS File | Python File | Status | Notes |
 |---------|-------------|--------|-------|
-| `src/tools/finance/backtest/baselines.ts` | `research/backtest/baselines.py` | 🟡 | Naive baselines (coin-flip, last-period). Last-period takes `horizon` and only uses outcomes realized by the step's origin |
-| `src/tools/finance/backtest/metrics.ts` | `research/backtest/metrics.py` | 🟡 | Brier, directional accuracy, CI coverage, calibration tables, CRPS |
+| `src/tools/finance/backtest/baselines.ts` | `research/backtest/baselines.py` | 🟡 | Naive baselines (coin-flip = fair-coin expected hit rate, last-period). Last-period takes `horizon` and only uses outcomes realized by the step's origin |
+| `src/tools/finance/backtest/metrics.ts` | `research/backtest/metrics.py` | 🟡 | Brier, directional accuracy, CI coverage, calibration tables, CRPS. TS `directionalAccuracy` scores traded (BUY/SELL) steps only, HOLD is an abstention (`abstainRate`); its Python mirror is `markov_tool_backtest.ts_directional_accuracy` |
 | `src/tools/finance/backtest/walk-forward.ts` | `research/backtest/walk_forward.py` | 🟡 | Walk-forward harness with HMM/GARCH/entropy options. Adaptive conformal (records queued until `t+horizon`) and cross-asset Lasso (peers sliced to the origin) are TS-only |
 
 ## Data Layer (TS-only tool wrappers)

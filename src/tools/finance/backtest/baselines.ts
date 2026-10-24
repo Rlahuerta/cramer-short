@@ -6,7 +6,7 @@
  *
  * Computes simple model-free baselines that any non-trivial forecast head
  * must beat:
- *   - Coin-flip:    always P(up)=0.5, recommends HOLD
+ *   - Coin-flip:    P(up)=0.5, a fair BUY/SELL coin (expected hit rate)
  *   - Last-period:  P(up)=0.65 if the latest realized step was up, recommends BUY/SELL
  *
  * Returned metrics use the same {@link BacktestStep} shape so they can be
@@ -27,7 +27,7 @@ export interface BaselineMetricBlock {
 }
 
 export interface NaiveBaselineReport {
-  /** "Always P=0.5, recommend HOLD" — the strict random null. */
+  /** "P=0.5, fair BUY/SELL coin" — the strict random null. */
   coinFlip: BaselineMetricBlock;
   /** "Predict last realized direction continues" — momentum-1 baseline. */
   lastPeriod: BaselineMetricBlock;
@@ -58,7 +58,8 @@ export function computeCoinFlipBaseline(steps: BacktestStep[]): BaselineMetricBl
   return {
     n: steps.length,
     brierScore: brierScore(synthetic),
-    directionalAccuracy: directionalAccuracy(synthetic),
+    // Expected hit rate of a fair BUY/SELL coin; a flat (r = 0) step is a miss either way.
+    directionalAccuracy: 0.5 * steps.filter(s => s.actualReturn !== 0).length / steps.length,
   };
 }
 

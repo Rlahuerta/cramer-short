@@ -102,7 +102,6 @@ from research.backtest.walk_forward import walk_forward
 # TS-style directional accuracy (reproduces TypeScript metrics.ts)
 # ---------------------------------------------------------------------------
 
-TS_HOLD_THRESHOLD = 0.03
 DEFAULT_HORIZONS = "1,7,14,30"
 DEFAULT_SOURCES = "financial_datasets,binance,yahoo"
 
@@ -134,30 +133,28 @@ def native_direction_accuracy(steps: list[BacktestStep]) -> dict[str, float]:
 
 
 def ts_directional_accuracy(steps: list[BacktestStep], horizon: int) -> float:
-    """Reproduce TypeScript directionalAccuracy with recommendation + HOLD zone.
+    """Reproduce TypeScript directionalAccuracy: hit rate over traded steps.
 
     Mirrors ``metrics.ts::directionalAccuracy`` with the recommendation derivation
     from ``markov-distribution.ts::computeActionSignal`` fallback thresholds:
-    - BUY   = predicted_return >  buy_threshold (horizon-dependent, 0.3 %–0.8 %)
-    - SELL  = predicted_return < -sell_threshold (horizon-dependent, 0.2 %–0.5 %)
-    - HOLD  = otherwise
-    Scoring:
+    - BUY   = predicted_return >  buy_threshold (horizon-dependent, 0.3 %–0.8 %)
+    - SELL  = predicted_return < -sell_threshold (horizon-dependent, 0.2 %–0.5 %)
+    - HOLD  = otherwise (abstention, not scored)
+    Scoring (BUY/SELL steps only; 0 when nothing is traded):
     - BUY  correct → actualReturn > 0
     - SELL correct → actualReturn < 0
-    - HOLD correct → |actualReturn| < 0.03
     """
-    if not steps:
-        return 0.0
     buy_thr, sell_thr = _ts_action_thresholds(horizon)
+    traded = 0
     correct = 0
     for s in steps:
         if s.predicted_return > buy_thr:
+            traded += 1
             correct += 1 if s.realised_return > 0 else 0
         elif s.predicted_return < -sell_thr:
+            traded += 1
             correct += 1 if s.realised_return < 0 else 0
-        else:  # HOLD
-            correct += 1 if abs(s.realised_return) < TS_HOLD_THRESHOLD else 0
-    return correct / len(steps)
+    return correct / traded if traded else 0.0
 
 
 def parse_horizons(raw: str) -> list[int]:
