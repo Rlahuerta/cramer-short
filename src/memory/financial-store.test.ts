@@ -3,8 +3,8 @@ import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:
 import { MemoryDatabase } from './database.js';
 import { FinancialMemoryStore, getTtlMs, isExpired } from './financial-store.js';
 import { EdgeRelations, RoutingResults, Tags } from './financial-tags.js';
-import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 beforeEach(() => {
@@ -20,14 +20,15 @@ let db: MemoryDatabase;
 let store: FinancialMemoryStore;
 
 beforeEach(async () => {
-  dbPath = join(tmpdir(), `dexter-test-${FIXED_TEST_NOW_MS}.sqlite`);
+  // Unique per process: a fixed name collides (SQLITE_BUSY) with concurrent `bun test` runs.
+  dbPath = join(await mkdtemp(join(tmpdir(), 'financial-store-test-')), 'memory.sqlite');
   db = await MemoryDatabase.create(dbPath);
   store = new FinancialMemoryStore(db);
 });
 
 afterEach(async () => {
   db.close();
-  await rm(dbPath, { force: true });
+  await rm(dirname(dbPath), { recursive: true, force: true });
 });
 
 describe('MemoryDatabase financial schema', () => {
@@ -221,14 +222,14 @@ describe('recallByTicker TTL filtering', () => {
   let store2: FinancialMemoryStore;
 
   beforeEach(async () => {
-    dbPath2 = join(tmpdir(), `dexter-ttl-test-${FIXED_TEST_NOW_MS}.sqlite`);
+    dbPath2 = join(await mkdtemp(join(tmpdir(), 'financial-store-ttl-test-')), 'memory.sqlite');
     db2 = await MemoryDatabase.create(dbPath2);
     store2 = new FinancialMemoryStore(db2);
   });
 
   afterEach(async () => {
     db2.close();
-    await rm(dbPath2, { force: true });
+    await rm(dirname(dbPath2), { recursive: true, force: true });
   });
 
   it('filters out expired entries from recallByTicker', async () => {

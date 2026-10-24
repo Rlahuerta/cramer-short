@@ -10,7 +10,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll,
 import { useNoNetwork } from '../utils/test-no-network.js';
 import * as polymarket from '../tools/finance/polymarket.js';
 import * as embeddings from '../memory/embeddings.js';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
@@ -51,9 +51,8 @@ let originalCwd: string;
 let prevOpenAiKey: string | undefined;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `agent-feat-test-${nextTestId('path')}`);
-  mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
+  tmpDir = mkdtempSync(join(tmpdir(), 'agent-feat-test-'));
   process.chdir(tmpDir);
 
   // Provide a stub API key so getChatModel()'s getApiKey() doesn't throw.
@@ -301,12 +300,11 @@ describe('Agent — parallel tool execution event ordering', () => {
     const { AgentToolExecutor } = await import('./tool-executor.js');
     const { createRunContext } = await import('./run-context.js');
     const { AIMessage } = await import('@langchain/core/messages');
-    const subDir = join(tmpdir(), `parallel-order-${FIXED_TEST_NOW_MS}`);
-    mkdirSync(subDir, { recursive: true });
     const savedCwd = process.cwd();
-    process.chdir(subDir);
+    const subDir = mkdtempSync(join(tmpdir(), 'parallel-order-'));
 
     try {
+      process.chdir(subDir);
       let toolCallCount = 0;
       const slowTool = {
         name: 'web_search',

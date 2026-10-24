@@ -5,7 +5,7 @@ import { integrationIt } from '@/utils/test-guards.js';
 import { BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS, MARKOV_PHASE0_BASELINES } from './markov-phase-baselines.js';
 import { getBtcShortHorizonLivePolicy } from '../markov-distribution.js';
 import { walkForward, type WalkForwardResult } from './walk-forward.js';
-import { brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
+import { abstainRate, brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
 
 const TICKER = 'BTC-USD';
 const HORIZONS = [1, 2, 3, 14] as const;
@@ -29,6 +29,7 @@ interface HorizonMetrics {
   brierScore: number;
   ciCoverage: number;
   abstainCount: number;
+  abstainRate: number;
   rerunRate: number;
   breakDivergenceThreshold: number;
   historyDays: number;
@@ -75,6 +76,7 @@ async function runCurrentPolicyForHorizon(horizon: number): Promise<HorizonMetri
     brierScore: result.steps.length > 0 ? brierScore(result.steps) : 0,
     ciCoverage: result.steps.length > 0 ? ciCoverage(result.steps) : 0,
     abstainCount: computeAbstainCount(result.steps),
+    abstainRate: abstainRate(result.steps),
     rerunRate: computeRerunRate(result.steps),
     breakDivergenceThreshold: policy!.breakDivergenceThreshold,
     historyDays: policy!.historyDays,
@@ -100,6 +102,7 @@ describe('Walk-forward BTC ultra-short-horizon live policy', () => {
         brierScore: metrics.brierScore,
         ciCoverage: metrics.ciCoverage,
         abstainCount: metrics.abstainCount,
+        abstainRate: metrics.abstainRate,
         rerunRate: metrics.rerunRate,
         breakDivergenceThreshold: metrics.breakDivergenceThreshold,
         historyDays: metrics.historyDays,

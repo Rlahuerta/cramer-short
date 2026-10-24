@@ -9,8 +9,8 @@ import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:
 import { MemoryDatabase } from './database.js';
 import type { MemoryChunk } from './types.js';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { rm } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { rm, mkdtemp } from 'node:fs/promises';
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);
@@ -53,13 +53,13 @@ let dbPath: string;
 let db: MemoryDatabase;
 
 beforeEach(async () => {
-  dbPath = join(tmpdir(), `dexter-test-${nextTestId('path')}.db`);
+  dbPath = join(await mkdtemp(join(tmpdir(), 'database-phase2-test-')), 'memory.db');
   db = await MemoryDatabase.create(dbPath);
 });
 
 afterEach(async () => {
-  db.close();
-  await rm(dbPath, { force: true });
+  db?.close();
+  await rm(dirname(dbPath), { recursive: true, force: true });
 });
 
 // ============================================================================
@@ -276,8 +276,7 @@ describe('deleteChunksForFile', () => {
 
 describe('SQLite WAL journaling', () => {
   it('database opens in WAL mode to prevent corruption on crash', async () => {
-    const { unlink } = await import('node:fs/promises');
-    const path = join(tmpdir(), `dexter-wal-${FIXED_TEST_NOW_MS}.db`);
+    const path = join(await mkdtemp(join(tmpdir(), 'dexter-wal-')), 'memory.db');
     try {
       const testDb = await MemoryDatabase.create(path);
       // Access via the private db field — safe in tests
@@ -286,7 +285,7 @@ describe('SQLite WAL journaling', () => {
       expect(result?.journal_mode).toBe('wal');
       testDb.close();
     } finally {
-      try { await unlink(path); } catch { /* ignore */ }
+      await rm(dirname(path), { recursive: true, force: true });
     }
   });
 });

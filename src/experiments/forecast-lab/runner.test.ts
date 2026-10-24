@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from 'bun:test';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { runForecastLabCommand } from '../../cli-forecast-lab.js';
 import { getCramerShortDir, getExperimentRunDir, getExperimentRunManifestPath, getExperimentsDir } from '../../utils/paths.js';
@@ -63,7 +63,6 @@ const RUN_IDS = [
   'runner-test-unknown',
   'runner-test-failed-candidate',
   'runner-test-structured',
-  'runner-test-structured-dirty-live-checkout',
   'runner-test-structured-parent-root',
   'runner-test-structured-parent-child',
   'runner-test-structured-auto-parent',
@@ -181,6 +180,7 @@ function buildBtcUltraShortMetrics(params?: {
   h1RerunRate?: number;
   h2DirectionalAccuracy?: number;
   h3DirectionalAccuracy?: number;
+  h1AbstainRate?: number;
 }): Record<string, Record<string, number>> {
   return {
     h1: {
@@ -188,18 +188,21 @@ function buildBtcUltraShortMetrics(params?: {
       brierScore: params?.h1BrierScore ?? 0.252,
       ciCoverage: 0.972,
       rerunRate: params?.h1RerunRate ?? 0.75,
+      abstainRate: params?.h1AbstainRate ?? 0.32,
     },
     h2: {
       directionalAccuracy: params?.h2DirectionalAccuracy ?? 0.52,
       brierScore: 0.254,
       ciCoverage: 0.989,
       rerunRate: 0,
+      abstainRate: 0.32,
     },
     h3: {
       directionalAccuracy: params?.h3DirectionalAccuracy ?? 0.56,
       brierScore: 0.261,
       ciCoverage: 0.978,
       rerunRate: 0.30,
+      abstainRate: 0.27,
     },
   };
 }
@@ -238,16 +241,19 @@ function buildGoldShortMetrics(params?: {
       directionalAccuracy: params?.h1DirectionalAccuracy ?? 0.58,
       brierScore: params?.h1BrierScore ?? 0.248,
       ciCoverage: 0.964,
+      abstainRate: 0,
     },
     h2: {
       directionalAccuracy: params?.h2DirectionalAccuracy ?? 0.55,
       brierScore: params?.h2BrierScore ?? 0.251,
       ciCoverage: 0.972,
+      abstainRate: 0,
     },
     h3: {
       directionalAccuracy: params?.h3DirectionalAccuracy ?? 0.57,
       brierScore: params?.h3BrierScore ?? 0.256,
       ciCoverage: 0.975,
+      abstainRate: 0,
     },
     h7: {
       directionalAccuracy: params?.h7DirectionalAccuracy ?? 0.64,
@@ -331,16 +337,21 @@ const LIVE_MUTABLE_FILES = [
   'src/tools/finance/regime-calibrator.ts',
 ] as const;
 
+// Promotion and reset rewrite these files in place, so tests point them at a per-process copy
+// instead of the live checkout (concurrent `bun test` runs would otherwise corrupt each other).
+const LIVE_SOURCE_ROOT = join(getCramerShortDir(), '__runner_test_live_source__');
+
 function snapshotLiveMutableFiles(): Map<(typeof LIVE_MUTABLE_FILES)[number], string> {
-  const repoRoot = join(import.meta.dir, '../../..');
   return new Map(
-    LIVE_MUTABLE_FILES.map((filePath) => [filePath, readFileSync(join(repoRoot, filePath), 'utf8')]),
+    LIVE_MUTABLE_FILES.map((filePath) => [filePath, readFileSync(join(LIVE_SOURCE_ROOT, filePath), 'utf8')]),
   );
 }
 
 function restoreLiveMutableFiles(snapshot: Map<(typeof LIVE_MUTABLE_FILES)[number], string>): void {
   for (const [filePath, contents] of snapshot.entries()) {
-    writeFileSync(filePath, contents, 'utf8');
+    const livePath = join(LIVE_SOURCE_ROOT, filePath);
+    mkdirSync(dirname(livePath), { recursive: true });
+    writeFileSync(livePath, contents, 'utf8');
   }
 }
 
@@ -421,7 +432,6 @@ function readHeadTrackedFile(filePath: (typeof LIVE_MUTABLE_FILES)[number]): str
   return result.stdout;
 }
 
-const ORIGINAL_LIVE_FILES = snapshotLiveMutableFiles();
 const ORIGINAL_RUNTIME_DEFAULTS = snapshotRuntimeDefaults();
 const SHIPPED_LIVE_FILES = new Map(
   LIVE_MUTABLE_FILES.map((filePath) => [filePath, readHeadTrackedFile(filePath)]),
@@ -659,7 +669,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  restoreLiveMutableFiles(ORIGINAL_LIVE_FILES);
   restoreRuntimeDefaults(ORIGINAL_RUNTIME_DEFAULTS);
 });
 
@@ -798,6 +807,29 @@ describe('forecast-lab runner', () => {
       runId: 'runner-test-failed-candidate',
       decision: 'drop',
     });
+  });
+
+  it('drops a BTC candidate that buys its accuracy gain by abstaining more', async () => {
+    const result = await runForecastLab({
+      profileId: 'btc-markov-ultra-short-horizon',
+      dryRun: true,
+      runId: 'runner-test-btc-abstain-gate',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: btcMetricsRunner([], {
+        baseline: buildBtcUltraShortMetrics({ h1AbstainRate: 0.32 }),
+        // Same as the kept candidate in the test below, but abstaining 10pp more at 1d.
+        candidate: buildBtcUltraShortMetrics({
+          h1DirectionalAccuracy: 0.64,
+          h1BrierScore: 0.247,
+          h1RerunRate: 0.78,
+          h2DirectionalAccuracy: 0.51,
+          h3DirectionalAccuracy: 0.55,
+          h1AbstainRate: 0.42,
+        }),
+      }),
+    });
+
+    expect(result.decision.decision).toBe('drop');
   });
 
   it('uses parsed BTC harness metrics for the ultra-short-horizon keep/drop decision', async () => {
@@ -1356,53 +1388,6 @@ describe('forecast-lab runner', () => {
       .toBeLessThan(progress.indexOf('forecast-lab: starting baseline gate'));
   });
 
-  it('selects structured mutations against the clean candidate workspace instead of a dirty live checkout', async () => {
-    const liveCheckoutPath = join(process.cwd(), 'src/tools/finance/markov-distribution/core.ts');
-    const originalContents = readFileSync(liveCheckoutPath, 'utf8');
-    const shippedMomentumLookback = SHIPPED_RUNTIME_DEFAULTS.markov.momentumLookback;
-    expect(originalContents).toContain(`  momentumLookback: ${shippedMomentumLookback},`);
-
-    writeFileSync(
-      liveCheckoutPath,
-      originalContents.replace(
-        `  momentumLookback: ${shippedMomentumLookback},`,
-        '  momentumLookback: 999,',
-      ),
-    );
-
-    try {
-      const result = await runForecastLab({
-        profileId: 'multi-asset-markov-short-horizon',
-        mutationMode: 'structured',
-        runId: 'runner-test-structured-dirty-live-checkout',
-        ledgerPath: TEST_LEDGER_PATH,
-        commandRunner: async (command, context) => {
-          if (context.phase === 'candidate') {
-            const candidateRoot = context.cwd!;
-            expect(readFileSync(join(candidateRoot, 'src/tools/finance/markov-distribution/core.ts'), 'utf8')).toContain(
-              getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'),
-            );
-            expect(readFileSync(liveCheckoutPath, 'utf8')).toContain('  momentumLookback: 999,');
-          }
-
-          return {
-            id: command.id,
-            command: command.command,
-            exitCode: 0,
-            stdout: `${context.phase} ok`,
-            stderr: '',
-            durationMs: 1,
-            timedOut: false,
-          };
-        },
-      });
-
-      expect(result.manifest.mutationId).toBe('markov-shorter-reactive-window');
-    } finally {
-      writeFileSync(liveCheckoutPath, originalContents);
-    }
-  });
-
   it('seeds the next structured mutation from the last kept structured run lineage', async () => {
     await runForecastLab({
       profileId: 'multi-asset-markov-short-horizon',
@@ -1521,6 +1506,27 @@ describe('forecast-lab runner', () => {
     expect(result.manifest.parentRunId).toBe('runner-test-structured-auto-parent');
     expect(result.manifest.mutationId).toBe('markov-faster-decay-reaction');
     expect(progress).toContain('forecast-lab: selected mutator markov-faster-decay-reaction (search-replace)');
+  });
+
+  it('does not re-pick a dropped mutator on the unranked path while untried ones remain', async () => {
+    appendStructuredMutationHistory({
+      runId: 'runner-test-unranked-history-drop',
+      mutationId: 'markov-shorter-reactive-window',
+      decision: 'drop',
+      startedAt: '2026-05-01T00:00:00.000Z',
+    });
+
+    const result = await runForecastLab({
+      profileId: 'multi-asset-markov-short-horizon',
+      mutationMode: 'structured',
+      rankMutators: false,
+      runId: 'runner-test-unranked-after-drop',
+      ledgerPath: TEST_LEDGER_PATH,
+      commandRunner: passingRunner([]),
+    });
+
+    // The catalog's first entry was already tried and dropped; take the next one.
+    expect(result.manifest.mutationId).toBe('markov-longer-stability-window');
   });
 
   it('prefers better-ranked kept structured mutations when ranking is enabled', async () => {
@@ -1703,6 +1709,7 @@ describe('forecast-lab runner', () => {
       const calls: string[] = [];
       const promotionWorktreePath = getForecastLabPromotionWorktreePath('runner-test-promote-verify');
       const result = await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'multi-asset-markov-short-horizon',
         runId: 'runner-test-promote-verify',
         ledgerPath: TEST_LEDGER_PATH,
@@ -1780,11 +1787,11 @@ describe('forecast-lab runner', () => {
       expect(activationArtifact.promotion).toEqual(activatedState);
       expect(activationArtifact.mutationReplayPayload).toEqual(source.manifest.mutationReplayPayload);
       expect(activationArtifact.activeStatePath).toBe(result.activeStatePath);
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/regime-calibrator.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
       const sharedEffectiveDefaults = resolveEffectiveRuntimeDefaults('shared');
       const goldEffectiveDefaults = resolveEffectiveRuntimeDefaults('gold');
@@ -1822,6 +1829,7 @@ describe('forecast-lab runner', () => {
         commandRunner: keptBtcMetricsRunner(),
       });
       const btcPromotion = await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'btc-markov-ultra-short-horizon',
         runId: 'runner-test-btc-promote-verify',
         sourceRunId: 'runner-test-btc-promote-source',
@@ -1838,6 +1846,7 @@ describe('forecast-lab runner', () => {
         commandRunner: keptGoldMetricsRunner(),
       });
       const goldPromotion = await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'gold-markov-short-horizon',
         runId: 'runner-test-gold-promote-verify-a',
         sourceRunId: 'runner-test-gold-promote-source-a',
@@ -1846,17 +1855,17 @@ describe('forecast-lab runner', () => {
       });
 
       expect(goldPromotion.activeStatePath).not.toBe(btcPromotion.activeStatePath);
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/regime-calibrator.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/regime-calibrator.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
 
       expectResolvedDefaultsToMatchMutation(resolveEffectiveRuntimeDefaults('btc'), BTC_SHORTER_REACTIVE_WINDOW);
@@ -1902,6 +1911,7 @@ describe('forecast-lab runner', () => {
       });
 
       const result = await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'multi-asset-markov-short-horizon',
         runId: 'runner-test-promote-legacy-verify',
         sourceRunId: 'runner-test-promote-legacy-source',
@@ -1936,7 +1946,7 @@ describe('forecast-lab runner', () => {
         commandRunner: passingRunner([]),
       });
 
-      const liveMarkovPath = 'src/tools/finance/markov-distribution/core.ts';
+      const liveMarkovPath = join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts');
       const originalMarkov = readFileSync(liveMarkovPath, 'utf8');
       writeFileSync(
         liveMarkovPath,
@@ -1948,6 +1958,7 @@ describe('forecast-lab runner', () => {
       );
 
       await expect(promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'multi-asset-markov-short-horizon',
         runId: 'runner-test-promote-verify',
         ledgerPath: TEST_LEDGER_PATH,
@@ -1983,6 +1994,7 @@ describe('forecast-lab runner', () => {
         commandRunner: passingRunner([]),
       });
       await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'multi-asset-markov-short-horizon',
         runId: 'runner-test-reset-promote-a',
         sourceRunId: 'runner-test-reset-source-a',
@@ -1991,6 +2003,7 @@ describe('forecast-lab runner', () => {
       });
 
       const result = await resetForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'multi-asset-markov-short-horizon',
         mode: 'defaults',
         runId: 'runner-test-reset-defaults',
@@ -1998,11 +2011,11 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('defaults');
       expect(result.activeStatePath).toBeUndefined();
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .toContain(`  momentumLookback: ${runtimeDefaults.markov.momentumLookback},`);
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .toContain(`  scoreAggregationCalibrationWindow: ${runtimeDefaults.conformal.scoreAggregationCalibrationWindow},`);
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/regime-calibrator.ts'), 'utf8'))
         .toContain(`  minSamplesPerRegime: ${runtimeDefaults.regime.minSamplesPerRegime},`);
       expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('shared'));
       expectResolvedDefaultsToMatchShipped(resolveEffectiveRuntimeDefaults('gold'));
@@ -2031,6 +2044,7 @@ describe('forecast-lab runner', () => {
         commandRunner: keptBtcMetricsRunner(),
       });
       const btcPromotion = await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'btc-markov-ultra-short-horizon',
         runId: 'runner-test-btc-promote-verify',
         sourceRunId: 'runner-test-btc-promote-source',
@@ -2047,6 +2061,7 @@ describe('forecast-lab runner', () => {
         commandRunner: keptGoldMetricsRunner(),
       });
       const goldPromotion = await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'gold-markov-short-horizon',
         runId: 'runner-test-gold-promote-verify-a',
         sourceRunId: 'runner-test-gold-promote-source-a',
@@ -2055,6 +2070,7 @@ describe('forecast-lab runner', () => {
       });
 
       const result = await resetForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'gold-markov-short-horizon',
         mode: 'defaults',
         runId: 'runner-test-gold-reset-defaults',
@@ -2062,17 +2078,17 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('defaults');
       expect(result.activeStatePath).toBeUndefined();
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/regime-calibrator.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/regime-calibrator.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
 
       expectResolvedDefaultsToMatchMutation(resolveEffectiveRuntimeDefaults('btc'), BTC_SHORTER_REACTIVE_WINDOW);
@@ -2106,6 +2122,7 @@ describe('forecast-lab runner', () => {
         commandRunner: passingRunner([]),
       });
       const firstPromotion = await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'multi-asset-markov-short-horizon',
         runId: 'runner-test-reset-promote-a',
         sourceRunId: 'runner-test-reset-source-a',
@@ -2122,6 +2139,7 @@ describe('forecast-lab runner', () => {
         commandRunner: passingRunner([]),
       });
       await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'multi-asset-markov-short-horizon',
         runId: 'runner-test-reset-promote-b',
         sourceRunId: 'runner-test-reset-source-b',
@@ -2130,6 +2148,7 @@ describe('forecast-lab runner', () => {
       });
 
       const result = await resetForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'multi-asset-markov-short-horizon',
         mode: 'last-known-good',
         runId: 'runner-test-reset-last-known-good',
@@ -2137,13 +2156,13 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('last-known-good');
       expect(result.activeStatePath).toBe(join(getExperimentsDir(), 'active-promotions', 'multi-asset-markov-short-horizon.json'));
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .toContain(`  transitionDecay: ${SHIPPED_RUNTIME_DEFAULTS.markov.transitionDecay},`);
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .toContain(`  adaptiveBreakLearningRateMultiplier: ${SHIPPED_RUNTIME_DEFAULTS.conformal.adaptiveBreakLearningRateMultiplier},`);
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/regime-calibrator.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(MULTI_ASSET_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
       const sharedEffectiveDefaults = resolveEffectiveRuntimeDefaults('shared');
       const goldEffectiveDefaults = resolveEffectiveRuntimeDefaults('gold');
@@ -2190,6 +2209,7 @@ describe('forecast-lab runner', () => {
         commandRunner: keptBtcMetricsRunner(),
       });
       const btcPromotion = await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'btc-markov-ultra-short-horizon',
         runId: 'runner-test-btc-promote-verify',
         sourceRunId: 'runner-test-btc-promote-source',
@@ -2206,6 +2226,7 @@ describe('forecast-lab runner', () => {
         commandRunner: keptGoldMetricsRunner(),
       });
       const firstGoldPromotion = await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'gold-markov-short-horizon',
         runId: 'runner-test-gold-promote-verify-a',
         sourceRunId: 'runner-test-gold-promote-source-a',
@@ -2222,6 +2243,7 @@ describe('forecast-lab runner', () => {
         commandRunner: keptGoldMetricsRunner(),
       });
       await promoteForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'gold-markov-short-horizon',
         runId: 'runner-test-gold-promote-verify-b',
         sourceRunId: 'runner-test-gold-promote-source-b',
@@ -2230,6 +2252,7 @@ describe('forecast-lab runner', () => {
       });
 
       const result = await resetForecastLab({
+        liveSourceRoot: LIVE_SOURCE_ROOT,
         profileId: 'gold-markov-short-horizon',
         mode: 'last-known-good',
         runId: 'runner-test-gold-reset-last-known-good',
@@ -2237,21 +2260,21 @@ describe('forecast-lab runner', () => {
 
       expect(result.mode).toBe('last-known-good');
       expect(result.activeStatePath).toBe(firstGoldPromotion.activeStatePath);
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'momentumLookback'));
-      expect(readFileSync('src/tools/finance/markov-distribution/core.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/markov-distribution/core.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_FASTER_DECAY_REACTION, 'transitionDecay'));
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'scoreAggregationCalibrationWindow'));
-      expect(readFileSync('src/tools/finance/conformal.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/conformal.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_FASTER_DECAY_REACTION, 'adaptiveBreakLearningRateMultiplier'));
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/regime-calibrator.ts'), 'utf8'))
         .toContain(getStructuredMutationLine(BTC_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
-      expect(readFileSync('src/tools/finance/regime-calibrator.ts', 'utf8'))
+      expect(readFileSync(join(LIVE_SOURCE_ROOT, 'src/tools/finance/regime-calibrator.ts'), 'utf8'))
         .not.toContain(getStructuredMutationLine(GOLD_SHORTER_REACTIVE_WINDOW, 'minSamplesPerRegime'));
 
       const goldEffectiveDefaults = resolveEffectiveRuntimeDefaults('gold');
@@ -2297,6 +2320,7 @@ describe('forecast-lab runner', () => {
     });
 
     const firstPromotion = promoteForecastLab({
+      liveSourceRoot: LIVE_SOURCE_ROOT,
       profileId: 'multi-asset-markov-short-horizon',
       runId: 'runner-test-promote-concurrent-verify-a',
       ledgerPath: TEST_LEDGER_PATH,
@@ -2323,6 +2347,7 @@ describe('forecast-lab runner', () => {
     await baselineGateStartedPromise;
 
     await expect(promoteForecastLab({
+      liveSourceRoot: LIVE_SOURCE_ROOT,
       profileId: 'multi-asset-markov-short-horizon',
       runId: 'runner-test-promote-concurrent-verify-b',
       ledgerPath: TEST_LEDGER_PATH,
@@ -2350,6 +2375,7 @@ describe('forecast-lab runner', () => {
     let mutatedSourceManifest = false;
 
     await expect(promoteForecastLab({
+      liveSourceRoot: LIVE_SOURCE_ROOT,
       profileId: 'multi-asset-markov-short-horizon',
       runId: 'runner-test-promote-stale-verify',
       ledgerPath: TEST_LEDGER_PATH,
@@ -2404,6 +2430,7 @@ describe('forecast-lab runner', () => {
     writeRunManifest(sourceManifestPath, manifestWithoutReplayPayload);
 
     await expect(promoteForecastLab({
+      liveSourceRoot: LIVE_SOURCE_ROOT,
       profileId: 'multi-asset-markov-short-horizon',
       runId: 'runner-test-promote-missing-payload-verify',
       ledgerPath: TEST_LEDGER_PATH,
@@ -2426,6 +2453,7 @@ describe('forecast-lab runner', () => {
     const promotionRunId = 'runner-test-promote-regression-verify';
 
     await expect(promoteForecastLab({
+      liveSourceRoot: LIVE_SOURCE_ROOT,
       profileId: 'multi-asset-markov-short-horizon',
       runId: promotionRunId,
       ledgerPath: TEST_LEDGER_PATH,

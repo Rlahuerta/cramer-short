@@ -9,7 +9,7 @@ import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll,
 import { useNoNetwork } from '../utils/test-no-network.js';
 import * as polymarket from '../tools/finance/polymarket.js';
 import * as embeddings from '../memory/embeddings.js';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentConfig, AgentEvent, AgentMemoryManager, DoneEvent } from './types.js';
@@ -106,9 +106,8 @@ function resetMemoryManagerSingleton(): void {
 }
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `agent-test-${nextTestId('path')}`);
-  mkdirSync(tmpDir, { recursive: true });
   originalCwd = process.cwd();
+  tmpDir = mkdtempSync(join(tmpdir(), 'agent-test-'));
   process.chdir(tmpDir);
   prevOpenAiKey = process.env.OPENAI_API_KEY;
   if (!prevOpenAiKey) process.env.OPENAI_API_KEY = 'sk-test-stub';

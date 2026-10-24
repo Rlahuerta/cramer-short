@@ -1,6 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, spyOn, setSystemTime } from 'bun:test';
-import { mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as paths from './paths.js';
@@ -22,8 +22,7 @@ let tmpDir: string;
 let dirSpy: ReturnType<typeof spyOn>;
 
 beforeEach(() => {
-  tmpDir = join(tmpdir(), `cache-test-${nextTestId('path')}`);
-  mkdirSync(tmpDir, { recursive: true });
+  tmpDir = mkdtempSync(join(tmpdir(), 'cache-test-'));
   // The dynamic import below uses a cache-busting query string, so the cache
   // module is re-evaluated and computes CACHE_DIR from this spy.
   dirSpy = spyOn(paths, 'getCramerShortDir').mockReturnValue(tmpDir);
