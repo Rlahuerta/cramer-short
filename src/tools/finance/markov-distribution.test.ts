@@ -1558,37 +1558,33 @@ describe('sensitivity analysis', () => {
   });
 
   it('sentiment shift produces monotonic effect on expected return', async () => {
-    const bullish = await computeMarkovDistribution({
+    // Not basePrices: on a straight line every day is bull with ~0 vol, so raw P(up)
+    // saturates (~0.99995) under any sentiment and calibration pins all three to the
+    // same P(up). Pinned P(up) fixes drift / sigma, so E[return] follows sigma, and
+    // bearish sentiment adds sigma via the unobserved bear/sideways default stats.
+    // The base-rate floor pins P(up) the same way, so this series also keeps clear of it.
+    const prices = [100];
+    for (let i = 1; i < 40; i++) {
+      prices.push(prices[i - 1] * (1 + 0.002 + 0.01 * Math.sin(i * 2.3) + 0.004 * Math.cos(i * 0.7)));
+    }
+    const run = (sentiment: { bullish: number; bearish: number }) => computeMarkovDistribution({
       ticker: 'SENT_MONO',
       horizon: 15,
-      currentPrice: 112,
-      historicalPrices: basePrices,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
       polymarketMarkets: [],
-      sentiment: { bullish: 0.8, bearish: 0.2 },
+      sentiment,
     });
-    const neutral = await computeMarkovDistribution({
-      ticker: 'SENT_MONO',
-      horizon: 15,
-      currentPrice: 112,
-      historicalPrices: basePrices,
-      polymarketMarkets: [],
-      sentiment: { bullish: 0.5, bearish: 0.5 },
-    });
-    const bearish = await computeMarkovDistribution({
-      ticker: 'SENT_MONO',
-      horizon: 15,
-      currentPrice: 112,
-      historicalPrices: basePrices,
-      polymarketMarkets: [],
-      sentiment: { bullish: 0.2, bearish: 0.8 },
-    });
+    const bullish = await run({ bullish: 0.8, bearish: 0.2 });
+    const neutral = await run({ bullish: 0.5, bearish: 0.5 });
+    const bearish = await run({ bullish: 0.2, bearish: 0.8 });
 
-    // Bullish sentiment → higher expected return than bearish (allow MC noise tolerance)
-    const mcTolerance = 0.001;
-    expect(bullish.actionSignal.expectedReturn).toBeGreaterThanOrEqual(bearish.actionSignal.expectedReturn - mcTolerance);
-    // Neutral should be between (or at least not more extreme than either)
-    expect(neutral.actionSignal.expectedReturn).toBeGreaterThanOrEqual(bearish.actionSignal.expectedReturn - 0.01);
-    expect(neutral.actionSignal.expectedReturn).toBeLessThanOrEqual(bullish.actionSignal.expectedReturn + 0.01);
+    // The forecast is deterministic, so the ordering is strict: no noise tolerance.
+    expect(bullish.actionSignal.expectedReturn).toBeGreaterThan(neutral.actionSignal.expectedReturn);
+    expect(neutral.actionSignal.expectedReturn).toBeGreaterThan(bearish.actionSignal.expectedReturn);
+    const pUp = (r: typeof bullish) => interpolateSurvival(r.distribution, r.currentPrice);
+    expect(pUp(bullish)).toBeGreaterThan(pUp(neutral));
+    expect(pUp(neutral)).toBeGreaterThan(pUp(bearish));
   });
 });
 
