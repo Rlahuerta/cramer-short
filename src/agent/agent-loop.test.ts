@@ -15,6 +15,7 @@ import type { ChatResult } from '@langchain/core/outputs';
 import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
 import { z } from 'zod';
 import { _setModelFactory } from '../model/llm.js';
+import * as config from '../utils/config.js';
 import { HISTORY_CONTEXT_MARKER } from '../utils/parsing/history-context.js';
 import type { AgentEvent, DoneEvent } from './types.js';
 
@@ -247,5 +248,67 @@ describe('exit messages', () => {
     const done = doneOf(await collect(agent.run('look up ZZZ')));
 
     expect(done.answer).toContain('Research interrupted');
+  });
+});
+
+describe('Agent — parallelToolLimit wiring', () => {
+  function executorLimit(agent: AgentInstance): unknown {
+    const executor = Object.getOwnPropertyDescriptor(agent, 'toolExecutor')?.value as object;
+    return Object.getOwnPropertyDescriptor(executor, 'parallelToolLimit')?.value;
+  }
+
+  it('reads the parallelToolLimit setting when the config leaves it unset', async () => {
+    const realGetSetting = config.getSetting;
+    const spy = spyOn(config, 'getSetting').mockImplementation(((key: string, fallback: unknown) =>
+      key === 'parallelToolLimit' ? 2 : realGetSetting(key, fallback)) as typeof config.getSetting);
+    try {
+      const agent = await Agent.create({ memoryEnabled: false });
+      expect(executorLimit(agent)).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('lets AgentConfig.parallelToolLimit override the setting', async () => {
+    const agent = await Agent.create({ memoryEnabled: false, parallelToolLimit: 3 });
+    expect(executorLimit(agent)).toBe(3);
+  });
+});
+
+describe('web_search fallback note after a tool error', () => {
+  const NOTE = 'you MUST call web_search next';
+  const call = (name: string, id: string): ToolCall => ({ id, name, args: { query: 'ZZZ revenue' }, type: 'tool_call' });
+
+  async function promptAfterFailedTool(opts: { webSearch: 'missing' | 'available' | 'called' }): Promise<string> {
+    const agent = await Agent.create({ maxIterations: 4, memoryEnabled: false });
+    const toolMap = Object.getOwnPropertyDescriptor(agent, 'toolMap')?.value as Map<string, StructuredToolInterface>;
+    toolMap.delete('web_search');
+    installTools(agent, {
+      zz_data: () => '{"error": "no data for ZZZ"}',
+      ...(opts.webSearch === 'missing' ? {} : { web_search: () => '{"results": []}' }),
+    });
+    script.responses = [
+      [ST_CALL],
+      opts.webSearch === 'called' ? [call('zz_data', 'z1'), call('web_search', 'w1')] : [call('zz_data', 'z1')],
+      'Final answer',
+    ];
+
+    await collect(agent.run('look up ZZZ'));
+
+    expect(script.prompts.length).toBeGreaterThanOrEqual(3);
+    expect(script.prompts[2]).toContain('no data for ZZZ');
+    return script.prompts[2];
+  }
+
+  it('asks for web_search when it is registered and has not run', async () => {
+    expect(await promptAfterFailedTool({ webSearch: 'available' })).toContain(NOTE);
+  });
+
+  it('leaves the note out when web_search is not registered', async () => {
+    expect(await promptAfterFailedTool({ webSearch: 'missing' })).not.toContain(NOTE);
+  });
+
+  it('leaves the note out once web_search has run', async () => {
+    expect(await promptAfterFailedTool({ webSearch: 'called' })).not.toContain(NOTE);
   });
 });

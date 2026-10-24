@@ -527,6 +527,8 @@ export function buildIterationPrompt(
   toolUsageStatus?: string | null,
   forecastLabRoutingHint?: ForecastLabRoutingHint | null,
   queryContext?: string,
+  /** web_search is registered and has not run yet, so a tool error can fall back to it. */
+  webSearchUntried = false,
 ): string {
   let prompt = queryContext ?? `Query: ${originalQuery}`;
 
@@ -552,7 +554,7 @@ ${fullToolResults}`;
     /"status":\s*4\d{2}/.test(fullToolResults) ||
     /"(premium[-\s]only|fmp[-\s]premium|free[-\s]tier[-\s]only)"/i.test(fullToolResults);
 
-  if (hasToolErrors) {
+  if (hasToolErrors && webSearchUntried) {
     prompt += `
 
 IMPORTANT: One or more data tools returned an error or empty result. Per your Financial Data Fallback Policy you MUST call web_search next with a targeted query (e.g. "Vestas Wind Systems VWS.CO revenue 2024 annual report"). Do NOT write a final answer until you have tried web_search. Continuing without trying web_search is not acceptable.`;

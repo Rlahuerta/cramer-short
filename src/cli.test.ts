@@ -15,6 +15,7 @@ import {
   flushExchangeToScrollback,
   resolveMaxIterations,
   DEEP_MAX_ITERATIONS,
+  serializeSubmits,
 } from './cli.js';
 import { DEFAULT_MAX_ITERATIONS } from './agent/index.js';
 import type { PriceSnapshot } from './controllers/watchlist-display.js';
@@ -580,5 +581,56 @@ describe('resolveMaxIterations', () => {
 
   it('DEEP_MAX_ITERATIONS is strictly greater than DEFAULT_MAX_ITERATIONS', () => {
     expect(DEEP_MAX_ITERATIONS).toBeGreaterThan(DEFAULT_MAX_ITERATIONS);
+  });
+});
+
+describe('serializeSubmits', () => {
+  function blockingSubmit() {
+    const seen: string[] = [];
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => (release = resolve));
+    const submit = async (query: string) => {
+      seen.push(query);
+      if (seen.length === 1) await blocked;
+    };
+    return { submit, seen, release };
+  }
+
+  it('drops an ordinary submit while one is running', async () => {
+    const { submit, seen, release } = blockingSubmit();
+    const handle = serializeSubmits(submit);
+
+    const first = handle('first query');
+    await handle('second query');
+    release();
+    await first;
+
+    expect(seen).toEqual(['first query']);
+  });
+
+  it('lets /exit, quit and /help through while a query runs', async () => {
+    const { submit, seen, release } = blockingSubmit();
+    const handle = serializeSubmits(submit);
+
+    const first = handle('first query');
+    await handle('/exit');
+    await handle(' Quit ');
+    await handle('/help');
+    release();
+    await first;
+
+    expect(seen).toEqual(['first query', '/exit', ' Quit ', '/help']);
+  });
+
+  it('accepts a new submit once the running one finishes', async () => {
+    const { submit, seen, release } = blockingSubmit();
+    const handle = serializeSubmits(submit);
+
+    const first = handle('first query');
+    release();
+    await first;
+    await handle('next query');
+
+    expect(seen).toEqual(['first query', 'next query']);
   });
 });

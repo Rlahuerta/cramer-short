@@ -59,9 +59,12 @@ function showChatAnswer(query: string, answer: string, options: Pick<CoreSlashCo
   options.requestRender();
 }
 
+export function isExitCommand(query: string): boolean {
+  return ['exit', 'quit', '/exit', '/quit'].includes(query.trim().toLowerCase());
+}
+
 export async function handleExitCommand(query: string, options: ExitCommandOptions): Promise<boolean> {
-  const normalized = query.trim().toLowerCase();
-  if (normalized !== 'exit' && normalized !== 'quit' && normalized !== '/exit' && normalized !== '/quit') {
+  if (!isExitCommand(query)) {
     return false;
   }
 

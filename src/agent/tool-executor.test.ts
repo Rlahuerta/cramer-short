@@ -945,3 +945,83 @@ describe('AgentToolExecutor — approval-gated calls in one batch', () => {
     expect(events.filter((event) => event.type === 'tool_denied')).toHaveLength(1);
   });
 });
+
+describe('AgentToolExecutor — parallelToolLimit', () => {
+  function concurrencyProbe() {
+    let active = 0;
+    let peak = 0;
+    const tool = {
+      name: 'browser',
+      invoke: async () => {
+        peak = Math.max(peak, ++active);
+        await Bun.sleep(5);
+        active--;
+        return 'ok';
+      },
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+    return { tool, peak: () => peak };
+  }
+
+  function fourCalls() {
+    return new AIMessage({
+      content: '',
+      tool_calls: [1, 2, 3, 4].map((n) => ({ id: `c${n}`, name: 'browser', args: { url: `u${n}` }, type: 'tool_call' as const })),
+    });
+  }
+
+  it('caps how many calls in a batch run at once', async () => {
+    const { tool, peak } = concurrencyProbe();
+    const executor = new AgentToolExecutor(new Map([['browser', tool]]), undefined, undefined, undefined, { parallelToolLimit: 2 });
+
+    const events = await drainEvents(executor.executeAll(fourCalls(), makeCtx()));
+
+    expect(peak()).toBe(2);
+    expect(events.filter((event) => event.type === 'tool_end')).toHaveLength(4);
+  });
+
+  it('runs the whole batch at once when the limit is 0', async () => {
+    const { tool, peak } = concurrencyProbe();
+    const executor = new AgentToolExecutor(new Map([['browser', tool]]), undefined, undefined, undefined, { parallelToolLimit: 0 });
+
+    await drainEvents(executor.executeAll(fourCalls(), makeCtx()));
+
+    expect(peak()).toBe(4);
+  });
+});
+
+describe('AgentToolExecutor — a lane that throws in a parallel batch', () => {
+  it('surfaces the throw as a tool_error and still finishes the other calls', async () => {
+    const searchTool = makeFakeTool('financial_search', 'results');
+    const browserTool = makeFakeTool('browser', 'page');
+    const executor = new AgentToolExecutor(new Map([['financial_search', searchTool], ['browser', browserTool]]));
+    const ctx = makeCtx();
+    const canCallTool = ctx.scratchpad.canCallTool.bind(ctx.scratchpad);
+    ctx.scratchpad.canCallTool = (name, query) => {
+      if (name === 'browser') throw new Error('scratchpad exploded');
+      return canCallTool(name, query);
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    const batch = new AIMessage({
+      content: '',
+      tool_calls: [
+        { id: 'c1', name: 'financial_search', args: { query: 'AAPL revenue' }, type: 'tool_call' as const },
+        { id: 'c2', name: 'browser', args: { url: 'https://example.com' }, type: 'tool_call' as const },
+      ],
+    });
+
+    try {
+      const events = await drainEvents(executor.executeAll(batch, ctx));
+      await Bun.sleep(0);
+
+      expect(unhandled).toEqual([]);
+      expect(events).toContainEqual({ type: 'tool_error', tool: 'browser', error: 'scratchpad exploded' });
+      expect(events.some((event) => event.type === 'tool_end' && event.tool === 'financial_search')).toBe(true);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+});

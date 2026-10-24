@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { cramerShortPath } from '../utils/paths.js';
 import { annotateFinancialNumbers } from '../utils/finance/number-format.js';
 
@@ -77,6 +77,9 @@ export class Scratchpad {
   // Stores indices of tool_result entries that have been cleared from context
   private clearedToolIndices: Set<number> = new Set();
 
+  // Parsed copy of every entry written to the JSONL file, so accessors never re-read it
+  private readonly entries: ScratchpadEntry[] = [];
+
   constructor(query: string, limitConfig?: Partial<ToolLimitConfig>) {
     this.limitConfig = { ...DEFAULT_LIMIT_CONFIG, ...limitConfig };
 
@@ -90,7 +93,8 @@ export class Scratchpad {
       .slice(0, 19)           // "2026-01-21T15:30:45"
       .replace('T', '-')      // "2026-01-21-15:30:45"
       .replace(/:/g, '');     // "2026-01-21-153045"
-    this.filepath = join(this.scratchpadDir, `${timestamp}_${hash}.jsonl`);
+    // Random suffix: the same query twice in one second must not share a file.
+    this.filepath = join(this.scratchpadDir, `${timestamp}_${hash}_${randomBytes(4).toString('hex')}.jsonl`);
 
     // Write initial entry with the query
     this.append({ type: 'init', content: query, timestamp: new Date().toISOString() });
@@ -550,37 +554,14 @@ export class Scratchpad {
    * Append-only write
    */
   private append(entry: ScratchpadEntry): void {
-    appendFileSync(this.filepath, JSON.stringify(entry) + '\n');
+    const line = JSON.stringify(entry);
+    appendFileSync(this.filepath, line + '\n');
+    // Keep the JSON round-trip so entries look exactly as a read of the file would.
+    this.entries.push(JSON.parse(line) as ScratchpadEntry);
   }
 
-  /**
-   * Parse and validate a single JSONL line. Returns null for malformed or invalid entries.
-   */
-  private parseLine(line: string): ScratchpadEntry | null {
-    try {
-      const parsed = JSON.parse(line);
-      return parsed && typeof parsed === 'object' && 'type' in parsed && 'timestamp' in parsed
-        ? (parsed as ScratchpadEntry)
-        : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Read all entries from the log.
-   * Skips malformed or corrupt lines (partial writes, disk corruption) to avoid
-   * a single bad line crashing tool-context methods.
-   */
+  /** All entries written so far. */
   private readEntries(): ScratchpadEntry[] {
-    if (!existsSync(this.filepath)) {
-      return [];
-    }
-
-    return readFileSync(this.filepath, 'utf-8')
-      .split('\n')
-      .filter((line) => line.trim())
-      .map((line) => this.parseLine(line))
-      .filter((entry): entry is ScratchpadEntry => entry !== null);
+    return this.entries;
   }
 }

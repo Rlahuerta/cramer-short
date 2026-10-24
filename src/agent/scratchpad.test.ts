@@ -10,7 +10,7 @@
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -270,5 +270,36 @@ describe('Scratchpad.collectSourceUrls', () => {
     const sp = new Scratchpad('test query');
     sp.addToolResult('tool', {}, 'plain text result');
     expect(sp.collectSourceUrls()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One file per scratchpad
+// ---------------------------------------------------------------------------
+
+function filepathOf(sp: InstanceType<typeof Scratchpad>): string {
+  return Object.getOwnPropertyDescriptor(sp, 'filepath')?.value as string;
+}
+
+describe('Scratchpad file', () => {
+  it('gives two runs of the same query in the same second their own file', () => {
+    const first = new Scratchpad('same query');
+    first.addToolResult('tool_a', { ticker: 'AAA' }, JSON.stringify({ value: 1 }));
+    const second = new Scratchpad('same query');
+
+    expect(filepathOf(second)).not.toBe(filepathOf(first));
+    expect(second.getToolResults()).not.toContain('tool_a');
+  });
+});
+
+describe('Scratchpad entries', () => {
+  it('serves accessors from memory instead of re-reading the file', () => {
+    const sp = new Scratchpad('cached query');
+    sp.addToolResult('tool_a', { ticker: 'AAA' }, JSON.stringify({ value: 1 }));
+    writeFileSync(filepathOf(sp), '');
+
+    expect(sp.hasToolResults()).toBe(true);
+    expect(sp.getToolResults()).toContain('tool_a');
+    expect(sp.getToolCallRecords()).toHaveLength(1);
   });
 });
