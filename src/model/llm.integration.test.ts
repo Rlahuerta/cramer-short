@@ -89,17 +89,15 @@ describe('Ollama model discovery', () => {
     expect(cloudModels.length).toBeGreaterThan(0);
   });
 
-  // Conditional test — only run if nemotron is installed
-  integrationIt('nemotron-3-super:cloud is listed in available models', () => {
-    if (skipWhenOllamaUnreachable(preflight, 'nemotron-3-super:cloud is listed in available models')) return;
+  // Conditional test — the tag only shows once the cloud model has been pulled
+  integrationIt('deepseek-v4.1-flash:cloud (the test model) is listed in available models', () => {
+    if (skipWhenOllamaUnreachable(preflight, 'deepseek-v4.1-flash:cloud (the test model) is listed in available models')) return;
     const models = preflight.models;
-    const hasNemotron = models.some((m: string) => m.includes('nemotron-3-super'));
-    if (!hasNemotron) {
-      // Skip gracefully if model not installed
+    if (!models.some((m: string) => m.includes('deepseek-v4.1-flash'))) {
       expect(true).toBe(true);
       return;
     }
-    expect(models).toContain('nemotron-3-super:cloud');
+    expect(models).toContain('deepseek-v4.1-flash:cloud');
   });
 
   integrationIt('getOllamaModels returns [] when Ollama URL is unreachable', async () => {
@@ -117,7 +115,7 @@ describe('Ollama model discovery', () => {
 
 describe('getFastModel — Ollama provider', () => {
   integrationIt('returns the fallback model for ollama (no fastModel defined)', () => {
-    const model = 'ollama:kimi-k2.6:cloud';
+    const model = 'ollama:deepseek-v4.1-flash:cloud';
     const fast = getFastModel('ollama', model);
     expect(fast).toBe(model);
   });

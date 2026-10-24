@@ -7,7 +7,7 @@
  * The agent is invoked ONCE via beforeAll; all tests share the same result
  * to avoid paying the LLM cost multiple times.
  *
- * Model: E2E_MODEL env var or the shared live E2E auto-resolver.
+ * Model: deepseek-v4.1-flash:cloud (override via E2E_MODEL env var).
  * Timeout: E2E_TIMEOUT_MS (default 600 s)
  */
 import { describe, expect, beforeAll } from 'bun:test';

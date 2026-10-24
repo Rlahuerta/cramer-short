@@ -3,7 +3,7 @@
  * model and returns a structured result for assertion.
  *
  * Environment variables:
- *   E2E_MODEL      — model to use (default: auto-resolved Ollama cloud model)
+ *   E2E_MODEL      — model to use (default: deepseek-v4.1-flash:cloud)
  *   OLLAMA_BASE_URL — Ollama endpoint (default: 'http://127.0.0.1:11434')
  *   E2E_TIMEOUT_MS  — Hard timeout in ms (default: 600 000)
  */
@@ -41,17 +41,9 @@ export const CHILD_RESULT_MARKER = '__CRAMER_E2E_RESULT__';
 
 const E2E_RESULT_DIR = join(process.cwd(), '.cramer-short', 'e2e-results');
 const DEFAULT_E2E_PREFLIGHT_TIMEOUT_MS = 30_000;
-const E2E_MODEL_FALLBACK = 'ollama:deepseek-v4.1-flash:cloud';
-// Ollama retires cloud models while they stay in the local tag list, so each
-// candidate is probed and the first live one wins (see selectLiveE2EModel).
-const E2E_MODEL_PREFERENCES = [
-  'deepseek-v4.1-flash:cloud',
-  'glm-5.3-flash:cloud',
-  'minimax-m2.7:cloud',
-  'kimi-k2.6:cloud',
-] as const;
+/** The only Ollama model live integration/E2E tests run against (E2E_MODEL overrides). */
+export const E2E_OLLAMA_MODEL = 'ollama:deepseek-v4.1-flash:cloud';
 
-let resolvedDefaultE2EModelPromise: Promise<string> | null = null;
 const preflightPromises = new Map<string, Promise<E2EPreflightStatus>>();
 let dynamicSkipReason: string | null = null;
 
@@ -253,38 +245,8 @@ function probeProviderModel(model: string): string | null {
   return null;
 }
 
-/** First candidate whose probe reports no problem, or null when none is live. */
-export async function selectLiveE2EModel(
-  candidates: readonly string[],
-  probe: (model: string) => Promise<string | null>,
-): Promise<string | null> {
-  for (const candidate of candidates) {
-    if (await probe(candidate) === null) return candidate;
-  }
-  return null;
-}
-
 async function resolveDefaultE2EModel(): Promise<string> {
-  const override = getEnv('E2E_MODEL')?.trim();
-  if (override) {
-    return override;
-  }
-
-  if (!resolvedDefaultE2EModelPromise) {
-    resolvedDefaultE2EModelPromise = (async () => {
-      const { getOllamaModels } = await import('./ollama.js');
-      const localCloudModels = (await getOllamaModels())
-        .filter((model) => model.includes(':cloud'))
-        .sort((a, b) => a.localeCompare(b));
-      const candidates = [...new Set([...E2E_MODEL_PREFERENCES, ...localCloudModels])]
-        .map((model) => `ollama:${model}`);
-      const timeoutMs = resolveE2EPreflightTimeoutMs();
-      return await selectLiveE2EModel(candidates, (model) => probeOllamaModel(model, timeoutMs))
-        ?? E2E_MODEL_FALLBACK;
-    })();
-  }
-
-  return resolvedDefaultE2EModelPromise;
+  return getEnv('E2E_MODEL')?.trim() || E2E_OLLAMA_MODEL;
 }
 
 export async function getE2EPreflightStatus(modelOverride?: string): Promise<E2EPreflightStatus> {

@@ -1,13 +1,13 @@
 /**
  * E2E tests — validate documented Polymarket history guide examples
- * against the default live Ollama cloud E2E model.
+ * against the default E2E model (deepseek-v4.1-flash:cloud).
  *
  * These tests assert on stable structural behaviour (tool calls triggered,
  * heading formats, horizon labels, warning phrases), not on volatile market
  * numbers that drift between runs.
  *
  * Run with:  bun run test:e2e
- * Model:     auto-resolved live Ollama cloud model (override via E2E_MODEL)
+ * Model:     deepseek-v4.1-flash:cloud (override via E2E_MODEL)
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
