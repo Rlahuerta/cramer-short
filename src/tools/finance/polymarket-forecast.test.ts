@@ -7,6 +7,7 @@ import {
   categoryToTier,
   resolveSignalTier,
   resolveSpreadFamily,
+  deriveThresholdMarketDeltas,
   deriveCrossPlatformConfidenceAdjustment,
   evaluateHistoryFlags,
   evaluateMarketHistory,
@@ -3212,5 +3213,56 @@ describe('resolveSpreadFamily (Phase 3 – spread-benchmark family resolution)',
     // return 'geopolitical' while the impact-map tier stays 'electoral'.
     expect(resolveSpreadFamily('btc_price_target', 'crypto')).toBe('geopolitical');
     expect(resolveSignalTier('btc_price_target', 'crypto')).toBe('electoral');
+  });
+});
+
+describe('deriveThresholdMarketDeltas', () => {
+  const BTC = ['bitcoin', 'btc'];
+
+  it('returns null when the question has no strike', () => {
+    expect(deriveThresholdMarketDeltas('Will the Fed cut rates?', 60_000, BTC)).toBeNull();
+  });
+
+  it('derives direction and size from strike vs current price and wording', () => {
+    const above = deriveThresholdMarketDeltas('Will Bitcoin be above $50,000 on Dec 31?', 60_000, BTC)!;
+    expect(above.deltaYes).toBeCloseTo(0, 10);
+    expect(above.deltaNo).toBeCloseTo(-1 / 6, 10);
+
+    const below = deriveThresholdMarketDeltas('Will Bitcoin be below $50k on Dec 31?', 60_000, BTC)!;
+    expect(below.deltaYes).toBeCloseTo(-1 / 6, 10);
+    expect(below.deltaNo).toBeCloseTo(0, 10);
+
+    const reach = deriveThresholdMarketDeltas('Will Bitcoin reach $72K in December?', 60_000, BTC)!;
+    expect(reach.deltaYes).toBeCloseTo(0.2, 10);
+    expect(reach.deltaNo).toBeCloseTo(0, 10);
+
+    const dip = deriveThresholdMarketDeltas('Will Bitcoin dip to $48K in December?', 60_000, BTC)!;
+    expect(dip.deltaYes).toBeCloseTo(-0.2, 10);
+    expect(dip.deltaNo).toBeCloseTo(0, 10);
+  });
+
+  it('carries no direction without a current price or when the strike is for another asset', () => {
+    expect(deriveThresholdMarketDeltas('Will Bitcoin be above $50,000?', undefined, BTC))
+      .toEqual({ deltaYes: 0, deltaNo: 0 });
+    expect(deriveThresholdMarketDeltas('Will Bitcoin be above $50,000?', 3_000, ['ethereum', 'eth']))
+      .toEqual({ deltaYes: 0, deltaNo: 0 });
+  });
+});
+
+describe('btc_price_target signal direction', () => {
+  async function rawReturnFor(question: string, probability: number): Promise<number> {
+    const tool = makeHermeticTool(async (query) => query === 'Bitcoin price target'
+      ? [{ marketId: 'btc-1', assetId: 'btc-1-yes', question, probability, volume24h: 500_000, ageDays: 30, endDate: futureIso(30) }]
+      : []);
+    const raw = await tool.func({ ticker: 'BTC', horizon_days: 30, current_price: 60_000 }, undefined);
+    return parsePayload(raw).rawForecastReturn!;
+  }
+
+  it('"above $50k @0.99" and "below $50k @0.01" agree on a small downside, not ±8-10%', async () => {
+    const above = await rawReturnFor('Will Bitcoin be above $50,000 on Dec 31?', 0.99);
+    const below = await rawReturnFor('Will Bitcoin be below $50,000 on Dec 31?', 0.01);
+    expect(above).toBeLessThanOrEqual(0);
+    expect(below).toBeLessThanOrEqual(0);
+    expect(Math.abs(above - below)).toBeLessThan(0.01);
   });
 });
