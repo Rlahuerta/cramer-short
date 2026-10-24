@@ -613,6 +613,7 @@ describe('forecast_lab_run tool', () => {
     const tool = createForecastLabRunTool({
       promoteForecastLabFn: promoteForecastLabFn as any,
       readLedgerEntriesFn,
+      readRunManifestFn: (() => ({ promotion: { status: 'approval-required' } })) as any,
       getLedgerPathFn: () => '.cramer-short/experiments/forecast-results.tsv',
     });
 
@@ -662,6 +663,7 @@ describe('forecast_lab_run tool', () => {
           },
         },
       ] as any,
+      readRunManifestFn: (() => ({ promotion: { status: 'approval-required' } })) as any,
     });
 
     const result = await tool.invoke({
@@ -676,6 +678,47 @@ describe('forecast_lab_run tool', () => {
       status: 'error',
     });
     expect(payload?.answer).toContain('Specify profileId or sourceRunId');
+  });
+
+  it('resolves promotion status from the run manifest, not the append-only ledger', async () => {
+    const promoteForecastLabFn = mock(async () => makePromotionResult());
+    const ledgerEntry = (runId: string, profileId: string) => ({
+      runId,
+      profileId,
+      decision: 'keep',
+      mutationMode: 'structured',
+      promotion: {
+        // Recorded at run time and never rewritten by a later promotion.
+        status: 'approval-required' as const,
+        source: { runId, manifestPath: `.cramer-short/experiments/runs/${runId}/manifest.json` },
+        requestedAt: '2026-05-03T00:00:00.000Z',
+      },
+    });
+    const tool = createForecastLabRunTool({
+      promoteForecastLabFn: promoteForecastLabFn as any,
+      readLedgerEntriesFn: () => [
+        ledgerEntry('btc-markov-ultra-short-horizon.keep-1', 'btc-markov-ultra-short-horizon'),
+        ledgerEntry('multi-asset-markov-short-horizon.keep-2', 'multi-asset-markov-short-horizon'),
+      ] as any,
+      readRunManifestFn: ((path: string) => ({
+        promotion: { status: path.includes('btc-markov-ultra-short-horizon.keep-1') ? 'activated' : 'approval-required' },
+      })) as any,
+    });
+
+    const inferred = parseForecastLabRunToolPayload(await tool.invoke({ action: 'promote-approved' }) as string);
+    expect(inferred?.status).toBe('ok');
+    expect(promoteForecastLabFn).toHaveBeenCalledWith({
+      profileId: 'multi-asset-markov-short-horizon',
+      sourceRunId: 'multi-asset-markov-short-horizon.keep-2',
+      progress: undefined,
+    });
+
+    const alreadyLive = parseForecastLabRunToolPayload(await tool.invoke({
+      action: 'promote-approved',
+      sourceRunId: 'btc-markov-ultra-short-horizon.keep-1',
+    }) as string);
+    expect(alreadyLive).toMatchObject({ status: 'error' });
+    expect(alreadyLive?.answer).toContain('No promotable kept structured run matched sourceRunId');
   });
 
   it('runs a bounded reset back to shipped defaults', async () => {

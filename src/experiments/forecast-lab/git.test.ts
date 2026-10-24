@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, setDefaultTimeout } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { getForecastLabProfile } from './profiles.js';
 import {
   ForecastLabGitError,
@@ -22,14 +24,21 @@ import { useTempCramerShortDir } from '../../utils/test-cramer-short-dir.js';
 // Candidate/promotion worktrees live under .cramer-short/experiments/worktrees; use a temp one.
 useTempCramerShortDir();
 
+// Branch names are shared by every worktree of the repository, so tests that create real
+// branches suffix their run ids per process to stay safe under concurrent `bun test` runs.
+const RUN_SUFFIX = randomUUID().slice(0, 8);
+const CLEANUP_RUN_ID = `git-test-cleanup-${RUN_SUFFIX}`;
+const EDIT_POLICY_RUN_ID = `git-test-edit-policy-${RUN_SUFFIX}`;
+const PROMOTION_CLEANUP_RUN_ID = `git-test-promotion-cleanup-${RUN_SUFFIX}`;
+
 const WORKTREE_RUN_IDS = [
   'git-test-safe-path',
-  'git-test-cleanup',
-  'git-test-edit-policy',
+  CLEANUP_RUN_ID,
+  EDIT_POLICY_RUN_ID,
   'git-test-existing-worktree',
   'git-test-cleanup-secondary-error',
   'git-test-promotion-safe-path',
-  'git-test-promotion-cleanup',
+  PROMOTION_CLEANUP_RUN_ID,
 ] as const;
 
 setDefaultTimeout(120_000);
@@ -141,7 +150,7 @@ describe('forecast-lab git helpers', () => {
   });
 
   it('cleans up the candidate branch and worktree after callback failure', async () => {
-    const runId = 'git-test-cleanup';
+    const runId = CLEANUP_RUN_ID;
     const branch = makeForecastLabCandidateBranch(runId);
     const worktreePath = getForecastLabCandidateWorktreePath(runId);
     const profile = getForecastLabProfile('multi-asset-markov-short-horizon');
@@ -161,7 +170,7 @@ describe('forecast-lab git helpers', () => {
   });
 
   it('cleans up the promotion staging branch and worktree after a verification failure', () => {
-    const runId = 'git-test-promotion-cleanup';
+    const runId = PROMOTION_CLEANUP_RUN_ID;
     const branch = makeForecastLabPromotionBranch(runId);
     const worktreePath = getForecastLabPromotionWorktreePath(runId);
     const profile = getForecastLabProfile('multi-asset-markov-short-horizon');
@@ -178,6 +187,40 @@ describe('forecast-lab git helpers', () => {
 
     expect(existsSync(worktreePath)).toBe(false);
     expect(branchExists(branch)).toBe(false);
+  });
+
+  it('materializes candidate files from the baseline commit instead of a dirty working tree', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forecast-lab-git-test-repo-'));
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', ['-C', repoRoot, '-c', 'user.name=test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false', ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(result.status).toBe(0);
+    };
+
+    try {
+      const corePath = join(repoRoot, 'src/core.ts');
+      mkdirSync(join(repoRoot, 'src'), { recursive: true });
+      writeFileSync(corePath, '  momentumLookback: 12,\n');
+      git('init', '-q');
+      git('add', '.');
+      git('commit', '-q', '-m', 'baseline');
+      writeFileSync(corePath, '  momentumLookback: 999,\n');
+
+      const workspace = prepareForecastLabCandidateWorkspace('git-test-dirty-working-tree', {
+        repoRoot,
+        materializePaths: ['src/core.ts'],
+        lightweight: true,
+      });
+      try {
+        expect(readFileSync(join(workspace.metadata.rootDir, 'src/core.ts'), 'utf8')).toBe('  momentumLookback: 12,\n');
+      } finally {
+        workspace.cleanup();
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 
   it('refuses to reuse a pre-existing worktree path before git unregisters it', () => {
@@ -281,7 +324,7 @@ describe('forecast-lab git helpers', () => {
   });
 
   it('applies edits only inside the allowed mutation set', async () => {
-    const runId = 'git-test-edit-policy';
+    const runId = EDIT_POLICY_RUN_ID;
     const profile = getForecastLabProfile('multi-asset-markov-short-horizon');
 
     await withForecastLabCandidateWorkspace(runId, (workspace) => {

@@ -1,6 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from 'bun:test';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ArbiterReplayBundle } from '../arbiter-replay.js';
 import type { ReplayPriceHistory } from '../arbiter-replay-labeler.js';
@@ -10,7 +11,7 @@ import {
   type ReplayTickerHistoryRequest,
 } from './replay-label-batch-runner.js';
 
-const SCRATCH_ROOT = join(import.meta.dir, '__test-scratch__');
+const SCRATCH_ROOT = mkdtempSync(join(tmpdir(), 'replay-test-scratch-'));
 const scratchDirs: string[] = [];
 
 function makeScratchDir(): string {

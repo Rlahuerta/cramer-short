@@ -3,8 +3,12 @@ import { listMarkovParameterMutations } from './mutators/markov-parameters.js';
 import {
   buildForecastLabImprovementTrials,
   runForecastLabImprovementSearch,
+  scoreCandidateAgainstProfile,
   type ForecastLabImprovementEvaluation,
+  type ForecastLabImprovementHorizonMetrics,
+  type ForecastLabImprovementMetrics,
 } from './improvement-loop.js';
+import { getForecastLabProfile } from './profiles.js';
 
 function findMutation(profileId: 'sol-markov-short-horizon' | 'hype-markov-short-horizon', id: string) {
   const mutation = listMarkovParameterMutations(profileId).find((candidate) => candidate.id === id);
@@ -108,5 +112,55 @@ describe('forecast-lab improvement loop', () => {
     });
 
     expect(maxInFlight).toBe(1);
+  });
+});
+
+describe('forecast-lab improvement loop scoring', () => {
+  const horizon = (overrides: Partial<ForecastLabImprovementHorizonMetrics> = {}): ForecastLabImprovementHorizonMetrics => ({
+    directionalAccuracy: 0.5,
+    brierScore: 0.25,
+    ciCoverage: 0.9,
+    structuralBreakCount: 0,
+    abstainCount: 10,
+    abstainRate: 0.2,
+    stepCount: 50,
+    errorCount: 0,
+    ...overrides,
+  });
+  const metrics = (overrides: Partial<Record<keyof ForecastLabImprovementMetrics, Partial<ForecastLabImprovementHorizonMetrics>>> = {}): ForecastLabImprovementMetrics => ({
+    h1: horizon(overrides.h1),
+    h2: horizon(overrides.h2),
+    h3: horizon(overrides.h3),
+    h7: horizon(overrides.h7),
+    h14: horizon(overrides.h14),
+  });
+  const profile = getForecastLabProfile('sol-markov-short-horizon');
+  const improvedH1 = { directionalAccuracy: 0.53 };
+
+  it('keeps a clean candidate that clears every gate', () => {
+    expect(scoreCandidateAgainstProfile(profile, metrics(), metrics({ h1: improvedH1 })).decision).toBe('keep');
+  });
+
+  it('drops a candidate whose walk-forward raised errors, however good its metrics look', () => {
+    const scored = scoreCandidateAgainstProfile(profile, metrics(), metrics({ h1: improvedH1, h14: { errorCount: 3 } }));
+    expect(scored.decision).toBe('drop');
+    expect(scored.objectiveScore).toBeLessThan(0);
+  });
+
+  it('drops a candidate with an empty horizon instead of scoring its zeroed metrics', () => {
+    const scored = scoreCandidateAgainstProfile(profile, metrics(), metrics({ h1: improvedH1, h2: { stepCount: 0 } }));
+    expect(scored.decision).toBe('drop');
+  });
+
+  it('drops on a missing required metric instead of defaulting it to 0', () => {
+    const candidate = metrics({ h1: improvedH1 });
+    const { abstainRate: _dropped, ...h1WithoutAbstainRate } = candidate.h1;
+    const scored = scoreCandidateAgainstProfile(
+      profile,
+      metrics(),
+      { ...candidate, h1: h1WithoutAbstainRate as ForecastLabImprovementHorizonMetrics },
+    );
+    expect(scored.decision).toBe('drop');
+    expect(scored.summary).toContain('missing required metric: solShortH1AbstainRate');
   });
 });

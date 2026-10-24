@@ -1317,16 +1317,26 @@ function buildErrorPayload(action: ForecastLabRunToolInput['action'], message: s
   } satisfies ForecastLabErrorPayload);
 }
 
-function isPromotableLedgerEntry(entry: ForecastLabLedgerEntry): boolean {
-  return entry.decision === 'keep'
-    && entry.mutationMode === 'structured'
-    && (entry.promotion?.status === 'approval-required' || entry.promotion?.status === 'approved');
-}
-
 function resolvePromotionSelection(
   input: ForecastLabRunToolInput,
   ledgerEntries: readonly ForecastLabLedgerEntry[],
+  readRunManifestFn: (path: string) => ForecastLabRunManifest,
 ): { profileId: string; sourceRunId?: string } | { error: string } {
+  // The ledger is append-only: its promotion status is the one recorded at run time.
+  // Promotion rewrites only the run manifest, so read the status there (as the runner's
+  // resolvePromotionSource does); an unreadable manifest is not promotable.
+  const isPromotableLedgerEntry = (entry: ForecastLabLedgerEntry): boolean => {
+    if (entry.decision !== 'keep' || entry.mutationMode !== 'structured') return false;
+    const manifestPath = entry.promotion?.source.manifestPath ?? getExperimentRunManifestPath(entry.runId);
+    let status: string | undefined;
+    try {
+      status = readRunManifestFn(manifestPath).promotion?.status;
+    } catch {
+      return false;
+    }
+    return status === 'approval-required' || status === 'approved';
+  };
+
   if (input.profileId?.trim()) {
     const profileId = getForecastLabProfile(input.profileId).id;
     return {
@@ -1846,7 +1856,7 @@ export function createForecastLabRunTool({
 
         if (input.action === 'promote-approved') {
           const ledgerPath = getLedgerPathFn();
-          const selection = resolvePromotionSelection(input, readLedgerEntriesFn(ledgerPath));
+          const selection = resolvePromotionSelection(input, readLedgerEntriesFn(ledgerPath), readRunManifestFn);
           if ('error' in selection) {
             return buildErrorPayload(input.action, selection.error);
           }

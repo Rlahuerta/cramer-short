@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
 import { walkForward, type WalkForwardResult } from './walk-forward.js';
-import { brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
+import { abstainRate, brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
 
 const TICKER = 'GLD';
 const HORIZONS = [1, 2, 3, 7, 14] as const;
@@ -36,6 +36,7 @@ interface HorizonMetrics {
   ciCoverage: number;
   structuralBreakCount: number;
   abstainCount: number;
+  abstainRate: number;
 }
 
 let fixture: FixtureData;
@@ -78,6 +79,7 @@ async function runCurrentLaneForHorizon(horizon: number): Promise<HorizonMetrics
     ciCoverage: result.steps.length > 0 ? ciCoverage(result.steps) : 0,
     structuralBreakCount: countStructuralBreaks(result.steps),
     abstainCount: countAbstains(result.steps),
+    abstainRate: abstainRate(result.steps),
   };
 }
 
@@ -126,6 +128,7 @@ describe('Walk-forward GOLD short-horizon benchmark', () => {
         ciCoverage: metrics.ciCoverage,
         structuralBreakCount: metrics.structuralBreakCount,
         abstainCount: metrics.abstainCount,
+        abstainRate: metrics.abstainRate,
       };
 
       lines.push(

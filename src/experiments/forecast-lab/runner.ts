@@ -23,10 +23,10 @@ import {
   prepareForecastLabPromotionWorkspace,
   withForecastLabCandidateWorkspace,
 } from './git.js';
+import { decideRun, type ForecastLabDecisionSummary } from './decision.js';
 import { getForecastLabProfile, listForecastLabStructuredMutations } from './profiles.js';
 import type { ForecastLabCommand, ForecastLabProfile } from './profiles.js';
 import type {
-  ForecastLabDecision,
   ForecastLabLedgerEntry,
   ForecastLabPromotionActivationRef,
   ForecastLabPromotionState,
@@ -106,19 +106,6 @@ interface ForecastLabGateSummary {
   readonly metrics?: JsonValue;
 }
 
-interface ForecastLabMetricEvaluation {
-  readonly name: string;
-  readonly baseline: number;
-  readonly candidate: number;
-  readonly delta: number;
-}
-
-interface ForecastLabDecisionSummary {
-  readonly decision: ForecastLabDecision;
-  readonly reason: string;
-  readonly metrics: readonly ForecastLabMetricEvaluation[];
-}
-
 interface ForecastLabStructuredMutationSelection {
   readonly mutationMode: 'structured';
   readonly parentRunId?: string;
@@ -185,6 +172,8 @@ export interface ForecastLabPromotionOptions {
   readonly now?: () => Date;
   readonly commandRunner?: ForecastLabCommandRunner;
   readonly ledgerPath?: string;
+  /** Checkout whose mutable source files activation rewrites. Defaults to process.cwd(). */
+  readonly liveSourceRoot?: string;
   readonly progress?: (message: string) => void;
   readonly output?: (chunk: string) => void;
 }
@@ -208,6 +197,8 @@ export interface ForecastLabResetOptions {
   readonly mode: ForecastLabResetMode;
   readonly runId?: string;
   readonly now?: () => Date;
+  /** Checkout whose mutable source files reset rewrites. Defaults to process.cwd(). */
+  readonly liveSourceRoot?: string;
   readonly progress?: (message: string) => void;
 }
 
@@ -879,91 +870,6 @@ async function runGate(
   };
 }
 
-function getPathNumber(root: unknown, path: string): number | undefined {
-  let current: unknown = root;
-
-  for (const segment of path.split('.')) {
-    if (!current || typeof current !== 'object' || !(segment in current)) {
-      return undefined;
-    }
-
-    current = (current as Record<string, unknown>)[segment];
-  }
-
-  return typeof current === 'number' && Number.isFinite(current) ? current : undefined;
-}
-
-function evaluateCriterion(
-  criterion: ForecastLabProfile['keepDropRule']['keepWhen']['all'][number],
-  metrics: readonly ForecastLabMetricEvaluation[],
-): boolean {
-  const metric = metrics.find((candidateMetric) => candidateMetric.name === criterion.metric);
-
-  if (!metric) {
-    return false;
-  }
-
-  switch (criterion.operator) {
-    case 'candidate-delta-gte':
-      return metric.delta >= criterion.value;
-    case 'candidate-delta-lte':
-      return metric.delta <= criterion.value;
-    case 'candidate-value-gte':
-      return metric.candidate >= criterion.value;
-    case 'candidate-value-lte':
-      return metric.candidate <= criterion.value;
-  }
-}
-
-function decideRun(
-  profile: ForecastLabProfile,
-  baseline: ForecastLabGateSummary,
-  candidate: ForecastLabGateSummary,
-): ForecastLabDecisionSummary {
-  const metricRoot = { baseline, candidate };
-  const metrics: ForecastLabMetricEvaluation[] = [];
-
-  for (const metric of profile.minimumMetrics) {
-    const baselineValue = getPathNumber(metricRoot, metric.baselinePath);
-    const candidateValue = getPathNumber(metricRoot, metric.candidatePath);
-
-    if (baselineValue === undefined || candidateValue === undefined) {
-      return {
-        decision: 'drop',
-        reason: `missing required metric: ${metric.name}`,
-        metrics,
-      };
-    }
-
-    metrics.push({
-      name: metric.name,
-      baseline: baselineValue,
-      candidate: candidateValue,
-      delta: candidateValue - baselineValue,
-    });
-  }
-
-  const dropCriterion = profile.keepDropRule.dropWhen.any.find((criterion) => evaluateCriterion(criterion, metrics));
-  if (dropCriterion) {
-    return { decision: 'drop', reason: dropCriterion.reason, metrics };
-  }
-
-  const keepCriteria = profile.keepDropRule.keepWhen.all;
-  if (keepCriteria.length > 0 && keepCriteria.every((criterion) => evaluateCriterion(criterion, metrics))) {
-    return {
-      decision: 'keep',
-      reason: keepCriteria.map((criterion) => criterion.reason).join('; '),
-      metrics,
-    };
-  }
-
-  return {
-    decision: profile.keepDropRule.defaultDecision,
-    reason: profile.keepDropRule.defaultDecision === 'drop' ? 'default drop: no keep rule satisfied' : 'default keep',
-    metrics,
-  };
-}
-
 function dropSkippedMutation(decision: ForecastLabDecisionSummary): ForecastLabDecisionSummary {
   return {
     ...decision,
@@ -1231,6 +1137,7 @@ function selectStructuredMutation(
   usedMutationIds?: ReadonlySet<string>,
   isApplicable: (candidate: ForecastLabMarkovParameterMutationCandidate) => boolean = () => true,
   ranking?: ForecastLabMutatorRanking,
+  droppedMutationIds?: ReadonlySet<string>,
 ): ForecastLabMarkovParameterMutationCandidate {
   if (profile.mutation.mode !== 'structured') {
     throw new ForecastLabRunnerError(
@@ -1271,6 +1178,9 @@ function selectStructuredMutation(
     ?? ranking?.rankedCandidates.find((candidate) =>
       allowedCandidateIds.has(candidate.id) && candidate.applicable
     )?.candidate
+    ?? allowedCandidates.find((candidate) =>
+      !usedMutationIds?.has(candidate.id) && !droppedMutationIds?.has(candidate.id) && isApplicable(candidate)
+    )
     ?? allowedCandidates.find((candidate) => !usedMutationIds?.has(candidate.id) && isApplicable(candidate))
     ?? allowedCandidates.find((candidate) => isApplicable(candidate));
   if (!selected) {
@@ -1542,12 +1452,12 @@ function restoreStructuredMutationRuntimeDefaults(
 function applyStructuredMutationToLiveSource(
   profile: ForecastLabProfile,
   mutation: ForecastLabMarkovParameterMutationCandidate,
+  rootDir: string,
 ): {
   readonly mutatedFiles: readonly string[];
   readonly previousContents: Map<string, string>;
   readonly runtimeDefaults: readonly ForecastLabRuntimeDefaultsSnapshot[];
   } {
-  const rootDir = process.cwd();
   const assetScope = resolveForecastLabRuntimeAssetScopeForProfile(profile);
   if (assetScope === 'gold' || assetScope === 'sol' || assetScope === 'hype') {
     return {
@@ -1894,6 +1804,7 @@ export async function promoteForecastLab(options: ForecastLabPromotionOptions): 
   const output = options.output;
   const ledgerPath = options.ledgerPath ?? getExperimentLedgerPath({ create: true });
   const commandRunner = options.commandRunner ?? defaultForecastLabCommandRunner;
+  const liveSourceRoot = options.liveSourceRoot ?? process.cwd();
   const workspaceMaterializePaths = options.commandRunner ? profile.mutation.mutableFiles : undefined;
   const lightweightWorkspace = options.commandRunner !== undefined;
   const source = resolvePromotionSource(profile, ledgerPath, options.sourceRunId);
@@ -2013,7 +1924,7 @@ export async function promoteForecastLab(options: ForecastLabPromotionOptions): 
         workspace: workspace.metadata,
       };
       const liveReplayMutation = replayForecastLabMarkovParameterMutation(structuredMutation.mutationReplayPayload);
-      const liveActivation = applyStructuredMutationToLiveSource(profile, liveReplayMutation);
+      const liveActivation = applyStructuredMutationToLiveSource(profile, liveReplayMutation, liveSourceRoot);
       const activatedAt = now().toISOString();
       const promotion: Extract<ForecastLabPromotionState, { status: 'activated' }> = {
         status: 'activated',
@@ -2091,7 +2002,7 @@ export async function promoteForecastLab(options: ForecastLabPromotionOptions): 
         try {
           writeRunManifest(source.manifestPath, refreshedSourceManifest);
           applyForecastLabCandidateEdits(
-            process.cwd(),
+            liveSourceRoot,
             [...liveActivation.previousContents.entries()].map(([path, contents]) => ({ path, contents })),
             {
               allowedPaths: profile.mutation.mutableFiles,
@@ -2141,6 +2052,7 @@ export async function resetForecastLab(options: ForecastLabResetOptions): Promis
   const startedAt = now().toISOString();
   const runId = options.runId ?? makeResetRunId(profile.id, new Date(startedAt));
   const progress = options.progress;
+  const liveSourceRoot = options.liveSourceRoot ?? process.cwd();
   const activeStatePath = getForecastLabActiveStatePath(profile.id);
   const activeState = readForecastLabActiveState(activeStatePath, profile.id);
 
@@ -2156,7 +2068,7 @@ export async function resetForecastLab(options: ForecastLabResetOptions): Promis
   }
 
   progress?.(`forecast-lab: resetting live parameters for ${profile.id} (${runId})`);
-  const liveReset = applyStructuredMutationToLiveSource(profile, resetMutation);
+  const liveReset = applyStructuredMutationToLiveSource(profile, resetMutation, liveSourceRoot);
   const resetAt = now().toISOString();
 
   try {
@@ -2209,7 +2121,7 @@ export async function resetForecastLab(options: ForecastLabResetOptions): Promis
     try {
       restoreStructuredMutationRuntimeDefaults(liveReset.runtimeDefaults);
       applyForecastLabCandidateEdits(
-        process.cwd(),
+        liveSourceRoot,
         [...liveReset.previousContents.entries()].map(([path, contents]) => ({ path, contents })),
         {
           allowedPaths: profile.mutation.mutableFiles,
@@ -2327,6 +2239,7 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
             catalog: mutationCatalog!,
             ledgerEntries,
             usedMutationIds: mutationSeed?.usedMutationIds,
+            allowMultipleCandidateAttempts: profile.mutation.allowMultipleCandidateAttempts,
             isApplicable: (candidate) => canApplyStructuredMutation(
               workspace.metadata.rootDir,
               mutationSeed?.replayedMutations ?? [],
@@ -2345,6 +2258,12 @@ export async function runForecastLab(options: ForecastLabRunOptions): Promise<Fo
           candidate,
         ),
         mutatorRanking,
+        // Unranked order is catalog order: without this, a dropped first entry is re-picked forever.
+        profile.mutation.allowMultipleCandidateAttempts
+          ? undefined
+          : new Set(ledgerEntries
+            .filter((entry) => entry.profileId === profile.id && entry.mutationMode === 'structured' && entry.decision !== 'keep')
+            .flatMap((entry) => (entry.mutationId ? [entry.mutationId] : []))),
       );
       const mutation = applyStructuredMutation(
         workspace.metadata.rootDir,

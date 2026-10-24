@@ -10,6 +10,7 @@ from research.backtest.baselines import (
     compute_naive_baselines,
     naive_baseline_guard,
 )
+from research.backtest.markov_tool_backtest import ts_directional_accuracy
 from research.backtest.walk_forward import BacktestStep
 
 
@@ -59,6 +60,13 @@ class TestCoinFlipBaseline:
         steps = [up, down, up, down]
         r = compute_coin_flip_baseline(steps)
         # pred_up=False for all: correct on downs (2), wrong on ups (2) -> 0.5
+        assert r.directional_accuracy == pytest.approx(0.5)
+
+    def test_directional_accuracy_is_fair_coin_not_always_down(self):
+        """Mirrors TS: the coin-flip baseline is a fair coin (expected hit rate 0.5),
+        not an always-down/always-HOLD call that scores 100% on a falling series."""
+        steps = [_step(-0.01), _step(-0.02), _step(-0.03)]
+        r = compute_coin_flip_baseline(steps)
         assert r.directional_accuracy == pytest.approx(0.5)
 
 
@@ -140,3 +148,23 @@ class TestNaiveBaselineGuard:
         steps = [_step(0.01, predicted_prob=0.3, start_idx=i) for i in range(20)]
         result = naive_baseline_guard(steps, 1, slack=0.99)
         assert result["passes"] is True
+
+
+class TestTsDirectionalAccuracy:
+    """Mirrors TS metrics.ts directionalAccuracy: traded (BUY/SELL) steps only."""
+
+    def test_hold_steps_are_not_scored(self):
+        # predicted_return 0 is inside the HOLD band at every horizon.
+        quiet = [_step(0.001), _step(-0.001)]
+        for s in quiet:
+            s.predicted_return = 0.0
+        assert ts_directional_accuracy(quiet, 1) == 0.0
+
+    def test_abstaining_does_not_inflate_accuracy(self):
+        buy_right = _step(0.01)
+        sell_wrong = _step(0.01)
+        sell_wrong.predicted_return = -0.01
+        holds = [_step(0.001), _step(-0.001)]
+        for s in holds:
+            s.predicted_return = 0.0
+        assert ts_directional_accuracy([buy_right, sell_wrong, *holds], 1) == pytest.approx(0.5)

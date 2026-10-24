@@ -42,8 +42,19 @@ describe('R5 Idea #3 — naive baselines', () => {
     const cf = computeCoinFlipBaseline(steps);
     expect(cf.n).toBe(4);
     expect(cf.brierScore).toBeCloseTo(0.25, 4);
-    // HOLD is correct only when |actualReturn| < 0.03 — none of these qualify
-    expect(cf.directionalAccuracy).toBe(0);
+    // A fair coin calls each non-zero move right half the time.
+    expect(cf.directionalAccuracy).toBeCloseTo(0.5, 10);
+  });
+
+  it('coin-flip is not an always-HOLD baseline: quiet markets do not lift it above 50%', () => {
+    const steps: BacktestStep[] = [
+      step({ actualReturn:  0.001, predictedProb: 0.5, recommendation: 'HOLD' }),
+      step({ actualReturn: -0.002, predictedProb: 0.5, recommendation: 'HOLD' }),
+      step({ actualReturn:  0.003, predictedProb: 0.5, recommendation: 'HOLD' }),
+      step({ actualReturn:  0,     predictedProb: 0.5, recommendation: 'HOLD' }),
+    ];
+    // Flat (r = 0) steps can't be called right by BUY or SELL.
+    expect(computeCoinFlipBaseline(steps).directionalAccuracy).toBeCloseTo(0.375, 10);
   });
 
   it('last-period baseline scores ~50% on alternating returns', () => {
@@ -64,8 +75,8 @@ describe('R5 Idea #3 — naive baselines', () => {
     const seq = [+0.05, +0.05, +0.05, +0.05, +0.05];
     const steps = seq.map((r, t) => step({ t, actualReturn: r, predictedProb: 0.5, recommendation: 'BUY' }));
     const lp = computeLastPeriodBaseline(steps, 1);
-    // Step 0 is HOLD on +5% move ⇒ wrong. Steps 1..4 all correctly BUY.
-    expect(lp.directionalAccuracy).toBeCloseTo(0.8, 2);
+    // Step 0 abstains (HOLD, unscored). Steps 1..4 all correctly BUY.
+    expect(lp.directionalAccuracy).toBeCloseTo(1, 10);
   });
 
   it('last-period baseline only uses outcomes realized by the origin when stride < horizon', () => {
@@ -74,10 +85,10 @@ describe('R5 Idea #3 — naive baselines', () => {
     const seq = [+0.05, +0.05, +0.05, -0.05, -0.05, -0.05, +0.05, +0.05, +0.05, -0.05, -0.05, -0.05];
     const steps = seq.map((r, t) => step({ t, actualReturn: r, predictedProb: 0.5, recommendation: 'HOLD' }));
     const lp = computeLastPeriodBaseline(steps, 3);
-    // Steps 0-2 have nothing realized (HOLD on ±5% ⇒ wrong); steps 3+ follow t−3, always the opposite sign.
+    // Steps 0-2 have nothing realized (HOLD, unscored); steps 3+ follow t−3, always the opposite sign.
     expect(lp.directionalAccuracy).toBe(0);
-    // The leaky lag-1 rule would score 8/12 here.
-    expect(computeLastPeriodBaseline(steps, 1).directionalAccuracy).toBeCloseTo(8 / 12, 10);
+    // The leaky lag-1 rule would score 8 of its 11 trades here.
+    expect(computeLastPeriodBaseline(steps, 1).directionalAccuracy).toBeCloseTo(8 / 11, 10);
   });
 
   it('computeNaiveBaselines returns both blocks', () => {
@@ -110,7 +121,7 @@ describe('R5 Idea #3 — naive baseline CI guard', () => {
     const seq = [+0.05, +0.05, +0.05];  // persistent uptrend
     const steps = seq.map((r, t) => step({ t, actualReturn: r, predictedProb: 0.5, recommendation: 'SELL' }));
     const g = naiveBaselineGuard(steps, 1, 0.01);
-    // Arm dirAcc = 0; lastPeriod dirAcc = 2/3 ≈ 0.67; gap = -0.67 < -0.01 ⇒ fails
+    // Arm dirAcc = 0; lastPeriod dirAcc = 2/2 (step 0 abstains); gap = -1 < -0.01 ⇒ fails
     expect(g.armDirAcc).toBe(0);
     expect(g.baselineDirAcc).toBeGreaterThan(0.5);
     expect(g.passes).toBe(false);

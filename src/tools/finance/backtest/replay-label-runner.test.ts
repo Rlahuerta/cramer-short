@@ -1,6 +1,7 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { afterEach, afterAll, describe, expect, it, beforeEach, setSystemTime } from 'bun:test';
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ArbiterReplayBundle } from '../arbiter-replay.js';
@@ -21,8 +22,8 @@ import {
   type HistoryProvider,
 } from './replay-label-runner.js';
 
-// Project-local scratch directory — never /tmp
-const SCRATCH_ROOT = join(import.meta.dir, '__test-scratch__');
+// Per-run scratch directory, so concurrent test runs never share fixtures
+const SCRATCH_ROOT = mkdtempSync(join(tmpdir(), 'replay-test-scratch-'));
 const scratchDirs: string[] = [];
 
 function makeScratchDir(): string {

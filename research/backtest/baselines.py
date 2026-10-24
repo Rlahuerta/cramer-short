@@ -7,7 +7,7 @@ arXiv:2502.09079 Puoti et al. 2025.
 
 Computes simple model-free baselines that any non-trivial forecast head
 must beat:
-  - Coin-flip:   always P(up)=0.5
+  - Coin-flip:   P(up)=0.5, a fair up/down coin (expected hit rate 0.5)
   - Last-period: P(up)=0.65 if the latest realized step was up, else 0.35
 
 The gate: deployed arm directional accuracy must be >= better baseline
@@ -57,7 +57,7 @@ def _synth(step: BacktestStep, predicted_prob: float) -> BacktestStep:
 
 
 def compute_coin_flip_baseline(steps: list[BacktestStep]) -> BaselineMetricBlock:
-    """Baseline: always predict P(up)=0.5 (strict random null)."""
+    """Baseline: P(up)=0.5 with a fair up/down call (strict random null)."""
     if not steps:
         return BaselineMetricBlock(n=0, brier_score=1.0, directional_accuracy=0.0)
 
@@ -65,9 +65,8 @@ def compute_coin_flip_baseline(steps: list[BacktestStep]) -> BaselineMetricBlock
     outcomes = [1.0 if s.realised_return > 0 else 0.0 for s in synthetic]
 
     bs = sum((s.predicted_prob - o) ** 2 for s, o in zip(synthetic, outcomes)) / len(synthetic)
-    da = sum(1 for s in synthetic if s.direction_correct) / len(synthetic)
-
-    return BaselineMetricBlock(n=len(steps), brier_score=bs, directional_accuracy=da)
+    # Expected hit rate of a fair up/down coin (every step has a direction here: r <= 0 is down).
+    return BaselineMetricBlock(n=len(steps), brier_score=bs, directional_accuracy=0.5)
 
 
 def compute_last_period_baseline(steps: list[BacktestStep], horizon: int) -> BaselineMetricBlock:

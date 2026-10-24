@@ -35,6 +35,8 @@ interface ForecastLabMutatorRankerParams {
   readonly ledgerEntries: readonly ForecastLabLedgerEntry[];
   readonly usedMutationIds?: ReadonlySet<string>;
   readonly isApplicable?: (candidate: ForecastLabMarkovParameterMutationCandidate) => boolean;
+  /** Profile mutation contract flag; when false, prior non-kept attempts are penalised by their drop rate. */
+  readonly allowMultipleCandidateAttempts?: boolean;
 }
 
 interface ForecastLabHistoricalMutatorStats {
@@ -183,7 +185,10 @@ export function rankForecastLabMutators(
       const dropRate = stats.attempts === 0 ? 0 : stats.droppedRuns / stats.attempts;
       const regressionRate = stats.attempts === 0 ? 0 : stats.regressedRuns / stats.attempts;
       const applicabilityFrequency = totalStructuredRuns === 0 ? 0 : stats.attempts / totalStructuredRuns;
-      const score = keepRate - regressionRate + (applicabilityFrequency * 0.25);
+      // Without the penalty a dropped mutator's applicability bonus (+0.25) outranks
+      // untested ones (0), so ranked selection re-picked it forever.
+      const retryPenalty = params.allowMultipleCandidateAttempts === true ? 0 : dropRate;
+      const score = keepRate - regressionRate - retryPenalty + (applicabilityFrequency * 0.25);
 
       return {
         candidate,

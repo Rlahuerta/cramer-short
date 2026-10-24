@@ -73,7 +73,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
     commands: [
       {
         id: 'walk-forward-sol-short-horizon',
-        command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.integration.test.ts --timeout 480000',
+        command: 'bun test src/tools/finance/backtest/walk-forward-sol-short-horizon.integration.test.ts --path-ignore-patterns= --timeout 480000',
         env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
         timeoutMs: 480_000,
       },
@@ -84,7 +84,7 @@ const EXPECTED_COMMAND_STATUS_PROFILES = {
     commands: [
       {
         id: 'walk-forward-hype-short-horizon',
-        command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.integration.test.ts --timeout 480000',
+        command: 'bun test src/tools/finance/backtest/walk-forward-hype-short-horizon.integration.test.ts --path-ignore-patterns= --timeout 480000',
         env: { RUN_INTEGRATION: '1', FORECAST_LAB_OUTPUT_METRICS: '1' },
         timeoutMs: 480_000,
       },
@@ -364,6 +364,16 @@ describe('forecast-lab profiles', () => {
     }
   });
 
+  it('un-ignores integration test files, which bunfig.toml pathIgnorePatterns would otherwise skip', () => {
+    for (const profile of listForecastLabProfiles()) {
+      for (const { command } of [...profile.baselineCommands, ...profile.candidateCommands]) {
+        if (/\.integration\.test\.ts\b/.test(command)) {
+          expect(command).toContain(' --path-ignore-patterns= ');
+        }
+      }
+    }
+  });
+
   it('does not reference unrelated fixed harnesses', () => {
     const commandHarnessPairs = [
       {
@@ -584,8 +594,17 @@ describe('forecast-lab profiles', () => {
       'btcUltraShortH1RerunRate',
       'btcUltraShortH2DirectionalAccuracy',
       'btcUltraShortH3DirectionalAccuracy',
+      'btcUltraShortH1AbstainRate',
+      'btcUltraShortH2AbstainRate',
+      'btcUltraShortH3AbstainRate',
     ]);
     expect(profile.minimumMetrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'btcUltraShortH1AbstainRate',
+        baselinePath: 'baseline.metrics.h1.abstainRate',
+        candidatePath: 'candidate.metrics.h1.abstainRate',
+        direction: 'lower-is-better',
+      }),
       expect.objectContaining({
         name: 'btcUltraShortH1DirectionalAccuracy',
         baselinePath: 'baseline.metrics.h1.directionalAccuracy',
@@ -626,7 +645,18 @@ describe('forecast-lab profiles', () => {
       'btcUltraShortH1RerunRate',
       'btcUltraShortH2DirectionalAccuracy',
       'btcUltraShortH3DirectionalAccuracy',
+      'btcUltraShortH1AbstainRate',
+      'btcUltraShortH2AbstainRate',
+      'btcUltraShortH3AbstainRate',
     ]);
+    // Accuracy is scored on traded steps only, so abstaining more must not buy a keep.
+    expect(profile.keepDropRule.keepWhen.all.filter((criterion) => criterion.metric.endsWith('AbstainRate'))).toEqual(
+      [1, 2, 3].map((h) => expect.objectContaining({
+        metric: `btcUltraShortH${h}AbstainRate`,
+        operator: 'candidate-delta-lte',
+        value: 0.05,
+      })),
+    );
     expect(profile.keepDropRule.dropWhen.any.map((criterion) => criterion.metric)).toEqual([
       'walkForwardBtcUltraShortHorizonTestExitCode',
       'btcUltraShortH1DirectionalAccuracy',
@@ -652,8 +682,17 @@ describe('forecast-lab profiles', () => {
       'goldShortH3BrierScore',
       'goldShortH7DirectionalAccuracy',
       'goldShortH14DirectionalAccuracy',
+      'goldShortH1AbstainRate',
+      'goldShortH2AbstainRate',
+      'goldShortH3AbstainRate',
     ]);
     expect(profile.minimumMetrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'goldShortH1AbstainRate',
+        baselinePath: 'baseline.metrics.h1.abstainRate',
+        candidatePath: 'candidate.metrics.h1.abstainRate',
+        direction: 'lower-is-better',
+      }),
       expect.objectContaining({
         name: 'goldShortH1DirectionalAccuracy',
         baselinePath: 'baseline.metrics.h1.directionalAccuracy',
@@ -688,7 +727,18 @@ describe('forecast-lab profiles', () => {
       'goldShortH1BrierScore',
       'goldShortH2BrierScore',
       'goldShortH3BrierScore',
+      'goldShortH1AbstainRate',
+      'goldShortH2AbstainRate',
+      'goldShortH3AbstainRate',
     ]);
+    // Accuracy is scored on traded steps only, so abstaining more must not buy a keep.
+    expect(profile.keepDropRule.keepWhen.all.filter((criterion) => criterion.metric.endsWith('AbstainRate'))).toEqual(
+      [1, 2, 3].map((h) => expect.objectContaining({
+        metric: `goldShortH${h}AbstainRate`,
+        operator: 'candidate-delta-lte',
+        value: 0.05,
+      })),
+    );
     expect(profile.keepDropRule.dropWhen.any.map((criterion) => criterion.metric)).toEqual([
       'walkForwardGoldShortHorizonTestExitCode',
       'goldShortH1DirectionalAccuracy',
@@ -732,8 +782,17 @@ describe('forecast-lab profiles', () => {
       'solShortH3BrierScore',
       'solShortH7DirectionalAccuracy',
       'solShortH14DirectionalAccuracy',
+      'solShortH1AbstainRate',
+      'solShortH2AbstainRate',
+      'solShortH3AbstainRate',
     ]);
     expect(profile.minimumMetrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'solShortH1AbstainRate',
+        baselinePath: 'baseline.metrics.h1.abstainRate',
+        candidatePath: 'candidate.metrics.h1.abstainRate',
+        direction: 'lower-is-better',
+      }),
       expect.objectContaining({
         name: 'solShortH1DirectionalAccuracy',
         baselinePath: 'baseline.metrics.h1.directionalAccuracy',
@@ -768,7 +827,18 @@ describe('forecast-lab profiles', () => {
       'solShortH1BrierScore',
       'solShortH2BrierScore',
       'solShortH3BrierScore',
+      'solShortH1AbstainRate',
+      'solShortH2AbstainRate',
+      'solShortH3AbstainRate',
     ]);
+    // Accuracy is scored on traded steps only, so abstaining more must not buy a keep.
+    expect(profile.keepDropRule.keepWhen.all.filter((criterion) => criterion.metric.endsWith('AbstainRate'))).toEqual(
+      [1, 2, 3].map((h) => expect.objectContaining({
+        metric: `solShortH${h}AbstainRate`,
+        operator: 'candidate-delta-lte',
+        value: 0.05,
+      })),
+    );
     expect(profile.keepDropRule.dropWhen.any.map((criterion) => criterion.metric)).toEqual([
       'walkForwardSolShortHorizonTestExitCode',
       'solShortH1DirectionalAccuracy',
@@ -812,8 +882,17 @@ describe('forecast-lab profiles', () => {
       'hypeShortH3BrierScore',
       'hypeShortH7DirectionalAccuracy',
       'hypeShortH14DirectionalAccuracy',
+      'hypeShortH1AbstainRate',
+      'hypeShortH2AbstainRate',
+      'hypeShortH3AbstainRate',
     ]);
     expect(profile.minimumMetrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'hypeShortH1AbstainRate',
+        baselinePath: 'baseline.metrics.h1.abstainRate',
+        candidatePath: 'candidate.metrics.h1.abstainRate',
+        direction: 'lower-is-better',
+      }),
       expect.objectContaining({
         name: 'hypeShortH1DirectionalAccuracy',
         baselinePath: 'baseline.metrics.h1.directionalAccuracy',
@@ -848,7 +927,18 @@ describe('forecast-lab profiles', () => {
       'hypeShortH1BrierScore',
       'hypeShortH2BrierScore',
       'hypeShortH3BrierScore',
+      'hypeShortH1AbstainRate',
+      'hypeShortH2AbstainRate',
+      'hypeShortH3AbstainRate',
     ]);
+    // Accuracy is scored on traded steps only, so abstaining more must not buy a keep.
+    expect(profile.keepDropRule.keepWhen.all.filter((criterion) => criterion.metric.endsWith('AbstainRate'))).toEqual(
+      [1, 2, 3].map((h) => expect.objectContaining({
+        metric: `hypeShortH${h}AbstainRate`,
+        operator: 'candidate-delta-lte',
+        value: 0.05,
+      })),
+    );
     expect(profile.keepDropRule.dropWhen.any.map((criterion) => criterion.metric)).toEqual([
       'walkForwardHypeShortHorizonTestExitCode',
       'hypeShortH1DirectionalAccuracy',
