@@ -41,14 +41,14 @@ export const CHILD_RESULT_MARKER = '__CRAMER_E2E_RESULT__';
 
 const E2E_RESULT_DIR = join(process.cwd(), '.cramer-short', 'e2e-results');
 const DEFAULT_E2E_PREFLIGHT_TIMEOUT_MS = 30_000;
-const E2E_MODEL_FALLBACK = 'ollama:glm-5:cloud';
+const E2E_MODEL_FALLBACK = 'ollama:deepseek-v4.1-flash:cloud';
+// Ollama retires cloud models while they stay in the local tag list, so each
+// candidate is probed and the first live one wins (see selectLiveE2EModel).
 const E2E_MODEL_PREFERENCES = [
-  'glm-5.1:cloud',
+  'deepseek-v4.1-flash:cloud',
+  'glm-5.3-flash:cloud',
   'minimax-m2.7:cloud',
-  'glm-5:cloud',
   'kimi-k2.6:cloud',
-  'qwen3.5:397b-cloud',
-  'qwen3-next:80b-cloud',
 ] as const;
 
 let resolvedDefaultE2EModelPromise: Promise<string> | null = null;
@@ -253,6 +253,17 @@ function probeProviderModel(model: string): string | null {
   return null;
 }
 
+/** First candidate whose probe reports no problem, or null when none is live. */
+export async function selectLiveE2EModel(
+  candidates: readonly string[],
+  probe: (model: string) => Promise<string | null>,
+): Promise<string | null> {
+  for (const candidate of candidates) {
+    if (await probe(candidate) === null) return candidate;
+  }
+  return null;
+}
+
 async function resolveDefaultE2EModel(): Promise<string> {
   const override = getEnv('E2E_MODEL')?.trim();
   if (override) {
@@ -262,18 +273,14 @@ async function resolveDefaultE2EModel(): Promise<string> {
   if (!resolvedDefaultE2EModelPromise) {
     resolvedDefaultE2EModelPromise = (async () => {
       const { getOllamaModels } = await import('./ollama.js');
-      const models = await getOllamaModels();
-
-      for (const candidate of E2E_MODEL_PREFERENCES) {
-        if (models.includes(candidate)) {
-          return `ollama:${candidate}`;
-        }
-      }
-
-      const firstCloudModel = models
+      const localCloudModels = (await getOllamaModels())
         .filter((model) => model.includes(':cloud'))
-        .sort((a, b) => a.localeCompare(b))[0];
-      return firstCloudModel ? `ollama:${firstCloudModel}` : E2E_MODEL_FALLBACK;
+        .sort((a, b) => a.localeCompare(b));
+      const candidates = [...new Set([...E2E_MODEL_PREFERENCES, ...localCloudModels])]
+        .map((model) => `ollama:${model}`);
+      const timeoutMs = resolveE2EPreflightTimeoutMs();
+      return await selectLiveE2EModel(candidates, (model) => probeOllamaModel(model, timeoutMs))
+        ?? E2E_MODEL_FALLBACK;
     })();
   }
 

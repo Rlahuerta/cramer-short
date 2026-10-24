@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { isE2EExternalModelError, isRetryableE2EExternalModelError } from './e2e-helpers.js';
+import { isE2EExternalModelError, isRetryableE2EExternalModelError, selectLiveE2EModel } from './e2e-helpers.js';
 
 describe('isRetryableE2EExternalModelError', () => {
   it('does not retry E2E timeout failures', () => {
@@ -128,5 +128,23 @@ NO_TRADE — wait for a cleaner entry/stop setup.
   it('classifies bare model-unavailability failures as external model errors', () => {
     expect(isE2EExternalModelError('Model unavailable')).toBe(true);
     expect(isRetryableE2EExternalModelError('Model unavailable')).toBe(false);
+  });
+});
+
+describe('selectLiveE2EModel', () => {
+  it('skips models whose probe fails (e.g. retired upstream) and returns the first live one', async () => {
+    const probed: string[] = [];
+    const probe = async (model: string) => {
+      probed.push(model);
+      return model === 'ollama:glm-5.1:cloud' ? 'HTTP 410: glm-5.1 was retired' : null;
+    };
+
+    await expect(selectLiveE2EModel(['ollama:glm-5.1:cloud', 'ollama:kimi-k2.6:cloud', 'ollama:x:cloud'], probe))
+      .resolves.toBe('ollama:kimi-k2.6:cloud');
+    expect(probed).toEqual(['ollama:glm-5.1:cloud', 'ollama:kimi-k2.6:cloud']);
+  });
+
+  it('returns null when no candidate is live', async () => {
+    await expect(selectLiveE2EModel(['ollama:a:cloud'], async () => 'down')).resolves.toBeNull();
   });
 });
