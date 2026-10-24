@@ -225,8 +225,15 @@ export class AgentToolExecutor {
       (async () => {
         try {
           while (nextLane < lanes.length) {
-            for await (const event of lanes[nextLane++]) {
-              push({ done: false, event });
+            const lane = nextLane++;
+            try {
+              for await (const event of lanes[lane]) {
+                push({ done: false, event });
+              }
+            } catch (error) {
+              // A throw outside executeSingle's own try would otherwise be an unhandled rejection.
+              const message = error instanceof Error ? error.message : String(error);
+              push({ done: false, event: { type: 'tool_error', tool: toolCalls[lane].name, error: message } });
             }
           }
         } finally {
