@@ -627,8 +627,12 @@ export class MemoryDatabase {
     }
   }
 
-  deleteChunksForFile(filePath: string): number {
-    const rows = this.db.query<{ id: number }>('SELECT id FROM chunks WHERE file_path = ?').all(filePath);
+  /** Deletes the file's chunks, except those whose content_hash is in `keepHashes`. */
+  deleteChunksForFile(filePath: string, keepHashes: Set<string> = new Set()): number {
+    const rows = this.db
+      .query<{ id: number; content_hash: string }>('SELECT id, content_hash FROM chunks WHERE file_path = ?')
+      .all(filePath)
+      .filter((row) => !keepHashes.has(row.content_hash));
     for (const row of rows) {
       this.db.query('DELETE FROM chunks_fts WHERE chunk_id = ?').run(row.id);
       if (this.vecEnabled && this.vecTableDim > 0) {
@@ -636,8 +640,8 @@ export class MemoryDatabase {
           this.db.query('DELETE FROM vec_chunks WHERE rowid = ?').run(row.id);
         } catch { /* ignore if table not yet created */ }
       }
+      this.db.query('DELETE FROM chunks WHERE id = ?').run(row.id);
     }
-    this.db.query('DELETE FROM chunks WHERE file_path = ?').run(filePath);
     return rows.length;
   }
 

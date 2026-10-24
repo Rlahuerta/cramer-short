@@ -59,3 +59,29 @@ describe('MemoryIndexer.sync — changes during an in-flight sync', () => {
     expect(indexer.isDirty()).toBe(false);
   });
 });
+
+describe('MemoryIndexer.sync — edited files', () => {
+  it('drops chunks whose content was edited out of a file that still exists', async () => {
+    const store = new MemoryStore(baseDir);
+    const indexer = new MemoryIndexer(store, db, {
+      chunkTokens: 8,
+      overlapTokens: 0,
+      watchDebounceMs: 1000,
+      embeddingClient: null,
+      indexSessions: false,
+    });
+
+    await store.writeMemoryFile('MEMORY.md', 'Alpha paragraph about AAPL.\n\nBeta paragraph about MSFT.\n');
+    await indexer.sync();
+    expect(db.listAllChunks().some((c) => c.content.includes('MSFT'))).toBe(true);
+
+    await store.writeMemoryFile('MEMORY.md', 'Alpha paragraph about AAPL.\n\nGamma paragraph about NVDA.\n');
+    indexer.markDirty();
+    await indexer.sync();
+
+    const contents = db.listAllChunks().map((c) => c.content);
+    expect(contents.some((c) => c.includes('MSFT'))).toBe(false);
+    expect(contents.some((c) => c.includes('NVDA'))).toBe(true);
+    expect(contents.some((c) => c.includes('AAPL'))).toBe(true);
+  });
+});
