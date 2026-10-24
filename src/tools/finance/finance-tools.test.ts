@@ -4,7 +4,7 @@ const FIXED_NOW = new Date('2026-01-15T12:00:00.000Z');
 const FIXED_TODAY = FIXED_NOW.toISOString().slice(0, 10);
 
 // Capture real module before mocking so afterAll can restore
-const realApi = await import('./api.js');
+const realApi = { ...(await import('./api.js')) };
 
 // Mock api module BEFORE importing any tool that depends on it
 const mockGet = mock(() => Promise.resolve({ data: {} as Record<string, unknown>, url: 'https://api.example.com/test' }));

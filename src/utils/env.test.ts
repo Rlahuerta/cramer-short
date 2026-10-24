@@ -35,6 +35,14 @@ afterAll(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock @/providers (project-internal alias — safe to mock per file)
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realProvidersModule = { ...(await import('@/providers')) };
+afterAll(() => {
+  mock.module('@/providers', () => realProvidersModule);
+});
+
 mock.module('@/providers', () => ({
   getProviderById: (id: string) => {
     const providers: Record<string, { apiKeyEnvVar?: string; displayName: string }> = {

@@ -24,6 +24,17 @@ const mockExaInvoke = mock(() =>
   Promise.resolve({ results: [{ url: 'https://example.com', text: 'content' }] })
 );
 
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realExaJsModule = { ...(await import('exa-js')) };
+const realExaModule = { ...(await import('@langchain/exa')) };
+const realTavilyModule = { ...(await import('@langchain/tavily')) };
+afterAll(() => {
+  mock.module('exa-js', () => realExaJsModule);
+  mock.module('@langchain/exa', () => realExaModule);
+  mock.module('@langchain/tavily', () => realTavilyModule);
+});
+
 mock.module('exa-js', () => ({
   default: class Exa {
     constructor(_apiKey?: string) {}

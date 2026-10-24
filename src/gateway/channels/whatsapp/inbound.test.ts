@@ -1,5 +1,5 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { beforeEach, describe, expect, it, mock, afterEach, setSystemTime, spyOn } from 'bun:test';
+import { beforeEach, describe, expect, it, mock, afterEach, setSystemTime, spyOn, afterAll } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { useTempCramerShortDir } from '../../../utils/test-cramer-short-dir.js';
@@ -49,6 +49,25 @@ const resolveJidToPhoneJidMock = mock(async (jid: string) => (
 ));
 const isRecentInboundMessageMock = mock(() => false);
 const setActiveWebListenerMock = mock(() => {});
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realBaileysModule = { ...(await import('@whiskeysockets/baileys')) };
+const realSessionModule = { ...(await import('./session.js')) };
+const realOutboundModule = { ...(await import('./outbound.js')) };
+const realDedupeModule = { ...(await import('./dedupe.js')) };
+const realAuthStoreModule = { ...(await import('./auth-store.js')) };
+const realAccessControlModule = { ...(await import('../../access-control.js')) };
+const realLidModule = { ...(await import('./lid.js')) };
+afterAll(() => {
+  mock.module('@whiskeysockets/baileys', () => realBaileysModule);
+  mock.module('./session.js', () => realSessionModule);
+  mock.module('./outbound.js', () => realOutboundModule);
+  mock.module('./dedupe.js', () => realDedupeModule);
+  mock.module('./auth-store.js', () => realAuthStoreModule);
+  mock.module('../../access-control.js', () => realAccessControlModule);
+  mock.module('./lid.js', () => realLidModule);
+});
 
 mock.module('@whiskeysockets/baileys', () => ({
   isJidGroup: (jid: string) => jid.endsWith('@g.us'),

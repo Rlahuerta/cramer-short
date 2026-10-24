@@ -1,9 +1,16 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it, mock, afterAll } from 'bun:test';
 import { nextTestId } from '@/utils/test-determinism.js';
 import type { ReconnectPolicy } from './reconnect.js';
 
 const monitorWebInboxMock = mock(async () => {
   throw new Error('connect failed');
+});
+
+// Snapshot the real modules so afterAll can undo mock.module (Bun never does);
+// otherwise these mocks leak into every test file that runs later.
+const realInboundModule = { ...(await import('./inbound.js')) };
+afterAll(() => {
+  mock.module('./inbound.js', () => realInboundModule);
 });
 
 mock.module('./inbound.js', () => ({ monitorWebInbox: monitorWebInboxMock }));

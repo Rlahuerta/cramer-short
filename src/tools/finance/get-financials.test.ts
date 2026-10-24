@@ -2,7 +2,7 @@ import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
 import { AIMessage } from '@langchain/core/messages';
 
 // Capture real module before mocking so afterAll can restore
-const realLlm = await import('../../model/llm.js');
+const realLlm = { ...(await import('../../model/llm.js')) };
 
 // ---------------------------------------------------------------------------
 // Mock callLlm BEFORE importing the module under test
