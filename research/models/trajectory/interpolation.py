@@ -85,6 +85,10 @@ def interpolate_distribution(
         closest_dist = min(abs(existing - price) / price for existing in prices)
         if closest_dist > 0.005:
             prices.append(price)
+    # The geometric grid straddles current_price. Put it on the grid so P(up) is read
+    # exactly instead of interpolated across the steepest part of the curve.
+    if current_price not in prices:
+        prices.append(current_price)
     prices.sort()
 
     mix_weight = compute_mixing_weight(second_eigenvalue, horizon)
