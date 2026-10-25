@@ -84,6 +84,7 @@ def interpolate_distribution(
     sample_size: int | None = None,
     garch_scales: list[float] | None = None,
     terminal_state_weights: list[float] | None = None,
+    random_state: int | None = None,
 ) -> list[dict]:
     import math
 
@@ -154,10 +155,13 @@ def interpolate_distribution(
     vol_upper_scale = min(1.15, 1 + drift_scale * 0.5) if sample_n else 1.10
     ci_samples: dict[float, list[float]] = {price: [] for price in prices}
 
+    # A seed makes the bands reproducible; without one the global np.random state is used.
+    draw = np.random.random if random_state is None else np.random.default_rng(random_state).random
+
     for _ in range(monte_carlo_samples):
-        perturbed_mu = mu_n + (float(np.random.random()) - 0.5) * sigma_n * drift_scale
+        perturbed_mu = mu_n + (float(draw()) - 0.5) * sigma_n * drift_scale
         perturbed_vol = sigma_n * (
-            vol_lower_scale + float(np.random.random()) * (vol_upper_scale - vol_lower_scale)
+            vol_lower_scale + float(draw()) * (vol_upper_scale - vol_lower_scale)
         )
         for price in prices:
             probability = student_t_survival(price, current_price, perturbed_mu, perturbed_vol, nu)

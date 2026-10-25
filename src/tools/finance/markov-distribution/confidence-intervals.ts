@@ -752,6 +752,8 @@ export function interpolateDistribution(
   garchScales?: readonly number[],
   /** Optional horizon-level regime weights override for the final forecast state mix. */
   terminalStateWeights?: readonly number[],
+  /** Optional seed for the confidence-band Monte Carlo. Default keeps Math.random. */
+  randomState?: number,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -821,7 +823,7 @@ export function interpolateDistribution(
   const driftScale = N ? Math.min(0.20, 1 / Math.sqrt(N)) : 0.20; // matches old ±0.5 × 0.20 band
   const volLowerScale = N ? Math.max(0.85, 1 - driftScale * 0.5) : 0.90;
   const volUpperScale = N ? Math.min(1.15, 1 + driftScale * 0.5) : 1.10;
-  const rng = (): number => Math.random();
+  const rng = randomState === undefined ? (): number => Math.random() : mulberry32(randomState);
   const ciSamples: Map<number, number[]> = new Map(prices.map(p => [p, []]));
 
   for (let s = 0; s < monteCarloSamples; s++) {

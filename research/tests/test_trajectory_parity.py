@@ -598,6 +598,23 @@ def test_pooled_anchor_survives_calibration():
     assert abs(after - before) < 0.05
 
 
+def test_interpolate_distribution_seed_makes_bounds_reproducible():
+    def run(seed):
+        return interpolate_distribution(
+            100.0, 7, _ANCHOR_P, _ANCHOR_STATS, "sideways", [], second_eigenvalue=0.4,
+            monte_carlo_samples=200, daily_vol=0.01, nu=5, sample_size=200, random_state=seed,
+        )
+
+    def bounds(points):
+        return [(p["lowerBound"], p["upperBound"]) for p in points]
+
+    a, b, c = run(7), run(7), run(8)
+    assert bounds(a) == bounds(b)
+    assert bounds(a) != bounds(c)
+    # The seed only drives the bands: the point estimates are analytic.
+    assert [p["probability"] for p in a] == [p["probability"] for p in c]
+
+
 def test_compute_trajectory_sigma_n_reproduces_p_up():
     # walk_forward re-centres this Student-t on a rerun's median to read P(up).
     P, regime_stats = _make_fixture()

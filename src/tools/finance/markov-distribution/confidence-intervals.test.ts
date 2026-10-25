@@ -264,6 +264,31 @@ describe('interpolateDistribution — an anchor applies only at its own strike',
   });
 });
 
+describe('interpolateDistribution — seeded confidence bands', () => {
+  const P = buildDefaultMatrix();
+  const stats = {
+    bull: { meanReturn: 0.004, stdReturn: 0.008 },
+    bear: { meanReturn: -0.004, stdReturn: 0.009 },
+    sideways: { meanReturn: 0, stdReturn: 0.005 },
+  };
+  const run = (randomState?: number) =>
+    interpolateDistribution(
+      100, 7, P, stats, 'sideways', [], 0.4, 20, 200, 1, 0, undefined, 0.01, undefined, 5,
+      undefined, undefined, 200, undefined, undefined, randomState,
+    );
+  const bounds = (dist: MarkovDistributionPoint[]) => dist.map(pt => [pt.lowerBound, pt.upperBound]);
+
+  it('gives identical bounds for the same randomState and different bounds for another', () => {
+    const a = run(7);
+    const b = run(7);
+    const c = run(8);
+    expect(bounds(b)).toEqual(bounds(a));
+    expect(bounds(c)).not.toEqual(bounds(a));
+    // The seed only drives the bands: the point estimates are analytic.
+    expect(c.map(pt => pt.probability)).toEqual(a.map(pt => pt.probability));
+  });
+});
+
 describe('computeMixingWeight', () => {
   it('Fix 7: at horizon 0, weight=1 (pure Markov)', () => {
     expect(computeMixingWeight(0.9, 0)).toBe(1);

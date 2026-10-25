@@ -4150,7 +4150,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     horizonStudentTNu(assetProfile.studentTNu, horizon), regimeSpecificSigma, regimeSpecificSigmaThreshold,
-    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights,
+    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, randomState,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)

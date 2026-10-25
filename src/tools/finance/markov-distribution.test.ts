@@ -2398,6 +2398,21 @@ describe('markov_distribution tool schema', () => {
   });
 });
 
+describe('randomState makes the whole distribution reproducible', () => {
+  const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
+  const run = () => computeMarkovDistribution({
+    ticker: 'TEST', horizon: 7, currentPrice: 118, historicalPrices: prices, polymarketMarkets: [], randomState: 3,
+  });
+
+  it('gives identical confidence bounds on the calibrated and raw distributions across runs', async () => {
+    const a = await run();
+    const b = await run();
+    const bounds = (d: MarkovDistributionPoint[]) => d.map(pt => [pt.lowerBound, pt.upperBound]);
+    expect(bounds(b.distribution)).toEqual(bounds(a.distribution));
+    expect(bounds(b.rawDistribution)).toEqual(bounds(a.rawDistribution));
+  });
+});
+
 describe('price input validation', () => {
   const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
   const run = (overrides: { currentPrice?: number; historicalPrices?: number[] }) =>
