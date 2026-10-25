@@ -33,7 +33,9 @@ def student_t_survival(
 ) -> float:
     if sigma_n <= 0:
         return 1.0 if mu_n > math.log(target_price / current_price) else 0.0
-    z = (math.log(target_price / current_price) - mu_n) / sigma_n
+    # sigma_n is the t's standard deviation: Var(t_nu) = nu/(nu-2) for nu > 2.
+    scaled_sigma = sigma_n * math.sqrt((nu - 2) / nu) if nu > 2 else sigma_n
+    z = (math.log(target_price / current_price) - mu_n) / scaled_sigma
     return 1.0 - student_t_cdf(z, nu)
 
 
