@@ -212,6 +212,24 @@ def test_predict_probabilities_sum_to_one():
     assert pytest.approx(sum(pred.forecast_probabilities), abs=1e-5) == 1.0
 
 
+def test_predict_forecasts_from_the_posterior_not_the_argmax_state():
+    # Mirrors TS predict: forecastProbabilities = currentStateProbabilities . A^h.
+    params = HMMParams(
+        n_states=2,
+        pi=np.array([0.5, 0.5]),
+        A=np.array([[0.9, 0.1], [0.2, 0.8]]),
+        means=np.array([-0.01, 0.01]),
+        stds=np.array([0.02, 0.02]),
+    )
+    obs = np.array([0.002] * 6)  # ambiguous: both emissions explain it
+    pred = predict(obs, params, forecast_horizon=5)
+    posterior = np.asarray(pred.current_state_probabilities)
+    assert posterior.max() < 0.95  # the posterior really is soft
+    expected = posterior @ mat_pow(params.A, 5)
+    assert np.allclose(pred.forecast_probabilities, expected, atol=1e-9)
+    assert pred.expected_return == pytest.approx(float(np.dot(expected, params.means)), abs=1e-12)
+
+
 def test_predict_probabilities_in_range():
     rng = np.random.default_rng(202)
     obs = _synthetic_regime_returns(rng)

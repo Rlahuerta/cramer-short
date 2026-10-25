@@ -297,9 +297,10 @@ def predict(
     current_state_probs = probs[-1]
     current_state = int(np.argmax(current_state_probs))
 
-    # n-step forecast via matrix power
+    # n-step forecast: the full posterior pushed through A^n, as in TS predict().
+    # (Forecasting from the argmax state alone discards the posterior's uncertainty.)
     A_n = mat_pow(params.A, forecast_horizon)
-    forecast_probs = A_n[current_state]
+    forecast_probs = np.asarray(current_state_probs) @ A_n
 
     # Expected return and volatility (proper mixture variance matching TS)
     expected_return = float(np.dot(forecast_probs, params.means))
