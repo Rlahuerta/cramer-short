@@ -104,12 +104,12 @@ export function estimateRegimeStats(
       if (maxDailyDrift !== undefined && maxDailyDrift > 0) {
         cappedMean = Math.max(-maxDailyDrift, Math.min(maxDailyDrift, mean));
       }
-      // Sigma is the raw dispersion about the mean the forecast uses. Winsorizing
-      // or capping only protects the drift: regimes are split on the day's own
-      // return, so the trimmed tails and the capped-off mean are return variance
-      // the Student-t interval needs.
-      const variance = vals.reduce((s, v) => s + (v - cappedMean) ** 2, 0) / vals.length;
-      result[state] = { meanReturn: cappedMean, stdReturn: Math.sqrt(variance) };
+      // Winsorizing or capping only protects the drift: regimes are split on the
+      // day's own return, so the trimmed tails and the capped-off mean are return
+      // variance the Student-t interval needs. The bin keeps its raw second moment;
+      // dispersion about the capped mean alone still drops 2c(mean - c).
+      const secondMoment = vals.reduce((s, v) => s + v * v, 0) / vals.length;
+      result[state] = { meanReturn: cappedMean, stdReturn: Math.sqrt(Math.max(0, secondMoment - cappedMean ** 2)) };
     }
   }
   return result;
@@ -725,7 +725,14 @@ export function interpolateDistribution(
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
   // too narrow for TSLA (~3%/day) or BTC (~4%/day) where a 14-day 2σ move is 22-30%.
-  const vol = dailyVol ?? 0.015;
+  // Compute regime-weighted drift and vol via shared helper
+  const { mu_n, sigma_n } = computeHorizonDriftVol(
+    horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales, terminalStateWeights,
+  );
+  // The grid must span the distribution it carries: a calm 20-day vol under a wider
+  // regime sigma left mass beyond the grid top and pinned the upper central bound there.
+  const vol = Math.max(dailyVol ?? 0.015, sigma_n / Math.sqrt(horizon));
   const volRange = 3.5 * vol * Math.sqrt(horizon);
   // Clamp to [0.15, 0.90] — minPrice must remain positive (>10% of currentPrice)
   const halfRange = Math.max(0.15, Math.min(0.90, volRange));
@@ -757,11 +764,6 @@ export function interpolateDistribution(
 
   const mixWeight = computeMixingWeight(secondEigenvalue, horizon);
 
-  // Compute regime-weighted drift and vol via shared helper
-  const { mu_n, sigma_n } = computeHorizonDriftVol(
-    horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
-    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales, terminalStateWeights,
-  );
 
   // Nearest anchor lookup helper with distance-based dampening.
   // Anchors far from current price are less trustworthy (often illiquid/speculative).

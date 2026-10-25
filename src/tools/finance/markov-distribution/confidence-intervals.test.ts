@@ -107,6 +107,19 @@ describe('interpolateDistribution', () => {
     expect(interpolateSurvival(dist, 100)).toBeCloseTo(studentTSurvival(100, 100, mu_n, sigma_n, 5), 12);
   });
 
+  it('spans the forecast sigma when the 20-day vol is calmer than the regime window', () => {
+    // A grid sized from a calm 20-day vol cut the upper central bound at the grid top
+    // on 12% of BTC 2018-2023 h=14 steps, which then covered only 0.68.
+    const wide = {
+      bull:     { meanReturn:  0.01, stdReturn: 0.04 },
+      bear:     { meanReturn: -0.01, stdReturn: 0.04 },
+      sideways: { meanReturn:  0,    stdReturn: 0.04 },
+    };
+    const dist = interpolateDistribution(100, 14, P, wide, 'sideways', [], 0.5, 20, 0, 1, 0, undefined, 0.005);
+    expect(dist[dist.length - 1].probability).toBeLessThan(0.01);
+    expect(dist[0].probability).toBeGreaterThan(0.99);
+  });
+
   it('Fix 7: high second-eigenvalue + long horizon → lower mixing weight', () => {
     const shortWeight = computeMixingWeight(0.9, 5);
     const longWeight  = computeMixingWeight(0.9, 60);
@@ -594,7 +607,7 @@ describe('estimateRegimeStats drift cap', () => {
     expect(stats.bear.meanReturn).toBeGreaterThanOrEqual(-0.01 - 1e-10);
   });
 
-  it('stdReturn measures raw dispersion about the capped mean', () => {
+  it('stdReturn keeps the raw second moment of the bin', () => {
     // Bins are split on the same day's return, so the bin means carry most of
     // the return variance. Capping the mean or winsorizing the bin must not
     // drop that variance: NVDA regime sigma fell to 0.58x its raw daily sd and
@@ -602,9 +615,26 @@ describe('estimateRegimeStats drift cap', () => {
     const returns = [...Array(49).fill(0.02), 0.12];
     const states: RegimeState[] = Array(50).fill('bull');
     const stats = estimateRegimeStats(returns, states, 0.012);
-    const rms = Math.sqrt(returns.reduce((s, r) => s + (r - 0.012) ** 2, 0) / returns.length);
+    const secondMoment = returns.reduce((s, r) => s + r * r, 0) / returns.length;
     expect(stats.bull.meanReturn).toBeCloseTo(0.012, 10);
-    expect(stats.bull.stdReturn).toBeCloseTo(rms, 10);
+    expect(stats.bull.stdReturn ** 2 + stats.bull.meanReturn ** 2).toBeCloseTo(secondMoment, 12);
+  });
+
+  it('drift cap keeps the horizon spread of sign-classified regimes', () => {
+    // Dispersion about the capped mean still drops 2c(mu - c) per capped regime:
+    // BTC 2018-2023 central-90 stayed at 0.86-0.88 for h=1-7.
+    const rng = seedRng(103);
+    const returns: number[] = [];
+    const states: RegimeState[] = [];
+    for (let i = 0; i < 300; i++) {
+      const r = (rng() - 0.5) * 0.12;
+      returns.push(r);
+      states.push(r > 0.01 ? 'bull' : r < -0.01 ? 'bear' : 'sideways');
+    }
+    const P = [[1 / 3, 1 / 3, 1 / 3], [1 / 3, 1 / 3, 1 / 3], [1 / 3, 1 / 3, 1 / 3]];
+    const capped = computeHorizonDriftVol(7, P, estimateRegimeStats(returns, states, 0.01), 'sideways');
+    const uncapped = computeHorizonDriftVol(7, P, estimateRegimeStats(returns, states), 'sideways');
+    expect(capped.sigma_n).toBeGreaterThan(0.97 * uncapped.sigma_n);
   });
 
   it('winsorization removes shock outliers from regime stats', () => {

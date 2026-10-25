@@ -62,7 +62,23 @@ def interpolate_distribution(
     from research.models.trajectory.distributions import student_t_survival
     from research.models.trajectory.driftvol import compute_horizon_drift_vol, compute_mixing_weight
 
-    vol = daily_vol or 0.015
+    horizon_stats = compute_horizon_drift_vol(
+        horizon,
+        P,
+        regime_stats,
+        initial_state,
+        momentum_adjustment,
+        start_mixture,
+        hmm_override,
+        regime_specific_sigma,
+        regime_specific_sigma_threshold,
+        garch_scales,
+        terminal_state_weights,
+    )
+    mu_n = float(horizon_stats["mu_n"])
+    sigma_n = float(horizon_stats["sigma_n"])
+    # The grid must span the distribution it carries (see interpolateDistribution).
+    vol = max(daily_vol or 0.015, sigma_n / math.sqrt(horizon))
     vol_range = 3.5 * vol * math.sqrt(horizon)
     half_range = max(0.15, min(0.90, vol_range))
     min_price = current_price * (1 - half_range)
@@ -92,21 +108,6 @@ def interpolate_distribution(
     prices.sort()
 
     mix_weight = compute_mixing_weight(second_eigenvalue, horizon)
-    horizon_stats = compute_horizon_drift_vol(
-        horizon,
-        P,
-        regime_stats,
-        initial_state,
-        momentum_adjustment,
-        start_mixture,
-        hmm_override,
-        regime_specific_sigma,
-        regime_specific_sigma_threshold,
-        garch_scales,
-        terminal_state_weights,
-    )
-    mu_n = float(horizon_stats["mu_n"])
-    sigma_n = float(horizon_stats["sigma_n"])
 
     def find_anchor(price: float) -> dict | None:
         tolerance_pct = 0.02
