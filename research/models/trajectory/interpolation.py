@@ -33,6 +33,36 @@ def interpolate_survival(
     return 0.0
 
 
+# Pooling weight of a fully anchor-driven point against a model point (weight 1): large
+# enough to outweigh the few grid points that can border it, so a conflict moves the
+# neighbours, not the anchor. Mirrors ANCHOR_POOL_WEIGHT in confidence-intervals.ts.
+ANCHOR_POOL_WEIGHT = 100.0
+
+
+def enforce_non_increasing(values: list[float], weights: list[float] | None = None) -> list[float]:
+    """Weighted least-squares non-increasing fit (pool adjacent violators).
+
+    Where neighbours contradict monotonicity they are averaged by weight, so neither
+    side silently wins. Mirrors ``enforceNonIncreasing`` in confidence-intervals.ts.
+    """
+    blocks: list[list[float]] = []  # [weighted sum, weight, count]
+    for i, v in enumerate(values):
+        w = 1.0 if weights is None else weights[i]
+        blocks.append([v * w, w, 1])
+        while len(blocks) > 1:
+            b, a = blocks[-1], blocks[-2]
+            if b[0] / b[1] <= a[0] / a[1]:
+                break
+            a[0] += b[0]
+            a[1] += b[1]
+            a[2] += b[2]
+            blocks.pop()
+    out: list[float] = []
+    for total, weight, count in blocks:
+        out.extend([total / weight] * int(count))
+    return out
+
+
 def interpolate_distribution(
     current_price: float,
     horizon: int,
@@ -96,10 +126,11 @@ def interpolate_distribution(
         for step in range(num_levels + 1)
     ]
 
+    # Put every anchor strike on the grid verbatim: an anchor is P(price > its strike), so
+    # find_anchor matches strikes exactly and a nearby grid point keeps the model's value.
     for anchor in anchors:
         price = float(anchor["price"])
-        closest_dist = min(abs(existing - price) / price for existing in prices)
-        if closest_dist > 0.005:
+        if price not in prices:
             prices.append(price)
     # The geometric grid straddles current_price. Put it on the grid so P(up) is read
     # exactly instead of interpolated across the steepest part of the curve.
@@ -110,15 +141,7 @@ def interpolate_distribution(
     mix_weight = compute_mixing_weight(second_eigenvalue, horizon)
 
     def find_anchor(price: float) -> dict | None:
-        tolerance_pct = 0.02
-        raw = next(
-            (
-                anchor
-                for anchor in anchors
-                if abs(float(anchor["price"]) - price) / price < tolerance_pct
-            ),
-            None,
-        )
+        raw = next((anchor for anchor in anchors if float(anchor["price"]) == price), None)
         if raw is None:
             return None
         dist_from_current = abs(float(raw["price"]) - current_price) / current_price
@@ -141,9 +164,11 @@ def interpolate_distribution(
             ci_samples[price].append(probability)
 
     raw_points: list[dict] = []
+    anchor_weights: list[float] = []
     for price in prices:
         anchor = find_anchor(price)
         markov_est = student_t_survival(price, current_price, mu_n, sigma_n, nu)
+        anchor_weight = 0.0
 
         if anchor is not None and anchor.get("trustScore") == "high":
             anchor_weight = (1 - mix_weight) * float(anchor["distanceWeight"])
@@ -165,6 +190,7 @@ def interpolate_distribution(
         widened_lo = max(0.0, center - half_width * ci_width_multiplier)
         widened_hi = min(1.0, center + half_width * ci_width_multiplier)
 
+        anchor_weights.append(anchor_weight)
         raw_points.append(
             {
                 "price": price,
@@ -175,8 +201,17 @@ def interpolate_distribution(
             }
         )
 
-    for index in range(len(raw_points) - 2, -1, -1):
-        if raw_points[index]["probability"] < raw_points[index + 1]["probability"]:
-            raw_points[index]["probability"] = raw_points[index + 1]["probability"]
+    # Enforce monotonicity. Anchor points carry more weight than model points, so a
+    # conflict adjusts the model around the anchor.
+    pooled = enforce_non_increasing(
+        [point["probability"] for point in raw_points],
+        [1.0 + ANCHOR_POOL_WEIGHT * w for w in anchor_weights],
+    )
+    for point, value in zip(raw_points, pooled):
+        # A model point that pooling moved is no longer pure Markov: label it blend so
+        # calibration shifts it (keeping the pooled value) instead of recomputing it.
+        if point["source"] == "markov" and abs(value - point["probability"]) > 1e-9:
+            point["source"] = "blend"
+        point["probability"] = value
 
     return raw_points
