@@ -178,6 +178,37 @@ def _default_matrix(diagonal: float = 0.6) -> np.ndarray:
     return np.eye(NUM_STATES) * (diagonal - off_diag) + np.full((NUM_STATES, NUM_STATES), off_diag)
 
 
+BREAK_SIGNIFICANCE = 0.05
+
+
+def _transition_homogeneity_p_value(states: list[RegimeState]) -> float:
+    """Anderson–Goodman: per from-state, a 2 × k table of next-state counts by half.
+
+    Raw (undecayed) counts; Wilson–Hilferty p-value. A from-state seen in only one
+    half carries no evidence. Mirrors ``transitionHomogeneityPValue`` in TS diagnostics.ts.
+    """
+    mid = len(states) // 2
+    counts = np.zeros((2, NUM_STATES, NUM_STATES))
+    for h, half in enumerate((states[:mid], states[mid:])):
+        for a, b in zip(half, half[1:]):
+            counts[h, STATE_INDEX[a], STATE_INDEX[b]] += 1
+    chi_sq = 0.0
+    df = 0
+    for i in range(NUM_STATES):
+        row_totals = counts[:, i, :].sum(axis=1)
+        if row_totals[0] == 0 or row_totals[1] == 0:
+            continue
+        col_totals = counts[0, i] + counts[1, i]
+        cols = col_totals > 0
+        expected = np.outer(row_totals, col_totals[cols]) / row_totals.sum()
+        chi_sq += float(np.sum((counts[:, i, cols] - expected) ** 2 / expected))
+        df += int(cols.sum()) - 1
+    if df == 0:
+        return 1.0
+    z = (math.cbrt(chi_sq / df) - (1 - 2 / (9 * df))) / math.sqrt(2 / (9 * df))
+    return 0.5 * math.erfc(z / math.sqrt(2))
+
+
 def detect_structural_break(
     states: list[RegimeState],
     divergence_threshold: float = 0.05,
@@ -223,8 +254,11 @@ def detect_structural_break(
 
     divergence = float(np.sum((first_matrix - second_matrix) ** 2))
 
+    # Divergence alone fired on ~95% of no-break sequences (each decayed half has
+    # ~11 effective transitions per row), so a break also needs significance.
     return {
-        "detected": divergence > divergence_threshold,
+        "detected": divergence > divergence_threshold
+        and _transition_homogeneity_p_value(states) < BREAK_SIGNIFICANCE,
         "divergence": divergence,
         "first_half_matrix": first_matrix,
         "second_half_matrix": second_matrix,

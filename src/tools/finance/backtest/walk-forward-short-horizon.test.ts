@@ -106,7 +106,6 @@ describe('Walk-forward short-horizon ablation (Phase 1 Discovery B1)', () => {
     const lines: string[] = ['', '═══ WALK-FORWARD SHORT-HORIZON ABLATION ═══'];
     let totalRuns = 0;
     let totalErrors = 0;
-    let breakSidewaysCount = 0;
     let breakSidewaysChangedCount = 0;
     let breakTrendingCount = 0;
     let regimeSpecificSigmaProvenanceCount = 0;
@@ -153,7 +152,6 @@ describe('Walk-forward short-horizon ablation (Phase 1 Discovery B1)', () => {
           expect(experimentStep.trendPenaltyOnlyBreakConfidenceActive).toBe(true);
 
           if (effectiveBreak && baseStep.regime === 'sideways') {
-            breakSidewaysCount++;
             if (Math.abs(experimentStep.confidence - baseStep.confidence) > 1e-9) {
               breakSidewaysChangedCount++;
             }
@@ -235,7 +233,8 @@ describe('Walk-forward short-horizon ablation (Phase 1 Discovery B1)', () => {
 
     expect(totalRuns).toBe(TICKERS.length * HORIZONS.length * variants.length);
     expect(totalErrors).toBe(0);
-    expect(breakSidewaysCount).toBeGreaterThan(0);
+    // Significance-tested breaks on this fixture all land in trending regimes, so the
+    // sideways branch is not reached here (its old >0 count came from false positives).
     expect(breakSidewaysChangedCount).toBe(0);
     expect(breakTrendingCount).toBeGreaterThan(0);
     expect(regimeSpecificSigmaProvenanceCount).toBeGreaterThan(0);

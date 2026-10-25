@@ -28,6 +28,7 @@ import numpy as np
 from research.models.markov import (
     NUM_STATES,
     STATE_INDEX,
+    _default_matrix,
     classify_regime_series,
     compute_markov_forecast,
     compute_regime_expected_returns,
@@ -320,8 +321,18 @@ def compute_window_forecast(
     regimes = classify_regime_series(active_returns, return_threshold_multiplier=return_threshold_multiplier)
     current_regime = regimes[-1] if regimes else "sideways"
 
-    # Estimate transition matrix once
-    if use_meta_regime and use_conditional_transitions:
+    # Detect structural break once
+    break_result = detect_structural_break(
+        regimes,
+        divergence_threshold=break_divergence_threshold,
+        decay_rate=decay_rate,
+    )
+
+    # Transition matrix: the symmetric default matrix unless conditional transitions
+    # apply (no break only), as in TS. The default's uniform stationary mix cancels
+    # the bull/bear regime drifts and measured better Brier than the decayed estimate.
+    estimated_P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
+    if not break_result["detected"] and use_meta_regime and use_conditional_transitions:
         meta_fit = MetaRegimeDetector().fit(active_returns)
         conditional_matrices = estimate_conditional_transition_matrices(
             regimes,
@@ -332,9 +343,9 @@ def compute_window_forecast(
         if current_environment is not None:
             P = conditional_matrices[current_environment]
         else:
-            P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
+            P = estimated_P.copy()
     else:
-        P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
+        P = _default_matrix()
 
     # Apply semi-Markov dwell-time adjustment: the longer the market has
     # been in the current regime, the more persistent it becomes. This
@@ -355,13 +366,6 @@ def compute_window_forecast(
         row_sum = float(np.sum(P[idx]))
         if row_sum > 0:
             P[idx] /= row_sum
-
-    # Detect structural break once
-    break_result = detect_structural_break(
-        regimes,
-        divergence_threshold=break_divergence_threshold,
-        decay_rate=decay_rate,
-    )
 
     # Compute Markov forecast once
     # forecast = compute_markov_forecast(P, current_regime, horizon)
@@ -449,7 +453,8 @@ def compute_window_forecast(
     # divergence and transition entropy z-score. This scale will be passed
     # directly into compute_trajectory to widen CIs at source, avoiding
     # double-widening in walk_forward.py.
-    transition_entropy_result = compute_transition_entropy(P)
+    # Entropy describes the estimated chain, not the shrunk P.
+    transition_entropy_result = compute_transition_entropy(estimated_P)
     structural_scale = 1.0
     if break_result["detected"]:
         # Structural break contributes monotonic widening based on divergence.
