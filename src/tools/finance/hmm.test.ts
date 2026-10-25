@@ -387,6 +387,67 @@ describe('predict', () => {
   });
 });
 
+describe('predict — path-averaged expected return and volatility', () => {
+  const STICKY: HMMParams = {
+    nStates: 2,
+    pi: [0.5, 0.5],
+    A: [[0.95, 0.05], [0.05, 0.95]],
+    means: [0.01, -0.01],
+    stds: [0.01, 0.01],
+  };
+  // Independent day-by-day calculation from the returned posterior.
+  function pathByHand(posterior: number[], params: HMMParams, horizon: number) {
+    let p = [...posterior];
+    let sumReturn = 0;
+    let sumVariance = 0;
+    for (let d = 1; d <= horizon; d++) {
+      p = params.A[0].map((_, j) => p.reduce((s, pi, i) => s + pi * params.A[i][j], 0));
+      const m = p.reduce((s, pj, j) => s + pj * params.means[j], 0);
+      const v = p.reduce((s, pj, j) => s + pj * (params.stds[j] ** 2 + params.means[j] ** 2), 0) - m * m;
+      sumReturn += m;
+      sumVariance += v;
+    }
+    return { ret: sumReturn / horizon, vol: Math.sqrt(sumVariance / horizon) };
+  }
+
+  it('is the mean over days 1..h of the daily expected return and the rms daily volatility', () => {
+    const obs = Array(60).fill(0.01); // posterior is in the +0.01 state
+    const result = predict(obs, STICKY, 14);
+    const hand = pathByHand(result.currentStateProbabilities, STICKY, 14);
+    expect(result.pathExpectedReturn).toBeCloseTo(hand.ret, 12);
+    expect(result.pathExpectedVolatility).toBeCloseTo(hand.vol, 12);
+  });
+
+  it('equals the terminal values at horizon 1', () => {
+    const obs = Array(60).fill(0.01);
+    const result = predict(obs, STICKY, 1);
+    expect(result.pathExpectedReturn).toBeCloseTo(result.expectedReturn, 12);
+    expect(result.pathExpectedVolatility).toBeCloseTo(result.expectedVolatility, 12);
+  });
+
+  it('keeps a persistent current state in the horizon drift, unlike the terminal-day value', () => {
+    const obs = Array(60).fill(0.01);
+    const result = predict(obs, STICKY, 14);
+    // Starting in the +0.01 state of a sticky chain, early days are bullish and the
+    // terminal day has mostly mixed back: the path average is the larger of the two.
+    expect(result.pathExpectedReturn).toBeGreaterThan(result.expectedReturn + 0.001);
+  });
+
+  it('matches the terminal values when the chain starts at its stationary mix', () => {
+    const symmetric: HMMParams = { ...STICKY, means: [0, 0], stds: [0.01, 0.01] };
+    const result = predict(Array(60).fill(0), symmetric, 14);
+    expect(result.pathExpectedReturn).toBeCloseTo(result.expectedReturn, 12);
+    expect(result.pathExpectedVolatility).toBeCloseTo(result.expectedVolatility, 12);
+  });
+
+  it('leaves the terminal fields unchanged', () => {
+    const obs = Array(60).fill(0.01);
+    const result = predict(obs, STICKY, 14);
+    const terminal = result.forecastProbabilities.reduce((s, p, i) => s + p * STICKY.means[i], 0);
+    expect(result.expectedReturn).toBeCloseTo(terminal, 12);
+  });
+});
+
 describe('attachStudentTPredictiveEmissions', () => {
   it('strengthens the prior mean weight for sparse states and relaxes it for dense states', () => {
     const calmObs = [-0.01, 0.02, -0.015, 0.01, -0.005, 0.012, -0.008, 0.009];

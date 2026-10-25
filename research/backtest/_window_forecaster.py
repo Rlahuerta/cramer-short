@@ -417,15 +417,16 @@ def compute_window_forecast(
                     profile = ASSET_PROFILES.get(asset_profile, ASSET_PROFILES["crypto"])
                     hmm_weight = float(np.clip(profile.hmm_weight_multiplier * 0.5, 0.0, 1.0))
                     if _usable_hmm_overlay_components(
-                        hmm_pred.expected_return,
-                        hmm_pred.expected_volatility,
+                        hmm_pred.path_expected_return,
+                        hmm_pred.path_expected_volatility,
                         vol_scale,
                         hmm_weight,
                     ):
-                        # HMM predict returns per-step emission values (daily drift/vol)
+                        # Daily drift/vol averaged over days 1..horizon, so horizon x drift is the
+                        # path-integrated drift (mirrors markov-distribution.ts).
                         hmm_override = {
-                            "drift": hmm_pred.expected_return,
-                            "vol": hmm_pred.expected_volatility * vol_scale,
+                            "drift": hmm_pred.path_expected_return,
+                            "vol": hmm_pred.path_expected_volatility * vol_scale,
                             "weight": hmm_weight,
                         }
                         hmm_status = "override_applied"

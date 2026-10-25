@@ -3824,8 +3824,8 @@ export async function computeMarkovDistribution(params: {
         };
         if (
           hmmResult.converged &&
-          Number.isFinite(hmmForecast.expectedReturn) &&
-          Number.isFinite(hmmForecast.expectedVolatility) &&
+          Number.isFinite(hmmForecast.pathExpectedReturn) &&
+          Number.isFinite(hmmForecast.pathExpectedVolatility) &&
           volScaleUsable
         ) {
           // Weight HMM based on data length, scaled by asset profile
@@ -3837,9 +3837,11 @@ export async function computeMarkovDistribution(params: {
                 1 - effectivePosteriorEntropy * softRegimeHmmWeightEntropyWeight,
               )
             : hmmWeight;
-          const hmmDrift = hmmForecast.expectedReturn;
-          const hmmVol = hmmForecast.expectedVolatility * volScaleFactor;
-          // HMM predict returns per-step emission values (daily drift/vol)
+          // Daily drift/vol averaged over days 1..horizon: the horizon drift is horizon x this,
+          // so it is the path-integrated drift (the terminal-day value would drop the early days
+          // a persistent regime still covers), like the Markov arm.
+          const hmmDrift = hmmForecast.pathExpectedReturn;
+          const hmmVol = hmmForecast.pathExpectedVolatility * volScaleFactor;
           if (
             Number.isFinite(hmmDrift) &&
             Number.isFinite(hmmVol) &&
