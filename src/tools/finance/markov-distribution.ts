@@ -3172,6 +3172,20 @@ export function applyBaseRateFloor(
 // ---------------------------------------------------------------------------
 
 /**
+ * Zero, negative or non-finite prices turn the returns, regime stats and grid into NaN,
+ * and the tool would still emit a confident recommendation. Fail loudly instead.
+ */
+function assertPositiveFinitePrices(currentPrice: number, historicalPrices: readonly number[]): void {
+  if (!(Number.isFinite(currentPrice) && currentPrice > 0)) {
+    throw new Error(`Invalid currentPrice ${currentPrice}: expected a positive finite number.`);
+  }
+  const bad = historicalPrices.findIndex(p => !(Number.isFinite(p) && p > 0));
+  if (bad >= 0) {
+    throw new Error(`Invalid historicalPrices[${bad}] = ${historicalPrices[bad]}: expected positive finite closes.`);
+  }
+}
+
+/**
  * Core Markov distribution computation. Separated from the LangChain tool wrapper
  * so it can be unit-tested directly without mocking the tool framework.
  */
@@ -3345,6 +3359,7 @@ export async function computeMarkovDistribution(params: {
   /** Lasso L1 strength.  Default 0.005. */
   crossAssetLassoLambda?: number;
 }): Promise<MarkovDistributionResult> {
+  assertPositiveFinitePrices(params.currentPrice, params.historicalPrices);
   const assetScope = resolveForecastLabRuntimeAssetScopeForTicker(params.ticker);
 
   return withForecastLabRuntimeAssetScope(assetScope, async () => {
@@ -3809,8 +3824,8 @@ export async function computeMarkovDistribution(params: {
         };
         if (
           hmmResult.converged &&
-          Number.isFinite(hmmForecast.expectedReturn) &&
-          Number.isFinite(hmmForecast.expectedVolatility) &&
+          Number.isFinite(hmmForecast.pathExpectedReturn) &&
+          Number.isFinite(hmmForecast.pathExpectedVolatility) &&
           volScaleUsable
         ) {
           // Weight HMM based on data length, scaled by asset profile
@@ -3822,9 +3837,11 @@ export async function computeMarkovDistribution(params: {
                 1 - effectivePosteriorEntropy * softRegimeHmmWeightEntropyWeight,
               )
             : hmmWeight;
-          const hmmDrift = hmmForecast.expectedReturn;
-          const hmmVol = hmmForecast.expectedVolatility * volScaleFactor;
-          // HMM predict returns per-step emission values (daily drift/vol)
+          // Daily drift/vol averaged over days 1..horizon: the horizon drift is horizon x this,
+          // so it is the path-integrated drift (the terminal-day value would drop the early days
+          // a persistent regime still covers), like the Markov arm.
+          const hmmDrift = hmmForecast.pathExpectedReturn;
+          const hmmVol = hmmForecast.pathExpectedVolatility * volScaleFactor;
           if (
             Number.isFinite(hmmDrift) &&
             Number.isFinite(hmmVol) &&
@@ -4135,7 +4152,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     horizonStudentTNu(assetProfile.studentTNu, horizon), regimeSpecificSigma, regimeSpecificSigmaThreshold,
-    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights,
+    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, randomState,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
@@ -4430,13 +4447,17 @@ export async function computeMarkovDistribution(params: {
       randomState,
     );
 
-    // Align trajectory P(Up) with the calibrated CDF at the final day.
+    // Align trajectory P(Up) with the calibrated CDF at the horizon day.
     // The trajectory computes P(Up) independently (uncalibrated), which can
-    // diverge from the calibrated distribution. Override the final day and
-    // interpolate intermediate days to maintain monotone consistency.
-    if (trajectoryResult.length > 0) {
+    // diverge from the calibrated distribution. Override the horizon day and
+    // interpolate the days before it to maintain monotone consistency. calPUp is
+    // the horizon's value, so it is only aligned when that day is in the
+    // trajectory (trajectoryDays is independent of horizon and capped at 30);
+    // days past the horizon stay on the raw trajectory.
+    const horizonIdx = horizon - 1;
+    if (horizonIdx < trajectoryResult.length) {
       const calibratedPUpFinal = calPUp;
-      const lastIdx = trajectoryResult.length - 1;
+      const lastIdx = horizonIdx;
       const rawFinalPUp = trajectoryResult[lastIdx].pUp;
       // Only override if they diverge by more than 2pp (avoid unnecessary perturbation)
       if (Math.abs(rawFinalPUp - calibratedPUpFinal) > 0.02) {
@@ -4817,8 +4838,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
   schema: z.object({
     ticker: z.string().max(128).describe('Stock/ETF/commodity ticker symbol, e.g. NVDA, SPY, BTC-USD, GLD. For commodities, prefer the liquid ETF (GLD for gold, SLV for silver, USO for oil) over futures tickers.'),
     horizon: z.number().int().min(1).max(90).describe('Forecast horizon in trading days'),
-    currentPrice: z.number().optional().describe('Current price (fetched automatically if omitted)'),
-    historicalPrices: z.array(z.number()).optional().describe(
+    currentPrice: z.number().positive().optional().describe('Current price (fetched automatically if omitted)'),
+    historicalPrices: z.array(z.number().positive()).optional().describe(
       'Daily close prices oldest-first. Auto-fetched if omitted or empty. Minimum 10 required, 30+ recommended.',
     ),
     polymarketMarkets: z.array(z.object({

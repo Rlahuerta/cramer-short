@@ -75,6 +75,11 @@ class HMMPrediction:
     forecast_probabilities: np.ndarray
     expected_return: float
     expected_volatility: float
+    # Mean over days 1..h of the daily expected return, and the rms daily volatility.
+    # The terminal-day values above drop the early days a persistent state still covers.
+    # NaN until predict() sets them, so an unset value is never read as a real drift.
+    path_expected_return: float = float("nan")
+    path_expected_volatility: float = float("nan")
 
 
 # ---------------------------------------------------------------------------
@@ -297,9 +302,10 @@ def predict(
     current_state_probs = probs[-1]
     current_state = int(np.argmax(current_state_probs))
 
-    # n-step forecast via matrix power
+    # n-step forecast: the full posterior pushed through A^n, as in TS predict().
+    # (Forecasting from the argmax state alone discards the posterior's uncertainty.)
     A_n = mat_pow(params.A, forecast_horizon)
-    forecast_probs = A_n[current_state]
+    forecast_probs = np.asarray(current_state_probs) @ A_n
 
     # Expected return and volatility (proper mixture variance matching TS)
     expected_return = float(np.dot(forecast_probs, params.means))
@@ -311,6 +317,18 @@ def predict(
         - expected_return ** 2
     ))
 
+    # Path average: push the posterior one day at a time (mirrors TS predict()).
+    day_probs = np.asarray(current_state_probs, dtype=float)
+    sum_return = 0.0
+    sum_variance = 0.0
+    for _ in range(max(0, forecast_horizon)):
+        day_probs = day_probs @ params.A
+        day_return = float(np.dot(day_probs, params.means))
+        day_variance = float(np.dot(day_probs, params.stds**2 + params.means**2)) - day_return**2
+        sum_return += day_return
+        sum_variance += max(0.0, day_variance)
+    days = max(1, forecast_horizon)
+
     return HMMPrediction(
         current_state=current_state,
         state_probabilities=current_state_probs,
@@ -318,6 +336,8 @@ def predict(
         forecast_probabilities=forecast_probs,
         expected_return=expected_return,
         expected_volatility=expected_volatility,
+        path_expected_return=sum_return / days,
+        path_expected_volatility=float(np.sqrt(sum_variance / days)),
     )
 
 

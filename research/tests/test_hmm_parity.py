@@ -212,6 +212,69 @@ def test_predict_probabilities_sum_to_one():
     assert pytest.approx(sum(pred.forecast_probabilities), abs=1e-5) == 1.0
 
 
+def test_predict_forecasts_from_the_posterior_not_the_argmax_state():
+    # Mirrors TS predict: forecastProbabilities = currentStateProbabilities . A^h.
+    params = HMMParams(
+        n_states=2,
+        pi=np.array([0.5, 0.5]),
+        A=np.array([[0.9, 0.1], [0.2, 0.8]]),
+        means=np.array([-0.01, 0.01]),
+        stds=np.array([0.02, 0.02]),
+    )
+    obs = np.array([0.002] * 6)  # ambiguous: both emissions explain it
+    pred = predict(obs, params, forecast_horizon=5)
+    posterior = np.asarray(pred.current_state_probabilities)
+    assert posterior.max() < 0.95  # the posterior really is soft
+    expected = posterior @ mat_pow(params.A, 5)
+    assert np.allclose(pred.forecast_probabilities, expected, atol=1e-9)
+    assert pred.expected_return == pytest.approx(float(np.dot(expected, params.means)), abs=1e-12)
+
+
+_STICKY = HMMParams(
+    n_states=2,
+    pi=np.array([0.5, 0.5]),
+    A=np.array([[0.95, 0.05], [0.05, 0.95]]),
+    means=np.array([0.01, -0.01]),
+    stds=np.array([0.01, 0.01]),
+)
+
+
+def _path_by_hand(posterior, params, horizon):
+    # Independent day-by-day calculation from the returned posterior (mirrors hmm.test.ts).
+    p = np.asarray(posterior, dtype=float)
+    sum_return = sum_variance = 0.0
+    for _ in range(horizon):
+        p = p @ params.A
+        m = float(p @ params.means)
+        v = float(p @ (params.stds**2 + params.means**2)) - m * m
+        sum_return += m
+        sum_variance += max(0.0, v)
+    return sum_return / horizon, math.sqrt(sum_variance / horizon)
+
+
+def test_predict_path_values_are_the_daily_mean_and_rms_over_the_horizon():
+    pred = predict(np.full(60, 0.01), _STICKY, forecast_horizon=14)
+    ret, vol = _path_by_hand(pred.current_state_probabilities, _STICKY, 14)
+    assert pred.path_expected_return == pytest.approx(ret, abs=1e-12)
+    assert pred.path_expected_volatility == pytest.approx(vol, abs=1e-12)
+
+
+def test_predict_path_values_equal_terminal_values_at_horizon_one():
+    pred = predict(np.full(60, 0.01), _STICKY, forecast_horizon=1)
+    assert pred.path_expected_return == pytest.approx(pred.expected_return, abs=1e-12)
+    assert pred.path_expected_volatility == pytest.approx(pred.expected_volatility, abs=1e-12)
+
+
+def test_predict_path_return_keeps_a_persistent_current_state():
+    pred = predict(np.full(60, 0.01), _STICKY, forecast_horizon=14)
+    assert pred.path_expected_return > pred.expected_return + 0.001
+
+
+def test_predict_terminal_values_are_unchanged_by_the_path_fields():
+    pred = predict(np.full(60, 0.01), _STICKY, forecast_horizon=14)
+    assert pred.expected_return == pytest.approx(float(np.dot(pred.forecast_probabilities, _STICKY.means)), abs=1e-12)
+
+
 def test_predict_probabilities_in_range():
     rng = np.random.default_rng(202)
     obs = _synthetic_regime_returns(rng)

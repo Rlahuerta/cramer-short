@@ -138,7 +138,8 @@ export function logNormalSurvival(
   driftN: number,    // n-day log-space drift
   volN: number,      // n-day log-space vol
 ): number {
-  if (volN <= 0) return targetPrice < currentPrice ? 1 : 0;
+  // With no vol the price lands at currentPrice * exp(driftN), so compare that with the target.
+  if (volN <= 0) return Math.log(targetPrice / currentPrice) < driftN ? 1 : 0;
   const z = (Math.log(targetPrice / currentPrice) - driftN) / volN;
   return 1 - normalCDF(z);
 }
@@ -272,11 +273,15 @@ export function studentTSurvival(
   volN: number,
   nu = 5,
 ): number {
-  if (volN <= 0) return targetPrice < currentPrice ? 1 : 0;
   if (targetPrice <= 0) return 1; // price can't go below 0; survival = 1
+  const move = Math.log(targetPrice / currentPrice) - driftN;
+  // With no vol the price lands at currentPrice * exp(driftN): above the target iff move < 0.
+  if (volN <= 0) return Number.isNaN(move) ? NaN : move < 0 ? 1 : 0;
   // Scale vol to match t-distribution variance: Var(t_ν) = ν/(ν-2) for ν>2
   const scaledVol = nu > 2 ? volN * Math.sqrt((nu - 2) / nu) : volN;
-  const z = (Math.log(targetPrice / currentPrice) - driftN) / scaledVol;
+  const z = move / scaledVol;
+  // NaN drift/vol/price must not read as certainty; only an infinite z saturates.
+  if (Number.isNaN(z)) return NaN;
   // Guard extreme z-scores: regularizedBeta can diverge beyond |z|~50
   if (!Number.isFinite(z)) return z > 0 ? 0 : 1;
   const clamped = Math.max(-50, Math.min(50, z));
@@ -691,6 +696,37 @@ export function computeTrajectory(
 }
 
 /**
+ * Weighted least-squares non-increasing fit (pool adjacent violators): where neighbours
+ * contradict monotonicity they are averaged by weight, so neither side silently wins. A
+ * running max from one side lets only the model's higher-price values stand, which
+ * discarded any anchor saying "less likely than the model".
+ */
+export function enforceNonIncreasing(values: number[], weights?: number[]): number[] {
+  const blocks: { sum: number; w: number; n: number }[] = [];
+  values.forEach((v, i) => {
+    const w = weights?.[i] ?? 1;
+    blocks.push({ sum: v * w, w, n: 1 });
+    while (blocks.length > 1) {
+      const b = blocks[blocks.length - 1];
+      const a = blocks[blocks.length - 2];
+      if (b.sum / b.w <= a.sum / a.w) break;
+      a.sum += b.sum;
+      a.w += b.w;
+      a.n += b.n;
+      blocks.pop();
+    }
+  });
+  return blocks.flatMap(b => Array<number>(b.n).fill(b.sum / b.w));
+}
+
+/**
+ * Pooling weight of a fully anchor-driven point against a model point (weight 1): large
+ * enough to outweigh the few grid points that can border it, so a conflict moves the
+ * neighbours, not the anchor.
+ */
+const ANCHOR_POOL_WEIGHT = 100;
+
+/**
  * Build probability distribution across price levels, blending Markov estimates
  * with Polymarket anchors using the mixing-time weight.
  *
@@ -721,6 +757,8 @@ export function interpolateDistribution(
   garchScales?: readonly number[],
   /** Optional horizon-level regime weights override for the final forecast state mix. */
   terminalStateWeights?: readonly number[],
+  /** Optional seed for the confidence-band Monte Carlo. Default keeps Math.random. */
+  randomState?: number,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -750,12 +788,11 @@ export function interpolateDistribution(
     prices.push(minPrice * Math.pow(maxPrice / minPrice, i / numLevels));
   }
 
-  // Merge anchor prices into the grid so they are never missed
+  // Put every anchor strike on the grid verbatim. An anchor is P(price > its strike), so
+  // findAnchor matches strikes exactly: a nearby grid point is a different price and keeps
+  // the model's own probability.
   for (const a of anchors) {
-    const closestDist = prices.reduce(
-      (best, p) => Math.min(best, Math.abs(p - a.price) / a.price), Infinity,
-    );
-    if (closestDist > 0.005) prices.push(a.price);
+    if (!prices.includes(a.price)) prices.push(a.price);
   }
   // The geometric grid straddles currentPrice. Put it on the grid so P(up) is read
   // exactly instead of interpolated across the steepest part of the curve.
@@ -765,13 +802,12 @@ export function interpolateDistribution(
   const mixWeight = computeMixingWeight(secondEigenvalue, horizon);
 
 
-  // Nearest anchor lookup helper with distance-based dampening.
+  // Exact-strike anchor lookup with distance-based dampening.
   // Anchors far from current price are less trustworthy (often illiquid/speculative).
   // Apply exponential decay: weight = exp(-k * distance²) where distance = |price - current| / current.
   // At 20% away: weight ≈ 0.67. At 40%: weight ≈ 0.20. At 60%+: weight ≈ 0.03.
   const findAnchor = (price: number) => {
-    const TOLERANCE_PCT = 0.02;
-    const raw = anchors.find(a => Math.abs(a.price - price) / price < TOLERANCE_PCT);
+    const raw = anchors.find(a => a.price === price);
     if (!raw) return undefined;
     // Compute distance-decay factor
     const distFromCurrent = Math.abs(raw.price - currentPrice) / currentPrice;
@@ -792,7 +828,7 @@ export function interpolateDistribution(
   const driftScale = N ? Math.min(0.20, 1 / Math.sqrt(N)) : 0.20; // matches old ±0.5 × 0.20 band
   const volLowerScale = N ? Math.max(0.85, 1 - driftScale * 0.5) : 0.90;
   const volUpperScale = N ? Math.min(1.15, 1 + driftScale * 0.5) : 1.10;
-  const rng = (): number => Math.random();
+  const rng = randomState === undefined ? (): number => Math.random() : mulberry32(randomState);
   const ciSamples: Map<number, number[]> = new Map(prices.map(p => [p, []]));
 
   for (let s = 0; s < monteCarloSamples; s++) {
@@ -812,15 +848,16 @@ export function interpolateDistribution(
 
     let probability: number;
     let source: 'polymarket' | 'markov' | 'blend';
+    let anchorW = 0;
 
     if (anchor && anchor.trustScore === 'high') {
       // Scale anchor influence by distance from current price
-      const anchorW = (1 - mixWeight) * anchor.distanceWeight;
+      anchorW = (1 - mixWeight) * anchor.distanceWeight;
       probability = (1 - anchorW) * markovEst + anchorW * anchor.probability;
       source = anchorW < 0.05 ? 'markov' : anchorW > 0.5 ? 'polymarket' : 'blend';
     } else if (anchor && anchor.trustScore === 'low') {
       // Low-trust anchors: half nominal influence, further scaled by distance
-      const anchorW = (1 - mixWeight) * 0.5 * anchor.distanceWeight;
+      anchorW = (1 - mixWeight) * 0.5 * anchor.distanceWeight;
       probability = (1 - anchorW) * markovEst + anchorW * anchor.probability;
       source = 'blend';
     } else {
@@ -838,15 +875,21 @@ export function interpolateDistribution(
     const widenedLo = Math.max(0, center - halfWidth * ciWidthMultiplier);
     const widenedHi = Math.min(1, center + halfWidth * ciWidthMultiplier);
 
-    return { price, probability, lowerBound: widenedLo, upperBound: widenedHi, source };
+    return { price, probability, lowerBound: widenedLo, upperBound: widenedHi, source, anchorW };
   });
 
-  // Enforce monotonicity: P(price > X) must be non-increasing in X
-  for (let i = rawPoints.length - 2; i >= 0; i--) {
-    if (rawPoints[i].probability < rawPoints[i + 1].probability) {
-      rawPoints[i].probability = rawPoints[i + 1].probability;
-    }
-  }
+  // Enforce monotonicity: P(price > X) must be non-increasing in X. Anchor points carry
+  // more weight than model points, so a conflict adjusts the model around the anchor.
+  const pooled = enforceNonIncreasing(
+    rawPoints.map(pt => pt.probability),
+    rawPoints.map(pt => 1 + ANCHOR_POOL_WEIGHT * pt.anchorW),
+  );
 
-  return rawPoints;
+  // A model point that pooling moved is no longer pure Markov: label it blend so calibration
+  // shifts it (keeping the pooled value) instead of recomputing it from the model.
+  return rawPoints.map(({ anchorW: _anchorW, ...pt }, i) => ({
+    ...pt,
+    probability: pooled[i],
+    source: pt.source === 'markov' && Math.abs(pooled[i] - pt.probability) > 1e-9 ? 'blend' as const : pt.source,
+  }));
 }

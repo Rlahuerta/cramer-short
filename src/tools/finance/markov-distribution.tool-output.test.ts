@@ -1622,6 +1622,8 @@ describe('markov_distribution tool output envelope', () => {
         forecastProbabilities: params.nStates === 3 ? [0.1, 0.8, 0.1] : [0.7, 0.3],
         expectedReturn: params.nStates === 3 ? 0.004 : 0.01,
         expectedVolatility: params.nStates === 3 ? Number.POSITIVE_INFINITY : 0.01,
+        pathExpectedReturn: params.nStates === 3 ? 0.004 : 0.01,
+        pathExpectedVolatility: params.nStates === 3 ? Number.POSITIVE_INFINITY : 0.01,
       }),
     }));
 
@@ -1714,6 +1716,8 @@ describe('markov_distribution tool output envelope', () => {
         forecastProbabilities: params.nStates === 3 ? [0.1, 0.8, 0.1] : [0.7, 0.3],
         expectedReturn: params.nStates === 3 ? 0.004 : Number.NaN,
         expectedVolatility: 0.01,
+        pathExpectedReturn: params.nStates === 3 ? 0.004 : Number.NaN,
+        pathExpectedVolatility: 0.01,
       }),
     }));
 
@@ -1814,6 +1818,8 @@ describe('markov_distribution tool output envelope', () => {
         forecastProbabilities: [0.1, 0.8, 0.1],
         expectedReturn: 0.004,
         expectedVolatility: 0.012,
+        pathExpectedReturn: 0.004,
+        pathExpectedVolatility: 0.012,
       }),
     }));
 
@@ -1865,6 +1871,8 @@ describe('markov_distribution tool output envelope', () => {
         forecastProbabilities: [0.10, 0.20, 0.70],
         expectedReturn: 0,
         expectedVolatility: 0.01,
+        pathExpectedReturn: 0,
+        pathExpectedVolatility: 0.01,
       }),
     }));
 
@@ -1931,6 +1939,8 @@ describe('markov_distribution tool output envelope', () => {
           forecastProbabilities: enabled ? [0.10, 0.20, 0.70] : [0.20, 0.60, 0.20],
           expectedReturn: enabled ? 0.012 : 0.002,
           expectedVolatility: enabled ? 0.035 : 0.012,
+          pathExpectedReturn: enabled ? 0.012 : 0.002,
+          pathExpectedVolatility: enabled ? 0.035 : 0.012,
         };
       },
     }));
@@ -2018,6 +2028,8 @@ describe('markov_distribution tool output envelope', () => {
         forecastProbabilities: [0.10, 0.70, 0.20],
         expectedReturn: 0.012,
         expectedVolatility: 0.035,
+        pathExpectedReturn: 0.012,
+        pathExpectedVolatility: 0.035,
       }),
     }));
 

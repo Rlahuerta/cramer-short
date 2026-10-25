@@ -19,6 +19,7 @@ from research.models.trajectory import (
     log_normal_survival,
     interpolate_survival,
 )
+from research.models.trajectory.interpolation import enforce_non_increasing
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,18 @@ def test_log_normal_survival_monotonic():
     targets = [80, 90, 100, 110, 120]
     probs = [log_normal_survival(current, t, 0.05, 0.2) for t in targets]
     assert probs == sorted(probs, reverse=True)  # decreasing in target
+
+
+def test_student_t_survival_non_positive_target_is_certain():
+    # Mirrors TS: a price cannot go below 0, so P(price > target <= 0) = 1.
+    assert student_t_survival(0.0, 100.0, 0.0, 0.1) == 1.0
+    assert student_t_survival(-5.0, 100.0, 0.0, 0.1) == 1.0
+    assert student_t_survival(-5.0, 100.0, 0.0, 0.0) == 1.0
+
+
+def test_student_t_survival_zero_vol_uses_the_drift():
+    assert student_t_survival(100.0, 100.0, 0.1, 0.0) == 1.0
+    assert student_t_survival(100.0, 100.0, -0.1, 0.0) == 0.0
 
 
 def test_student_t_survival_current():
@@ -474,6 +487,144 @@ def test_interpolate_distribution_grid_spans_forecast_sigma():
     sigma_n = compute_horizon_drift_vol(14, P, regime_stats, "sideways")["sigma_n"]
     assert points[-1]["price"] >= 100.0 * (1 + 3.5 * sigma_n) - 1e-9
     assert points[0]["price"] <= 100.0 * (1 - 3.5 * sigma_n) + 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Anchors apply only at their own strike (mirrors confidence-intervals.test.ts)
+# ---------------------------------------------------------------------------
+
+_ANCHOR_P = 0.6 * np.eye(3) + 0.2 * (1 - np.eye(3))
+_ANCHOR_STATS = {
+    "bull": RegimeStats(mean_return=0.004, std_return=0.008),
+    "bear": RegimeStats(mean_return=-0.004, std_return=0.009),
+    "sideways": RegimeStats(mean_return=0.0, std_return=0.005),
+}
+
+
+def _anchor(price, probability):
+    return {
+        "price": price,
+        "rawProbability": probability,
+        "probability": probability,
+        "trustScore": "high",
+        "source": "polymarket",
+    }
+
+
+def _anchored(anchors):
+    # Spot 100, h=7: anchors dominate at this horizon (mixing weight 0.4**7).
+    return interpolate_distribution(
+        100.0, 7, _ANCHOR_P, _ANCHOR_STATS, "sideways", anchors,
+        second_eigenvalue=0.4, monte_carlo_samples=20, daily_vol=0.01, nu=5,
+    )
+
+
+def _at(points, price):
+    return min(points, key=lambda p: abs(p["price"] - price))
+
+
+def test_enforce_non_increasing_pools_violations():
+    assert enforce_non_increasing([1, 0.9, 0.9, 0.2, 0]) == [1, 0.9, 0.9, 0.2, 0]
+    assert enforce_non_increasing([0.6, 0.9]) == pytest.approx([0.75, 0.75])
+    out = enforce_non_increasing([0.9, 0.6, 0.8, 0.5])
+    assert out == pytest.approx([0.9, 0.7, 0.7, 0.5])
+    cascade = enforce_non_increasing([0.3, 0.5, 0.9, 0.2, 0.25])
+    assert all(cascade[i] >= cascade[i + 1] - 1e-12 for i in range(len(cascade) - 1))
+    assert sum(cascade) == pytest.approx(sum([0.3, 0.5, 0.9, 0.2, 0.25]))
+    assert enforce_non_increasing([]) == []
+
+
+def test_enforce_non_increasing_weights_the_pool():
+    out = enforce_non_increasing([0.6, 0.9], [100, 1])
+    assert out[0] == pytest.approx((0.6 * 100 + 0.9) / 101)
+    assert out[1] == out[0]
+    assert enforce_non_increasing([0.6, 0.9], [1, 3])[0] == pytest.approx(0.825)
+
+
+def test_interpolate_distribution_anchor_order_does_not_matter():
+    far, near = _anchor(101.9, 0.30), _anchor(100.2, 0.49)
+    a, b = _anchored([far, near]), _anchored([near, far])
+    assert [p["price"] for p in a] == [p["price"] for p in b]
+    assert [p["probability"] for p in a] == pytest.approx([p["probability"] for p in b])
+
+
+def test_interpolate_distribution_anchor_does_not_leak_to_other_strikes():
+    none = _anchored([])
+    with_anchor = _anchored([_anchor(101.9, 0.30)])
+    spot = next(p for p in with_anchor if p["price"] == 100.0)
+    assert spot["source"] == "markov"
+    assert spot["probability"] == pytest.approx(next(p for p in none if p["price"] == 100.0)["probability"], abs=1e-12)
+    assert [p["price"] for p in with_anchor if p["source"] != "markov"] == [101.9]
+
+
+def test_interpolate_distribution_puts_anchor_strike_on_grid_verbatim():
+    with_anchor = _anchored([_anchor(101.9, 0.30)])
+    point = next(p for p in with_anchor if p["price"] == 101.9)
+    assert abs(point["probability"] - 0.30) < 0.01
+
+
+def test_interpolate_distribution_anchor_near_grid_point_gets_own_point():
+    none = _anchored([])
+    g = none[5]
+    strike = g["price"] * 1.002
+    with_anchor = _anchored([_anchor(strike, g["probability"])])
+    assert len(with_anchor) == len(none) + 1
+    assert next(p for p in with_anchor if p["price"] == g["price"])["source"] == "markov"
+    assert next(p for p in with_anchor if p["price"] == strike)["source"] != "markov"
+
+
+def test_interpolate_distribution_honours_anchor_below_the_model():
+    none = _anchored([])
+    with_anchor = _anchored([_anchor(97, 0.60)])
+    assert _at(none, 97)["probability"] > 0.85
+    assert abs(next(p for p in with_anchor if p["price"] == 97)["probability"] - 0.60) < 0.01
+    assert all(with_anchor[i]["probability"] >= with_anchor[i + 1]["probability"] - 1e-12 for i in range(len(with_anchor) - 1))
+
+
+def test_interpolate_distribution_honours_anchor_above_the_model():
+    with_anchor = _anchored([_anchor(103, 0.40)])
+    assert abs(next(p for p in with_anchor if p["price"] == 103)["probability"] - 0.40) < 0.01
+
+
+def test_interpolate_distribution_labels_pooled_points_blend():
+    none = _anchored([])
+    with_anchor = _anchored([_anchor(97, 0.60)])
+    pooled_markov = [
+        p for p in with_anchor
+        if p["source"] == "markov"
+        and abs(p["probability"] - next(q for q in none if q["price"] == p["price"])["probability"]) > 1e-9
+    ]
+    assert pooled_markov == []
+
+
+def test_pooled_anchor_survives_calibration():
+    from research.models.markov.calibration import calibrate_probabilities
+
+    with_anchor = _anchored([_anchor(97, 0.60)])
+    stats = compute_horizon_drift_vol(7, _ANCHOR_P, _ANCHOR_STATS, "sideways")
+    calibrated = calibrate_probabilities(
+        with_anchor, current_price=100.0, drift_n=stats["mu_n"], vol_n=stats["sigma_n"], nu=5, base_rate=0.5,
+    )
+    before = next(p for p in with_anchor if p["price"] == 97)["probability"]
+    after = next(p for p in calibrated if p["price"] == 97)["probability"]
+    assert abs(after - before) < 0.05
+
+
+def test_interpolate_distribution_seed_makes_bounds_reproducible():
+    def run(seed):
+        return interpolate_distribution(
+            100.0, 7, _ANCHOR_P, _ANCHOR_STATS, "sideways", [], second_eigenvalue=0.4,
+            monte_carlo_samples=200, daily_vol=0.01, nu=5, sample_size=200, random_state=seed,
+        )
+
+    def bounds(points):
+        return [(p["lowerBound"], p["upperBound"]) for p in points]
+
+    a, b, c = run(7), run(7), run(8)
+    assert bounds(a) == bounds(b)
+    assert bounds(a) != bounds(c)
+    # The seed only drives the bands: the point estimates are analytic.
+    assert [p["probability"] for p in a] == [p["probability"] for p in c]
 
 
 def test_compute_trajectory_sigma_n_reproduces_p_up():

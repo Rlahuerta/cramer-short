@@ -15,6 +15,7 @@ import { formatToolResult } from '../types.js';
 import { polymarketBreaker } from '../../utils/circuit-breaker.js';
 import { getEnv, hasEnv } from '../../utils/env.js';
 import {
+  extractCanonicalNames,
   fetchPolymarketAnchorMarketsWithQueries,
   fetchPolymarketMarkets,
   type PolymarketMarketResult,
@@ -1292,7 +1293,9 @@ export function deriveThresholdMarketDeltas(
   const suffix = (match[2] ?? '').toLowerCase();
   const strike = parseFloat(match[1]!.replace(/,/g, '')) * (suffix === 'k' ? 1_000 : suffix === 'm' ? 1_000_000 : 1);
   const lower = question.toLowerCase();
-  const aboutAsset = assetNames.some((name) => new RegExp(`\\b${name.toLowerCase()}\\b`).test(lower));
+  // Names are literals (a ticker like "C++" must not be parsed as a pattern); (?<!\w)/(?!\w) is \b that also works at a non-word edge.
+  const aboutAsset = assetNames.some((name) =>
+    new RegExp(`(?<!\\w)${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\w)`).test(lower));
   if (!(strike > 0) || currentPrice === undefined || !(currentPrice > 0) || !aboutAsset) {
     return { deltaYes: 0, deltaNo: 0 };
   }
@@ -1374,7 +1377,7 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
         const assetClass = inferAssetClass(searchIdentity.canonicalTicker);
         const marketImpact = (m: { signalCategory: string; question: string }) =>
           (m.signalCategory === 'btc_price_target'
-            && deriveThresholdMarketDeltas(m.question, currentPrice, searchIdentity.canonicalNames))
+            && deriveThresholdMarketDeltas(m.question, currentPrice, extractCanonicalNames(ticker)))
           || lookupImpact(m.signalCategory, assetClass);
         const historyWarnings: string[] = [];
         const nowMs = Date.now();

@@ -2150,6 +2150,63 @@ describe('computeMarkovDistribution trajectory mode', () => {
   });
 });
 
+describe('trajectory P(up) alignment follows the horizon, not the last trajectory day', () => {
+  // Seeded GBM (mulberry32 + Box-Muller): raw trajectory P(up) is analytic, so this is deterministic.
+  const prices = (() => {
+    let seed = 11;
+    const u = () => {
+      seed = (seed + 0x6D2B79F5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const out = [100];
+    for (let i = 1; i < 160; i++) {
+      const z = Math.sqrt(-2 * Math.log(Math.max(1e-12, u()))) * Math.cos(2 * Math.PI * u());
+      out.push(out[i - 1] * Math.exp(0.0005 + 0.02 * z));
+    }
+    return out;
+  })();
+  const run = (horizon: number, trajectoryDays?: number) =>
+    computeMarkovDistribution({
+      ticker: 'SPY',
+      horizon,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+      trajectoryDays,
+      randomState: 7,
+    });
+
+  it('puts the calibrated horizon P(up) on day `horizon` when the trajectory is longer', async () => {
+    const result = await run(7, 30);
+    const calPUp = interpolateSurvival(result.distribution, result.currentPrice);
+    const traj = result.trajectory!;
+    expect(traj).toHaveLength(30);
+    expect(traj[6].day).toBe(7);
+    expect(Math.abs(traj[6].pUp - calPUp)).toBeLessThan(0.0015);
+  });
+
+  it('leaves days past the horizon on the raw trajectory instead of the horizon value', async () => {
+    const long = await run(7, 30);
+    const short = await run(7, 7);
+    // The first `horizon` days are identical whatever the trajectory length.
+    for (let i = 0; i < 7; i++) expect(long.trajectory![i].pUp).toBe(short.trajectory![i].pUp);
+    const calPUp = interpolateSurvival(long.distribution, long.currentPrice);
+    expect(Math.abs(long.trajectory![29].pUp - calPUp)).toBeGreaterThan(0.005);
+  });
+
+  it('does not overwrite a trajectory that stops before the horizon', async () => {
+    const result = await run(45);
+    const calPUp = interpolateSurvival(result.distribution, result.currentPrice);
+    const traj = result.trajectory!;
+    expect(traj).toHaveLength(30);
+    expect(Math.abs(traj[29].pUp - calPUp)).toBeGreaterThan(0.005);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // markovDistributionTool — trajectory output format
 // ---------------------------------------------------------------------------
@@ -2216,6 +2273,55 @@ describe('markovDistributionTool trajectory output', () => {
 // ---------------------------------------------------------------------------
 // normalizeAnchorPricesForETF — commodity futures → ETF price conversion
 // ---------------------------------------------------------------------------
+
+describe('anchor ladder around spot (pipeline)', () => {
+  // Seeded GBM, BTC-like vol; spot is the last close.
+  const prices = (() => {
+    let seed = 21;
+    const u = () => {
+      seed = (seed + 0x6D2B79F5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const out = [60_000];
+    for (let i = 1; i < 200; i++) {
+      const z = Math.sqrt(-2 * Math.log(Math.max(1e-12, u()))) * Math.cos(2 * Math.PI * u());
+      out.push(out[i - 1] * Math.exp(0.0003 + 0.025 * z));
+    }
+    return out;
+  })();
+  const spot = prices[prices.length - 1];
+  const endDate = new Date(FIXED_NOW_MS + 7 * MS_PER_DAY);
+  const dateText = endDate.toLocaleString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
+  const market = (strikePct: number, probability: number) => ({
+    question: `Will the price of Bitcoin be above $${Math.round(spot * (1 + strikePct))} on ${dateText}?`,
+    probability,
+    volume: 500_000,
+    createdAt: FIXED_NOW_MS - MS_PER_DAY,
+    endDate: endDate.toISOString(),
+  });
+
+  it('keeps P(up) between the probabilities of the strikes either side of spot', async () => {
+    // P(>spot-1.5%) = 0.62 and P(>spot+0.5%) = 0.47 bound P(>spot). One anchor's
+    // probability used to leak onto every grid point within 2% and the first anchor in
+    // price order won, which put P(up) above the lower strike's own probability (0.657).
+    const result = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: spot,
+      historicalPrices: prices,
+      polymarketMarkets: [market(-0.015, 0.62), market(0.005, 0.47), market(0.015, 0.40)],
+      referenceTimeMs: FIXED_NOW_MS,
+      randomState: 3,
+    });
+    expect(result.metadata.polymarketAnchors).toBe(3);
+    const pUp = interpolateSurvival(result.distribution, spot);
+    expect(pUp).toBeGreaterThan(0.47 - 0.02);
+    expect(pUp).toBeLessThan(0.62 + 0.02);
+  });
+});
 
 describe('Phase 5 fallback helpers', () => {
   it('keeps medium-divergence fallback blending row-stochastic for GLD-style breaks', () => {
@@ -2288,6 +2394,60 @@ describe('markov_distribution tool schema', () => {
       historicalPrices: Array(60).fill(150),
       polymarketMarkets: [],
     });
+    expect(parsed.success).toBe(true);
+  });
+});
+
+describe('randomState makes the whole distribution reproducible', () => {
+  const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
+  const run = () => computeMarkovDistribution({
+    ticker: 'TEST', horizon: 7, currentPrice: 118, historicalPrices: prices, polymarketMarkets: [], randomState: 3,
+  });
+
+  it('gives identical confidence bounds on the calibrated and raw distributions across runs', async () => {
+    const a = await run();
+    const b = await run();
+    const bounds = (d: MarkovDistributionPoint[]) => d.map(pt => [pt.lowerBound, pt.upperBound]);
+    expect(bounds(b.distribution)).toEqual(bounds(a.distribution));
+    expect(bounds(b.rawDistribution)).toEqual(bounds(a.rawDistribution));
+  });
+});
+
+describe('price input validation', () => {
+  const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
+  const run = (overrides: { currentPrice?: number; historicalPrices?: number[] }) =>
+    computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      ...overrides,
+    });
+
+  for (const currentPrice of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    it(`computeMarkovDistribution rejects currentPrice ${currentPrice}`, async () => {
+      await expect(run({ currentPrice })).rejects.toThrow(/currentPrice/);
+    });
+  }
+
+  for (const [label, bad] of [['zero', 0], ['negative', -3], ['NaN', Number.NaN]] as const) {
+    it(`computeMarkovDistribution rejects a ${label} close in the history`, async () => {
+      const historicalPrices = prices.map((p, i) => (i === 40 ? bad : p));
+      await expect(run({ historicalPrices })).rejects.toThrow(/historicalPrices\[40\]/);
+    });
+  }
+
+  it('tool schema rejects non-positive currentPrice and history closes', () => {
+    const schema = markovDistributionTool.schema;
+    expect(schema.safeParse({ ticker: 'SPY', horizon: 7, currentPrice: 0 }).success).toBe(false);
+    expect(schema.safeParse({ ticker: 'SPY', horizon: 7, currentPrice: -5 }).success).toBe(false);
+    expect(schema.safeParse({ ticker: 'SPY', horizon: 7, historicalPrices: prices.map((p, i) => (i === 3 ? 0 : p)) }).success).toBe(false);
+    expect(schema.safeParse({ ticker: 'SPY', horizon: 7, historicalPrices: prices.map((p, i) => (i === 3 ? -1 : p)) }).success).toBe(false);
+  });
+
+  it('tool schema still accepts positive prices', () => {
+    const parsed = markovDistributionTool.schema.safeParse({ ticker: 'SPY', horizon: 7, currentPrice: 118, historicalPrices: prices });
     expect(parsed.success).toBe(true);
   });
 });

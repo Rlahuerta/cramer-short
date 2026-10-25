@@ -80,6 +80,11 @@ export interface HMMPrediction {
   expectedReturn: number;
   /** Expected volatility (weighted by state probabilities and emission stds) */
   expectedVolatility: number;
+  /** Mean over days 1..h of the daily expected return. The terminal-day `expectedReturn`
+   *  alone drops the early days a persistent current state still covers. */
+  pathExpectedReturn: number;
+  /** Root-mean-square over days 1..h of the daily volatility (law of total variance per day). */
+  pathExpectedVolatility: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -680,6 +685,23 @@ export function predict(
     ) - expectedReturn ** 2,
   );
 
+  // Path average: push the posterior one day at a time. Multiplying the terminal-day
+  // value by the horizon treats day 1 like day h, which a persistent regime makes wrong.
+  let dayProbabilities = currentStateProbabilities;
+  let sumReturn = 0;
+  let sumVariance = 0;
+  for (let d = 1; d <= forecastHorizon; d++) {
+    dayProbabilities = Array.from({ length: nStates }, (_, j) =>
+      dayProbabilities.reduce((s, p, i) => s + p * A[i][j], 0),
+    );
+    const dayReturn = dayProbabilities.reduce((s, p, i) => s + p * means[i], 0);
+    const dayVariance = dayProbabilities.reduce((s, p, i) => s + p * (stds[i] ** 2 + means[i] ** 2), 0)
+      - dayReturn ** 2;
+    sumReturn += dayReturn;
+    sumVariance += Math.max(0, dayVariance);
+  }
+  const days = Math.max(1, forecastHorizon);
+
   return {
     currentState,
     stateProbabilities: gamma,
@@ -687,6 +709,8 @@ export function predict(
     forecastProbabilities,
     expectedReturn,
     expectedVolatility,
+    pathExpectedReturn: sumReturn / days,
+    pathExpectedVolatility: Math.sqrt(sumVariance / days),
   };
 }
 

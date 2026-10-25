@@ -361,7 +361,10 @@ def test_invalid_hmm_overlay_components_preserve_base_markov_forecast(
     monkeypatch.setattr(
         wf,
         "predict",
-        lambda *_args, **_kwargs: SimpleNamespace(expected_return=0.02, expected_volatility=0.03),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            expected_return=0.02, expected_volatility=0.03,
+            path_expected_return=0.02, path_expected_volatility=0.03,
+        ),
     )
     monkeypatch.setattr(wf, "fit_volatility_hmm", lambda *_args, **_kwargs: vol_scale)
     if weight_multiplier is not None:
@@ -528,7 +531,10 @@ def test_window_forecast_passes_hmm_daily_emission_payload_as_per_day_override(
     monkeypatch.setattr(
         wf,
         "predict",
-        lambda *_args, **_kwargs: SimpleNamespace(expected_return=0.14, expected_volatility=0.07),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            expected_return=0.14, expected_volatility=0.07,
+            path_expected_return=0.14, path_expected_volatility=0.07,
+        ),
     )
     monkeypatch.setattr(wf, "fit_volatility_hmm", lambda *_args, **_kwargs: 1.0)
 

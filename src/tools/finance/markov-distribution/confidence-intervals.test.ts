@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import { classifyRegimeState } from './regime.js';
 import { buildDefaultMatrix } from './transition.js';
-import { computeHorizonDriftVol, horizonStudentTNu, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
-import { combineUncertaintyCiScale, computeMarkovDistribution, interpolateSurvival } from '../markov-distribution.js';
-import type { MarkovDistributionPoint, RegimeState } from './core.js';
+import { computeHorizonDriftVol, horizonStudentTNu, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, enforceNonIncreasing, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
+import { calibrateProbabilities, combineUncertaintyCiScale, computeMarkovDistribution, interpolateSurvival } from '../markov-distribution.js';
+import type { MarkovDistributionPoint, PriceThreshold, RegimeState } from './core.js';
 
 function seedRng(seed: number): () => number {
   let s = seed >>> 0;
@@ -58,6 +58,12 @@ describe('logNormalSurvival', () => {
 
   it('returns 0 for vol ≤ 0 when target > current', () => {
     expect(logNormalSurvival(100, 110, 0, 0)).toBe(0);
+  });
+
+  it('uses the drift when vol ≤ 0', () => {
+    expect(logNormalSurvival(100, 100, 0.1, 0)).toBe(1);
+    expect(logNormalSurvival(100, 100, -0.1, 0)).toBe(0);
+    expect(logNormalSurvival(100, 120, 0.1, 0)).toBe(0);
   });
 
   it('returns 1 for vol ≤ 0 when target < current', () => {
@@ -135,6 +141,160 @@ describe('interpolateDistribution', () => {
     expect(['markov', 'blend', 'polymarket']).toContain(point?.source as string);
   });
 });
+describe('enforceNonIncreasing', () => {
+  it('returns an already non-increasing sequence unchanged', () => {
+    expect(enforceNonIncreasing([1, 0.9, 0.9, 0.2, 0])).toEqual([1, 0.9, 0.9, 0.2, 0]);
+  });
+
+  it('averages a violating pair instead of letting one side win', () => {
+    expect(enforceNonIncreasing([0.6, 0.9])).toEqual([0.75, 0.75]);
+    const out = enforceNonIncreasing([0.9, 0.6, 0.8, 0.5]);
+    expect(out[0]).toBe(0.9);
+    expect(out[1]).toBeCloseTo(0.7, 12);
+    expect(out[2]).toBeCloseTo(0.7, 12);
+    expect(out[3]).toBe(0.5);
+  });
+
+  it('pools cascading violations and preserves the total', () => {
+    const input = [0.3, 0.5, 0.9, 0.2, 0.25];
+    const out = enforceNonIncreasing(input);
+    for (let i = 1; i < out.length; i++) expect(out[i]).toBeLessThanOrEqual(out[i - 1] + 1e-12);
+    expect(out.reduce((a, b) => a + b, 0)).toBeCloseTo(input.reduce((a, b) => a + b, 0), 12);
+  });
+
+  it('weights the pool: a heavy point barely moves', () => {
+    const out = enforceNonIncreasing([0.6, 0.9], [100, 1]);
+    expect(out[0]).toBeCloseTo((0.6 * 100 + 0.9) / 101, 12);
+    expect(out[1]).toBe(out[0]);
+    expect(enforceNonIncreasing([0.6, 0.9], [1, 3])[0]).toBeCloseTo(0.825, 12);
+  });
+
+  it('is idempotent and handles empty input', () => {
+    const once = enforceNonIncreasing([0.2, 0.8, 0.1, 0.4]);
+    expect(enforceNonIncreasing(once)).toEqual(once);
+    expect(enforceNonIncreasing([])).toEqual([]);
+  });
+});
+
+describe('interpolateDistribution — an anchor applies only at its own strike', () => {
+  const P = buildDefaultMatrix();
+  const stats = {
+    bull: { meanReturn: 0.004, stdReturn: 0.008 },
+    bear: { meanReturn: -0.004, stdReturn: 0.009 },
+    sideways: { meanReturn: 0, stdReturn: 0.005 },
+  };
+  const anchor = (price: number, probability: number): PriceThreshold => ({
+    price, rawProbability: probability, probability, trustScore: 'high', source: 'polymarket',
+  });
+  // Spot 100, h=7: anchors dominate at this horizon (mixing weight 0.4^7).
+  const run = (anchors: PriceThreshold[]) =>
+    interpolateDistribution(100, 7, P, stats, 'sideways', anchors, 0.4, 20, 0, 1, 0, undefined, 0.01, undefined, 5);
+
+  it('does not depend on the order the anchors are listed in', () => {
+    const far = anchor(101.9, 0.30);
+    const near = anchor(100.2, 0.49);
+    const a = run([far, near]);
+    const b = run([near, far]);
+    expect(b.map(pt => pt.price)).toEqual(a.map(pt => pt.price));
+    expect(b.map(pt => pt.probability)).toEqual(a.map(pt => pt.probability));
+  });
+
+  it('keeps the model probability at spot when the only anchor is a different strike', () => {
+    const none = run([]);
+    const withAnchor = run([anchor(101.9, 0.30)]);
+    const spot = withAnchor.find(pt => pt.price === 100)!;
+    expect(spot.source).toBe('markov');
+    expect(spot.probability).toBeCloseTo(none.find(pt => pt.price === 100)!.probability, 12);
+    expect(withAnchor.filter(pt => pt.source !== 'markov').map(pt => pt.price)).toEqual([101.9]);
+  });
+
+  it('puts the anchor strike on the grid verbatim and gives it the anchor probability', () => {
+    const withAnchor = run([anchor(101.9, 0.30)]);
+    const pt = withAnchor.find(q => q.price === 101.9)!;
+    expect(pt).toBeDefined();
+    expect(Math.abs(pt.probability - 0.30)).toBeLessThan(0.01);
+  });
+
+  it('gives an anchor within 0.5% of a grid point its own point and leaves the neighbour alone', () => {
+    const none = run([]);
+    const g = none[5];
+    const strike = g.price * 1.002;
+    const withAnchor = run([anchor(strike, g.probability)]);
+    expect(withAnchor).toHaveLength(none.length + 1);
+    expect(withAnchor.find(q => q.price === g.price)!.source).toBe('markov');
+    expect(withAnchor.find(q => q.price === strike)!.source).not.toBe('markov');
+  });
+
+  it('honours an anchor that is far below the model instead of discarding it', () => {
+    // Model P(>97) is ~0.91; the anchor says 0.60. A right-to-left max pass used to lift the
+    // anchor point back to the model value (anchors could only raise the curve).
+    const none = run([]);
+    const withAnchor = run([anchor(97, 0.60)]);
+    const modelAt97 = none.reduce((b, pt) => (Math.abs(pt.price - 97) < Math.abs(b.price - 97) ? pt : b)).probability;
+    const at97 = withAnchor.find(pt => pt.price === 97)!;
+    expect(modelAt97).toBeGreaterThan(0.85);
+    expect(Math.abs(at97.probability - 0.60)).toBeLessThan(0.01);
+    for (let i = 1; i < withAnchor.length; i++) {
+      expect(withAnchor[i].probability).toBeLessThanOrEqual(withAnchor[i - 1].probability + 1e-12);
+    }
+  });
+
+  it('labels points whose value was pooled as blend, not markov', () => {
+    const none = run([]);
+    const withAnchor = run([anchor(97, 0.60)]);
+    const pooled = withAnchor.filter(pt => pt.source === 'markov'
+      && Math.abs(pt.probability - none.find(q => q.price === pt.price)!.probability) > 1e-9);
+    expect(pooled).toEqual([]);
+  });
+
+  it('still honours an anchor above the model exactly', () => {
+    const withAnchor = run([anchor(103, 0.40)]);
+    expect(Math.abs(withAnchor.find(pt => pt.price === 103)!.probability - 0.40)).toBeLessThan(0.01);
+  });
+
+  it('keeps a pooled anchor through calibration', () => {
+    const withAnchor = run([anchor(97, 0.60)]);
+    const { mu_n, sigma_n } = computeHorizonDriftVol(7, P, stats, 'sideways', 0);
+    const calibrated = calibrateProbabilities(withAnchor, { currentPrice: 100, driftN: mu_n, volN: sigma_n, nu: 5, baseRate: 0.5 });
+    const before = withAnchor.find(pt => pt.price === 97)!.probability;
+    const after = calibrated.find(pt => pt.price === 97)!.probability;
+    expect(Math.abs(after - before)).toBeLessThan(0.05);
+  });
+
+  it('stays monotone with a ladder of strikes around spot', () => {
+    const dist = run([anchor(98.5, 0.62), anchor(100.5, 0.47), anchor(101.5, 0.40)]);
+    for (let i = 1; i < dist.length; i++) {
+      expect(dist[i].probability).toBeLessThanOrEqual(dist[i - 1].probability + 1e-12);
+    }
+    expect(dist.find(pt => pt.price === 100)!.source).toBe('markov');
+  });
+});
+
+describe('interpolateDistribution — seeded confidence bands', () => {
+  const P = buildDefaultMatrix();
+  const stats = {
+    bull: { meanReturn: 0.004, stdReturn: 0.008 },
+    bear: { meanReturn: -0.004, stdReturn: 0.009 },
+    sideways: { meanReturn: 0, stdReturn: 0.005 },
+  };
+  const run = (randomState?: number) =>
+    interpolateDistribution(
+      100, 7, P, stats, 'sideways', [], 0.4, 20, 200, 1, 0, undefined, 0.01, undefined, 5,
+      undefined, undefined, 200, undefined, undefined, randomState,
+    );
+  const bounds = (dist: MarkovDistributionPoint[]) => dist.map(pt => [pt.lowerBound, pt.upperBound]);
+
+  it('gives identical bounds for the same randomState and different bounds for another', () => {
+    const a = run(7);
+    const b = run(7);
+    const c = run(8);
+    expect(bounds(b)).toEqual(bounds(a));
+    expect(bounds(c)).not.toEqual(bounds(a));
+    // The seed only drives the bands: the point estimates are analytic.
+    expect(c.map(pt => pt.probability)).toEqual(a.map(pt => pt.probability));
+  });
+});
+
 describe('computeMixingWeight', () => {
   it('Fix 7: at horizon 0, weight=1 (pure Markov)', () => {
     expect(computeMixingWeight(0.9, 0)).toBe(1);
@@ -265,6 +425,31 @@ describe('studentTSurvival', () => {
 
   it('returns 0 when target > current and vol=0', () => {
     expect(studentTSurvival(100, 110, 0, 0)).toBe(0);
+  });
+
+  it('uses the drift when vol=0: the price lands at current * exp(drift)', () => {
+    expect(studentTSurvival(100, 100, 0.1, 0)).toBe(1); // lands at ~110.5, above 100
+    expect(studentTSurvival(100, 100, -0.1, 0)).toBe(0); // lands at ~90.5, below 100
+    expect(studentTSurvival(100, 105, 0.1, 0)).toBe(1);
+    expect(studentTSurvival(100, 120, 0.1, 0)).toBe(0);
+  });
+
+  it('returns 1 for a non-positive target whatever the vol', () => {
+    expect(studentTSurvival(100, 0, 0, 0)).toBe(1);
+    expect(studentTSurvival(100, -5, 0, 0)).toBe(1);
+    expect(studentTSurvival(100, -5, 0, 0.1)).toBe(1);
+  });
+
+  it('does not turn NaN inputs into certainty', () => {
+    expect(studentTSurvival(100, 90, 0, Number.NaN)).toBeNaN();
+    expect(studentTSurvival(100, 90, Number.NaN, 0.05)).toBeNaN();
+    expect(studentTSurvival(100, 90, Number.NaN, 0)).toBeNaN();
+    expect(studentTSurvival(Number.NaN, 90, 0, 0.05)).toBeNaN();
+  });
+
+  it('still saturates an infinite z-score to 0 or 1', () => {
+    expect(studentTSurvival(100, 110, 0, 1e-320)).toBe(0);
+    expect(studentTSurvival(100, 90, 0, 1e-320)).toBe(1);
   });
 });
 describe('computeTrajectory', () => {

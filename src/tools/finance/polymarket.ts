@@ -189,7 +189,7 @@ export function drainSearchWarnings(): string[] {
 
 export const questionMatchesQuery = questionMatchesQueryFromGamma;
 
-function extractCanonicalNames(ticker: string): string[] {
+export function extractCanonicalNames(ticker: string): string[] {
   const normalized = ticker.trim().toUpperCase().replace(/-USD$/, '');
   const known: Record<string, string[]> = {
     BTC: ['bitcoin', 'btc'],
