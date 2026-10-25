@@ -220,30 +220,26 @@ describe('Tier 1b — detectStructuralBreak', () => {
   });
 
   it('CI is wider when structural break is detected', async () => {
-    // We compare two runs: one stationary (no break) vs one with clear break
-    // The break case should produce wider (upper-lower) CI intervals
-    const stationaryPrices = Array.from({ length: 60 }, (_, i) => 100 + i * 0.2);
+    // Same series with and without the break (suppressed via the BTC threshold
+    // override), so the width difference is the break widening, not the series.
     const breakPrices = [
       ...Array.from({ length: 30 }, (_, i) => 100 + i * 0.3),    // bull
       ...Array.from({ length: 30 }, (_, i) => 109 - i * 0.3),    // bear
     ];
-
-    const r1 = await computeMarkovDistribution({
-      ticker: 'STAT', horizon: 10, currentPrice: stationaryPrices[stationaryPrices.length - 1],
-      historicalPrices: stationaryPrices, polymarketMarkets: [],
+    const run = (btcBreakDivergenceThreshold?: number) => computeMarkovDistribution({
+      ticker: 'BTC-USD', horizon: 10, currentPrice: breakPrices[breakPrices.length - 1],
+      historicalPrices: breakPrices, polymarketMarkets: [], btcBreakDivergenceThreshold,
     });
-    const r2 = await computeMarkovDistribution({
-      ticker: 'BREAK', horizon: 10, currentPrice: breakPrices[breakPrices.length - 1],
-      historicalPrices: breakPrices, polymarketMarkets: [],
-    });
+    const withBreak = await run();
+    const withoutBreak = await run(withBreak.metadata.structuralBreakDivergence + 0.01);
 
-    // Band widths of two different series are not comparable: the falling series sits on
-    // the base-rate floor, and its raw bands are already narrower (~0.010 vs ~0.013).
-    // Check that a detected break widens this run's bands and a quiet one does not.
-    expect(r2.metadata.structuralBreakDetected).toBe(true);
-    expect(r2.metadata.ciWidened).toBe(true);
-    expect(r1.metadata.structuralBreakDetected).toBe(false);
-    expect(r1.metadata.ciWidened).toBe(false);
+    const avgWidth = (dist: typeof withBreak.distribution) =>
+      dist.reduce((s, d) => s + d.upperBound - d.lowerBound, 0) / dist.length;
+
+    expect(withBreak.metadata.structuralBreakDetected).toBe(true);
+    expect(withoutBreak.metadata.structuralBreakDetected).toBe(false);
+    // The break widens CIs 1.5x; the margin keeps Monte Carlo noise from passing it.
+    expect(avgWidth(withBreak.distribution)).toBeGreaterThan(avgWidth(withoutBreak.distribution) * 1.2);
   });
 });
 describe('transitionGoodnessOfFit', () => {
