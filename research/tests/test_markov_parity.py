@@ -287,6 +287,41 @@ def test_detect_structural_break_no_break():
     assert result["divergence"] < 1.0
 
 
+# Regime chains drawn row by row from a transition matrix (TS diagnostics.test.ts).
+_IID = [[0.43, 0.30, 0.27]] * 3
+_STICKY = [[0.7, 0.15, 0.15], [0.15, 0.7, 0.15], [0.15, 0.15, 0.7]]
+
+
+def _simulate_regimes(rng, n, first, second=None):
+    second = second or first
+    states = ["bull", "bear", "sideways"]
+    seq, current = [], 0
+    for t in range(n):
+        row = (first if t < n / 2 else second)[current]
+        u = rng.random()
+        current = 0 if u < row[0] else 1 if u < row[0] + row[1] else 2
+        seq.append(states[current])
+    return seq
+
+
+def _fire_rate(seed, sims, n, first, second=None):
+    rng = np.random.default_rng(seed)
+    return np.mean([
+        detect_structural_break(_simulate_regimes(rng, n, first, second))["detected"]
+        for _ in range(sims)
+    ])
+
+
+def test_detect_structural_break_fires_on_about_5pct_of_no_break_sequences():
+    # The half-vs-half divergence of decayed fits alone fired on ~95% of these.
+    assert _fire_rate(301, 400, 300, _IID) < 0.09
+    assert _fire_rate(302, 400, 300, _STICKY) < 0.09
+
+
+def test_detect_structural_break_detects_change_in_dynamics():
+    assert _fire_rate(303, 100, 300, _IID, _STICKY) > 0.9
+
+
 def test_get_btc_short_horizon_live_policy_matches_ts_horizons():
     assert get_btc_short_horizon_live_policy("ETH-USD", 1) is None
     assert get_btc_short_horizon_live_policy("BTC-USD", 30) is None
