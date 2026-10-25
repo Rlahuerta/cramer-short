@@ -3241,6 +3241,14 @@ describe('deriveThresholdMarketDeltas', () => {
     expect(dip.deltaNo).toBeCloseTo(0, 10);
   });
 
+  it('treats asset names as literals, not regex', () => {
+    expect(() => deriveThresholdMarketDeltas('Will C++ be above $50,000?', 60_000, ['c++'])).not.toThrow();
+    expect(() => deriveThresholdMarketDeltas('Will (X be above $50,000?', 60_000, ['(x'])).not.toThrow();
+    const literal = deriveThresholdMarketDeltas('Will c++ be above $50,000?', 60_000, ['c++'])!;
+    expect(literal.deltaYes).toBeCloseTo(0, 10);
+    expect(literal.deltaNo).toBeCloseTo(-1 / 6, 10);
+  });
+
   it('carries no direction without a current price or when the strike is for another asset', () => {
     expect(deriveThresholdMarketDeltas('Will Bitcoin be above $50,000?', undefined, BTC))
       .toEqual({ deltaYes: 0, deltaNo: 0 });
@@ -3261,8 +3269,9 @@ describe('btc_price_target signal direction', () => {
   it('"above $50k @0.99" and "below $50k @0.01" agree on a small downside, not ±8-10%', async () => {
     const above = await rawReturnFor('Will Bitcoin be above $50,000 on Dec 31?', 0.99);
     const below = await rawReturnFor('Will Bitcoin be below $50,000 on Dec 31?', 0.01);
-    expect(above).toBeLessThanOrEqual(0);
-    expect(below).toBeLessThanOrEqual(0);
+    // Strictly negative: zero deltas (strike not recognised as BTC) would also satisfy <= 0 and equality.
+    expect(above).toBeLessThan(0);
+    expect(below).toBeLessThan(0);
     expect(Math.abs(above - below)).toBeLessThan(0.01);
   });
 });
