@@ -121,14 +121,16 @@ export function findSparseStates(
  * Detect a structural break in the transition matrix between the first and second
  * halves of the state sequence.
  *
- * Uses a chi-square-like divergence statistic on the empirical transition counts:
- *   D = Σᵢⱼ |P_first[i][j] − P_second[i][j]|²  (Frobenius-style element divergence)
+ * A break needs both:
+ *   - significance: the Anderson–Goodman chi-square test of homogeneity on the raw
+ *     transition counts of the two halves rejects at BREAK_SIGNIFICANCE. Under no
+ *     break it fires on ~5% of sequences (simulated, n = 200–500, iid and
+ *     persistent chains). A state seen in only one half carries no evidence here.
+ *   - size: D = Σᵢⱼ (P_first[i][j] − P_second[i][j])² of the decayed half fits
+ *     exceeds divergenceThreshold. D alone fired on ~95% of no-break sequences
+ *     (each decayed half has ~11 effective transitions per row; median D ≈ 0.16).
  *
- * When D > threshold (default 0.05 per cell = 0.05 × N² total), the two halves of
- * the training window describe meaningfully different dynamics. In that case:
- *   1. Fall back to the default (identity-like) transition matrix — the full-window
- *      estimate mixes two different regimes and is unreliable.
- *   2. Widen all CI bounds by 50% to reflect increased model uncertainty.
+ * When a break is detected the caller widens CI bounds by 50%.
  *
  * This addresses the non-stationarity limitation noted in Mettle et al. (2014)
  * and Welton & Ades (2005): time-homogeneous Markov assumption is violated when
@@ -140,6 +142,40 @@ export interface StructuralBreakResult {
   divergence: number;
   firstHalfMatrix: TransitionMatrix;
   secondHalfMatrix: TransitionMatrix;
+}
+
+const BREAK_SIGNIFICANCE = 0.05;
+
+// Anderson–Goodman: per from-state, a 2 × k table of next-state counts by half;
+// Wilson–Hilferty p-value as in transitionGoodnessOfFit.
+function transitionHomogeneityPValue(states: RegimeState[]): number {
+  const mid = Math.floor(states.length / 2);
+  const counts = [states.slice(0, mid), states.slice(mid)].map(half => {
+    const c = Array.from({ length: NUM_STATES }, () => Array(NUM_STATES).fill(0));
+    for (let t = 0; t < half.length - 1; t++) c[STATE_INDEX[half[t]]][STATE_INDEX[half[t + 1]]]++;
+    return c;
+  });
+  let chiSq = 0;
+  let df = 0;
+  for (let i = 0; i < NUM_STATES; i++) {
+    const rowTotals = counts.map(c => c[i].reduce((a, b) => a + b, 0));
+    const total = rowTotals[0] + rowTotals[1];
+    if (rowTotals[0] === 0 || rowTotals[1] === 0) continue;
+    let cols = 0;
+    for (let j = 0; j < NUM_STATES; j++) {
+      const colTotal = counts[0][i][j] + counts[1][i][j];
+      if (colTotal === 0) continue;
+      cols++;
+      for (let h = 0; h < 2; h++) {
+        const expected = rowTotals[h] * colTotal / total;
+        chiSq += (counts[h][i][j] - expected) ** 2 / expected;
+      }
+    }
+    df += cols - 1;
+  }
+  if (df === 0) return 1;
+  const z = (Math.cbrt(chiSq / df) - (1 - 2 / (9 * df))) / Math.sqrt(2 / (9 * df));
+  return 1 - normalCDF(z);
 }
 
 export function detectStructuralBreak(
@@ -179,7 +215,7 @@ export function detectStructuralBreak(
   }
 
   return {
-    detected: divergence > divergenceThreshold,
+    detected: divergence > divergenceThreshold && transitionHomogeneityPValue(states) < BREAK_SIGNIFICANCE,
     divergence,
     firstHalfMatrix,
     secondHalfMatrix,

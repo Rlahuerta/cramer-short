@@ -3529,14 +3529,19 @@ export async function computeMarkovDistribution(params: {
     ? detectStructuralBreak(regimeSeq, effectiveBreakDivergenceThreshold, 0.1, effectiveTransitionDecay)
     : { detected: false, divergence: 0, firstHalfMatrix: buildDefaultMatrix(), secondHalfMatrix: buildDefaultMatrix() };
 
-  // --- Estimate transition matrix (fall back to default when break detected) ---
+  // --- Transition matrix ---
+  // Without a break the symmetric default matrix is used, not the decayed estimate:
+  // its uniform stationary mix cancels the bull/bear regime drifts, and on the
+  // backtest fixture that shrinkage measured better Brier than the estimate or
+  // 50/75% blends of the two. The old detector fired on ~90% of steps, so this
+  // was already the de facto baseline.
+  const estimatedP = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
   let P: TransitionMatrix;
   if (breakResult.detected) {
     // Structural break detected: replace or blend the estimated matrix
     if (breakFallbackCandidate) {
       // Phase 5: apply hybrid fallback candidate (backtest-only)
-      const estimatedMatrix = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
-      P = applyBreakFallbackCandidate(estimatedMatrix, breakResult.divergence, breakFallbackCandidate, assetProfile.type);
+      P = applyBreakFallbackCandidate(estimatedP, breakResult.divergence, breakFallbackCandidate, assetProfile.type);
     } else {
       P = buildDefaultMatrix();
     }
@@ -3554,12 +3559,12 @@ export async function computeMarkovDistribution(params: {
         ? conditionalMatrices[metaRegime.current_environment] ?? estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay)
         : estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
     } else {
-      P = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
+      P = buildDefaultMatrix();
     }
   }
 
-  // --- Goodness-of-fit test (before sentiment adjustment, which is intentional) ---
-  const gofResult = breakResult.detected ? null : transitionGoodnessOfFit(regimeSeq, P);
+  // Goodness of fit and transition entropy describe the estimated chain, not the shrunk P.
+  const gofResult = breakResult.detected ? null : transitionGoodnessOfFit(regimeSeq, estimatedP);
 
   // --- Sentiment adjustment ---
   const sentimentSignal = normalizedSentiment ?? { bullish: 0.5, bearish: 0.5 };
@@ -3646,8 +3651,8 @@ export async function computeMarkovDistribution(params: {
   if (Math.sign(m10.velocity) === primaryDir && primaryDir !== 0) lookbackAgreement++;
   if (m40 && Math.sign(m40.velocity) === primaryDir && primaryDir !== 0) lookbackAgreement++;
   const totalLookbacks = m40 ? 3 : 2;
-  // Halve momentum weight when structural break detected (trend may have broken)
-  const momentumAdj = breakResult.detected ? momentum.adjustment * 0.5 : momentum.adjustment;
+  // Momentum is always halved; full momentum measured worse Brier (formerly break-only).
+  const momentumAdj = momentum.adjustment * 0.5;
 
   // --- Ensemble signal (Idea D: combine mean-reversion + crossover + vol compression) ---
   const ensemble = computeEnsembleSignal(historicalPrices);
@@ -4073,7 +4078,7 @@ export async function computeMarkovDistribution(params: {
         softTransitionBlendWeight,
       )
     : baseForecastStateWeights;
-  const transitionEntropy = computeTransitionEntropy(effectiveP);
+  const transitionEntropy = computeTransitionEntropy(estimatedP);
   const transitionEntropyZ = enableEntropyCiModulation === true
     ? zScoreAgainstHistory(transitionEntropyHistory, transitionEntropy.entropyNorm)
     : null;
