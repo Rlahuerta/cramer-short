@@ -4,7 +4,7 @@ Auto-generated from codebase audit. Lists every TypeScript module in `src/`
 with a known or intended Python mirror in `research/`, its parity-test status,
 and known divergences.
 
-**Last updated**: 2026-10-23
+**Last updated**: 2026-10-25
 **Convention**: A TS file is "mirrored" when it carries a `Mirrors research/...`
 JSDoc tag AND its math is verified against the Python implementation.
 
@@ -51,7 +51,7 @@ JSDoc tag AND its math is verified against the Python implementation.
 | TS File | Python File | Divergence |
 |---------|-------------|------------|
 | `src/utils/finance/garch.ts` | `research/models/garch.py` | 🔸 TS uses fixed-prior moment-matching shortcut; Python uses full MLE (golden-section). TS header explicitly says "not a mirror — for full MLE see garch.py". |
-| `src/tools/finance/markov-distribution.ts` | `research/models/markov/` | 🔸 Core Markov calibration, confidence, action-signal, context-only canonical, BTC short-horizon confidence caps, BTC 14d bearish-break sell gate, and weighted anchor trust are now mirrored in Python. The remaining gap is the broader TS production/tooling surface (full tool wrapper, arbitrator integration, and richer backtest/metrics controls). |
+| `src/tools/finance/markov-distribution.ts` | `research/models/markov/` | 🔸 Core Markov calibration, confidence, action-signal, context-only canonical, BTC short-horizon confidence caps, BTC 14d bearish-break sell gate, and weighted anchor trust are now mirrored in Python. **Not mirrored in Python:** `horizonStudentTNu` (h-day Student-t nu = max(nu, 4+h)), the base-rate floor (`computeBaseRateFloor` / `applyBaseRateFloor`, a log-drift shift to `pUpFloor`) and the legacy decision surface; Python `interpolate_distribution` and `calibrate_probabilities` have no caller outside the parity tests, so their `nu` stays the daily profile value. The Python backtest harness also blends the HMM with `clip(hmm_weight_multiplier·0.5, 0, 1)` where TS uses `min(0.7, (0.5 if ≥120 returns else 0.25)·multiplier)`. The remaining gap is the broader TS production/tooling surface (full tool wrapper, arbitrator integration, and richer backtest/metrics controls). |
 
 ### Markov Upgrade Additions (2026-07)
 
@@ -72,6 +72,9 @@ F14 jump diffusion) already existed in both. Sobol sensitivity is Python-only by
 | HMM override scales momentum by `(1−w)` | `confidence-intervals.ts` `computeHorizonDriftVol` | `trajectory/driftvol.py` `compute_horizon_drift_vol` | `confidence-intervals.test.ts` / `test_trajectory_parity.py` |
 | Distribution grid includes `currentPrice`, so P(up) is read exactly rather than interpolated | `confidence-intervals.ts` `interpolateDistribution` | `trajectory/interpolation.py` `interpolate_distribution` | `confidence-intervals.test.ts` / `test_trajectory_parity.py` |
 | Seedable Monte Carlo | `confidence-intervals.ts` `computeTrajectory(randomState)` | `trajectory/simulation.py` `compute_trajectory(random_state)` | `confidence-intervals.test.ts` / `test_trajectory_parity.py` |
+| Seedable distribution confidence bands (the RNGs differ, as for the trajectory, so seeded values are not comparable across languages) | `confidence-intervals.ts` `interpolateDistribution(randomState)` | `trajectory/interpolation.py` `interpolate_distribution(random_state)` | `confidence-intervals.test.ts` / `test_trajectory_parity.py` |
+| Anchors apply only at their exact strike (every anchor price is put on the grid); monotonicity by weighted pool-adjacent-violators (anchor weight `1 + 100·anchorW`), points pooling moves are labelled `blend` | `confidence-intervals.ts` `interpolateDistribution`, `enforceNonIncreasing` | `trajectory/interpolation.py` `interpolate_distribution`, `enforce_non_increasing` | `confidence-intervals.test.ts` / `test_trajectory_parity.py` |
+| HMM `predict`: forecast from the full posterior (`currentStateProbabilities · Aⁿ`); `pathExpectedReturn` / `pathExpectedVolatility` are the daily mean / rms over days 1..h and feed the HMM override (horizon drift = `h ×` path mean, like the Markov arm) | `hmm.ts` `predict`; `markov-distribution.ts` | `hmm.py` `predict`; `backtest/_window_forecaster.py` | `hmm.test.ts` / `test_hmm_parity.py` |
 | Sobol sensitivity (Python-only) | — | `sensitivity.py` | — / `test_sensitivity.py` |
 | Walk-forward flags: `useMetaRegime`, `useConditionalTransitions`, `randomState` (all default-off) | `backtest/walk-forward.ts` + `markov-distribution.ts` | `backtest/walk_forward.py` + `backtest/_window_forecaster.py` | `walk-forward-markov-features.test.ts` / `test_walk_forward_features.py` |
 | No-look-ahead regression lock | `markov-distribution/no-lookahead.test.ts` | `test_no_lookahead.py` | test-only |
