@@ -594,17 +594,17 @@ describe('estimateRegimeStats drift cap', () => {
     expect(stats.bear.meanReturn).toBeGreaterThanOrEqual(-0.01 - 1e-10);
   });
 
-  it('stdReturn is not affected by drift cap', () => {
-    const returns = Array(30).fill(0.05);
-    // Add some variance
-    returns[0] = 0.04;
-    returns[1] = 0.06;
-    const states: RegimeState[] = Array(30).fill('bull');
-    const withCap = estimateRegimeStats(returns, states, 0.01);
-    const noCap = estimateRegimeStats(returns, states);
-    // std should be similar (winsorization may slightly affect it, but shouldn't destroy it)
-    expect(withCap.bull.stdReturn).toBeGreaterThan(0);
-    expect(Math.abs(withCap.bull.stdReturn - noCap.bull.stdReturn)).toBeLessThan(0.01);
+  it('stdReturn measures raw dispersion about the capped mean', () => {
+    // Bins are split on the same day's return, so the bin means carry most of
+    // the return variance. Capping the mean or winsorizing the bin must not
+    // drop that variance: NVDA regime sigma fell to 0.58x its raw daily sd and
+    // central-90 coverage to 0.77-0.84.
+    const returns = [...Array(49).fill(0.02), 0.12];
+    const states: RegimeState[] = Array(50).fill('bull');
+    const stats = estimateRegimeStats(returns, states, 0.012);
+    const rms = Math.sqrt(returns.reduce((s, r) => s + (r - 0.012) ** 2, 0) / returns.length);
+    expect(stats.bull.meanReturn).toBeCloseTo(0.012, 10);
+    expect(stats.bull.stdReturn).toBeCloseTo(rms, 10);
   });
 
   it('winsorization removes shock outliers from regime stats', () => {

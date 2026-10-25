@@ -99,12 +99,16 @@ export function estimateRegimeStats(
       // Winsorize at 3σ to remove shock outliers before computing stats
       const cleaned = winsorize(vals);
       const mean = cleaned.reduce((s, v) => s + v, 0) / cleaned.length;
-      const variance = cleaned.reduce((s, v) => s + (v - mean) ** 2, 0) / cleaned.length;
       let cappedMean = mean;
       // Cap daily drift to prevent shock-period contamination
       if (maxDailyDrift !== undefined && maxDailyDrift > 0) {
         cappedMean = Math.max(-maxDailyDrift, Math.min(maxDailyDrift, mean));
       }
+      // Sigma is the raw dispersion about the mean the forecast uses. Winsorizing
+      // or capping only protects the drift: regimes are split on the day's own
+      // return, so the trimmed tails and the capped-off mean are return variance
+      // the Student-t interval needs.
+      const variance = vals.reduce((s, v) => s + (v - cappedMean) ** 2, 0) / vals.length;
       result[state] = { meanReturn: cappedMean, stdReturn: Math.sqrt(variance) };
     }
   }

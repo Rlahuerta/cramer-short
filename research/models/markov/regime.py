@@ -237,8 +237,10 @@ def estimate_regime_stats(
             arr = np.asarray(vals, dtype=float)
             cleaned = _winsorize(arr)
             mean = float(np.mean(cleaned))
-            variance = float(np.mean((cleaned - mean) ** 2))
             if max_daily_drift is not None and max_daily_drift > 0:
                 mean = max(-max_daily_drift, min(max_daily_drift, mean))
+            # Raw dispersion about the mean the forecast uses: winsorizing and the
+            # cap only protect the drift (mirrors estimateRegimeStats).
+            variance = float(np.mean((arr - mean) ** 2))
             result[state] = {"meanReturn": mean, "stdReturn": math.sqrt(variance)}
     return result
