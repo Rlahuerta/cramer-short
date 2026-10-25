@@ -13,6 +13,7 @@ const describeParity = describe.skipIf(!pythonParityAvailable());
 import {
   estimateRegimeStats,
   logNormalSurvival,
+  studentTSurvival,
 } from './markov-distribution/confidence-intervals.js';
 import type { RegimeState } from './markov-distribution/core.js';
 
@@ -40,6 +41,19 @@ print(log_normal_survival(100, 120, -0.05, 0.30))
 `);
     expect(ts).toBeCloseTo(parseFloat(py), SURVIVAL_PARITY_DIGITS);
     expect(ts).toBeLessThan(0.3);
+  }, PYTHON_PARITY_TIMEOUT_MS);
+});
+
+describeParity('TS/Python parity — student_t_survival', () => {
+  test('sigma_n is the t standard deviation (variance-matched scale)', async () => {
+    // Python takes (target, current); TS takes (current, target).
+    const ts = studentTSurvival(100, 153.46, 0, 0.15275, 5);
+    const py = await runPython(`
+from research.models.trajectory import student_t_survival
+print(student_t_survival(153.46, 100, 0.0, 0.15275, 5))
+`);
+    expect(ts).toBeCloseTo(parseFloat(py), SURVIVAL_PARITY_DIGITS);
+    expect(ts).toBeCloseTo(0.0076, 4);
   }, PYTHON_PARITY_TIMEOUT_MS);
 });
 
