@@ -2867,6 +2867,33 @@ describe('PR3 Post-Experiment: matureBullCalibration', () => {
 
     expect(experimentAtCurrent).toBeLessThan(defaultAtCurrent);
   });
+
+  it('stays off when raw P(up) is below the calibration center, where extra shrinkage would raise it', async () => {
+    // Late drift 0.001: raw P(up) ~0.74, below the 0.80 center, so the run is not overconfident.
+    const prices: number[] = [];
+    let p = 60000;
+    for (let i = 0; i < 140; i++) {
+      const drift = i < 70 ? 0.012 : 0.001;
+      p *= (1 + drift + Math.sin(i / 2) * 0.003);
+      prices.push(p);
+    }
+    const currentPrice = prices[prices.length - 1];
+    const run = (matureBullCalibration: boolean) => computeMarkovDistribution({
+      ticker: 'BTC',
+      horizon: 14,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      matureBullCalibration,
+      btcReturnThresholdMultiplier: 0.5,
+    });
+    const defaultResult = await run(false);
+    const experimentResult = await run(true);
+
+    expect(experimentResult.metadata.matureBullCalibrationActive).toBe(false);
+    expect(interpolateSurvival(experimentResult.distribution, currentPrice))
+      .toBe(interpolateSurvival(defaultResult.distribution, currentPrice));
+  });
 });
 
 // ---------------------------------------------------------------------------
