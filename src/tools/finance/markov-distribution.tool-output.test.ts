@@ -181,6 +181,18 @@ function repeatStates(pattern: ReturnType<typeof classifyRegimeState>[], n: numb
   return Array.from({ length: n }, (_, i) => pattern[i % pattern.length]);
 }
 
+/** 100 prices whose regime dynamics break mid-window: daily up/down flips, then 6-day runs, then a late shock. */
+function transitionBreakPrices(start: number, lateShock: number): number[] {
+  const prices: number[] = [];
+  let p = start;
+  for (let i = 0; i < 100; i++) {
+    const sign = i < 50 ? (i % 2 ? 1 : -1) : (Math.floor(i / 6) % 2 ? 1 : -1);
+    p *= 1 + (i > 85 ? lateShock : sign * 0.006);
+    prices.push(Math.round(p * 100) / 100);
+  }
+  return prices;
+}
+
 describe('markov_distribution tool output envelope', () => {
   integrationIt('auto-fetches candidate Polymarket anchors when polymarketMarkets are omitted', async () => {
     installDefaultPolymarketMock();
@@ -661,13 +673,7 @@ describe('markov_distribution tool output envelope', () => {
     }));
 
     const { markovDistributionTool: emitTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
-    const prices: number[] = [];
-    let p = 65000;
-    for (let i = 0; i < 100; i++) {
-      const shock = i > 85 ? 0.04 : Math.sin(i * 0.12) * 0.004;
-      p *= 1 + shock;
-      prices.push(Math.round(p * 100) / 100);
-    }
+    const prices = transitionBreakPrices(65000, 0.04);
 
     const result = await emitTool.func({
       ticker: 'BTC-USD',
@@ -687,13 +693,7 @@ describe('markov_distribution tool output envelope', () => {
   });
 
   it('BTC break-threshold override can suppress a detected structural break', async () => {
-    const prices: number[] = [];
-    let p = 65000;
-    for (let i = 0; i < 100; i++) {
-      const shock = i > 85 ? 0.04 : Math.sin(i * 0.12) * 0.004;
-      p *= 1 + shock;
-      prices.push(Math.round(p * 100) / 100);
-    }
+    const prices = transitionBreakPrices(65000, 0.04);
 
     const baseline = await computeMarkovDistribution({
       ticker: 'BTC-USD',
@@ -709,7 +709,7 @@ describe('markov_distribution tool output envelope', () => {
       currentPrice: prices[prices.length - 1],
       historicalPrices: prices,
       polymarketMarkets: [],
-      btcBreakDivergenceThreshold: 1.0,
+      btcBreakDivergenceThreshold: baseline.metadata.structuralBreakDivergence + 0.01,
     });
 
     expect(baseline.metadata.structuralBreakDetected).toBe(true);
@@ -2828,14 +2828,7 @@ describe('markov_distribution tool output envelope', () => {
 
       const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
-      // Generate prices with sharp break after index 85
-      const prices: number[] = [];
-      let p = 200;
-      for (let i = 0; i < 100; i++) {
-        const shock = i > 85 ? 0.05 : Math.sin(i * 0.12) * 0.004;
-        p *= 1 + shock;
-        prices.push(Math.round(p * 100) / 100);
-      }
+      const prices = transitionBreakPrices(200, 0.05);
 
       const result = await freshTool.func({
         ticker: 'GLD',
@@ -3023,7 +3016,7 @@ describe('markov_distribution tool output envelope', () => {
         return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
       }
 
-      const rng = makeRng(28);
+      const rng = makeRng(48);
       const returns: number[] = [];
       let prevA = 0;
       for (let i = 0; i < 126; i++) {

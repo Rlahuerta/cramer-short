@@ -126,16 +126,47 @@ describe('Tier 1b — detectStructuralBreak', () => {
     expect(result.secondHalfMatrix).toHaveLength(NUM_STATES);
   });
 
-  it('detects a break when regimes are completely different in each half', () => {
-    // First 30: all bull → bull; Last 30: all bear → bear
-    const states: ReturnType<typeof classifyRegimeState>[] = [
-      ...Array(30).fill('bull'),
-      ...Array(30).fill('bear'),
-    ];
-    const result = detectStructuralBreak(states);
-    // The two halves describe very different dynamics
-    expect(result.detected).toBe(true);
-    expect(result.divergence).toBeGreaterThan(0.05);
+  // Regime chains drawn row by row from a transition matrix with a seeded RNG.
+  const IID: number[][] = [[0.43, 0.30, 0.27], [0.43, 0.30, 0.27], [0.43, 0.30, 0.27]];
+  const STICKY: number[][] = [[0.7, 0.15, 0.15], [0.15, 0.7, 0.15], [0.15, 0.15, 0.7]];
+  function simulateRegimes(rng: () => number, n: number, first: number[][], second = first): RegimeState[] {
+    const seq: RegimeState[] = [];
+    let current = 0;
+    for (let t = 0; t < n; t++) {
+      const row = (t < n / 2 ? first : second)[current];
+      const u = rng();
+      current = u < row[0] ? 0 : u < row[0] + row[1] ? 1 : 2;
+      seq.push(REGIME_STATES[current]);
+    }
+    return seq;
+  }
+  const fireRate = (seed: number, sims: number, n: number, first: number[][], second?: number[][]) => {
+    const rng = seedRng(seed);
+    let fired = 0;
+    for (let k = 0; k < sims; k++) {
+      if (detectStructuralBreak(simulateRegimes(rng, n, first, second)).detected) fired++;
+    }
+    return fired / sims;
+  };
+
+  it('fires on about 5% of sequences that have no break', () => {
+    // The half-vs-half divergence of decayed fits fired on ~95% of these.
+    expect(fireRate(301, 400, 300, IID)).toBeLessThan(0.09);
+    expect(fireRate(302, 400, 300, STICKY)).toBeLessThan(0.09);
+  });
+
+  it('detects a change in transition dynamics between the halves', () => {
+    expect(fireRate(303, 100, 300, IID, STICKY)).toBeGreaterThan(0.9);
+  });
+
+  it('respects an explicit divergence threshold override', () => {
+    const states = simulateRegimes(seedRng(304), 300, IID, STICKY);
+    const defaultResult = detectStructuralBreak(states);
+    const relaxedResult = detectStructuralBreak(states, defaultResult.divergence + 0.01);
+
+    expect(defaultResult.detected).toBe(true);
+    expect(relaxedResult.detected).toBe(false);
+    expect(relaxedResult.divergence).toBe(defaultResult.divergence);
   });
 
   it('detected=false when sequence is too short', () => {
@@ -156,17 +187,19 @@ describe('Tier 1b — detectStructuralBreak', () => {
     }
   });
 
-  it('respects an explicit divergence threshold override', () => {
-    const states: ReturnType<typeof classifyRegimeState>[] = [
-      ...Array(30).fill('bull'),
-      ...Array(30).fill('bear'),
-    ];
-    const defaultResult = detectStructuralBreak(states);
-    const relaxedResult = detectStructuralBreak(states, defaultResult.divergence + 0.01);
-
-    expect(defaultResult.detected).toBe(true);
-    expect(relaxedResult.detected).toBe(false);
-    expect(relaxedResult.divergence).toBe(defaultResult.divergence);
+  it('uses the symmetric default transition matrix when no break is detected', async () => {
+    // Shrinking P to the default (regime drifts cancel) measured better Brier than the
+    // decayed estimate; it used to happen only because the detector fired almost always.
+    const rng = seedRng(305);
+    const prices = [100];
+    for (let t = 0; t < 300; t++) prices.push(prices[t] * (1 + 0.01 * (rng() + rng() + rng() - 1.5)));
+    const result = await computeMarkovDistribution({
+      ticker: 'NOBREAK', horizon: 5, currentPrice: prices[prices.length - 1],
+      historicalPrices: prices, polymarketMarkets: [],
+    });
+    expect(result.metadata.structuralBreakDetected).toBe(false);
+    // buildDefaultMatrix() = 0.4·I + 0.2·J, whose second eigenvalue is 0.4.
+    expect(result.metadata.secondEigenvalue).toBeCloseTo(0.4, 6);
   });
 
   it('metadata.structuralBreakDetected reflects detection', async () => {

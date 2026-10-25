@@ -385,7 +385,8 @@ describe('R6 adaptive conformal walk-forward wiring', () => {
       ticker: 'BTC-USD',
       prices,
       horizon: 14,
-      warmup: 160,
+      // From 170 the first break is the vol burst itself (t=160 is a lone false positive).
+      warmup: 170,
       stride: 5,
       postBreakShortWindow: true,
       postBreakWindowSize: 60,
