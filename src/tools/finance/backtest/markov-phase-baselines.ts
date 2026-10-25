@@ -102,10 +102,12 @@ export const MARKOV_PHASE0_BASELINES = {
  * measured once directionalAccuracy() stopped scoring HOLD as correct (2026-10:
  * traded steps only). The phase-0 directionalAccuracy values above were taken with
  * the old |r| < 3% HOLD band and are not comparable with directionalAccuracy() any more.
+ * h14 is .50: reading P(up) exactly at currentPrice turns one correct 14d SELL into
+ * HOLD (38/74 = .514 -> 37/73 = .507), while h1-h3 rise to .524/.554/.565.
  */
 export const BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS = {
   h1: 0.49,
   h2: 0.53,
   h3: 0.55,
-  h14: 0.51,
+  h14: 0.50,
 } as const;
