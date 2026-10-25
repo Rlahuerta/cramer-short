@@ -52,7 +52,6 @@ JSDoc tag AND its math is verified against the Python implementation.
 |---------|-------------|------------|
 | `src/utils/finance/garch.ts` | `research/models/garch.py` | 🔸 TS uses fixed-prior moment-matching shortcut; Python uses full MLE (golden-section). TS header explicitly says "not a mirror — for full MLE see garch.py". |
 | `src/tools/finance/markov-distribution.ts` | `research/models/markov/` | 🔸 Core Markov calibration, confidence, action-signal, context-only canonical, BTC short-horizon confidence caps, BTC 14d bearish-break sell gate, and weighted anchor trust are now mirrored in Python. The remaining gap is the broader TS production/tooling surface (full tool wrapper, arbitrator integration, and richer backtest/metrics controls). |
-| `src/tools/finance/markov-distribution/diagnostics.ts` (`detectStructuralBreak`) + `markov-distribution.ts` | `research/models/markov/transition.py` (`detect_structural_break`) + `research/backtest/_window_forecaster.py` | 🔸 TS flags a break only when the divergence exceeds its threshold and an Anderson–Goodman homogeneity test on the halves' raw transition counts rejects at 0.05; Python still uses the divergence alone, which fires on ~95% of no-break sequences. Without a break, TS uses the symmetric default transition matrix and halves momentum, and computes goodness of fit and transition entropy on the estimated matrix. |
 
 ### Markov Upgrade Additions (2026-07)
 

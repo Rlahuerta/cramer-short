@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 import research.backtest._window_forecaster as wf
+from research.models.markov import _default_matrix
 
 
 def _prices_from_returns(returns: list[float]) -> list[float]:
@@ -556,3 +557,37 @@ def test_window_forecast_passes_hmm_daily_emission_payload_as_per_day_override(
     override = captured["hmm_override"]
     assert override["drift"] == pytest.approx(0.14)
     assert override["vol"] == pytest.approx(0.07)
+
+
+def test_window_forecast_uses_default_matrix_without_break_and_entropy_of_estimate(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Mirrors TS 18aeeb6: without a break P is the symmetric default matrix (shrinkage
+    # measured better Brier), while transition entropy describes the estimated chain.
+    regimes = ["bull", "bull", "bear", "sideways", "bull", "bear"]
+    _patch_base_markov(monkeypatch, regimes)
+    captured: dict[str, object] = {}
+
+    def fake_compute_trajectory(current_price, _horizon, P, *_args, **_kwargs):
+        captured["P"] = P
+        return [_point(current_price * 1.01)]
+
+    monkeypatch.setattr(wf, "compute_trajectory", fake_compute_trajectory)
+
+    result = wf.compute_window_forecast(
+        _prices_from_returns([0.02, 0.01, -0.03, 0.01, 0.02, -0.01]),
+        horizon=1,
+        return_threshold_multiplier=0.5,
+        decay_rate=0.95,
+        break_divergence_threshold=0.2,
+        use_hmm=False,
+        asset_profile="crypto",
+        enable_garch_vol=False,
+        garch_horizon=None,
+        garch_ceiling=None,
+        use_empirical_up_rates=False,
+    )
+
+    np.testing.assert_allclose(captured["P"], _default_matrix())
+    # The patched estimate is the identity, whose rows carry zero entropy.
+    assert result["entropy"].entropy_norm == pytest.approx(0.0)

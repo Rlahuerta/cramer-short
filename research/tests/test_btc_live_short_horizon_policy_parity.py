@@ -118,15 +118,13 @@ def test_btc_live_short_horizon_policy_wires_ts_knobs_and_improves_shortest_hori
         assert not tuned.errors
         assert tuned_first_start == 252
 
+        # No 1d/2d/3d rerun-rate pins (as in TS): those rates were the old divergence-only
+        # detector's false-positive rate; a significance-tested break fires on none of these steps.
         if horizon == 1:
             assert tuned_dir > baseline_dir
             assert tuned_dir > 0.50
-            assert tuned_rerun_rate > 0.50
         elif horizon == 2:
             assert tuned_dir > baseline_dir
-            assert 0.20 < tuned_rerun_rate < 0.50
-        elif horizon == 3:
-            assert 0.20 < tuned_rerun_rate < 0.50
         elif horizon == 14:
             assert tuned_brier < baseline_brier
             assert tuned_rerun_rate == 0.0
@@ -135,7 +133,7 @@ def test_btc_live_short_horizon_policy_wires_ts_knobs_and_improves_shortest_hori
     print("\n".join(lines))
 
 
-def test_btc_live_short_horizon_policy_only_reruns_for_1d_and_3d():
+def test_btc_live_short_horizon_policy_never_reruns_at_14d():
     prices = _load_btc_fixture_prices()
     rerun_rates: dict[int, float] = {}
 
@@ -154,9 +152,7 @@ def test_btc_live_short_horizon_policy_only_reruns_for_1d_and_3d():
             else 0.0
         )
 
-    assert rerun_rates[1] > 0.50
-    assert 0.20 < rerun_rates[2] < 0.50
-    assert 0.20 < rerun_rates[3] < 0.50
+    # Short-horizon rerun rates are not pinned; see the test above.
     assert rerun_rates[14] == 0.0
 
 
