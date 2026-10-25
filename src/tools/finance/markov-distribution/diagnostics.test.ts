@@ -237,13 +237,13 @@ describe('Tier 1b — detectStructuralBreak', () => {
       historicalPrices: breakPrices, polymarketMarkets: [],
     });
 
-    const avgWidth = (dist: typeof r1.distribution) =>
-      dist.reduce((s, d) => s + d.upperBound - d.lowerBound, 0) / dist.length;
-
-    // When structuralBreakDetected: true, the CI must be wider
-    if (r2.metadata.structuralBreakDetected) {
-      expect(avgWidth(r2.distribution)).toBeGreaterThan(avgWidth(r1.distribution) * 0.9);
-    }
+    // Band widths of two different series are not comparable: the falling series sits on
+    // the base-rate floor, and its raw bands are already narrower (~0.010 vs ~0.013).
+    // Check that a detected break widens this run's bands and a quiet one does not.
+    expect(r2.metadata.structuralBreakDetected).toBe(true);
+    expect(r2.metadata.ciWidened).toBe(true);
+    expect(r1.metadata.structuralBreakDetected).toBe(false);
+    expect(r1.metadata.ciWidened).toBe(false);
   });
 });
 describe('transitionGoodnessOfFit', () => {
