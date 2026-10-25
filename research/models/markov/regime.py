@@ -239,8 +239,11 @@ def estimate_regime_stats(
             mean = float(np.mean(cleaned))
             if max_daily_drift is not None and max_daily_drift > 0:
                 mean = max(-max_daily_drift, min(max_daily_drift, mean))
-            # Raw dispersion about the mean the forecast uses: winsorizing and the
-            # cap only protect the drift (mirrors estimateRegimeStats).
-            variance = float(np.mean((arr - mean) ** 2))
-            result[state] = {"meanReturn": mean, "stdReturn": math.sqrt(variance)}
+            # Winsorizing and the cap only protect the drift: the bin keeps its raw
+            # second moment (mirrors estimateRegimeStats).
+            second_moment = float(np.mean(arr**2))
+            result[state] = {
+                "meanReturn": mean,
+                "stdReturn": math.sqrt(max(0.0, second_moment - mean * mean)),
+            }
     return result
