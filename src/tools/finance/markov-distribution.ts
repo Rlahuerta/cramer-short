@@ -3172,6 +3172,20 @@ export function applyBaseRateFloor(
 // ---------------------------------------------------------------------------
 
 /**
+ * Zero, negative or non-finite prices turn the returns, regime stats and grid into NaN,
+ * and the tool would still emit a confident recommendation. Fail loudly instead.
+ */
+function assertPositiveFinitePrices(currentPrice: number, historicalPrices: readonly number[]): void {
+  if (!(Number.isFinite(currentPrice) && currentPrice > 0)) {
+    throw new Error(`Invalid currentPrice ${currentPrice}: expected a positive finite number.`);
+  }
+  const bad = historicalPrices.findIndex(p => !(Number.isFinite(p) && p > 0));
+  if (bad >= 0) {
+    throw new Error(`Invalid historicalPrices[${bad}] = ${historicalPrices[bad]}: expected positive finite closes.`);
+  }
+}
+
+/**
  * Core Markov distribution computation. Separated from the LangChain tool wrapper
  * so it can be unit-tested directly without mocking the tool framework.
  */
@@ -3345,6 +3359,7 @@ export async function computeMarkovDistribution(params: {
   /** Lasso L1 strength.  Default 0.005. */
   crossAssetLassoLambda?: number;
 }): Promise<MarkovDistributionResult> {
+  assertPositiveFinitePrices(params.currentPrice, params.historicalPrices);
   const assetScope = resolveForecastLabRuntimeAssetScopeForTicker(params.ticker);
 
   return withForecastLabRuntimeAssetScope(assetScope, async () => {
@@ -4817,8 +4832,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
   schema: z.object({
     ticker: z.string().max(128).describe('Stock/ETF/commodity ticker symbol, e.g. NVDA, SPY, BTC-USD, GLD. For commodities, prefer the liquid ETF (GLD for gold, SLV for silver, USO for oil) over futures tickers.'),
     horizon: z.number().int().min(1).max(90).describe('Forecast horizon in trading days'),
-    currentPrice: z.number().optional().describe('Current price (fetched automatically if omitted)'),
-    historicalPrices: z.array(z.number()).optional().describe(
+    currentPrice: z.number().positive().optional().describe('Current price (fetched automatically if omitted)'),
+    historicalPrices: z.array(z.number().positive()).optional().describe(
       'Daily close prices oldest-first. Auto-fetched if omitted or empty. Minimum 10 required, 30+ recommended.',
     ),
     polymarketMarkets: z.array(z.object({

@@ -2292,6 +2292,45 @@ describe('markov_distribution tool schema', () => {
   });
 });
 
+describe('price input validation', () => {
+  const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
+  const run = (overrides: { currentPrice?: number; historicalPrices?: number[] }) =>
+    computeMarkovDistribution({
+      ticker: 'TEST',
+      horizon: 7,
+      currentPrice: 118,
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      ...overrides,
+    });
+
+  for (const currentPrice of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    it(`computeMarkovDistribution rejects currentPrice ${currentPrice}`, async () => {
+      await expect(run({ currentPrice })).rejects.toThrow(/currentPrice/);
+    });
+  }
+
+  for (const [label, bad] of [['zero', 0], ['negative', -3], ['NaN', Number.NaN]] as const) {
+    it(`computeMarkovDistribution rejects a ${label} close in the history`, async () => {
+      const historicalPrices = prices.map((p, i) => (i === 40 ? bad : p));
+      await expect(run({ historicalPrices })).rejects.toThrow(/historicalPrices\[40\]/);
+    });
+  }
+
+  it('tool schema rejects non-positive currentPrice and history closes', () => {
+    const schema = markovDistributionTool.schema;
+    expect(schema.safeParse({ ticker: 'SPY', horizon: 7, currentPrice: 0 }).success).toBe(false);
+    expect(schema.safeParse({ ticker: 'SPY', horizon: 7, currentPrice: -5 }).success).toBe(false);
+    expect(schema.safeParse({ ticker: 'SPY', horizon: 7, historicalPrices: prices.map((p, i) => (i === 3 ? 0 : p)) }).success).toBe(false);
+    expect(schema.safeParse({ ticker: 'SPY', horizon: 7, historicalPrices: prices.map((p, i) => (i === 3 ? -1 : p)) }).success).toBe(false);
+  });
+
+  it('tool schema still accepts positive prices', () => {
+    const parsed = markovDistributionTool.schema.safeParse({ ticker: 'SPY', horizon: 7, currentPrice: 118, historicalPrices: prices });
+    expect(parsed.success).toBe(true);
+  });
+});
+
 describe('markov_distribution anchor query strategy', () => {
   it('normalizes BTC-USD search phrase to Bitcoin price', () => {
     expect(inferPolymarketSearchPhrase('BTC-USD')).toBe('Bitcoin price');
