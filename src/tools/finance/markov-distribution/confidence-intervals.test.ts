@@ -107,6 +107,19 @@ describe('interpolateDistribution', () => {
     expect(interpolateSurvival(dist, 100)).toBeCloseTo(studentTSurvival(100, 100, mu_n, sigma_n, 5), 12);
   });
 
+  it('spans the forecast sigma when the 20-day vol is calmer than the regime window', () => {
+    // A grid sized from a calm 20-day vol cut the upper central bound at the grid top
+    // on 12% of BTC 2018-2023 h=14 steps, which then covered only 0.68.
+    const wide = {
+      bull:     { meanReturn:  0.01, stdReturn: 0.04 },
+      bear:     { meanReturn: -0.01, stdReturn: 0.04 },
+      sideways: { meanReturn:  0,    stdReturn: 0.04 },
+    };
+    const dist = interpolateDistribution(100, 14, P, wide, 'sideways', [], 0.5, 20, 0, 1, 0, undefined, 0.005);
+    expect(dist[dist.length - 1].probability).toBeLessThan(0.01);
+    expect(dist[0].probability).toBeGreaterThan(0.99);
+  });
+
   it('Fix 7: high second-eigenvalue + long horizon → lower mixing weight', () => {
     const shortWeight = computeMixingWeight(0.9, 5);
     const longWeight  = computeMixingWeight(0.9, 60);
