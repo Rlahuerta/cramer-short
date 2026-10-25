@@ -111,23 +111,20 @@ describe('BTC live short-horizon policy walk-forward', () => {
 
       // Refreshed after the zero-anchor cryptoModelOnly break fix shifted the
       // deterministic BTC fixture toward slightly more conservative HOLD usage.
+      // No 1d/2d/3d rerun-rate pins: the 45-75% rates were the old divergence-only
+      // detector's false-positive rate; a significance-tested break fires on none of these steps.
       if (horizon === 1) {
         expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h1);
-        expect(tunedMetrics.rerunRate).toBeGreaterThan(0.50);
       }
 
       if (horizon === 2) {
         expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h2);
         expect(tunedMetrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h2.abstainCount);
-        expect(tunedMetrics.rerunRate).toBeGreaterThan(0.45);
-        expect(tunedMetrics.rerunRate).toBeLessThan(0.60);
       }
 
       if (horizon === 3) {
         expect(tunedMetrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h3);
         expect(tunedMetrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h3.abstainCount);
-        expect(tunedMetrics.rerunRate).toBeGreaterThan(0.45);
-        expect(tunedMetrics.rerunRate).toBeLessThan(0.60);
       }
 
       if (horizon === 14) {
