@@ -138,7 +138,8 @@ export function logNormalSurvival(
   driftN: number,    // n-day log-space drift
   volN: number,      // n-day log-space vol
 ): number {
-  if (volN <= 0) return targetPrice < currentPrice ? 1 : 0;
+  // With no vol the price lands at currentPrice * exp(driftN), so compare that with the target.
+  if (volN <= 0) return Math.log(targetPrice / currentPrice) < driftN ? 1 : 0;
   const z = (Math.log(targetPrice / currentPrice) - driftN) / volN;
   return 1 - normalCDF(z);
 }
@@ -272,11 +273,15 @@ export function studentTSurvival(
   volN: number,
   nu = 5,
 ): number {
-  if (volN <= 0) return targetPrice < currentPrice ? 1 : 0;
   if (targetPrice <= 0) return 1; // price can't go below 0; survival = 1
+  const move = Math.log(targetPrice / currentPrice) - driftN;
+  // With no vol the price lands at currentPrice * exp(driftN): above the target iff move < 0.
+  if (volN <= 0) return Number.isNaN(move) ? NaN : move < 0 ? 1 : 0;
   // Scale vol to match t-distribution variance: Var(t_ν) = ν/(ν-2) for ν>2
   const scaledVol = nu > 2 ? volN * Math.sqrt((nu - 2) / nu) : volN;
-  const z = (Math.log(targetPrice / currentPrice) - driftN) / scaledVol;
+  const z = move / scaledVol;
+  // NaN drift/vol/price must not read as certainty; only an infinite z saturates.
+  if (Number.isNaN(z)) return NaN;
   // Guard extreme z-scores: regularizedBeta can diverge beyond |z|~50
   if (!Number.isFinite(z)) return z > 0 ? 0 : 1;
   const clamped = Math.max(-50, Math.min(50, z));

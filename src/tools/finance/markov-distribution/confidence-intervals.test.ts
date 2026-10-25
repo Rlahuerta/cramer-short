@@ -60,6 +60,12 @@ describe('logNormalSurvival', () => {
     expect(logNormalSurvival(100, 110, 0, 0)).toBe(0);
   });
 
+  it('uses the drift when vol ≤ 0', () => {
+    expect(logNormalSurvival(100, 100, 0.1, 0)).toBe(1);
+    expect(logNormalSurvival(100, 100, -0.1, 0)).toBe(0);
+    expect(logNormalSurvival(100, 120, 0.1, 0)).toBe(0);
+  });
+
   it('returns 1 for vol ≤ 0 when target < current', () => {
     expect(logNormalSurvival(100, 90, 0, 0)).toBe(1);
   });
@@ -419,6 +425,31 @@ describe('studentTSurvival', () => {
 
   it('returns 0 when target > current and vol=0', () => {
     expect(studentTSurvival(100, 110, 0, 0)).toBe(0);
+  });
+
+  it('uses the drift when vol=0: the price lands at current * exp(drift)', () => {
+    expect(studentTSurvival(100, 100, 0.1, 0)).toBe(1); // lands at ~110.5, above 100
+    expect(studentTSurvival(100, 100, -0.1, 0)).toBe(0); // lands at ~90.5, below 100
+    expect(studentTSurvival(100, 105, 0.1, 0)).toBe(1);
+    expect(studentTSurvival(100, 120, 0.1, 0)).toBe(0);
+  });
+
+  it('returns 1 for a non-positive target whatever the vol', () => {
+    expect(studentTSurvival(100, 0, 0, 0)).toBe(1);
+    expect(studentTSurvival(100, -5, 0, 0)).toBe(1);
+    expect(studentTSurvival(100, -5, 0, 0.1)).toBe(1);
+  });
+
+  it('does not turn NaN inputs into certainty', () => {
+    expect(studentTSurvival(100, 90, 0, Number.NaN)).toBeNaN();
+    expect(studentTSurvival(100, 90, Number.NaN, 0.05)).toBeNaN();
+    expect(studentTSurvival(100, 90, Number.NaN, 0)).toBeNaN();
+    expect(studentTSurvival(Number.NaN, 90, 0, 0.05)).toBeNaN();
+  });
+
+  it('still saturates an infinite z-score to 0 or 1', () => {
+    expect(studentTSurvival(100, 110, 0, 1e-320)).toBe(0);
+    expect(studentTSurvival(100, 90, 0, 1e-320)).toBe(1);
   });
 });
 describe('computeTrajectory', () => {

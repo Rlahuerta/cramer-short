@@ -51,6 +51,18 @@ def test_log_normal_survival_monotonic():
     assert probs == sorted(probs, reverse=True)  # decreasing in target
 
 
+def test_student_t_survival_non_positive_target_is_certain():
+    # Mirrors TS: a price cannot go below 0, so P(price > target <= 0) = 1.
+    assert student_t_survival(0.0, 100.0, 0.0, 0.1) == 1.0
+    assert student_t_survival(-5.0, 100.0, 0.0, 0.1) == 1.0
+    assert student_t_survival(-5.0, 100.0, 0.0, 0.0) == 1.0
+
+
+def test_student_t_survival_zero_vol_uses_the_drift():
+    assert student_t_survival(100.0, 100.0, 0.1, 0.0) == 1.0
+    assert student_t_survival(100.0, 100.0, -0.1, 0.0) == 0.0
+
+
 def test_student_t_survival_current():
     # P(price > current) when drift=0, vol=0 → undefined; vol > 0 needed
     p = student_t_survival(100, 100, 0.0, 0.01, nu=5)

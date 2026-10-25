@@ -31,6 +31,8 @@ def student_t_survival(
     sigma_n: float,
     nu: int = 5,
 ) -> float:
+    if target_price <= 0:
+        return 1.0  # price can't go below 0
     if sigma_n <= 0:
         return 1.0 if mu_n > math.log(target_price / current_price) else 0.0
     # sigma_n is the t's standard deviation: Var(t_nu) = nu/(nu-2) for nu > 2.
