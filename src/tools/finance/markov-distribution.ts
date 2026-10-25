@@ -4445,13 +4445,17 @@ export async function computeMarkovDistribution(params: {
       randomState,
     );
 
-    // Align trajectory P(Up) with the calibrated CDF at the final day.
+    // Align trajectory P(Up) with the calibrated CDF at the horizon day.
     // The trajectory computes P(Up) independently (uncalibrated), which can
-    // diverge from the calibrated distribution. Override the final day and
-    // interpolate intermediate days to maintain monotone consistency.
-    if (trajectoryResult.length > 0) {
+    // diverge from the calibrated distribution. Override the horizon day and
+    // interpolate the days before it to maintain monotone consistency. calPUp is
+    // the horizon's value, so it is only aligned when that day is in the
+    // trajectory (trajectoryDays is independent of horizon and capped at 30);
+    // days past the horizon stay on the raw trajectory.
+    const horizonIdx = horizon - 1;
+    if (horizonIdx < trajectoryResult.length) {
       const calibratedPUpFinal = calPUp;
-      const lastIdx = trajectoryResult.length - 1;
+      const lastIdx = horizonIdx;
       const rawFinalPUp = trajectoryResult[lastIdx].pUp;
       // Only override if they diverge by more than 2pp (avoid unnecessary perturbation)
       if (Math.abs(rawFinalPUp - calibratedPUpFinal) > 0.02) {

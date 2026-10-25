@@ -2150,6 +2150,63 @@ describe('computeMarkovDistribution trajectory mode', () => {
   });
 });
 
+describe('trajectory P(up) alignment follows the horizon, not the last trajectory day', () => {
+  // Seeded GBM (mulberry32 + Box-Muller): raw trajectory P(up) is analytic, so this is deterministic.
+  const prices = (() => {
+    let seed = 11;
+    const u = () => {
+      seed = (seed + 0x6D2B79F5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const out = [100];
+    for (let i = 1; i < 160; i++) {
+      const z = Math.sqrt(-2 * Math.log(Math.max(1e-12, u()))) * Math.cos(2 * Math.PI * u());
+      out.push(out[i - 1] * Math.exp(0.0005 + 0.02 * z));
+    }
+    return out;
+  })();
+  const run = (horizon: number, trajectoryDays?: number) =>
+    computeMarkovDistribution({
+      ticker: 'SPY',
+      horizon,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: true,
+      trajectoryDays,
+      randomState: 7,
+    });
+
+  it('puts the calibrated horizon P(up) on day `horizon` when the trajectory is longer', async () => {
+    const result = await run(7, 30);
+    const calPUp = interpolateSurvival(result.distribution, result.currentPrice);
+    const traj = result.trajectory!;
+    expect(traj).toHaveLength(30);
+    expect(traj[6].day).toBe(7);
+    expect(Math.abs(traj[6].pUp - calPUp)).toBeLessThan(0.0015);
+  });
+
+  it('leaves days past the horizon on the raw trajectory instead of the horizon value', async () => {
+    const long = await run(7, 30);
+    const short = await run(7, 7);
+    // The first `horizon` days are identical whatever the trajectory length.
+    for (let i = 0; i < 7; i++) expect(long.trajectory![i].pUp).toBe(short.trajectory![i].pUp);
+    const calPUp = interpolateSurvival(long.distribution, long.currentPrice);
+    expect(Math.abs(long.trajectory![29].pUp - calPUp)).toBeGreaterThan(0.005);
+  });
+
+  it('does not overwrite a trajectory that stops before the horizon', async () => {
+    const result = await run(45);
+    const calPUp = interpolateSurvival(result.distribution, result.currentPrice);
+    const traj = result.trajectory!;
+    expect(traj).toHaveLength(30);
+    expect(Math.abs(traj[29].pUp - calPUp)).toBeGreaterThan(0.005);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // markovDistributionTool — trajectory output format
 // ---------------------------------------------------------------------------
