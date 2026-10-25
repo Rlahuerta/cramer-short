@@ -104,12 +104,12 @@ export function estimateRegimeStats(
       if (maxDailyDrift !== undefined && maxDailyDrift > 0) {
         cappedMean = Math.max(-maxDailyDrift, Math.min(maxDailyDrift, mean));
       }
-      // Sigma is the raw dispersion about the mean the forecast uses. Winsorizing
-      // or capping only protects the drift: regimes are split on the day's own
-      // return, so the trimmed tails and the capped-off mean are return variance
-      // the Student-t interval needs.
-      const variance = vals.reduce((s, v) => s + (v - cappedMean) ** 2, 0) / vals.length;
-      result[state] = { meanReturn: cappedMean, stdReturn: Math.sqrt(variance) };
+      // Winsorizing or capping only protects the drift: regimes are split on the
+      // day's own return, so the trimmed tails and the capped-off mean are return
+      // variance the Student-t interval needs. The bin keeps its raw second moment;
+      // dispersion about the capped mean alone still drops 2c(mean - c).
+      const secondMoment = vals.reduce((s, v) => s + v * v, 0) / vals.length;
+      result[state] = { meanReturn: cappedMean, stdReturn: Math.sqrt(Math.max(0, secondMoment - cappedMean ** 2)) };
     }
   }
   return result;
