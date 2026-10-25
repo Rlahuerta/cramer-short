@@ -746,9 +746,6 @@ export function interpolateDistribution(
     );
     if (closestDist > 0.005) prices.push(a.price);
   }
-  // The geometric grid straddles currentPrice. Put it on the grid so P(up) is read
-  // exactly instead of interpolated across the steepest part of the curve.
-  if (!prices.includes(currentPrice)) prices.push(currentPrice);
   prices.sort((a, b) => a - b);
 
   const mixWeight = computeMixingWeight(secondEigenvalue, horizon);

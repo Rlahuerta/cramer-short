@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import { classifyRegimeState } from './regime.js';
 import { buildDefaultMatrix } from './transition.js';
 import { computeHorizonDriftVol, horizonStudentTNu, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
-import { combineUncertaintyCiScale, computeMarkovDistribution, interpolateSurvival } from '../markov-distribution.js';
+import { combineUncertaintyCiScale, computeMarkovDistribution } from '../markov-distribution.js';
 import type { MarkovDistributionPoint, RegimeState } from './core.js';
 
 function seedRng(seed: number): () => number {
@@ -93,18 +93,6 @@ describe('interpolateDistribution', () => {
     const dist = interpolateDistribution(100, 10, P, regimeStats, 'bull', [], 0.5);
     const highest = dist[dist.length - 1];
     expect(highest.probability).toBeLessThan(0.3);
-  });
-
-  it('puts currentPrice on the grid so P(up) is exact, not interpolated', () => {
-    // Low vol: grid spacing (~1.5%) is wider than sigma_n, where interpolation is worst.
-    const tight = {
-      bull:     { meanReturn:  0.002, stdReturn: 0.001 },
-      bear:     { meanReturn: -0.002, stdReturn: 0.001 },
-      sideways: { meanReturn:  0,     stdReturn: 0.001 },
-    };
-    const dist = interpolateDistribution(100, 10, P, tight, 'bull', [], 0.5);
-    const { mu_n, sigma_n } = computeHorizonDriftVol(10, P, tight, 'bull', 0);
-    expect(interpolateSurvival(dist, 100)).toBeCloseTo(studentTSurvival(100, 100, mu_n, sigma_n, 5), 12);
   });
 
   it('Fix 7: high second-eigenvalue + long horizon → lower mixing weight', () => {

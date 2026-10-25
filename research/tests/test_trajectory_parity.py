@@ -443,22 +443,6 @@ def test_interpolate_distribution_returns_ts_style_distribution_points():
     assert all(points[i]["probability"] >= points[i + 1]["probability"] for i in range(len(points) - 1))
 
 
-def test_interpolate_distribution_puts_current_price_on_grid():
-    # Mirrors the TS test: low vol, grid spacing wider than sigma_n.
-    P = np.eye(3)
-    regime_stats = {
-        "bull": RegimeStats(mean_return=0.002, std_return=0.001),
-        "bear": RegimeStats(mean_return=-0.002, std_return=0.001),
-        "sideways": RegimeStats(mean_return=0.0, std_return=0.001),
-    }
-    points = interpolate_distribution(
-        100.0, 10, P, regime_stats, "bull", [], second_eigenvalue=0.5, monte_carlo_samples=50
-    )
-    stats = compute_horizon_drift_vol(10, P, regime_stats, "bull")
-    exact = student_t_survival(100.0, 100.0, stats["mu_n"], stats["sigma_n"], 5)
-    assert interpolate_survival(points, 100.0) == pytest.approx(exact, abs=1e-12)
-
-
 def test_compute_trajectory_sigma_n_reproduces_p_up():
     # walk_forward re-centres this Student-t on a rerun's median to read P(up).
     P, regime_stats = _make_fixture()

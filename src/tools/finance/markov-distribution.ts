@@ -4196,9 +4196,7 @@ export async function computeMarkovDistribution(params: {
     assetProfile.type === 'crypto' &&
     horizon === 14 &&
     currentRegime === 'bull' &&
-    // Extra shrinkage pulls toward calibrateProbabilities' center (capped at 0.80);
-    // below it, shrinking would raise P(up), the opposite of the intent.
-    rawPUp > Math.max(0.60, Math.min(0.80, calibrationCenter)) &&
+    rawPUp > 0.60 &&
     momentum.acceleration <= 0;
 
   const calibrationOptions = {
