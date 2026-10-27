@@ -1123,6 +1123,7 @@ function inspectAnchorCandidate(
     threshold: {
       price: matched,
       rawProbability,
+      isBelow,
       probability: correctedProbability,
       trustScore,
       trustWeight,
@@ -1932,23 +1933,27 @@ export function mergeAnchorsWithCrossPlatformValidation(
       });
     } else {
       const poly = merged[matchIdx];
-      const divergence = Math.abs(poly.rawProbability - kalshi.probability);
+      // Kalshi quotes P(above), but a "below" market's raw YES is P(below): put Kalshi in the
+      // market's own YES frame before comparing/averaging, then restore P(above) at the end.
+      const kalshiYes = poly.isBelow ? 1 - kalshi.probability : kalshi.probability;
+      const divergence = Math.abs(poly.rawProbability - kalshiYes);
 
       if (divergence > divergenceThresholdPp) {
         warnings.push({
           price: kalshi.price,
-          polymarketProb: poly.rawProbability,
+          polymarketProb: poly.isBelow ? 1 - poly.rawProbability : poly.rawProbability,
           kalshiProb: kalshi.probability,
           divergencePp: Math.round(divergence * 10000) / 100, // to 2dp
         });
       }
 
       // Average both platforms' raw probabilities, then apply bias correction
-      const averaged = (poly.rawProbability + kalshi.probability) / 2;
+      const averaged = (poly.rawProbability + kalshiYes) / 2;
+      const biasCorrected = averaged * YES_BIAS_MULTIPLIER; // apply bias correction to blended probability
       merged[matchIdx] = {
         ...poly,
         rawProbability: averaged,
-        probability: averaged * YES_BIAS_MULTIPLIER, // apply bias correction to blended probability
+        probability: poly.isBelow ? 1 - biasCorrected : biasCorrected,
         source: 'averaged',
         // Upgrade to high trust if either source qualifies
         trustScore: poly.trustScore === 'high' || (kalshi.volume ?? 0) > 0 ? 'high' : 'low',
