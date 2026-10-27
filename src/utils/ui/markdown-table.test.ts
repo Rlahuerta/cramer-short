@@ -44,6 +44,24 @@ describe('parseMarkdownTable', () => {
     expect(result!.headers).toEqual(['Ticker', 'Price']);
     expect(result!.rows[0]).toEqual(['HON', '$225']);
   });
+
+  it('keeps every header cell when only the leading pipe is present', () => {
+    const result = parseMarkdownTable('| A | B\n|---|---|\n| 1 | 2');
+    expect(result!.headers).toEqual(['A', 'B']);
+    expect(result!.rows).toEqual([['1', '2']]);
+  });
+
+  it('keeps every header cell when only the trailing pipe is present', () => {
+    const result = parseMarkdownTable('A | B |\n|---|---|\n1 | 2 |');
+    expect(result!.headers).toEqual(['A', 'B']);
+    expect(result!.rows).toEqual([['1', '2']]);
+  });
+
+  it('keeps every header cell when neither outer pipe is present', () => {
+    const result = parseMarkdownTable('A | B | C\n---|---|---\n1 | 2 | 3');
+    expect(result!.headers).toEqual(['A', 'B', 'C']);
+    expect(result!.rows).toEqual([['1', '2', '3']]);
+  });
 });
 
 describe('renderBoxTable — plain text', () => {
@@ -125,6 +143,16 @@ describe('transformMarkdownTables', () => {
     expect(result).toContain('┌');
     expect(result).toContain('┘');
     expect(result).toContain('│');
+  });
+
+  it('renders every column of a table with only one outer pipe', () => {
+    for (const md of ['| A | B\n|---|---|\n| 1 | 2', 'A | B |\n|---|---|\n1 | 2 |']) {
+      const result = transformMarkdownTables(md);
+      expect(result).toContain('┌');
+      for (const cell of ['A', 'B', '1', '2']) {
+        expect(result).toMatch(new RegExp(`│ ${cell} +│`));
+      }
+    }
   });
 
   it('produces consistent visual line widths for bold-cell tables', () => {

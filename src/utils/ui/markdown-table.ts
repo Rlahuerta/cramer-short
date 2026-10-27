@@ -82,11 +82,11 @@ export function parseMarkdownTable(tableText: string): { headers: string[]; rows
   const headerLine = lines[0];
   if (!headerLine.includes('|')) return null;
   
-  const headers = headerLine
-    .split('|')
-    .map(cell => cell.trim())
-    .filter((_, i, arr) => i > 0 && i < arr.length - 1 || arr.length === 1);
-  
+  // Leading and trailing pipes are each optional (GFM): drop only empty edge cells.
+  const headers = headerLine.split('|').map(cell => cell.trim());
+  if (headers[0] === '') headers.shift();
+  if (headers[headers.length - 1] === '') headers.pop();
+
   // Handle edge case where there's no leading/trailing pipe
   if (headers.length === 0) {
     const rawHeaders = headerLine.split('|').map(cell => cell.trim());
