@@ -518,7 +518,7 @@ export class MemoryDatabase {
   getChunkByHash(contentHash: string): ChunkRow | null {
     return this.db
       .query<ChunkRow>(
-        'SELECT id, file_path, start_line, end_line, content, content_hash, embedding FROM chunks WHERE content_hash = ?',
+        'SELECT id, file_path, start_line, end_line, content, content_hash, embedding, source FROM chunks WHERE content_hash = ?',
       )
       .get(contentHash);
   }
