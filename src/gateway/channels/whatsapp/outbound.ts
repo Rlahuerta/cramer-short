@@ -100,6 +100,12 @@ export function assertOutboundAllowed(params: {
   to: string;
   accountId?: string;
   configPath?: string;
+  /**
+   * True only when replying to an inbound sender that already passed inbound access
+   * control. Lets a wildcard allowlist / open DM policy cover the reply; proactive
+   * sends (e.g. heartbeat) leave it unset and keep requiring an explicit recipient.
+   */
+  replyToInbound?: boolean;
 }): { toJid: string; recipientE164: string } {
   const cfg = loadGatewayConfig(params.configPath);
   const accountId = params.accountId ?? cfg.gateway.accountId;
@@ -117,6 +123,11 @@ export function assertOutboundAllowed(params: {
   const recipientE164 = extractE164FromJid(toJid);
   if (!recipientE164) {
     throw new Error(`Outbound blocked: invalid recipient JID ${toJid}`);
+  }
+
+  // Inbound already admitted this sender under a wildcard allowlist or an open DM policy.
+  if (params.replyToInbound && (account.allowFrom.includes('*') || account.dmPolicy === 'open')) {
+    return { toJid, recipientE164 };
   }
 
   // Strict mode: require explicit recipient allowlist entries and ignore wildcard.
@@ -140,6 +151,7 @@ export async function sendMessageWhatsApp(params: {
   media?: AnyMessageContent;
   signal?: AbortSignal;
   configPath?: string;
+  replyToInbound?: boolean;
 }): Promise<{ messageId: string; toJid: string }> {
   const active = getActive(params.accountId);
   debugLog(`[outbound] input to=${params.to}`);
@@ -147,6 +159,7 @@ export async function sendMessageWhatsApp(params: {
     to: params.to,
     accountId: params.accountId,
     configPath: params.configPath,
+    replyToInbound: params.replyToInbound,
   });
   debugLog(`[outbound] normalized to=${to}`);
   const payload = params.media ?? { text: params.body };
@@ -164,12 +177,14 @@ export async function sendComposing(params: {
   to: string;
   accountId?: string;
   configPath?: string;
+  replyToInbound?: boolean;
 }): Promise<void> {
   const active = getActive(params.accountId);
   const { toJid: to } = assertOutboundAllowed({
     to: params.to,
     accountId: params.accountId,
     configPath: params.configPath,
+    replyToInbound: params.replyToInbound,
   });
   await active.sock.sendPresenceUpdate('composing', to);
 }

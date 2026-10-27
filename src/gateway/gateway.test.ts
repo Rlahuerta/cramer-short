@@ -149,6 +149,7 @@ describe('startGateway orchestration', () => {
       to: '12025550100@s.whatsapp.net',
       accountId: 'default',
       configPath: 'gateway.json',
+      replyToInbound: true,
     });
     expect(upsertSessionMetaMock).toHaveBeenCalledWith(expect.objectContaining({
       sessionKey: 'whatsapp:default:+12025550100',
@@ -158,6 +159,7 @@ describe('startGateway orchestration', () => {
       to: '12025550100@s.whatsapp.net',
       accountId: 'default',
       configPath: 'gateway.json',
+      replyToInbound: true,
     });
     expect(runAgentForMessageMock).toHaveBeenCalledWith(expect.objectContaining({
       sessionKey: 'whatsapp:default:+12025550100',
@@ -171,6 +173,7 @@ describe('startGateway orchestration', () => {
       body: 'clean:**agent answer**',
       accountId: 'default',
       configPath: 'gateway.json',
+      replyToInbound: true,
     });
   });
 
