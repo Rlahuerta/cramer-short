@@ -20,7 +20,7 @@ function debugLog(msg: string) {
  * Check if the current time is within the configured active hours and days.
  * Defaults to NYSE market hours: 9:30 AM - 4:00 PM ET, Mon-Fri.
  */
-function isWithinActiveHours(activeHours?: {
+export function isWithinActiveHours(activeHours?: {
   start: string;
   end: string;
   timezone?: string;
@@ -51,9 +51,13 @@ function isWithinActiveHours(activeHours?: {
     minute: '2-digit',
     hour12: false,
   });
-  const currentTime = timeFormatter.format(now); // "HH:MM"
+  const toMinutes = (hhmm: string): number => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return (h ?? 0) * 60 + (m ?? 0);
+  };
+  const currentMinutes = toMinutes(timeFormatter.format(now)); // "HH:MM"
 
-  return currentTime >= activeHours.start && currentTime <= activeHours.end;
+  return currentMinutes >= toMinutes(activeHours.start) && currentMinutes <= toMinutes(activeHours.end);
 }
 
 /**
