@@ -89,7 +89,12 @@ const replacementBlock = `// Restore raw mode state BEFORE pausing stdin.
     // Clean up StdinBuffer
     if (this.stdinBuffer) {`;
 
-content = content.replace(originalBlock, replacementBlock);
+const patched = content.replace(originalBlock, replacementBlock);
+if (patched === content) {
+  console.error('❌ pi-tui terminal.js layout changed: anchor not found; refusing to patch');
+  process.exit(1);
+}
+content = patched;
 
 // Now remove the old setRawMode call that was after the handler cleanup.
 // It's in a different location in the original file — after the event handler
