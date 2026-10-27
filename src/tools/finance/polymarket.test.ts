@@ -681,6 +681,28 @@ describe('polymarketTool', () => {
     );
   });
 
+  it('requests enough CLOB history for the 6-hour velocity and 24-hour jump windows', async () => {
+    // Polymarket's `interval` is the lookback span ending now, not the bar size.
+    const spanSeconds: Record<string, number> = { '1h': 3600, '6h': 6 * 3600, '1d': 24 * 3600 };
+    const hourly = [0.10, 0.16, 0.22, 0.28, 0.34, 0.40, 0.46, 0.46].map((p, hour) => ({ t: hour * 3600, p }));
+    const newestSec = hourly[hourly.length - 1]!.t;
+    const base = mockFetchWithClob([MOCK_EVENT], [MOCK_MARKET], { spread: 0.02, history: [] });
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes('clob.polymarket.com/prices-history')) {
+        const interval = /[?&]interval=([^&]+)/.exec(urlStr)?.[1] ?? '1h';
+        const history = hourly.filter((point) => point.t >= newestSec - spanSeconds[interval]!);
+        return { ok: true, status: 200, json: async () => ({ history }) } as Response;
+      }
+      return base(url);
+    }) as typeof fetch;
+
+    const result = await fetchPolymarketMarkets('Fed rate cut', 1, { enrichMicrostructure: true });
+
+    // A +6pp/hour ramp over the last six hours followed by a flat hour is not flat.
+    expect(result[0]?.priceVelocityPpH).toBeGreaterThan(1);
+  });
+
   it('deduplicates markets appearing in both events and direct search', async () => {
     globalThis.fetch = mockFetch([MOCK_EVENT], [MOCK_MARKET]) as typeof fetch;
     const result = await polymarketTool.invoke({ query: 'Fed rate cut', limit: 10 });

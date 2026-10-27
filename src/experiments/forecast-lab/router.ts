@@ -34,18 +34,24 @@ function normalizeForContainment(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// Whole-word match (optionally plural), so "fix" does not fire inside "fixed-income" or "fixture".
+function containsWholeTerm(text: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![a-z0-9])${escaped}(?:e?s)?(?![a-z0-9])`).test(text);
+}
+
 function includesTerm(rawQuery: string, normalizedQuery: string, term: string): boolean {
   const rawTerm = term.trim().toLowerCase();
   if (rawTerm.length === 0) {
     return false;
   }
 
-  if (rawQuery.includes(rawTerm)) {
+  if (containsWholeTerm(rawQuery, rawTerm)) {
     return true;
   }
 
   const normalizedTerm = normalizeForContainment(rawTerm);
-  return normalizedTerm.length > 0 && normalizedQuery.includes(normalizedTerm);
+  return normalizedTerm.length > 0 && containsWholeTerm(normalizedQuery, normalizedTerm);
 }
 
 function summarizeMatchedGroup(

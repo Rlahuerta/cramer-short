@@ -237,6 +237,7 @@ function isReplaySemantics(value: unknown): value is ForecastMarketSemantics {
     || value === 'barrier_touch'
     || value === 'range'
     || value === 'path_dependent'
+    || value === 'ambiguous'
     || value === 'unknown';
 }
 

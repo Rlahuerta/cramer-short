@@ -564,6 +564,54 @@ describe('forecast_lab_run tool', () => {
     expect(payload?.answer).toContain('Active Dir Acc 54.4% vs Requested Dir Acc 55.1% (+0.7pp)');
   });
 
+  it('resolves a gold- prefixed mutator named only in the query', async () => {
+    const entry = (runId: string, mutationId: string) => ({
+      runId,
+      profileId: 'gold-markov-short-horizon',
+      targetSubsystem: 'markov-distribution',
+      candidateBranch: `topic/${runId}`,
+      allowedGlobs: [],
+      mutationMode: 'structured',
+      mutationId,
+      baselineSummary: { exitCode: 0 },
+      candidateSummary: { exitCode: 0 },
+      decision: 'keep',
+      reason: 'kept',
+      artifactsPath: `.cramer-short/experiments/runs/${runId}`,
+    });
+    const tool = createForecastLabRunTool({
+      readLedgerEntriesFn: () => [
+        entry('gold-active.keep-1', 'gold-markov-longer-stability-window'),
+        entry('gold-requested.keep-1', 'gold-markov-shorter-reactive-window'),
+      ] as any,
+      getLedgerPathFn: () => '.cramer-short/experiments/forecast-results.tsv',
+      readTextFileFn: (path: string) => {
+        if (path.endsWith('active-promotions/gold-markov-short-horizon.json')) {
+          return JSON.stringify({ sourceRunId: 'gold-active.keep-1' });
+        }
+        if (path.endsWith('/candidate.json')) {
+          return JSON.stringify({ commands: [] });
+        }
+        throw new Error(`unexpected path ${path}`);
+      },
+      existsSyncFn: (path: string) => path.endsWith('active-promotions/gold-markov-short-horizon.json'),
+    });
+
+    const result = await tool.invoke({
+      action: 'compare-best-vs-shipped',
+      profileId: 'gold-markov-short-horizon',
+      query: 'Compare gold-markov-shorter-reactive-window against the active run.',
+    });
+    const payload = parseForecastLabRunToolPayload(result as string);
+
+    expect(payload).toMatchObject({
+      status: 'ok',
+      sourceRunId: 'gold-requested.keep-1',
+      mutationId: 'gold-markov-shorter-reactive-window',
+      activeMutationId: 'gold-markov-longer-stability-window',
+    });
+  });
+
   it('promotes an explicitly approved kept run without reimplementing promotion logic', async () => {
     const promoteForecastLabFn = mock(async () => makePromotionResult());
     const tool = createForecastLabRunTool({ promoteForecastLabFn: promoteForecastLabFn as any });

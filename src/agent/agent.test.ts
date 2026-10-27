@@ -1937,6 +1937,13 @@ describe('Agent', () => {
       });
     });
 
+    it('only skips crypto forecast routing for an affirmative probability_assessment skill request', () => {
+      expect(isCryptoForecastQuery("Don't use the probability_assessment skill; BTC-USD 7-day price forecast")).toBe(true);
+      expect(
+        isCryptoForecastQuery('Should I use the probability_assessment skill for a BTC-USD 7-day price forecast?'),
+      ).toBe(true);
+    });
+
     it('detects crypto forecast queries without matching explicit distribution requests', () => {
       expect(isCryptoForecastQuery('Provide a BTC forecast for the next 7 days')).toBe(true);
       expect(isCryptoForecastQuery('What will ETH trade at next week?')).toBe(true);
@@ -3161,6 +3168,16 @@ describe('Agent', () => {
       expect(detectExplicitSkillRequest('Use the DCF skill to value Apple')).toBeNull();
     });
 
+    it('ignores negated or questioning skill mentions but keeps affirmative ones', () => {
+      expect(detectExplicitSkillRequest("Don't use the portfolio_risk skill for AAPL")).toBeNull();
+      expect(detectExplicitSkillRequest('Do not use the portfolio_risk skill; just summarise the risk')).toBeNull();
+      expect(detectExplicitSkillRequest('Should I use the portfolio_risk skill for AAPL?')).toBeNull();
+      // A "not" or "?" in another clause does not cancel a genuine request.
+      expect(
+        detectExplicitSkillRequest("Use the portfolio_risk skill for AAPL, don't include crypto. Why is beta high?"),
+      ).toBe('portfolio_risk');
+    });
+
     it('accepts an explicitly requested skill as the first planning tool', () => {
       const response = new AIMessage({
         content: '',
@@ -3442,6 +3459,11 @@ describe('Agent', () => {
 
       it('rejects probability_assessment skill invocations', () => {
         expect(isNonCryptoForecastQuery('Use the probability_assessment skill for NVDA')).toBe(false);
+      });
+
+      it('keeps routing when the probability_assessment skill is negated or questioned', () => {
+        expect(isNonCryptoForecastQuery("Don't use the probability_assessment skill for the NVDA outlook")).toBe(true);
+        expect(isNonCryptoForecastQuery('Should I use the probability_assessment skill for the NVDA outlook?')).toBe(true);
       });
 
       it('rejects non-forecast non-crypto queries', () => {
