@@ -39,7 +39,9 @@ function normalizeKey(ticker: string): string {
 }
 
 function isStale(entry: RoutingEntry): boolean {
-  return Date.now() - new Date(entry.updatedAt).getTime() > TTL_MS;
+  const updatedAt = new Date(entry.updatedAt).getTime();
+  // An unparseable date (NaN) can never be "fresh"; treat it as stale so it gets re-probed.
+  return !Number.isFinite(updatedAt) || Date.now() - updatedAt > TTL_MS;
 }
 
 async function load(): Promise<Map<string, RoutingEntry>> {
@@ -87,7 +89,7 @@ export async function setPreferredApi(ticker: string, preferred: ApiPreference):
   const cache = await load();
   const key = normalizeKey(ticker);
   const existing = cache.get(key);
-  if (existing?.preferred === preferred) return; // no change — skip write
+  if (existing?.preferred === preferred && !isStale(existing)) return; // unchanged and fresh — skip write
   cache.set(key, { preferred, updatedAt: new Date().toISOString() });
   dirty = true;
   void persist();
