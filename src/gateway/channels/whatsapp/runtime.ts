@@ -69,6 +69,15 @@ export async function monitorWhatsAppChannel(params: {
         },
       });
       setActiveWebListener(params.accountId, listener.sock);
+      // Closing the listener settles onClose, so the await below ends on abort.
+      const onAbort = () => {
+        void listener.close();
+      };
+      if (params.abortSignal.aborted) {
+        onAbort();
+      } else {
+        params.abortSignal.addEventListener('abort', onAbort, { once: true });
+      }
       params.onStatus?.({ connected: true, lastError: null });
       heartbeat = setInterval(() => {
         const uptimeMs = Date.now() - startedAt;
@@ -88,6 +97,7 @@ export async function monitorWhatsAppChannel(params: {
         void listener.close();
       }, WATCHDOG_CHECK_MS);
       const closeReason = await listener.onClose;
+      params.abortSignal.removeEventListener('abort', onAbort);
       await listener.close();
       setActiveWebListener(params.accountId, null);
       if (heartbeat) {

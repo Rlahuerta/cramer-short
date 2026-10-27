@@ -1,8 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertOutboundAllowed } from './outbound.js';
+import { assertOutboundAllowed, sendComposing, sendMessageWhatsApp, setActiveWebListener } from './outbound.js';
+import { useTempCramerShortDir } from '../../../utils/test-cramer-short-dir.js';
+
+useTempCramerShortDir();
 
 let tmpDir: string;
 let previousConfigPath: string | undefined;
@@ -58,5 +61,44 @@ describe('assertOutboundAllowed config path', () => {
       accountId: 'default',
       configPath: allowPath,
     })).toThrow(/not in allowFrom/);
+  });
+});
+
+describe('outbound account socket selection', () => {
+  const fakeSock = () => ({
+    sendMessage: mock(async () => ({ key: { id: 'msg-1' } })),
+    sendPresenceUpdate: mock(async () => {}),
+  });
+
+  afterEach(() => {
+    setActiveWebListener('work', null);
+    setActiveWebListener('personal', null);
+  });
+
+  it('fails instead of borrowing another account socket when the requested account is not connected', async () => {
+    const personal = fakeSock();
+    setActiveWebListener('personal', personal as never);
+
+    await expect(
+      sendMessageWhatsApp({ to: '+19998887777', body: 'hi', accountId: 'work' }),
+    ).rejects.toThrow(/account work/);
+    await expect(sendComposing({ to: '+19998887777', accountId: 'work' })).rejects.toThrow(
+      /account work/,
+    );
+
+    expect(personal.sendMessage).not.toHaveBeenCalled();
+    expect(personal.sendPresenceUpdate).not.toHaveBeenCalled();
+  });
+
+  it('sends through the requested account socket when several accounts are connected', async () => {
+    const personal = fakeSock();
+    const work = fakeSock();
+    setActiveWebListener('personal', personal as never);
+    setActiveWebListener('work', work as never);
+
+    await sendMessageWhatsApp({ to: '+19998887777', body: 'hi', accountId: 'work' });
+
+    expect(work.sendMessage).toHaveBeenCalledTimes(1);
+    expect(personal.sendMessage).not.toHaveBeenCalled();
   });
 });

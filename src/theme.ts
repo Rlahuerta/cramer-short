@@ -16,7 +16,9 @@ const palette = {
   border: '#303030',
 };
 
-const fg = (color: string) => (text: string) => chalk.hex(color)(text);
+// Palette entries are either '#rrggbb' hex or an ANSI colour name (chalk.hex() paints names black).
+const fg = (color: string) => (text: string) =>
+  (color.startsWith('#') ? chalk.hex(color) : chalk[color as 'green'])(text);
 const bg = (color: string) => (text: string) => chalk.bgHex(color)(text);
 
 export const theme = {
