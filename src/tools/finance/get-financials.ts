@@ -303,7 +303,7 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
 
         // Update routing cache: record which API backend succeeded for this ticker
         if (ticker) {
-          const apiHint = result.tool.includes('yahoo') ? 'yahoo' : 'fmp';
+          const apiHint = result.tool.includes('yahoo') ? 'yahoo' : 'financial-datasets';
           void setPreferredApi(ticker, apiHint);
         }
       }

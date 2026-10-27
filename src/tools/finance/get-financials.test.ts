@@ -222,3 +222,39 @@ describe('get-financials — router prompt tool names', () => {
     expect(historicalLine).toContain('get_historical_key_ratios');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Routing cache records the provider that actually served the call
+// ---------------------------------------------------------------------------
+
+describe('get-financials — routing cache provider', () => {
+  const tool = createGetFinancials('test-model');
+  const setPreferredApiSpy = routingSpies[1];
+
+  beforeEach(() => {
+    mockCallLlm.mockReset();
+    setPreferredApiSpy.mockClear();
+  });
+
+  test('records financial-datasets (not fmp) when a Financial Datasets tool succeeds', async () => {
+    mockCallLlm.mockResolvedValueOnce({
+      response: makeToolCallResponse('get_key_ratios', { ticker: 'AAPL' }),
+      usage: undefined,
+    });
+
+    await tool.invoke({ query: 'AAPL P/E' });
+
+    expect(setPreferredApiSpy).toHaveBeenCalledWith('AAPL', 'financial-datasets');
+  });
+
+  test('records yahoo when a Yahoo tool succeeds', async () => {
+    mockCallLlm.mockResolvedValueOnce({
+      response: makeToolCallResponse('get_yahoo_analyst_targets', { ticker: 'VWS.CO' }),
+      usage: undefined,
+    });
+
+    await tool.invoke({ query: 'price targets for VWS.CO' });
+
+    expect(setPreferredApiSpy).toHaveBeenCalledWith('VWS.CO', 'yahoo');
+  });
+});
