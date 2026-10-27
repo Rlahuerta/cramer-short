@@ -7,9 +7,10 @@
  * Also covers: relative paths still sandboxed to cwd, escape attempts blocked.
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime, spyOn } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import * as os from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // Import the tool func directly (bypasses LangChain wrapper overhead).
@@ -181,4 +182,45 @@ describe('write_file sandbox — narrowed homedir scope', () => {
       }
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// @-prefixed home paths (PI-46): `@` is decoration, `@~/x` must behave exactly like `~/x`
+// Hermetic: homedir() and cwd are spied into a temp dir (os.homedir() is cached per process, so
+// HOME cannot be changed at runtime); cwd is a project folder inside home.
+// ---------------------------------------------------------------------------
+
+describe('write_file sandbox — @-prefixed home paths', () => {
+  let tmpHome: string;
+  let homeSpy: ReturnType<typeof spyOn>;
+  let cwdSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), 'cs-write-home-'));
+    mkdirSync(join(tmpHome, 'repo'));
+    homeSpy = spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    cwdSpy = spyOn(process, 'cwd').mockReturnValue(join(tmpHome, 'repo'));
+  });
+
+  afterEach(() => {
+    cwdSpy.mockRestore();
+    homeSpy.mockRestore();
+    rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('writes @~/reports/x.md exactly like ~/reports/x.md', async () => {
+    await writeFileTool.invoke({ path: '@~/reports/at.md', content: 'at' });
+    await writeFileTool.invoke({ path: '~/reports/plain.md', content: 'plain' });
+
+    expect(readFileSync(join(tmpHome, 'reports', 'at.md'), 'utf-8')).toBe('at');
+    expect(readFileSync(join(tmpHome, 'reports', 'plain.md'), 'utf-8')).toBe('plain');
+  });
+
+  it('keeps the narrowed home scope and the sandbox for @-prefixed paths', async () => {
+    await expect(writeFileTool.invoke({ path: '@~/.bashrc', content: 'evil' })).rejects.toThrow(
+      /outside allowed home directories/,
+    );
+    await expect(writeFileTool.invoke({ path: '@~/../escape.md', content: 'evil' })).rejects.toThrow(/sandbox/i);
+    await expect(writeFileTool.invoke({ path: '@/etc/cs-test.txt', content: 'evil' })).rejects.toThrow(/sandbox/i);
+  });
 });
