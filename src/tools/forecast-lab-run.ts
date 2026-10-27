@@ -530,7 +530,7 @@ function resolveComparisonProfile(
 }
 
 function extractComparisonMutationId(query: string | undefined): string | undefined {
-  return query?.match(/\b(markov-[A-Za-z0-9][A-Za-z0-9_.-]*)\b/i)?.[1];
+  return query?.match(/(?<![A-Za-z0-9_.-])((?:gold-)?markov-[A-Za-z0-9][A-Za-z0-9_.-]*)\b/i)?.[1];
 }
 
 function findLatestKeptStructuredMutationEntry(
