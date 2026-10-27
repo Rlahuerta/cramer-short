@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { ArbiterReplayBundle } from '../arbiter-replay.js';
 import type { ForecastArbiterInput, ForecastArbiterResult } from '../forecast-arbitrator.js';
-import { compareReplayEvaluators, runArbiterReplay } from './arbiter-replay-runner.js';
+import { compareReplayEvaluators, pickPrimarySemantics, runArbiterReplay } from './arbiter-replay-runner.js';
 
 function makeLabeledBundle(params: {
   capturedAt: string;
@@ -237,6 +237,28 @@ describe('arbiter replay runner', () => {
     expect(run.baseline.crossPlatformSlices.withoutEvidence.totalRows).toBe(1);
     expect(run.baseline.crossPlatformSlices.flaggedDivergence.totalRows).toBe(1);
     expect(run.baseline.crossPlatformSlices.adjustmentApplied.totalRows).toBe(1);
+  });
+
+  it('buckets a bundle with no Polymarket markets as unknown semantics, not terminal (PI-53)', () => {
+    const run = runArbiterReplay({
+      bundles: [makeLabeledBundle({ capturedAt: '2026-05-01T00:00:00.000Z', ticker: 'BTC', actualBinary: 1 })],
+      baselineEvaluator: {
+        name: 'baseline',
+        evaluate() {
+          return makeResult({ preferredDirection: 'long', confidence: 'medium', shouldEnterNow: true });
+        },
+      },
+    });
+
+    expect(run.baseline.rows[0]!.primarySemantics).toBe('unknown');
+    expect(Object.keys(run.baseline.semanticBucketCalibration)).toEqual(['unknown']);
+  });
+
+  it('pickPrimarySemantics returns unknown for empty counts and the most frequent otherwise (PI-53)', () => {
+    const none = { terminal: 0, barrier_touch: 0, range: 0, path_dependent: 0, ambiguous: 0, unknown: 0 };
+    expect(pickPrimarySemantics(none)).toBe('unknown');
+    expect(pickPrimarySemantics({ ...none, range: 2, barrier_touch: 1 })).toBe('range');
+    expect(pickPrimarySemantics({ ...none, unknown: 1 })).toBe('unknown');
   });
 
   it('fails the acceptance gate when a candidate buys accuracy by abstaining too often', () => {
