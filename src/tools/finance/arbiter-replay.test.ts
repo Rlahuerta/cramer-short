@@ -316,6 +316,44 @@ describe('ArbiterReplayBundle persistence', () => {
     expect(parseArbiterReplayBundleLine(JSON.stringify(labeledBundle))).toEqual(labeledBundle);
   });
 
+  it('round-trips ambiguous-semantics markets and labels instead of dropping the bundle', () => {
+    const block = freezePolymarketReplayBlock({
+      querySet: ['bitcoin price'],
+      selectedMarkets: [
+        {
+          marketId: 'pm-ambiguous',
+          assetId: 'asset-yes-ambiguous',
+          question: 'Will BTC close above $80,000 or hit $90,000 by May?',
+          probability: 0.3,
+          volume24h: 100000,
+          endDate: '2026-05-31T00:00:00.000Z',
+        },
+      ],
+    });
+    expect(block.selectedMarkets[0]?.semantics).toBe('ambiguous');
+
+    const bundle: ArbiterReplayBundle = {
+      capturedAt: '2026-04-30T12:00:00.000Z',
+      ticker: 'BTC',
+      horizonDays: 7,
+      currentPrice: 68000,
+      polymarket: block,
+      labels: {
+        semantic: [
+          {
+            marketId: 'pm-ambiguous',
+            semantics: 'ambiguous',
+            outcome: 'unsupported',
+            labeledAt: '2026-06-01T00:00:00.000Z',
+          },
+        ],
+      },
+      warnings: [],
+    };
+
+    expect(parseArbiterReplayBundleLine(JSON.stringify(bundle))).toEqual(bundle);
+  });
+
   it('appends auto-captured replay records into the local cache layout', () => {
     const dir = mkdtempSync(join(tmpdir(), 'arbiter-replay-cache-'));
     tempDirs.push(dir);
