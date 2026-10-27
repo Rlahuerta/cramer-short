@@ -5261,16 +5261,14 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       trajectorySection.push('    The CI range is the honest measure of uncertainty.');
     }
 
-    const forecastHint = fullCanonical
-      ? buildForecastHint({
-          canEmitCanonical,
-          ticker: result.ticker,
-          horizon: result.horizon,
-          expectedReturn: result.actionSignal.expectedReturn,
-          mixingTimeWeight: m.mixingTimeWeight,
-          predictionConfidence: result.predictionConfidence,
-        })
-      : null;
+    const forecastHint = buildForecastHint({
+      canEmitCanonical,
+      ticker: result.ticker,
+      horizon: result.horizon,
+      expectedReturn: result.actionSignal.expectedReturn,
+      mixingTimeWeight: m.mixingTimeWeight,
+      predictionConfidence: result.predictionConfidence,
+    });
     const closestResolutionLine =
       m.anchorInspection.closestResolutionDate != null
       && m.anchorInspection.closestResolutionOffsetDays != null

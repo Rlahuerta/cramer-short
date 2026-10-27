@@ -561,6 +561,28 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.forecastHint).toBeNull();
   });
 
+  it('emits forecastHint on a BTC short-horizon abstain payload so the arbiter keeps the model fallback', async () => {
+    const prices = Array.from({ length: 40 }, (_, i) => Math.round((100 + i * 0.4) * 100) / 100);
+
+    const result = await markovDistributionTool.func({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [{ question: 'Will it rain tomorrow?', probability: 0.5 }],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.data.status).toBe('abstain');
+    expect(parsed.data.canonical.diagnostics.predictionConfidence).toBeGreaterThanOrEqual(0.10);
+    expect(parsed.data.forecastHint).not.toBeNull();
+    expect(parsed.data.forecastHint.usage).toBe('forecast_only');
+    expect(parsed.data.forecastHint.calibratedDistribution).toBe(false);
+    expect(Number.isFinite(parsed.data.forecastHint.markovReturn)).toBe(true);
+    expect(parsed.data.forecastHint.confidenceScore).toBe(parsed.data.canonical.diagnostics.predictionConfidence);
+  });
+
   it('explains low-trust BTC 14d anchors in abstain diagnostics', async () => {
     const prices: number[] = [];
     let p = 65000;
