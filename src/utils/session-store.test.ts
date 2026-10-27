@@ -5,7 +5,7 @@
 
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HistoryItem } from '../shared/history-types.js';
@@ -137,6 +137,52 @@ describe('createSession', () => {
       createSession('query B', tmpDir),
     ]);
     expect(a.id).not.toBe(b.id);
+  });
+
+  it('keeps every index entry when sessions are created concurrently', async () => {
+    const created = await Promise.all(
+      Array.from({ length: 5 }, (_, i) => createSession(`query ${i}`, tmpDir)),
+    );
+    const listed = await listSessions(tmpDir);
+    expect(listed.map((s) => s.id).sort()).toEqual(created.map((s) => s.id).sort());
+  });
+
+  it('keeps an index entry created concurrently with a saveSession of another session', async () => {
+    const first = await createSession('first', tmpDir);
+    const [second] = await Promise.all([
+      createSession('second', tmpDir),
+      saveSession({ ...first, queryCount: 2 }, tmpDir),
+    ]);
+    const listed = await listSessions(tmpDir);
+    expect(listed.map((s) => s.id).sort()).toEqual([first.id, second.id].sort());
+    expect(listed.find((s) => s.id === first.id)?.queryCount).toBe(2);
+  });
+
+  describe('with an unparseable index', () => {
+    async function writeCorruptIndex(): Promise<string> {
+      const dir = join(tmpDir, '.cramer-short', 'sessions');
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, '_index.json'), '{"sessions":[{"id":"old-1","name":"OLD-SESSION-MARKER"}]} BROKEN');
+      return dir;
+    }
+
+    it('moves it to a .corrupt-* backup instead of overwriting it', async () => {
+      const dir = await writeCorruptIndex();
+      await createSession('new query', tmpDir);
+
+      const backups = (await readdir(dir)).filter((f) => f.startsWith('_index.json.corrupt-'));
+      expect(backups).toHaveLength(1);
+      expect(await readFile(join(dir, backups[0]), 'utf-8')).toContain('OLD-SESSION-MARKER');
+      expect(await listSessions(tmpDir)).toHaveLength(1);
+    });
+
+    it('listSessions returns an empty list and still keeps the old content', async () => {
+      const dir = await writeCorruptIndex();
+      expect(await listSessions(tmpDir)).toEqual([]);
+
+      const backups = (await readdir(dir)).filter((f) => f.startsWith('_index.json.corrupt-'));
+      expect(await readFile(join(dir, backups[0]), 'utf-8')).toContain('OLD-SESSION-MARKER');
+    });
   });
 });
 
