@@ -102,3 +102,125 @@ describe('outbound account socket selection', () => {
     expect(personal.sendMessage).not.toHaveBeenCalled();
   });
 });
+
+describe('outbound wildcard / open policy allowlist', () => {
+  const writeConfig = (account: Record<string, unknown>): string => {
+    const path = join(tmpDir, 'wildcard.json');
+    writeFileSync(
+      path,
+      JSON.stringify({ channels: { whatsapp: { accounts: { default: account } } } }),
+      'utf-8',
+    );
+    return path;
+  };
+
+  it('allows a reply to an inbound sender when the allowlist is the wildcard', () => {
+    const configPath = writeConfig({ dmPolicy: 'allowlist', allowFrom: ['*'] });
+
+    const result = assertOutboundAllowed({
+      to: '+12025550999',
+      accountId: 'default',
+      configPath,
+      replyToInbound: true,
+    });
+
+    expect(result.recipientE164).toBe('+12025550999');
+  });
+
+  it('allows a reply to an inbound sender under dmPolicy open with an empty allowFrom', () => {
+    const configPath = writeConfig({ dmPolicy: 'open', allowFrom: [] });
+
+    const result = assertOutboundAllowed({
+      to: '+12025550999',
+      accountId: 'default',
+      configPath,
+      replyToInbound: true,
+    });
+
+    expect(result.recipientE164).toBe('+12025550999');
+  });
+
+  it('still blocks a proactive (non-reply) send when the allowlist is only the wildcard', () => {
+    const configPath = writeConfig({ dmPolicy: 'allowlist', allowFrom: ['*'] });
+
+    expect(() =>
+      assertOutboundAllowed({ to: '+12025550999', accountId: 'default', configPath }),
+    ).toThrow(/no explicit allowFrom recipient/);
+  });
+
+  it('still blocks a proactive send to a number outside the explicit entries next to a wildcard', () => {
+    const configPath = writeConfig({ dmPolicy: 'allowlist', allowFrom: ['*', '+12025550100'] });
+
+    expect(() =>
+      assertOutboundAllowed({ to: '+12025550999', accountId: 'default', configPath }),
+    ).toThrow(/not in allowFrom/);
+    expect(
+      assertOutboundAllowed({ to: '+12025550100', accountId: 'default', configPath }).recipientE164,
+    ).toBe('+12025550100');
+  });
+
+  it('still blocks a proactive send under dmPolicy open with an empty allowFrom', () => {
+    const configPath = writeConfig({ dmPolicy: 'open', allowFrom: [] });
+
+    expect(() =>
+      assertOutboundAllowed({ to: '+12025550999', accountId: 'default', configPath }),
+    ).toThrow(/no explicit allowFrom recipient/);
+  });
+
+  it('does not widen an explicit allowlist for replies', () => {
+    const configPath = writeConfig({ dmPolicy: 'allowlist', allowFrom: ['+12025550100'] });
+
+    expect(() =>
+      assertOutboundAllowed({
+        to: '+12025550999',
+        accountId: 'default',
+        configPath,
+        replyToInbound: true,
+      }),
+    ).toThrow(/not in allowFrom/);
+    expect(
+      assertOutboundAllowed({
+        to: '+12025550100',
+        accountId: 'default',
+        configPath,
+        replyToInbound: true,
+      }).recipientE164,
+    ).toBe('+12025550100');
+  });
+
+  it('sendMessageWhatsApp and sendComposing honour the reply flag end to end', async () => {
+    const configPath = writeConfig({ dmPolicy: 'allowlist', allowFrom: ['*'] });
+    const sock = {
+      sendMessage: mock(async () => ({ key: { id: 'msg-1' } })),
+      sendPresenceUpdate: mock(async () => {}),
+    };
+    setActiveWebListener('default', sock as never);
+    try {
+      await expect(
+        sendMessageWhatsApp({ to: '+12025550999', body: 'hi', accountId: 'default', configPath }),
+      ).rejects.toThrow(/no explicit allowFrom recipient/);
+      await expect(
+        sendComposing({ to: '+12025550999', accountId: 'default', configPath }),
+      ).rejects.toThrow(/no explicit allowFrom recipient/);
+      expect(sock.sendMessage).not.toHaveBeenCalled();
+
+      await sendMessageWhatsApp({
+        to: '+12025550999',
+        body: 'hi',
+        accountId: 'default',
+        configPath,
+        replyToInbound: true,
+      });
+      await sendComposing({
+        to: '+12025550999',
+        accountId: 'default',
+        configPath,
+        replyToInbound: true,
+      });
+      expect(sock.sendMessage).toHaveBeenCalledTimes(1);
+      expect(sock.sendPresenceUpdate).toHaveBeenCalledTimes(1);
+    } finally {
+      setActiveWebListener('default', null);
+    }
+  });
+});
