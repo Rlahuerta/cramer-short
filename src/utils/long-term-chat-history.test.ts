@@ -1,6 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { rmSync, mkdtempSync } from 'node:fs';
+import { rmSync, mkdtempSync, chmodSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LongTermChatHistory, type ConversationEntry } from './long-term-chat-history.js';
@@ -94,6 +94,38 @@ describe('LongTermChatHistory — load (existing file)', () => {
     const h = makeHistory(tmpDir);
     await h.load();
     expect(h.getMessages()).toEqual([]);
+  });
+});
+
+describe('LongTermChatHistory — a failed load never overwrites the file', () => {
+  async function writeHistoryFile(content: string): Promise<string> {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const dir = join(tmpDir, '.cramer-short', 'messages');
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, 'chat_history.json');
+    await writeFile(file, content, 'utf-8');
+    return file;
+  }
+
+  it('keeps a corrupt file untouched when the next message is added', async () => {
+    const file = await writeHistoryFile('{"messages": [ BROKEN');
+    const h = makeHistory(tmpDir);
+    await h.addUserMessage('new question');
+    await h.updateAgentResponse('new answer');
+    expect(readFileSync(file, 'utf-8')).toBe('{"messages": [ BROKEN');
+    expect(h.getMessageStrings()).toEqual(['new question']);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('keeps an unreadable file untouched when the next message is added', async () => {
+    const file = await writeHistoryFile(JSON.stringify({ messages: [{ id: '1', timestamp: 't', userMessage: 'OLD', agentResponse: null }] }));
+    chmodSync(file, 0o000);
+    try {
+      const h = makeHistory(tmpDir);
+      await h.addUserMessage('new question');
+    } finally {
+      chmodSync(file, 0o644);
+    }
+    expect(readFileSync(file, 'utf-8')).toContain('OLD');
   });
 });
 
