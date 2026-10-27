@@ -2,7 +2,7 @@ import { resolveAssetIntent } from '../asset-resolver.js';
 import { readArbiterReplayBundles, type ArbiterReplayBundle } from '../arbiter-replay.js';
 import { arbitrateForecast, type ForecastArbiterInput, type ForecastArbiterResult, type ForecastMarketSemantics } from '../forecast-arbitrator.js';
 import { getBtcShortHorizonLivePolicy } from '../markov-distribution.js';
-import { runArbiterReplay, type ArbiterReplayEvaluator } from './arbiter-replay-runner.js';
+import { pickPrimarySemantics, runArbiterReplay, type ArbiterReplayEvaluator } from './arbiter-replay-runner.js';
 import { brierScore, ciCoverage, directionalAccuracy } from './metrics.js';
 import { walkForward } from './walk-forward.js';
 
@@ -78,7 +78,7 @@ function summarizeSemantics(markets: NonNullable<ForecastArbiterInput['polymarke
     counts[semantics] += 1;
   }
 
-  const primary = (Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] as ForecastMarketSemantics | undefined) ?? 'unknown';
+  const primary = pickPrimarySemantics(counts);
   const barrierPrices = (markets ?? [])
     .filter((market) => market.semantics === 'barrier_touch' && isFiniteNumber(market.price))
     .map((market) => market.price!) as number[];

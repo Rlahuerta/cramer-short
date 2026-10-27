@@ -114,12 +114,12 @@ describe('fuzzyFindText', () => {
     expect(result.contentForReplacement).toBe(content);
   });
 
-  test('contentForReplacement is normalized content on fuzzy match', () => {
-    const content = 'hello   \nworld';
+  test('contentForReplacement is the original content on fuzzy match, with offsets into it (PI-3)', () => {
+    const content = 'a   \nhello   \nworld  \nz';
     const result = fuzzyFindText(content, 'hello\nworld');
-    if (result.found && result.usedFuzzyMatch) {
-      expect(result.contentForReplacement).not.toBe(content);
-    }
+    expect(result.usedFuzzyMatch).toBe(true);
+    expect(result.contentForReplacement).toBe(content);
+    expect(content.slice(result.index, result.index + result.matchLength)).toBe('hello   \nworld');
   });
 });
 

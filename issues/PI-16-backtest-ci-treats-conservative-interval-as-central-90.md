@@ -2,10 +2,16 @@
 
 - Severity: M
 - Area: C1c
-- Status: Open
+- Status: Partially fixed (by decision)
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/backtest/metrics.ts:533` — `const sigma = width / (2 * CENTRAL_90_Z);`, `src/tools/finance/backtest/metrics.ts:851` — `const lower = Math.min(step.ciLower, step.ciUpper);`, `src/tools/finance/backtest/comparison-harness.ts:129` — `const overallCoverage = ciCoverage(steps);`, `src/tools/finance/backtest/comparison-harness.ts:130` — `const breakCoverage = breakSteps.length > 0 ? ciCoverage(breakSteps) : null;`
 - Repro kind: runtime
+
+## Resolution
+
+Decision: score the literal central-90 where the metric is about the distribution, keep the helper interval where round 6 compares arms. `deriveIntervalScale` (CRPS, scaled CRPS, tail weights) and `murphyWinklerDecomposition` now read the literal central-90 bounds, falling back to `ciLower`/`ciUpper` when absent. `summarizeCalibrationSteps` keeps its helper-interval `coverageError`/`breakCoverageError` and adds `central90Coverage`, `central90CoverageError`, `breakCentral90Coverage` and `breakCentral90CoverageError` beside them, because the adaptive-conformal path rewrites `ciLower`/`ciUpper` but not `central90*`; switching the existing columns would make baseline and conformal arms compare identically in round 6's adopt/reject rule. The stale `BacktestStep.ciLower` "90% CI" comment was corrected.
+
+The repro's first two assertions (CRPS equal for an identical central-90; Murphy-Winkler `meanWidth = 10`) now pass. Its third (`coverageError = 0.9`) is intentionally unmet; that value is `central90CoverageError`. Python `BacktestStep` has no central-90 fields, so Python CRPS/Murphy-Winkler still score `ci_lower`/`ci_upper` (recorded in `research/PARITY.md`).
 
 ## Summary
 

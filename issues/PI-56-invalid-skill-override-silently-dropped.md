@@ -2,7 +2,7 @@
 
 - Severity: L
 - Area: C8b
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/skills/registry.ts:44` — `const metadata = extractSkillMetadata(skillFilePath, source);`, `src/skills/registry.ts:46` — `} catch {`, `src/skills/registry.ts:47` — `// Skip invalid skill files silently`
 - Repro kind: runtime

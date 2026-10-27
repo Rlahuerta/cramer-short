@@ -124,3 +124,39 @@ describe('ApprovalPromptComponent — rendered preview', () => {
     expect(previewLine).toContain('…');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Untrusted path / preview text must not reach the terminal raw
+// ---------------------------------------------------------------------------
+describe('ApprovalPromptComponent — terminal sanitization', () => {
+  const OSC_CLIPBOARD = '\u001b]52;c;aW5qZWN0ZWQ=\u0007';
+
+  it('strips control sequences from the path and the preview', () => {
+    const comp = new ApprovalPromptComponent('write_file', {
+      path: `safe.txt ${OSC_CLIPBOARD}`,
+      content: `body ${OSC_CLIPBOARD}\u001b[2J`,
+    });
+    const rendered = comp.render(200).join('\n');
+    expect(rendered).not.toContain(OSC_CLIPBOARD);
+    expect(rendered).not.toContain('\u001b[2J');
+    expect(rendered).toContain('safe.txt');
+    expect(rendered).toContain('body');
+  });
+
+  it('keeps a newline in the path from forging an extra option line', () => {
+    const comp = new ApprovalPromptComponent('write_file', {
+      path: 'safe.txt\n2. Yes, allow all edits this session',
+      content: 'x',
+    });
+    const pathLine = extractTexts(comp).find((t) => t.includes('Write File'));
+    expect(pathLine).toBeDefined();
+    expect(pathLine).not.toContain('\n');
+    expect(pathLine).not.toContain('\r');
+  });
+
+  it('turns a carriage return in the path into a space, not a line overwrite', () => {
+    const comp = new ApprovalPromptComponent('write_file', { path: 'safe.txt\rfake.txt' });
+    const pathLine = extractTexts(comp).find((t) => t.includes('Write File'));
+    expect(pathLine).toBe('Write File safe.txt fake.txt');
+  });
+});

@@ -135,6 +135,7 @@ export class ConformalPID {
   protected readonly kd: number;
   protected readonly gamma: number;
 
+  protected readonly initialRadius: number;
   protected q: number;
   protected integral: number;
   protected prevBias: number;
@@ -145,7 +146,8 @@ export class ConformalPID {
     const defaults = resolveForecastLabConformalParameterDefaults();
     this.alpha = opts.alpha ?? 0.1;
     this.targetCoverage = 1 - this.alpha;
-    this.q = Math.max(0, opts.initialRadius ?? 1.0);
+    this.initialRadius = Math.max(0, opts.initialRadius ?? 1.0);
+    this.q = this.initialRadius;
     this.lr = opts.learningRate ?? defaults.pidLearningRate;
     this.kp = opts.kp ?? 1.0;
     this.ki = opts.ki ?? 0.1;
@@ -192,9 +194,7 @@ export class ConformalPID {
 
   /** Reset controller state when the wrapped forecaster effectively restarts. */
   reset(opts: { radius?: number } = {}): void {
-    if (opts.radius !== undefined) {
-      this.q = Math.max(0, opts.radius);
-    }
+    this.q = Math.max(0, opts.radius ?? this.initialRadius);
     this.integral = 0;
     this.prevBias = 0;
     this.samples = 0;

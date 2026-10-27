@@ -27,6 +27,23 @@ export function normalizeForFuzzyMatch(text: string): string {
     .replace(/[\u00A0\u2002-\u200A\u202F\u205F\u3000]/g, ' ');
 }
 
+/**
+ * Maps each offset of `normalizeForFuzzyMatch(content)` to its offset in `content`, plus a final
+ * entry for the end of text. The per-line trimEnd is the only length-changing step; the character
+ * folds are 1:1.
+ */
+function fuzzyOffsetMap(content: string): number[] {
+  const map: number[] = [];
+  let lineStart = 0;
+  for (const line of content.split('\n')) {
+    const kept = line.trimEnd().length;
+    for (let i = 0; i < kept; i++) map.push(lineStart + i);
+    map.push(lineStart + line.length);
+    lineStart += line.length + 1;
+  }
+  return map;
+}
+
 export interface FuzzyMatchResult {
   found: boolean;
   index: number;
@@ -61,12 +78,17 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
     };
   }
 
+  // Report the match in original-content offsets so the caller splices into the original text.
+  const offsets = fuzzyOffsetMap(content);
+  const index = offsets[fuzzyIndex];
+  const end = fuzzyOldText.length === 0 ? index : offsets[fuzzyIndex + fuzzyOldText.length - 1] + 1;
+
   return {
     found: true,
-    index: fuzzyIndex,
-    matchLength: fuzzyOldText.length,
+    index,
+    matchLength: end - index,
     usedFuzzyMatch: true,
-    contentForReplacement: fuzzyContent,
+    contentForReplacement: content,
   };
 }
 

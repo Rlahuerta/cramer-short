@@ -2,7 +2,7 @@
 
 - Severity: C
 - Area: C5
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/memory/store.ts:75` — `return '';`, `src/memory/store.ts:86` — `const previous = await this.readMemoryFile(path);`
 - Repro kind: runtime

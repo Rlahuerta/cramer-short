@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C5
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/memory/database.ts:731` — `score: range > 0 ? (maxRank - row.rank) / range : 1,`, `src/memory/search.ts:96` — `.filter((entry) => entry.finalScore >= minScore)`
 - Repro kind: runtime

@@ -47,11 +47,24 @@ export function inferTrajectoryRequest(query: string): boolean {
   return /trajectory|day[- ]by[- ]day|day by day|price path|daily forecast|daily projection/i.test(lower);
 }
 
+// "don't use the X skill" / "should I use the X skill?" is not a request for the skill. Only the clause
+// before the match counts, so a "not" or "?" elsewhere in the query does not cancel a genuine request.
+const NEGATION_OR_QUESTION = /\b(?:no|not|never|avoid|skip)\b|n['’]t\b|\b(?:should|shall|do|does|can|could|may|might|would)\s+(?:i|we)\b/i;
+
+function findAffirmativeRequest(query: string, pattern: RegExp): RegExpMatchArray | undefined {
+  return [...query.matchAll(pattern)].find((match) => {
+    const clauseBefore = query.slice(0, match.index).split(/[.,;:!?\n]/).pop() ?? '';
+    return !NEGATION_OR_QUESTION.test(clauseBefore);
+  });
+}
+
+const PROBABILITY_ASSESSMENT_SKILL_REQUEST = /\buse the\s+probability_assessment\s+skill\b/gi;
+
 export function isCryptoForecastQuery(query: string): boolean {
   if (isForecastLabImprovementQuery(query)) return false;
   if (isExplicitTerminalDistributionQuery(query)) return false;
 
-  if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;
+  if (findAffirmativeRequest(query, PROBABILITY_ASSESSMENT_SKILL_REQUEST)) return false;
 
   const detected = detectAssetType(query);
   if (detected.type !== 'crypto' || !detected.ticker) return false;
@@ -71,7 +84,7 @@ export function isCryptoForecastQuery(query: string): boolean {
  */
 export function isNonCryptoForecastQuery(query: string): boolean {
   if (isForecastLabImprovementQuery(query)) return false;
-  if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;
+  if (findAffirmativeRequest(query, PROBABILITY_ASSESSMENT_SKILL_REQUEST)) return false;
 
   // Exclude crypto — that path has its own dedicated forcing
   const detected = detectAssetType(query);
@@ -139,7 +152,7 @@ export function isCryptoForecastPipelineQuery(query: string): boolean {
 }
 
 export function detectExplicitSkillRequest(query: string): string | null {
-  const match = query.match(/\buse (?:the )?([a-z0-9_-]+) skill\b/i);
+  const match = findAffirmativeRequest(query, /\buse (?:the )?([a-z0-9_-]+) skill\b/gi);
   if (!match) return null;
 
   const requested = match[1].toLowerCase();

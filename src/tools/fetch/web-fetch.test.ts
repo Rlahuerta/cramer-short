@@ -325,3 +325,47 @@ describe('web_fetch default transport', () => {
     }
   });
 });
+
+describe('web_fetch cache key (PI-45)', () => {
+  function stubPages(calls: string[]): void {
+    _setHttpFetchForTest(async (url: string) => {
+      calls.push(url);
+      return new Response(`<p>body of ${url}</p>`, { status: 200, headers: { 'content-type': 'text/html' } });
+    });
+  }
+
+  async function fetchText(url: string): Promise<{ text: string; cached?: boolean }> {
+    return (JSON.parse(await (webFetchTool.invoke({ url }) as Promise<string>)) as { data: { text: string; cached?: boolean } })
+      .data;
+  }
+
+  test('URLs that differ only by path or query case are fetched separately', async () => {
+    const calls: string[] = [];
+    stubPages(calls);
+
+    const upper = await fetchText('https://case-path.example.com/Report?Ticker=AAPL');
+    const lower = await fetchText('https://case-path.example.com/report?Ticker=AAPL');
+    const lowerQuery = await fetchText('https://case-path.example.com/Report?ticker=aapl');
+
+    expect(calls).toEqual([
+      'https://case-path.example.com/Report?Ticker=AAPL',
+      'https://case-path.example.com/report?Ticker=AAPL',
+      'https://case-path.example.com/Report?ticker=aapl',
+    ]);
+    expect(upper.text).toContain('/Report?Ticker=AAPL');
+    expect(lower.text).toContain('/report?Ticker=AAPL');
+    expect(lower.cached).toBeUndefined();
+    expect(lowerQuery.text).toContain('/Report?ticker=aapl');
+  });
+
+  test('URLs that differ only by scheme or host case still share one cache entry', async () => {
+    const calls: string[] = [];
+    stubPages(calls);
+
+    await fetchText('https://case-host.example.com/Report');
+    const again = await fetchText('HTTPS://Case-Host.Example.COM/Report');
+
+    expect(calls).toHaveLength(1);
+    expect(again.cached).toBe(true);
+  });
+});

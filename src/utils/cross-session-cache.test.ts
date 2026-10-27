@@ -142,6 +142,32 @@ describe('saveCacheToDisk', () => {
     expect(files[0].replace('.json', '').length).toBeLessThanOrEqual(100);
   });
 
+  it('keeps distinct keys that share their first 100 characters, and keys that sanitize alike', async () => {
+    const { saveCacheToDisk, loadCacheFromDisk } = await getCacheModule();
+    const prefix = 'x'.repeat(100);
+
+    saveCacheToDisk(`${prefix}A`, 'value-A', 'toolA', 900_000);
+    saveCacheToDisk(`${prefix}B`, 'value-B', 'toolB', 900_000);
+    saveCacheToDisk('a/b', 'slash', 'tool', 900_000);
+    saveCacheToDisk('a:b', 'colon', 'tool', 900_000);
+
+    const loaded = await loadCacheFromDisk();
+    expect(loaded.get(`${prefix}A`)).toBe('value-A');
+    expect(loaded.get(`${prefix}B`)).toBe('value-B');
+    expect(loaded.get('a/b')).toBe('slash');
+    expect(loaded.get('a:b')).toBe('colon');
+  });
+
+  it('overwrites the same file when the same key is saved again', async () => {
+    const { saveCacheToDisk, loadCacheFromDisk, CACHE_DIR } = await getCacheModule();
+
+    saveCacheToDisk('same_key', 'first', 'tool', 900_000);
+    saveCacheToDisk('same_key', 'second', 'tool', 900_000);
+
+    expect((await import('node:fs')).readdirSync(CACHE_DIR)).toHaveLength(1);
+    expect((await loadCacheFromDisk()).get('same_key')).toBe('second');
+  });
+
   it('silently swallows write errors (never throws)', async () => {
     const { saveCacheToDisk } = await getCacheModule();
 

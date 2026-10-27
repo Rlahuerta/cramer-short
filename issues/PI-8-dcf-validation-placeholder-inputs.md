@@ -2,7 +2,7 @@
 
 - Severity: H
 - Area: C6b
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/dcf-valuation.ts:160` — `roic: 0,`, `src/tools/finance/dcf-valuation.ts:162` — `reportedEv: 0,`, `src/tools/finance/dcf-valuation.ts:156` — `riskFreeRate: 0.043,`, `src/utils/finance/dcf-validation.ts:143` — `if (reportedEv <= 0) {`
 - Repro kind: runtime

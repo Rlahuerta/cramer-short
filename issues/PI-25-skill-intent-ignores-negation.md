@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C4
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/agent/query-router/classification.ts:142` — `const match = query.match(/\buse (?:the )?([a-z0-9_-]+) skill\b/i);`, `src/agent/query-router/classification.ts:54` — `if (/\buse the\s+probability_assessment\s+skill\b/i.test(query)) return false;`, `src/agent/agent.ts:364` — `const explicitlyRequestedSkill = detectExplicitSkillRequest(query);`, `src/agent/agent.ts:375` — `for await (const event of this.toolExecutor.executeTool(`, `src/agent/agent.ts:388` — `runState.sequentialThinkingUsed = true;`
 - Repro kind: runtime

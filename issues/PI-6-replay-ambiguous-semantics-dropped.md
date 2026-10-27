@@ -2,7 +2,7 @@
 
 - Severity: H
 - Area: C3
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/arbiter-replay.ts:235` — `function isReplaySemantics(value: unknown): value is ForecastMarketSemantics {`, `src/tools/finance/arbiter-replay.ts:840` — `semantics: classifyPolymarketQuestion(market.question),`
 - Repro kind: runtime

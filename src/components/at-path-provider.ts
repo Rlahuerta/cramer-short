@@ -74,8 +74,12 @@ export function getAtFileSuggestions(atPrefix: string, cwd: string): Autocomplet
         }
       }
 
-      const rel =
-        rawPath.includes('/') ? join(dirname(rawPath), e.name) : e.name;
+      // A trailing slash makes dirname() collapse the directory to '.', so keep rawPath as typed.
+      const rel = rawPath.endsWith('/')
+        ? `${rawPath}${e.name}`
+        : rawPath.includes('/')
+          ? join(dirname(rawPath), e.name)
+          : e.name;
       const completionPath = isDir ? `${rel}/` : rel;
 
       return {

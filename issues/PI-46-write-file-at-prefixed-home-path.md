@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C8a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/filesystem/write-file.ts:46` — `const isHomePath = input.path.startsWith('~/') || input.path === '~';`, `src/tools/filesystem/write-file.ts:47` — `const root = isHomePath ? homedir() : cwd;`, `src/tools/filesystem/utils/path-utils.ts:21` — `return filePath.startsWith('@') ? filePath.slice(1) : filePath;`
 - Repro kind: runtime

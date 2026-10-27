@@ -2,10 +2,16 @@
 
 - Severity: M
 - Area: C8b
-- Status: Open
+- Status: Not a bug
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/model/llm.ts:497` — `const stream = await withRetry(`, `src/model/llm.ts:498` — `() => llm.stream(messages, signal ? { signal } : {}),`, `src/model/llm.ts:507` — `for await (const chunk of stream) {`
 - Repro kind: runtime
+
+## Resolution
+
+Not a bug with real provider models. In `@langchain/core`, `Runnable.stream()` is `async` and awaits `AsyncGeneratorWithSetup.setup`, which runs the first `generator.next()` and rejects if that first provider call fails. So `await llm.stream(...)` inside `withRetry` already retries a 429/5xx that arrives before the first chunk: a real `BaseChatModel` subclass whose `_streamResponseChunks` throws a 429 made 3 attempts (~1.5 s), the same policy as `callLlm`. Errors after the first chunk are deliberately not retried, because that would duplicate streamed output.
+
+The repro (and the fakes in `llm.test.ts`) use a lazy `stream: async function*`, which defers the throw to the `for await` loop. No real provider model does that, so the repro's failure is an artifact of its fake.
 
 ## Summary
 

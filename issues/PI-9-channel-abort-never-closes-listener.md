@@ -2,7 +2,7 @@
 
 - Severity: H
 - Area: C7a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/gateway/channels/whatsapp/runtime.ts:90` — `const closeReason = await listener.onClose;`, `src/gateway/channels/whatsapp/runtime.ts:49` — `while (!params.abortSignal.aborted) {`, `src/gateway/channels/manager.ts:110` — `await task.catch((err) => {`
 - Repro kind: runtime

@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C5
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/memory/financial-store.ts:105` — `let results = this.db.searchInsightsFts(query, (options?.maxResults ?? 6) * 2).map(rowToInsight);`, `src/memory/database.ts:431` — `ORDER BY rank LIMIT ?`
 - Repro kind: runtime

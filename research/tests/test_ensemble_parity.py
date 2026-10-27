@@ -353,6 +353,14 @@ def test_compute_quality_score_integer_range():
     assert isinstance(score, int)
 
 
+def test_compute_quality_score_signal_diversity_is_15_points_over_five_sources():
+    # sigma = 0.20 zeroes s3; with no markets s1 = s2 = s5 = 0, so the score is s4 alone.
+    assert compute_quality_score([], 0, 0.20, 0, 0) == 0
+    assert compute_quality_score([], 0, 0.20, 1, 0) == 3
+    assert compute_quality_score([], 0, 0.20, 4, 0) == 12
+    assert compute_quality_score([], 0, 0.20, 5, 0) == 15
+
+
 # ---------------------------------------------------------------------------
 # score_to_grade
 # ---------------------------------------------------------------------------
@@ -450,8 +458,41 @@ def test_compute_variance_sentiment_only():
         delta_no=-0.10,
     )
     sent_weight = 0.20
-    sigma = compute_variance([m], 0, sent_weight, None)
-    assert sigma == pytest.approx(sent_weight * 0.04 * 1.2, abs=1e-6)
+    # sigma = sent_weight * 0.04 * max(|sent_signal|, 0.25) * 1.2
+    assert compute_variance([m], 0, sent_weight, 1.0) == pytest.approx(sent_weight * 0.04 * 1.2, abs=1e-6)
+    assert compute_variance([m], 0, sent_weight, -1.0) == pytest.approx(sent_weight * 0.04 * 1.2, abs=1e-6)
+    assert compute_variance([m], 0, sent_weight, 0.5) == pytest.approx(sent_weight * 0.04 * 0.5 * 1.2, abs=1e-6)
+    # A missing signal counts as magnitude 0, i.e. the 0.25 floor.
+    assert compute_variance([m], 0, sent_weight, None) == pytest.approx(sent_weight * 0.04 * 0.25 * 1.2, abs=1e-6)
+
+
+def _sentiment_market() -> MarketInput:
+    return MarketInput(
+        question="Q",
+        probability=0.6,
+        volume24h_usd=800_000,
+        age_days=21,
+        signal_tier="macro",
+        delta_yes=0.06,
+        delta_no=-0.04,
+    )
+
+
+def test_compute_variance_grows_with_sentiment_strength():
+    m = _sentiment_market()
+    assert compute_variance([m], 0.4, 0.2, 0.01) < compute_variance([m], 0.4, 0.2, 1.0)
+    assert compute_variance([m], 0.4, 0.2, 0.5) < compute_variance([m], 0.4, 0.2, 1.0)
+    assert compute_variance([m], 0.4, 0.2, -0.7) == pytest.approx(compute_variance([m], 0.4, 0.2, 0.7), abs=1e-12)
+
+
+def test_compute_variance_sentiment_signal_floor():
+    m = _sentiment_market()
+    at_floor = compute_variance([m], 0.4, 0.2, 0.25)
+    assert compute_variance([m], 0.4, 0.2, 0.0) == pytest.approx(at_floor, abs=1e-12)
+    assert compute_variance([m], 0.4, 0.2, 0.01) == pytest.approx(at_floor, abs=1e-12)
+    assert compute_variance([m], 0.4, 0.2, None) == pytest.approx(at_floor, abs=1e-12)
+    assert compute_variance([m], 0.4, 0.2, float("nan")) == pytest.approx(at_floor, abs=1e-12)
+    assert at_floor < compute_variance([m], 0.4, 0.2, 1.0)
 
 
 def test_compute_variance_doubles_with_pm_weight():

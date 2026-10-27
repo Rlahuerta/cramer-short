@@ -2,7 +2,7 @@
 
 - Severity: L
 - Area: C1c
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/backtest/arbiter-replay-runner.ts:110` — `return (Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] as ForecastMarketSemantics | undefined) ?? 'unknown';`, `src/tools/finance/backtest/combined-short-horizon-benchmark.ts:81` — `const primary = (Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] as ForecastMarketSemantics | undefined) ?? 'unknown';`
 - Repro kind: runtime

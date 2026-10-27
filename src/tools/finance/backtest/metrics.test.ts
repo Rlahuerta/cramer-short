@@ -543,6 +543,16 @@ describe('crps', () => {
     expect(crps(accurate)).toBeLessThan(crps(farWide));
   });
 
+  it('scores the literal central-90 interval, not the wider helper interval (PI-16)', () => {
+    // Same central-90 (95..105); only the conservative helper interval differs.
+    const narrowHelper = makeStep({ ciLower: 95, ciUpper: 105 });
+    const wideHelper = makeStep({ ciLower: 90, ciUpper: 110, central90CiLower: 95, central90CiUpper: 105 });
+
+    expect(crps([wideHelper])).toBeCloseTo(crps([narrowHelper]), 10);
+    expect(scaledCrps([wideHelper])).toBeCloseTo(scaledCrps([narrowHelper]), 10);
+    expect(tailWeightedCrps([wideHelper])).toBeCloseTo(tailWeightedCrps([narrowHelper]), 10);
+  });
+
   it('returns finite scaled scores for zero-width or invalid intervals', () => {
     const score = scaledCrps([
       makeStep({
@@ -861,6 +871,37 @@ describe('murphyWinklerDecomposition', () => {
     expect(decomposition.coverage).toBeCloseTo(0);
   });
 
+  it('scores the literal central-90 interval, not the wider helper interval (PI-16)', () => {
+    const wideHelper = { ciLower: 90, ciUpper: 110, central90CiLower: 95, central90CiUpper: 105 };
+    const decomposition = murphyWinklerDecomposition([
+      makeStep({ ...wideHelper, realizedPrice: 100 }),
+      makeStep({ ...wideHelper, realizedPrice: 108 }),
+    ]);
+
+    expect(decomposition.meanWidth).toBeCloseTo(10);
+    // 108 is inside the helper interval but 3 above central-90: penalty 2 / 0.10 * 3 = 60, averaged over 2 steps.
+    expect(decomposition.upperMissPenalty).toBeCloseTo(30);
+    expect(decomposition.coverage).toBeCloseTo(0.5);
+  });
+
+  it('matches the interval level to alpha and falls back to the helper interval without literal bounds (PI-16)', () => {
+    const step = makeStep({
+      ciLower: 90,
+      ciUpper: 110,
+      central90CiLower: 95,
+      central90CiUpper: 105,
+      central95CiLower: 93,
+      central95CiUpper: 107,
+      realizedPrice: 100,
+    });
+
+    expect(murphyWinklerDecomposition([step], 0.05).meanWidth).toBeCloseTo(14);
+    // No literal 99% bounds on the step, so alpha 0.01 falls back to ciLower/ciUpper.
+    expect(murphyWinklerDecomposition([step], 0.01).meanWidth).toBeCloseTo(20);
+    // Non-standard alpha has no literal interval at all.
+    expect(murphyWinklerDecomposition([step], 0.2).meanWidth).toBeCloseTo(20);
+  });
+
   it('returns zeros for empty input', () => {
     expect(murphyWinklerDecomposition([])).toEqual({
       meanWidth: 0,
@@ -1065,12 +1106,31 @@ describe('selectiveDirectionalAccuracy', () => {
     expect(selective.coverage).toBe(3 / 5); // 60% coverage
   });
 
-  it('HOLD is correct when |actualReturn| < holdThreshold', () => {
+  it('scores only traded selected steps; HOLD abstentions are not rewarded (PI-17)', () => {
+    // Selected set: 3 traded (2 correct) + 7 flat HOLD abstentions.
     const steps = [
-      makeStep({ confidence: 0.7, recommendation: 'HOLD', actualReturn: 0.01 }),
+      makeStep({ confidence: 0.9, recommendation: 'BUY', actualReturn: 0.05 }),
+      makeStep({ confidence: 0.9, recommendation: 'BUY', actualReturn: 0.04 }),
+      makeStep({ confidence: 0.9, recommendation: 'SELL', actualReturn: 0.03 }),
+      ...Array.from({ length: 7 }, () => makeStep({ confidence: 0.9, recommendation: 'HOLD', actualReturn: 0.001 })),
     ];
-    const result = selectiveDirectionalAccuracy(steps, 0.5, 0.03);
-    expect(result.accuracy).toBe(1.0);
+    const result = selectiveDirectionalAccuracy(steps, 0.5);
+    expect(result.accuracy).toBeCloseTo(2 / 3, 10);
+    expect(result.accuracy).toBeCloseTo(directionalAccuracy(steps), 10);
+    // The coverage axis is still the confidence-selected fraction.
+    expect(result.selected).toBe(10);
+    expect(result.coverage).toBe(1);
+  });
+
+  it('scores 0 for a model that never trades instead of 100% (PI-17)', () => {
+    const steps = Array.from({ length: 5 }, () =>
+      makeStep({ confidence: 0.9, recommendation: 'HOLD', actualReturn: 0.001 }),
+    );
+    const result = selectiveDirectionalAccuracy(steps, 0.5);
+    expect(result.accuracy).toBe(0);
+    expect(result.coverage).toBe(1);
+    expect(result.selected).toBe(5);
+    expect(computeRCCurve(steps, [0, 0.5])[0].accuracy).toBe(0);
   });
 });
 

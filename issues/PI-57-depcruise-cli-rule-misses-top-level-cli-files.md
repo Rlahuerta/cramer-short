@@ -2,7 +2,7 @@
 
 - Severity: L
 - Area: C9
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `.dependency-cruiser.cjs:37` — `path: '^src/(cli|components|controllers)/',`, `.dependency-cruiser.cjs:48` — `path: '^src/(cli|components|controllers)/',`
 - Repro kind: static

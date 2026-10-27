@@ -1,6 +1,13 @@
 import { Container, Spacer, Text } from '@mariozechner/pi-tui';
 import type { ApprovalDecision } from '../agent/types.js';
 import { theme } from '../theme.js';
+import { formatResponseTui } from '../utils/ui/markdown-table.js';
+
+// Tool args, paths and results are model/remote-controlled: strip terminal control
+// sequences before colouring, and flatten newlines where a single line is expected.
+function oneLine(text: string): string {
+  return formatResponseTui(text).replace(/\n/g, ' ');
+}
 
 function formatToolName(name: string): string {
   // Strip common verb prefixes for cleaner display (get_financials → Financials)
@@ -28,20 +35,22 @@ function formatArgs(tool: string, args: Record<string, unknown>): string {
     const num = args.thoughtNumber ?? '?';
     const total = args.totalThoughts ?? '?';
     const prefix = args.isRevision ? '🔄' : args.branchFromThought ? '🌿' : '💭';
-    return theme.muted(`${prefix} ${num}/${total} "${truncateAtWord(thought, 60)}"`);
+    return theme.muted(oneLine(`${prefix} ${num}/${total} "${truncateAtWord(thought, 60)}"`));
   }
   if ('query' in args) {
     const query = String(args.query);
-    return theme.muted(`"${truncateAtWord(query, 60)}"`);
+    return theme.muted(oneLine(`"${truncateAtWord(query, 60)}"`));
   }
   if (tool === 'memory_update') {
     const text = String(args.content ?? args.old_text ?? '').replace(/\n/g, ' ');
-    if (text) return theme.muted(truncateAtWord(text, 80));
+    if (text) return theme.muted(oneLine(truncateAtWord(text, 80)));
   }
   return theme.muted(
-    Object.entries(args)
-      .map(([key, value]) => `${key}=${truncateAtWord(String(value).replace(/\n/g, '\\n'), 60)}`)
-      .join(', '),
+    oneLine(
+      Object.entries(args)
+        .map(([key, value]) => `${key}=${truncateAtWord(String(value).replace(/\n/g, '\\n'), 60)}`)
+        .join(', '),
+    ),
   );
 }
 
@@ -74,7 +83,7 @@ export class ToolEventComponent extends Container {
     this.addChild(new Spacer(1));
     const isSkill = tool === 'skill';
     if (isSkill) {
-      const skillName = String(args.skill ?? 'skill');
+      const skillName = oneLine(String(args.skill ?? 'skill'));
       this.titleText = `${theme.accent('Skill:')} ${theme.accent(skillName)}${theme.muted('()')}`;
       this.header = new Text(`${theme.accent('⚡')} ${this.titleText}`, 0, 0);
     } else {
@@ -92,7 +101,7 @@ export class ToolEventComponent extends Container {
     this.setHeaderBullet('⚡', theme.warning);
     this.clearDetail();
     const message = progressMessage || 'Searching...';
-    this.activeDetail = new Text(`${theme.muted('⎿  ')}${message}`, 0, 0);
+    this.activeDetail = new Text(`${theme.muted('⎿  ')}${formatResponseTui(message)}`, 0, 0);
     this.addChild(this.activeDetail);
   }
 
@@ -100,7 +109,7 @@ export class ToolEventComponent extends Container {
     this.setHeaderBullet('✓', theme.success);
     this.clearDetail();
     const detail = new Text(
-      `${theme.muted('⎿  ')}${summary}${theme.muted(` in ${formatDuration(duration)}`)}`,
+      `${theme.muted('⎿  ')}${formatResponseTui(summary)}${theme.muted(` in ${formatDuration(duration)}`)}`,
       0,
       0
     );
@@ -111,7 +120,7 @@ export class ToolEventComponent extends Container {
   setError(error: string) {
     this.setHeaderBullet('✗', theme.error);
     this.clearDetail();
-    const detail = new Text(`${theme.muted('⎿  ')}${theme.error(`Error: ${truncateAtWord(error, 80)}`)}`, 0, 0);
+    const detail = new Text(`${theme.muted('⎿  ')}${theme.error(`Error: ${truncateAtWord(formatResponseTui(error), 80)}`)}`, 0, 0);
     this.completedDetails.push(detail);
     this.addChild(detail);
   }
@@ -120,7 +129,7 @@ export class ToolEventComponent extends Container {
     this.setHeaderBullet('⚠', theme.warning);
     this.clearDetail();
     this.activeDetail = new Text(
-      `${theme.muted('⎿  ')}${theme.warning(truncateAtWord(warning || 'Approaching suggested limit', 100))}`,
+      `${theme.muted('⎿  ')}${theme.warning(truncateAtWord(formatResponseTui(warning || 'Approaching suggested limit'), 100))}`,
       0,
       0,
     );
@@ -131,7 +140,7 @@ export class ToolEventComponent extends Container {
     this.setHeaderBullet('⊘', theme.muted);
     this.clearDetail();
     const action = tool === 'write_file' ? 'write to' : tool === 'edit_file' ? 'edit of' : tool;
-    const detail = new Text(`${theme.muted('⎿  ')}${theme.warning(`User denied ${action} ${path}`)}`, 0, 0);
+    const detail = new Text(`${theme.muted('⎿  ')}${theme.warning(`User denied ${action} ${oneLine(path)}`)}`, 0, 0);
     this.completedDetails.push(detail);
     this.addChild(detail);
   }

@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C1d
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/utils/finance/ensemble.ts:617` — `sentSignal: number,`, `src/utils/finance/ensemble.ts:638` — `const varianceSent = (sentWeight * 0.04) ** 2;`
 - Repro kind: runtime

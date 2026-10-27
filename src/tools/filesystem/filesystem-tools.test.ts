@@ -257,6 +257,25 @@ describe('read_file tool', () => {
     }
   });
 
+  it('refuses to read credential stores that have no .env/.pem/.key name (PI-10)', async () => {
+    for (const name of ['.npmrc', '.netrc', '.git-credentials', '.htpasswd', 'id_rsa', 'id_ed25519', 'cert.p12']) {
+      await writeFile(tmpFile(name), 'SECRET=1');
+      await expect(readFileTool.invoke({ path: relPath(name) })).rejects.toThrow(/secrets/i);
+    }
+  });
+
+  it('isSecretPath flags well-known credential stores but not look-alikes (PI-10)', () => {
+    for (const p of ['.npmrc', 'app/.NETRC', '.git-credentials', '.htpasswd', '.ssh/id_rsa', 'id_ecdsa', 'id_dsa']) {
+      expect(isSecretPath(p)).toBe(true);
+    }
+    for (const p of ['a.p12', 'a.PFX', 'service-account.json', 'service-account-prod.json', 'Service-Account.JSON']) {
+      expect(isSecretPath(p)).toBe(true);
+    }
+    for (const p of ['.npmrc.md', 'id_rsa.pub', 'service-account-notes.md', 'service-accounts.ts', 'src/netrc.ts']) {
+      expect(isSecretPath(p)).toBe(false);
+    }
+  });
+
   it('isSecretPath flags cramer-short settings and credentials', () => {
     expect(isSecretPath('.cramer-short/settings.json')).toBe(true);
     expect(isSecretPath('.cramer-short/credentials/token.json')).toBe(true);
@@ -421,5 +440,50 @@ describe('edit_file tool', () => {
     expect(content).toContain('line 1');
     expect(content).toContain('changed!');
     expect(content).toContain('line 3');
+  });
+
+  it('fuzzy match edits only the matched region and keeps every other byte (PI-3)', async () => {
+    const file = tmpFile('fuzzy-bytes.ts');
+    await writeFile(file, 'const a = \u201cit\u2019s\u201d;\nconst b = 1;   \nconst c = \u201Cx\u201D;\n');
+
+    // Straight quotes in old_text force the fuzzy path (the file has curly quotes).
+    await editFileTool.invoke({
+      path: relPath('fuzzy-bytes.ts'),
+      old_text: `const a = "it's";`,
+      new_text: 'const a = "REPLACED";',
+    });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe('const a = "REPLACED";\nconst b = 1;   \nconst c = \u201Cx\u201D;\n');
+  });
+
+  it('fuzzy match spanning lines with trailing whitespace keeps the surrounding bytes (PI-3)', async () => {
+    const file = tmpFile('fuzzy-span.txt');
+    await writeFile(file, 'keep   \nfoo   \nbar   \nend\u00A0 \n');
+
+    await editFileTool.invoke({
+      path: relPath('fuzzy-span.txt'),
+      old_text: 'foo\nbar',
+      new_text: 'X',
+    });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe('keep   \nX   \nend\u00A0 \n');
+  });
+
+  it('fuzzy match on a CRLF file keeps CRLF and every untouched byte (PI-3)', async () => {
+    const file = tmpFile('fuzzy-crlf.ts');
+    await writeFile(file, 'const a = \u201cit\u2019s\u201d;\r\nconst b = 1;   \r\nconst c = \u201Cx\u201D;\r\n');
+
+    await editFileTool.invoke({
+      path: relPath('fuzzy-crlf.ts'),
+      old_text: `const a = "it's";`,
+      new_text: 'const a = "REPLACED";',
+    });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe(
+      'const a = "REPLACED";\r\nconst b = 1;   \r\nconst c = \u201Cx\u201D;\r\n',
+    );
   });
 });

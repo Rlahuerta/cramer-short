@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C4
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/agent/prompts.ts:563` — `const hasCanonicalMarkovOutput = /"_tool"\s*:\s*"markov_distribution"/.test(fullToolResults);`, `src/agent/prompts.ts:567` — `Use the reported scenario bucket probabilities and diagnostics verbatim.`, `src/agent/prompts.ts:573` — `if (hasCanonicalMarkovOutput && requestedBucketMatch) {`, `src/agent/prompts.ts:576` — `Preserve that ${requestedBucketMatch[1]}-part bucket granularity in the final answer when presenting the canonical Markov distribution.`
 - Repro kind: runtime

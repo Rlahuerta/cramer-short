@@ -117,7 +117,7 @@ export function aggregateStats(posts: SentimentPost[]): SentimentStats {
   let weightedSum = 0;
   let weightSum = 0;
   for (const p of posts) {
-    const w = 1 + (p.score / maxScore);
+    const w = 1 + Math.max(0, p.score) / maxScore; // downvotes (ups < 0) add no weight
     weightedSum += p.sentimentScore * w;
     weightSum += w;
   }

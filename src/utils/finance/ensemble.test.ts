@@ -1220,7 +1220,7 @@ describe('computeEnsemble', () => {
 // ---------------------------------------------------------------------------
 
 describe('computeQualityScore', () => {
-  it('5 markets + avgQuality=1 + low sigma + all 4 signals + no whales → high score (≥80)', () => {
+  it('5 markets + avgQuality=1 + low sigma + 4 of 5 signals + no whales → high score (≥80)', () => {
     const markets: MarketInput[] = Array.from({ length: 5 }, (_, i) => ({
       question: `M${i}`,
       probability: 0.5,
@@ -1236,7 +1236,7 @@ describe('computeQualityScore', () => {
 
   it('0 markets → s1=0, s5=0 → low score', () => {
     const score = computeQualityScore([], 0, 0.10, 1, 0);
-    // s1=0, s2=0, s3=20*(1-0.5)=10, s4=15*0.25=3.75, s5=0 → ≈14
+    // s1=0, s2=0, s3=20*(1-0.5)=10, s4=15*0.2=3, s5=0 → 13
     expect(score).toBeLessThan(20);
   });
 
@@ -1244,6 +1244,14 @@ describe('computeQualityScore', () => {
     const score = computeQualityScore([], 0, 1.0, 0, 0);
     expect(score).toBe(0);
     expect(Number.isInteger(score)).toBe(true);
+  });
+
+  it('signal diversity is a 15-point component over the five signal sources (PI-18)', () => {
+    // sigma = 0.20 zeroes s3; with no markets s1 = s2 = s5 = 0, so the score is s4 alone.
+    expect(computeQualityScore([], 0, 0.20, 0, 0)).toBe(0);
+    expect(computeQualityScore([], 0, 0.20, 1, 0)).toBe(3);
+    expect(computeQualityScore([], 0, 0.20, 4, 0)).toBe(12);
+    expect(computeQualityScore([], 0, 0.20, 5, 0)).toBe(15);
   });
 });
 
@@ -1589,7 +1597,7 @@ describe('computeVariance — additional edge cases', () => {
     expect(s2).toBeLessThan(s3);
   });
 
-  it('sentiment-only variance when pmWeight = 0: sigma = sentWeight × 0.04 × 1.2', () => {
+  it('sentiment-only variance when pmWeight = 0: sigma = sentWeight × 0.04 × max(|sentSignal|, 0.25) × 1.2', () => {
     const m: MarketInput = {
       question: 'Q',
       probability: 0.5,
@@ -1599,10 +1607,60 @@ describe('computeVariance — additional edge cases', () => {
       deltaYes: 0.10,
       deltaNo: -0.10,
     };
-    // varianceSent = (sentWeight × 0.04)² → sigma = sentWeight × 0.04 × 1.2
+    // varianceSent = (sentWeight × 0.04 × max(|s|, 0.25))² → sigma = sentWeight × 0.04 × max(|s|, 0.25) × 1.2
     const sentWeight = 0.20;
-    const sigma = computeVariance([m], 0, sentWeight, 0);
-    expect(sigma).toBeCloseTo(sentWeight * 0.04 * 1.2, 6);
+    expect(computeVariance([m], 0, sentWeight, 1)).toBeCloseTo(sentWeight * 0.04 * 1.2, 6);
+    expect(computeVariance([m], 0, sentWeight, -1)).toBeCloseTo(sentWeight * 0.04 * 1.2, 6);
+    expect(computeVariance([m], 0, sentWeight, 0.5)).toBeCloseTo(sentWeight * 0.04 * 0.5 * 1.2, 6);
+  });
+
+  it('sentiment uncertainty grows with signal strength (PI-19)', () => {
+    const m: MarketInput = {
+      question: 'Q',
+      probability: 0.6,
+      volume24hUsd: 800_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+    };
+    expect(computeVariance([m], 0.4, 0.2, 0.01)).toBeLessThan(computeVariance([m], 0.4, 0.2, 1.0));
+    expect(computeVariance([m], 0.4, 0.2, 0.5)).toBeLessThan(computeVariance([m], 0.4, 0.2, 1.0));
+    // Sign does not matter: only the magnitude of the sentiment signal.
+    expect(computeVariance([m], 0.4, 0.2, -0.7)).toBeCloseTo(computeVariance([m], 0.4, 0.2, 0.7), 12);
+  });
+
+  it('sentiment uncertainty never drops below the 0.25 signal floor (PI-19)', () => {
+    const m: MarketInput = {
+      question: 'Q',
+      probability: 0.6,
+      volume24hUsd: 800_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+    };
+    const atFloor = computeVariance([m], 0.4, 0.2, 0.25);
+    expect(computeVariance([m], 0.4, 0.2, 0)).toBeCloseTo(atFloor, 12);
+    expect(computeVariance([m], 0.4, 0.2, 0.01)).toBeCloseTo(atFloor, 12);
+    expect(computeVariance([m], 0.4, 0.2, -0.1)).toBeCloseTo(atFloor, 12);
+    expect(atFloor).toBeLessThan(computeVariance([m], 0.4, 0.2, 1.0));
+  });
+
+  it('a non-finite sentiment signal with zero sentiment weight leaves sigma finite (PI-19)', () => {
+    const m: MarketInput = {
+      question: 'Q',
+      probability: 0.6,
+      volume24hUsd: 800_000,
+      ageDays: 21,
+      signalTier: 'macro',
+      deltaYes: 0.06,
+      deltaNo: -0.04,
+    };
+    const sigma = computeVariance([m], 0.4, 0, Number.NaN);
+    expect(Number.isFinite(sigma)).toBe(true);
+    expect(sigma).toBeCloseTo(computeVariance([m], 0.4, 0, 0), 12);
+    expect(Number.isFinite(runEnsemble(100, [m], { sentimentScore: Number.NaN }).sigma)).toBe(true);
   });
 
   it('doubling pmWeight doubles sigma (quadratic variance, linear sigma)', () => {

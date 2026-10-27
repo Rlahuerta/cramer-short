@@ -62,7 +62,7 @@ mock.module('../search/tavily.js', () => ({
 }));
 
 import { api } from './api.js';
-const { getIncomeStatements, getBalanceSheets, getCashFlowStatements } =
+const { getIncomeStatements, getBalanceSheets, getCashFlowStatements, getAllFinancialStatements } =
   await import('./fundamentals.js');
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -501,5 +501,94 @@ describe('getCashFlowStatements — Tavily fallback on FMP premium', () => {
     const [calledInput] = mockTavilyInvoke.mock.calls[0] as [{ query: string }];
     expect(calledInput.query).toContain('VWS.CO');
     expect(calledInput.query.toLowerCase()).toContain('cash flow');
+  });
+});
+
+// ===========================================================================
+// FMP fallback — honours report_period_* bounds
+// ===========================================================================
+
+describe('FMP fallback honours report_period bounds', () => {
+  const fmpRows = (extra: Record<string, unknown>) =>
+    JSON.stringify({
+      data: ['2024-09-28', '2021-09-25', '2019-09-28'].map((date) => ({ date, symbol: 'AAPL', ...extra })),
+      sourceUrls: [],
+    });
+  const bounds = { report_period_gte: '2019-01-01', report_period_lte: '2019-12-31' };
+  const datesOf = (raw: unknown) => (parseResult(raw).data as { date: string }[]).map((r) => r.date);
+
+  beforeEach(() => {
+    mockYahooIncomeInvoke.mockResolvedValue(JSON.stringify({ data: { error: 'No data' }, sourceUrls: [] }));
+  });
+
+  test('income statements: keeps only rows inside the requested window', async () => {
+    mockFdFailure();
+    mockFmpIncomeInvoke.mockResolvedValueOnce(fmpRows({ revenue: 1 }));
+
+    const raw = await getIncomeStatements.invoke({ ticker: 'AAPL', period: 'annual', limit: 4, ...bounds });
+
+    expect(datesOf(raw)).toEqual(['2019-09-28']);
+  });
+
+  test('income statements: strict gt/lt bounds exclude the boundary dates', async () => {
+    mockFdFailure();
+    mockFmpIncomeInvoke.mockResolvedValueOnce(fmpRows({ revenue: 1 }));
+
+    const raw = await getIncomeStatements.invoke({
+      ticker: 'AAPL',
+      period: 'annual',
+      limit: 4,
+      report_period_gt: '2019-09-28',
+      report_period_lt: '2024-09-28',
+    });
+
+    expect(datesOf(raw)).toEqual(['2021-09-25']);
+  });
+
+  test('income statements: a window with no FMP rows is an error, not the latest periods', async () => {
+    mockFdFailure();
+    mockFmpIncomeInvoke.mockResolvedValueOnce(fmpRows({ revenue: 1 }));
+
+    const raw = await getIncomeStatements.invoke({
+      ticker: 'AAPL',
+      period: 'annual',
+      limit: 4,
+      report_period_gte: '2010-01-01',
+      report_period_lte: '2010-12-31',
+    });
+
+    expect((parseResult(raw).data as { error?: string }).error).toContain('No income statement data');
+  });
+
+  test('balance sheets: keeps only rows inside the requested window', async () => {
+    mockFdFailure();
+    mockFmpBalanceInvoke.mockResolvedValueOnce(fmpRows({ totalAssets: 1 }));
+
+    const raw = await getBalanceSheets.invoke({ ticker: 'AAPL', period: 'annual', limit: 4, ...bounds });
+
+    expect(datesOf(raw)).toEqual(['2019-09-28']);
+  });
+
+  test('cash flow statements: keeps only rows inside the requested window', async () => {
+    mockFdFailure();
+    mockFmpCashFlowInvoke.mockResolvedValueOnce(fmpRows({ freeCashFlow: 1 }));
+
+    const raw = await getCashFlowStatements.invoke({ ticker: 'AAPL', period: 'annual', limit: 4, ...bounds });
+
+    expect(datesOf(raw)).toEqual(['2019-09-28']);
+  });
+
+  test('all statements: each FMP statement is filtered to the requested window', async () => {
+    mockFdFailure();
+    mockFmpIncomeInvoke.mockResolvedValueOnce(fmpRows({ revenue: 1 }));
+    mockFmpBalanceInvoke.mockResolvedValueOnce(fmpRows({ totalAssets: 1 }));
+    mockFmpCashFlowInvoke.mockResolvedValueOnce(fmpRows({ freeCashFlow: 1 }));
+
+    const raw = await getAllFinancialStatements.invoke({ ticker: 'AAPL', period: 'annual', limit: 4, ...bounds });
+    const data = parseResult(raw).data as Record<string, { date: string }[]>;
+
+    expect(data.income_statements?.map((r) => r.date)).toEqual(['2019-09-28']);
+    expect(data.balance_sheets?.map((r) => r.date)).toEqual(['2019-09-28']);
+    expect(data.cash_flow_statements?.map((r) => r.date)).toEqual(['2019-09-28']);
   });
 });

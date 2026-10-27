@@ -4,6 +4,7 @@ import {
   countRenderedTuiMarkdownLines,
   parseMarkdownTable,
   renderBoxTable,
+  renderTuiMarkdownLines,
   truncateTuiMarkdownTail,
   transformMarkdownTables,
   formatResponse,
@@ -43,6 +44,24 @@ describe('parseMarkdownTable', () => {
     const result = parseMarkdownTable(md);
     expect(result!.headers).toEqual(['Ticker', 'Price']);
     expect(result!.rows[0]).toEqual(['HON', '$225']);
+  });
+
+  it('keeps every header cell when only the leading pipe is present', () => {
+    const result = parseMarkdownTable('| A | B\n|---|---|\n| 1 | 2');
+    expect(result!.headers).toEqual(['A', 'B']);
+    expect(result!.rows).toEqual([['1', '2']]);
+  });
+
+  it('keeps every header cell when only the trailing pipe is present', () => {
+    const result = parseMarkdownTable('A | B |\n|---|---|\n1 | 2 |');
+    expect(result!.headers).toEqual(['A', 'B']);
+    expect(result!.rows).toEqual([['1', '2']]);
+  });
+
+  it('keeps every header cell when neither outer pipe is present', () => {
+    const result = parseMarkdownTable('A | B | C\n---|---|---\n1 | 2 | 3');
+    expect(result!.headers).toEqual(['A', 'B', 'C']);
+    expect(result!.rows).toEqual([['1', '2', '3']]);
   });
 });
 
@@ -127,6 +146,16 @@ describe('transformMarkdownTables', () => {
     expect(result).toContain('│');
   });
 
+  it('renders every column of a table with only one outer pipe', () => {
+    for (const md of ['| A | B\n|---|---|\n| 1 | 2', 'A | B |\n|---|---|\n1 | 2 |']) {
+      const result = transformMarkdownTables(md);
+      expect(result).toContain('┌');
+      for (const cell of ['A', 'B', '1', '2']) {
+        expect(result).toMatch(new RegExp(`│ ${cell} +│`));
+      }
+    }
+  });
+
   it('produces consistent visual line widths for bold-cell tables', () => {
     const md = `| Ticker | Price |\n|--------|-------|\n| **HON** | ~$225 |\n| **AMAT** | ~$180 |`;
     const result = transformMarkdownTables(md);
@@ -161,6 +190,22 @@ describe('formatResponse (full pipeline)', () => {
     const headerRow = lines[1];
     const dataRow = lines[3];
     expect(visualWidth(headerRow)).toBe(visualWidth(dataRow));
+  });
+});
+
+describe('formatResponse — underscores in table cells', () => {
+  // Rendered width without relying on the markdown-stripping helper above.
+  const renderedWidths = (md: string) =>
+    formatResponse(md).split('\n').map(line => [...line.replace(/\x1b\[[0-9;]*m/g, '')].length);
+
+  it('keeps rows aligned when a cell holds a snake_case identifier', () => {
+    const widths = renderedWidths('| metric | note |\n|---|---|\n| foo_bar_baz | x |');
+    expect(new Set(widths).size).toBe(1);
+  });
+
+  it('still measures a real _italic_ cell by its visible text', () => {
+    const widths = renderedWidths('| metric | note |\n|---|---|\n| _growth_ | x |');
+    expect(new Set(widths).size).toBe(1);
   });
 });
 
@@ -317,5 +362,20 @@ describe('formatResponseTui', () => {
     expect(truncated.truncated).toBe(true);
     expect(truncated.text.startsWith('…\n')).toBe(true);
     expect(countRenderedTuiMarkdownLines(truncated.text, 20)).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('countRenderedTuiMarkdownLines', () => {
+  it('does not reuse the count of a different answer with the same length and prefix', () => {
+    const width = 40;
+    const sharedPrefix = 'x'.repeat(120);
+    const first = `${sharedPrefix}\n${'b'.repeat(19)}`;
+    const second = `${sharedPrefix}\n${Array.from({ length: 10 }, () => 'c').join('\n')}`;
+    expect(second.length).toBe(first.length);
+    expect(renderTuiMarkdownLines(second, width).length).not.toBe(renderTuiMarkdownLines(first, width).length);
+
+    // Counting `first` seeds the cache; `second` must still be counted from its own render.
+    expect(countRenderedTuiMarkdownLines(first, width)).toBe(renderTuiMarkdownLines(first, width).length);
+    expect(countRenderedTuiMarkdownLines(second, width)).toBe(renderTuiMarkdownLines(second, width).length);
   });
 });

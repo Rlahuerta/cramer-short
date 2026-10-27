@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C1b
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/conformal.ts:195` — `if (opts.radius !== undefined) {`, `src/tools/finance/conformal.ts:148` — `this.q = Math.max(0, opts.initialRadius ?? 1.0);`, `research/models/conformal.py:148` — `def reset(self, radius: Optional[float] = None) -> None:`
 - Repro kind: runtime

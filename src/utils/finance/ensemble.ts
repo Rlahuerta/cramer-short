@@ -606,9 +606,13 @@ export function computeEnsemble(
   return { forecastReturn, weights };
 }
 
+/** Minimum fraction of a full sentiment unit used for the sentiment variance term. */
+const SENTIMENT_SIGNAL_FLOOR = 0.25;
+
 /**
  * Estimate total forecast standard deviation combining market-level
- * uncertainty, sentiment uncertainty, and a 20% model-uncertainty buffer.
+ * uncertainty, sentiment uncertainty (scaled by max(|sentSignal|, 0.25)),
+ * and a 20% model-uncertainty buffer.
  */
 export function computeVariance(
   markets: MarketInput[],
@@ -634,8 +638,11 @@ export function computeVariance(
     variancePmMarkets += normW * normW * pAdj * (1 - pAdj) * spread * spread;
   }
 
-  // Sentiment variance — assume ±4% std for full bullish/bearish unit.
-  const varianceSent = (sentWeight * 0.04) ** 2;
+  // Sentiment variance — assume ±4% std for a full bullish/bearish unit, scaled by the
+  // signal magnitude but never below SENTIMENT_SIGNAL_FLOOR of a unit. A non-finite signal
+  // (NaN means sentiment is unavailable, so its weight is 0) counts as magnitude 0.
+  const sentMagnitude = Math.max(Number.isFinite(sentSignal) ? Math.abs(sentSignal) : 0, SENTIMENT_SIGNAL_FLOOR);
+  const varianceSent = (sentWeight * 0.04 * sentMagnitude) ** 2;
 
   // Combine and apply 20% model-uncertainty buffer.
   const varianceCombined = pmWeight ** 2 * variancePmMarkets + varianceSent;
@@ -671,7 +678,7 @@ export function computeQualityScore(
   const s1 = 30 * Math.min(markets.length, 5) / 5;
   const s2 = 25 * avgQuality;
   const s3 = 20 * Math.max(0, 1 - sigma / 0.20);
-  const s4 = 15 * (signalsWithData / 4);
+  const s4 = 15 * (signalsWithData / 5); // five sources: Polymarket, sentiment, fundamental, options, Markov
   const s5 = markets.length > 0 ? 10 * (1 - whaleCount / markets.length) : 0;
   return Math.round(Math.min(100, Math.max(0, s1 + s2 + s3 + s4 + s5)));
 }

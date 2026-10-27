@@ -2,7 +2,7 @@
 
 - Severity: L
 - Area: C6a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/get-financials.ts:306` — `const apiHint = result.tool.includes('yahoo') ? 'yahoo' : 'fmp';`
 - Repro kind: runtime

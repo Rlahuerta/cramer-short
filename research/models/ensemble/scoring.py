@@ -23,7 +23,8 @@ def compute_quality_score(
     - s1 (30 pts): market count (saturates at 5)
     - s2 (25 pts): average market quality
     - s3 (20 pts): sigma penalty (higher uncertainty → lower score)
-    - s4 (15 pts): auxiliary signal coverage (out of 4 possible)
+    - s4 (15 pts): signal coverage (out of 5 sources: Polymarket, sentiment,
+      fundamental, options, Markov)
     - s5 (10 pts): whale ratio penalty
 
     Parameters
@@ -35,7 +36,7 @@ def compute_quality_score(
     sigma : float
         Forecast standard deviation.
     signals_with_data : int
-        Number of auxiliary signal sources with valid data (0–4).
+        Number of signal sources with valid data (0–5), Polymarket included.
     whale_count : int
         Number of markets with detected price spikes.
 
@@ -47,7 +48,7 @@ def compute_quality_score(
     s1 = 30 * min(len(markets), 5) / 5
     s2 = 25 * avg_quality
     s3 = 20 * max(0, 1 - sigma / 0.20)
-    s4 = 15 * (signals_with_data / 4)
+    s4 = 15 * (signals_with_data / 5)
     s5 = 10 * (1 - whale_count / len(markets)) if markets else 0
     return round(min(100, max(0, s1 + s2 + s3 + s4 + s5)))
 

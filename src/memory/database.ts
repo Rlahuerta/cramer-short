@@ -69,6 +69,9 @@ type CacheRow = {
   embedding: Uint8Array;
 };
 
+// Lowest keyword score a real FTS match can get; keep >= the default minScore in memory/index.ts.
+const KEYWORD_SCORE_FLOOR = 0.1;
+
 const FINANCIAL_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS financial_insights (
   id           INTEGER PRIMARY KEY,
@@ -423,14 +426,32 @@ export class MemoryDatabase {
       .all(ticker);
   }
 
-  searchInsightsFts(query: string, maxResults: number): FinancialInsightRecord[] {
+  searchInsightsFts(
+    query: string,
+    maxResults: number,
+    filter?: { ticker?: string; namespace?: string },
+  ): FinancialInsightRecord[] {
     const sanitized = buildFtsQuery(query);
     if (!sanitized) return [];
+    // Apply ticker/namespace before the LIMIT, so other tickers' top-ranked rows cannot crowd out the matches.
+    const conditions: string[] = [];
+    const args: string[] = [];
+    if (filter?.ticker) {
+      conditions.push('UPPER(ticker) = UPPER(?)');
+      args.push(filter.ticker);
+    }
+    if (filter?.namespace !== undefined) {
+      conditions.push('namespace = ?');
+      args.push(filter.namespace);
+    }
+    const scope = conditions.length
+      ? ` AND insight_id IN (SELECT id FROM financial_insights WHERE ${conditions.join(' AND ')})`
+      : '';
     const rows = this.db
       .query<{ insight_id: number; rank: number }>(
-        'SELECT insight_id, bm25(financial_insights_fts) AS rank FROM financial_insights_fts WHERE financial_insights_fts MATCH ? ORDER BY rank LIMIT ?',
+        `SELECT insight_id, bm25(financial_insights_fts) AS rank FROM financial_insights_fts WHERE financial_insights_fts MATCH ?${scope} ORDER BY rank LIMIT ?`,
       )
-      .all(sanitized, maxResults);
+      .all(sanitized, ...args, maxResults);
     const ids = rows.map((r) => r.insight_id);
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => '?').join(',');
@@ -518,7 +539,7 @@ export class MemoryDatabase {
   getChunkByHash(contentHash: string): ChunkRow | null {
     return this.db
       .query<ChunkRow>(
-        'SELECT id, file_path, start_line, end_line, content, content_hash, embedding FROM chunks WHERE content_hash = ?',
+        'SELECT id, file_path, start_line, end_line, content, content_hash, embedding, source FROM chunks WHERE content_hash = ?',
       )
       .get(contentHash);
   }
@@ -721,14 +742,15 @@ export class MemoryDatabase {
     if (rows.length === 0) return [];
 
     // SQLite BM25 returns negative values — more negative = better match.
-    // Normalise to [0, 1]: best candidate → 1, worst → 0.
+    // Normalise to [KEYWORD_SCORE_FLOOR, 1]: best candidate → 1, worst → the floor. Every row is a real
+    // FTS match, so it must not score 0 and fall under hybridSearch's default minScore (0.1).
     const minRank = Math.min(...rows.map((r) => r.rank));
     const maxRank = Math.max(...rows.map((r) => r.rank));
     const range = maxRank - minRank;
 
     return rows.slice(0, maxResults).map((row) => ({
       chunkId: row.chunk_id,
-      score: range > 0 ? (maxRank - row.rank) / range : 1,
+      score: range > 0 ? KEYWORD_SCORE_FLOOR + (1 - KEYWORD_SCORE_FLOOR) * ((maxRank - row.rank) / range) : 1,
     }));
   }
 

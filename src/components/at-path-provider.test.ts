@@ -95,6 +95,19 @@ describe('getAtFileSuggestions', () => {
     expect(labels).toContain('cli.ts');
   });
 
+  it('keeps the directory prefix in suggestion values when path ends with /', () => {
+    mkdirSync(join(tmpDir, 'src', 'nested'));
+    writeFileSync(join(tmpDir, 'src', 'nested', 'deep.ts'), '');
+    writeFileSync(join(tmpDir, 'cli.ts'), '');
+
+    const src = getAtFileSuggestions('@src/', tmpDir);
+    expect(src.find((i) => i.label === 'cli.ts')!.value).toBe('@src/cli.ts');
+    expect(src.find((i) => i.label === 'nested/')!.value).toBe('@src/nested/');
+
+    const nested = getAtFileSuggestions('@src/nested/', tmpDir);
+    expect(nested.map((i) => i.value)).toEqual(['@src/nested/deep.ts']);
+  });
+
   it('filters inside subdirectory', () => {
     const items = getAtFileSuggestions('@src/cli', tmpDir);
     expect(items).toHaveLength(1);
@@ -225,6 +238,18 @@ describe('AtPathAutocompleteProvider', () => {
     );
     const result = providerWithFd.getSuggestions(['/watchlist'], 0, '/watchlist'.length);
     expect(result).toBeNull();
+  });
+
+  it('completing inside a directory typed with a trailing slash keeps the directory', () => {
+    writeFileSync(join(tmpDir, 'src', 'cli.ts'), '');
+    writeFileSync(join(tmpDir, 'cli.ts'), '');
+    const line = '@src/';
+    const result = provider.getSuggestions([line], 0, line.length);
+    const item = result!.items.find((i) => i.label === 'cli.ts')!;
+
+    const applied = provider.applyCompletion([line], 0, line.length, item, result!.prefix);
+
+    expect(applied.lines[0]).toBe('@src/cli.ts ');
   });
 
   it('applyCompletion replaces @ prefix with file value', () => {

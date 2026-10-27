@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C7b
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/theme.ts:19` — `chalk.hex(color)(text)`, `src/theme.ts:7` — `success: 'green',`
 - Repro kind: runtime

@@ -145,4 +145,25 @@ describe('forecast-lab router', () => {
       preferredProfileId: null,
     });
   });
+
+  it('matches improvement cues as whole words, not as fragments of unrelated words', () => {
+    for (const query of [
+      'What is the fixed-income outlook for the next year?',
+      'Compare the fixture data quality across providers.',
+      'What is the fortune 500 earnings trend?',
+    ]) {
+      expect(routeForecastLabQuery(query)).toMatchObject({ intent: 'none', preferredProfileId: null });
+    }
+  });
+
+  it('still matches plural improvement cues and multi-word profile terms', () => {
+    expect(routeForecastLabQuery('Review these improvements to the BTC 1d/2d/3d Markov lane.')).toMatchObject({
+      intent: 'improvement',
+      preferredProfileId: 'btc-markov-ultra-short-horizon',
+    });
+    expect(routeForecastLabQuery('Optimize the ultra short horizon BTC Markov behavior.')).toMatchObject({
+      intent: 'improvement',
+      preferredProfileId: 'btc-markov-ultra-short-horizon',
+    });
+  });
 });

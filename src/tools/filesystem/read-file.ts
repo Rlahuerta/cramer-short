@@ -37,6 +37,17 @@ const readFileSchema = z.object({
   limit: z.number().optional().describe('Maximum number of lines to read from the offset.'),
 });
 
+const SECRET_BASENAMES = new Set([
+  '.npmrc',
+  '.netrc',
+  '.git-credentials',
+  '.htpasswd',
+  'id_rsa',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
+]);
+
 /** Secret-bearing paths that must never reach the LLM context, even inside the cwd sandbox. */
 export function isSecretPath(relPath: string): boolean {
   const rel = relPath.normalize('NFC').replace(/\\/g, '/').toLowerCase();
@@ -45,6 +56,10 @@ export function isSecretPath(relPath: string): boolean {
     name.startsWith('.env') ||
     name.endsWith('.pem') ||
     name.endsWith('.key') ||
+    name.endsWith('.p12') ||
+    name.endsWith('.pfx') ||
+    SECRET_BASENAMES.has(name) ||
+    /^service-account.*\.json$/.test(name) ||
     rel === '.cramer-short/settings.json' ||
     rel === '.cramer-short/credentials' ||
     rel.startsWith('.cramer-short/credentials/')

@@ -5,6 +5,7 @@
  * Also handles bold text formatting.
  */
 
+import { createHash } from 'node:crypto';
 import { Markdown } from '@mariozechner/pi-tui';
 import chalk from 'chalk';
 import { markdownTheme } from '../../theme.js';
@@ -37,7 +38,7 @@ function stripMarkdownFormatting(text: string): string {
   return text
     .replace(/\*\*([^*]+)\*\*/g, '$1')   // **bold** → content
     .replace(/\*([^*]+)\*/g, '$1')        // *italic* → content
-    .replace(/_([^_\s][^_]*)_/g, '$1');   // _italic_ → content
+    .replace(/(?<!\w)_([^_\s][^_\n]*)_(?!\w)/g, '$1');   // _italic_ → content (word-boundary guard as in transformItalic: snake_case stays)
 }
 
 /**
@@ -82,11 +83,11 @@ export function parseMarkdownTable(tableText: string): { headers: string[]; rows
   const headerLine = lines[0];
   if (!headerLine.includes('|')) return null;
   
-  const headers = headerLine
-    .split('|')
-    .map(cell => cell.trim())
-    .filter((_, i, arr) => i > 0 && i < arr.length - 1 || arr.length === 1);
-  
+  // Leading and trailing pipes are each optional (GFM): drop only empty edge cells.
+  const headers = headerLine.split('|').map(cell => cell.trim());
+  if (headers[0] === '') headers.shift();
+  if (headers[headers.length - 1] === '') headers.pop();
+
   // Handle edge case where there's no leading/trailing pipe
   if (headers.length === 0) {
     const rawHeaders = headerLine.split('|').map(cell => cell.trim());
@@ -365,7 +366,9 @@ export function renderTuiMarkdownLines(content: string, width: number): string[]
 const renderedLineCache = new Map<string, number>();
 
 export function countRenderedTuiMarkdownLines(content: string, width: number): number {
-  const key = `${content.length}:${width}:${content.slice(0, 120)}`;
+  // Hash the full content: a truncated prefix collides, and streaming re-counts every growing
+  // answer, so full-content keys would be retained for the life of the process.
+  const key = `${width}:${createHash('sha256').update(content).digest('hex')}`;
   const cached = renderedLineCache.get(key);
   if (cached !== undefined) return cached;
   const result = renderTuiMarkdownLines(content, width).length;

@@ -2,7 +2,7 @@
 
 - Severity: L
 - Area: C5
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/utils/cross-session-cache.ts:32` — `return key.replace(/[/:?&]/g, '_').slice(0, 100);`
 - Repro kind: runtime

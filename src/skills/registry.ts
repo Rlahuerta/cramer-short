@@ -43,8 +43,11 @@ function scanSkillDirectory(dirPath: string, source: SkillSource): SkillMetadata
         try {
           const metadata = extractSkillMetadata(skillFilePath, source);
           skills.push(metadata);
-        } catch {
-          // Skip invalid skill files silently
+        } catch (error) {
+          // Skip the invalid file, but say which one and why (a bad override would otherwise be invisible).
+          console.warn(
+            `[cramer-short] skipping invalid skill file ${skillFilePath}: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
       }
     }

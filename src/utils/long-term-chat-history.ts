@@ -31,6 +31,7 @@ export class LongTermChatHistory {
   private filePath: string;
   private messages: ConversationEntry[] = [];
   private loaded = false;
+  private readFailed = false;
 
   constructor(baseDir: string = process.cwd()) {
     this.filePath = join(baseDir, getCramerShortDir(), MESSAGES_DIR, MESSAGES_FILE);
@@ -54,8 +55,10 @@ export class LongTermChatHistory {
         await this.save();
       }
     } catch {
-      // If there's any error reading/parsing, start fresh
+      // If there's any error reading/parsing, start fresh in memory, but never save over the
+      // file we could not read (save() is skipped), so its history stays recoverable.
       this.messages = [];
+      this.readFailed = true;
     }
 
     this.loaded = true;
@@ -66,6 +69,7 @@ export class LongTermChatHistory {
    * Creates directories if they don't exist.
    */
   private async save(): Promise<void> {
+    if (this.readFailed) return;
     const data: MessagesFile = { messages: this.messages };
     await atomicWriteFile(this.filePath, JSON.stringify(data, null, 2));
   }

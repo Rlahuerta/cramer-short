@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C9
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/utils/ui/markdown-table.ts:88` — `.filter((_, i, arr) => i > 0 && i < arr.length - 1 || arr.length === 1);`
 - Repro kind: runtime

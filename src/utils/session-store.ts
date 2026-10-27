@@ -10,7 +10,7 @@
  *   history      — full HistoryItem[] for terminal scrollback display
  */
 
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -89,6 +89,10 @@ async function readIndex(baseDir: string): Promise<SessionIndex> {
   try {
     return JSON.parse(await readFile(path, 'utf-8')) as SessionIndex;
   } catch {
+    // Keep the unreadable index as a backup so the next writeIndex cannot overwrite it.
+    try {
+      await rename(path, `${path}.corrupt-${Date.now()}`);
+    } catch { /* keep in place */ }
     return { sessions: [] };
   }
 }
@@ -96,6 +100,22 @@ async function readIndex(baseDir: string): Promise<SessionIndex> {
 async function writeIndex(index: SessionIndex, baseDir: string): Promise<void> {
   const path = indexPath(baseDir);
   await atomicWriteFile(path, JSON.stringify(index, null, 2));
+}
+
+// Per-index write queue so concurrent create/save calls cannot interleave a read-modify-write
+// and drop each other's entries.
+// ponytail: in-process only; a second process writing the same index can still race.
+const indexQueues = new Map<string, Promise<unknown>>();
+
+function withIndexLock<T>(baseDir: string, fn: () => Promise<T>): Promise<T> {
+  const key = indexPath(baseDir);
+  const run = (indexQueues.get(key) ?? Promise.resolve()).then(fn);
+  const tail = run.catch(() => {});
+  indexQueues.set(key, tail);
+  void tail.then(() => {
+    if (indexQueues.get(key) === tail) indexQueues.delete(key);
+  });
+  return run;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -151,17 +171,19 @@ export async function createSession(
   await atomicWriteFile(filePath, JSON.stringify(session));
 
   // Update index
-  const index = await readIndex(baseDir);
-  index.sessions.push({
-    id,
-    name: session.name,
-    firstQuery: firstQuery.trim(),
-    created: session.created,
-    lastModified: session.lastModified,
-    queryCount: session.queryCount,
-    file: `${id}.json`,
+  await withIndexLock(baseDir, async () => {
+    const index = await readIndex(baseDir);
+    index.sessions.push({
+      id,
+      name: session.name,
+      firstQuery: firstQuery.trim(),
+      created: session.created,
+      lastModified: session.lastModified,
+      queryCount: session.queryCount,
+      file: `${id}.json`,
+    });
+    await writeIndex(index, baseDir);
   });
-  await writeIndex(index, baseDir);
 
   return session;
 }
@@ -178,25 +200,27 @@ export async function saveSession(
   const filePath = sessionFilePath(session.id, baseDir);
   await atomicWriteFile(filePath, JSON.stringify(session));
 
-  const index = await readIndex(baseDir);
-  const idx = index.sessions.findIndex((s) => s.id === session.id);
-  const existing = idx >= 0 ? index.sessions[idx] : undefined;
-  const entry: SessionIndexEntry = {
-    id: session.id,
-    name: session.name,
-    // Preserve firstQuery from the existing index entry (set at createSession time).
-    firstQuery: existing?.firstQuery,
-    created: session.created,
-    lastModified: session.lastModified,
-    queryCount: session.queryCount,
-    file: `${session.id}.json`,
-  };
-  if (idx >= 0) {
-    index.sessions[idx] = entry;
-  } else {
-    index.sessions.push(entry);
-  }
-  await writeIndex(index, baseDir);
+  await withIndexLock(baseDir, async () => {
+    const index = await readIndex(baseDir);
+    const idx = index.sessions.findIndex((s) => s.id === session.id);
+    const existing = idx >= 0 ? index.sessions[idx] : undefined;
+    const entry: SessionIndexEntry = {
+      id: session.id,
+      name: session.name,
+      // Preserve firstQuery from the existing index entry (set at createSession time).
+      firstQuery: existing?.firstQuery,
+      created: session.created,
+      lastModified: session.lastModified,
+      queryCount: session.queryCount,
+      file: `${session.id}.json`,
+    };
+    if (idx >= 0) {
+      index.sessions[idx] = entry;
+    } else {
+      index.sessions.push(entry);
+    }
+    await writeIndex(index, baseDir);
+  });
 }
 
 /**

@@ -2,7 +2,7 @@
 
 - Severity: L
 - Area: C1a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/markov-distribution/confidence-intervals.ts:643` — `const p95Idx = Math.min(nSamples - 1, Math.ceil(nSamples * 0.95));`, `src/tools/finance/markov-distribution/confidence-intervals.ts:645` — `let upperBound = prices[p95Idx];`
 - Repro kind: runtime

@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C6a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/fundamentals.ts:104` — `fmpTool: { invoke: (input: { ticker: string; period: 'annual' | 'quarterly'; limit: number }) => Promise<string> },`, `src/tools/finance/fundamentals.ts:111` — `const raw = await fmpTool.invoke({ ticker, period: fmpPeriod(period), limit });`, `src/tools/finance/fundamentals.ts:184` — `const fmpResult = await tryFmp(getFmpIncomeStatements, ticker, input.period, input.limit);`
 - Repro kind: runtime

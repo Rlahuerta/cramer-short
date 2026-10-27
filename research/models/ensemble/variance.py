@@ -15,6 +15,10 @@ from research.models.ensemble.quality import compute_market_quality
 from research.models.ensemble.types import MarketInput
 
 
+# Minimum fraction of a full sentiment unit used for the sentiment variance term.
+SENTIMENT_SIGNAL_FLOOR = 0.25
+
+
 def compute_variance(
     markets: list[MarketInput],
     pm_weight: float,
@@ -25,8 +29,9 @@ def compute_variance(
 
     The result is the quality-weighted standard deviation of the ensemble
     forecast, combining market-level binomial variance from Polymarket
-    probabilities with an additional sentiment variance term. A 1.2× scaling
-    factor is applied for conservatism.
+    probabilities with an additional sentiment variance term, scaled by
+    ``max(|sent_signal|, 0.25)``. A 1.2× scaling factor is applied for
+    conservatism.
 
     Parameters
     ----------
@@ -37,7 +42,8 @@ def compute_variance(
     sent_weight : float
         Normalized sentiment weight in the ensemble blend.
     sent_signal : float or None
-        Raw sentiment score; contributes to the variance term when provided.
+        Raw sentiment score in [-1, 1]; its magnitude scales the sentiment
+        variance term, floored at 0.25 (also used when missing or non-finite).
 
     Returns
     -------
@@ -58,7 +64,10 @@ def compute_variance(
         spread = m.delta_yes - m.delta_no
         variance_pm += norm_w * norm_w * p_adj * (1 - p_adj) * spread * spread
 
-    variance_sent = (sent_weight * 0.04) ** 2 if sent_weight else 0.0
+    # ±4% std for a full bullish/bearish unit, scaled by the signal magnitude but never
+    # below SENTIMENT_SIGNAL_FLOOR of a unit. A missing or non-finite signal counts as 0.
+    magnitude = abs(sent_signal) if sent_signal is not None and math.isfinite(sent_signal) else 0.0
+    variance_sent = (sent_weight * 0.04 * max(magnitude, SENTIMENT_SIGNAL_FLOOR)) ** 2 if sent_weight else 0.0
 
     variance_combined = pm_weight**2 * variance_pm + variance_sent
     return math.sqrt(variance_combined) * 1.2

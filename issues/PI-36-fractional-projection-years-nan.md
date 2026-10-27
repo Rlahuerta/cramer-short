@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C6b
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/dcf-valuation.ts:82` — `years: z`, `src/utils/finance/dcf.ts:150` — `const finalFcf = projectedFcf[years - 1];`, `src/tools/finance/reverse-dcf.ts:30` — `years: z`, `src/tools/finance/reverse-dcf.ts:209` — `const finalFcf = impliedFcfProjection[years - 1];`
 - Repro kind: runtime

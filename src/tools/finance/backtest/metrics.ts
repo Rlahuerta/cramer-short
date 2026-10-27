@@ -128,6 +128,8 @@ export const MEAN_EDGE_HOLD_POLICY = 'penalize_missed_move' as const;
 export interface BucketedMetricRow {
   label: string;
   count: number;
+  /** Traded (non-HOLD) steps: the denominator of `directionalAccuracy`. */
+  tradedCount: number;
   fraction: number;
   directionalAccuracy: number;
   balancedDirectionalAccuracy: number;
@@ -162,9 +164,13 @@ export interface BacktestStep {
   predictedReturn: number;
   /** Actual realized return over the horizon */
   actualReturn: number;
-  /** 90% CI lower bound (price) */
+  /**
+   * Primary step interval lower bound (price). Not a literal central 90%: walk-forward and
+   * replay store a conservative ~99% survival interval here (widened by adaptive conformal
+   * in break mode). The literal central intervals are the `central*CiLower` fields below.
+   */
   ciLower: number;
-  /** 90% CI upper bound (price) */
+  /** Primary step interval upper bound (price); see `ciLower`. */
   ciUpper: number;
   /** Literal central 90% interval lower bound from the forecast distribution when available. */
   central90CiLower?: number;
@@ -529,7 +535,8 @@ function deriveForecastCenter(step: BacktestStep): number {
 }
 
 function deriveIntervalScale(step: BacktestStep): number {
-  const width = Math.abs(step.ciUpper - step.ciLower);
+  const bounds = resolveCentralIntervalBounds(step, 0.9);
+  const width = Math.abs(bounds.upper - bounds.lower);
   const sigma = width / (2 * CENTRAL_90_Z);
   return Number.isFinite(sigma) && sigma > MIN_SCALE ? sigma : MIN_SCALE;
 }
@@ -721,8 +728,8 @@ function weightedStepScore(
 }
 
 /**
- * Continuous Ranked Probability Score using the current backtest interval as a
- * central-normal approximation. Lower is better.
+ * Continuous Ranked Probability Score using the literal central-90 interval (falling
+ * back to `ciLower` / `ciUpper`) as a central-normal approximation. Lower is better.
  */
 export function crps(steps: BacktestStep[]): number {
   if (steps.length === 0) return 0;
@@ -823,9 +830,10 @@ export function forecastAccuracyCoherenceScore(
 }
 
 /**
- * Murphy-Winkler interval score decomposition for the primary step interval.
- * In current walk-forward runs this is the conservative helper interval unless a
- * caller populates a different interval into `ciLower` / `ciUpper`.
+ * Murphy-Winkler interval score decomposition for the central (1 - alpha) interval.
+ * Scores the literal central interval carried on the step (alpha 0.10 / 0.05 / 0.01);
+ * falls back to the primary `ciLower` / `ciUpper` interval when the step has no literal
+ * bounds for that level.
  */
 export function murphyWinklerDecomposition(
   steps: BacktestStep[],
@@ -842,14 +850,16 @@ export function murphyWinklerDecomposition(
   }
 
   const penaltyScale = 2 / alpha;
+  const level = ([0.9, 0.95, 0.99] as const).find(candidate => Math.abs(1 - candidate - alpha) < 1e-9);
   let widthSum = 0;
   let lowerPenaltySum = 0;
   let upperPenaltySum = 0;
   let covered = 0;
 
   for (const step of steps) {
-    const lower = Math.min(step.ciLower, step.ciUpper);
-    const upper = Math.max(step.ciLower, step.ciUpper);
+    const bounds = level ? resolveCentralIntervalBounds(step, level) : { lower: step.ciLower, upper: step.ciUpper };
+    const lower = Math.min(bounds.lower, bounds.upper);
+    const upper = Math.max(bounds.lower, bounds.upper);
     widthSum += upper - lower;
     if (step.realizedPrice < lower) {
       lowerPenaltySum += penaltyScale * (lower - step.realizedPrice);
@@ -920,6 +930,7 @@ function bucketRow(
     return {
       label,
       count: 0,
+      tradedCount: 0,
       fraction: 0,
       directionalAccuracy: 0,
       balancedDirectionalAccuracy: 0,
@@ -932,6 +943,7 @@ function bucketRow(
   return {
     label,
     count: bucketSteps.length,
+    tradedCount: bucketSteps.filter(step => step.recommendation !== 'HOLD').length,
     fraction: totalSteps > 0 ? bucketSteps.length / totalSteps : 0,
     directionalAccuracy: directionalAccuracy(bucketSteps),
     balancedDirectionalAccuracy: balancedDirectionalAccuracy(bucketSteps, holdThreshold),
@@ -1280,6 +1292,9 @@ export function computeFailureDecomposition(
 /**
  * Selective directional accuracy: only count predictions above a confidence threshold.
  * Returns both accuracy (on selected predictions) and coverage (fraction selected).
+ * Accuracy scores traded (BUY/SELL) selected steps only, like {@link directionalAccuracy}:
+ * HOLD is an abstention, so a model that never trades scores 0. Coverage is the
+ * confidence-selected fraction, HOLD steps included.
  *
  * Inspired by El-Yaniv & Pidan (NeurIPS 2011): selective prediction achieves
  * lower error by abstaining on uncertain predictions. The RC (risk-coverage)
@@ -1288,21 +1303,14 @@ export function computeFailureDecomposition(
 export function selectiveDirectionalAccuracy(
   steps: BacktestStep[],
   minConfidence: number,
-  holdThreshold = 0.03,
 ): { accuracy: number; coverage: number; selected: number; total: number } {
   if (steps.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: 0 };
 
   const selected = steps.filter(s => s.confidence >= minConfidence);
   if (selected.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: steps.length };
 
-  const correct = selected.filter(s => {
-    if (s.recommendation === 'BUY')  return s.actualReturn > 0;
-    if (s.recommendation === 'SELL') return s.actualReturn < 0;
-    return Math.abs(s.actualReturn) < holdThreshold;
-  });
-
   return {
-    accuracy: correct.length / selected.length,
+    accuracy: directionalAccuracy(selected),
     coverage: selected.length / steps.length,
     selected: selected.length,
     total: steps.length,

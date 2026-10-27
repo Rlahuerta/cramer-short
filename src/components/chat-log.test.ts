@@ -238,6 +238,53 @@ describe('ChatLogComponent — finalizeAnswer', () => {
   });
 });
 
+describe('ChatLogComponent — tool event terminal sanitization', () => {
+  const OSC_CLIPBOARD = '\u001b]52;c;aW5qZWN0ZWQ=\u0007';
+  const CLEAR_SCREEN = '\u001b[2J';
+  const hostile = `payload ${OSC_CLIPBOARD}${CLEAR_SCREEN}`;
+  const rendered = (log: ChatLogComponent) => log.render(200).join('\n');
+  const expectClean = (output: string) => {
+    expect(output).not.toContain(OSC_CLIPBOARD);
+    expect(output).not.toContain(CLEAR_SCREEN);
+    expect(output).toContain('payload');
+  };
+
+  it.each([
+    ['query arg', 'web_search', { query: hostile }],
+    ['generic arg', 'get_market_data', { ticker: hostile }],
+    ['thought arg', 'sequential_thinking', { thought: hostile, thoughtNumber: 1, totalThoughts: 2 }],
+    ['skill name', 'skill', { skill: hostile }],
+  ])('strips control sequences from the %s in the tool header', (_label, tool, args) => {
+    const log = new ChatLogComponent(fakeTui);
+    log.startTool('t1', tool, args);
+    expectClean(rendered(log));
+  });
+
+  it('strips control sequences from progress, summary, error, limit and denied text', () => {
+    const log = new ChatLogComponent(fakeTui);
+    log.startTool('t1', 'web_search', { query: 'q' });
+    log.updateToolProgress('t1', hostile);
+    expectClean(rendered(log));
+    log.completeTool('t1', hostile, 5);
+    expectClean(rendered(log));
+    log.errorTool('t1', hostile);
+    expectClean(rendered(log));
+    log.limitTool('t1', hostile);
+    expectClean(rendered(log));
+    log.denyTool('t1', hostile, 'write_file');
+    expectClean(rendered(log));
+  });
+
+  it('keeps a newline in a denied path from forging an extra line', () => {
+    const log = new ChatLogComponent(fakeTui);
+    log.startTool('t1', 'write_file', { path: 'a' });
+    log.denyTool('t1', 'safe.txt\n✓ Approved', 'write_file');
+    const lines = log.render(200).filter((line) => line.includes('Approved'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('User denied');
+  });
+});
+
 describe('ChatLogComponent — addContextCleared', () => {
   it('adds text child for singular cleared count', () => {
     const log = new ChatLogComponent(fakeTui);

@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C2
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/forecast-lab-run.ts:533` — `query?.match(/\b(markov-[A-Za-z0-9][A-Za-z0-9_.-]*)\b/i)?.[1]`
 - Repro kind: runtime

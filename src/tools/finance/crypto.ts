@@ -82,13 +82,15 @@ export const getCryptoPrices = new DynamicStructuredTool({
     } catch {
       const startDate = new Date(input.start_date + 'T00:00:00');
       const days = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / MS_PER_DAY) + 1);
-      const closes = await fetchBinanceDailyCloses(input.ticker, days);
+      const startMs = Date.parse(`${input.start_date}T00:00:00Z`);
+      const endMs = Date.parse(`${input.end_date}T00:00:00Z`) + MS_PER_DAY - 1;
+      const closes = await fetchBinanceDailyCloses(input.ticker, days, { startMs, endMs });
       if (closes.length === 0) {
         return formatToolResult({ error: `No crypto price history available for ${input.ticker}` });
       }
       return formatToolResult(
         closes.map((close, index) => ({ close, index })),
-        [`https://api.binance.com/api/v3/klines?symbol=${toBinanceSymbol(input.ticker)}&interval=1d&limit=${Math.min(days, 1000)}`],
+        [`https://api.binance.com/api/v3/klines?symbol=${toBinanceSymbol(input.ticker)}&interval=1d&limit=${Math.min(days, 1000)}&startTime=${startMs}&endTime=${endMs}`],
       );
     }
   },

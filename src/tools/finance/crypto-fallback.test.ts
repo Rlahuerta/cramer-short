@@ -68,4 +68,26 @@ describe('crypto tool Binance fallbacks', () => {
     expect(parsed.data).toHaveLength(3);
     expect(parsed.data[0].close).toBe(42300);
   });
+
+  it('bounds the Binance fallback klines to the requested date range, not the last N days', async () => {
+    let klinesUrl = '';
+    globalThis.fetch = (mock(async (input: RequestInfo | URL) => {
+      klinesUrl = String(input);
+      return Response.json([
+        [1609459200000, '42000', '42500', '41800', '42300', '10000', 1609545599999, '0', 0, '0', '0', '0'],
+      ]);
+    }) as unknown) as typeof fetch;
+
+    await getCryptoPrices.invoke({
+      ticker: 'BTC-USD',
+      interval: 'day',
+      interval_multiplier: 1,
+      start_date: '2021-01-01',
+      end_date: '2021-01-10',
+    });
+
+    const params = new URL(klinesUrl).searchParams;
+    expect(Number(params.get('startTime'))).toBe(Date.UTC(2021, 0, 1));
+    expect(Number(params.get('endTime'))).toBe(Date.UTC(2021, 0, 10) + 86_399_999);
+  });
 });

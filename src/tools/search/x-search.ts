@@ -2,6 +2,7 @@ import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
+import { wrapWebContent } from '../fetch/external-content.js';
 import { getEnv } from '../../utils/env.js';
 
 const X_API_BASE = 'https://api.x.com/2';
@@ -105,6 +106,11 @@ function parseTweets(raw: RawXResponse): XTweet[] {
       tweet_url: `https://x.com/${(u.username as string) ?? '?'}/status/${t.id as string}`,
     };
   });
+}
+
+/** Tweet text and profile bios are third-party content: mark them untrusted for the model. */
+function wrapTweetText(tweets: XTweet[]): XTweet[] {
+  return tweets.map((t) => ({ ...t, text: wrapWebContent(t.text) }));
 }
 
 /** Parse shorthand time strings like "1h", "3d" into ISO 8601 start_time. */
@@ -296,21 +302,23 @@ export const xSearchTool = new DynamicStructuredTool({
 
         const results = tweets.slice(0, limit);
         const urls = results.map((t) => t.tweet_url);
-        return formatToolResult({ tweets: results, total_fetched: tweets.length }, urls);
+        return formatToolResult({ tweets: wrapTweetText(results), total_fetched: tweets.length }, urls);
       }
 
       if (input.command === 'profile') {
         if (!input.username) throw new Error('username is required for profile command');
         const { user, tweets } = await getProfile(input.username, limit);
         const urls = tweets.map((t) => t.tweet_url);
-        return formatToolResult({ user, tweets: tweets.slice(0, limit) }, urls);
+        const wrappedUser =
+          typeof user.description === 'string' ? { ...user, description: wrapWebContent(user.description) } : user;
+        return formatToolResult({ user: wrappedUser, tweets: wrapTweetText(tweets.slice(0, limit)) }, urls);
       }
 
       if (input.command === 'thread') {
         if (!input.query) throw new Error('tweet ID (query field) is required for thread command');
         const tweets = await getThread(input.query);
         const urls = tweets.map((t) => t.tweet_url);
-        return formatToolResult({ tweets: tweets.slice(0, limit) }, urls);
+        return formatToolResult({ tweets: wrapTweetText(tweets.slice(0, limit)) }, urls);
       }
 
       throw new Error(`Unknown command: ${input.command}`);

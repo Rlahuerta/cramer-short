@@ -147,6 +147,20 @@ describe('aggregateStats — sentiment aggregation', () => {
     expect(stats.avgScore).toBeGreaterThan(0);
   });
 
+  it('a single downvoted post still yields a finite score (weight does not reach 0)', () => {
+    const stats = aggregateStats([makePost({ text: 'buy long bullish moon 🚀', score: -1 })]);
+    expect(stats.avgScore).toBe(100);
+  });
+
+  it('heavily downvoted posts keep avgScore inside -100..100 and do not invert their contribution', () => {
+    const stats = aggregateStats([
+      makePost({ text: 'buy long bullish moon 🚀', score: 100 }),
+      makePost({ text: 'sell short bearish crash 📉', score: -200 }),
+    ]);
+    // weights: bullish 1 + 100/100 = 2, bearish 1 (negative engagement counts as none) → (2 - 1) / 3
+    expect(stats.avgScore).toBe(33);
+  });
+
   it('bullishPct + bearishPct + neutralPct = 100', () => {
     const posts: SentimentPost[] = [
       makePost({ text: 'buy long bullish' }),

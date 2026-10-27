@@ -152,8 +152,11 @@ export function normalizeSentiment(raw: unknown): SentimentSignal | undefined {
 }
 export interface PriceThreshold {
   price: number;
-  /** Raw YES probability from Polymarket (0–1) */
+  /** Raw YES probability from Polymarket (0–1). For a "below $X" market (`isBelow`) this is
+   *  P(price < strike), the complement of `probability`'s P(price > strike) frame. */
   rawProbability: number;
+  /** True when the Polymarket market asked "below/under $X"; absent/false for "above" markets. */
+  isBelow?: boolean;
   /** Bias-corrected probability (rawProbability × YES_BIAS_MULTIPLIER). Reichenbach & Walther (2025)
    *  found systematic YES-overtrading across 124M trades. Uses multiplicative form
    *  (vs. additive in ensemble.ts) because survival interpolation is log-spaced. */

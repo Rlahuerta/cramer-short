@@ -60,4 +60,81 @@ describe('monitorWhatsAppChannel shutdown', () => {
 
     expect(Date.now() - startedAt).toBeLessThan(100);
   });
+
+  // Fake listener whose close() settles onClose, like monitorWebInbox().close().
+  function fakeListener() {
+    let resolveClose: (reason: { status: number; isLoggedOut: boolean }) => void = () => {};
+    const onClose = new Promise<{ status: number; isLoggedOut: boolean }>((resolve) => {
+      resolveClose = resolve;
+    });
+    const close = mock(async () => resolveClose({ status: 499, isLoggedOut: false }));
+    return { sock: {}, onClose, close };
+  }
+
+  const settlesWithin = async (run: Promise<void>, ms: number): Promise<boolean> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+    });
+    const settled = await Promise.race([run.then(() => true), timeout]);
+    clearTimeout(timer);
+    return settled;
+  };
+
+  const baseParams = {
+    accountId: 'default',
+    authDir: '/tmp/does-not-exist',
+    verbose: false,
+    allowFrom: [],
+    dmPolicy: 'open' as const,
+    groupPolicy: 'disabled' as const,
+    groupAllowFrom: [],
+    reconnect: fastBackoff,
+    onMessage: async () => {},
+  };
+
+  it('closes the connected listener and resolves when aborted while connected', async () => {
+    const controller = new AbortController();
+    const listener = fakeListener();
+    monitorWebInboxMock.mockImplementationOnce((async () => listener) as never);
+    let markConnected: (() => void) | undefined;
+    const connected = new Promise<void>((resolve) => {
+      markConnected = resolve;
+    });
+
+    const run = monitorWhatsAppChannel({
+      ...baseParams,
+      abortSignal: controller.signal,
+      onStatus: (status) => {
+        if (status.connected) markConnected?.();
+      },
+    });
+
+    await connected;
+    controller.abort();
+
+    expect(await settlesWithin(run, 500)).toBe(true);
+    expect(listener.close).toHaveBeenCalled();
+  });
+
+  it('closes the listener when the signal aborted while the socket was still connecting', async () => {
+    const controller = new AbortController();
+    const listener = fakeListener();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    monitorWebInboxMock.mockImplementationOnce((async () => {
+      await gate;
+      return listener;
+    }) as never);
+
+    const run = monitorWhatsAppChannel({ ...baseParams, abortSignal: controller.signal });
+
+    controller.abort();
+    release?.();
+
+    expect(await settlesWithin(run, 500)).toBe(true);
+    expect(listener.close).toHaveBeenCalled();
+  });
 });

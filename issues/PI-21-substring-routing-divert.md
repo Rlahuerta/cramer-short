@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C2
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/experiments/forecast-lab/router.ts:43` — `if (rawQuery.includes(rawTerm)) {`, `src/experiments/forecast-lab/router.ts:48` — `return normalizedTerm.length > 0 && normalizedQuery.includes(normalizedTerm);`
 - Repro kind: runtime

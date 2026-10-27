@@ -134,15 +134,14 @@ function extractForecastLabProfileId(text: string): string | undefined {
 }
 
 function extractForecastLabSourceRunId(text: string): string | undefined {
-  const match = text.match(new RegExp(`(?:source\\s+run|run)\\s+(${SAFE_FORECAST_LAB_RUN_ID.source})`, 'i'));
-  const candidate = match?.[1]?.replace(/[.,!?;:]+$/, '');
-  if (!candidate) {
-    return undefined;
+  const matches = text.matchAll(new RegExp(`\\b(?:source\\s+run|run)\\s+(${SAFE_FORECAST_LAB_RUN_ID.source})`, 'gi'));
+  for (const match of matches) {
+    const candidate = match[1]?.replace(/[.,!?;:]+$/, '');
+    if (candidate && (candidate.includes('-') || candidate.includes('.'))) {
+      return candidate;
+    }
   }
-  if (!candidate.includes('-') && !candidate.includes('.')) {
-    return undefined;
-  }
-  return candidate;
+  return undefined;
 }
 
 function isForecastLabApprovalIntent(query: string): boolean {

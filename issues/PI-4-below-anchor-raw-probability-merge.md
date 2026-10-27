@@ -2,7 +2,7 @@
 
 - Severity: H
 - Area: C1a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/markov-distribution.ts:1935` — `const divergence = Math.abs(poly.rawProbability - kalshi.probability);`, `src/tools/finance/markov-distribution.ts:1947` — `const averaged = (poly.rawProbability + kalshi.probability) / 2;`, `src/tools/finance/markov-distribution.ts:1951` — `probability: averaged * YES_BIAS_MULTIPLIER, // apply bias correction to blended probability`
 - Repro kind: runtime

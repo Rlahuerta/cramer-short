@@ -72,10 +72,11 @@ export async function fetchBinanceTicker24h(ticker: string): Promise<{
 export async function fetchBinanceDailyCloses(
   ticker: string,
   days = 120,
+  range?: { startMs: number; endMs: number },
 ): Promise<number[]> {
   const symbol = toBinanceSymbol(ticker);
-  const endTime = Date.now();
-  const startTime = endTime - days * MS_PER_DAY;
+  const endTime = range?.endMs ?? Date.now();
+  const startTime = range?.startMs ?? endTime - days * MS_PER_DAY;
   const params = new URLSearchParams({
     symbol,
     interval: '1d',

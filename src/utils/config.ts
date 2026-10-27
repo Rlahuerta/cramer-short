@@ -137,6 +137,11 @@ export function loadConfig(): Config {
       saveConfig(config);
     }
 
+    // Migrate the legacy `model` key here, not lazily in getSetting('provider'), so a reader that asks
+    // for modelId first (gateway, heartbeat) sees it. Runs after the upgrade above so a legacy
+    // deprecated model is carried over as-is and upgraded on the next load, as before.
+    migrateModelToProvider(config);
+
     configCache = { data: config, loadedAt: now };
     return config;
   } catch (err) {

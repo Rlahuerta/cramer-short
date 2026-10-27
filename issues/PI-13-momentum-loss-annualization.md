@@ -2,10 +2,16 @@
 
 - Severity: M
 - Area: C1a
-- Status: Open
+- Status: Resolved (docs only, by decision)
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/markov-distribution/regime.ts:94` — `const velocity = Math.sign(totalReturn) * (Math.pow(1 + Math.abs(totalReturn), 252 / lookback) - 1);`, `src/tools/finance/markov-distribution/regime.ts:100` — `const recentVel = Math.sign(recentRet) * (Math.pow(1 + Math.abs(recentRet), 252 / half) - 1);`
 - Repro kind: runtime
+
+## Resolution
+
+Decision: keep the numbers, fix the description. `velocity` is used only for its sign and the clamped drift `adjustment` (never displayed), and the scale 0.25 / clamp 0.003 were tuned against this symmetric `sign(r) * ((1+|r|)^k - 1)` form. The geometric `(1+r)^(252/L)-1` removes the impossible values below -100% but makes the tilt strongly asymmetric (at the shipped lookback of 10, a -10% move gives -0.0009/day while +10% gives +0.003/day, clamped), which would shift every downtrend forecast. The `regime.ts` comment now describes it as a symmetric compounded magnitude, not an annualized return.
+
+The repro still exits 42 because it asserts the geometric annualization. Alternatives if this is revisited: symmetric log annualization `252*ln(1+r)/L` with scale/clamp re-tuned by backtest.
 
 ## Summary
 

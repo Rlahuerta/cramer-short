@@ -81,6 +81,7 @@ const DcfValuationSchema = z.object({
     .describe('Long-run terminal growth rate as a decimal (default 0.025 = 2.5%).'),
   years: z
     .number()
+    .int()
     .min(1)
     .max(20)
     .default(5)
@@ -153,13 +154,10 @@ export const dcfValuationTool = new DynamicStructuredTool({
     const validation = runDcfValidation({
       wacc: input.wacc,
       terminalGrowth: input.terminal_growth_rate,
-      riskFreeRate: 0.043,
       isDevelopedMarket: true,
       tvPV: result.pvTerminalValue,
       enterpriseValue: result.enterpriseValue,
-      roic: 0,
       computedEv: result.enterpriseValue,
-      reportedEv: 0,
       debtToEquity: 0,
       source: 'unknown',
     });

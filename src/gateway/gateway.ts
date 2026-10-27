@@ -170,10 +170,10 @@ async function handleInbound(
         void inbound.sendComposing().catch(handleTypingError);
       }, TYPING_INTERVAL_MS);
     } else {
-      await runtime.sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId, configPath });
+      await runtime.sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId, configPath, replyToInbound: true });
       typingTimer = setInterval(() => {
         void runtime
-          .sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId, configPath })
+          .sendComposing({ to: inbound.replyToJid, accountId: inbound.accountId, configPath, replyToInbound: true })
           .catch(handleTypingError);
       }, TYPING_INTERVAL_MS);
     }
@@ -184,7 +184,7 @@ async function handleInbound(
     // For groups, use chatId (the group JID); for DMs, use replyToJid
     const outboundTarget = isGroup ? inbound.chatId : inbound.replyToJid;
     try {
-      runtime.assertOutboundAllowed({ to: outboundTarget, accountId: inbound.accountId, configPath });
+      runtime.assertOutboundAllowed({ to: outboundTarget, accountId: inbound.accountId, configPath, replyToInbound: true });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       runtime.debugLog(`[gateway] outbound BLOCKED: ${msg}`);
@@ -252,6 +252,7 @@ async function handleInbound(
           body: cleanedAnswer,
           accountId: inbound.accountId,
           configPath,
+          replyToInbound: true,
         });
       }
       console.log(`Sent reply (${answer.length} chars, ${durationMs}ms)`);
