@@ -82,6 +82,21 @@ function fmpPeriod(period: string): 'annual' | 'quarterly' {
 
 type FmpCallResult = { kind: 'ok'; result: string } | { kind: 'premium' } | { kind: 'error' };
 
+type ReportPeriodBounds = Pick<
+  z.infer<typeof FinancialStatementsInputSchema>,
+  'report_period_gt' | 'report_period_gte' | 'report_period_lt' | 'report_period_lte'
+>;
+
+function inReportPeriod(date: unknown, b: ReportPeriodBounds): boolean {
+  if (typeof date !== 'string') return false;
+  return (
+    (!b.report_period_gt || date > b.report_period_gt) &&
+    (!b.report_period_gte || date >= b.report_period_gte) &&
+    (!b.report_period_lt || date < b.report_period_lt) &&
+    (!b.report_period_lte || date <= b.report_period_lte)
+  );
+}
+
 interface ToolErrorPayload {
   error?: unknown;
 }
@@ -98,13 +113,15 @@ interface FinancialStatementApiRow {
  * Try the FMP fallback tool.  Returns:
  * - `{ kind: 'ok', result }` when FMP returns real data
  * - `{ kind: 'premium' }` when FMP signals the ticker requires a paid plan (HTTP 402)
- * - `{ kind: 'error' }` for any other failure (empty data, API key missing, network error)
+ * - `{ kind: 'error' }` for any other failure (empty data, API key missing, network error,
+ *   or no returned period inside the requested `bounds`)
  */
 async function tryFmp(
   fmpTool: { invoke: (input: { ticker: string; period: 'annual' | 'quarterly'; limit: number }) => Promise<string> },
   ticker: string,
   period: string,
   limit: number,
+  bounds?: ReportPeriodBounds,
 ): Promise<FmpCallResult> {
   if (!hasEnv('FMP_API_KEY')) return { kind: 'error' };
   try {
@@ -114,6 +131,11 @@ async function tryFmp(
     const error = (parsed.data as ToolErrorPayload).error;
     if (typeof error === 'string' && error.includes(FMP_PREMIUM_REQUIRED)) return { kind: 'premium' };
     if (error) return { kind: 'error' };
+    if (bounds && Array.isArray(parsed.data)) {
+      const rows = parsed.data.filter((row) => inReportPeriod((row as { date?: unknown }).date, bounds));
+      if (rows.length === 0) return { kind: 'error' };
+      return { kind: 'ok', result: JSON.stringify({ ...parsed, data: rows }) };
+    }
     return { kind: 'ok', result: raw };
   } catch {
     return { kind: 'error' };
@@ -181,7 +203,7 @@ export const getIncomeStatements = new DynamicStructuredTool({
       logFallbackDebug(`primary income statements failed for ${ticker}; falling back to FMP`, error);
     }
 
-    const fmpResult = await tryFmp(getFmpIncomeStatements, ticker, input.period, input.limit);
+    const fmpResult = await tryFmp(getFmpIncomeStatements, ticker, input.period, input.limit, input);
     if (fmpResult.kind === 'ok') return fmpResult.result;
 
     // FMP premium or error — try Yahoo Finance (has totalRevenue + netIncome for intl tickers)
@@ -224,7 +246,7 @@ export const getBalanceSheets = new DynamicStructuredTool({
       logFallbackDebug(`primary balance sheets failed for ${ticker}; falling back to FMP`, error);
     }
 
-    const fmpResult = await tryFmp(getFmpBalanceSheets, ticker, input.period, input.limit);
+    const fmpResult = await tryFmp(getFmpBalanceSheets, ticker, input.period, input.limit, input);
     if (fmpResult.kind === 'ok') return fmpResult.result;
 
     // FMP premium or error — use Tavily web search (Yahoo Finance balance sheet is nearly empty)
@@ -258,7 +280,7 @@ export const getCashFlowStatements = new DynamicStructuredTool({
       logFallbackDebug(`primary cash-flow statements failed for ${ticker}; falling back to FMP`, error);
     }
 
-    const fmpResult = await tryFmp(getFmpCashFlowStatements, ticker, input.period, input.limit);
+    const fmpResult = await tryFmp(getFmpCashFlowStatements, ticker, input.period, input.limit, input);
     if (fmpResult.kind === 'ok') return fmpResult.result;
 
     // FMP premium or error — use Tavily web search (Yahoo Finance cashflow is nearly empty)
@@ -296,9 +318,9 @@ export const getAllFinancialStatements = new DynamicStructuredTool({
 
     // FMP fallback — try all three statements individually
     const [incomeResult, balanceResult, cashResult] = await Promise.allSettled([
-      tryFmp(getFmpIncomeStatements, ticker, input.period, input.limit),
-      tryFmp(getFmpBalanceSheets, ticker, input.period, input.limit),
-      tryFmp(getFmpCashFlowStatements, ticker, input.period, input.limit),
+      tryFmp(getFmpIncomeStatements, ticker, input.period, input.limit, input),
+      tryFmp(getFmpBalanceSheets, ticker, input.period, input.limit, input),
+      tryFmp(getFmpCashFlowStatements, ticker, input.period, input.limit, input),
     ]);
 
     const fmpData: {
