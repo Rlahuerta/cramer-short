@@ -620,6 +620,7 @@ export function computeTrajectory(
     paths.push(path);
   }
 
+  let prevWidthCents = 0;
   for (let d = 1; d <= days; d++) {
     const dayIdx = d - 1;
     const stateWeights = regimeWeightsPerDay[dayIdx];
@@ -663,6 +664,20 @@ export function computeTrajectory(
       upperBound = scaledUpper;
     }
 
+    // Sample percentiles of the shared paths can narrow day-over-day by sampling noise. Where
+    // that happens, widen the band symmetrically about its own midpoint to the previous day's
+    // final width (never moving the midpoint or pinning a single bound). Done in whole cents so
+    // the rounded output is exactly non-decreasing; the lower bound stays >= 0.01.
+    let lowerCents = Math.round(lowerBound * 100);
+    let upperCents = Math.round(upperBound * 100);
+    const widenCents = Math.ceil((prevWidthCents - (upperCents - lowerCents)) / 2);
+    if (widenCents > 0) {
+      const lowerShortfall = Math.max(0, 1 - (lowerCents - widenCents));
+      lowerCents += lowerShortfall - widenCents;
+      upperCents += widenCents + lowerShortfall;
+    }
+    prevWidthCents = upperCents - lowerCents;
+
     // P(up) from Student-t survival at currentPrice
     const pUp = studentTSurvival(currentPrice, currentPrice, mu_n, sigma_n, nu);
 
@@ -684,8 +699,8 @@ export function computeTrajectory(
     trajectory.push({
       day: d,
       expectedPrice: Math.round(expectedPrice * 100) / 100,
-      lowerBound: Math.round(lowerBound * 100) / 100,
-      upperBound: Math.round(upperBound * 100) / 100,
+      lowerBound: lowerCents / 100,
+      upperBound: upperCents / 100,
       pUp: Math.round(pUp * 1000) / 1000,
       cumulativeReturn,
       regime,
