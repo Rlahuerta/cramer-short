@@ -110,10 +110,10 @@ function keywordFallbackFinancials(query: string): ToolCall[] | null {
     return [{ name: 'get_cash_flow_statements', args: { ticker, period: 'annual', limit: 3 }, id: 'kw-fb', type: 'tool_call' as const }];
   }
   if (q.includes('p/e') || q.includes('ratio') || q.includes('valuation') || q.includes('metric')) {
-    return [{ name: 'get_financial_metrics_snapshot', args: { ticker }, id: 'kw-fb', type: 'tool_call' as const }];
+    return [{ name: 'get_key_ratios', args: { ticker }, id: 'kw-fb', type: 'tool_call' as const }];
   }
   // Default: key ratios snapshot
-  return [{ name: 'get_financial_metrics_snapshot', args: { ticker }, id: 'kw-fb', type: 'tool_call' as const }];
+  return [{ name: 'get_key_ratios', args: { ticker }, id: 'kw-fb', type: 'tool_call' as const }];
 }
 
 // All finance tools available for routing
@@ -160,8 +160,8 @@ ${hintSection}
    - "YTD" → report_period_gte Jan 1 of current year
 
 3. **Tool Selection**:
-   - For latest financial metrics snapshot (P/E, margins, ROE, EPS, growth rates) → get_financial_metrics_snapshot
-   - For historical P/E ratio, historical market cap, valuation metrics over time → get_key_ratios
+   - For latest financial metrics snapshot (P/E, margins, ROE, EPS, growth rates) → get_key_ratios
+   - For historical P/E ratio, historical market cap, valuation metrics over time → get_historical_key_ratios
    - For revenue, earnings, profitability → get_income_statements
    - For latest earnings release snapshot, EPS/revenue beat-miss, earnings surprises → get_earnings
    - For debt, assets, equity → get_balance_sheets

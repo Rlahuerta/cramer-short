@@ -2,6 +2,7 @@ import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:t
 import { useNoNetwork } from '../../utils/test-no-network.js';
 import * as apiRoutingCache from '../../utils/api-routing-cache.js';
 import { getAnalystEstimates } from './estimates.js';
+import { getKeyRatios } from './key-ratios.js';
 import { getYahooAnalystTargets } from './yahoo-finance.js';
 import { AIMessage } from '@langchain/core/messages';
 
@@ -31,7 +32,7 @@ const routingSpies = [
 ];
 
 // These tests only check routing: keep the routed sub-tools off financialdatasets.ai and Yahoo.
-const subToolSpies = [getAnalystEstimates, getYahooAnalystTargets].map((subTool) =>
+const subToolSpies = [getAnalystEstimates, getKeyRatios, getYahooAnalystTargets].map((subTool) =>
   spyOn(subTool, 'invoke').mockResolvedValue(JSON.stringify({ data: {}, sourceUrls: [] })),
 );
 
@@ -142,6 +143,17 @@ describe('get-financials router — keyword fallback after two empty responses',
     expect((result.data as Record<string, unknown>).error).not.toBe('No tools selected for query');
   });
 
+  test.each(['AAPL valuation metrics', 'AAPL P/E ratio', 'tell me about AAPL'])(
+    'routes "%s" to the registered get_key_ratios tool',
+    async (query) => {
+      const raw = await tool.invoke({ query });
+      const data = parseResult(raw).data as Record<string, unknown>;
+
+      expect(data._errors).toBeUndefined();
+      expect(data).toHaveProperty('get_key_ratios_AAPL');
+    },
+  );
+
   test('returns "No tools selected" error only when no ticker can be extracted', async () => {
     const raw = await tool.invoke({ query: 'what is the meaning of life' });
     const result = parseResult(raw);
@@ -170,5 +182,43 @@ describe('get-financials — Yahoo Finance tools in FINANCE_TOOLS', () => {
     const toolNames = callOpts?.tools?.map((t) => t.name) ?? [];
     expect(toolNames).toContain('get_yahoo_analyst_targets');
     expect(toolNames).toContain('get_yahoo_analyst_recommendations');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Router prompt only names registered tools
+// ---------------------------------------------------------------------------
+
+describe('get-financials — router prompt tool names', () => {
+  const tool = createGetFinancials('test-model');
+
+  test('every get_* tool the prompt tells the model to call is registered', async () => {
+    mockCallLlm.mockReset();
+    mockCallLlm.mockResolvedValueOnce({
+      response: makeToolCallResponse('get_key_ratios', { ticker: 'AAPL' }),
+      usage: undefined,
+    });
+
+    await tool.invoke({ query: 'AAPL P/E' });
+
+    const callOpts = mockCallLlm.mock.calls[0]?.[1] as { systemPrompt: string; tools: Array<{ name: string }> };
+    const registered = new Set(callOpts.tools.map((t) => t.name));
+    const mentioned = [...callOpts.systemPrompt.matchAll(/\bget_[a-z_]+\b/g)].map((m) => m[0]);
+    expect(mentioned.length).toBeGreaterThan(0);
+    expect(mentioned.filter((name) => !registered.has(name))).toEqual([]);
+  });
+
+  test('prompt routes historical ratio queries to get_historical_key_ratios', async () => {
+    mockCallLlm.mockReset();
+    mockCallLlm.mockResolvedValueOnce({
+      response: makeToolCallResponse('get_key_ratios', { ticker: 'AAPL' }),
+      usage: undefined,
+    });
+
+    await tool.invoke({ query: 'AAPL P/E' });
+
+    const { systemPrompt } = mockCallLlm.mock.calls[0]?.[1] as { systemPrompt: string };
+    const historicalLine = systemPrompt.split('\n').find((l) => l.includes('historical P/E ratio'));
+    expect(historicalLine).toContain('get_historical_key_ratios');
   });
 });
