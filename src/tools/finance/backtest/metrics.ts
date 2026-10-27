@@ -128,6 +128,8 @@ export const MEAN_EDGE_HOLD_POLICY = 'penalize_missed_move' as const;
 export interface BucketedMetricRow {
   label: string;
   count: number;
+  /** Traded (non-HOLD) steps: the denominator of `directionalAccuracy`. */
+  tradedCount: number;
   fraction: number;
   directionalAccuracy: number;
   balancedDirectionalAccuracy: number;
@@ -920,6 +922,7 @@ function bucketRow(
     return {
       label,
       count: 0,
+      tradedCount: 0,
       fraction: 0,
       directionalAccuracy: 0,
       balancedDirectionalAccuracy: 0,
@@ -932,6 +935,7 @@ function bucketRow(
   return {
     label,
     count: bucketSteps.length,
+    tradedCount: bucketSteps.filter(step => step.recommendation !== 'HOLD').length,
     fraction: totalSteps > 0 ? bucketSteps.length / totalSteps : 0,
     directionalAccuracy: directionalAccuracy(bucketSteps),
     balancedDirectionalAccuracy: balancedDirectionalAccuracy(bucketSteps, holdThreshold),
@@ -1280,6 +1284,9 @@ export function computeFailureDecomposition(
 /**
  * Selective directional accuracy: only count predictions above a confidence threshold.
  * Returns both accuracy (on selected predictions) and coverage (fraction selected).
+ * Accuracy scores traded (BUY/SELL) selected steps only, like {@link directionalAccuracy}:
+ * HOLD is an abstention, so a model that never trades scores 0. Coverage is the
+ * confidence-selected fraction, HOLD steps included.
  *
  * Inspired by El-Yaniv & Pidan (NeurIPS 2011): selective prediction achieves
  * lower error by abstaining on uncertain predictions. The RC (risk-coverage)
@@ -1288,21 +1295,14 @@ export function computeFailureDecomposition(
 export function selectiveDirectionalAccuracy(
   steps: BacktestStep[],
   minConfidence: number,
-  holdThreshold = 0.03,
 ): { accuracy: number; coverage: number; selected: number; total: number } {
   if (steps.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: 0 };
 
   const selected = steps.filter(s => s.confidence >= minConfidence);
   if (selected.length === 0) return { accuracy: 0, coverage: 0, selected: 0, total: steps.length };
 
-  const correct = selected.filter(s => {
-    if (s.recommendation === 'BUY')  return s.actualReturn > 0;
-    if (s.recommendation === 'SELL') return s.actualReturn < 0;
-    return Math.abs(s.actualReturn) < holdThreshold;
-  });
-
   return {
-    accuracy: correct.length / selected.length,
+    accuracy: directionalAccuracy(selected),
     coverage: selected.length / steps.length,
     selected: selected.length,
     total: steps.length,

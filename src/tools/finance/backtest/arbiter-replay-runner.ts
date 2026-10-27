@@ -93,6 +93,12 @@ function impliedProbability(result: ForecastArbiterResult): number {
     : 1 - directionalProbability;
 }
 
+/** Most frequent semantics; 'unknown' when there are no markets (all counts 0). Ties keep key order. */
+export function pickPrimarySemantics(counts: Record<ForecastMarketSemantics, number>): ForecastMarketSemantics {
+  const [top] = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  return top && top[1] > 0 ? (top[0] as ForecastMarketSemantics) : 'unknown';
+}
+
 function primarySemantics(bundle: ArbiterReplayBundle): ForecastMarketSemantics {
   const counts: Record<ForecastMarketSemantics, number> = {
     terminal: 0,
@@ -107,7 +113,7 @@ function primarySemantics(bundle: ArbiterReplayBundle): ForecastMarketSemantics 
     counts[market.semantics]++;
   }
 
-  return (Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] as ForecastMarketSemantics | undefined) ?? 'unknown';
+  return pickPrimarySemantics(counts);
 }
 
 function polymarketEvidenceRichness(bundle: ArbiterReplayBundle): 'none' | 'thin' | 'rich' {

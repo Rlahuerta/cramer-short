@@ -527,6 +527,44 @@ describe('rankFailureBuckets', () => {
     expect(bucket!.accuracyCI.upper).toBeLessThanOrEqual(1);
     expect(bucket!.accuracyCI.lower).toBeLessThan(bucket!.accuracyCI.upper);
   });
+
+  it('derives the Wilson CI from traded rows only, not from every bucket row (PI-15)', () => {
+    // Bear bucket: 20 rows, only 5 traded (2 correct), 15 HOLD. Bull: 20 traded, all correct.
+    const bearTraded = [
+      ...Array.from({ length: 2 }, () => makeStep({ regime: 'bear', recommendation: 'BUY', actualReturn: 0.05, confidence: 0.8 })),
+      ...Array.from({ length: 3 }, () => makeStep({ regime: 'bear', recommendation: 'SELL', actualReturn: 0.05, confidence: 0.8 })),
+    ];
+    const bearHolds = Array.from({ length: 15 }, () =>
+      makeStep({ regime: 'bear', recommendation: 'HOLD', actualReturn: 0.001, confidence: 0.5 }),
+    );
+    const report = rankFailureBuckets(
+      [...bearTraded, ...bearHolds, ...makeAllCorrectSteps(20)].map((step, t) => ({ ...step, t })),
+      7,
+    );
+    const bucket = findBucket(report, 'regime', 'bear');
+
+    expect(bucket).toBeDefined();
+    expect(bucket!.n).toBe(20);
+    expect(bucket!.directionalAccuracy).toBeCloseTo(0.4, 10);
+    // wilson95(2, 5)
+    expect(bucket!.accuracyCI.lower).toBeCloseTo(0.117621, 5);
+    expect(bucket!.accuracyCI.upper).toBeCloseTo(0.769276, 5);
+  });
+
+  it('reports an uninformative CI and never passes the Wilson screen for a bucket with no traded rows (PI-15)', () => {
+    const bearHolds = Array.from({ length: 10 }, () =>
+      makeStep({ regime: 'bear', recommendation: 'HOLD', actualReturn: 0.001, confidence: 0.5 }),
+    );
+    const report = rankFailureBuckets(
+      [...bearHolds, ...makeAllCorrectSteps(20)].map((step, t) => ({ ...step, t })),
+      7,
+    );
+    const bucket = findBucket(report, 'regime', 'bear');
+
+    expect(bucket).toBeDefined();
+    expect(bucket!.accuracyCI).toEqual({ lower: 0, upper: 1 });
+    expect(bucket!.passesWilsonScreen).toBe(false);
+  });
 });
 
 describe('formatFailureAnalysisReport', () => {

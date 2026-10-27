@@ -1220,7 +1220,7 @@ describe('computeEnsemble', () => {
 // ---------------------------------------------------------------------------
 
 describe('computeQualityScore', () => {
-  it('5 markets + avgQuality=1 + low sigma + all 4 signals + no whales → high score (≥80)', () => {
+  it('5 markets + avgQuality=1 + low sigma + 4 of 5 signals + no whales → high score (≥80)', () => {
     const markets: MarketInput[] = Array.from({ length: 5 }, (_, i) => ({
       question: `M${i}`,
       probability: 0.5,
@@ -1236,7 +1236,7 @@ describe('computeQualityScore', () => {
 
   it('0 markets → s1=0, s5=0 → low score', () => {
     const score = computeQualityScore([], 0, 0.10, 1, 0);
-    // s1=0, s2=0, s3=20*(1-0.5)=10, s4=15*0.25=3.75, s5=0 → ≈14
+    // s1=0, s2=0, s3=20*(1-0.5)=10, s4=15*0.2=3, s5=0 → 13
     expect(score).toBeLessThan(20);
   });
 
@@ -1244,6 +1244,14 @@ describe('computeQualityScore', () => {
     const score = computeQualityScore([], 0, 1.0, 0, 0);
     expect(score).toBe(0);
     expect(Number.isInteger(score)).toBe(true);
+  });
+
+  it('signal diversity is a 15-point component over the five signal sources (PI-18)', () => {
+    // sigma = 0.20 zeroes s3; with no markets s1 = s2 = s5 = 0, so the score is s4 alone.
+    expect(computeQualityScore([], 0, 0.20, 0, 0)).toBe(0);
+    expect(computeQualityScore([], 0, 0.20, 1, 0)).toBe(3);
+    expect(computeQualityScore([], 0, 0.20, 4, 0)).toBe(12);
+    expect(computeQualityScore([], 0, 0.20, 5, 0)).toBe(15);
   });
 });
 

@@ -171,7 +171,7 @@ function wilsonCI(
   total: number,
   alpha: number,
 ): { lower: number; upper: number } {
-  if (total <= 0) return { lower: 0, upper: 0 };
+  if (total <= 0) return { lower: 0, upper: 1 };
 
   const boundedAlpha = Number.isFinite(alpha) && alpha > 0 && alpha < 1
     ? alpha
@@ -203,7 +203,7 @@ function failureWeaknessFamily(dimension: FailureSliceKey): FailureWeaknessFamil
 }
 
 function toSuccessCount(row: BucketedMetricRow): number {
-  return Math.round(row.directionalAccuracy * row.count);
+  return Math.round(row.directionalAccuracy * row.tradedCount);
 }
 
 function toRankedBucket(
@@ -214,7 +214,7 @@ function toRankedBucket(
   aggregateEdge: number,
   ciAlpha: number,
 ): RankedFailureBucket {
-  const accuracyCI = wilsonCI(toSuccessCount(row), row.count, ciAlpha);
+  const accuracyCI = wilsonCI(toSuccessCount(row), row.tradedCount, ciAlpha);
   const rankedBucketBase = {
     dimension,
     bucket: row.label,

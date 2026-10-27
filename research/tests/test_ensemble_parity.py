@@ -353,6 +353,14 @@ def test_compute_quality_score_integer_range():
     assert isinstance(score, int)
 
 
+def test_compute_quality_score_signal_diversity_is_15_points_over_five_sources():
+    # sigma = 0.20 zeroes s3; with no markets s1 = s2 = s5 = 0, so the score is s4 alone.
+    assert compute_quality_score([], 0, 0.20, 0, 0) == 0
+    assert compute_quality_score([], 0, 0.20, 1, 0) == 3
+    assert compute_quality_score([], 0, 0.20, 4, 0) == 12
+    assert compute_quality_score([], 0, 0.20, 5, 0) == 15
+
+
 # ---------------------------------------------------------------------------
 # score_to_grade
 # ---------------------------------------------------------------------------
