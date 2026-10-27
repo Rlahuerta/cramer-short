@@ -153,13 +153,10 @@ export const dcfValuationTool = new DynamicStructuredTool({
     const validation = runDcfValidation({
       wacc: input.wacc,
       terminalGrowth: input.terminal_growth_rate,
-      riskFreeRate: 0.043,
       isDevelopedMarket: true,
       tvPV: result.pvTerminalValue,
       enterpriseValue: result.enterpriseValue,
-      roic: 0,
       computedEv: result.enterpriseValue,
-      reportedEv: 0,
       debtToEquity: 0,
       source: 'unknown',
     });

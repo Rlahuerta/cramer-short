@@ -192,4 +192,11 @@ describe('runDcfValidation', () => {
     const result = runDcfValidation(warn);
     expect(result.warnings.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('skips the checks whose inputs were not supplied (rfr, ROIC, reported EV)', () => {
+    const { riskFreeRate: _rfr, roic: _roic, reportedEv: _ev, ...unsupplied } = happyInput;
+    const result = runDcfValidation({ ...unsupplied, terminalGrowth: 0.035, wacc: 0.1 });
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toEqual([]);
+  });
 });

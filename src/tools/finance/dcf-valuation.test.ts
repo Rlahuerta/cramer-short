@@ -28,6 +28,23 @@ describe('dcfValuationTool', () => {
     expect(Number(parsed.data.fairValuePerShare)).toBeFinite();
   });
 
+  test('healthy DCF carries no fabricated EV error or value-destruction warning', async () => {
+    const result = await dcfValuationTool.invoke({
+      ticker: 'AAPL',
+      base_fcf: 100,
+      net_debt: 0,
+      diluted_shares: 10,
+      wacc: 0.10,
+      growth_rate: 0.15,
+      terminal_growth_rate: 0.025,
+      years: 5,
+      decay: 0.05,
+    });
+    const validation = parseResult(result).data.validation as { errors: string[]; warnings: string[] };
+    expect(validation.errors).toEqual([]);
+    expect(validation.warnings.filter((w) => /destruction/i.test(w))).toEqual([]);
+  });
+
   test('WACC less than terminal growth returns validation error', async () => {
     const result = await dcfValuationTool.invoke({
       ticker: 'AAPL',
