@@ -34,7 +34,7 @@ module.exports = {
         path: '^src/tools/',
       },
       to: {
-        path: '^src/(cli|components|controllers)/',
+        path: '^src/(cli[-./]|components/|controllers/)',
       },
     },
     {
@@ -45,7 +45,7 @@ module.exports = {
         path: '^src/agent/',
       },
       to: {
-        path: '^src/(cli|components|controllers)/',
+        path: '^src/(cli[-./]|components/|controllers/)',
       },
     },
     {
