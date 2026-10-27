@@ -1,7 +1,11 @@
 import { readFileSync } from 'fs';
 
 const lcovPath = process.argv[2] ?? 'coverage/lcov.info';
-const minimumLineCoverage = Number(process.env.COVERAGE_LINES_MIN ?? '22');
+const rawMinimum = process.env.COVERAGE_LINES_MIN ?? '22';
+const minimumLineCoverage = Number(rawMinimum);
+if (rawMinimum.trim() === '' || !Number.isFinite(minimumLineCoverage)) {
+  throw new Error(`COVERAGE_LINES_MIN must be a number, got ${JSON.stringify(rawMinimum)}`);
+}
 
 function readMetric(prefix: string, content: string): number {
   const matches = content.matchAll(new RegExp(`^${prefix}:(\\d+)`, 'gm'));
