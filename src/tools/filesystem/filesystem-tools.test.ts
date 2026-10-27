@@ -257,6 +257,25 @@ describe('read_file tool', () => {
     }
   });
 
+  it('refuses to read credential stores that have no .env/.pem/.key name (PI-10)', async () => {
+    for (const name of ['.npmrc', '.netrc', '.git-credentials', '.htpasswd', 'id_rsa', 'id_ed25519', 'cert.p12']) {
+      await writeFile(tmpFile(name), 'SECRET=1');
+      await expect(readFileTool.invoke({ path: relPath(name) })).rejects.toThrow(/secrets/i);
+    }
+  });
+
+  it('isSecretPath flags well-known credential stores but not look-alikes (PI-10)', () => {
+    for (const p of ['.npmrc', 'app/.NETRC', '.git-credentials', '.htpasswd', '.ssh/id_rsa', 'id_ecdsa', 'id_dsa']) {
+      expect(isSecretPath(p)).toBe(true);
+    }
+    for (const p of ['a.p12', 'a.PFX', 'service-account.json', 'service-account-prod.json', 'Service-Account.JSON']) {
+      expect(isSecretPath(p)).toBe(true);
+    }
+    for (const p of ['.npmrc.md', 'id_rsa.pub', 'service-account-notes.md', 'service-accounts.ts', 'src/netrc.ts']) {
+      expect(isSecretPath(p)).toBe(false);
+    }
+  });
+
   it('isSecretPath flags cramer-short settings and credentials', () => {
     expect(isSecretPath('.cramer-short/settings.json')).toBe(true);
     expect(isSecretPath('.cramer-short/credentials/token.json')).toBe(true);
