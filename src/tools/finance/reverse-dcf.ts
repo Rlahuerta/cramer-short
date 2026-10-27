@@ -29,6 +29,7 @@ const ReverseDcfSchema = z.object({
     .describe('Perpetual terminal growth rate as a decimal (default 0.025 = 2.5%).'),
   years: z
     .number()
+    .int()
     .min(1)
     .max(20)
     .default(5)

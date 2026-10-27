@@ -11,6 +11,24 @@ function parseResult(raw: unknown): { data: Record<string, unknown> } {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe('reverseDcfTool — input boundary', () => {
+  test('rejects a fractional projection horizon instead of reporting a false convergence', async () => {
+    await expect(
+      reverseDcfTool.invoke({
+        ticker: 'AAPL',
+        current_price: 100,
+        base_fcf: 100,
+        wacc: 0.10,
+        terminal_growth_rate: 0.025,
+        years: 5.5,
+        decay: 0.05,
+        net_debt: 0,
+        diluted_shares: 10,
+      }),
+    ).rejects.toThrow();
+  });
+});
+
 describe('reverseDcfTool — known solutions', () => {
   test('recovers growth rate from synthetic DCF with g=0.10', async () => {
     const baseFcf = 100;

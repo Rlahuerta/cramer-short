@@ -45,6 +45,22 @@ describe('dcfValuationTool', () => {
     expect(validation.warnings.filter((w) => /destruction/i.test(w))).toEqual([]);
   });
 
+  test('rejects a fractional projection horizon instead of returning a NaN valuation', async () => {
+    await expect(
+      dcfValuationTool.invoke({
+        ticker: 'AAPL',
+        base_fcf: 100,
+        net_debt: 0,
+        diluted_shares: 10,
+        wacc: 0.10,
+        growth_rate: 0.15,
+        terminal_growth_rate: 0.025,
+        years: 5.5,
+        decay: 0.05,
+      }),
+    ).rejects.toThrow();
+  });
+
   test('WACC less than terminal growth returns validation error', async () => {
     const result = await dcfValuationTool.invoke({
       ticker: 'AAPL',

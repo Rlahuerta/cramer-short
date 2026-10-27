@@ -81,6 +81,7 @@ const DcfValuationSchema = z.object({
     .describe('Long-run terminal growth rate as a decimal (default 0.025 = 2.5%).'),
   years: z
     .number()
+    .int()
     .min(1)
     .max(20)
     .default(5)
