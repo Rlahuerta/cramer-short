@@ -78,7 +78,7 @@ export const EVENT_ASSET_MAP: EventMapping[] = [
     category: 'china-taiwan',
     displayName: 'China-Taiwan Military Tension',
     description: 'PLA military exercises, blockade threats, escalating rhetoric over Taiwan',
-    detectionKeywords: ['taiwan', 'pla', 'strait', 'beijing', 'xi jinping', 'tsmc', 'semiconductor', 'chip war', 'reunification', 'military exercises'],
+    detectionKeywords: ['taiwan', 'pla', 'beijing', 'xi jinping', 'tsmc', 'semiconductor', 'chip war', 'reunification', 'military exercises'],
     gdeltThemes: ['MILITARY_CONFLICT', 'THREATEN', 'BLOCKADE_EMBARGO'],
     assets: [
       { ticker: 'TSM', name: 'TSMC', assetClass: 'equity', direction: 'risk-down', rationale: '90% of advanced chips made in Taiwan', confidence: 0.95 },

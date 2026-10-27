@@ -28,7 +28,6 @@ import {
   type CacheEntry,
   DEFAULT_CACHE_TTL_MINUTES,
   DEFAULT_TIMEOUT_SECONDS,
-  normalizeCacheKey,
   readCache,
   readResponseText,
   resolveCacheTtlMs,
@@ -331,9 +330,9 @@ async function runWebFetch(params: {
   cacheTtlMs: number;
   userAgent: string;
 }): Promise<Record<string, unknown>> {
-  const cacheKey = normalizeCacheKey(
-    `fetch:${params.url}:${params.extractMode}:${params.maxChars}`,
-  );
+  // Scheme and host are case-insensitive, path and query are not: URL folds only the former.
+  const urlKey = URL.canParse(params.url) ? new URL(params.url).href : params.url.trim();
+  const cacheKey = `fetch:${urlKey}:${params.extractMode}:${params.maxChars}`;
   const cached = readCache(FETCH_CACHE, cacheKey);
   if (cached) {
     return { ...cached.value, cached: true };

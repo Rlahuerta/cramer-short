@@ -22,6 +22,7 @@ import { detectCategories, getAssetImplications, getMappingForCategory, buildGde
 import type { AssetCorrelation } from './event-asset-map.js';
 import type { EventCategory } from './accounts.js';
 import { logger } from '../../utils/logger.js';
+import { wrapWebContent } from '../fetch/external-content.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Types
@@ -324,7 +325,7 @@ function formatResult(r: GeopoliticsResult): string {
       .slice(0, 10);
     for (const ev of top) {
       const ts = new Date(ev.publishedAt).toUTCString();
-      lines.push(`- **[${ev.category}]** ${ev.summary} — *${ev.source}* · ${ts}`);
+      lines.push(`- **[${ev.category}]** ${wrapWebContent(ev.summary)} — *${ev.source}* · ${ts}`);
       lines.push(`  ${ev.url}`);
     }
     lines.push('');

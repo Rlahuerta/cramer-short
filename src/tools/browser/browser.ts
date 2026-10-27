@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { logger } from '../../utils/logger.js';
+import { wrapWebContent } from '../fetch/external-content.js';
 import { assertPublicHttpUrl, assertPublicUrl } from '../fetch/url-guard.js';
 import { startGuardProxy } from './guard-proxy.js';
 
@@ -672,8 +673,10 @@ export function createBrowserTool(options: { runtime?: BrowserRuntime } = {}): D
             }
             return formatToolResult(await runtime.open(url, signal));
 
-          case 'snapshot':
-            return formatToolResult(await runtime.snapshot(maxChars, signal));
+          case 'snapshot': {
+            const page = await runtime.snapshot(maxChars, signal);
+            return formatToolResult({ ...page, snapshot: wrapWebContent(page.snapshot, 'web_fetch') });
+          }
 
           case 'act': {
             if (!request) {
@@ -686,8 +689,10 @@ export function createBrowserTool(options: { runtime?: BrowserRuntime } = {}): D
             return formatToolResult(await runtime.act(request, signal));
           }
 
-          case 'read':
-            return formatToolResult(await runtime.read(signal));
+          case 'read': {
+            const page = await runtime.read(signal);
+            return formatToolResult({ ...page, content: wrapWebContent(page.content, 'web_fetch') });
+          }
 
           case 'close':
             return formatToolResult({ ok: true, message: 'Browser closed' });

@@ -43,7 +43,8 @@ export const writeFileTool = new DynamicStructuredTool({
   func: async (input) => {
     const cwd = process.cwd();
     // Allow ~/... and absolute paths by sandboxing to homedir instead of cwd.
-    const isHomePath = input.path.startsWith('~/') || input.path === '~';
+    // expandPath() strips a leading `@` before expanding `~`, so `@~/x` is the same home path as `~/x`.
+    const isHomePath = /^@?~(\/|$)/.test(input.path);
     const root = isHomePath ? homedir() : cwd;
     const { resolved } = await assertSandboxPath({
       filePath: input.path,

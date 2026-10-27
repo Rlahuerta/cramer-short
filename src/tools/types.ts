@@ -1,3 +1,5 @@
+import { wrapWebContent } from './fetch/external-content.js';
+
 export interface ToolResult {
   data: unknown;
   sourceUrls?: string[];
@@ -50,4 +52,33 @@ export function parseSearchResults(result: unknown): { parsed: unknown; urls: st
   }
 
   return { parsed, urls };
+}
+
+const RESULT_TEXT_KEYS = ['title', 'text', 'content', 'raw_content', 'snippet', 'summary'];
+
+function wrapSearchResult(result: unknown): unknown {
+  if (!result || typeof result !== 'object') return result;
+  const out: Record<string, unknown> = { ...(result as Record<string, unknown>) };
+  for (const key of RESULT_TEXT_KEYS) {
+    if (typeof out[key] === 'string') out[key] = wrapWebContent(out[key]);
+  }
+  if (Array.isArray(out.highlights)) {
+    out.highlights = out.highlights.map((h) => (typeof h === 'string' ? wrapWebContent(h) : h));
+  }
+  return out;
+}
+
+/**
+ * Wrap the third-party text in web-search results (title/text/content/snippet/highlights and a
+ * synthesized `answer`) in EXTERNAL_UNTRUSTED_CONTENT markers, as web_fetch does. Urls, ids and
+ * scores stay untouched.
+ */
+export function wrapSearchResults(data: unknown): unknown {
+  if (typeof data === 'string') return wrapWebContent(data);
+  if (Array.isArray(data)) return data.map(wrapSearchResult);
+  if (!data || typeof data !== 'object') return data;
+  const out: Record<string, unknown> = { ...(data as Record<string, unknown>) };
+  if (typeof out.answer === 'string') out.answer = wrapWebContent(out.answer);
+  if (Array.isArray(out.results)) out.results = out.results.map(wrapSearchResult);
+  return out;
 }
