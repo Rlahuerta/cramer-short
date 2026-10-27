@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 
 import {
+  detectForecastLabPromotionApproval,
   extractForecastLabMutatorId,
   getForecastLabRoutingHint,
   routeForecastLabIntent,
@@ -156,5 +157,18 @@ describe('forecast-lab routing hint', () => {
     expect(extractForecastLabMutatorId('Use mutator gold-markov-shorter-reactive-window.')).toBe(
       'gold-markov-shorter-reactive-window',
     );
+  });
+
+  it('takes the explicitly named run id even when earlier words end in "run" or start with "run"', () => {
+    const runId = 'forecast-lab-sol-2026-01-01T00-00-00-000Z';
+    const prefix = 'Approve forecast-lab promotion for sol-markov-short-horizon';
+
+    for (const query of [
+      `${prefix}. Rerun the check for run ${runId}.`,
+      `${prefix}; the overrun 2026-01-01 was fine, promote run ${runId}`,
+      `${prefix}. Run the check first, then promote run ${runId}`,
+    ]) {
+      expect(detectForecastLabPromotionApproval(query)?.sourceRunId).toBe(runId);
+    }
   });
 });
