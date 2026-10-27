@@ -128,6 +128,8 @@ export const MEAN_EDGE_HOLD_POLICY = 'penalize_missed_move' as const;
 export interface BucketedMetricRow {
   label: string;
   count: number;
+  /** Traded (non-HOLD) steps: the denominator of `directionalAccuracy`. */
+  tradedCount: number;
   fraction: number;
   directionalAccuracy: number;
   balancedDirectionalAccuracy: number;
@@ -920,6 +922,7 @@ function bucketRow(
     return {
       label,
       count: 0,
+      tradedCount: 0,
       fraction: 0,
       directionalAccuracy: 0,
       balancedDirectionalAccuracy: 0,
@@ -932,6 +935,7 @@ function bucketRow(
   return {
     label,
     count: bucketSteps.length,
+    tradedCount: bucketSteps.filter(step => step.recommendation !== 'HOLD').length,
     fraction: totalSteps > 0 ? bucketSteps.length / totalSteps : 0,
     directionalAccuracy: directionalAccuracy(bucketSteps),
     balancedDirectionalAccuracy: balancedDirectionalAccuracy(bucketSteps, holdThreshold),
