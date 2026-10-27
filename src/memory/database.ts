@@ -69,6 +69,9 @@ type CacheRow = {
   embedding: Uint8Array;
 };
 
+// Lowest keyword score a real FTS match can get; keep >= the default minScore in memory/index.ts.
+const KEYWORD_SCORE_FLOOR = 0.1;
+
 const FINANCIAL_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS financial_insights (
   id           INTEGER PRIMARY KEY,
@@ -721,14 +724,15 @@ export class MemoryDatabase {
     if (rows.length === 0) return [];
 
     // SQLite BM25 returns negative values — more negative = better match.
-    // Normalise to [0, 1]: best candidate → 1, worst → 0.
+    // Normalise to [KEYWORD_SCORE_FLOOR, 1]: best candidate → 1, worst → the floor. Every row is a real
+    // FTS match, so it must not score 0 and fall under hybridSearch's default minScore (0.1).
     const minRank = Math.min(...rows.map((r) => r.rank));
     const maxRank = Math.max(...rows.map((r) => r.rank));
     const range = maxRank - minRank;
 
     return rows.slice(0, maxResults).map((row) => ({
       chunkId: row.chunk_id,
-      score: range > 0 ? (maxRank - row.rank) / range : 1,
+      score: range > 0 ? KEYWORD_SCORE_FLOOR + (1 - KEYWORD_SCORE_FLOOR) * ((maxRank - row.rank) / range) : 1,
     }));
   }
 
