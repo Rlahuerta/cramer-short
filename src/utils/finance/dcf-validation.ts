@@ -10,13 +10,13 @@
 export interface DcfValidationInput {
   wacc: number;
   terminalGrowth: number;
-  riskFreeRate: number;
+  riskFreeRate?: number;
   isDevelopedMarket?: boolean;
   tvPV: number;
   enterpriseValue: number;
-  roic: number;
+  roic?: number;
   computedEv: number;
-  reportedEv: number;
+  reportedEv?: number;
   debtToEquity: number;
   source?: 'book' | 'market' | 'unknown';
 }
@@ -193,8 +193,10 @@ export function runDcfValidation(checks: DcfValidationInput): DcfValidationResul
   const r1 = validateWaccGreaterThanGrowth(checks.wacc, checks.terminalGrowth);
   if (!r1.ok) errors.push(r1.message);
 
-  const r2 = validateTerminalGrowthVsRfr(checks.terminalGrowth, checks.riskFreeRate);
-  if (!r2.ok) errors.push(r2.message);
+  if (checks.riskFreeRate !== undefined) {
+    const r2 = validateTerminalGrowthVsRfr(checks.terminalGrowth, checks.riskFreeRate);
+    if (!r2.ok) errors.push(r2.message);
+  }
 
   const r3 = validateTerminalGrowthCap(
     checks.terminalGrowth,
@@ -209,14 +211,18 @@ export function runDcfValidation(checks: DcfValidationInput): DcfValidationResul
     warnings.push(r4.message);
   }
 
-  const r5 = validateWaccVsRoic(checks.wacc, checks.roic);
-  if (r5.ok && r5.message.toLowerCase().includes('destruction')) {
-    warnings.push(r5.message);
+  if (checks.roic !== undefined) {
+    const r5 = validateWaccVsRoic(checks.wacc, checks.roic);
+    if (r5.ok && r5.message.toLowerCase().includes('destruction')) {
+      warnings.push(r5.message);
+    }
   }
 
-  const r6 = validateEvSanity(checks.computedEv, checks.reportedEv);
-  if (!r6.ok) {
-    errors.push(r6.message);
+  if (checks.reportedEv !== undefined) {
+    const r6 = validateEvSanity(checks.computedEv, checks.reportedEv);
+    if (!r6.ok) {
+      errors.push(r6.message);
+    }
   }
 
   const r7 = validateMarketValueWeights(checks.debtToEquity, checks.source);

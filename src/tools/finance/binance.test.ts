@@ -54,4 +54,16 @@ describe('fetchBinanceDailyCloses', () => {
     const result = await fetchBinanceDailyCloses('BTC-USD', 2);
     expect(result).toEqual([42300, 42650]);
   });
+
+  it('anchors the klines window to an explicit range when given', async () => {
+    let url = '';
+    globalThis.fetch = (mock(async (input: RequestInfo | URL) => {
+      url = String(input);
+      return Response.json([]);
+    }) as unknown) as typeof fetch;
+    await fetchBinanceDailyCloses('BTC-USD', 10, { startMs: 1_609_459_200_000, endMs: 1_610_323_199_999 });
+    const params = new URL(url).searchParams;
+    expect(params.get('startTime')).toBe('1609459200000');
+    expect(params.get('endTime')).toBe('1610323199999');
+  });
 });
