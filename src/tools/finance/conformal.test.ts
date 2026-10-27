@@ -37,6 +37,7 @@ type AdaptiveConformalLike = {
   empiricalCoverage(): number | undefined;
   sampleCount(): number;
   wrap(forecastCenter: number): { low: number; high: number };
+  reset(opts?: { radius?: number }): void;
   record(
     forecastCenter: number,
     actual: number,
@@ -174,6 +175,37 @@ describe('ConformalPID — coverage helpers', () => {
     const c = new ConformalPID();
     expect(c.sampleCount()).toBe(0);
     expect(c.empiricalCoverage()).toBeUndefined();
+  });
+});
+
+describe('ConformalPID — reset', () => {
+  it('restores the constructor initialRadius when no radius is given (Python parity)', () => {
+    const c = new ConformalPID({ alpha: 0.1, initialRadius: 1.0 });
+    c.record(0, 5); // miss: the controller widens q
+    expect(c.currentRadius()).toBeGreaterThan(1.0);
+
+    c.reset();
+    expect(c.currentRadius()).toBe(1.0);
+    expect(c.sampleCount()).toBe(0);
+    expect(c.empiricalCoverage()).toBeUndefined();
+  });
+
+  it('uses an explicit radius over the initialRadius', () => {
+    const c = new ConformalPID({ alpha: 0.1, initialRadius: 1.0 });
+    c.record(0, 5);
+    c.reset({ radius: 3 });
+    expect(c.currentRadius()).toBe(3);
+  });
+
+  it('AdaptiveConformalPID.reset() also restores the initialRadius and normal mode', () => {
+    const c = createAdaptiveConformal({ enabled: true, initialRadius: 1.0, cooloffWindow: 2 });
+    c.record(0, 2, { structuralBreak: true });
+    expect(c.currentMode()).toBe('break');
+    expect(c.currentRadius()).toBeGreaterThan(1.0);
+
+    c.reset();
+    expect(c.currentMode()).toBe('normal');
+    expect(c.currentRadius()).toBe(1.0);
   });
 });
 

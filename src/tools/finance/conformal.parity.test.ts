@@ -73,6 +73,36 @@ print(cov)
   }, PYTHON_PARITY_TIMEOUT_MS);
 });
 
+describeParity('TS/Python parity — reset()', () => {
+  test('reset() restores the constructor initialRadius; reset({radius}) overrides it', async () => {
+    const tsPid = new ConformalPID({ alpha: 0.1, initialRadius: 1.0 });
+    tsPid.record(0, 5);
+    const tsWidened = tsPid.currentRadius();
+    tsPid.reset();
+    const tsRestored = tsPid.currentRadius();
+    tsPid.reset({ radius: 3 });
+    const tsExplicit = tsPid.currentRadius();
+
+    const py = await runPython(`
+from research.models.conformal import ConformalPID
+import json
+
+pid = ConformalPID(alpha=0.1, initial_radius=1.0)
+pid.record(0.0, 5.0)
+widened = pid.current_radius()
+pid.reset()
+restored = pid.current_radius()
+pid.reset(radius=3.0)
+print(json.dumps([widened, restored, pid.current_radius()]))
+`);
+    const [pyWidened, pyRestored, pyExplicit] = JSON.parse(py) as number[];
+    expect(tsWidened).toBeCloseTo(pyWidened, 12);
+    expect(tsRestored).toBeCloseTo(pyRestored, 12);
+    expect(tsExplicit).toBeCloseTo(pyExplicit, 12);
+    expect(tsRestored).toBe(1.0);
+  }, PYTHON_PARITY_TIMEOUT_MS);
+});
+
 describeParity('TS/Python parity — AdaptiveConformalPID break mode', () => {
   test('enters break mode when structural break detected', async () => {
     const events: [number, number, boolean, number][] = [
