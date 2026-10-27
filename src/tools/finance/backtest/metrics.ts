@@ -164,9 +164,13 @@ export interface BacktestStep {
   predictedReturn: number;
   /** Actual realized return over the horizon */
   actualReturn: number;
-  /** 90% CI lower bound (price) */
+  /**
+   * Primary step interval lower bound (price). Not a literal central 90%: walk-forward and
+   * replay store a conservative ~99% survival interval here (widened by adaptive conformal
+   * in break mode). The literal central intervals are the `central*CiLower` fields below.
+   */
   ciLower: number;
-  /** 90% CI upper bound (price) */
+  /** Primary step interval upper bound (price); see `ciLower`. */
   ciUpper: number;
   /** Literal central 90% interval lower bound from the forecast distribution when available. */
   central90CiLower?: number;
@@ -531,7 +535,8 @@ function deriveForecastCenter(step: BacktestStep): number {
 }
 
 function deriveIntervalScale(step: BacktestStep): number {
-  const width = Math.abs(step.ciUpper - step.ciLower);
+  const bounds = resolveCentralIntervalBounds(step, 0.9);
+  const width = Math.abs(bounds.upper - bounds.lower);
   const sigma = width / (2 * CENTRAL_90_Z);
   return Number.isFinite(sigma) && sigma > MIN_SCALE ? sigma : MIN_SCALE;
 }
@@ -723,8 +728,8 @@ function weightedStepScore(
 }
 
 /**
- * Continuous Ranked Probability Score using the current backtest interval as a
- * central-normal approximation. Lower is better.
+ * Continuous Ranked Probability Score using the literal central-90 interval (falling
+ * back to `ciLower` / `ciUpper`) as a central-normal approximation. Lower is better.
  */
 export function crps(steps: BacktestStep[]): number {
   if (steps.length === 0) return 0;
@@ -825,9 +830,10 @@ export function forecastAccuracyCoherenceScore(
 }
 
 /**
- * Murphy-Winkler interval score decomposition for the primary step interval.
- * In current walk-forward runs this is the conservative helper interval unless a
- * caller populates a different interval into `ciLower` / `ciUpper`.
+ * Murphy-Winkler interval score decomposition for the central (1 - alpha) interval.
+ * Scores the literal central interval carried on the step (alpha 0.10 / 0.05 / 0.01);
+ * falls back to the primary `ciLower` / `ciUpper` interval when the step has no literal
+ * bounds for that level.
  */
 export function murphyWinklerDecomposition(
   steps: BacktestStep[],
@@ -844,14 +850,16 @@ export function murphyWinklerDecomposition(
   }
 
   const penaltyScale = 2 / alpha;
+  const level = ([0.9, 0.95, 0.99] as const).find(candidate => Math.abs(1 - candidate - alpha) < 1e-9);
   let widthSum = 0;
   let lowerPenaltySum = 0;
   let upperPenaltySum = 0;
   let covered = 0;
 
   for (const step of steps) {
-    const lower = Math.min(step.ciLower, step.ciUpper);
-    const upper = Math.max(step.ciLower, step.ciUpper);
+    const bounds = level ? resolveCentralIntervalBounds(step, level) : { lower: step.ciLower, upper: step.ciUpper };
+    const lower = Math.min(bounds.lower, bounds.upper);
+    const upper = Math.max(bounds.lower, bounds.upper);
     widthSum += upper - lower;
     if (step.realizedPrice < lower) {
       lowerPenaltySum += penaltyScale * (lower - step.realizedPrice);
