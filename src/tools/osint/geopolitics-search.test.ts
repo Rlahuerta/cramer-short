@@ -33,6 +33,21 @@ describe('detectCategories', () => {
     expect(cats).toContain('middle-east');
   });
 
+  test('does not classify a Strait of Hormuz story as china-taiwan (PI-47)', () => {
+    const cats = detectCategories('Strait of Hormuz closure');
+    expect(cats).toContain('middle-east');
+    expect(cats).toContain('iran');
+    expect(cats).not.toContain('china-taiwan');
+    const tickers = getAssetImplications(cats).map((a) => a.ticker);
+    for (const chip of ['TSM', 'NVDA', 'AMD', 'ASML', 'INTC']) {
+      expect(tickers).not.toContain(chip);
+    }
+  });
+
+  test('still detects china-taiwan from a Taiwan Strait story (PI-47)', () => {
+    expect(detectCategories('Taiwan Strait military exercises')).toContain('china-taiwan');
+  });
+
   test('detects cyberattack from infrastructure text', () => {
     const cats = detectCategories('Nation-state ransomware attack on critical infrastructure power grid');
     expect(cats).toContain('cyberattack');
