@@ -5,6 +5,7 @@
  * Also handles bold text formatting.
  */
 
+import { createHash } from 'node:crypto';
 import { Markdown } from '@mariozechner/pi-tui';
 import chalk from 'chalk';
 import { markdownTheme } from '../../theme.js';
@@ -365,7 +366,9 @@ export function renderTuiMarkdownLines(content: string, width: number): string[]
 const renderedLineCache = new Map<string, number>();
 
 export function countRenderedTuiMarkdownLines(content: string, width: number): number {
-  const key = `${content.length}:${width}:${content.slice(0, 120)}`;
+  // Hash the full content: a truncated prefix collides, and streaming re-counts every growing
+  // answer, so full-content keys would be retained for the life of the process.
+  const key = `${width}:${createHash('sha256').update(content).digest('hex')}`;
   const cached = renderedLineCache.get(key);
   if (cached !== undefined) return cached;
   const result = renderTuiMarkdownLines(content, width).length;

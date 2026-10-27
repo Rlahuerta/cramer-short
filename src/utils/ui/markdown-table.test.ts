@@ -4,6 +4,7 @@ import {
   countRenderedTuiMarkdownLines,
   parseMarkdownTable,
   renderBoxTable,
+  renderTuiMarkdownLines,
   truncateTuiMarkdownTail,
   transformMarkdownTables,
   formatResponse,
@@ -345,5 +346,20 @@ describe('formatResponseTui', () => {
     expect(truncated.truncated).toBe(true);
     expect(truncated.text.startsWith('…\n')).toBe(true);
     expect(countRenderedTuiMarkdownLines(truncated.text, 20)).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('countRenderedTuiMarkdownLines', () => {
+  it('does not reuse the count of a different answer with the same length and prefix', () => {
+    const width = 40;
+    const sharedPrefix = 'x'.repeat(120);
+    const first = `${sharedPrefix}\n${'b'.repeat(19)}`;
+    const second = `${sharedPrefix}\n${Array.from({ length: 10 }, () => 'c').join('\n')}`;
+    expect(second.length).toBe(first.length);
+    expect(renderTuiMarkdownLines(second, width).length).not.toBe(renderTuiMarkdownLines(first, width).length);
+
+    // Counting `first` seeds the cache; `second` must still be counted from its own render.
+    expect(countRenderedTuiMarkdownLines(first, width)).toBe(renderTuiMarkdownLines(first, width).length);
+    expect(countRenderedTuiMarkdownLines(second, width)).toBe(renderTuiMarkdownLines(second, width).length);
   });
 });
