@@ -193,6 +193,22 @@ describe('formatResponse (full pipeline)', () => {
   });
 });
 
+describe('formatResponse — underscores in table cells', () => {
+  // Rendered width without relying on the markdown-stripping helper above.
+  const renderedWidths = (md: string) =>
+    formatResponse(md).split('\n').map(line => [...line.replace(/\x1b\[[0-9;]*m/g, '')].length);
+
+  it('keeps rows aligned when a cell holds a snake_case identifier', () => {
+    const widths = renderedWidths('| metric | note |\n|---|---|\n| foo_bar_baz | x |');
+    expect(new Set(widths).size).toBe(1);
+  });
+
+  it('still measures a real _italic_ cell by its visible text', () => {
+    const widths = renderedWidths('| metric | note |\n|---|---|\n| _growth_ | x |');
+    expect(new Set(widths).size).toBe(1);
+  });
+});
+
 describe('transformHeaders', () => {
   it('H1: # Title → contains bold yellow text', () => {
     const result = transformHeaders('# Title');

@@ -38,7 +38,7 @@ function stripMarkdownFormatting(text: string): string {
   return text
     .replace(/\*\*([^*]+)\*\*/g, '$1')   // **bold** → content
     .replace(/\*([^*]+)\*/g, '$1')        // *italic* → content
-    .replace(/_([^_\s][^_]*)_/g, '$1');   // _italic_ → content
+    .replace(/(?<!\w)_([^_\s][^_\n]*)_(?!\w)/g, '$1');   // _italic_ → content (word-boundary guard as in transformItalic: snake_case stays)
 }
 
 /**
