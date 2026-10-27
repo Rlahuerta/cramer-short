@@ -62,6 +62,11 @@ export interface CalibrationSummary {
   breakCount: number;
   breakCiCoverage: number | null;
   breakCoverageError: number | null;
+  /** Coverage of the literal central-90 interval (`ciCoverage` scores the wider helper interval). */
+  central90Coverage: number;
+  central90CoverageError: number;
+  breakCentral90Coverage: number | null;
+  breakCentral90CoverageError: number | null;
   sharpness: number;
   brierScore: number;
   directionalAccuracy: number;
@@ -128,6 +133,8 @@ export function summarizeCalibrationSteps(
   const selective045 = selectiveDirectionalAccuracy(steps, 0.45);
   const overallCoverage = ciCoverage(steps);
   const breakCoverage = breakSteps.length > 0 ? ciCoverage(breakSteps) : null;
+  const central90 = centralIntervalCoverage(steps, 0.9);
+  const breakCentral90 = breakSteps.length > 0 ? centralIntervalCoverage(breakSteps, 0.9) : null;
   return {
     n: steps.length,
     ciCoverage: overallCoverage,
@@ -135,6 +142,10 @@ export function summarizeCalibrationSteps(
     breakCount: breakSteps.length,
     breakCiCoverage: breakCoverage,
     breakCoverageError: breakCoverage === null ? null : Math.abs(breakCoverage - options.targetCiCoverage),
+    central90Coverage: central90,
+    central90CoverageError: Math.abs(central90 - options.targetCiCoverage),
+    breakCentral90Coverage: breakCentral90,
+    breakCentral90CoverageError: breakCentral90 === null ? null : Math.abs(breakCentral90 - options.targetCiCoverage),
     sharpness: sharpness(steps),
     brierScore: brierScore(steps),
     directionalAccuracy: directionalAccuracy(steps),

@@ -543,6 +543,16 @@ describe('crps', () => {
     expect(crps(accurate)).toBeLessThan(crps(farWide));
   });
 
+  it('scores the literal central-90 interval, not the wider helper interval (PI-16)', () => {
+    // Same central-90 (95..105); only the conservative helper interval differs.
+    const narrowHelper = makeStep({ ciLower: 95, ciUpper: 105 });
+    const wideHelper = makeStep({ ciLower: 90, ciUpper: 110, central90CiLower: 95, central90CiUpper: 105 });
+
+    expect(crps([wideHelper])).toBeCloseTo(crps([narrowHelper]), 10);
+    expect(scaledCrps([wideHelper])).toBeCloseTo(scaledCrps([narrowHelper]), 10);
+    expect(tailWeightedCrps([wideHelper])).toBeCloseTo(tailWeightedCrps([narrowHelper]), 10);
+  });
+
   it('returns finite scaled scores for zero-width or invalid intervals', () => {
     const score = scaledCrps([
       makeStep({
@@ -859,6 +869,37 @@ describe('murphyWinklerDecomposition', () => {
     expect(decomposition.upperMissPenalty).toBeCloseTo(100);
     expect(decomposition.totalScore).toBeCloseTo(220);
     expect(decomposition.coverage).toBeCloseTo(0);
+  });
+
+  it('scores the literal central-90 interval, not the wider helper interval (PI-16)', () => {
+    const wideHelper = { ciLower: 90, ciUpper: 110, central90CiLower: 95, central90CiUpper: 105 };
+    const decomposition = murphyWinklerDecomposition([
+      makeStep({ ...wideHelper, realizedPrice: 100 }),
+      makeStep({ ...wideHelper, realizedPrice: 108 }),
+    ]);
+
+    expect(decomposition.meanWidth).toBeCloseTo(10);
+    // 108 is inside the helper interval but 3 above central-90: penalty 2 / 0.10 * 3 = 60, averaged over 2 steps.
+    expect(decomposition.upperMissPenalty).toBeCloseTo(30);
+    expect(decomposition.coverage).toBeCloseTo(0.5);
+  });
+
+  it('matches the interval level to alpha and falls back to the helper interval without literal bounds (PI-16)', () => {
+    const step = makeStep({
+      ciLower: 90,
+      ciUpper: 110,
+      central90CiLower: 95,
+      central90CiUpper: 105,
+      central95CiLower: 93,
+      central95CiUpper: 107,
+      realizedPrice: 100,
+    });
+
+    expect(murphyWinklerDecomposition([step], 0.05).meanWidth).toBeCloseTo(14);
+    // No literal 99% bounds on the step, so alpha 0.01 falls back to ciLower/ciUpper.
+    expect(murphyWinklerDecomposition([step], 0.01).meanWidth).toBeCloseTo(20);
+    // Non-standard alpha has no literal interval at all.
+    expect(murphyWinklerDecomposition([step], 0.2).meanWidth).toBeCloseTo(20);
   });
 
   it('returns zeros for empty input', () => {
