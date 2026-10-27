@@ -1123,6 +1123,7 @@ function inspectAnchorCandidate(
     threshold: {
       price: matched,
       rawProbability,
+      isBelow,
       probability: correctedProbability,
       trustScore,
       trustWeight,
@@ -1932,23 +1933,27 @@ export function mergeAnchorsWithCrossPlatformValidation(
       });
     } else {
       const poly = merged[matchIdx];
-      const divergence = Math.abs(poly.rawProbability - kalshi.probability);
+      // Kalshi quotes P(above), but a "below" market's raw YES is P(below): put Kalshi in the
+      // market's own YES frame before comparing/averaging, then restore P(above) at the end.
+      const kalshiYes = poly.isBelow ? 1 - kalshi.probability : kalshi.probability;
+      const divergence = Math.abs(poly.rawProbability - kalshiYes);
 
       if (divergence > divergenceThresholdPp) {
         warnings.push({
           price: kalshi.price,
-          polymarketProb: poly.rawProbability,
+          polymarketProb: poly.isBelow ? 1 - poly.rawProbability : poly.rawProbability,
           kalshiProb: kalshi.probability,
           divergencePp: Math.round(divergence * 10000) / 100, // to 2dp
         });
       }
 
       // Average both platforms' raw probabilities, then apply bias correction
-      const averaged = (poly.rawProbability + kalshi.probability) / 2;
+      const averaged = (poly.rawProbability + kalshiYes) / 2;
+      const biasCorrected = averaged * YES_BIAS_MULTIPLIER; // apply bias correction to blended probability
       merged[matchIdx] = {
         ...poly,
         rawProbability: averaged,
-        probability: averaged * YES_BIAS_MULTIPLIER, // apply bias correction to blended probability
+        probability: poly.isBelow ? 1 - biasCorrected : biasCorrected,
         source: 'averaged',
         // Upgrade to high trust if either source qualifies
         trustScore: poly.trustScore === 'high' || (kalshi.volume ?? 0) > 0 ? 'high' : 'low',
@@ -2999,12 +3004,17 @@ export function buildBtcShortHorizonThinAnchorWarning(options: {
 
 export function formatMarkovMixingLine(options: {
   commodityModelOnly: boolean;
+  cryptoModelOnly?: boolean;
   markovWeight: number;
   anchorWeight: number;
   trustedAnchors: number;
 }): string {
   if (options.commodityModelOnly) {
     return 'Calibration: model-only (commodity bypass, no anchors)';
+  }
+
+  if (options.cryptoModelOnly) {
+    return 'Calibration: model-only (crypto bypass, no anchors)';
   }
 
   const pct = (n: number) => (n * 100).toFixed(1);
@@ -5176,6 +5186,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     // --- Section 4: Header and metadata ---
     const mixingLine = formatMarkovMixingLine({
       commodityModelOnly,
+      cryptoModelOnly,
       markovWeight: m.mixingTimeWeight,
       anchorWeight: 1 - m.mixingTimeWeight,
       trustedAnchors: m.polymarketAnchors,
@@ -5256,16 +5267,14 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       trajectorySection.push('    The CI range is the honest measure of uncertainty.');
     }
 
-    const forecastHint = fullCanonical
-      ? buildForecastHint({
-          canEmitCanonical,
-          ticker: result.ticker,
-          horizon: result.horizon,
-          expectedReturn: result.actionSignal.expectedReturn,
-          mixingTimeWeight: m.mixingTimeWeight,
-          predictionConfidence: result.predictionConfidence,
-        })
-      : null;
+    const forecastHint = buildForecastHint({
+      canEmitCanonical,
+      ticker: result.ticker,
+      horizon: result.horizon,
+      expectedReturn: result.actionSignal.expectedReturn,
+      mixingTimeWeight: m.mixingTimeWeight,
+      predictionConfidence: result.predictionConfidence,
+    });
     const closestResolutionLine =
       m.anchorInspection.closestResolutionDate != null
       && m.anchorInspection.closestResolutionOffsetDays != null
@@ -5368,8 +5377,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           regimeState: m.regimeState,
           historicalDays: m.historicalDays,
           mixingTimeWeight: m.mixingTimeWeight,
-          markovWeight: commodityModelOnly ? 1 : m.mixingTimeWeight,
-          anchorWeight: commodityModelOnly ? 0 : 1 - m.mixingTimeWeight,
+          markovWeight: anchorBypassApplied ? 1 : m.mixingTimeWeight,
+          anchorWeight: anchorBypassApplied ? 0 : 1 - m.mixingTimeWeight,
           outOfSampleR2: m.outOfSampleR2,
           structuralBreakDetected: m.structuralBreakDetected,
           structuralBreakDivergence: m.structuralBreakDivergence,

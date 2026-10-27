@@ -1308,6 +1308,41 @@ describe('Tier 1c — mergeAnchorsWithCrossPlatformValidation', () => {
     expect(anchors[0].trustScore).toBe('high');
   });
 
+  describe('"below $X" Polymarket anchors (rawProbability is P(below), Kalshi is P(above))', () => {
+    const belowAnchor = () => extractPriceThresholds(
+      [{ question: 'Will BTC close below $90,000 on March 8, 2026?', probability: 0.8, volume: 100_000 }],
+      { referenceTimeMs: Date.parse('2026-03-01T00:00:00Z') },
+    );
+
+    it('compares and averages in the P(above) frame, so agreeing platforms neither warn nor collapse to 0.5', () => {
+      const poly = belowAnchor();
+      expect(poly[0].probability).toBeCloseTo(0.24, 10); // 1 - 0.8 * 0.95
+      const { anchors, warnings } = mergeAnchorsWithCrossPlatformValidation(
+        poly,
+        [{ price: 90_000, probability: 0.24, volume: 10_000 }],
+      );
+      expect(warnings).toHaveLength(0);
+      // Same "average raw, then YES-bias correct" rule as above markets, applied to P(below):
+      // P(below) = 0.95 * avg(0.8, 1 - 0.24); canonical P(above) = 1 - P(below).
+      expect(anchors[0].rawProbability).toBeCloseTo(0.78, 10);
+      expect(anchors[0].probability).toBeCloseTo(1 - 0.95 * 0.78, 10);
+    });
+
+    it('reports a genuine divergence in the P(above) frame', () => {
+      const { anchors, warnings } = mergeAnchorsWithCrossPlatformValidation(
+        belowAnchor(),
+        [{ price: 90_000, probability: 0.5 }], // poly P(above) raw = 1 - 0.8 = 0.2
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].polymarketProb).toBeCloseTo(0.2, 10);
+      expect(warnings[0].kalshiProb).toBeCloseTo(0.5, 10);
+      expect(warnings[0].divergencePp).toBeCloseTo(30, 10);
+      // The merged P(above) lies between the two platforms' P(above) quotes (0.2..0.5, bias-adjusted).
+      expect(anchors[0].probability).toBeGreaterThan(0.2);
+      expect(anchors[0].probability).toBeLessThan(0.5);
+    });
+  });
+
   it('kalshiAnchors parameter propagates through computeMarkovDistribution', async () => {
     const prices = Array.from({ length: 40 }, (_, i) => 100 + i * 0.3);
     const result = await computeMarkovDistribution({
