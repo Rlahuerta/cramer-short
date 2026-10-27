@@ -1065,12 +1065,31 @@ describe('selectiveDirectionalAccuracy', () => {
     expect(selective.coverage).toBe(3 / 5); // 60% coverage
   });
 
-  it('HOLD is correct when |actualReturn| < holdThreshold', () => {
+  it('scores only traded selected steps; HOLD abstentions are not rewarded (PI-17)', () => {
+    // Selected set: 3 traded (2 correct) + 7 flat HOLD abstentions.
     const steps = [
-      makeStep({ confidence: 0.7, recommendation: 'HOLD', actualReturn: 0.01 }),
+      makeStep({ confidence: 0.9, recommendation: 'BUY', actualReturn: 0.05 }),
+      makeStep({ confidence: 0.9, recommendation: 'BUY', actualReturn: 0.04 }),
+      makeStep({ confidence: 0.9, recommendation: 'SELL', actualReturn: 0.03 }),
+      ...Array.from({ length: 7 }, () => makeStep({ confidence: 0.9, recommendation: 'HOLD', actualReturn: 0.001 })),
     ];
-    const result = selectiveDirectionalAccuracy(steps, 0.5, 0.03);
-    expect(result.accuracy).toBe(1.0);
+    const result = selectiveDirectionalAccuracy(steps, 0.5);
+    expect(result.accuracy).toBeCloseTo(2 / 3, 10);
+    expect(result.accuracy).toBeCloseTo(directionalAccuracy(steps), 10);
+    // The coverage axis is still the confidence-selected fraction.
+    expect(result.selected).toBe(10);
+    expect(result.coverage).toBe(1);
+  });
+
+  it('scores 0 for a model that never trades instead of 100% (PI-17)', () => {
+    const steps = Array.from({ length: 5 }, () =>
+      makeStep({ confidence: 0.9, recommendation: 'HOLD', actualReturn: 0.001 }),
+    );
+    const result = selectiveDirectionalAccuracy(steps, 0.5);
+    expect(result.accuracy).toBe(0);
+    expect(result.coverage).toBe(1);
+    expect(result.selected).toBe(5);
+    expect(computeRCCurve(steps, [0, 0.5])[0].accuracy).toBe(0);
   });
 });
 
