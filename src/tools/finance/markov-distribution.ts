@@ -3004,12 +3004,17 @@ export function buildBtcShortHorizonThinAnchorWarning(options: {
 
 export function formatMarkovMixingLine(options: {
   commodityModelOnly: boolean;
+  cryptoModelOnly?: boolean;
   markovWeight: number;
   anchorWeight: number;
   trustedAnchors: number;
 }): string {
   if (options.commodityModelOnly) {
     return 'Calibration: model-only (commodity bypass, no anchors)';
+  }
+
+  if (options.cryptoModelOnly) {
+    return 'Calibration: model-only (crypto bypass, no anchors)';
   }
 
   const pct = (n: number) => (n * 100).toFixed(1);
@@ -5181,6 +5186,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     // --- Section 4: Header and metadata ---
     const mixingLine = formatMarkovMixingLine({
       commodityModelOnly,
+      cryptoModelOnly,
       markovWeight: m.mixingTimeWeight,
       anchorWeight: 1 - m.mixingTimeWeight,
       trustedAnchors: m.polymarketAnchors,
@@ -5371,8 +5377,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           regimeState: m.regimeState,
           historicalDays: m.historicalDays,
           mixingTimeWeight: m.mixingTimeWeight,
-          markovWeight: commodityModelOnly ? 1 : m.mixingTimeWeight,
-          anchorWeight: commodityModelOnly ? 0 : 1 - m.mixingTimeWeight,
+          markovWeight: anchorBypassApplied ? 1 : m.mixingTimeWeight,
+          anchorWeight: anchorBypassApplied ? 0 : 1 - m.mixingTimeWeight,
           outOfSampleR2: m.outOfSampleR2,
           structuralBreakDetected: m.structuralBreakDetected,
           structuralBreakDivergence: m.structuralBreakDivergence,

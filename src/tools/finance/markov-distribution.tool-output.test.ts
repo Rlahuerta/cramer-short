@@ -714,6 +714,44 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.canonical.diagnostics.anchorBypassApplied).toBe(true);
   });
 
+  it('reports 100% Markov weight and a model-only calibration line for BTC zero-anchor emission', async () => {
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [],
+    }));
+
+    const { markovDistributionTool: emitTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+
+    const result = await emitTool.func({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical.diagnostics;
+    expect(parsed.data.status).toBe('ok');
+    expect(diagnostics.calibrationMode).toBe('model_only');
+    expect(diagnostics.anchorBypassApplied).toBe(true);
+    expect(diagnostics.trustedAnchors).toBe(0);
+    expect(diagnostics.markovWeight).toBe(1);
+    expect(diagnostics.anchorWeight).toBe(0);
+    expect(parsed.data.report).toContain('Calibration: model-only (crypto bypass, no anchors)');
+    expect(parsed.data.report).not.toContain('% Anchors');
+    expect(parsed.data.report).not.toContain('commodity bypass');
+  });
+
   it('BTC break-threshold override can suppress a detected structural break', async () => {
     const prices = transitionBreakPrices(65000, 0.04);
 
@@ -1122,6 +1160,16 @@ describe('markov_distribution tool output envelope', () => {
         anchorWeight: 0,
         trustedAnchors: 0,
       })).toBe('Calibration: model-only (commodity bypass, no anchors)');
+    });
+
+    it('labels the crypto bypass as model-only without calling it a commodity bypass', () => {
+      expect(formatMarkovMixingLine({
+        commodityModelOnly: false,
+        cryptoModelOnly: true,
+        markovWeight: 1,
+        anchorWeight: 0,
+        trustedAnchors: 0,
+      })).toBe('Calibration: model-only (crypto bypass, no anchors)');
     });
   });
 
