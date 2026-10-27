@@ -105,6 +105,40 @@ describe('reverseDcfTool — known solutions', () => {
   });
 });
 
+describe('reverseDcfTool — low per-share values', () => {
+  // 1,000,000 shares make the fair value a fraction of a cent: an absolute $0.01 tolerance would
+  // accept the LOW bracket endpoint (or any early bisection midpoint) as "converged".
+  test.each([0.30, -0.10, 0.60])('recovers growth g=%f when fair value per share is below one cent', async (trueGrowth) => {
+    const dilutedShares = 1_000_000;
+    const { fairValuePerShare } = computeFairValuePerShare({
+      baseFcf: 100,
+      wacc: 0.10,
+      growthRate: trueGrowth,
+      terminalGrowthRate: 0.025,
+      years: 5,
+      decay: 0.05,
+      netDebt: 0,
+      dilutedShares,
+    });
+    expect(fairValuePerShare).toBeLessThan(0.01);
+
+    const result = await reverseDcfTool.invoke({
+      ticker: 'PENNY',
+      current_price: fairValuePerShare,
+      base_fcf: 100,
+      wacc: 0.10,
+      terminal_growth_rate: 0.025,
+      years: 5,
+      decay: 0.05,
+      net_debt: 0,
+      diluted_shares: dilutedShares,
+    });
+    const parsed = parseResult(result);
+    expect(parsed.data.resultStatus).toBe('converged');
+    expect(parsed.data.impliedGrowthRate).toBeCloseTo(trueGrowth, 3);
+  });
+});
+
 describe('reverseDcfTool — boundary and edge cases', () => {
   test('boundary at zero growth (price equals no-growth FCF-only value)', async () => {
     const baseFcf = 100;

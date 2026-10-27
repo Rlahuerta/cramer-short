@@ -111,7 +111,7 @@ function solveReverseDcf(
 
   const LOW = -0.20;
   const HIGH = 2.00;
-  const TOLERANCE = 0.01;
+  const TOLERANCE = Math.max(1e-9, currentPrice * 1e-6); // relative to the price: a fixed $0.01 swamps sub-cent per-share values
   const MAX_ITER = 100;
 
   function fairValue(g: number): number {
