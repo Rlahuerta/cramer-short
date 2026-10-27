@@ -561,16 +561,20 @@ IMPORTANT: One or more data tools returned an error or empty result. Per your Fi
   }
 
   const hasCanonicalMarkovOutput = /"_tool"\s*:\s*"markov_distribution"/.test(fullToolResults);
+  const hasAbstainingMarkovOutput =
+    hasCanonicalMarkovOutput && /"status"\s*:\s*"abstain"/.test(fullToolResults);
+  // An abstained payload carries diagnostics but no scenario distribution to use or bucket.
+  const hasMarkovDistribution = hasCanonicalMarkovOutput && !hasAbstainingMarkovOutput;
   if (hasCanonicalMarkovOutput) {
     prompt += `
 
-IMPORTANT: markov_distribution results are present. Treat the canonical Markov payload as authoritative. Use the reported scenario bucket probabilities and diagnostics verbatim. Do NOT recompute, sum, or infer scenario probabilities from raw Polymarket titles, threshold questions, or price_distribution_chart output — those are inputs/visual aids, not the canonical distribution.
+IMPORTANT: markov_distribution results are present. Treat the canonical Markov payload as authoritative.${hasMarkovDistribution ? ' Use the reported scenario bucket probabilities and diagnostics verbatim.' : ''} Do NOT recompute, sum, or infer scenario probabilities from raw Polymarket titles, threshold questions, or price_distribution_chart output — those are inputs/visual aids, not the canonical distribution.
 
 IMPORTANT: Do NOT substitute another asset, proxy ticker, or proxy-history narrative unless the canonical Markov payload explicitly says that proxy was used. For example, do NOT describe a BTC/BTC-USD run as using GLD, gold, or any commodity-equivalent history unless the diagnostics explicitly name that proxy. Likewise, if diagnostics.anchorBypassApplied is false or diagnostics.calibrationMode is "anchored", do NOT call the run "model-only", "commodity bypass", or say trusted anchors were "unused". If trusted anchors are present, do NOT imply they were absent or ignored just because a displayed mixing split rounds to 100% Markov / 0% Anchors.`;
   }
 
   const requestedBucketMatch = originalQuery.match(/\b(\d+)\s*(?:parts|buckets|bins|segments)\b/i);
-  if (hasCanonicalMarkovOutput && requestedBucketMatch) {
+  if (hasMarkovDistribution && requestedBucketMatch) {
     prompt += `
 
 IMPORTANT: The user explicitly requested the probability range be divided into ${requestedBucketMatch[1]} parts. Preserve that ${requestedBucketMatch[1]}-part bucket granularity in the final answer when presenting the canonical Markov distribution. Do NOT compress it into fewer buckets or replace it with a coarser summary. When the user asks for density probabilities, that means per-bucket probability mass (for example, P(bucket) or P(in bucket)), not just survival probabilities like P(price > level). If you also show a survival-style view, label it separately and do NOT substitute it for the requested density table.`;
@@ -621,9 +625,6 @@ IMPORTANT: forecast_arbitrator returned NO_TRADE. That is the final trading deci
 IMPORTANT: This is an explicit combined GOLD Markov + Polymarket workflow. Keep the Markov and Polymarket sections separate. Present a Markov block first using only the Markov payload, then a Polymarket block using only the Polymarket payload and quoted market questions/probabilities. Do NOT collapse them into one blended gold forecast. If forecast_arbitrator is present, the forecast_arbitrator verdict comes after those evidence blocks as the trade/action layer, not as a replacement for the underlying evidence.`;
   }
 
-  const hasAbstainingMarkovOutput =
-    /"_tool"\s*:\s*"markov_distribution"/.test(fullToolResults)
-    && /"status"\s*:\s*"abstain"/.test(fullToolResults);
   if (hasAbstainingMarkovOutput) {
     const assetIntent = resolveAssetIntent(originalQuery, null);
     const explicitCombinedForecast = isExplicitCombinedMarkovPolymarketRequest(originalQuery);

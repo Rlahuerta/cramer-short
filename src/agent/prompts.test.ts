@@ -227,6 +227,18 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('If trusted anchors are present, do NOT imply they were absent or ignored just because a displayed mixing split rounds to 100% Markov / 0% Anchors');
   });
 
+  it('does not tell the model to use or bucket a distribution that an abstained markov payload lacks', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null,"diagnostics":{"trustedAnchors":6}}}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Show the BTC-USD 7-day price probability distribution in 5 buckets', results);
+    expect(prompt).toContain('markov_distribution explicitly abstained');
+    expect(prompt).toContain('Do NOT substitute another asset, proxy ticker, or proxy-history narrative');
+    expect(prompt).not.toContain('Use the reported scenario bucket probabilities');
+    expect(prompt).not.toContain('Preserve that 5-part bucket granularity');
+  });
+
   it('injects mixed-evidence guard when BTC short-horizon Markov and Polymarket disagree', () => {
     const results = [
       '### markov_distribution(ticker=BTC-USD)',
