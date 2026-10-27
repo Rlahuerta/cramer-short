@@ -414,6 +414,68 @@ def test_compute_trajectory_uncertainty_scale_contains_skewed_baseline_ci():
         assert wide.upper_bound >= base.upper_bound
 
 
+def _widths(trajectory):
+    return [pt.upper_bound - pt.lower_bound for pt in trajectory]
+
+
+def test_compute_trajectory_ci_widens_a_narrowed_day_about_its_own_midpoint():
+    """Sampled percentiles can narrow day-over-day (seed 35, day 13: raw [83.82, 117.89]
+    after [84.23, 118.68]). The band is widened symmetrically to the previous day's final
+    width: the midpoint is kept and no single bound is pinned to the previous day's."""
+    P = np.array([[0.5, 0.2, 0.3], [0.2, 0.5, 0.3], [0.3, 0.3, 0.4]])
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.01, std_return=0.03),
+        "bear": RegimeStats(mean_return=-0.01, std_return=0.03),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.03),
+    }
+    traj = compute_trajectory(
+        100.0, 14, P, regime_stats, "sideways", n_samples=1000, random_state=35,
+    )
+
+    widths = _widths(traj)
+    assert all(b >= a - 1e-9 for a, b in zip(widths, widths[1:]))
+    day12, day13 = traj[11], traj[12]
+    assert (day12.lower_bound, day12.upper_bound) == (84.23, 118.68)  # unaffected day
+    assert (day13.lower_bound + day13.upper_bound) / 2 == pytest.approx((83.82 + 117.89) / 2, abs=1e-9)
+    assert day13.lower_bound < 83.82 and day13.upper_bound > 117.89
+    assert day13.upper_bound < day12.upper_bound  # not the old per-bound "never retreat" clamp
+
+
+def test_compute_trajectory_ci_guard_does_not_pin_bounds_in_a_drifting_regime():
+    """Low-vol persistent downtrend: the width grows every day while the true upper
+    quantile peaks early and then falls. The guard must follow the sampled upper bound
+    down instead of holding the early peak."""
+    P = np.eye(3)
+    regime_stats = {
+        "bull": RegimeStats(mean_return=0.01, std_return=0.01),
+        "bear": RegimeStats(mean_return=-0.004, std_return=0.01),
+        "sideways": RegimeStats(mean_return=0.0, std_return=0.01),
+    }
+    traj = compute_trajectory(
+        100.0, 30, P, regime_stats, "bear", n_samples=1000, random_state=7,
+    )
+
+    widths = _widths(traj)
+    assert all(b >= a - 1e-9 for a, b in zip(widths, widths[1:]))
+    peak_upper = max(pt.upper_bound for pt in traj)
+    assert traj[-1].upper_bound < peak_upper - 2.0
+
+
+def test_compute_trajectory_ci_guard_keeps_the_lower_bound_positive():
+    """A heavy uncertainty scale floors the lower bound at 0.01; widening a narrowed
+    day must not push it below that."""
+    P = np.eye(3)
+    regime_stats = {s: RegimeStats(mean_return=0.0, std_return=0.06) for s in ("bull", "bear", "sideways")}
+    for seed in (2, 3):
+        traj = compute_trajectory(
+            100.0, 20, P, regime_stats, "sideways", n_samples=300,
+            uncertainty_ci_scale=3.0, random_state=seed,
+        )
+        assert all(pt.lower_bound >= 0.01 for pt in traj)
+        widths = _widths(traj)
+        assert all(b >= a - 1e-9 for a, b in zip(widths, widths[1:]))
+
+
 def test_compute_horizon_drift_vol_supports_regime_specific_sigma_and_garch():
     P = np.eye(3)
     regime_stats = {

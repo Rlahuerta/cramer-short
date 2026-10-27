@@ -62,7 +62,9 @@ export function computeAdaptiveThresholds(
 // ---------------------------------------------------------------------------
 
 export interface MomentumSignal {
-  /** Annualized return over lookback window */
+  /** Symmetric compounded magnitude of the lookback move, signed by its direction:
+   *  sign(r)·((1+|r|)^(252/lookback) − 1). NOT an annualized return (a loss can read below −100%);
+   *  used only for its sign and for the clamped drift `adjustment`. */
   velocity: number;
   /** Change in velocity (recent half vs older half): >0 = accelerating */
   acceleration: number;
@@ -89,7 +91,9 @@ export function computeMomentumSignal(
 
   const window = prices.slice(-lookback - 1);
 
-  // Velocity: annualized return over lookback
+  // Velocity: symmetric compounded magnitude (up and down moves of equal |r| score equally).
+  // Intentionally NOT the geometric (1+r)^k − 1: momentumAdjustmentScale (0.25) and
+  // momentumAdjustmentClamp (0.003) were tuned against this symmetric form.
   const totalReturn = window[window.length - 1] / window[0] - 1;
   const velocity = Math.sign(totalReturn) * (Math.pow(1 + Math.abs(totalReturn), 252 / lookback) - 1);
 

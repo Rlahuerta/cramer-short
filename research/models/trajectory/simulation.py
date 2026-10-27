@@ -140,6 +140,7 @@ def compute_trajectory(
 
                 paths[s, d] = cum_log_return
 
+    prev_width_cents = 0
     for d in range(1, days + 1):
         day_idx = d - 1
         state_weights = regime_weights_per_day[day_idx]
@@ -169,11 +170,19 @@ def compute_trajectory(
             lower_bound = max(0.01, ci_mid - scaled_half)
             upper_bound = ci_mid + scaled_half
 
-        # Enforce monotonically widening CIs: prevent the CI from narrowing
-        # as the forecast horizon extends, which can happen due to sampling noise.
-        if trajectory:
-            lower_bound = min(lower_bound, trajectory[-1].lower_bound)
-            upper_bound = max(upper_bound, trajectory[-1].upper_bound)
+        # Sample percentiles of the shared paths can narrow day-over-day by sampling noise.
+        # Where that happens, widen the band symmetrically about its own midpoint to the
+        # previous day's final width (never moving the midpoint or pinning a single bound).
+        # Done in whole cents so the rounded output is exactly non-decreasing; the lower
+        # bound stays >= 0.01.
+        lower_cents = round(lower_bound * 100)
+        upper_cents = round(upper_bound * 100)
+        widen_cents = math.ceil((prev_width_cents - (upper_cents - lower_cents)) / 2)
+        if widen_cents > 0:
+            lower_shortfall = max(0, 1 - (lower_cents - widen_cents))
+            lower_cents += lower_shortfall - widen_cents
+            upper_cents += widen_cents + lower_shortfall
+        prev_width_cents = upper_cents - lower_cents
 
         p_up = student_t_survival(current_price, current_price, mu_n, sigma_n, nu)
 
@@ -191,8 +200,8 @@ def compute_trajectory(
             TrajectoryPoint(
                 day=d,
                 expected_price=round(expected_price, 2),
-                lower_bound=round(lower_bound, 2),
-                upper_bound=round(upper_bound, 2),
+                lower_bound=lower_cents / 100,
+                upper_bound=upper_cents / 100,
                 p_up=round(p_up, 3),
                 cumulative_return=cumulative_return,
                 regime=regime,

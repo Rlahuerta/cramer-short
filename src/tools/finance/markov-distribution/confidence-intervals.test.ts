@@ -671,6 +671,66 @@ describe('computeTrajectory', () => {
       .toBeGreaterThan(baseline[13].upperBound - baseline[13].lowerBound);
   });
 
+  describe('90% CI never narrows with the horizon (PI-52)', () => {
+    const noisyStats = {
+      bull: { meanReturn: 0.01, stdReturn: 0.03 },
+      bear: { meanReturn: -0.01, stdReturn: 0.03 },
+      sideways: { meanReturn: 0, stdReturn: 0.03 },
+    };
+    const seeded = (randomState: number) => computeTrajectory(
+      100, 14, buildDefaultMatrix(), noisyStats, 'sideways', 0,
+      undefined, 1000, 5, undefined, undefined, undefined, undefined, 1.0, randomState,
+    );
+
+    it('keeps widths non-decreasing for seeds whose raw sample percentiles used to narrow', () => {
+      // Each of these seeds narrowed the sampled band on some day before the guard.
+      for (const seed of [28, 51, 65, 70, 76, 86, 119, 133, 155, 183]) {
+        const traj = seeded(seed);
+        for (let i = 1; i < traj.length; i++) {
+          const prev = traj[i - 1].upperBound - traj[i - 1].lowerBound;
+          const curr = traj[i].upperBound - traj[i].lowerBound;
+          expect(curr).toBeGreaterThanOrEqual(prev - 1e-9);
+        }
+      }
+    });
+
+    it('widens a narrowed day symmetrically about its own midpoint without pinning either bound', () => {
+      // Seed 76 raw samples: day 11 [84.02, 120.09], day 12 [83.97, 119.35] (narrower), day 13 [84.14, 120.43].
+      const traj = seeded(76);
+      const [day11, day12, day13] = [traj[10], traj[11], traj[12]];
+
+      expect([day11.lowerBound, day11.upperBound]).toEqual([84.02, 120.09]); // unaffected day
+      expect([day13.lowerBound, day13.upperBound]).toEqual([84.14, 120.43]); // already wide enough
+
+      expect((day12.lowerBound + day12.upperBound) / 2).toBeCloseTo((83.97 + 119.35) / 2, 9); // midpoint kept
+      expect(day12.lowerBound).toBeLessThan(83.97);
+      expect(day12.upperBound).toBeGreaterThan(119.35);
+      // Not the old per-bound "never retreat" clamp: the upper bound may sit below the previous day's.
+      expect(day12.upperBound).toBeLessThan(day11.upperBound);
+    });
+
+    it('keeps the lower bound at or above 0.01 when widening a band that the CI scale already floored', () => {
+      const wildStats = {
+        bull: { meanReturn: 0, stdReturn: 0.06 },
+        bear: { meanReturn: 0, stdReturn: 0.06 },
+        sideways: { meanReturn: 0, stdReturn: 0.06 },
+      };
+      for (const seed of [1, 2, 3, 4, 5, 6]) {
+        const traj = computeTrajectory(
+          100, 20, buildDefaultMatrix(), wildStats, 'sideways', 0,
+          undefined, 500, 5, undefined, undefined, undefined, undefined, 3.0, seed,
+        );
+        for (let i = 0; i < traj.length; i++) {
+          expect(traj[i].lowerBound).toBeGreaterThanOrEqual(0.01);
+          if (i > 0) {
+            const prev = traj[i - 1].upperBound - traj[i - 1].lowerBound;
+            expect(traj[i].upperBound - traj[i].lowerBound).toBeGreaterThanOrEqual(prev - 1e-9);
+          }
+        }
+      }
+    });
+  });
+
   it('seeded randomState makes computeTrajectory CIs reproducible', () => {
     randomSpy?.mockRestore();
     const first = computeTrajectory(
