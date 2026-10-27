@@ -210,12 +210,26 @@ describe('browser tool with mocked Playwright', () => {
     expect(read).toMatchObject({
       url: 'https://example.com/new-tab',
       title: 'Second page',
-      content: 'Main visible text',
     });
+    expect(read.content).toContain('Main visible text');
 
     const close = parseToolResult(await browserTool.invoke({ action: 'close' }) as string);
     expect(close).toEqual({ ok: true, message: 'Browser closed' });
     expect(browserCloseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('wraps page text from read and snapshot in untrusted-content markers (PI-44)', async () => {
+    await browserTool.invoke({ action: 'navigate', url: 'https://example.com' });
+
+    const read = parseToolResult(await browserTool.invoke({ action: 'read' }) as string);
+    const snapshot = parseToolResult(await browserTool.invoke({ action: 'snapshot' }) as string);
+
+    for (const text of [read.content, snapshot.snapshot] as string[]) {
+      expect(text).toContain('<<<EXTERNAL_UNTRUSTED_CONTENT>>>');
+      expect(text).toContain('<<<END_EXTERNAL_UNTRUSTED_CONTENT>>>');
+    }
+    expect(read.content).toContain('Main visible text');
+    expect(snapshot.snapshot).toContain('This is deliberately long snapshot content');
   });
 
   it('closes the browser when a Playwright action throws', async () => {

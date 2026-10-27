@@ -1,6 +1,6 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { formatToolResult } from '../types.js';
+import { formatToolResult, wrapSearchResults } from '../types.js';
 import { getEnv } from '../../utils/env.js';
 import { logger } from '../../utils/logger.js';
 
@@ -81,7 +81,7 @@ export const perplexitySearch = new DynamicStructuredTool({
             snippet: r.snippet ?? undefined,
           })) ?? [],
       };
-      return formatToolResult(data, urls.length ? urls : undefined);
+      return formatToolResult(wrapSearchResults(data), urls.length ? urls : undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error(`[Perplexity API] error: ${message}`);
