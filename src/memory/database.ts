@@ -426,14 +426,32 @@ export class MemoryDatabase {
       .all(ticker);
   }
 
-  searchInsightsFts(query: string, maxResults: number): FinancialInsightRecord[] {
+  searchInsightsFts(
+    query: string,
+    maxResults: number,
+    filter?: { ticker?: string; namespace?: string },
+  ): FinancialInsightRecord[] {
     const sanitized = buildFtsQuery(query);
     if (!sanitized) return [];
+    // Apply ticker/namespace before the LIMIT, so other tickers' top-ranked rows cannot crowd out the matches.
+    const conditions: string[] = [];
+    const args: string[] = [];
+    if (filter?.ticker) {
+      conditions.push('UPPER(ticker) = UPPER(?)');
+      args.push(filter.ticker);
+    }
+    if (filter?.namespace !== undefined) {
+      conditions.push('namespace = ?');
+      args.push(filter.namespace);
+    }
+    const scope = conditions.length
+      ? ` AND insight_id IN (SELECT id FROM financial_insights WHERE ${conditions.join(' AND ')})`
+      : '';
     const rows = this.db
       .query<{ insight_id: number; rank: number }>(
-        'SELECT insight_id, bm25(financial_insights_fts) AS rank FROM financial_insights_fts WHERE financial_insights_fts MATCH ? ORDER BY rank LIMIT ?',
+        `SELECT insight_id, bm25(financial_insights_fts) AS rank FROM financial_insights_fts WHERE financial_insights_fts MATCH ?${scope} ORDER BY rank LIMIT ?`,
       )
-      .all(sanitized, maxResults);
+      .all(sanitized, ...args, maxResults);
     const ids = rows.map((r) => r.insight_id);
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => '?').join(',');

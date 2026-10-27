@@ -102,7 +102,12 @@ export class FinancialMemoryStore {
     options?: { tags?: string[]; ticker?: string; maxResults?: number; namespace?: string },
   ): FinancialInsight[] {
     // Fetch extra results to account for entries filtered out by TTL
-    let results = this.db.searchInsightsFts(query, (options?.maxResults ?? 6) * 2).map(rowToInsight);
+    let results = this.db
+      .searchInsightsFts(query, (options?.maxResults ?? 6) * 2, {
+        ticker: options?.ticker,
+        namespace: options?.namespace,
+      })
+      .map(rowToInsight);
     results = results.filter((i) => !isExpired(i));
     if (options?.namespace !== undefined) {
       results = results.filter((i) => (i.namespace ?? null) === options.namespace!);

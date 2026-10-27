@@ -145,6 +145,25 @@ describe('FinancialMemoryStore', () => {
     expect(results.some((r) => r.ticker === 'VWS.CO')).toBe(true);
   });
 
+  it('search applies the ticker and namespace filters before the result limit', async () => {
+    // Another ticker/namespace owns every top-ranked row, far more than maxResults * 2 of them.
+    for (let i = 0; i < 20; i += 1) {
+      await store.storeInsight({
+        ticker: 'BBB',
+        content: `revenue growth revenue growth revenue growth ${i}`,
+        tags: [],
+        namespace: 'other',
+      });
+    }
+    await store.storeInsight({ ticker: 'AAPL', content: 'revenue growth mentioned once', tags: [], namespace: 'dcf' });
+
+    const byTicker = store.search('revenue growth', { ticker: 'aapl', maxResults: 3 });
+    expect(byTicker.map((r) => r.ticker)).toEqual(['AAPL']);
+
+    const byNamespace = store.search('revenue growth', { namespace: 'dcf', maxResults: 3 });
+    expect(byNamespace.map((r) => r.ticker)).toEqual(['AAPL']);
+  });
+
   it('getRelatedInsights traverses edges', async () => {
     const id1 = await store.storeInsight({ ticker: 'A', content: 'cause event', tags: [] });
     const id2 = await store.storeInsight({ ticker: 'B', content: 'effect event', tags: [] });
