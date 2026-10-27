@@ -74,9 +74,11 @@ export function setActiveWebListener(accountId: string, sock: WaSocket | null): 
 function getActive(accountId?: string): ActiveListener {
   if (accountId) {
     const found = listeners.get(accountId);
-    if (found) {
-      return found;
+    if (!found) {
+      // Never borrow another account's socket: the message would leave from the wrong number.
+      throw new Error(`No active WhatsApp listener for account ${accountId}. Run dexter gateway run.`);
     }
+    return found;
   }
   const first = listeners.values().next().value as ActiveListener | undefined;
   if (!first) {
