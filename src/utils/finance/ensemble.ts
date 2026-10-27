@@ -671,7 +671,7 @@ export function computeQualityScore(
   const s1 = 30 * Math.min(markets.length, 5) / 5;
   const s2 = 25 * avgQuality;
   const s3 = 20 * Math.max(0, 1 - sigma / 0.20);
-  const s4 = 15 * (signalsWithData / 4);
+  const s4 = 15 * (signalsWithData / 5); // five sources: Polymarket, sentiment, fundamental, options, Markov
   const s5 = markets.length > 0 ? 10 * (1 - whaleCount / markets.length) : 0;
   return Math.round(Math.min(100, Math.max(0, s1 + s2 + s3 + s4 + s5)));
 }
