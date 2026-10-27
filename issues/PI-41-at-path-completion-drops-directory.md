@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C7b
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/components/at-path-provider.ts:77` — `const rel =`, `src/components/at-path-provider.ts:78` — `join(dirname(rawPath), e.name)`
 - Repro kind: runtime

@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C5
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/utils/config.ts:198` — `if (key === 'provider') {`, `src/utils/config.ts:174` — `function migrateModelToProvider(config: Config): Config {`
 - Repro kind: runtime

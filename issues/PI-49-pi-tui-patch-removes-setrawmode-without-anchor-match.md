@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C9
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `patches/pi-tui-terminal-fix.cjs:92` — `content = content.replace(originalBlock, replacementBlock);`, `patches/pi-tui-terminal-fix.cjs:100` — `content = content.replace(oldSetRawMode, '');`
 - Repro kind: static

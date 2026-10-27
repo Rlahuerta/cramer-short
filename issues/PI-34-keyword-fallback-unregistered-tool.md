@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C6a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/get-financials.ts:113` — `return [{ name: 'get_financial_metrics_snapshot', args: { ticker }, id: 'kw-fb', type: 'tool_call' as const }];`, `src/tools/finance/get-financials.ts:116` — `return [{ name: 'get_financial_metrics_snapshot', args: { ticker }, id: 'kw-fb', type: 'tool_call' as const }];`, `src/tools/finance/get-financials.ts:163` — `- For latest financial metrics snapshot (P/E, margins, ROE, EPS, growth rates) → get_financial_metrics_snapshot`
 - Repro kind: runtime

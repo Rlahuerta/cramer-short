@@ -2,7 +2,7 @@
 
 - Severity: C
 - Area: C8a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/filesystem/utils/edit-diff.ts:69` — `contentForReplacement: fuzzyContent,`, `src/tools/filesystem/utils/edit-diff.ts:22` — `.map((line) => line.trimEnd())`, `src/tools/filesystem/edit-file.ts:89` — `const baseContent = matchResult.contentForReplacement;`
 - Repro kind: runtime

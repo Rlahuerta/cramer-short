@@ -2,7 +2,7 @@
 
 - Severity: L
 - Area: C9
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/utils/ui/markdown-table.ts:365` — `const renderedLineCache = new Map<string, number>();`, `src/utils/ui/markdown-table.ts:368` — `content.slice(0, 120)`
 - Repro kind: runtime

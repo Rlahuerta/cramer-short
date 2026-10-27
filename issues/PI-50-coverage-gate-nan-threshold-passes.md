@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C9
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `scripts/check-coverage.ts:4` — `const minimumLineCoverage = Number(process.env.COVERAGE_LINES_MIN ?? '22');`, `scripts/check-coverage.ts:26` — `if (lineCoverage < minimumLineCoverage) {`
 - Repro kind: runtime

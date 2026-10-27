@@ -2,7 +2,7 @@
 
 - Severity: H
 - Area: C8a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/filesystem/read-file.ts:45` — `name.startsWith('.env') ||`, `src/tools/filesystem/read-file.ts:47` — `name.endsWith('.key') ||`, `src/tools/filesystem/read-file.ts:68` — `if (isSecretPath(relative(cwd, absolutePath))) {`
 - Repro kind: runtime

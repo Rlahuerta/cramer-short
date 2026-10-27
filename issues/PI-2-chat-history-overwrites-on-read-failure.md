@@ -2,7 +2,7 @@
 
 - Severity: C
 - Area: C5
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/utils/long-term-chat-history.ts:58` — `this.messages = [];`, `src/utils/long-term-chat-history.ts:70` — `await atomicWriteFile(this.filePath, JSON.stringify(data, null, 2));`
 - Repro kind: runtime

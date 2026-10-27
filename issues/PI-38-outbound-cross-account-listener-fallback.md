@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C7a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/gateway/channels/whatsapp/outbound.ts:74` — `function getActive(accountId?: string): ActiveListener {`, `src/gateway/channels/whatsapp/outbound.ts:81` — `const first = listeners.values().next().value as ActiveListener | undefined;`, `src/gateway/channels/whatsapp/outbound.ts:142` — `const active = getActive(params.accountId);`
 - Repro kind: runtime

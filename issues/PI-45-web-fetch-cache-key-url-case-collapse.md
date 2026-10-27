@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C8a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/fetch/web-fetch.ts:335` — `fetch:${params.url}:${params.extractMode}:${params.maxChars}`, `src/tools/fetch/cache.ts:23` — `return value.trim().toLowerCase();`
 - Repro kind: runtime

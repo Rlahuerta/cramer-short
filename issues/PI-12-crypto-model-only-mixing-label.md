@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C1a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/markov-distribution.ts:5178` — `commodityModelOnly,`, `src/tools/finance/markov-distribution.ts:5371` — `markovWeight: commodityModelOnly ? 1 : m.mixingTimeWeight,`, `src/tools/finance/markov-distribution.ts:5372` — `anchorWeight: commodityModelOnly ? 0 : 1 - m.mixingTimeWeight,`, `src/tools/finance/markov-distribution.ts:3007` — `return 'Calibration: model-only (commodity bypass, no anchors)';`
 - Repro kind: runtime

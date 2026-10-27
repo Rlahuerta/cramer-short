@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C5
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/utils/session-store.ts:154` — `const index = await readIndex(baseDir);`, `src/utils/session-store.ts:164` — `await writeIndex(index, baseDir);`
 - Repro kind: runtime

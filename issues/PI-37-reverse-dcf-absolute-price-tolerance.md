@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C6b
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/reverse-dcf.ts:113` — `const TOLERANCE = 0.01;`, `src/tools/finance/reverse-dcf.ts:134` — `if (Math.abs(fLow) <= TOLERANCE) {`, `src/tools/finance/reverse-dcf.ts:147` — `if (Math.abs(fHigh) <= TOLERANCE) {`, `src/tools/finance/reverse-dcf.ts:195` — `if (Math.abs(fMid) <= TOLERANCE) {`
 - Repro kind: runtime

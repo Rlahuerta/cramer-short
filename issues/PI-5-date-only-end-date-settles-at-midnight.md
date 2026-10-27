@@ -2,10 +2,16 @@
 
 - Severity: H
 - Area: C3
-- Status: Open
+- Status: Not a bug (latent)
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/arbiter-replay-labeler.ts:38` — `const marketEndMs = market.endDate ? Date.parse(market.endDate) : Number.NaN;`, `src/tools/finance/arbiter-replay-labeler.ts:39` — `return Number.isFinite(marketEndMs) ? marketEndMs : forecastTargetTimeMs(bundle);`
 - Repro kind: runtime
+
+## Resolution
+
+Not a bug for the data this repo produces. Every price-history loader that ships (`fixture` and `local:<path>`, `replay-price-history-adapter.ts`) builds daily closes dated `YYYY-MM-DD`, which normalise to `T00:00Z`, so a date-only `endDate` at 00:00Z lines up with that day's own close (the repro's expectation assumes intraday history that nothing here produces). Checked with daily bars (06-29=95k, 06-30=90k, 07-01=120k; "above 100k on June 30"): current code answers `no`, which is correct; a 16:00Z target would pick the July 1 bar and answer `yes`. The 16:00 UTC claim is documented only in an untracked review doc and in this issue.
+
+Latent only for a custom `local:` fixture carrying intraday timestamps. If that is ever supported: for a date-only `endDate`, settle on the last point within that UTC day instead of the first point at or after 00:00Z. That works for daily and intraday data alike. Not applied.
 
 ## Summary
 

@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C7b
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/components/tool-event.ts:114` — `truncateAtWord(error, 80)`, `src/components/tool-event.ts:95` — `this.activeDetail = new Text(`, `src/components/approval-prompt.ts:22` — `const path = (args.path as string)`, `src/components/approval-prompt.ts:39` — `${formatToolLabel(tool)} ${path}`
 - Repro kind: runtime

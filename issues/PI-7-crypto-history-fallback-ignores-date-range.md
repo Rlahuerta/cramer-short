@@ -2,7 +2,7 @@
 
 - Severity: H
 - Area: C6a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/crypto.ts:85` — `const closes = await fetchBinanceDailyCloses(input.ticker, days);`, `src/tools/finance/binance.ts:77` — `const endTime = Date.now();`, `src/tools/finance/binance.ts:78` — `const startTime = endTime - days * MS_PER_DAY;`
 - Repro kind: runtime

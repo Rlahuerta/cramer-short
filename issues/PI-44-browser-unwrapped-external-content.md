@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C8a
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/browser/browser.ts:676` — `return formatToolResult(await runtime.snapshot(maxChars, signal));`, `src/tools/browser/browser.ts:690` — `return formatToolResult(await runtime.read(signal));`, `src/tools/search/x-search.ts:299` — `return formatToolResult({ tweets: results, total_fetched: tweets.length }, urls);`, `src/tools/osint/geopolitics-search.ts:327` — `ev.summary`, `src/tools/search/exa.ts:48` — `return formatToolResult(parsed, urls);`
 - Repro kind: runtime

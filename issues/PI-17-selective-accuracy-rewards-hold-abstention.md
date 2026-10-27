@@ -2,7 +2,7 @@
 
 - Severity: M
 - Area: C1c
-- Status: Open
+- Status: Fixed
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/tools/finance/backtest/metrics.ts:1301` — `return Math.abs(s.actualReturn) < holdThreshold;`
 - Repro kind: runtime

@@ -2,10 +2,16 @@
 
 - Severity: M
 - Area: C7a
-- Status: Open
+- Status: Fixed (replies only, by decision)
 - Found at: e3e2088b21acc4963b3c20661e5d15c739244409
 - Location: `src/gateway/channels/whatsapp/outbound.ts:122` — `.filter((entry) => entry !== '*')`, `src/gateway/channels/whatsapp/outbound.ts:125` — `throw new Error('Outbound blocked: no explicit allowFrom recipient configured.');`, `src/gateway/index.ts:68` — `if (input === '*') {`, `src/gateway/index.ts:84` — `allowFrom: phones,`
 - Repro kind: runtime
+
+## Resolution
+
+Decision: replies only. The outbound guard's "ignore `*`" was deliberate (strict self-chat mode, 6dec1c0), and the heartbeat uses the same guard as its authorisation to push agent output to the most recently active session, so honouring `*` everywhere would let proactive output reach whichever stranger messaged last. Now `assertOutboundAllowed`, `sendMessageWhatsApp` and `sendComposing` take an optional `replyToInbound`, which `gateway.ts` sets on its reply-path calls (pre-check, typing indicator, reply). With the flag, `*` or `dmPolicy: 'open'` admits the recipient, who already passed inbound access control. Without it (heartbeat, any proactive send) the strict guard is unchanged, and explicit allowlists are never widened.
+
+The repro calls the guard without the flag, which is the intentionally strict heartbeat path, so it still exits 42. Passing `replyToInbound: true` in the repro exercises the fixed path and prints NO BUG.
 
 ## Summary
 
