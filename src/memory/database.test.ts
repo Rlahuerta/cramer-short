@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,6 +60,30 @@ describe('MemoryDatabase chunk indexing', () => {
 
     expect(db.listIndexedFiles().sort()).toEqual(['notes/aapl.md', 'notes/nvda.md']);
     expect(db.getChunkTickers([first.id, second.id]).get(second.id)).toContain('NVDA');
+  });
+
+  it('skips rewriting an unchanged chunk, so updatedAt is preserved', () => {
+    const sessionChunk = chunk({ contentHash: 'chunk-session', source: 'sessions' });
+    setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    try {
+      const first = db.upsertChunk({ chunk: sessionChunk, embedding: null, source: 'sessions' });
+      const firstUpdatedAt = db.loadResultsByIds([first.id])[0]!.updatedAt!;
+
+      setSystemTime(new Date('2026-02-01T00:00:00Z'));
+      const second = db.upsertChunk({ chunk: sessionChunk, embedding: null, source: 'sessions' });
+
+      expect(second).toEqual({ id: first.id, inserted: false });
+      expect(db.loadResultsByIds([first.id])[0]!.updatedAt).toBe(firstUpdatedAt);
+
+      // A changed source still rewrites the row.
+      setSystemTime(new Date('2026-03-01T00:00:00Z'));
+      db.upsertChunk({ chunk: sessionChunk, embedding: null, source: 'memory' });
+      const [row] = db.loadResultsByIds([first.id]);
+      expect(row!.contentSource).toBe('memory');
+      expect(row!.updatedAt).toBeGreaterThan(firstUpdatedAt);
+    } finally {
+      setSystemTime();
+    }
   });
 
   it('uses deterministic local vector ranking whether sqlite-vec is loaded or JS fallback is used', () => {

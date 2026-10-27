@@ -343,6 +343,18 @@ describe('legacy model migration (getSetting)', () => {
     expect(saved.model).toBeUndefined();
   });
 
+  it('migrates on load, so reading modelId first (gateway, heartbeat) sees the legacy model', () => {
+    writeSettings({ model: 'claude-opus-4-6' });
+
+    expect(getSetting<string | null>('modelId', null)).toBe('claude-opus-4-6');
+    expect(getSetting('provider', 'openai')).toBe('anthropic');
+
+    const saved = readSettings();
+    expect(saved.provider).toBe('anthropic');
+    expect(saved.modelId).toBe('claude-opus-4-6');
+    expect(saved.model).toBeUndefined();
+  });
+
   it('keeps mapped legacy models working and preserves them in modelId', () => {
     writeSettings({ model: 'gpt-5.2' });
 

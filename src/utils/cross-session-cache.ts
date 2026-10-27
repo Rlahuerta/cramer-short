@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getCramerShortDir } from './paths.js';
@@ -27,9 +28,13 @@ function warnOnce(scope: string, err: unknown): void {
   console.warn(`[cramer-short] cross-session cache ${scope} failed (${code}): ${msg}`);
 }
 
-/** Replaces characters that are illegal or problematic in filenames. */
+/**
+ * Replaces characters that are illegal or problematic in filenames and appends a hash of the full
+ * key, so keys that sanitize or truncate alike still get distinct files. Total length is 100.
+ */
 function sanitizeKey(key: string): string {
-  return key.replace(/[/:?&]/g, '_').slice(0, 100);
+  const hash = createHash('sha256').update(key).digest('hex').slice(0, 12);
+  return `${key.replace(/[/:?&]/g, '_').slice(0, 87)}-${hash}`;
 }
 
 /** Load non-expired entries from disk. Returns map of key → value. */

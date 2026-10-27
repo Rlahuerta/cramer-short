@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MemoryStore } from './store.js';
@@ -36,6 +36,25 @@ describe('MemoryStore writes', () => {
     await store.writeMemoryFile('MEMORY.md', 'price: X\n');
     await store.editInMemoryFile('MEMORY.md', 'X', '$$100 $& $1');
     expect(await store.readMemoryFile('MEMORY.md')).toBe('price: $$100 $& $1\n');
+  });
+});
+
+describe('MemoryStore append on read failure', () => {
+  it('creates the file when it does not exist yet', async () => {
+    await store.appendMemoryFile('MEMORY.md', '- first\n');
+    expect(await store.readMemoryFile('MEMORY.md')).toBe('- first\n');
+  });
+
+  it.skipIf(process.getuid?.() === 0)('rejects and keeps an unreadable file instead of overwriting it', async () => {
+    const file = store.getLongTermMemoryPath();
+    writeFileSync(file, '- durable fact\n');
+    chmodSync(file, 0o000);
+    try {
+      await expect(store.appendMemoryFile('MEMORY.md', '- new fact')).rejects.toThrow();
+    } finally {
+      chmodSync(file, 0o644);
+    }
+    expect(readFileSync(file, 'utf-8')).toBe('- durable fact\n');
   });
 });
 

@@ -96,6 +96,25 @@ describe('searchKeyword — BM25 normalised scoring', () => {
     expect(results).toHaveLength(1);
     expect(results[0]!.score).toBeCloseTo(1, 2);
   });
+
+  it('the weakest match still scores at least the default minScore (0.1)', () => {
+    // Two chunks match "AAPL price"; the weaker one used to be normalised to exactly 0.
+    const results = db.searchKeyword('AAPL price', 10);
+    expect(results).toHaveLength(2);
+    expect(results[1]!.score).toBeGreaterThanOrEqual(0.1);
+    expect(results[0]!.score).toBeGreaterThan(results[1]!.score);
+  });
+
+  it('keyword-only hybridSearch with the default minScore returns every matching chunk', async () => {
+    const results = await hybridSearch({
+      db,
+      embeddingClient: null,
+      query: 'AAPL price',
+      options: { maxResults: 2 },
+      defaults: { maxResults: 6, minScore: 0.1, vectorWeight: 0.7, textWeight: 0.3 },
+    });
+    expect(results).toHaveLength(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

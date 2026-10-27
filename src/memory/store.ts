@@ -83,7 +83,11 @@ export class MemoryStore {
 
   async appendMemoryFile(path: string, content: string): Promise<void> {
     return withFileLock(this.resolveMemoryPath(path), async () => {
-      const previous = await this.readMemoryFile(path);
+      // Only a missing file starts empty; any other read error must not be replaced by the new text.
+      const previous = await readFile(this.resolveMemoryPath(path), 'utf-8').catch((err: NodeJS.ErrnoException) => {
+        if (err.code === 'ENOENT') return '';
+        throw err;
+      });
       const separator = previous.endsWith('\n') || previous.length === 0 ? '' : '\n';
       await this.writeMemoryFile(path, `${previous}${separator}${content}`);
     });
