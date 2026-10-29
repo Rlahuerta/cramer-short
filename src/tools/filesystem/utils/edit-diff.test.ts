@@ -3,6 +3,8 @@ import {
   detectLineEnding,
   normalizeToLF,
   restoreLineEndings,
+  lfOffsetMap,
+  lineEndingAt,
   normalizeForFuzzyMatch,
   fuzzyFindText,
   stripBom,
@@ -56,6 +58,33 @@ describe('restoreLineEndings', () => {
 
   test('leaves LF unchanged when ending is \\n', () => {
     expect(restoreLineEndings('a\nb', '\n')).toBe('a\nb');
+  });
+});
+
+describe('lfOffsetMap', () => {
+  test('maps each normalized character to where it starts, CRLF counting as one, plus the end', () => {
+    const text = 'a\r\nb\rc\nd';
+    const map = lfOffsetMap(text);
+    expect(map).toEqual([0, 1, 3, 4, 5, 6, 7, 8]);
+    expect(map).toHaveLength(normalizeToLF(text).length + 1);
+  });
+
+  test('has just the end entry for empty text', () => {
+    expect(lfOffsetMap('')).toEqual([0]);
+  });
+});
+
+describe('lineEndingAt', () => {
+  test('reads the ending of the first line terminator at or after the position', () => {
+    const text = 'x\nold\r\nnext\n';
+    expect(lineEndingAt(text, 0, '\r\n')).toBe('\n');
+    expect(lineEndingAt(text, 2, '\n')).toBe('\r\n');
+    expect(lineEndingAt(text, 8, '\r\n')).toBe('\n');
+  });
+
+  test('uses the fallback when no terminator follows', () => {
+    expect(lineEndingAt('no newline', 3, '\r\n')).toBe('\r\n');
+    expect(lineEndingAt('last line\n', 10, '\r\n')).toBe('\r\n');
   });
 });
 

@@ -8,6 +8,8 @@ import {
   detectLineEnding,
   fuzzyFindText,
   generateDiffString,
+  lfOffsetMap,
+  lineEndingAt,
   normalizeForFuzzyMatch,
   normalizeToLF,
   restoreLineEndings,
@@ -96,7 +98,14 @@ export const editFileTool = new DynamicStructuredTool({
       throw new Error(`No changes made to ${input.path}. Replacement produced identical content.`);
     }
 
-    const finalContent = bom + restoreLineEndings(newContent, originalEnding);
+    // Splice into the original text, not the LF-normalised copy, so untouched lines keep their own
+    // line endings (mixed files, lone CRs); new text takes the ending of the lines it replaces.
+    const offsets = lfOffsetMap(content);
+    const start = offsets[matchResult.index];
+    const end = offsets[matchResult.index + matchResult.matchLength];
+    const ending = lineEndingAt(content, start, originalEnding);
+    const finalContent =
+      bom + content.slice(0, start) + restoreLineEndings(normalizedNewText, ending) + content.slice(end);
     await writeFile(resolved, finalContent, 'utf-8');
 
     const diffResult = generateDiffString(baseContent, newContent);
