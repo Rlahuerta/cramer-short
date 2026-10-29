@@ -87,13 +87,30 @@ type ReportPeriodBounds = Pick<
   'report_period_gt' | 'report_period_gte' | 'report_period_lt' | 'report_period_lte'
 >;
 
+function hasReportPeriodBounds(b: ReportPeriodBounds): boolean {
+  return Boolean(b.report_period_gt || b.report_period_gte || b.report_period_lt || b.report_period_lte);
+}
+
+/**
+ * A report date as "YYYY-MM-DD" (UTC). FMP already gives that; Yahoo gives an ISO timestamp
+ * or, from its raw API, epoch seconds. Comparing a timestamp as a string would put "2024-12-31T00:00Z"
+ * after the bound "2024-12-31".
+ */
+function toReportDay(value: unknown): string | null {
+  if (typeof value === 'string') return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const date = new Date(value * 1000);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
 function inReportPeriod(date: unknown, b: ReportPeriodBounds): boolean {
-  if (typeof date !== 'string') return false;
+  const day = toReportDay(date);
+  if (!day) return false;
   return (
-    (!b.report_period_gt || date > b.report_period_gt) &&
-    (!b.report_period_gte || date >= b.report_period_gte) &&
-    (!b.report_period_lt || date < b.report_period_lt) &&
-    (!b.report_period_lte || date <= b.report_period_lte)
+    (!b.report_period_gt || day > b.report_period_gt) &&
+    (!b.report_period_gte || day >= b.report_period_gte) &&
+    (!b.report_period_lt || day < b.report_period_lt) &&
+    (!b.report_period_lte || day <= b.report_period_lte)
   );
 }
 
@@ -143,13 +160,31 @@ async function tryFmp(
 }
 
 /**
+ * The years a web search should target: each year of the requested window (at most five),
+ * or the recent default when no usable window is given. Web results are unstructured, so the
+ * window can only steer the search, not filter what comes back.
+ */
+function searchYears(bounds?: ReportPeriodBounds): string {
+  const from = Number((bounds?.report_period_gte || bounds?.report_period_gt)?.slice(0, 4));
+  const to = Number((bounds?.report_period_lte || bounds?.report_period_lt)?.slice(0, 4));
+  const start = Number.isInteger(from) ? from : to;
+  const end = Number.isInteger(to) ? to : from;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) return '2024 2023';
+  return Array.from({ length: Math.min(end - start, 4) + 1 }, (_, i) => start + i).join(' ');
+}
+
+/**
  * Search for financial data via Tavily as a last resort.
  * Returns null if TAVILY_API_KEY is not set or the search fails.
  */
-async function tryTavilySearch(ticker: string, statementType: string): Promise<string | null> {
+async function tryTavilySearch(
+  ticker: string,
+  statementType: string,
+  bounds?: ReportPeriodBounds,
+): Promise<string | null> {
   if (!hasEnv('TAVILY_API_KEY')) return null;
   try {
-    const query = `${ticker} ${statementType} annual financial data 2024 2023`;
+    const query = `${ticker} ${statementType} annual financial data ${searchYears(bounds)}`;
     const result = await tavilySearch.invoke({ query });
     const parsed = JSON.parse(result) as { data: unknown };
     if (!Array.isArray(parsed.data) || parsed.data.length === 0) return null;
@@ -213,10 +248,15 @@ export const getIncomeStatements = new DynamicStructuredTool({
       yahooParsed.data !== undefined &&
       yahooParsed.data !== null &&
       !(yahooParsed.data as ToolErrorPayload).error;
-    if (yahooHasData) return yahooRaw;
+    if (yahooHasData) {
+      // Yahoo has no date filter: keep only periods inside the requested window, else fall through.
+      if (!hasReportPeriodBounds(input) || !Array.isArray(yahooParsed.data)) return yahooRaw;
+      const rows = yahooParsed.data.filter((row) => inReportPeriod((row as { date?: unknown }).date, input));
+      if (rows.length > 0) return JSON.stringify({ ...yahooParsed, data: rows });
+    }
 
     // Last resort: Tavily web search
-    const tavilyRaw = await tryTavilySearch(ticker, 'income statement revenue earnings');
+    const tavilyRaw = await tryTavilySearch(ticker, 'income statement revenue earnings', input);
     if (tavilyRaw) return tavilyRaw;
 
     return formatToolResult(
@@ -250,7 +290,7 @@ export const getBalanceSheets = new DynamicStructuredTool({
     if (fmpResult.kind === 'ok') return fmpResult.result;
 
     // FMP premium or error — use Tavily web search (Yahoo Finance balance sheet is nearly empty)
-    const tavilyRaw = await tryTavilySearch(ticker, 'balance sheet total assets shareholders equity');
+    const tavilyRaw = await tryTavilySearch(ticker, 'balance sheet total assets shareholders equity', input);
     if (tavilyRaw) return tavilyRaw;
 
     return formatToolResult(
@@ -284,7 +324,7 @@ export const getCashFlowStatements = new DynamicStructuredTool({
     if (fmpResult.kind === 'ok') return fmpResult.result;
 
     // FMP premium or error — use Tavily web search (Yahoo Finance cashflow is nearly empty)
-    const tavilyRaw = await tryTavilySearch(ticker, 'cash flow statement operating investing free cash flow');
+    const tavilyRaw = await tryTavilySearch(ticker, 'cash flow statement operating investing free cash flow', input);
     if (tavilyRaw) return tavilyRaw;
 
     return formatToolResult(
@@ -343,7 +383,7 @@ export const getAllFinancialStatements = new DynamicStructuredTool({
     }
 
     // Tavily last resort
-    const tavilyRaw = await tryTavilySearch(ticker, 'income statement balance sheet cash flow annual results');
+    const tavilyRaw = await tryTavilySearch(ticker, 'income statement balance sheet cash flow annual results', input);
     if (tavilyRaw) return tavilyRaw;
 
     return formatToolResult(
