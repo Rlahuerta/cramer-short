@@ -48,6 +48,30 @@ describe('detectCategories', () => {
     expect(detectCategories('Taiwan Strait military exercises')).toContain('china-taiwan');
   });
 
+  test('does not read "pla" or "coup" inside longer words', () => {
+    expect(detectCategories('We plan to place the platform on display')).toEqual([]);
+    expect(detectCategories('A couple used a coupon at the checkout')).toEqual([]);
+  });
+
+  test('still reads "pla" and "coup" as whole words, plural or possessive', () => {
+    expect(detectCategories('PLA aircraft crossed the median line')).toContain('china-taiwan');
+    expect(detectCategories("The PLA's drills continue")).toContain('china-taiwan');
+    expect(detectCategories('Military coup attempt reported')).toContain('election-risk');
+    expect(detectCategories('Coups are on the rise')).toContain('election-risk');
+  });
+
+  test('does not read a keyword that starts in the middle of a word', () => {
+    // "senator" contains "nato", "computing" contains "putin"
+    expect(detectCategories('The senator said computing costs will rise')).toEqual([]);
+  });
+
+  test('still reads inflected forms of a keyword (demonyms, plurals, possessives)', () => {
+    expect(detectCategories('Russian troops advance')).toContain('ukraine-russia');
+    expect(detectCategories("NATO's eastern flank")).toContain('ukraine-russia');
+    expect(detectCategories('Iranian drones launched')).toContain('iran');
+    expect(detectCategories('Protesters gathered ahead of the elections')).toContain('election-risk');
+  });
+
   test('detects cyberattack from infrastructure text', () => {
     const cats = detectCategories('Nation-state ransomware attack on critical infrastructure power grid');
     expect(cats).toContain('cyberattack');
