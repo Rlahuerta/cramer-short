@@ -486,4 +486,83 @@ describe('edit_file tool', () => {
       'const a = "REPLACED";\r\nconst b = 1;   \r\nconst c = \u201Cx\u201D;\r\n',
     );
   });
+
+  it('keeps the line endings of untouched lines in a CRLF-first file that also has LF lines', async () => {
+    const file = tmpFile('mixed-crlf-first.txt');
+    await writeFile(file, 'a\r\nb\nc\r\nd\n');
+
+    await editFileTool.invoke({ path: relPath('mixed-crlf-first.txt'), old_text: 'b', new_text: 'B' });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe('a\r\nB\nc\r\nd\n');
+  });
+
+  it('keeps the line endings of untouched lines in an LF-first file that also has CRLF lines', async () => {
+    const file = tmpFile('mixed-lf-first.txt');
+    await writeFile(file, 'a\nb\r\nc\n');
+
+    await editFileTool.invoke({ path: relPath('mixed-lf-first.txt'), old_text: 'a', new_text: 'A' });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe('A\nb\r\nc\n');
+  });
+
+  it('does not turn a lone CR inside an untouched line into a newline', async () => {
+    const file = tmpFile('lone-cr.txt');
+    await writeFile(file, 'keep\rthis\nedit me\n');
+
+    await editFileTool.invoke({ path: relPath('lone-cr.txt'), old_text: 'edit me', new_text: 'done' });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe('keep\rthis\ndone\n');
+  });
+
+  it('gives new multi-line text the line ending of the lines it replaces', async () => {
+    const file = tmpFile('local-ending.txt');
+    await writeFile(file, 'x\nold1\r\nold2\r\nz\n');
+
+    await editFileTool.invoke({
+      path: relPath('local-ending.txt'),
+      old_text: 'old1\nold2',
+      new_text: 'new1\nnew2\nnew3',
+    });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe('x\nnew1\r\nnew2\r\nnew3\r\nz\n');
+  });
+
+  it('fuzzy match in a mixed-ending file keeps the endings around the matched region', async () => {
+    const file = tmpFile('fuzzy-mixed.txt');
+    await writeFile(file, 'keep\r\nfoo  \nbar\r\ntail\n');
+
+    // Trailing spaces in the file force the fuzzy path.
+    await editFileTool.invoke({
+      path: relPath('fuzzy-mixed.txt'),
+      old_text: 'foo\nbar',
+      new_text: 'FOO\nBAR',
+    });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe('keep\r\nFOO\nBAR\r\ntail\n');
+  });
+
+  it('replaces a CRLF pair whole when the matched text spans it', async () => {
+    const file = tmpFile('span-crlf.txt');
+    await writeFile(file, 'a\r\nb\r\nc\r\n');
+
+    await editFileTool.invoke({ path: relPath('span-crlf.txt'), old_text: 'a\nb', new_text: 'X' });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe('X\r\nc\r\n');
+  });
+
+  it('keeps CRLF when the matched text ends with the newline itself', async () => {
+    const file = tmpFile('end-newline-crlf.txt');
+    await writeFile(file, 'a\r\nb\r\nc\r\n');
+
+    await editFileTool.invoke({ path: relPath('end-newline-crlf.txt'), old_text: 'b\n', new_text: 'B\n' });
+
+    const { readFile } = await import('node:fs/promises');
+    expect(await readFile(file, 'utf-8')).toBe('a\r\nB\r\nc\r\n');
+  });
 });

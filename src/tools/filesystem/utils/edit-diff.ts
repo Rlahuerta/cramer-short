@@ -16,6 +16,27 @@ export function restoreLineEndings(text: string, ending: '\r\n' | '\n'): string 
   return ending === '\r\n' ? text.replace(/\n/g, '\r\n') : text;
 }
 
+/**
+ * Offsets of `normalizeToLF(text)` in `text`: entry i is where normalized character i starts, plus a
+ * final entry for the end of text. A CRLF pair is one normalized character.
+ */
+export function lfOffsetMap(text: string): number[] {
+  const map: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    map.push(i);
+    if (text[i] === '\r' && text[i + 1] === '\n') i++;
+  }
+  map.push(text.length);
+  return map;
+}
+
+/** The line ending of the first line terminator at or after `pos`, or `fallback` if there is none. */
+export function lineEndingAt(text: string, pos: number, fallback: '\r\n' | '\n'): '\r\n' | '\n' {
+  const newline = text.indexOf('\n', pos);
+  if (newline === -1) return fallback;
+  return text[newline - 1] === '\r' ? '\r\n' : '\n';
+}
+
 export function normalizeForFuzzyMatch(text: string): string {
   return text
     .split('\n')
