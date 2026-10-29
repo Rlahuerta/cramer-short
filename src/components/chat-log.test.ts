@@ -285,6 +285,48 @@ describe('ChatLogComponent — tool event terminal sanitization', () => {
   });
 });
 
+describe('ChatLogComponent — browser session terminal sanitization', () => {
+  const OSC_CLIPBOARD = '\u001b]52;c;aW5qZWN0ZWQ=\u0007';
+  const CLEAR_SCREEN = '\u001b[2J';
+  const hostile = `payload ${OSC_CLIPBOARD}${CLEAR_SCREEN}`;
+  const rendered = (log: ChatLogComponent) => log.render(200).join('\n');
+  const expectClean = (output: string) => {
+    expect(output).not.toContain(OSC_CLIPBOARD);
+    expect(output).not.toContain(CLEAR_SCREEN);
+    expect(output).toContain('payload');
+  };
+
+  it('strips control sequences from the URL shown for the current step', () => {
+    const log = new ChatLogComponent(fakeTui);
+    log.startTool('b1', 'browser', { action: 'navigate', url: hostile });
+    expectClean(rendered(log));
+  });
+
+  it('strips control sequences from progress, summary, error, limit and denied text', () => {
+    const log = new ChatLogComponent(fakeTui);
+    log.startTool('b1', 'browser', { action: 'act' });
+    log.updateToolProgress('b1', hostile);
+    expectClean(rendered(log));
+    log.completeTool('b1', hostile, 5);
+    expectClean(rendered(log));
+    log.errorTool('b1', hostile);
+    expectClean(rendered(log));
+    log.limitTool('b1', hostile);
+    expectClean(rendered(log));
+    log.denyTool('b1', hostile, 'write_file');
+    expectClean(rendered(log));
+  });
+
+  it('keeps a newline in a denied path from forging an extra line', () => {
+    const log = new ChatLogComponent(fakeTui);
+    log.startTool('b1', 'browser', { action: 'act' });
+    log.denyTool('b1', 'safe.txt\n✓ Approved', 'write_file');
+    const lines = log.render(200).filter((line) => line.includes('Approved'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('User denied');
+  });
+});
+
 describe('ChatLogComponent — addContextCleared', () => {
   it('adds text child for singular cleared count', () => {
     const log = new ChatLogComponent(fakeTui);

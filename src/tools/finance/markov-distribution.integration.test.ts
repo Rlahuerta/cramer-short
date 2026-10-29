@@ -287,13 +287,14 @@ describe('markov_distribution integration — structural break', () => {
   });
 
   it('BTC-only break-threshold override changes break detection without changing divergence value', async () => {
-    const prices: number[] = [];
-    let p = 65000;
-    for (let i = 0; i < 100; i++) {
-      const shock = i > 85 ? 0.04 : Math.sin(i * 0.12) * 0.004;
-      p *= 1 + shock;
-      prices.push(Math.round(p * 100) / 100);
-    }
+    // Detection needs a statistically significant break, not just a large divergence: the same states must
+    // behave differently in the two halves (a state seen in only one half carries no evidence). So whipsaw
+    // first (every up day is followed by a down day), then trend in runs of five.
+    const returns = [
+      ...Array.from({ length: 50 }, (_, i) => (i % 2 === 0 ? 0.03 : -0.03)),
+      ...Array.from({ length: 50 }, (_, i) => (Math.floor(i / 5) % 2 === 0 ? 0.03 : -0.03)),
+    ];
+    const prices = makePricesFromReturns(returns, 65000);
     const current = prices[prices.length - 1];
 
     const baseline = await computeMarkovDistribution({

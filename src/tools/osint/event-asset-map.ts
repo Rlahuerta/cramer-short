@@ -26,8 +26,10 @@ export interface EventMapping {
   category: EventCategory;
   displayName: string;
   description: string;
-  /** Keywords that trigger detection of this category in article text */
+  /** Keywords that trigger detection of this category in article text (matched from the start of a word) */
   detectionKeywords: string[];
+  /** Short keywords that would also begin longer words ("pla" in "plan"): matched as whole words only */
+  wholeWordKeywords?: string[];
   /** GDELT THEME codes relevant to this category */
   gdeltThemes: string[];
   assets: AssetCorrelation[];
@@ -78,7 +80,8 @@ export const EVENT_ASSET_MAP: EventMapping[] = [
     category: 'china-taiwan',
     displayName: 'China-Taiwan Military Tension',
     description: 'PLA military exercises, blockade threats, escalating rhetoric over Taiwan',
-    detectionKeywords: ['taiwan', 'pla', 'beijing', 'xi jinping', 'tsmc', 'semiconductor', 'chip war', 'reunification', 'military exercises'],
+    detectionKeywords: ['taiwan', 'beijing', 'xi jinping', 'tsmc', 'semiconductor', 'chip war', 'reunification', 'military exercises'],
+    wholeWordKeywords: ['pla'],
     gdeltThemes: ['MILITARY_CONFLICT', 'THREATEN', 'BLOCKADE_EMBARGO'],
     assets: [
       { ticker: 'TSM', name: 'TSMC', assetClass: 'equity', direction: 'risk-down', rationale: '90% of advanced chips made in Taiwan', confidence: 0.95 },
@@ -182,7 +185,8 @@ export const EVENT_ASSET_MAP: EventMapping[] = [
     category: 'election-risk',
     displayName: 'Election / Political Risk',
     description: 'Major election uncertainty, coup, regime change in EM country with commodity exposure',
-    detectionKeywords: ['election', 'coup', 'regime change', 'political crisis', 'protest', 'snap election', 'government collapse'],
+    detectionKeywords: ['election', 'regime change', 'political crisis', 'protest', 'snap election', 'government collapse'],
+    wholeWordKeywords: ['coup'],
     gdeltThemes: ['ELECTION', 'POLITICAL_CRISIS', 'REBELLION_COUP'],
     assets: [
       { ticker: 'EEM', name: 'Emerging Markets ETF', assetClass: 'etf', direction: 'volatility', rationale: 'EM political risk premium', confidence: 0.70 },
@@ -208,12 +212,24 @@ export function getMappingForCategory(category: EventCategory): EventMapping | u
 export function detectCategories(text: string): EventCategory[] {
   const lower = text.toLowerCase();
   const hits: EventCategory[] = [];
-  for (const mapping of EVENT_ASSET_MAP) {
-    const matched = mapping.detectionKeywords.some((kw) => lower.includes(kw.toLowerCase()));
-    if (matched) hits.push(mapping.category);
+  for (const { category, pattern } of DETECTION_PATTERNS) {
+    if (pattern.test(lower)) hits.push(category);
   }
   return [...new Set(hits)];
 }
+
+// A keyword must start a word, so "nato" is not found in "senator" nor "putin" in "computing", but it may be
+// inflected ("Russian", "elections"). Whole-word keywords must also end the word, apart from a plural "s".
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const DETECTION_PATTERNS = EVENT_ASSET_MAP.map(({ category, detectionKeywords, wholeWordKeywords = [] }) => ({
+  category,
+  pattern: new RegExp(
+    [
+      ...detectionKeywords.map((kw) => `(?<![a-z0-9])${escapeRegExp(kw.toLowerCase())}`),
+      ...wholeWordKeywords.map((kw) => `(?<![a-z0-9])${escapeRegExp(kw.toLowerCase())}s?(?![a-z0-9])`),
+    ].join('|'),
+  ),
+}));
 
 /**
  * Given a set of event categories, return the deduplicated asset implications.
