@@ -76,6 +76,14 @@ export class MemoryStore {
     }
   }
 
+  /** Like readMemoryFile, but only a missing file reads as empty; any other read error is thrown. */
+  async readMemoryFileStrict(path: string): Promise<string> {
+    return readFile(this.resolveMemoryPath(path), 'utf-8').catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return '';
+      throw err;
+    });
+  }
+
   async writeMemoryFile(path: string, content: string): Promise<void> {
     const resolved = this.resolveMemoryPath(path);
     await atomicWriteFile(resolved, content);
@@ -84,10 +92,7 @@ export class MemoryStore {
   async appendMemoryFile(path: string, content: string): Promise<void> {
     return withFileLock(this.resolveMemoryPath(path), async () => {
       // Only a missing file starts empty; any other read error must not be replaced by the new text.
-      const previous = await readFile(this.resolveMemoryPath(path), 'utf-8').catch((err: NodeJS.ErrnoException) => {
-        if (err.code === 'ENOENT') return '';
-        throw err;
-      });
+      const previous = await this.readMemoryFileStrict(path);
       const separator = previous.endsWith('\n') || previous.length === 0 ? '' : '\n';
       await this.writeMemoryFile(path, `${previous}${separator}${content}`);
     });

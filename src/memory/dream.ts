@@ -264,7 +264,8 @@ async function consolidate(
     ...(await Promise.all(
       ['MEMORY.md', 'FINANCE.md'].map(async (filename) => {
         throwIfAborted(abortSignal);
-        const content = (await store.readMemoryFile(filename)).trim();
+        // Strict: an unreadable file must abort the run, not read as empty and be overwritten below.
+        const content = (await store.readMemoryFileStrict(filename)).trim();
         return content ? `### ${filename}\n${content}` : null;
       }),
     )),
@@ -296,7 +297,7 @@ async function consolidate(
     ['MEMORY.md', parsed.memory],
     ['FINANCE.md', parsed.finance],
   ] as const) {
-    const existing = await store.readMemoryFile(filename);
+    const existing = await store.readMemoryFileStrict(filename);
     if (existing) {
       await atomicWriteFile(join(store.getMemoryDir(), `${filename}.bak`), existing);
     }

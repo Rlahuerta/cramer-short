@@ -1,6 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
-import { existsSync, mkdirSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MemoryStore } from './store.js';
@@ -538,6 +538,31 @@ describe('runDream — full cycle (E2E)', () => {
     const bak = (name: string) => Bun.file(join(tmpDir, 'memory', name)).text();
     expect(await bak('MEMORY.md.bak')).toBe('- User prefers value investing.\n- Uses FMP for data.');
     expect(await bak('FINANCE.md.bak')).toBe('- AAPL: strong buy thesis.\n- Watchlist: AAPL, MSFT');
+  });
+
+  it.skipIf(process.getuid?.() === 0)('aborts without touching anything when MEMORY.md cannot be read', async () => {
+    seedRealisticFiles();
+    const memoryPath = join(tmpDir, 'memory', 'MEMORY.md');
+    let llmCalled = false;
+    const trackingLlm: CallLlmFn = async () => {
+      llmCalled = true;
+      return { content: '### MEMORY.md\nReplacement.\n\n### FINANCE.md\nReplacement.' };
+    };
+
+    chmodSync(memoryPath, 0o000);
+    try {
+      await expect(runDream(store, 'gpt-4', { force: true, callLlm: trackingLlm })).rejects.toThrow();
+    } finally {
+      chmodSync(memoryPath, 0o644);
+    }
+
+    expect(llmCalled).toBe(false);
+    expect(readFileSync(memoryPath, 'utf-8')).toBe('- User prefers value investing.\n- Uses FMP for data.');
+    expect(existsSync(join(tmpDir, 'memory', 'MEMORY.md.bak'))).toBe(false);
+    expect(readFileSync(join(tmpDir, 'memory', 'FINANCE.md'), 'utf-8')).toBe(
+      '- AAPL: strong buy thesis.\n- Watchlist: AAPL, MSFT',
+    );
+    expect(await store.listDailyFiles()).toHaveLength(2);
   });
 
   it('moves all daily files to archive/ and removes them from memory dir', async () => {
