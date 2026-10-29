@@ -6,7 +6,7 @@ import type { ChatLogComponent } from '../components/index.js';
 import type { AgentRunnerController } from './agent-runner.js';
 import type { HistoryItem, HistoryItemStatus } from './types.js';
 import { theme } from '../theme.js';
-import { countRenderedTuiMarkdownLines, truncateTuiMarkdownTail } from '../utils/ui/markdown-table.js';
+import { countRenderedTuiMarkdownLines, formatResponseTui, truncateTuiMarkdownTail } from '../utils/ui/markdown-table.js';
 import { formatExchangeForScrollback } from '../utils/ui/scrollback.js';
 import { summarizeToolResult } from '../utils/parsing/tool-result-summary.js';
 
@@ -158,7 +158,8 @@ export function renderCurrentQuery(chatLog: ChatLogComponent, history: AgentRunn
   for (const display of visibleEvents) {
     const event = display.event;
     if (event.type === 'thinking') {
-      const message = event.message.trim();
+      // Model text can echo remote content: strip terminal control sequences before it is truncated and shown.
+      const message = formatResponseTui(event.message).trim();
       if (message) {
         const preview = message.length > 120 ? `${message.slice(0, 120)}…` : message;
         chatLog.addChild(new Text(theme.muted(`  💭 ${preview}`), 0, 0));
@@ -167,7 +168,7 @@ export function renderCurrentQuery(chatLog: ChatLogComponent, history: AgentRunn
     }
 
     if (event.type === 'reasoning') {
-      const reasoning = (event as ReasoningEvent).content.trim();
+      const reasoning = formatResponseTui((event as ReasoningEvent).content).trim();
       if (reasoning) {
         const preview = reasoning.length > 300 ? `${reasoning.slice(0, 300)}...` : reasoning;
         chatLog.addChild(new Spacer(1));

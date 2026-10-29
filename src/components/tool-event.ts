@@ -5,7 +5,7 @@ import { formatResponseTui } from '../utils/ui/markdown-table.js';
 
 // Tool args, paths and results are model/remote-controlled: strip terminal control
 // sequences before colouring, and flatten newlines where a single line is expected.
-function oneLine(text: string): string {
+export function oneLine(text: string): string {
   return formatResponseTui(text).replace(/\n/g, ' ');
 }
 

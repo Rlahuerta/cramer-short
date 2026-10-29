@@ -2,8 +2,9 @@ import { Container, Spacer, Text, type TUI } from '@mariozechner/pi-tui';
 import type { TokenUsage } from '../agent/types.js';
 import { theme } from '../theme.js';
 import { AnswerBoxComponent } from './answer-box.js';
-import { ToolEventComponent } from './tool-event.js';
+import { ToolEventComponent, oneLine } from './tool-event.js';
 import { UserQueryComponent } from './user-query.js';
+import { formatResponseTui } from '../utils/ui/markdown-table.js';
 
 function formatDuration(ms: number): string {
   if (ms < 1000) {
@@ -30,7 +31,8 @@ function truncateUrl(url: string, maxLen = 45): string {
 
 function formatBrowserStep(args: Record<string, unknown>): string | null {
   const action = args.action as string | undefined;
-  const url = args.url as string | undefined;
+  // The URL is model/page-controlled: strip control sequences before it is truncated and shown.
+  const url = typeof args.url === 'string' ? oneLine(args.url) : undefined;
   switch (action) {
     case 'open':
       return `Opening ${truncateUrl(url || '')}`;
@@ -79,27 +81,27 @@ class BrowserSessionComponent extends Container implements ToolDisplayComponent 
 
   setActive(progressMessage?: string): void {
     this.clearDetail();
-    const message = progressMessage || this.currentStep || 'Searching...';
+    const message = formatResponseTui(progressMessage || this.currentStep || 'Searching...');
     this.detail = new Text(`${theme.muted('⎿  ')}${message}`, 0, 0);
     this.addChild(this.detail);
   }
 
   setComplete(summary: string, duration: number): void {
     this.clearDetail();
-    const text = this.currentStep || `${summary}${theme.muted(` in ${formatDuration(duration)}`)}`;
+    const text = this.currentStep || `${formatResponseTui(summary)}${theme.muted(` in ${formatDuration(duration)}`)}`;
     this.detail = new Text(`${theme.muted('⎿  ')}${text}`, 0, 0);
     this.addChild(this.detail);
   }
 
   setError(error: string): void {
     this.clearDetail();
-    this.detail = new Text(`${theme.muted('⎿  ')}${theme.error(`Error: ${error}`)}`, 0, 0);
+    this.detail = new Text(`${theme.muted('⎿  ')}${theme.error(`Error: ${formatResponseTui(error)}`)}`, 0, 0);
     this.addChild(this.detail);
   }
 
   setLimitWarning(warning?: string): void {
     this.clearDetail();
-    this.detail = new Text(`${theme.muted('⎿  ')}${theme.warning(warning || 'Approaching suggested limit')}`, 0, 0);
+    this.detail = new Text(`${theme.muted('⎿  ')}${theme.warning(formatResponseTui(warning || 'Approaching suggested limit'))}`, 0, 0);
     this.addChild(this.detail);
   }
 
@@ -119,7 +121,7 @@ class BrowserSessionComponent extends Container implements ToolDisplayComponent 
   setDenied(path: string, tool: string): void {
     this.clearDetail();
     const action = tool === 'write_file' ? 'write to' : tool === 'edit_file' ? 'edit of' : tool;
-    this.detail = new Text(`${theme.muted('⎿  ')}${theme.warning(`User denied ${action} ${path}`)}`, 0, 0);
+    this.detail = new Text(`${theme.muted('⎿  ')}${theme.warning(`User denied ${action} ${oneLine(path)}`)}`, 0, 0);
     this.addChild(this.detail);
   }
 

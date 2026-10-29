@@ -345,3 +345,28 @@ describe('renderCurrentQuery — incremental streamed rendering', () => {
     expect(buildLongTrace()).toBe(GOLDEN_LONG);
   });
 });
+
+describe('renderCurrentQuery — terminal sanitization of model text', () => {
+  const OSC_CLIPBOARD = '\u001b]52;c;aW5qZWN0ZWQ=\u0007';
+  const CLEAR_SCREEN = '\u001b[2J';
+  const hostile = `payload ${OSC_CLIPBOARD}${CLEAR_SCREEN}`;
+
+  it('strips control sequences from thinking and reasoning lines', () => {
+    const chatLog = new ChatLogComponent({} as TUI);
+    const item: HistoryItem = {
+      id: 'sanitize',
+      query: 'q',
+      events: [
+        { id: 'e1', event: { type: 'thinking', message: hostile }, completed: true },
+        { id: 'e2', event: { type: 'reasoning', content: hostile }, completed: true },
+      ],
+      answer: '',
+      status: 'processing',
+    };
+    renderCurrentQuery(chatLog, [item]);
+    const output = chatLog.render(200).join('\n');
+    expect(output).not.toContain(OSC_CLIPBOARD);
+    expect(output).not.toContain(CLEAR_SCREEN);
+    expect(output).toContain('payload');
+  });
+});
