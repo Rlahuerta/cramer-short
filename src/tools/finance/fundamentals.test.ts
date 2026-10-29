@@ -592,3 +592,145 @@ describe('FMP fallback honours report_period bounds', () => {
     expect(data.cash_flow_statements?.map((r) => r.date)).toEqual(['2019-09-28']);
   });
 });
+
+describe('Yahoo and Tavily fallbacks honour report_period bounds', () => {
+  const bounds = { report_period_gte: '2019-01-01', report_period_lte: '2019-12-31' };
+  // Yahoo's raw API (formatted=false) gives epoch seconds and a Date serialises to an ISO timestamp,
+  // so rows can carry any of the three shapes.
+  const secs = (day: string) => Date.parse(`${day}T00:00:00Z`) / 1000;
+  const yahooRows = (rows: { date: unknown; totalRevenue: number }[]) =>
+    JSON.stringify({ data: rows, sourceUrls: ['https://finance.yahoo.com/quote/VWS.CO/financials'] });
+  const mixedRows = yahooRows([
+    { date: '2024-12-31T00:00:00.000Z', totalRevenue: 3 },
+    { date: secs('2021-12-31'), totalRevenue: 2 },
+    { date: '2019-12-31', totalRevenue: 1 },
+  ]);
+  const revenuesOf = (raw: unknown) =>
+    (parseResult(raw).data as { totalRevenue: number }[]).map((r) => r.totalRevenue);
+  const yahooAfterPremium = (yahoo: string) => {
+    mockFdEmpty('income_statements');
+    mockFmpIncomeInvoke.mockResolvedValueOnce(fmpPremiumResult());
+    mockYahooIncomeInvoke.mockResolvedValueOnce(yahoo);
+  };
+
+  test('Yahoo: keeps only rows inside the requested window, whatever the date shape', async () => {
+    yahooAfterPremium(mixedRows);
+
+    const raw = await getIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4, ...bounds });
+
+    expect(revenuesOf(raw)).toEqual([1]);
+  });
+
+  test('Yahoo: reads an epoch-seconds date as its UTC day', async () => {
+    yahooAfterPremium(mixedRows);
+
+    const raw = await getIncomeStatements.invoke({
+      ticker: 'VWS.CO',
+      period: 'annual',
+      limit: 4,
+      report_period_gte: '2021-01-01',
+      report_period_lte: '2021-12-31',
+    });
+
+    expect(revenuesOf(raw)).toEqual([2]);
+  });
+
+  test.each([
+    ['gte/lte include the bound day', { report_period_gte: '2024-12-31', report_period_lte: '2024-12-31' }, true],
+    ['gt excludes the bound day', { report_period_gt: '2024-12-31' }, false],
+    ['lt excludes the bound day', { report_period_lt: '2024-12-31' }, false],
+  ])('Yahoo: an ISO timestamp on the bound day, %s', async (_label, window, included) => {
+    yahooAfterPremium(yahooRows([{ date: '2024-12-31T00:00:00.000Z', totalRevenue: 3 }]));
+
+    const raw = await getIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4, ...window });
+
+    if (included) expect(revenuesOf(raw)).toEqual([3]);
+    else expect((parseResult(raw).data as { error?: string }).error).toContain('No income statement data');
+  });
+
+  test('Yahoo: a window with no Yahoo rows falls through to Tavily, not to the latest periods', async () => {
+    yahooAfterPremium(mixedRows);
+    enableTavily();
+    mockTavilyInvoke.mockResolvedValueOnce(tavilyResult());
+
+    const raw = await getIncomeStatements.invoke({
+      ticker: 'VWS.CO',
+      period: 'annual',
+      limit: 4,
+      report_period_gte: '2010-01-01',
+      report_period_lte: '2010-12-31',
+    });
+
+    expect(mockTavilyInvoke).toHaveBeenCalledTimes(1);
+    expect(parseResult(raw).sourceUrls?.some((u) => u.includes('yahoo.com'))).toBe(false);
+  });
+
+  test('Yahoo: with no bounds every row is returned, epoch dates included', async () => {
+    yahooAfterPremium(mixedRows);
+
+    const raw = await getIncomeStatements.invoke({ ticker: 'VWS.CO', period: 'annual', limit: 4 });
+
+    expect(revenuesOf(raw)).toEqual([3, 2, 1]);
+  });
+
+  describe('Tavily query', () => {
+    const queryOf = () => (mockTavilyInvoke.mock.calls[0] as [{ query: string }])[0].query;
+    const noYahoo = () =>
+      mockYahooIncomeInvoke.mockResolvedValueOnce(JSON.stringify({ data: { error: 'No data' }, sourceUrls: [] }));
+    const input = { ticker: 'VWS.CO', period: 'annual' as const, limit: 4 };
+
+    beforeEach(() => {
+      enableTavily();
+      mockTavilyInvoke.mockResolvedValueOnce(tavilyResult());
+    });
+
+    test('income statements target the requested window instead of the default years', async () => {
+      mockFdEmpty('income_statements');
+      mockFmpIncomeInvoke.mockResolvedValueOnce(fmpPremiumResult());
+      noYahoo();
+      await getIncomeStatements.invoke({ ...input, ...bounds });
+      expect(queryOf()).toContain('2019');
+      expect(queryOf()).not.toContain('2024');
+    });
+
+    test('balance sheets target the requested window', async () => {
+      mockFdEmpty('balance_sheets');
+      mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
+      await getBalanceSheets.invoke({ ...input, ...bounds });
+      expect(queryOf()).toContain('2019');
+      expect(queryOf()).not.toContain('2024');
+    });
+
+    test('cash flow statements target the requested window', async () => {
+      mockFdEmpty('cash_flow_statements');
+      mockFmpCashFlowInvoke.mockResolvedValueOnce(fmpPremiumResult());
+      await getCashFlowStatements.invoke({ ...input, ...bounds });
+      expect(queryOf()).toContain('2019');
+      expect(queryOf()).not.toContain('2024');
+    });
+
+    test('all statements target the requested window', async () => {
+      mockFdFailure();
+      mockFmpIncomeInvoke.mockResolvedValueOnce(fmpPremiumResult());
+      mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
+      mockFmpCashFlowInvoke.mockResolvedValueOnce(fmpPremiumResult());
+      await getAllFinancialStatements.invoke({ ...input, ...bounds });
+      expect(queryOf()).toContain('2019');
+      expect(queryOf()).not.toContain('2024');
+    });
+
+    test('a multi-year window lists each year', async () => {
+      mockFdEmpty('balance_sheets');
+      mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
+      await getBalanceSheets.invoke({ ...input, report_period_gte: '2018-01-01', report_period_lte: '2020-12-31' });
+      expect(queryOf()).toContain('2018 2019 2020');
+    });
+
+    test('without bounds the default years are kept', async () => {
+      mockFdEmpty('balance_sheets');
+      mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
+      await getBalanceSheets.invoke(input);
+      expect(queryOf()).toContain('2024 2023');
+    });
+  });
+});
