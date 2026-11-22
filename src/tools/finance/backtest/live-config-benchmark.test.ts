@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'bun:test';
+import { getBtcShortHorizonLivePolicy } from '../markov-distribution/live-policies.js';
 import {
   compareBenchmarkRuns,
+  liveBenchmarkCells,
+  runLiveConfigBenchmark,
   type BenchmarkCell,
   type BenchmarkRun,
   type BenchmarkStep,
 } from './live-config-benchmark.js';
+import { xiphosBtcWalkForwardConfig } from './xiphos-btc-preset.js';
 
 function makeCell(ticker: string, horizon: number, steps: BenchmarkStep[]): BenchmarkCell {
   return { ticker, horizon, stride: 5, steps };
@@ -79,5 +83,39 @@ describe('compareBenchmarkRuns', () => {
       steps: c.steps.map((s, i) => ({ ...s, predictedProb: s.predictedProb + (i % 3 === 0 ? 0.04 : -0.03) })),
     })));
     expect(compareBenchmarkRuns(base, noisy, { seed: 7 })).toEqual(compareBenchmarkRuns(base, noisy, { seed: 7 }));
+  });
+});
+
+describe('liveBenchmarkCells', () => {
+  it('covers six tickers at 1, 7 and 14 days with the history the live tool fetches', () => {
+    const cells = liveBenchmarkCells();
+    expect(cells).toHaveLength(18);
+    const historyOf = (ticker: string) => [...new Set(cells.filter((c) => c.ticker === ticker).map((c) => c.maxHistoryPrices))];
+    expect(historyOf('SPY')).toEqual([83]);
+    expect(historyOf('GLD')).toEqual([174]);
+    expect(historyOf('BTC-USD')).toEqual([252]);
+  });
+
+  it("configures BTC like the live tool: the xiphos profile, then each horizon's live break policy", () => {
+    for (const cell of liveBenchmarkCells().filter((c) => c.ticker === 'BTC-USD')) {
+      const policy = getBtcShortHorizonLivePolicy('BTC-USD', cell.horizon)!;
+      expect(cell.config.btcBreakDivergenceThreshold).toBe(policy.breakDivergenceThreshold);
+      expect(cell.config.postBreakShortWindow).toBe(policy.rerunOnBreak);
+      expect(cell.config.postBreakWindowSize).toBe(policy.rerunWindowDays);
+      expect(cell.config.btcReturnThresholdMultiplier).toBe(xiphosBtcWalkForwardConfig().btcReturnThresholdMultiplier);
+    }
+  });
+});
+
+describe('runLiveConfigBenchmark', () => {
+  it('turns a walk-forward run into cells the decision rule can pair', async () => {
+    const prices = Array.from({ length: 140 }, (_, i) => 100 * Math.exp(0.001 * i + 0.02 * Math.sin(i / 3)));
+    const run = await runLiveConfigBenchmark('smoke', { SPY: prices }, [
+      { ticker: 'SPY', horizon: 1, maxHistoryPrices: 60, config: {} },
+    ]);
+    expect(run.cells).toHaveLength(1);
+    expect(run.cells[0].steps.length).toBeGreaterThan(0);
+    expect(run.cells[0].steps[0].t).toBe(60);
+    expect(compareBenchmarkRuns(run, run).verdict).toBe('no-harm');
   });
 });

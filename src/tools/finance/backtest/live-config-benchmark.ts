@@ -4,14 +4,21 @@
  *
  * A forecast change is judged by pairing each step of a candidate run with the same step of a baseline run
  * and bootstrapping the pooled Brier change, not by per-cell thresholds, which sit below the metrics' noise.
+ *
+ *   bun run src/tools/finance/backtest/live-config-benchmark.ts run <label> <out.json>
+ *   bun run src/tools/finance/backtest/live-config-benchmark.ts compare <base.json> <candidate.json>
  */
-import { mulberry32 } from './metrics.js';
+import { join } from 'node:path';
+import { getBtcShortHorizonLivePolicy } from '../markov-distribution/live-policies.js';
+import { mulberry32, type BacktestRecommendation } from './metrics.js';
+import { walkForward, type WalkForwardConfig } from './walk-forward.js';
+import { xiphosBtcWalkForwardConfig } from './xiphos-btc-preset.js';
 
 export interface BenchmarkStep {
   t: number;
   predictedProb: number;
   actualBinary: number;
-  recommendation: 'BUY' | 'SELL' | 'HOLD';
+  recommendation: BacktestRecommendation;
 }
 
 export interface BenchmarkCell {
@@ -19,6 +26,94 @@ export interface BenchmarkCell {
   horizon: number;
   stride: number;
   steps: BenchmarkStep[];
+  /** Origins where the forecast failed; a candidate that fails elsewhere will not pair with the baseline. */
+  errors?: number;
+}
+
+export interface BenchmarkCellSpec {
+  ticker: string;
+  horizon: number;
+  maxHistoryPrices: number;
+  config: Partial<WalkForwardConfig>;
+}
+
+const STRIDE = 5;
+const RANDOM_STATE = 42;
+// The live tool fetches calendar days (fetchHistoricalPrices): 120 by default and 252 under the BTC/GLD
+// short-horizon policies. In the fixture's trading-day prices that is about 83 for equities and 174 for GLD;
+// BTC trades every day, so 252.
+const EQUITY_HISTORY_PRICES = 83;
+const GLD_HISTORY_PRICES = 174;
+const BTC_HISTORY_PRICES = 252;
+
+/** The benchmark cells, each configured the way the live tool forecasts that ticker and horizon. */
+export function liveBenchmarkCells(): BenchmarkCellSpec[] {
+  const cells: BenchmarkCellSpec[] = [];
+  for (const horizon of [1, 7, 14]) {
+    for (const ticker of ['SPY', 'QQQ', 'NVDA', 'MSFT']) {
+      cells.push({ ticker, horizon, maxHistoryPrices: EQUITY_HISTORY_PRICES, config: {} });
+    }
+    // The gold live policy's break threshold is applied inside computeMarkovDistribution.
+    cells.push({ ticker: 'GLD', horizon, maxHistoryPrices: GLD_HISTORY_PRICES, config: {} });
+    // Live BTC spreads the xiphos profile, then the per-horizon live policy's break threshold and rerun.
+    const policy = getBtcShortHorizonLivePolicy('BTC-USD', horizon);
+    cells.push({
+      ticker: 'BTC-USD',
+      horizon,
+      maxHistoryPrices: BTC_HISTORY_PRICES,
+      config: {
+        ...xiphosBtcWalkForwardConfig(),
+        btcBreakDivergenceThreshold: policy?.breakDivergenceThreshold,
+        postBreakShortWindow: policy?.rerunOnBreak,
+        postBreakWindowSize: policy?.rerunWindowDays,
+      },
+    });
+  }
+  return cells;
+}
+
+/** Run the benchmark cells over the price fixture. Each origin starts with a full live-length window. */
+export async function runLiveConfigBenchmark(
+  label: string,
+  prices?: Record<string, number[]>,
+  cells: BenchmarkCellSpec[] = liveBenchmarkCells(),
+): Promise<BenchmarkRun> {
+  const closes = prices ?? await loadFixtureCloses();
+  const runCells: BenchmarkCell[] = [];
+  for (const spec of cells) {
+    const tickerPrices = closes[spec.ticker];
+    if (!tickerPrices) throw new Error(`no prices for ${spec.ticker}`);
+    const result = await walkForward({
+      ...spec.config,
+      ticker: spec.ticker,
+      prices: tickerPrices,
+      horizon: spec.horizon,
+      warmup: spec.maxHistoryPrices,
+      stride: STRIDE,
+      maxHistoryPrices: spec.maxHistoryPrices,
+      randomState: RANDOM_STATE,
+    });
+    runCells.push({
+      ticker: spec.ticker,
+      horizon: spec.horizon,
+      stride: STRIDE,
+      errors: result.errors.length,
+      steps: result.steps.map((s) => ({
+        t: s.t,
+        predictedProb: s.predictedProb,
+        actualBinary: s.actualBinary,
+        recommendation: s.recommendation,
+      })),
+    });
+  }
+  return { label, generatedAt: new Date().toISOString(), cells: runCells };
+}
+
+async function loadFixtureCloses(): Promise<Record<string, number[]>> {
+  const fixture = await Bun.file(join(import.meta.dir, '..', 'fixtures', 'backtest-prices.json')).json() as {
+    tickers: Record<string, { closes: number[] }>;
+  };
+  return Object.fromEntries(Object.entries(fixture.tickers).map(([ticker, data]) => [ticker, data.closes]));
 }
 
 export interface BenchmarkRun {
@@ -114,4 +209,23 @@ export function compareBenchmarkRuns(
         : 'harm';
 
   return { pairedSteps: total, meanBrierDelta, ci95, abstainRateDelta, verdict };
+}
+
+if (import.meta.main) {
+  const [command, ...args] = process.argv.slice(2);
+  if (command === 'run' && args.length === 2) {
+    const [label, out] = args;
+    const run = await runLiveConfigBenchmark(label);
+    await Bun.write(out, JSON.stringify(run, null, 2));
+    const steps = run.cells.reduce((n, cell) => n + cell.steps.length, 0);
+    const errors = run.cells.reduce((n, cell) => n + (cell.errors ?? 0), 0);
+    console.log(`${label}: ${run.cells.length} cells, ${steps} steps, ${errors} failed origins -> ${out}`);
+  } else if (command === 'compare' && args.length === 2) {
+    const [baseFile, candidateFile] = args;
+    const result = compareBenchmarkRuns(await Bun.file(baseFile).json(), await Bun.file(candidateFile).json());
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.error('Usage: live-config-benchmark.ts run <label> <out.json> | compare <base.json> <candidate.json>');
+    process.exit(1);
+  }
 }
