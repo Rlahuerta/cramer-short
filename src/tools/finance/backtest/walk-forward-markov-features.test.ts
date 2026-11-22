@@ -171,3 +171,24 @@ describe('walk-forward look-ahead guards', () => {
     expect(sliceCrossAssetReturnsToOrigin(undefined, 2)).toBeUndefined();
   });
 });
+
+describe('walk-forward rolling history window', () => {
+  // Same prices from index 60 on; only the first 60 differ.
+  const pricesA = syntheticTrajectoryPrices();
+  const pricesB = pricesA.map((p, i) => (i < 60 ? p * 1.3 : p));
+  const run = (prices: number[], extra: Partial<WalkForwardConfig>) => walkForward({
+    ticker: 'SPY', prices, horizon: 1, warmup: 120, stride: 10, randomState: 42, ...extra,
+  });
+  const probs = (steps: { predictedProb: number }[]) => steps.map((s) => s.predictedProb);
+
+  it('forecasts each origin from at most maxHistoryPrices trailing prices, like the live tool', async () => {
+    const [a, b] = await Promise.all([run(pricesA, { maxHistoryPrices: 50 }), run(pricesB, { maxHistoryPrices: 50 })]);
+    expect(a.steps.length).toBeGreaterThan(0);
+    expect(probs(b.steps)).toEqual(probs(a.steps));
+  });
+
+  it('still uses the whole expanding history when no cap is set', async () => {
+    const [a, b] = await Promise.all([run(pricesA, {}), run(pricesB, {})]);
+    expect(probs(b.steps)).not.toEqual(probs(a.steps));
+  });
+});

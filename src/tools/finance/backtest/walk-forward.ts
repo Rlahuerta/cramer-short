@@ -42,6 +42,11 @@ export interface WalkForwardConfig {
   warmup?: number;
   /** Step forward by this many days between predictions (default: 5) */
   stride?: number;
+  /**
+   * Forecast each origin from at most this many trailing prices, like the live tool's fixed fetch window.
+   * Unset (default) uses the whole expanding history up to the origin.
+   */
+  maxHistoryPrices?: number;
   /** Optional override for crypto short-horizon conditional weight (PR3B ablation) */
   cryptoShortHorizonConditionalWeight?: number;
   /** Optional override for crypto short-horizon kappa multiplier (PR3B ablation) */
@@ -281,7 +286,10 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
   };
 
   for (let t = warmup; t <= maxT; t += stride) {
-    const histPrices = prices.slice(0, t + 1);
+    const histPrices = prices.slice(
+      config.maxHistoryPrices !== undefined ? Math.max(0, t + 1 - config.maxHistoryPrices) : 0,
+      t + 1,
+    );
     const currentPrice = prices[t];
     const realizedPrice = prices[t + horizon];
     const actualReturn = (realizedPrice - currentPrice) / currentPrice;
