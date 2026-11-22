@@ -20,6 +20,7 @@ from research.models.trajectory import (
     interpolate_survival,
 )
 from research.models.trajectory.interpolation import enforce_non_increasing
+from research.models.trajectory.simulation import widen_band_to_width
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +417,15 @@ def test_compute_trajectory_uncertainty_scale_contains_skewed_baseline_ci():
 
 def _widths(trajectory):
     return [pt.upper_bound - pt.lower_bound for pt in trajectory]
+
+
+def test_widen_band_to_width_ends_exactly_at_the_requested_width():
+    """An odd gap must not overshoot by a cent: the overshoot becomes the next day's floor and
+    compounds. Mirrors the widenBandToWidth test in confidence-intervals.test.ts."""
+    assert widen_band_to_width(10, 19, 12) == (9, 21)
+    assert widen_band_to_width(10, 18, 12) == (8, 20)
+    assert widen_band_to_width(10, 25, 12) == (10, 25)
+    assert widen_band_to_width(1, 4, 9) == (1, 10)
 
 
 def test_compute_trajectory_ci_widens_a_narrowed_day_about_its_own_midpoint():

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import { classifyRegimeState } from './regime.js';
 import { buildDefaultMatrix } from './transition.js';
-import { computeHorizonDriftVol, horizonStudentTNu, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, enforceNonIncreasing, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, winsorize } from './confidence-intervals.js';
+import { computeHorizonDriftVol, horizonStudentTNu, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, enforceNonIncreasing, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, widenBandToWidth, winsorize } from './confidence-intervals.js';
 import { calibrateProbabilities, combineUncertaintyCiScale, computeMarkovDistribution, interpolateSurvival } from '../markov-distribution.js';
 import type { MarkovDistributionPoint, PriceThreshold, RegimeState } from './core.js';
 
@@ -671,6 +671,15 @@ describe('computeTrajectory', () => {
       .toBeGreaterThan(baseline[13].upperBound - baseline[13].lowerBound);
   });
 
+  describe('widenBandToWidth', () => {
+    it('ends exactly at the requested width, so an odd cent does not ratchet up day after day', () => {
+      expect(widenBandToWidth(10, 19, 12)).toEqual([9, 21]); // gap 3: one cent below, two above
+      expect(widenBandToWidth(10, 18, 12)).toEqual([8, 20]); // even gap: symmetric
+      expect(widenBandToWidth(10, 25, 12)).toEqual([10, 25]); // already wide enough: unchanged
+      expect(widenBandToWidth(1, 4, 9)).toEqual([1, 10]); // lower bound stays at 1 cent, width still exact
+    });
+  });
+
   describe('90% CI never narrows with the horizon (PI-52)', () => {
     const noisyStats = {
       bull: { meanReturn: 0.01, stdReturn: 0.03 },
@@ -702,7 +711,10 @@ describe('computeTrajectory', () => {
       expect([day11.lowerBound, day11.upperBound]).toEqual([84.02, 120.09]); // unaffected day
       expect([day13.lowerBound, day13.upperBound]).toEqual([84.14, 120.43]); // already wide enough
 
-      expect((day12.lowerBound + day12.upperBound) / 2).toBeCloseTo((83.97 + 119.35) / 2, 9); // midpoint kept
+      // Widened to exactly the previous day's width (no extra cent to compound the next day), about
+      // its own midpoint to within the half cent that an odd gap cannot split evenly.
+      expect(day12.upperBound - day12.lowerBound).toBeCloseTo(day11.upperBound - day11.lowerBound, 9);
+      expect(Math.abs((day12.lowerBound + day12.upperBound) / 2 - (83.97 + 119.35) / 2)).toBeLessThanOrEqual(0.005 + 1e-9);
       expect(day12.lowerBound).toBeLessThan(83.97);
       expect(day12.upperBound).toBeGreaterThan(119.35);
       // Not the old per-bound "never retreat" clamp: the upper bound may sit below the previous day's.
