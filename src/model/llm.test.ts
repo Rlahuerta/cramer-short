@@ -23,6 +23,7 @@ const {
   streamCallLlm,
   resolveOllamaTarget,
   _setModelFactory,
+  DEFAULT_MODEL,
 } = await import('./llm.js');
 
 beforeEach(() => {
@@ -95,6 +96,25 @@ describe('getChatModel — Ollama think flag', () => {
   test('does NOT pass think:true for llama3', () => {
     const model = getChatModel('ollama:llama3.1:8b') as { think?: boolean };
     expect(model.think).toBeUndefined();
+  });
+
+  test('asks DeepSeek v4.1 Flash for its "max" thinking level, not the model default', () => {
+    for (const name of [
+      DEFAULT_MODEL,
+      'ollama:deepseek-v4.1-flash:cloud',
+      'ollama:deepseek-v4.1-flash:1017-cloud',
+      'ollama:deepseek-v4.1-flash',
+    ]) {
+      const model = getChatModel(name) as { think?: boolean | string };
+      expect(model.think).toBe('max');
+    }
+  });
+
+  test('thinkOverride still turns DeepSeek v4.1 Flash thinking off, and on at "max"', () => {
+    const off = getChatModel('ollama:deepseek-v4.1-flash:cloud', false, false) as { think?: boolean | string };
+    const on = getChatModel('ollama:deepseek-v4.1-flash:cloud', false, true) as { think?: boolean | string };
+    expect(off.think).toBeUndefined();
+    expect(on.think).toBe('max');
   });
 
   test('strips ollama: prefix before passing model to ChatOllama', () => {
