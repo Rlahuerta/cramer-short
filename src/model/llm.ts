@@ -23,6 +23,13 @@ export const DEFAULT_MODEL = 'ollama:deepseek-v4.1-flash:cloud';
 const THINKING_MODEL_PATTERNS = [/qwen3/, /deepseek-r1/, /deepseek-v4/, /qwq/, /nemotron/, /gemma4/, /kimi-k2\.6/];
 
 /**
+ * Thinking level requested from Ollama models that offer levels; other thinking models get `think: true`
+ * (their default level). Levels are model-defined (`/api/show` → `thinking.values`): deepseek-v4.1-flash lists
+ * [false, "low", "high", "max"] with "high" as the default, and "max" is this project's choice for it.
+ */
+const OLLAMA_THINK_LEVELS: ReadonlyArray<readonly [RegExp, string]> = [[/^deepseek-v4\.1-flash(?::|$)/, 'max']];
+
+/**
  * Returns true when the given model name is an Ollama thinking-capable model
  * (e.g. qwen3, deepseek-r1, qwq, nemotron). Case-insensitive; strips `ollama:` prefix.
  */
@@ -252,10 +259,13 @@ const MODEL_FACTORIES: Record<string, ModelFactory> = {
     // Use explicit override when provided; fall back to model-name auto-detect.
     const useThink = thinkOverride !== undefined ? thinkOverride : isThinkingModel(name);
     const target = resolveOllamaTarget(name);
+    const bare = name.replace(/^ollama:/i, '').toLowerCase();
+    const think = OLLAMA_THINK_LEVELS.find(([pattern]) => pattern.test(bare))?.[1] ?? true;
     return new ChatOllama({
       model: target.model,
       ...opts,
-      ...(useThink ? { think: true } : {}),
+      // @langchain/ollama types `think` as boolean but forwards it unchanged, and Ollama accepts level names.
+      ...(useThink ? { think: think as boolean } : {}),
       ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
       ...(target.headers ? { headers: target.headers } : {}),
     });
