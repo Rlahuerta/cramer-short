@@ -34,15 +34,18 @@ const BTC_14D_ABSTAIN_REASON =
 // Deterministic lock for the current BTC replay + price fixtures, not a claim of broad live accuracy.
 // Refreshed after the Markov/Python mirror parity update shifted deterministic
 // BTC fixture confidence/HOLD counts while preserving the live-policy lift.
+// Refreshed again 2026-11-22: since the break-significance gate (83992ca) no structural break fires on this
+// fixture (was 49-85 per horizon), and directional accuracy now scores traded steps only (f40143d); this case had
+// not run in any tier until integrationIt cases in ordinary test files joined test:integration.
 const BTC_FIXTURE_BASELINE = {
   '1d': {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 28,
-      directionalAccuracy: 0.6145833333333334,
-      brierScore: 0.2550127431393302,
-      structuralBreakCount: 72,
+      abstainCount: 39,
+      directionalAccuracy: 0.5087719298245614,
+      brierScore: 0.25608100871354733,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -71,10 +74,10 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 29,
-      directionalAccuracy: 0.65625,
-      brierScore: 0.25477609958328445,
-      structuralBreakCount: 50,
+      abstainCount: 33,
+      directionalAccuracy: 0.5396825396825397,
+      brierScore: 0.2565592337955964,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -103,10 +106,10 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 24,
-      directionalAccuracy: 0.59375,
-      brierScore: 0.2637207940101452,
-      structuralBreakCount: 50,
+      abstainCount: 29,
+      directionalAccuracy: 0.5522388059701493,
+      brierScore: 0.2593818993841678,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -135,10 +138,10 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 95,
       tradedCount: null,
-      abstainCount: 17,
-      directionalAccuracy: 0.5578947368421052,
-      brierScore: 0.256354982659173,
-      structuralBreakCount: 49,
+      abstainCount: 24,
+      directionalAccuracy: 0.5633802816901409,
+      brierScore: 0.25446851842771256,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -167,10 +170,10 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 93,
       tradedCount: null,
-      abstainCount: 13,
-      directionalAccuracy: 0.5053763440860215,
-      brierScore: 0.26736459290288817,
-      structuralBreakCount: 85,
+      abstainCount: 21,
+      directionalAccuracy: 0.5138888888888888,
+      brierScore: 0.2567091626052878,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -530,10 +533,12 @@ describe('combined short-horizon benchmark', () => {
     ).length;
 
     expect(naiveOneDay.steps.length).toBe(122);
-    expect(naiveHoldCount).toBe(34);
-    expect(naiveBreakCount).toBe(120);
+    expect(naiveHoldCount).toBe(39);
+    expect(naiveBreakCount).toBe(8);
     expect(report.horizons['1d'].markovOnly.observationCount).toBeLessThan(naiveOneDay.steps.length);
-    expect(report.horizons['1d'].markovOnly.abstainCount).toBeLessThan(naiveHoldCount);
+    // Since 83992ca the live policy no longer lowers 1d abstentions on this fixture (39 vs 39); it still
+    // detects fewer breaks than the naive config (0 vs 8), which is what shows the policy is applied.
+    expect(report.horizons['1d'].markovOnly.abstainCount).toBeLessThanOrEqual(naiveHoldCount);
     expect(report.horizons['1d'].markovOnly.structuralBreakCount).toBeLessThan(naiveBreakCount);
     expect(report.horizons['7d'].combinedArbitrated.pendingReasons).toEqual([BTC_7D_ABSTAIN_REASON]);
     expect(report.horizons['14d'].combinedArbitrated.pendingReasons).toEqual([BTC_14D_ABSTAIN_REASON]);
