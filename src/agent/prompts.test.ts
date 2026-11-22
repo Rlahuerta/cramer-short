@@ -239,6 +239,18 @@ describe('buildIterationPrompt', () => {
     expect(prompt).not.toContain('Preserve that 5-part bucket granularity');
   });
 
+  it('keeps the distribution guidance for a successful markov payload when another one abstained', () => {
+    const ok = '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"scenarios":{"buckets":[]}}}}';
+    const abstain = '{"data":{"_tool":"markov_distribution","status":"abstain","canonical":{"scenarios":null}}}';
+    for (const payloads of [[ok, abstain], [abstain, ok]]) {
+      const results = payloads.map((p, i) => `### markov_distribution(ticker=${i === 0 ? 'BTC' : 'ETH'}-USD)\n${p}`).join('\n');
+      const prompt = buildIterationPrompt('Show the BTC-USD and ETH-USD 7-day distributions in 10 buckets', results);
+      expect(prompt).toContain('Use the reported scenario bucket probabilities');
+      expect(prompt).toContain('Preserve that 10-part bucket granularity');
+      expect(prompt).toContain('markov_distribution explicitly abstained');
+    }
+  });
+
   it('injects mixed-evidence guard when BTC short-horizon Markov and Polymarket disagree', () => {
     const results = [
       '### markov_distribution(ticker=BTC-USD)',

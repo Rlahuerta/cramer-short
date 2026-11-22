@@ -563,8 +563,10 @@ IMPORTANT: One or more data tools returned an error or empty result. Per your Fi
   const hasCanonicalMarkovOutput = /"_tool"\s*:\s*"markov_distribution"/.test(fullToolResults);
   const hasAbstainingMarkovOutput =
     hasCanonicalMarkovOutput && /"status"\s*:\s*"abstain"/.test(fullToolResults);
-  // An abstained payload carries diagnostics but no scenario distribution to use or bucket.
-  const hasMarkovDistribution = hasCanonicalMarkovOutput && !hasAbstainingMarkovOutput;
+  // An abstained payload carries diagnostics but no scenario distribution to use or bucket, so the
+  // guidance needs at least one payload whose own status (the first after its _tool tag) is "ok".
+  const hasMarkovDistribution =
+    /"_tool"\s*:\s*"markov_distribution"(?:(?!"status"\s*:)[\s\S])*?"status"\s*:\s*"ok"/.test(fullToolResults);
   if (hasCanonicalMarkovOutput) {
     prompt += `
 
