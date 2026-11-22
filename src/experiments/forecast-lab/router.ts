@@ -40,6 +40,13 @@ function containsWholeTerm(text: string, term: string): boolean {
   return new RegExp(`(?<![a-z0-9])${escaped}(?:e?s)?(?![a-z0-9])`).test(text);
 }
 
+// Improvement cues may be inflected or prefixed ("improved", "fixes", "recalibrated", "retune"),
+// but "fixed income" is an asset class, not a cue.
+function matchesImprovementCue(normalizedQuery: string, term: string): boolean {
+  const query = normalizedQuery.replace(/(?<![a-z0-9])fixed income(?![a-z0-9])/g, ' ');
+  return new RegExp(`(?<![a-z0-9])(?:re)?${term}(?:e?[sd])?(?![a-z0-9])`).test(query);
+}
+
 function includesTerm(rawQuery: string, normalizedQuery: string, term: string): boolean {
   const rawTerm = term.trim().toLowerCase();
   if (rawTerm.length === 0) {
@@ -98,9 +105,7 @@ function scoreProfile(
 export function routeForecastLabQuery(query: string): ForecastLabQueryRoute {
   const rawQuery = query.trim().toLowerCase();
   const normalizedQuery = normalizeForContainment(query);
-  const matchedImprovementTerms = IMPROVEMENT_TERMS.filter((term) =>
-    includesTerm(rawQuery, normalizedQuery, term),
-  );
+  const matchedImprovementTerms = IMPROVEMENT_TERMS.filter((term) => matchesImprovementCue(normalizedQuery, term));
 
   if (matchedImprovementTerms.length === 0) {
     return {
