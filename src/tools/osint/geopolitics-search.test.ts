@@ -65,6 +65,15 @@ describe('detectCategories', () => {
     expect(detectCategories('The senator said computing costs will rise')).toEqual([]);
   });
 
+  test('reads keywords inside camel-case hashtags', () => {
+    expect(detectCategories('#StandWithUkraine rally')).toContain('ukraine-russia');
+    expect(detectCategories('#FreeIran protests')).toContain('iran');
+    expect(detectCategories('PrayForGaza')).toContain('middle-east');
+    expect(detectCategories('antiNATO sentiment')).toContain('ukraine-russia');
+    // A camel-case brand that is itself a keyword still matches whole.
+    expect(detectCategories('TikTok ban talks resume')).toContain('us-china-trade');
+  });
+
   test('still reads inflected forms of a keyword (demonyms, plurals, possessives)', () => {
     expect(detectCategories('Russian troops advance')).toContain('ukraine-russia');
     expect(detectCategories("NATO's eastern flank")).toContain('ukraine-russia');
