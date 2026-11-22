@@ -726,6 +726,36 @@ describe('Yahoo and Tavily fallbacks honour report_period bounds', () => {
       expect(queryOf()).toContain('2018 2019 2020');
     });
 
+    const searchFor = async (window: Record<string, string>) => {
+      mockFdEmpty('balance_sheets');
+      mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
+      await getBalanceSheets.invoke({ ...input, ...window });
+      return queryOf();
+    };
+
+    test('an open-ended window searches the recent years up to now', async () => {
+      const year = new Date().getUTCFullYear();
+      const query = await searchFor({ report_period_gte: `${year - 5}-06-01` });
+      expect(query).toContain([year - 4, year - 3, year - 2, year - 1, year].join(' '));
+    });
+
+    test('a strict bound leaves out its own boundary year', async () => {
+      const before2024 = await searchFor({ report_period_lt: '2024-01-01' });
+      expect(before2024).toContain('2022 2023');
+      expect(before2024).not.toContain('2024');
+    });
+
+    test('strict bounds on both sides keep only the years between them', async () => {
+      const query = await searchFor({ report_period_gt: '2018-12-31', report_period_lt: '2020-01-01' });
+      expect(query).toMatch(/ 2019$/);
+    });
+
+    test('a window longer than five years keeps the newest five', async () => {
+      const query = await searchFor({ report_period_gte: '2012-01-01', report_period_lte: '2024-12-31' });
+      expect(query).toContain('2020 2021 2022 2023 2024');
+      expect(query).not.toContain('2016');
+    });
+
     test('without bounds the default years are kept', async () => {
       mockFdEmpty('balance_sheets');
       mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());

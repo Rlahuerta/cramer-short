@@ -160,17 +160,24 @@ async function tryFmp(
 }
 
 /**
- * The years a web search should target: each year of the requested window (at most five),
- * or the recent default when no usable window is given. Web results are unstructured, so the
- * window can only steer the search, not filter what comes back.
+ * The years a web search should target: the years of the requested window, newest five at most.
+ * A strict bound leaves out its own day (gt 2018-12-31 starts in 2019, lt 2024-01-01 ends in 2023),
+ * an open end runs to the current year and an open start covers the two latest years. With no usable
+ * window it keeps the recent default. Web results are unstructured, so the window can only steer the
+ * search, not filter what comes back.
  */
 function searchYears(bounds?: ReportPeriodBounds): string {
-  const from = Number((bounds?.report_period_gte || bounds?.report_period_gt)?.slice(0, 4));
-  const to = Number((bounds?.report_period_lte || bounds?.report_period_lt)?.slice(0, 4));
-  const start = Number.isInteger(from) ? from : to;
-  const end = Number.isInteger(to) ? to : from;
-  if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) return '2024 2023';
-  return Array.from({ length: Math.min(end - start, 4) + 1 }, (_, i) => start + i).join(' ');
+  const yearOf = (day: string | undefined, shiftDays: number): number | undefined => {
+    const ms = day ? Date.parse(`${day.slice(0, 10)}T00:00:00Z`) : Number.NaN;
+    return Number.isNaN(ms) ? undefined : new Date(ms + shiftDays * 86_400_000).getUTCFullYear();
+  };
+  const from = yearOf(bounds?.report_period_gte, 0) ?? yearOf(bounds?.report_period_gt, 1);
+  const to = yearOf(bounds?.report_period_lte, 0) ?? yearOf(bounds?.report_period_lt, -1);
+  if (from === undefined && to === undefined) return '2024 2023';
+  const end = to ?? new Date().getUTCFullYear();
+  const start = Math.max(from ?? end - 1, end - 4);
+  if (end < start) return '2024 2023';
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i).join(' ');
 }
 
 /**
