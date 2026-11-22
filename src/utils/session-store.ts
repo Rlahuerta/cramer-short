@@ -83,16 +83,24 @@ async function ensureSessionsDir(baseDir: string): Promise<void> {
   }
 }
 
-async function readIndex(baseDir: string): Promise<SessionIndex> {
+async function readIndex(baseDir: string, { forWrite = false } = {}): Promise<SessionIndex> {
   const path = indexPath(baseDir);
   if (!existsSync(path)) return { sessions: [] };
+  // Keep an index we cannot use as a backup so the next writeIndex cannot overwrite it.
+  const moveAside = () => rename(path, `${path}.corrupt-${Date.now()}`).catch(() => { /* keep in place */ });
+  let raw: string;
   try {
-    return JSON.parse(await readFile(path, 'utf-8')) as SessionIndex;
+    raw = await readFile(path, 'utf-8');
   } catch {
-    // Keep the unreadable index as a backup so the next writeIndex cannot overwrite it.
-    try {
-      await rename(path, `${path}.corrupt-${Date.now()}`);
-    } catch { /* keep in place */ }
+    // A read error can be transient (EACCES, EIO, EMFILE): a listing just shows nothing this time,
+    // and only a writer, which would otherwise replace what it could not read, moves the index aside.
+    if (forWrite) await moveAside();
+    return { sessions: [] };
+  }
+  try {
+    return JSON.parse(raw) as SessionIndex;
+  } catch {
+    await moveAside();
     return { sessions: [] };
   }
 }
@@ -172,7 +180,7 @@ export async function createSession(
 
   // Update index
   await withIndexLock(baseDir, async () => {
-    const index = await readIndex(baseDir);
+    const index = await readIndex(baseDir, { forWrite: true });
     index.sessions.push({
       id,
       name: session.name,
@@ -201,7 +209,7 @@ export async function saveSession(
   await atomicWriteFile(filePath, JSON.stringify(session));
 
   await withIndexLock(baseDir, async () => {
-    const index = await readIndex(baseDir);
+    const index = await readIndex(baseDir, { forWrite: true });
     const idx = index.sessions.findIndex((s) => s.id === session.id);
     const existing = idx >= 0 ? index.sessions[idx] : undefined;
     const entry: SessionIndexEntry = {
