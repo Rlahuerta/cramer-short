@@ -4,8 +4,6 @@ type IsolatedTestSpec = {
   env?: Record<string, string>;
 };
 
-export {};
-
 const E2E_SPEC_OVERRIDES: Record<string, Omit<IsolatedTestSpec, 'file'>> = {
   'src/agent/agent.e2e.test.ts': { timeoutMs: 360_000 },
   'src/agent/bitmex-trade-prompt.e2e.test.ts': { timeoutMs: 600_000, env: { E2E_TIMEOUT_MS: '600000' } },
@@ -30,8 +28,16 @@ async function findSpecFiles(pattern: string): Promise<string[]> {
   return files;
 }
 
-async function getIntegrationSpecs(): Promise<IsolatedTestSpec[]> {
-  return (await findSpecFiles('src/**/*.integration.test.ts')).map((file) => ({ file }));
+export async function getIntegrationSpecs(): Promise<IsolatedTestSpec[]> {
+  const named = await findSpecFiles('src/**/*.integration.test.ts');
+  // integrationIt cases also live in ordinary *.test.ts files next to their unit tests. `bun test` skips them
+  // (no RUN_INTEGRATION), so run those files here too; a file that only imports integrationIt is left out.
+  const embedded: string[] = [];
+  for (const file of await findSpecFiles('src/**/*.test.ts')) {
+    if (file.endsWith('.integration.test.ts') || file.endsWith('.e2e.test.ts')) continue;
+    if (/\bintegrationIt(?:\.\w+)?\s*\(/.test(await Bun.file(file).text())) embedded.push(file);
+  }
+  return [...named, ...embedded].map((file) => ({ file }));
 }
 
 async function getE2ESpecs(): Promise<IsolatedTestSpec[]> {
@@ -52,39 +58,41 @@ async function resolveSpecs(mode: string): Promise<{ specs: IsolatedTestSpec[]; 
   throw new Error(`Unknown isolated test mode: ${mode}`);
 }
 
-const mode = process.argv[2];
-if (!mode) {
-  throw new Error('Usage: bun run scripts/run-isolated-bun-tests.ts <integration|e2e>');
-}
-
-const { specs, baseEnv } = await resolveSpecs(mode);
-if (specs.length === 0) {
-  console.error(`No ${mode} test files found.`);
-  process.exit(1);
-}
-
-for (const spec of specs) {
-  // Empty --path-ignore-patterns overrides bunfig.toml's tier exclusions for this explicit file.
-  const cmd = [process.execPath, 'test', '--path-ignore-patterns=', spec.file];
-  if (spec.timeoutMs) {
-    cmd.push('--timeout', String(spec.timeoutMs));
+if (import.meta.main) {
+  const mode = process.argv[2];
+  if (!mode) {
+    throw new Error('Usage: bun run scripts/run-isolated-bun-tests.ts <integration|e2e>');
   }
 
-  console.log(`\n=== ${spec.file} ===`);
-  const proc = Bun.spawn({
-    cmd,
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      ...baseEnv,
-      ...spec.env,
-    },
-    stdout: 'inherit',
-    stderr: 'inherit',
-  });
+  const { specs, baseEnv } = await resolveSpecs(mode);
+  if (specs.length === 0) {
+    console.error(`No ${mode} test files found.`);
+    process.exit(1);
+  }
 
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    process.exit(exitCode);
+  for (const spec of specs) {
+    // Empty --path-ignore-patterns overrides bunfig.toml's tier exclusions for this explicit file.
+    const cmd = [process.execPath, 'test', '--path-ignore-patterns=', spec.file];
+    if (spec.timeoutMs) {
+      cmd.push('--timeout', String(spec.timeoutMs));
+    }
+
+    console.log(`\n=== ${spec.file} ===`);
+    const proc = Bun.spawn({
+      cmd,
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        ...baseEnv,
+        ...spec.env,
+      },
+      stdout: 'inherit',
+      stderr: 'inherit',
+    });
+
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      process.exit(exitCode);
+    }
   }
 }
