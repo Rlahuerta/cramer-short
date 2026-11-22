@@ -47,15 +47,16 @@ export function inferTrajectoryRequest(query: string): boolean {
   return /trajectory|day[- ]by[- ]day|day by day|price path|daily forecast|daily projection/i.test(lower);
 }
 
-// "don't use the X skill" / "should I use the X skill?" is not a request for the skill. Only the clause
-// before the match counts, so a "not" or "?" elsewhere in the query does not cancel a genuine request.
-const NEGATION_OR_QUESTION = /\b(?:no|not|never|avoid|skip)\b|n['’]t\b|\b(?:should|shall|do|does|can|could|may|might|would)\s+(?:i|we)\b/i;
+// "don't use the X skill" / "should I use the X skill?" is not a request for the skill. Only a negation or
+// question that governs "use" itself counts ("never use", "do not use", "should we use"), so "skip the intro
+// and use the X skill", "don't forget to use…" or a "not" in another clause does not cancel a genuine request.
+const NEGATION_OR_QUESTION_BEFORE_USE =
+  /(?:\b(?:not|never)|n['’]t|\b(?:should|shall|do|does|can|could|may|might|would)\s+(?:i|we))(?:\s+ever)?\s*$/i;
 
 function findAffirmativeRequest(query: string, pattern: RegExp): RegExpMatchArray | undefined {
-  return [...query.matchAll(pattern)].find((match) => {
-    const clauseBefore = query.slice(0, match.index).split(/[.,;:!?\n]/).pop() ?? '';
-    return !NEGATION_OR_QUESTION.test(clauseBefore);
-  });
+  return [...query.matchAll(pattern)].find(
+    (match) => !NEGATION_OR_QUESTION_BEFORE_USE.test(query.slice(0, match.index)),
+  );
 }
 
 const PROBABILITY_ASSESSMENT_SKILL_REQUEST = /\buse the\s+probability_assessment\s+skill\b/gi;

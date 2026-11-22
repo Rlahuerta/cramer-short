@@ -44,21 +44,22 @@ export class LongTermChatHistory {
   async load(): Promise<void> {
     if (this.loaded) return;
 
-    try {
-      if (existsSync(this.filePath)) {
+    if (existsSync(this.filePath)) {
+      try {
         const content = await readFile(this.filePath, 'utf-8');
         const data: MessagesFile = JSON.parse(content);
         this.messages = data.messages || [];
-      } else {
-        // File doesn't exist, initialize with empty messages
+      } catch {
+        // If there's any error reading/parsing, start fresh in memory, but never save over the
+        // file we could not read (save() is skipped), so its history stays recoverable.
         this.messages = [];
-        await this.save();
+        this.readFailed = true;
       }
-    } catch {
-      // If there's any error reading/parsing, start fresh in memory, but never save over the
-      // file we could not read (save() is skipped), so its history stays recoverable.
+    } else {
+      // File doesn't exist, initialize with empty messages. A failed first save is just retried
+      // by the next one: there is nothing on disk to protect.
       this.messages = [];
-      this.readFailed = true;
+      await this.save().catch(() => {});
     }
 
     this.loaded = true;

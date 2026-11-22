@@ -19,6 +19,20 @@ from research.models.trajectory.driftvol import _mat_pow
 from research.models.trajectory.types import RegimeStats, TrajectoryPoint
 
 
+def widen_band_to_width(lower_cents: int, upper_cents: int, min_width_cents: int) -> tuple[int, int]:
+    """Widen a band given in whole cents to at least ``min_width_cents`` about its own midpoint,
+    keeping the lower bound at >= 1 cent. The width ends exactly at ``min_width_cents``: an odd
+    cent goes to the upper bound rather than to both, because an overshoot becomes the next day's
+    floor and compounds. Mirrors ``widenBandToWidth`` in
+    src/tools/finance/markov-distribution/confidence-intervals.ts."""
+    gap = min_width_cents - (upper_cents - lower_cents)
+    if gap <= 0:
+        return lower_cents, upper_cents
+    down = gap // 2
+    lower_shortfall = max(0, 1 - (lower_cents - down))
+    return lower_cents - down + lower_shortfall, upper_cents + gap - down + lower_shortfall
+
+
 def compute_trajectory(
     current_price: float,
     days: int,
@@ -171,17 +185,11 @@ def compute_trajectory(
             upper_bound = ci_mid + scaled_half
 
         # Sample percentiles of the shared paths can narrow day-over-day by sampling noise.
-        # Where that happens, widen the band symmetrically about its own midpoint to the
-        # previous day's final width (never moving the midpoint or pinning a single bound).
-        # Done in whole cents so the rounded output is exactly non-decreasing; the lower
-        # bound stays >= 0.01.
-        lower_cents = round(lower_bound * 100)
-        upper_cents = round(upper_bound * 100)
-        widen_cents = math.ceil((prev_width_cents - (upper_cents - lower_cents)) / 2)
-        if widen_cents > 0:
-            lower_shortfall = max(0, 1 - (lower_cents - widen_cents))
-            lower_cents += lower_shortfall - widen_cents
-            upper_cents += widen_cents + lower_shortfall
+        # Where that happens, widen the band about its own midpoint to the previous day's
+        # final width, in whole cents so the rounded output is exactly non-decreasing.
+        lower_cents, upper_cents = widen_band_to_width(
+            round(lower_bound * 100), round(upper_bound * 100), prev_width_cents
+        )
         prev_width_cents = upper_cents - lower_cents
 
         p_up = student_t_survival(current_price, current_price, mu_n, sigma_n, nu)

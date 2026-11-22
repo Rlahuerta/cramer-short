@@ -166,4 +166,36 @@ describe('forecast-lab router', () => {
       preferredProfileId: 'btc-markov-ultra-short-horizon',
     });
   });
+
+  it('matches past-tense and re- forms of improvement cues', () => {
+    for (const query of [
+      'Can the BTC Markov 1d/2d/3d forecast lane be improved?',
+      'The BTC Markov 1d/2d/3d forecast needs to be recalibrated.',
+      'Has the BTC Markov 1d/2d/3d lane been fixed yet?',
+      'The BTC Markov 1d/2d/3d lane should be retuned.',
+    ]) {
+      expect(routeForecastLabQuery(query)).toMatchObject({
+        intent: 'improvement',
+        preferredProfileId: 'btc-markov-ultra-short-horizon',
+      });
+    }
+  });
+
+  it('does not read "fixed income" as an improvement cue', () => {
+    for (const query of ['How did fixed income do this year?', 'What is the fixed-income outlook?']) {
+      expect(routeForecastLabQuery(query)).toMatchObject({ intent: 'none' });
+    }
+  });
+
+  it('routes BTCUSD and BTCUSDT pair spellings to the BTC profile', () => {
+    for (const query of [
+      'Improve the BTCUSD markov ultra-short horizon',
+      'Improve the BTCUSDT Markov ultra-short horizon',
+    ]) {
+      expect(routeForecastLabQuery(query)).toMatchObject({
+        intent: 'improvement',
+        preferredProfileId: 'btc-markov-ultra-short-horizon',
+      });
+    }
+  });
 });

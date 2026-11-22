@@ -1171,6 +1171,24 @@ describe('markov_distribution tool output envelope', () => {
         trustedAnchors: 0,
       })).toBe('Calibration: model-only (crypto bypass, no anchors)');
     });
+
+    it('does not claim "no anchors" when low-trust anchors were blended into a bypass run', () => {
+      expect(formatMarkovMixingLine({
+        commodityModelOnly: false,
+        cryptoModelOnly: true,
+        markovWeight: 1,
+        anchorWeight: 0,
+        trustedAnchors: 0,
+        lowTrustAnchors: 1,
+      })).toBe('Calibration: model-only (crypto bypass, no trusted anchors; 1 low-trust anchor blended at its strike)');
+      expect(formatMarkovMixingLine({
+        commodityModelOnly: true,
+        markovWeight: 1,
+        anchorWeight: 0,
+        trustedAnchors: 0,
+        lowTrustAnchors: 2,
+      })).toBe('Calibration: model-only (commodity bypass, no trusted anchors; 2 low-trust anchors blended at their strikes)');
+    });
   });
 
   describe('Phase 1: BTC zero-anchor crypto model-only path', () => {

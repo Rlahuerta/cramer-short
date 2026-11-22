@@ -456,6 +456,20 @@ export function computeHorizonDriftVol(
 }
 
 /**
+ * Widen a band given in whole cents to at least `minWidthCents` about its own midpoint, keeping
+ * the lower bound at >= 1 cent. The width ends exactly at `minWidthCents`: an odd cent goes to the
+ * upper bound rather than to both, because an overshoot becomes the next day's floor and compounds.
+ * Mirrors research/models/trajectory/simulation.py `widen_band_to_width`.
+ */
+export function widenBandToWidth(lowerCents: number, upperCents: number, minWidthCents: number): [number, number] {
+  const gap = minWidthCents - (upperCents - lowerCents);
+  if (gap <= 0) return [lowerCents, upperCents];
+  const down = Math.floor(gap / 2);
+  const lowerShortfall = Math.max(0, 1 - (lowerCents - down));
+  return [lowerCents - down + lowerShortfall, upperCents + gap - down + lowerShortfall];
+}
+
+/**
  * Compute a day-by-day price trajectory for days 1..N.
  *
  * Uses a SINGLE set of Monte Carlo random walks and samples the path at each day,
@@ -665,17 +679,13 @@ export function computeTrajectory(
     }
 
     // Sample percentiles of the shared paths can narrow day-over-day by sampling noise. Where
-    // that happens, widen the band symmetrically about its own midpoint to the previous day's
-    // final width (never moving the midpoint or pinning a single bound). Done in whole cents so
-    // the rounded output is exactly non-decreasing; the lower bound stays >= 0.01.
-    let lowerCents = Math.round(lowerBound * 100);
-    let upperCents = Math.round(upperBound * 100);
-    const widenCents = Math.ceil((prevWidthCents - (upperCents - lowerCents)) / 2);
-    if (widenCents > 0) {
-      const lowerShortfall = Math.max(0, 1 - (lowerCents - widenCents));
-      lowerCents += lowerShortfall - widenCents;
-      upperCents += widenCents + lowerShortfall;
-    }
+    // that happens, widen the band about its own midpoint to the previous day's final width, in
+    // whole cents so the rounded output is exactly non-decreasing.
+    const [lowerCents, upperCents] = widenBandToWidth(
+      Math.round(lowerBound * 100),
+      Math.round(upperBound * 100),
+      prevWidthCents,
+    );
     prevWidthCents = upperCents - lowerCents;
 
     // P(up) from Student-t survival at currentPrice

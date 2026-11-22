@@ -227,7 +227,7 @@ const MULTI_ASSET_MARKOV_SHORT_HORIZON_ROUTING = deepFreeze({
 const BTC_MARKOV_ULTRA_SHORT_HORIZON_ROUTING = deepFreeze({
   summary: 'Improve BTC ultra-short-horizon Markov behavior for 1d/2d/3d forecasts.',
   keywordGroups: [
-    { label: 'btc asset', terms: ['btc', 'bitcoin'] },
+    { label: 'btc asset', terms: ['btc', 'bitcoin', 'btcusd', 'btcusdt'] },
     {
       label: 'ultra-short horizons',
       terms: ['1d/2d/3d', '1d', '2d', '3d', 'ultra-short-horizon', 'ultra short horizon', 'ultra-short'],

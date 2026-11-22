@@ -5,7 +5,7 @@
 
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HistoryItem } from '../shared/history-types.js';
@@ -184,6 +184,26 @@ describe('createSession', () => {
       expect(await readFile(join(dir, backups[0]), 'utf-8')).toContain('OLD-SESSION-MARKER');
     });
   });
+
+  it.skipIf(process.getuid?.() === 0)(
+    'listSessions leaves an index it cannot read right now in place, so the sessions come back',
+    async () => {
+      await createSession('first query', tmpDir);
+      await createSession('second query', tmpDir);
+      const dir = join(tmpDir, '.cramer-short', 'sessions');
+      const index = join(dir, '_index.json');
+
+      await chmod(index, 0o000); // a transient read error (EACCES, EIO, EMFILE)
+      try {
+        expect(await listSessions(tmpDir)).toEqual([]);
+      } finally {
+        await chmod(index, 0o644).catch(() => {});
+      }
+
+      expect((await readdir(dir)).filter((f) => f.startsWith('_index.json.corrupt-'))).toEqual([]);
+      expect(await listSessions(tmpDir)).toHaveLength(2);
+    },
+  );
 });
 
 // ─── saveSession ─────────────────────────────────────────────────────────────

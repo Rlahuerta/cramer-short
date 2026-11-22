@@ -210,10 +210,12 @@ export function getMappingForCategory(category: EventCategory): EventMapping | u
  * Pure string matching — no LLM.
  */
 export function detectCategories(text: string): EventCategory[] {
-  const lower = text.toLowerCase();
+  // Also read camel-case hashtags as words (#StandWithUkraine), while keeping the plain text so a
+  // camel-case keyword such as "TikTok" still matches whole.
+  const views = [text.toLowerCase(), text.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()];
   const hits: EventCategory[] = [];
   for (const { category, pattern } of DETECTION_PATTERNS) {
-    if (pattern.test(lower)) hits.push(category);
+    if (views.some((view) => pattern.test(view))) hits.push(category);
   }
   return [...new Set(hits)];
 }

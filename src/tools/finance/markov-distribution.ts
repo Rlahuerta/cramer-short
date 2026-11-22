@@ -3008,13 +3008,15 @@ export function formatMarkovMixingLine(options: {
   markovWeight: number;
   anchorWeight: number;
   trustedAnchors: number;
+  lowTrustAnchors?: number;
 }): string {
-  if (options.commodityModelOnly) {
-    return 'Calibration: model-only (commodity bypass, no anchors)';
-  }
-
-  if (options.cryptoModelOnly) {
-    return 'Calibration: model-only (crypto bypass, no anchors)';
+  if (options.commodityModelOnly || options.cryptoModelOnly) {
+    const bypass = options.commodityModelOnly ? 'commodity' : 'crypto';
+    // A bypass means no trusted anchors; low-trust ones are still blended in at their own strikes.
+    const lowTrust = options.lowTrustAnchors ?? 0;
+    if (lowTrust === 0) return `Calibration: model-only (${bypass} bypass, no anchors)`;
+    const blended = lowTrust === 1 ? '1 low-trust anchor blended at its strike' : `${lowTrust} low-trust anchors blended at their strikes`;
+    return `Calibration: model-only (${bypass} bypass, no trusted anchors; ${blended})`;
   }
 
   const pct = (n: number) => (n * 100).toFixed(1);
@@ -5190,6 +5192,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       markovWeight: m.mixingTimeWeight,
       anchorWeight: 1 - m.mixingTimeWeight,
       trustedAnchors: m.polymarketAnchors,
+      lowTrustAnchors: m.anchorInspection.lowTrustAnchors,
     });
     const header = [
       '',

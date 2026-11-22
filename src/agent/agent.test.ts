@@ -1942,6 +1942,12 @@ describe('Agent', () => {
       expect(
         isCryptoForecastQuery('Should I use the probability_assessment skill for a BTC-USD 7-day price forecast?'),
       ).toBe(true);
+      // A negation of something else does not cancel the skill request.
+      expect(
+        isCryptoForecastQuery(
+          'Skip the Markov model and use the probability_assessment skill for a BTC-USD 7-day price forecast',
+        ),
+      ).toBe(false);
     });
 
     it('detects crypto forecast queries without matching explicit distribution requests', () => {
@@ -3178,6 +3184,20 @@ describe('Agent', () => {
       ).toBe('portfolio_risk');
     });
 
+    it('only lets a negation that governs "use" cancel the request', () => {
+      for (const query of [
+        'Skip the intro and use the portfolio_risk skill for AAPL',
+        "Don't forget to use the portfolio_risk skill for AAPL",
+        'Avoid speculation and use the portfolio_risk skill for AAPL',
+        'No need to explain - just use the portfolio_risk skill for AAPL',
+        'Do not hesitate to use the portfolio_risk skill for my AAPL position',
+      ]) {
+        expect(detectExplicitSkillRequest(query)).toBe('portfolio_risk');
+      }
+      expect(detectExplicitSkillRequest('Never use the portfolio_risk skill for this')).toBeNull();
+      expect(detectExplicitSkillRequest("I'd rather not use the portfolio_risk skill here")).toBeNull();
+    });
+
     it('accepts an explicitly requested skill as the first planning tool', () => {
       const response = new AIMessage({
         content: '',
@@ -3464,6 +3484,9 @@ describe('Agent', () => {
       it('keeps routing when the probability_assessment skill is negated or questioned', () => {
         expect(isNonCryptoForecastQuery("Don't use the probability_assessment skill for the NVDA outlook")).toBe(true);
         expect(isNonCryptoForecastQuery('Should I use the probability_assessment skill for the NVDA outlook?')).toBe(true);
+        expect(
+          isNonCryptoForecastQuery('Skip the Markov model and use the probability_assessment skill for the NVDA outlook'),
+        ).toBe(false);
       });
 
       it('rejects non-forecast non-crypto queries', () => {

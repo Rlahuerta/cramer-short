@@ -127,6 +127,21 @@ describe('LongTermChatHistory — a failed load never overwrites the file', () =
     }
     expect(readFileSync(file, 'utf-8')).toContain('OLD');
   });
+
+  it.skipIf(process.getuid?.() === 0)('a failed first save of a new history does not stop later saves', async () => {
+    const { mkdir } = await import('node:fs/promises');
+    const dir = join(tmpDir, '.cramer-short', 'messages');
+    await mkdir(dir, { recursive: true });
+    const h = makeHistory(tmpDir);
+    chmodSync(dir, 0o555); // the first save cannot write yet
+    try {
+      await h.load();
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+    await h.addUserMessage('new question');
+    expect(readFileSync(join(dir, 'chat_history.json'), 'utf-8')).toContain('new question');
+  });
 });
 
 // ============================================================================
