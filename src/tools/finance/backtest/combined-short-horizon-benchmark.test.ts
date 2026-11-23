@@ -37,14 +37,16 @@ const BTC_14D_ABSTAIN_REASON =
 // Refreshed again 2026-11-22: since the break-significance gate (83992ca) no structural break fires on this
 // fixture (was 49-85 per horizon), and directional accuracy now scores traded steps only (f40143d); this case had
 // not run in any tier until integrationIt cases in ordinary test files joined test:integration.
+// Refreshed 2026-11-23: the return-HMM fit budget went from 50 to 400 iterations, so the HMM overlay now applies on
+// these steps; Brier improves at every horizon (pooled live-config benchmark: -0.0021, 95% CI [-0.0029, -0.0013]).
 const BTC_FIXTURE_BASELINE = {
   '1d': {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 39,
-      directionalAccuracy: 0.5087719298245614,
-      brierScore: 0.25608100871354733,
+      abstainCount: 42,
+      directionalAccuracy: 0.5185185185185185,
+      brierScore: 0.2557203601232038,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -74,9 +76,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 33,
-      directionalAccuracy: 0.5396825396825397,
-      brierScore: 0.2565592337955964,
+      abstainCount: 35,
+      directionalAccuracy: 0.5573770491803278,
+      brierScore: 0.2551864645615971,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -106,9 +108,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 29,
-      directionalAccuracy: 0.5522388059701493,
-      brierScore: 0.2593818993841678,
+      abstainCount: 28,
+      directionalAccuracy: 0.5294117647058824,
+      brierScore: 0.25764120320931194,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -138,9 +140,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 95,
       tradedCount: null,
-      abstainCount: 24,
-      directionalAccuracy: 0.5633802816901409,
-      brierScore: 0.25446851842771256,
+      abstainCount: 15,
+      directionalAccuracy: 0.5375,
+      brierScore: 0.25386558303749585,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -170,9 +172,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 93,
       tradedCount: null,
-      abstainCount: 21,
-      directionalAccuracy: 0.5138888888888888,
-      brierScore: 0.2567091626052878,
+      abstainCount: 11,
+      directionalAccuracy: 0.5,
+      brierScore: 0.2549100748403252,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -533,12 +535,12 @@ describe('combined short-horizon benchmark', () => {
     ).length;
 
     expect(naiveOneDay.steps.length).toBe(122);
-    expect(naiveHoldCount).toBe(39);
+    expect(naiveHoldCount).toBe(52);
     expect(naiveBreakCount).toBe(8);
     expect(report.horizons['1d'].markovOnly.observationCount).toBeLessThan(naiveOneDay.steps.length);
-    // Since 83992ca the live policy no longer lowers 1d abstentions on this fixture (39 vs 39); it still
-    // detects fewer breaks than the naive config (0 vs 8), which is what shows the policy is applied.
-    expect(report.horizons['1d'].markovOnly.abstainCount).toBeLessThanOrEqual(naiveHoldCount);
+    // With the 400-iteration HMM budget (2026-11-23) the live policy lowers 1d abstentions again (42 vs 52);
+    // it also detects fewer breaks than the naive config (0 vs 8).
+    expect(report.horizons['1d'].markovOnly.abstainCount).toBeLessThan(naiveHoldCount);
     expect(report.horizons['1d'].markovOnly.structuralBreakCount).toBeLessThan(naiveBreakCount);
     expect(report.horizons['7d'].combinedArbitrated.pendingReasons).toEqual([BTC_7D_ABSTAIN_REASON]);
     expect(report.horizons['14d'].combinedArbitrated.pendingReasons).toEqual([BTC_14D_ABSTAIN_REASON]);

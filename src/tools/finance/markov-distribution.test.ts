@@ -2448,6 +2448,24 @@ describe('randomState makes the whole distribution reproducible', () => {
   });
 });
 
+describe('return-HMM iteration budget', () => {
+  it('fits a live-length window that Baum-Welch needs more than 50 iterations for', async () => {
+    const { readFileSync } = await import('fs');
+    const { baumWelch } = await import('./hmm.js');
+    const closes: number[] = JSON.parse(
+      readFileSync(new URL('./fixtures/backtest-prices.json', import.meta.url), 'utf-8'),
+    ).tickers.SPY.closes;
+    const window = closes.slice(82, 165); // 83 prices, the live equity window
+    const returns = window.slice(1).map((p, i) => (p - window[i]) / window[i]);
+    expect(baumWelch(returns, 3, 50, 1e-3).converged).toBe(false);
+
+    const result = await computeMarkovDistribution({
+      ticker: 'SPY', horizon: 7, currentPrice: window[window.length - 1], historicalPrices: window, polymarketMarkets: [],
+    });
+    expect(result.metadata.hmm?.converged).toBe(true);
+  });
+});
+
 describe('price input validation', () => {
   const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
   const run = (overrides: { currentPrice?: number; historicalPrices?: number[] }) =>

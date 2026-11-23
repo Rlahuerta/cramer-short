@@ -3735,7 +3735,9 @@ export async function computeMarkovDistribution(params: {
   if (returns.length >= HMM_MIN_OBS) {
     try {
       // Primary: return HMM (directional signal)
-      const hmmResult = baumWelch(returns, 3, 50, 1e-3);
+      // 400 iterations: on live-length windows 50 converged for 0% of BTC and ~6% of GLD fits, which left the
+      // overlay off; 400 converges them all (live-config benchmark, 2026-11-23).
+      const hmmResult = baumWelch(returns, 3, 400, 1e-3);
       if (!hmmResult.converged) {
         hmmMeta = {
           converged: false,

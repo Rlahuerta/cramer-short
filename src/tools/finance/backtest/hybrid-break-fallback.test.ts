@@ -378,10 +378,11 @@ describe('hybrid break fallback', () => {
     // Refreshed 2026-11-22: since the break-significance gate (83992ca) breaks almost never fire on the fixture,
     // so the hybrid barely differs from the control (break+trending delta 0, Brier delta ~-2e-6); this case had
     // not run in any tier until integrationIt cases in ordinary test files joined test:integration.
+    // Refreshed 2026-11-23: the 400-iteration return-HMM budget moves the Brier delta to ~-2.9e-7.
     const bestHybrid = artifact.candidates.find(candidate => candidate.candidateId === 'HYB_L025_M050_H075_lambda025');
     expect(bestHybrid).toBeDefined();
     expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeCloseTo(0, 10);
-    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeCloseTo(-0.000002015790233594883, 10);
+    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeCloseTo(-2.88690099797817e-7, 10);
     expect(bestHybrid!.passesThresholds).toBe(false);
     expect(bestHybrid!.failureReasons.some(reason => reason.includes('break+trending gain'))).toBe(true);
 
