@@ -2077,6 +2077,12 @@ export function isCompositeValidationAcceptable(options: {
   predictionConfidence: number;
   goodnessOfFit: Pick<GoodnessOfFitResult, 'passes'> | null;
 }): boolean {
+  // Outside crypto, R² alone does not reject a forecast: on the live-config benchmark and 8 held-out tickers,
+  // forecasts that failed the R² gate were no worse than those that passed (Brier and traded accuracy,
+  // 2026-11-23). Validation must still be computable.
+  if (options.assetType !== 'crypto') {
+    return typeof options.outOfSampleR2 === 'number' && Number.isFinite(options.outOfSampleR2);
+  }
   const hasPositiveR2 =
     typeof options.outOfSampleR2 === 'number'
     && Number.isFinite(options.outOfSampleR2)
@@ -5031,15 +5037,14 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       goodnessOfFit: m.goodnessOfFit,
     });
 
-    const COMMODITY_WRAPPER_MIN_R2 = -0.02;
     const COMMODITY_WRAPPER_MIN_CONFIDENCE = 0.15;
     const assetProfile = getAssetProfile(result.ticker);
+    // No R² floor: R² did not predict commodity forecast quality (see isCompositeValidationAcceptable).
     const commodityModelOnly =
       assetProfile.type === 'commodity' &&
       m.anchorCoverage.trustedAnchors === 0 &&
       typeof m.outOfSampleR2 === 'number' &&
       Number.isFinite(m.outOfSampleR2) &&
-      m.outOfSampleR2 >= COMMODITY_WRAPPER_MIN_R2 &&
       result.predictionConfidence >= COMMODITY_WRAPPER_MIN_CONFIDENCE;
 
     const CRYPTO_MODEL_ONLY_MIN_R2 = -0.03;

@@ -136,6 +136,9 @@ def evaluate_validation_acceptability(
 ) -> bool:
     """Check whether Markov forecast passes out-of-sample validation."""
     has_r2 = out_of_sample_r2 is not None and math.isfinite(out_of_sample_r2)
+    # Mirrors markov-distribution.ts: outside crypto, R² alone does not reject a forecast.
+    if asset_type != "crypto":
+        return has_r2
     has_positive_r2 = has_r2 and out_of_sample_r2 >= -0.01  # type: ignore[operator]
 
     crypto_short = asset_type == "crypto" and 1 <= horizon <= 14
@@ -170,6 +173,9 @@ def is_composite_validation_acceptable(
 ) -> bool:
     """Full composite validation gate."""
     has_r2 = out_of_sample_r2 is not None and math.isfinite(out_of_sample_r2)
+    # Mirrors markov-distribution.ts: outside crypto, R² alone does not reject a forecast.
+    if asset_type != "crypto":
+        return has_r2
     has_positive_r2 = has_r2 and out_of_sample_r2 >= -0.01  # type: ignore[operator]
     if has_positive_r2:
         return True
@@ -219,7 +225,6 @@ def evaluate_model_only_bypass(
 ) -> dict[str, bool]:
     """Determine whether commodity or crypto model-only emission bypass applies."""
     from research.models.markov.core import (
-        COMMODITY_MODEL_ONLY_MIN_R2,
         COMMODITY_MODEL_ONLY_MIN_CONFIDENCE,
         CRYPTO_MODEL_ONLY_MIN_R2,
         CRYPTO_MODEL_ONLY_MIN_CONFIDENCE,
@@ -230,8 +235,7 @@ def evaluate_model_only_bypass(
     commodity_model_only = (
         asset_type == "commodity"
         and trusted_anchors == 0
-        and has_r2
-        and out_of_sample_r2 >= COMMODITY_MODEL_ONLY_MIN_R2  # type: ignore[operator]
+        and has_r2  # no R² floor (mirrors markov-distribution.ts)
         and prediction_confidence >= COMMODITY_MODEL_ONLY_MIN_CONFIDENCE
     )
 

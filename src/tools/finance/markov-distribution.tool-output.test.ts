@@ -2920,7 +2920,7 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.canonical.diagnostics.trustedAnchors).toBe(0);
     });
 
-    it('abstains for commodity when R² is too low', async () => {
+    it('emits a commodity model-only forecast even when R² is low (R² alone does not abstain)', async () => {
       mock.module('./polymarket.js', () => ({
         ...realPolymarketModule,
         fetchPolymarketMarkets: async () => [],
@@ -2949,8 +2949,9 @@ describe('markov_distribution tool output envelope', () => {
       });
 
       const parsed = JSON.parse(result);
-      expect(parsed.data.status).toBe('abstain');
-      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+      expect(parsed.data.canonical.diagnostics.calibrationMode).toBe('model_only');
     });
 
     it('abstains for commodity when confidence is too low', async () => {

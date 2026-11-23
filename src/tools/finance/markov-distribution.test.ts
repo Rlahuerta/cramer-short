@@ -925,6 +925,21 @@ describe('R²_OS validation threshold', () => {
     expect(await r2osWith(r => 8 * r)).toBe(await r2osWith(r => r));
   });
 
+  it('does not reject a non-crypto forecast on R² alone (the gate did not predict forecast quality)', () => {
+    const base = {
+      horizon: 7,
+      validationMetric: 'daily_return' as const,
+      anchorCoverage: { quality: 'good' as const, trustedAnchors: 2 },
+      predictionConfidence: 0.3,
+      goodnessOfFit: { passes: true },
+    };
+    expect(isCompositeValidationAcceptable({ ...base, assetType: 'equity', outOfSampleR2: -0.5 })).toBe(true);
+    expect(isCompositeValidationAcceptable({ ...base, assetType: 'commodity', outOfSampleR2: -0.5 })).toBe(true);
+    // Validation that could not be computed still fails, and crypto keeps its R² thresholds.
+    expect(isCompositeValidationAcceptable({ ...base, assetType: 'equity', outOfSampleR2: null })).toBe(false);
+    expect(isCompositeValidationAcceptable({ ...base, assetType: 'crypto', outOfSampleR2: -0.5 })).toBe(false);
+  });
+
   it('Phase 3: non-crypto validation acceptable with R² = -0.003', () => {
     const r2os = -0.003;
     const validationAcceptable = r2os >= -0.01;

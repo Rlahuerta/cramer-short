@@ -811,9 +811,15 @@ class TestEvaluateValidationAcceptability:
         from research.models.markov import evaluate_validation_acceptability
         assert evaluate_validation_acceptability(0.05, "equity", 7, "daily_return", "good", 3) is True
 
-    def test_negative_r2_below_threshold_rejected(self):
-        from research.models.markov import evaluate_validation_acceptability
-        assert evaluate_validation_acceptability(-0.02, "equity", 7, "daily_return", "good", 3) is False
+    def test_non_crypto_is_not_rejected_on_r2_alone(self):
+        # Mirrors markov-distribution.ts: R² did not separate better from worse non-crypto forecasts.
+        from research.models.markov import evaluate_validation_acceptability, is_composite_validation_acceptable
+        assert evaluate_validation_acceptability(-0.5, "equity", 7, "daily_return", "good", 3) is True
+        assert evaluate_validation_acceptability(-0.5, "commodity", 7, "daily_return", "good", 3) is True
+        assert evaluate_validation_acceptability(-0.02, "crypto", 7, "daily_return", "good", 3) is False
+        assert is_composite_validation_acceptable(-0.5, "equity", 7, "daily_return", "good", 2, 0.3, True) is True
+        assert is_composite_validation_acceptable(None, "equity", 7, "daily_return", "good", 2, 0.3, True) is False
+        assert is_composite_validation_acceptable(-0.5, "crypto", 7, "daily_return", "good", 2, 0.3, True) is False
 
     def test_crypto_good_anchors_r2_neutral(self):
         from research.models.markov import evaluate_validation_acceptability
@@ -857,10 +863,11 @@ class TestEvaluateModelOnlyBypass:
         assert result["commodity_model_only"] is False
         assert result["crypto_model_only"] is True
 
-    def test_commodity_below_r2_rejected(self):
+    def test_commodity_low_r2_still_bypasses(self):
+        # Mirrors markov-distribution.ts: commodity model-only emission no longer has an R² floor.
         from research.models.markov import evaluate_model_only_bypass
-        result = evaluate_model_only_bypass("commodity", 7, 0, -0.03, 0.20)
-        assert result["commodity_model_only"] is False
+        assert evaluate_model_only_bypass("commodity", 7, 0, -0.5, 0.20)["commodity_model_only"] is True
+        assert evaluate_model_only_bypass("commodity", 7, 0, None, 0.20)["commodity_model_only"] is False
 
     def test_commodity_below_confidence_rejected(self):
         from research.models.markov import evaluate_model_only_bypass
