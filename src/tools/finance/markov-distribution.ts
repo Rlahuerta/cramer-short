@@ -3737,7 +3737,9 @@ export async function computeMarkovDistribution(params: {
       // Primary: return HMM (directional signal)
       // 400 iterations: on live-length windows 50 converged for 0% of BTC and ~6% of GLD fits, which left the
       // overlay off; 400 converges them all (live-config benchmark, 2026-11-23).
-      const hmmResult = baumWelch(returns, 3, 400, 1e-3);
+      // Log returns, so the state means are the log drift the override feeds (simple returns overstate it by ~σ²/2).
+      const logReturns = returns.map(r => Math.log1p(r));
+      const hmmResult = baumWelch(logReturns, 3, 400, 1e-3);
       if (!hmmResult.converged) {
         hmmMeta = {
           converged: false,
@@ -3748,9 +3750,9 @@ export async function computeMarkovDistribution(params: {
         };
       } else {
         const hmmParams = enableStudentTEmission === true
-          ? attachStudentTPredictiveEmissions(returns, hmmResult.params)
+          ? attachStudentTPredictiveEmissions(logReturns, hmmResult.params)
           : hmmResult.params;
-        const hmmForecast = hmmPredict(returns, hmmParams, horizon);
+        const hmmForecast = hmmPredict(logReturns, hmmParams, horizon);
         const posteriorEntropy = computeNormalizedEntropy(hmmForecast.currentStateProbabilities);
         const forecastEntropy = computeNormalizedEntropy(hmmForecast.forecastProbabilities);
         const effectivePosteriorEntropy = Math.max(posteriorEntropy, forecastEntropy);
