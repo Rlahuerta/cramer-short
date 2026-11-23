@@ -1984,10 +1984,15 @@ function computeValidationR2OS(params: {
   horizon: number;
   regimeSeq: RegimeState[];
   logReturns: number[];
+  /** Simple daily returns and the regime threshold multiplier, to classify each training slice on its own. */
+  returns: number[];
+  returnThresholdMultiplier: number;
   assetProfile: AssetProfile;
   transitionDecayOverride?: number;
 }): { r2os: number | null; validationMetric: 'daily_return' | 'horizon_return' } {
-  const { assetType, horizon, regimeSeq, logReturns, assetProfile, transitionDecayOverride } = params;
+  const {
+    assetType, horizon, regimeSeq, logReturns, returns, returnThresholdMultiplier, assetProfile, transitionDecayOverride,
+  } = params;
   const effectiveDecayRate = transitionDecayOverride ?? resolveForecastLabMarkovParameterDefaults().transitionDecay;
 
   const useHorizonValidator = assetType === 'crypto' && horizon >= 7 && horizon <= 14;
@@ -2000,7 +2005,10 @@ function computeValidationR2OS(params: {
       const startIdx = logReturns.length - heldoutDays;
 
       for (let start = startIdx; start + horizon <= logReturns.length; start += horizon) {
-        const trainStates = regimeSeq.slice(0, start);
+        // Thresholds from the training slice only: the full-window regimeSeq would leak the held-out days.
+        const trainSimpleReturns = returns.slice(0, start);
+        const { returnThreshold } = computeAdaptiveThresholds(trainSimpleReturns, returnThresholdMultiplier);
+        const trainStates = trainSimpleReturns.map(r => classifyRegimeState(r, Math.abs(r), returnThreshold));
         const trainLogReturns = logReturns.slice(0, start);
         if (trainStates.length < 20 || trainLogReturns.length < 20) continue;
 
@@ -4332,6 +4340,8 @@ export async function computeMarkovDistribution(params: {
     horizon,
     regimeSeq,
     logReturns,
+    returns,
+    returnThresholdMultiplier: effectiveReturnThresholdMultiplier,
     assetProfile,
     transitionDecayOverride,
   });
