@@ -475,10 +475,21 @@ describe('applyCryptoTerminalAnchorFallback', () => {
     // April 17 endDate → daysUntil = (Apr 17 - Apr 15) = 2 days
     // horizon=14 → |2 - 14| = 12 days offset
     // Beyond tolerance of 2 → discount = 1 - 0.03*(12-2) = 1 - 0.30 = 0.70
-    // adjusted probability = 0.50 * 0.95 * 0.70 ≈ 0.3325
+    // which lowers the trust weight; the probability stays the extracted 0.50 * 0.95 = 0.475
     expect(result[0].probability).toBeLessThan(0.5);
     expect(result[0].probability).toBeGreaterThan(0);
     expect(result[0].trustScore).toBe('low');
+  });
+
+  it("keeps an off-horizon anchor's probability and discounts only its trust", () => {
+    // Multiplying P(above) by the date-gap discount pulled every off-horizon anchor toward 0 (a bearish bias).
+    const market = { question: 'Will the price of Bitcoin be above $84000 on April 17?', probability: 0.80, volume: 30000, createdAt: REF_TIME - 5 * DAY_MS, endDate: '2025-04-17' };
+    const [extracted] = extractPriceThresholds([market], { ticker: 'BTC-USD', horizonDays: 14, referenceTimeMs: REF_TIME });
+
+    const [fallback] = applyCryptoTerminalAnchorFallback([market], [], 'BTC-USD', 14, REF_TIME);
+
+    expect(fallback.probability).toBe(extracted.probability);
+    expect(fallback.trustWeight!).toBeLessThan(extracted.trustWeight!);
   });
 
   it('keeps a mature short-horizon crypto fallback trusted when it is only one day beyond tolerance', () => {

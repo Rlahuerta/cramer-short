@@ -1297,7 +1297,8 @@ interface FallbackMarket {
  * usable terminal-threshold markets ("above $X on April 17").
  *
  * Each fallback anchor receives a date-gap discount that reduces its
- * probability proportional to how far its endDate is from the target horizon:
+ * trust weight (not its probability, which would bias P(above) toward 0)
+ * proportional to how far its endDate is from the target horizon:
  *   discount = 1 − 0.03 × max(0, |daysOffset| − 2)
  * clamped to [0.5, 1.0].
  *
@@ -1356,7 +1357,6 @@ export function applyCryptoTerminalAnchorFallback(
       MIN_DISCOUNT,
       1 - DISCOUNT_PER_DAY * (daysOffset - HORIZON_TOLERANCE_DAYS),
     );
-    const adjustedProbability = Math.max(0, Math.min(1, anchor.probability * discount));
     const discountedTrustWeight = getAnchorTrustWeight(anchor) * discount;
     const retainsHighTrust =
       anchor.trustScore === 'high'
@@ -1365,7 +1365,6 @@ export function applyCryptoTerminalAnchorFallback(
 
     return {
       ...anchor,
-      probability: adjustedProbability,
       trustScore: retainsHighTrust ? 'high' : 'low',
       trustWeight: retainsHighTrust ? discountedTrustWeight : Math.min(discountedTrustWeight, 0.49),
     } satisfies PriceThreshold;
