@@ -178,7 +178,8 @@ def interpolate_distribution(
             anchor_weight = (1 - mix_weight) * float(anchor["distanceWeight"])
             probability = (1 - anchor_weight) * markov_est + anchor_weight * float(anchor["probability"])
             source = "markov" if anchor_weight < 0.05 else "polymarket" if anchor_weight > 0.5 else "blend"
-        elif anchor is not None and anchor.get("trustScore") == "low":
+        elif anchor is not None and anchor.get("trustScore") == "low" and anchor.get("trustWeight") != 0:
+            # A zero-volume anchor (trustWeight 0) does not blend; an ungraded one keeps the half weight.
             anchor_weight = (1 - mix_weight) * 0.5 * float(anchor["distanceWeight"])
             probability = (1 - anchor_weight) * markov_est + anchor_weight * float(anchor["probability"])
             source = "blend"

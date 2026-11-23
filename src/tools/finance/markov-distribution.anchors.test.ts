@@ -557,6 +557,18 @@ describe('applyCryptoTerminalAnchorFallback', () => {
     expect(result[0].trustScore).toBe('low');
   });
 
+  it('grades a zero-volume market to weight 0 and leaves a market without volume ungraded', () => {
+    const market = { question: 'Will the price of Bitcoin be above $84000 on April 29?', probability: 0.50, createdAt: REF_TIME - 5 * DAY_MS, endDate: '2025-04-29' };
+    const options = { ticker: 'BTC-USD', horizonDays: 14, referenceTimeMs: REF_TIME };
+    const [zero] = extractPriceThresholds([{ ...market, volume: 0 }], options);
+    const [missing] = extractPriceThresholds([market], options);
+
+    expect(zero.trustScore).toBe('low');
+    expect(zero.trustWeight).toBe(0);
+    expect(missing.trustScore).toBe('low');
+    expect(missing.trustWeight).toBeUndefined();
+  });
+
   it('keeps undated BTC 30-day anchors at low trust even when mature', () => {
     const result = extractPriceThresholds([
       {

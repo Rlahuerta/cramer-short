@@ -1126,7 +1126,8 @@ function inspectAnchorCandidate(
       isBelow,
       probability: correctedProbability,
       trustScore,
-      trustWeight,
+      // A market without volume data is not graded: weight 0 means zero volume, which stops it blending.
+      ...(market.volume == null ? {} : { trustWeight }),
       source: 'polymarket',
       endDate,
     },

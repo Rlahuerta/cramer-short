@@ -880,8 +880,9 @@ export function interpolateDistribution(
       anchorW = (1 - mixWeight) * anchor.distanceWeight;
       probability = (1 - anchorW) * markovEst + anchorW * anchor.probability;
       source = anchorW < 0.05 ? 'markov' : anchorW > 0.5 ? 'polymarket' : 'blend';
-    } else if (anchor && anchor.trustScore === 'low') {
-      // Low-trust anchors: half nominal influence, further scaled by distance
+    } else if (anchor && anchor.trustScore === 'low' && anchor.trustWeight !== 0) {
+      // Low-trust anchors: half nominal influence, further scaled by distance. An anchor graded to weight 0
+      // (a market with zero volume) does not blend; one without a grade (unknown volume) still does.
       anchorW = (1 - mixWeight) * 0.5 * anchor.distanceWeight;
       probability = (1 - anchorW) * markovEst + anchorW * anchor.probability;
       source = 'blend';

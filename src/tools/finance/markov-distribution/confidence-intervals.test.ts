@@ -247,6 +247,17 @@ describe('interpolateDistribution — an anchor applies only at its own strike',
     expect(pooled).toEqual([]);
   });
 
+  it('ignores an anchor graded to zero trust weight (zero volume) and keeps the half weight when ungraded', () => {
+    const strike = 101.9;
+    const at = (probability: number, trustWeight?: number) =>
+      run([{ ...anchor(strike, probability), trustScore: 'low', trustWeight }]).find(pt => pt.price === strike)!;
+    expect(at(0.30, 0).source).toBe('markov');
+    expect(at(0.30, 0).probability).toBe(at(0.90, 0).probability);
+    // No trust weight (unknown volume, Kalshi-only or hand-built anchors): today's low-trust half weight.
+    expect(at(0.30).source).toBe('blend');
+    expect(at(0.30).probability).toBeLessThan(at(0.90).probability);
+  });
+
   it('still honours an anchor above the model exactly', () => {
     const withAnchor = run([anchor(103, 0.40)]);
     expect(Math.abs(withAnchor.find(pt => pt.price === 103)!.probability - 0.40)).toBeLessThan(0.01);
