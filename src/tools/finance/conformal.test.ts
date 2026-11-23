@@ -364,6 +364,19 @@ describe('ScoreAggregatedConformal — score-level aggregation', () => {
     expect(interval.radius).toBeLessThan(8);
   });
 
+  it('calibrates on the finite-sample conformal quantile, the ceil((n+1)(1-alpha))-th smallest score', () => {
+    const aggregated = new ScoreAggregatedConformal({ alpha: 0.1, minSamples: 5, calibrationWindow: 40 });
+    // 20 scores 2..21 (radius 1): ceil(21 * 0.9) = 19th smallest = 20; the plain ceil(n(1-alpha)) gave 19.
+    for (let residual = 2; residual <= 21; residual++) aggregated.record(100, 100 + residual, [1]);
+    expect(aggregated.wrap(100, [1]).multiplier).toBe(20);
+  });
+
+  it('uses the largest score when (n+1)(1-alpha) exceeds n', () => {
+    const aggregated = new ScoreAggregatedConformal({ alpha: 0.1, minSamples: 5, calibrationWindow: 40 });
+    for (let residual = 2; residual <= 6; residual++) aggregated.record(100, 100 + residual, [1]);
+    expect(aggregated.wrap(100, [1]).multiplier).toBe(6);
+  });
+
   it('resets its calibration history when the wrapped forecaster restarts', () => {
     const aggregated = new ScoreAggregatedConformal({ alpha: 0.1, minSamples: 2, calibrationWindow: 10 });
     aggregated.record(100, 103, [4, 8]);

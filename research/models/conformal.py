@@ -437,12 +437,13 @@ def _normalize_source_radii(source_radii: list[float]) -> list[float]:
 
 
 def _upper_quantile(values: list[float], quantile: float) -> float:
+    """Split-conformal quantile: the ceil((n+1)*q)-th smallest score, clamped to the largest."""
     if not values:
         return 0.0
     sorted_vals = sorted(values)
     clamped = min(1.0, max(0.0, quantile))
     index = min(
         len(sorted_vals) - 1,
-        max(0, int(math.ceil(len(sorted_vals) * clamped)) - 1),
+        max(0, int(math.ceil((len(sorted_vals) + 1) * clamped)) - 1),
     )
     return sorted_vals[index]

@@ -417,13 +417,18 @@ function normalizeSourceRadii(sourceRadii: readonly number[]): number[] {
   return sourceRadii.filter((radius) => Number.isFinite(radius) && radius > 0);
 }
 
+/**
+ * Split-conformal quantile: the ceil((n+1)·q)-th smallest score, which gives coverage ≥ q for n
+ * exchangeable scores. When (n+1)·q > n the exact quantile is +∞; this clamps to the largest score,
+ * so very small calibration sets under-cover slightly instead of returning an infinite interval.
+ */
 function upperQuantile(values: readonly number[], quantile: number): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const clampedQuantile = Math.min(1, Math.max(0, quantile));
   const index = Math.min(
     sorted.length - 1,
-    Math.max(0, Math.ceil(sorted.length * clampedQuantile) - 1),
+    Math.max(0, Math.ceil((sorted.length + 1) * clampedQuantile) - 1),
   );
   return sorted[index];
 }
