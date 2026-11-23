@@ -13,7 +13,7 @@ import numpy as np
 
 from research.models.markov.core import RegimeState
 from research.models.markov.forecast import _compute_horizon_drift_vol, _compute_terminal_state_weights
-from research.models.markov.regime import estimate_regime_stats
+from research.models.markov.regime import classify_regime_series, estimate_regime_stats
 from research.models.markov.transition import estimate_transition_matrix
 
 
@@ -44,8 +44,13 @@ def compute_validation_r2_os(
     log_returns: np.ndarray,
     max_daily_drift: float | None = None,
     transition_decay_override: float | None = None,
+    return_threshold_multiplier: float = 0.5,
 ) -> dict:
-    """Walk-forward excess R²: Markov R² minus historical-mean baseline R²."""
+    """Walk-forward excess R²: Markov R² minus historical-mean baseline R².
+
+    The horizon validator classifies each training slice with thresholds from that slice alone
+    (``return_threshold_multiplier``), so the held-out days do not leak into the training regimes.
+    """
     effective_decay = transition_decay_override if transition_decay_override is not None else 0.97
     returns = np.asarray(log_returns, dtype=float)
 
@@ -60,7 +65,7 @@ def compute_validation_r2_os(
             step = max(1, horizon)
 
             for start in range(start_idx, len(returns) - horizon + 1, step):
-                train_states = regime_seq[:start]
+                train_states = classify_regime_series(np.expm1(returns[:start]), return_threshold_multiplier)
                 train_returns = returns[:start]
                 if len(train_states) < 20 or len(train_returns) < 20:
                     continue

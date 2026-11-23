@@ -1996,6 +1996,45 @@ describe('markov_distribution tool output envelope', () => {
     expect(enabled.actionSignal.expectedReturn).toBeGreaterThan(disabled.actionSignal.expectedReturn);
   });
 
+  it('fits and reads the return HMM on log returns, like the log drift it feeds', async () => {
+    const seen: { fit?: number[]; studentT?: number[]; predict?: number[] } = {};
+    mock.module('./hmm.js', () => ({
+      ...realHmmModule,
+      baumWelch: (...args: Parameters<typeof realHmmModule.baumWelch>) => {
+        if (args[1] === 3) seen.fit = args[0];
+        return realHmmModule.baumWelch(...args);
+      },
+      attachStudentTPredictiveEmissions: (...args: Parameters<typeof realHmmModule.attachStudentTPredictiveEmissions>) => {
+        seen.studentT = args[0];
+        return realHmmModule.attachStudentTPredictiveEmissions(...args);
+      },
+      predict: (...args: Parameters<typeof realHmmModule.predict>) => {
+        if (args[1].nStates === 3) seen.predict = args[0];
+        return realHmmModule.predict(...args);
+      },
+    }));
+
+    const logReturns = Array.from({ length: 160 }, (_, i) => [0, 0.012, -0.010, 0.002][i % 4] + 0.004 * Math.sin(i));
+    const prices = [100];
+    for (const r of logReturns) prices.push(prices[prices.length - 1] * Math.exp(r));
+
+    await computeMarkovDistribution({
+      ticker: 'SPY',
+      horizon: 7,
+      currentPrice: prices[prices.length - 1],
+      historicalPrices: prices,
+      polymarketMarkets: [],
+      enableStudentTEmission: true,
+    });
+
+    const expected = prices.slice(1).map((p, i) => Math.log(p / prices[i]));
+    const maxGap = (xs: number[] | undefined) => Math.max(...expected.map((e, i) => Math.abs((xs?.[i] ?? NaN) - e)));
+    expect(seen.predict).toBeDefined();
+    expect(maxGap(seen.fit)).toBeLessThan(1e-12);
+    expect(maxGap(seen.studentT)).toBeLessThan(1e-12);
+    expect(maxGap(seen.predict)).toBeLessThan(1e-12);
+  });
+
   it('keeps Student-t HMM emissions default-off and changes the forecast path only when enabled', async () => {
     const predictSawStudentT: boolean[] = [];
 

@@ -629,6 +629,19 @@ def test_interpolate_distribution_anchor_does_not_leak_to_other_strikes():
     assert [p["price"] for p in with_anchor if p["source"] != "markov"] == [101.9]
 
 
+def test_interpolate_distribution_ignores_zero_trust_weight_anchor():
+    # Mirrors confidence-intervals.ts: a zero-volume anchor (trustWeight 0) does not blend;
+    # an anchor without a trust weight keeps the low-trust half weight.
+    def at(probability, **extra):
+        a = {**_anchor(101.9, probability), "trustScore": "low", **extra}
+        return next(p for p in _anchored([a]) if p["price"] == 101.9)
+
+    assert at(0.30, trustWeight=0.0)["source"] == "markov"
+    assert at(0.30, trustWeight=0.0)["probability"] == at(0.90, trustWeight=0.0)["probability"]
+    assert at(0.30)["source"] == "blend"
+    assert at(0.30)["probability"] < at(0.90)["probability"]
+
+
 def test_interpolate_distribution_puts_anchor_strike_on_grid_verbatim():
     with_anchor = _anchored([_anchor(101.9, 0.30)])
     point = next(p for p in with_anchor if p["price"] == 101.9)

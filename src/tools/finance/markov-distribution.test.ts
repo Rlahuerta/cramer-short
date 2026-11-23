@@ -909,6 +909,22 @@ describe('commodityModelOnly condition logic', () => {
 
 // Phase 3: R²_OS validation threshold for non-crypto — near-zero values should not block
 describe('R²_OS validation threshold', () => {
+  it('classifies each horizon-validation training slice without the days after it', async () => {
+    // 150 returns, horizon 14: blocks start at 30, 44, ..., 128, so the last 8 returns (142..149) are in no
+    // training slice and no realised block. Inflating them must not change the validation R².
+    const returns = Array.from({ length: 150 }, (_, i) => 0.02 * Math.sin(0.7 * i) + 0.01 * Math.cos(1.3 * i));
+    const r2osWith = async (tail: (r: number) => number) => {
+      const prices = [100];
+      returns.forEach((r, i) => prices.push(prices[i] * (1 + (i >= 142 ? tail(r) : r))));
+      const result = await computeMarkovDistribution({
+        ticker: 'BTC-USD', horizon: 14, currentPrice: prices[150], historicalPrices: prices, polymarketMarkets: [],
+      });
+      expect(result.metadata.validationMetric).toBe('horizon_return');
+      return result.metadata.outOfSampleR2;
+    };
+    expect(await r2osWith(r => 8 * r)).toBe(await r2osWith(r => r));
+  });
+
   it('Phase 3: non-crypto validation acceptable with R² = -0.003', () => {
     const r2os = -0.003;
     const validationAcceptable = r2os >= -0.01;
@@ -2445,6 +2461,24 @@ describe('randomState makes the whole distribution reproducible', () => {
     const bounds = (d: MarkovDistributionPoint[]) => d.map(pt => [pt.lowerBound, pt.upperBound]);
     expect(bounds(b.distribution)).toEqual(bounds(a.distribution));
     expect(bounds(b.rawDistribution)).toEqual(bounds(a.rawDistribution));
+  });
+});
+
+describe('return-HMM iteration budget', () => {
+  it('fits a live-length window that Baum-Welch needs more than 50 iterations for', async () => {
+    const { readFileSync } = await import('fs');
+    const { baumWelch } = await import('./hmm.js');
+    const closes: number[] = JSON.parse(
+      readFileSync(new URL('./fixtures/backtest-prices.json', import.meta.url), 'utf-8'),
+    ).tickers.SPY.closes;
+    const window = closes.slice(82, 165); // 83 prices, the live equity window
+    const returns = window.slice(1).map((p, i) => (p - window[i]) / window[i]);
+    expect(baumWelch(returns, 3, 50, 1e-3).converged).toBe(false);
+
+    const result = await computeMarkovDistribution({
+      ticker: 'SPY', horizon: 7, currentPrice: window[window.length - 1], historicalPrices: window, polymarketMarkets: [],
+    });
+    expect(result.metadata.hmm?.converged).toBe(true);
   });
 });
 

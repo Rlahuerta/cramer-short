@@ -1126,7 +1126,8 @@ function inspectAnchorCandidate(
       isBelow,
       probability: correctedProbability,
       trustScore,
-      trustWeight,
+      // A market without volume data is not graded: weight 0 means zero volume, which stops it blending.
+      ...(market.volume == null ? {} : { trustWeight }),
       source: 'polymarket',
       endDate,
     },
@@ -1297,7 +1298,8 @@ interface FallbackMarket {
  * usable terminal-threshold markets ("above $X on April 17").
  *
  * Each fallback anchor receives a date-gap discount that reduces its
- * probability proportional to how far its endDate is from the target horizon:
+ * trust weight (not its probability, which would bias P(above) toward 0)
+ * proportional to how far its endDate is from the target horizon:
  *   discount = 1 − 0.03 × max(0, |daysOffset| − 2)
  * clamped to [0.5, 1.0].
  *
@@ -1356,7 +1358,6 @@ export function applyCryptoTerminalAnchorFallback(
       MIN_DISCOUNT,
       1 - DISCOUNT_PER_DAY * (daysOffset - HORIZON_TOLERANCE_DAYS),
     );
-    const adjustedProbability = Math.max(0, Math.min(1, anchor.probability * discount));
     const discountedTrustWeight = getAnchorTrustWeight(anchor) * discount;
     const retainsHighTrust =
       anchor.trustScore === 'high'
@@ -1365,7 +1366,6 @@ export function applyCryptoTerminalAnchorFallback(
 
     return {
       ...anchor,
-      probability: adjustedProbability,
       trustScore: retainsHighTrust ? 'high' : 'low',
       trustWeight: retainsHighTrust ? discountedTrustWeight : Math.min(discountedTrustWeight, 0.49),
     } satisfies PriceThreshold;
@@ -1984,10 +1984,15 @@ function computeValidationR2OS(params: {
   horizon: number;
   regimeSeq: RegimeState[];
   logReturns: number[];
+  /** Simple daily returns and the regime threshold multiplier, to classify each training slice on its own. */
+  returns: number[];
+  returnThresholdMultiplier: number;
   assetProfile: AssetProfile;
   transitionDecayOverride?: number;
 }): { r2os: number | null; validationMetric: 'daily_return' | 'horizon_return' } {
-  const { assetType, horizon, regimeSeq, logReturns, assetProfile, transitionDecayOverride } = params;
+  const {
+    assetType, horizon, regimeSeq, logReturns, returns, returnThresholdMultiplier, assetProfile, transitionDecayOverride,
+  } = params;
   const effectiveDecayRate = transitionDecayOverride ?? resolveForecastLabMarkovParameterDefaults().transitionDecay;
 
   const useHorizonValidator = assetType === 'crypto' && horizon >= 7 && horizon <= 14;
@@ -2000,7 +2005,10 @@ function computeValidationR2OS(params: {
       const startIdx = logReturns.length - heldoutDays;
 
       for (let start = startIdx; start + horizon <= logReturns.length; start += horizon) {
-        const trainStates = regimeSeq.slice(0, start);
+        // Thresholds from the training slice only: the full-window regimeSeq would leak the held-out days.
+        const trainSimpleReturns = returns.slice(0, start);
+        const { returnThreshold } = computeAdaptiveThresholds(trainSimpleReturns, returnThresholdMultiplier);
+        const trainStates = trainSimpleReturns.map(r => classifyRegimeState(r, Math.abs(r), returnThreshold));
         const trainLogReturns = logReturns.slice(0, start);
         if (trainStates.length < 20 || trainLogReturns.length < 20) continue;
 
@@ -3735,7 +3743,11 @@ export async function computeMarkovDistribution(params: {
   if (returns.length >= HMM_MIN_OBS) {
     try {
       // Primary: return HMM (directional signal)
-      const hmmResult = baumWelch(returns, 3, 50, 1e-3);
+      // 400 iterations: on live-length windows 50 converged for 0% of BTC and ~6% of GLD fits, which left the
+      // overlay off; 400 converges them all (live-config benchmark, 2026-11-23).
+      // Log returns, so the state means are the log drift the override feeds (simple returns overstate it by ~σ²/2).
+      const logReturns = returns.map(r => Math.log1p(r));
+      const hmmResult = baumWelch(logReturns, 3, 400, 1e-3);
       if (!hmmResult.converged) {
         hmmMeta = {
           converged: false,
@@ -3746,9 +3758,9 @@ export async function computeMarkovDistribution(params: {
         };
       } else {
         const hmmParams = enableStudentTEmission === true
-          ? attachStudentTPredictiveEmissions(returns, hmmResult.params)
+          ? attachStudentTPredictiveEmissions(logReturns, hmmResult.params)
           : hmmResult.params;
-        const hmmForecast = hmmPredict(returns, hmmParams, horizon);
+        const hmmForecast = hmmPredict(logReturns, hmmParams, horizon);
         const posteriorEntropy = computeNormalizedEntropy(hmmForecast.currentStateProbabilities);
         const forecastEntropy = computeNormalizedEntropy(hmmForecast.forecastProbabilities);
         const effectivePosteriorEntropy = Math.max(posteriorEntropy, forecastEntropy);
@@ -4328,6 +4340,8 @@ export async function computeMarkovDistribution(params: {
     horizon,
     regimeSeq,
     logReturns,
+    returns,
+    returnThresholdMultiplier: effectiveReturnThresholdMultiplier,
     assetProfile,
     transitionDecayOverride,
   });

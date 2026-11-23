@@ -31,7 +31,7 @@ SPY finishes above $600 in 14 days?" by combining three independent signals:
 
 1. **Markov regime transitions** — classifies recent history into bull/bear/
    sideways regimes, then projects forward via matrix exponentiation.
-2. **Hidden Markov Model (HMM)** — a Baum-Welch Gaussian HMM fitted on daily
+2. **Hidden Markov Model (HMM)** — a Baum-Welch Gaussian HMM fitted on daily log
    returns for an independent directional + volatility forecast.
 3. **Ensemble momentum indicators** — mean-reversion z-score, SMA crossover,
    and volatility compression signals.
@@ -119,7 +119,7 @@ Three independent signals contribute to the final distribution:
 | Signal | What it measures | Weight mechanism |
 |--------|-----------------|------------------|
 | **Markov chain** | Regime persistence and transition probabilities | Primary signal — regime-conditional P(up) |
-| **HMM (Baum-Welch)** | Latent states from daily returns | Weighted blend (0.25–0.70 depending on data length and asset) |
+| **HMM (Baum-Welch)** | Latent states from daily log returns | Weighted blend (0.25–0.70 depending on data length and asset) |
 | **Momentum ensemble** | Mean-reversion z-score, SMA5/SMA20 crossover, vol compression | Applied as drift adjustment when ≥2 of 3 signals agree |
 
 The momentum ensemble includes multi-lookback confirmation (10d, 20d, 40d). If

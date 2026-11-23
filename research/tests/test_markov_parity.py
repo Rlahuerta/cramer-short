@@ -737,6 +737,22 @@ class TestComputeValidationR2OS:
         result = compute_validation_r2_os("equity", 7, states, short_returns)
         assert result["r2os"] is None
 
+    def test_horizon_validator_classifies_each_training_slice_without_later_days(self):
+        # Mirrors markov-distribution.ts: blocks start at 30, 44, ..., 128, so returns 142..149 are in no
+        # training slice and no realised block; inflating them must not change the validation R².
+        from research.models.markov import compute_validation_r2_os, classify_regime_series
+        import numpy as np
+        i = np.arange(150)
+        simple = 0.02 * np.sin(0.7 * i) + 0.01 * np.cos(1.3 * i)
+
+        def r2os(tail_scale):
+            s = simple.copy()
+            s[142:] *= tail_scale
+            return compute_validation_r2_os("crypto", 14, classify_regime_series(s), np.log1p(s))["r2os"]
+
+        assert r2os(1.0) is not None
+        assert r2os(8.0) == r2os(1.0)
+
     def test_horizon_return_path_for_crypto(self):
         from research.models.markov import (
             compute_validation_r2_os, classify_regime_series,

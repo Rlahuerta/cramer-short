@@ -97,6 +97,7 @@ setForecastLabMarkovRuntimeDefaults('hype', PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULT
  * - conf ≥ 0.25: ~66% accuracy at ~44% coverage (aggregate)
  * - conf ≥ 0.30: ~71% accuracy at ~30% coverage
  * - conf ≥ 0.40: ~75% accuracy at ~15% coverage
+ * The shipped value is 0.22 (lowered from 0.25 on 2026-05-04); 0.22 itself has not been re-measured.
  *
  * Use this threshold to filter low-confidence predictions when accuracy matters more than coverage.
  * For full coverage (no filtering), ignore this threshold.

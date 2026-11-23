@@ -661,7 +661,8 @@ async function enrichStructuredMarketMicrostructure(
   const [bidAskSpread, history] = await Promise.all([
     market.enableOrderBook === false ? Promise.resolve(null) : fetchClobSpread(tokenId),
     // `interval` is the lookback span: 1d covers the 6h velocity and 24h jump windows below.
-    fetchClobPriceHistory(tokenId, '1d'),
+    // Hourly points, so the max adjacent jump is an hourly jump (the default spacing is ~1 minute).
+    fetchClobPriceHistory(tokenId, '1d', 60),
   ]);
 
   if (bidAskSpread === null && history.length < 2) return market;

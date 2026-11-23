@@ -277,3 +277,13 @@ class TestAdaptiveConformalVolatilityShock:
             c.record(0.0, 0.5)
         c.record(0.0, 2.0, diagnostics={"realized_vol": 5.0})
         assert c.current_mode() == "normal"
+
+
+def test_score_aggregated_conformal_uses_finite_sample_quantile():
+    # Mirrors conformal.ts: 20 scores 2..21 at alpha 0.1 calibrate on the ceil(21 * 0.9) = 19th smallest = 20.
+    from research.models.conformal import ScoreAggregatedConformal
+
+    aggregated = ScoreAggregatedConformal(alpha=0.1, min_samples=5, calibration_window=40)
+    for residual in range(2, 22):
+        aggregated.record(100.0, 100.0 + residual, [1.0])
+    assert aggregated.wrap(100.0, [1.0]).high == pytest.approx(120.0)

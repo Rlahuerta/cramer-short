@@ -172,6 +172,37 @@ def test_hmm_non_convergence_preserves_base_markov_forecast(monkeypatch: pytest.
     assert result["predicted_return"] == pytest.approx(0.08)
 
 
+def test_return_hmm_fit_uses_the_ts_iteration_budget(monkeypatch: pytest.MonkeyPatch):
+    regimes = ["bull", "bull", "bear", "sideways", "bull", "bear"]
+    _patch_base_markov(monkeypatch, regimes)
+    captured: dict[str, object] = {}
+
+    def fake_baum_welch(*_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(converged=False)
+
+    monkeypatch.setattr(wf, "baum_welch", fake_baum_welch)
+    monkeypatch.setattr(wf, "compute_trajectory", lambda current_price, *_a, **_k: [_point(current_price)])
+
+    wf.compute_window_forecast(
+        _prices_from_returns([0.02, 0.01, -0.03, 0.01, 0.02, -0.01]),
+        horizon=3,
+        return_threshold_multiplier=0.5,
+        decay_rate=0.95,
+        break_divergence_threshold=0.2,
+        use_hmm=True,
+        asset_profile="crypto",
+        enable_garch_vol=False,
+        garch_horizon=None,
+        garch_ceiling=None,
+        use_empirical_up_rates=False,
+    )
+
+    # Mirrors markov-distribution.ts: baumWelch(returns, 3, 400, 1e-3).
+    assert captured["max_iterations"] == 400
+    assert captured["tolerance"] == pytest.approx(1e-3)
+
+
 @pytest.mark.parametrize(
     "exc",
     [

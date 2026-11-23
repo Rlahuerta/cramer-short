@@ -2,7 +2,7 @@ import { describe, beforeAll, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { integrationIt } from '@/utils/test-guards.js';
-import { BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS, MARKOV_PHASE0_BASELINES } from './markov-phase-baselines.js';
+import { BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS, BTC_LIVE_POLICY_H2_MAX_ABSTAIN, MARKOV_PHASE0_BASELINES } from './markov-phase-baselines.js';
 import { getBtcShortHorizonLivePolicy } from '../markov-distribution.js';
 import { walkForward, type WalkForwardResult } from './walk-forward.js';
 import { abstainRate, brierScore, ciCoverage, directionalAccuracy, type BacktestStep } from './metrics.js';
@@ -119,7 +119,7 @@ describe('Walk-forward BTC ultra-short-horizon live policy', () => {
       if (horizon === 2) {
         expect(metrics.rerunOnBreak).toBe(true);
         expect(metrics.rerunWindowDays).toBe(120);
-        expect(metrics.abstainCount).toBeLessThan(MARKOV_PHASE0_BASELINES.btc.h2.abstainCount);
+        expect(metrics.abstainCount).toBeLessThanOrEqual(BTC_LIVE_POLICY_H2_MAX_ABSTAIN);
         expect(metrics.directionalAccuracy).toBeGreaterThanOrEqual(BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS.h2);
       }
 

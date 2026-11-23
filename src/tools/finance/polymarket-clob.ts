@@ -191,13 +191,19 @@ export async function fetchClobSpread(tokenId: string): Promise<number | null> {
   }
 }
 
+/**
+ * `interval` is the lookback span. `fidelityMinutes` is the point spacing; without it the CLOB returns
+ * ~1-minute points (1440 for interval=1d), so adjacent-point jumps are minute jumps, not hourly ones.
+ */
 export async function fetchClobPriceHistory(
   market: string,
   interval: '1h' | '6h' | '1d' = '1h',
+  fidelityMinutes?: number,
 ): Promise<ClobPricePoint[]> {
   try {
+    const fidelity = fidelityMinutes === undefined ? '' : `&fidelity=${fidelityMinutes}`;
     const r = await fetch(
-      `${CLOB_BASE}/prices-history?market=${encodeURIComponent(market)}&interval=${interval}`,
+      `${CLOB_BASE}/prices-history?market=${encodeURIComponent(market)}&interval=${interval}${fidelity}`,
     );
     if (!r.ok) return [];
     return parseClobPriceHistory(await r.json());

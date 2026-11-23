@@ -34,15 +34,21 @@ const BTC_14D_ABSTAIN_REASON =
 // Deterministic lock for the current BTC replay + price fixtures, not a claim of broad live accuracy.
 // Refreshed after the Markov/Python mirror parity update shifted deterministic
 // BTC fixture confidence/HOLD counts while preserving the live-policy lift.
+// Refreshed again 2026-11-22: since the break-significance gate (83992ca) no structural break fires on this
+// fixture (was 49-85 per horizon), and directional accuracy now scores traded steps only (f40143d); this case had
+// not run in any tier until integrationIt cases in ordinary test files joined test:integration.
+// Refreshed 2026-11-23: the return-HMM fit budget went from 50 to 400 iterations, so the HMM overlay now applies on
+// these steps; Brier improves at every horizon (pooled live-config benchmark: -0.0021, 95% CI [-0.0029, -0.0013]).
+// Refreshed again 2026-11-23 for the return HMM on log returns (pooled benchmark: no-harm, +0.00004).
 const BTC_FIXTURE_BASELINE = {
   '1d': {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 28,
-      directionalAccuracy: 0.6145833333333334,
-      brierScore: 0.2550127431393302,
-      structuralBreakCount: 72,
+      abstainCount: 42,
+      directionalAccuracy: 0.5185185185185185,
+      brierScore: 0.2561278464473905,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -71,10 +77,10 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 29,
-      directionalAccuracy: 0.65625,
-      brierScore: 0.25477609958328445,
-      structuralBreakCount: 50,
+      abstainCount: 40,
+      directionalAccuracy: 0.5357142857142857,
+      brierScore: 0.2551547905103559,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -103,10 +109,10 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 24,
-      directionalAccuracy: 0.59375,
-      brierScore: 0.2637207940101452,
-      structuralBreakCount: 50,
+      abstainCount: 31,
+      directionalAccuracy: 0.49230769230769234,
+      brierScore: 0.25776093006437284,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -135,10 +141,10 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 95,
       tradedCount: null,
-      abstainCount: 17,
-      directionalAccuracy: 0.5578947368421052,
-      brierScore: 0.256354982659173,
-      structuralBreakCount: 49,
+      abstainCount: 15,
+      directionalAccuracy: 0.5375,
+      brierScore: 0.25366490203665915,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -167,10 +173,10 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 93,
       tradedCount: null,
-      abstainCount: 13,
-      directionalAccuracy: 0.5053763440860215,
-      brierScore: 0.26736459290288817,
-      structuralBreakCount: 85,
+      abstainCount: 11,
+      directionalAccuracy: 0.5121951219512195,
+      brierScore: 0.25500178024926645,
+      structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
     },
@@ -530,9 +536,11 @@ describe('combined short-horizon benchmark', () => {
     ).length;
 
     expect(naiveOneDay.steps.length).toBe(122);
-    expect(naiveHoldCount).toBe(34);
-    expect(naiveBreakCount).toBe(120);
+    expect(naiveHoldCount).toBe(50);
+    expect(naiveBreakCount).toBe(8);
     expect(report.horizons['1d'].markovOnly.observationCount).toBeLessThan(naiveOneDay.steps.length);
+    // Since the 400-iteration HMM budget (2026-11-23) the live policy lowers 1d abstentions again (42 vs 50 with
+    // the HMM on log returns); it also detects fewer breaks than the naive config (0 vs 8).
     expect(report.horizons['1d'].markovOnly.abstainCount).toBeLessThan(naiveHoldCount);
     expect(report.horizons['1d'].markovOnly.structuralBreakCount).toBeLessThan(naiveBreakCount);
     expect(report.horizons['7d'].combinedArbitrated.pendingReasons).toEqual([BTC_7D_ABSTAIN_REASON]);

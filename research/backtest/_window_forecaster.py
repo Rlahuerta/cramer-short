@@ -383,7 +383,7 @@ def compute_window_forecast(
             hmm_result = baum_welch(
                 log_returns,
                 n_states=3,
-                max_iterations=50,
+                max_iterations=400,  # mirrors markov-distribution.ts
                 tolerance=1e-3,
             )
         except HMM_OPTIONAL_ERRORS as exc:
