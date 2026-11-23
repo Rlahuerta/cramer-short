@@ -925,6 +925,21 @@ describe('R²_OS validation threshold', () => {
     expect(await r2osWith(r => 8 * r)).toBe(await r2osWith(r => r));
   });
 
+  it('does not reject a non-crypto forecast on R² alone (the gate did not predict forecast quality)', () => {
+    const base = {
+      horizon: 7,
+      validationMetric: 'daily_return' as const,
+      anchorCoverage: { quality: 'good' as const, trustedAnchors: 2 },
+      predictionConfidence: 0.3,
+      goodnessOfFit: { passes: true },
+    };
+    expect(isCompositeValidationAcceptable({ ...base, assetType: 'equity', outOfSampleR2: -0.5 })).toBe(true);
+    expect(isCompositeValidationAcceptable({ ...base, assetType: 'commodity', outOfSampleR2: -0.5 })).toBe(true);
+    // Validation that could not be computed still fails, and crypto keeps its R² thresholds.
+    expect(isCompositeValidationAcceptable({ ...base, assetType: 'equity', outOfSampleR2: null })).toBe(false);
+    expect(isCompositeValidationAcceptable({ ...base, assetType: 'crypto', outOfSampleR2: -0.5 })).toBe(false);
+  });
+
   it('Phase 3: non-crypto validation acceptable with R² = -0.003', () => {
     const r2os = -0.003;
     const validationAcceptable = r2os >= -0.01;
@@ -2202,9 +2217,11 @@ describe('computeMarkovDistribution trajectory mode', () => {
 });
 
 describe('trajectory P(up) alignment follows the horizon, not the last trajectory day', () => {
-  // Seeded GBM (mulberry32 + Box-Muller): raw trajectory P(up) is analytic, so this is deterministic.
+  // Seeded GBM (mulberry32 + Box-Muller): raw trajectory P(up) is analytic, so this is deterministic. The seed
+  // must put the raw day-7 P(up) more than 2pp from the calibrated value, or no override happens (16 since the
+  // no-break matrix became the estimate, 2026-11-23).
   const prices = (() => {
-    let seed = 11;
+    let seed = 16;
     const u = () => {
       seed = (seed + 0x6D2B79F5) >>> 0;
       let t = seed;
@@ -2774,12 +2791,22 @@ describe('GLD 30-day output validation (integration)', () => {
     expect(result.trajectory!.length).toBe(7);
   });
 
-  // --- Invariant 12: Trajectory P(Up) at final day aligns with CDF P(up) ---
-  it('trajectory final day P(Up) is within 3pp of CDF P(up)', () => {
-    const traj = result.trajectory!;
-    const lastPUp = traj[traj.length - 1].pUp;
-    const cdfPUp = result.scenarios.pUp;
-    expect(Math.abs(lastPUp - cdfPUp)).toBeLessThan(0.03);
+  // --- Invariant 12: Trajectory P(Up) on the horizon day aligns with CDF P(up) ---
+  // The 7-day trajectory above stops before the 30-day horizon, so this needs one that reaches it.
+  it('trajectory P(Up) on the horizon day is within 3pp of CDF P(up)', async () => {
+    const full = await computeMarkovDistribution({
+      ticker: 'GLD',
+      horizon: 30,
+      currentPrice,
+      historicalPrices: gldPrices,
+      polymarketMarkets: [
+        { question: 'Will gold exceed $5,500 by June 2026?', probability: 0.40, volume: 50000 },
+        { question: 'Will gold exceed $6,000 by June 2026?', probability: 0.10, volume: 30000 },
+      ],
+      trajectory: true,
+      trajectoryDays: 30,
+    });
+    expect(Math.abs(full.trajectory![29].pUp - full.scenarios.pUp)).toBeLessThan(0.03);
   });
 
   // --- Invariant 13: Trajectory prices are within CI bounds ---

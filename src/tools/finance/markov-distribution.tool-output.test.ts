@@ -87,6 +87,7 @@ afterEach(() => {
 const realPolymarketModule = { ...(await import('./polymarket.js')) };
 const realHmmModule = { ...(await import('./hmm.js')) };
 const realApiModule = { ...(await import('./api.js')) };
+const realTransitionModule = { ...(await import('./markov-distribution/transition.js')) };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -166,6 +167,7 @@ afterEach(() => {
   mock.module('./polymarket.js', () => realPolymarketModule);
   mock.module('./hmm.js', () => realHmmModule);
   mock.module('./api.js', () => realApiModule);
+  mock.module('./markov-distribution/transition.js', () => realTransitionModule);
 });
 
 function rowSums(m: number[][]): number[] {
@@ -1996,6 +1998,29 @@ describe('markov_distribution tool output envelope', () => {
     expect(enabled.actionSignal.expectedReturn).toBeGreaterThan(disabled.actionSignal.expectedReturn);
   });
 
+  it('validates the transition matrix the forecast uses', async () => {
+    const fittedLengths: number[] = [];
+    mock.module('./markov-distribution/transition.js', () => ({
+      ...realTransitionModule,
+      estimateForecastTransitionMatrix: (...args: Parameters<typeof realTransitionModule.estimateForecastTransitionMatrix>) => {
+        fittedLengths.push(args[0].length);
+        return realTransitionModule.estimateForecastTransitionMatrix(...args);
+      },
+    }));
+    const returns = Array.from({ length: 150 }, (_, i) => 0.012 * Math.sin(0.9 * i) + 0.004 * Math.cos(2.1 * i));
+    const prices = [100];
+    returns.forEach((r, i) => prices.push(prices[i] * (1 + r)));
+
+    const result = await computeMarkovDistribution({
+      ticker: 'SPY', horizon: 7, currentPrice: prices[150], historicalPrices: prices, polymarketMarkets: [],
+    });
+
+    // The forecast fits all 150 regimes; the daily R²_OS validator fits the training slice before its last 20.
+    expect(result.metadata.validationMetric).toBe('daily_return');
+    expect(fittedLengths).toContain(150);
+    expect(fittedLengths).toContain(130);
+  });
+
   it('fits and reads the return HMM on log returns, like the log drift it feeds', async () => {
     const seen: { fit?: number[]; studentT?: number[]; predict?: number[] } = {};
     mock.module('./hmm.js', () => ({
@@ -2895,7 +2920,7 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.canonical.diagnostics.trustedAnchors).toBe(0);
     });
 
-    it('abstains for commodity when R² is too low', async () => {
+    it('emits a commodity model-only forecast even when R² is low (R² alone does not abstain)', async () => {
       mock.module('./polymarket.js', () => ({
         ...realPolymarketModule,
         fetchPolymarketMarkets: async () => [],
@@ -2904,14 +2929,15 @@ describe('markov_distribution tool output envelope', () => {
 
       const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
 
-      // Deterministic oscillating series that produces strongly negative R² without a structural break.
-      const prices: number[] = [];
-      let p = 200;
-      for (let i = 0; i < 95; i++) {
-        const shock = Math.sin(i * 0.15) * 0.004;
-        p *= 1 + shock;
-        prices.push(Math.round(p * 100) / 100);
-      }
+      // Persistent ±0.4% runs ending inside an up-run, then 20 small alternating days: the estimated chain
+      // predicts a continuation the held-out days do not show, so R² is strongly negative without a break.
+      // (A smooth sine oscillation stopped working once the no-break matrix became the estimate, 2026-11-23:
+      // its persistence is genuinely predictable.)
+      const returns: number[] = [];
+      for (let i = 0; i < 74; i++) returns.push(Math.floor((i + 2) / 8) % 2 === 0 ? 0.004 : -0.004);
+      for (let i = 0; i < 20; i++) returns.push(i % 2 === 0 ? 0.001 : -0.001);
+      const prices = [200];
+      for (const r of returns) prices.push(Math.round(prices[prices.length - 1] * (1 + r) * 100) / 100);
 
       const result = await freshTool.func({
         ticker: 'GLD',
@@ -2923,8 +2949,9 @@ describe('markov_distribution tool output envelope', () => {
       });
 
       const parsed = JSON.parse(result);
-      expect(parsed.data.status).toBe('abstain');
-      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(true);
+      expect(parsed.data.canonical.diagnostics.calibrationMode).toBe('model_only');
     });
 
     it('abstains for commodity when confidence is too low', async () => {

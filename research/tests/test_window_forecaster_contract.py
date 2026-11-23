@@ -596,13 +596,25 @@ def test_window_forecast_passes_hmm_daily_emission_payload_as_per_day_override(
     assert override["vol"] == pytest.approx(0.07)
 
 
-def test_window_forecast_uses_default_matrix_without_break_and_entropy_of_estimate(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("break_detected", "asset_profile", "uses_estimate"),
+    [(False, "equity", True), (True, "equity", False), (False, "crypto", False)],
+)
+def test_window_forecast_uses_forecast_estimate_without_break_for_non_crypto(
+    monkeypatch: pytest.MonkeyPatch, break_detected: bool, asset_profile: str, uses_estimate: bool,
 ):
-    # Mirrors TS 18aeeb6: without a break P is the symmetric default matrix (shrinkage
-    # measured better Brier), while transition entropy describes the estimated chain.
+    # Mirrors TS: without a break a non-crypto P is the forecast estimate (undecayed counts under a Dirichlet
+    # prior centred on the default matrix); with a break, or for crypto, it is the default. Entropy describes
+    # the decayed estimate.
     regimes = ["bull", "bull", "bear", "sideways", "bull", "bear"]
     _patch_base_markov(monkeypatch, regimes)
+    sentinel = np.full((3, 3), 1.0 / 3.0)
+    monkeypatch.setattr(wf, "estimate_forecast_transition_matrix", lambda *_args, **_kwargs: sentinel)
+    monkeypatch.setattr(
+        wf,
+        "detect_structural_break",
+        lambda *_args, **_kwargs: {"detected": break_detected, "divergence": 0.3 if break_detected else 0.0},
+    )
     captured: dict[str, object] = {}
 
     def fake_compute_trajectory(current_price, _horizon, P, *_args, **_kwargs):
@@ -618,13 +630,13 @@ def test_window_forecast_uses_default_matrix_without_break_and_entropy_of_estima
         decay_rate=0.95,
         break_divergence_threshold=0.2,
         use_hmm=False,
-        asset_profile="crypto",
+        asset_profile=asset_profile,
         enable_garch_vol=False,
         garch_horizon=None,
         garch_ceiling=None,
         use_empirical_up_rates=False,
     )
 
-    np.testing.assert_allclose(captured["P"], _default_matrix())
-    # The patched estimate is the identity, whose rows carry zero entropy.
+    np.testing.assert_allclose(captured["P"], sentinel if uses_estimate else _default_matrix())
+    # The patched decayed estimate is the identity, whose rows carry zero entropy.
     assert result["entropy"].entropy_norm == pytest.approx(0.0)

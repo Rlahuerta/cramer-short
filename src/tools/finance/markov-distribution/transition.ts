@@ -31,6 +31,8 @@ export function estimateTransitionMatrix(
   minObservations = resolveForecastLabMarkovParameterDefaults().transitionMinObservations,
   decayRate = resolveForecastLabMarkovParameterDefaults().transitionDecay,   // Exponential decay: recent transitions weighted more (1.0 = no decay)
   stickinessShrinkage = false,
+  /** Pseudo-transitions per row of a Dirichlet prior centred on the default matrix; replaces `alpha`. */
+  priorStrength?: number,
 ): TransitionMatrix {
   if (states.length < minObservations) {
     return buildDefaultMatrix();
@@ -40,9 +42,10 @@ export function estimateTransitionMatrix(
   const effectiveAlpha = alpha ?? Math.max(0.01, 5.0 / states.length);
 
   // Initialise count matrix with Dirichlet prior
-  const counts: number[][] = Array.from({ length: NUM_STATES }, () =>
-    Array(NUM_STATES).fill(effectiveAlpha),
-  );
+  const counts: number[][] = priorStrength === undefined
+    ? Array.from({ length: NUM_STATES }, () => Array(NUM_STATES).fill(effectiveAlpha))
+    : buildDefaultMatrix().map(row => row.map(v => priorStrength * v));
+  const priorMassPerRow = priorStrength ?? NUM_STATES * effectiveAlpha;
 
   // Exponentially-weighted transition counts: recent transitions matter more.
   // weight = decayRate^(distance_from_end). Last transition gets weight=1.
@@ -66,7 +69,7 @@ export function estimateTransitionMatrix(
     for (let i = 0; i < NUM_STATES; i++) {
       const rawRowSum = Math.max(
         0,
-        counts[i].reduce((sum, v) => sum + v, 0) - NUM_STATES * effectiveAlpha,
+        counts[i].reduce((sum, v) => sum + v, 0) - priorMassPerRow,
       );
       const lambda = rawRowSum / (rawRowSum + priorStrength);
       result[i] = result[i].map((v, j) => lambda * v + (1.0 - lambda) * def[i][j]);
@@ -80,6 +83,22 @@ export function estimateTransitionMatrix(
   }
 
   return result;
+}
+
+/** Pseudo-transitions per row behind the forecast's no-break matrix: the weakest prior on the Step 3.1 grid
+ *  (10/30/60/100/300) that was no-harm both on the live-config benchmark and on 8 held-out tickers
+ *  (2026-11-23; 30 failed the held-out HOLD limit). */
+export const FORECAST_TRANSITION_PRIOR_STRENGTH = 100;
+
+/**
+ * The transition matrix a forecast uses when no structural break is detected, and the one its R²_OS validator
+ * fits on each training slice: undecayed transition counts under a Dirichlet prior centred on the default
+ * matrix, so a row moves from the default toward its observed frequencies as its transitions add up. The bare
+ * estimate overfits a short window (its stationary mix extrapolates the window's drift), and the default alone
+ * ignores the data.
+ */
+export function estimateForecastTransitionMatrix(states: RegimeState[]): TransitionMatrix {
+  return estimateTransitionMatrix(states, undefined, 30, 1.0, false, FORECAST_TRANSITION_PRIOR_STRENGTH);
 }
 
 export function estimateConditionalTransitionMatrices(

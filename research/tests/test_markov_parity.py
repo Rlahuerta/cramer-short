@@ -117,6 +117,24 @@ def test_estimate_transition_matrix_self_persistence():
     assert m[bull_idx][bull_idx] > 0.8
 
 
+def test_estimate_forecast_transition_matrix_is_dirichlet_posterior_on_default():
+    # Mirrors transition.ts estimateForecastTransitionMatrix: undecayed counts plus K x default row.
+    from research.models.markov.transition import (
+        FORECAST_TRANSITION_PRIOR_STRENGTH,
+        _default_matrix,
+        estimate_forecast_transition_matrix,
+    )
+    pattern = ["bull", "bull", "bear", "sideways"]
+    states = [pattern[i % 4] for i in range(40)]
+    counts = np.zeros((NUM_STATES, NUM_STATES))
+    for a, b in zip(states, states[1:]):
+        counts[STATE_INDEX[a]][STATE_INDEX[b]] += 1
+    k = FORECAST_TRANSITION_PRIOR_STRENGTH
+    expected = (counts + k * _default_matrix()) / (counts.sum(axis=1, keepdims=True) + k)
+    np.testing.assert_allclose(estimate_forecast_transition_matrix(states), expected, atol=1e-12)
+    np.testing.assert_allclose(estimate_forecast_transition_matrix(states[:20]), _default_matrix())
+
+
 def test_estimate_transition_matrix_decay_weights_match_hand_count():
     states = ["bull", "bear", "bull", "sideways"]
     alpha = 0.1
@@ -753,6 +771,23 @@ class TestComputeValidationR2OS:
         assert r2os(1.0) is not None
         assert r2os(8.0) == r2os(1.0)
 
+    def test_validator_fits_the_given_matrix_estimator_on_the_training_slice(self):
+        # Mirrors markov-distribution.ts: the gate validates the estimator behind the forecast's matrix.
+        from research.models.markov import compute_validation_r2_os, classify_regime_series
+        from research.models.markov.transition import estimate_forecast_transition_matrix
+        import numpy as np
+        returns = 0.012 * np.sin(0.9 * np.arange(150))
+        fitted: list[int] = []
+
+        def spy(states):
+            fitted.append(len(states))
+            return estimate_forecast_transition_matrix(states)
+
+        compute_validation_r2_os(
+            "equity", 7, classify_regime_series(returns), np.log1p(returns), estimate_train_matrix=spy,
+        )
+        assert fitted == [130]
+
     def test_horizon_return_path_for_crypto(self):
         from research.models.markov import (
             compute_validation_r2_os, classify_regime_series,
@@ -776,9 +811,15 @@ class TestEvaluateValidationAcceptability:
         from research.models.markov import evaluate_validation_acceptability
         assert evaluate_validation_acceptability(0.05, "equity", 7, "daily_return", "good", 3) is True
 
-    def test_negative_r2_below_threshold_rejected(self):
-        from research.models.markov import evaluate_validation_acceptability
-        assert evaluate_validation_acceptability(-0.02, "equity", 7, "daily_return", "good", 3) is False
+    def test_non_crypto_is_not_rejected_on_r2_alone(self):
+        # Mirrors markov-distribution.ts: R² did not separate better from worse non-crypto forecasts.
+        from research.models.markov import evaluate_validation_acceptability, is_composite_validation_acceptable
+        assert evaluate_validation_acceptability(-0.5, "equity", 7, "daily_return", "good", 3) is True
+        assert evaluate_validation_acceptability(-0.5, "commodity", 7, "daily_return", "good", 3) is True
+        assert evaluate_validation_acceptability(-0.02, "crypto", 7, "daily_return", "good", 3) is False
+        assert is_composite_validation_acceptable(-0.5, "equity", 7, "daily_return", "good", 2, 0.3, True) is True
+        assert is_composite_validation_acceptable(None, "equity", 7, "daily_return", "good", 2, 0.3, True) is False
+        assert is_composite_validation_acceptable(-0.5, "crypto", 7, "daily_return", "good", 2, 0.3, True) is False
 
     def test_crypto_good_anchors_r2_neutral(self):
         from research.models.markov import evaluate_validation_acceptability
@@ -822,10 +863,11 @@ class TestEvaluateModelOnlyBypass:
         assert result["commodity_model_only"] is False
         assert result["crypto_model_only"] is True
 
-    def test_commodity_below_r2_rejected(self):
+    def test_commodity_low_r2_still_bypasses(self):
+        # Mirrors markov-distribution.ts: commodity model-only emission no longer has an R² floor.
         from research.models.markov import evaluate_model_only_bypass
-        result = evaluate_model_only_bypass("commodity", 7, 0, -0.03, 0.20)
-        assert result["commodity_model_only"] is False
+        assert evaluate_model_only_bypass("commodity", 7, 0, -0.5, 0.20)["commodity_model_only"] is True
+        assert evaluate_model_only_bypass("commodity", 7, 0, None, 0.20)["commodity_model_only"] is False
 
     def test_commodity_below_confidence_rejected(self):
         from research.models.markov import evaluate_model_only_bypass
