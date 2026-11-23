@@ -703,6 +703,28 @@ describe('polymarketTool', () => {
     expect(result[0]?.priceVelocityPpH).toBeGreaterThan(1);
   });
 
+  it('measures the hourly jump on hourly CLOB points, not minute points', async () => {
+    // Without `fidelity` the CLOB returns ~1-minute points for interval=1d; fidelity=60 returns hourly ones.
+    // A +10pp move spread over the last hour is a 10pp hourly jump, but only ~0.17pp between minutes.
+    const minutes = Array.from({ length: 24 * 60 + 1 }, (_, m) => ({
+      t: m * 60,
+      p: m < 23 * 60 ? 0.40 : 0.40 + 0.10 * (m - 23 * 60) / 60,
+    }));
+    const base = mockFetchWithClob([MOCK_EVENT], [MOCK_MARKET], { spread: 0.02, history: [] });
+    globalThis.fetch = (async (url: string | URL) => {
+      const urlStr = String(url);
+      if (urlStr.includes('clob.polymarket.com/prices-history')) {
+        const history = /[?&]fidelity=60(&|$)/.test(urlStr) ? minutes.filter((point) => point.t % 3600 === 0) : minutes;
+        return { ok: true, status: 200, json: async () => ({ history }) } as Response;
+      }
+      return base(url);
+    }) as typeof fetch;
+
+    const result = await fetchPolymarketMarkets('Fed rate cut', 1, { enrichMicrostructure: true });
+
+    expect(result[0]?.maxHourlyJump).toBeCloseTo(0.10, 6);
+  });
+
   it('deduplicates markets appearing in both events and direct search', async () => {
     globalThis.fetch = mockFetch([MOCK_EVENT], [MOCK_MARKET]) as typeof fetch;
     const result = await polymarketTool.invoke({ query: 'Fed rate cut', limit: 10 });
