@@ -5,7 +5,9 @@ import {
   adjustTransitionMatrix,
   buildDefaultMatrix,
   estimateConditionalTransitionMatrices,
+  estimateForecastTransitionMatrix,
   estimateTransitionMatrix,
+  FORECAST_TRANSITION_PRIOR_STRENGTH,
   isIrreducible,
   matMul,
   matPow,
@@ -132,6 +134,30 @@ describe('estimateTransitionMatrix', () => {
     expect(m[bullIdx][bearIdx]).toBeCloseTo(expectedBullToBear, 12);
   });
 });
+describe('estimateForecastTransitionMatrix', () => {
+  it('is the posterior mean of undecayed counts under a Dirichlet prior centred on the default matrix', () => {
+    // 40 states cycling bull -> bull -> bear -> sideways: 39 transitions.
+    const states = repeatStates(['bull', 'bull', 'bear', 'sideways'], 40);
+    const counts = Array.from({ length: NUM_STATES }, () => Array(NUM_STATES).fill(0));
+    for (let i = 0; i + 1 < states.length; i++) counts[STATE_INDEX[states[i]]][STATE_INDEX[states[i + 1]]] += 1;
+    const def = buildDefaultMatrix();
+    const k = FORECAST_TRANSITION_PRIOR_STRENGTH;
+
+    const m = estimateForecastTransitionMatrix(states);
+
+    for (let i = 0; i < NUM_STATES; i++) {
+      const n = counts[i].reduce((s, v) => s + v, 0);
+      for (let j = 0; j < NUM_STATES; j++) {
+        expect(m[i][j]).toBeCloseTo((counts[i][j] + k * def[i][j]) / (n + k), 12);
+      }
+    }
+  });
+
+  it('is the default matrix below the minimum sample', () => {
+    expect(estimateForecastTransitionMatrix(repeatStates(['bull', 'bear'], 20))).toEqual(buildDefaultMatrix());
+  });
+});
+
 describe('estimateConditionalTransitionMatrices', () => {
   it('conditional matrices raise on length mismatch', () => {
     expect(() => estimateConditionalTransitionMatrices(['bull', 'bear'], ['low_volume'], 0.1, 1.0))

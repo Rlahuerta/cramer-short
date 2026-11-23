@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import { NUM_STATES, REGIME_STATES } from './core.js';
 import type { RegimeState } from './core.js';
-import { classifyRegimeState } from './regime.js';
-import { buildDefaultMatrix, estimateTransitionMatrix } from './transition.js';
+import { classifyRegimeState, computeAdaptiveThresholds } from './regime.js';
+import {
+  buildDefaultMatrix,
+  estimateForecastTransitionMatrix,
+  estimateTransitionMatrix,
+  secondLargestEigenvalue,
+} from './transition.js';
 import { computeR2OS, countStateObservations, detectStructuralBreak, findSparseStates, transitionGoodnessOfFit } from './diagnostics.js';
 import { computeMarkovDistribution } from '../markov-distribution.js';
 
@@ -187,9 +192,9 @@ describe('Tier 1b — detectStructuralBreak', () => {
     }
   });
 
-  it('uses the symmetric default transition matrix when no break is detected', async () => {
-    // Shrinking P to the default (regime drifts cancel) measured better Brier than the
-    // decayed estimate; it used to happen only because the detector fired almost always.
+  it('uses the forecast estimate (Dirichlet prior on the default matrix) when no break is detected', async () => {
+    // The bare decayed estimate measured worse Brier than the default matrix; the prior keeps the default's
+    // cancelling mix until a row has enough transitions, and the R²_OS gate validates the same estimator.
     const rng = seedRng(305);
     const prices = [100];
     for (let t = 0; t < 300; t++) prices.push(prices[t] * (1 + 0.01 * (rng() + rng() + rng() - 1.5)));
@@ -197,8 +202,25 @@ describe('Tier 1b — detectStructuralBreak', () => {
       ticker: 'NOBREAK', horizon: 5, currentPrice: prices[prices.length - 1],
       historicalPrices: prices, polymarketMarkets: [],
     });
+    const returns = prices.slice(1).map((p, i) => (p - prices[i]) / prices[i]);
+    const { returnThreshold } = computeAdaptiveThresholds(returns, 0.5);
+    const regimeSeq = returns.map(r => classifyRegimeState(r, Math.abs(r), returnThreshold));
     expect(result.metadata.structuralBreakDetected).toBe(false);
+    expect(result.metadata.secondEigenvalue)
+      .toBeCloseTo(secondLargestEigenvalue(estimateForecastTransitionMatrix(regimeSeq)), 12);
     // buildDefaultMatrix() = 0.4·I + 0.2·J, whose second eigenvalue is 0.4.
+    expect(result.metadata.secondEigenvalue).not.toBeCloseTo(0.4, 6);
+  });
+
+  it('keeps the default matrix for crypto without a break (the estimate failed the HOLD limit there)', async () => {
+    const rng = seedRng(305);
+    const prices = [100];
+    for (let t = 0; t < 300; t++) prices.push(prices[t] * (1 + 0.01 * (rng() + rng() + rng() - 1.5)));
+    const result = await computeMarkovDistribution({
+      ticker: 'ETH-USD', horizon: 5, currentPrice: prices[prices.length - 1],
+      historicalPrices: prices, polymarketMarkets: [],
+    });
+    expect(result.metadata.structuralBreakDetected).toBe(false);
     expect(result.metadata.secondEigenvalue).toBeCloseTo(0.4, 6);
   });
 

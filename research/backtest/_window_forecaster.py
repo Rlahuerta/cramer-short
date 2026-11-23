@@ -39,7 +39,10 @@ from research.models.markov import (
 )
 from research.models.garch_scales import GarchClampOptions, compute_garch_scales
 from research.models.hmm import ASSET_PROFILES, baum_welch, fit_volatility_hmm, predict
-from research.models.markov.transition import estimate_conditional_transition_matrices
+from research.models.markov.transition import (
+    estimate_conditional_transition_matrices,
+    estimate_forecast_transition_matrix,
+)
 from research.models.meta_regime import MetaRegimeDetector
 from research.models.transition_entropy import compute_transition_entropy
 from research.models.trajectory import RegimeStats, compute_trajectory
@@ -328,9 +331,9 @@ def compute_window_forecast(
         decay_rate=decay_rate,
     )
 
-    # Transition matrix: the symmetric default matrix unless conditional transitions
-    # apply (no break only), as in TS. The default's uniform stationary mix cancels
-    # the bull/bear regime drifts and measured better Brier than the decayed estimate.
+    # Transition matrix, as in TS: without a break, the conditional matrices when they apply, else (non-crypto)
+    # the decay-free estimate under a Dirichlet prior centred on the default matrix; with a break, or for
+    # crypto, the default.
     estimated_P = estimate_transition_matrix(regimes, decay_rate=decay_rate)
     if not break_result["detected"] and use_meta_regime and use_conditional_transitions:
         meta_fit = MetaRegimeDetector().fit(active_returns)
@@ -344,6 +347,8 @@ def compute_window_forecast(
             P = conditional_matrices[current_environment]
         else:
             P = estimated_P.copy()
+    elif not break_result["detected"] and asset_profile != "crypto":
+        P = estimate_forecast_transition_matrix(regimes)
     else:
         P = _default_matrix()
 

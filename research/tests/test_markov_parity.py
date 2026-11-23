@@ -117,6 +117,24 @@ def test_estimate_transition_matrix_self_persistence():
     assert m[bull_idx][bull_idx] > 0.8
 
 
+def test_estimate_forecast_transition_matrix_is_dirichlet_posterior_on_default():
+    # Mirrors transition.ts estimateForecastTransitionMatrix: undecayed counts plus K x default row.
+    from research.models.markov.transition import (
+        FORECAST_TRANSITION_PRIOR_STRENGTH,
+        _default_matrix,
+        estimate_forecast_transition_matrix,
+    )
+    pattern = ["bull", "bull", "bear", "sideways"]
+    states = [pattern[i % 4] for i in range(40)]
+    counts = np.zeros((NUM_STATES, NUM_STATES))
+    for a, b in zip(states, states[1:]):
+        counts[STATE_INDEX[a]][STATE_INDEX[b]] += 1
+    k = FORECAST_TRANSITION_PRIOR_STRENGTH
+    expected = (counts + k * _default_matrix()) / (counts.sum(axis=1, keepdims=True) + k)
+    np.testing.assert_allclose(estimate_forecast_transition_matrix(states), expected, atol=1e-12)
+    np.testing.assert_allclose(estimate_forecast_transition_matrix(states[:20]), _default_matrix())
+
+
 def test_estimate_transition_matrix_decay_weights_match_hand_count():
     states = ["bull", "bear", "bull", "sideways"]
     alpha = 0.1
@@ -752,6 +770,23 @@ class TestComputeValidationR2OS:
 
         assert r2os(1.0) is not None
         assert r2os(8.0) == r2os(1.0)
+
+    def test_validator_fits_the_given_matrix_estimator_on_the_training_slice(self):
+        # Mirrors markov-distribution.ts: the gate validates the estimator behind the forecast's matrix.
+        from research.models.markov import compute_validation_r2_os, classify_regime_series
+        from research.models.markov.transition import estimate_forecast_transition_matrix
+        import numpy as np
+        returns = 0.012 * np.sin(0.9 * np.arange(150))
+        fitted: list[int] = []
+
+        def spy(states):
+            fitted.append(len(states))
+            return estimate_forecast_transition_matrix(states)
+
+        compute_validation_r2_os(
+            "equity", 7, classify_regime_series(returns), np.log1p(returns), estimate_train_matrix=spy,
+        )
+        assert fitted == [130]
 
     def test_horizon_return_path_for_crypto(self):
         from research.models.markov import (

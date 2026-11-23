@@ -145,6 +145,7 @@ import {
   adjustTransitionMatrix,
   buildDefaultMatrix,
   estimateConditionalTransitionMatrices,
+  estimateForecastTransitionMatrix,
   estimateTransitionMatrix,
   matMul,
   matPow,
@@ -1988,12 +1989,12 @@ function computeValidationR2OS(params: {
   returns: number[];
   returnThresholdMultiplier: number;
   assetProfile: AssetProfile;
-  transitionDecayOverride?: number;
+  /** The estimator behind the forecast's matrix, fitted on each training slice so the gate validates that model. */
+  estimateTrainMatrix: (states: RegimeState[]) => TransitionMatrix;
 }): { r2os: number | null; validationMetric: 'daily_return' | 'horizon_return' } {
   const {
-    assetType, horizon, regimeSeq, logReturns, returns, returnThresholdMultiplier, assetProfile, transitionDecayOverride,
+    assetType, horizon, regimeSeq, logReturns, returns, returnThresholdMultiplier, assetProfile, estimateTrainMatrix,
   } = params;
-  const effectiveDecayRate = transitionDecayOverride ?? resolveForecastLabMarkovParameterDefaults().transitionDecay;
 
   const useHorizonValidator = assetType === 'crypto' && horizon >= 7 && horizon <= 14;
   if (useHorizonValidator) {
@@ -2012,7 +2013,7 @@ function computeValidationR2OS(params: {
         const trainLogReturns = logReturns.slice(0, start);
         if (trainStates.length < 20 || trainLogReturns.length < 20) continue;
 
-        const trainP = estimateTransitionMatrix(trainStates, undefined, 30, effectiveDecayRate);
+        const trainP = estimateTrainMatrix(trainStates);
         const trainRegimeStats = estimateRegimeStats(trainLogReturns, trainStates, assetProfile.maxDailyDrift);
         const lastTrainState = trainStates[trainStates.length - 1];
         const trainMean = trainLogReturns.reduce((s, v) => s + v, 0) / trainLogReturns.length;
@@ -2046,7 +2047,7 @@ function computeValidationR2OS(params: {
     const trainReturns = logReturns.slice(0, -minHeldOut);
     const testReturns  = logReturns.slice(-minHeldOut);
 
-    const trainP    = estimateTransitionMatrix(trainStates, undefined, 30, effectiveDecayRate);
+    const trainP    = estimateTrainMatrix(trainStates);
     const trainRegimeStats = estimateRegimeStats(trainReturns, trainStates, assetProfile.maxDailyDrift);
     const trainMean = trainReturns.reduce((s, v) => s + v, 0) / trainReturns.length;
     const predicted = testReturns.map((_, i) => {
@@ -3565,11 +3566,14 @@ export async function computeMarkovDistribution(params: {
     : { detected: false, divergence: 0, firstHalfMatrix: buildDefaultMatrix(), secondHalfMatrix: buildDefaultMatrix() };
 
   // --- Transition matrix ---
-  // Without a break the symmetric default matrix is used, not the decayed estimate:
-  // its uniform stationary mix cancels the bull/bear regime drifts, and on the
-  // backtest fixture that shrinkage measured better Brier than the estimate or
-  // 50/75% blends of the two. The old detector fired on ~90% of steps, so this
-  // was already the de facto baseline.
+  // Without a break a non-crypto forecast uses the decay-free estimate under a Dirichlet prior centred on the
+  // default matrix (estimateForecastTransitionMatrix). The bare decayed estimate measured worse Brier than the
+  // default (+0.0019 on the live-config benchmark) because its stationary mix extrapolates the window's drift;
+  // the prior keeps the default's cancelling mix until a row has enough transitions. The R²_OS gate validates
+  // this same estimator. Crypto keeps the default matrix (on BTC without the xiphos profile the estimate raised
+  // HOLD by 2.1pp, over the 2pp limit), as does any forecast with a break.
+  const metaRegimeTransitions = params.useMetaRegime === true && params.useConditionalTransitions === true;
+  const noBreakUsesForecastEstimate = !metaRegimeTransitions && assetProfile.type !== 'crypto';
   const estimatedP = estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
   let P: TransitionMatrix;
   if (breakResult.detected) {
@@ -3581,7 +3585,7 @@ export async function computeMarkovDistribution(params: {
       P = buildDefaultMatrix();
     }
   } else {
-    if (params.useMetaRegime === true && params.useConditionalTransitions === true) {
+    if (metaRegimeTransitions) {
       // Conditional transitions only override the non-break estimated-matrix path.
       const metaRegime = new MetaRegimeDetector().fit(returns);
       const conditionalMatrices = estimateConditionalTransitionMatrices(
@@ -3594,7 +3598,7 @@ export async function computeMarkovDistribution(params: {
         ? conditionalMatrices[metaRegime.current_environment] ?? estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay)
         : estimateTransitionMatrix(regimeSeq, undefined, 30, effectiveTransitionDecay);
     } else {
-      P = buildDefaultMatrix();
+      P = noBreakUsesForecastEstimate ? estimateForecastTransitionMatrix(regimeSeq) : buildDefaultMatrix();
     }
   }
 
@@ -4343,7 +4347,11 @@ export async function computeMarkovDistribution(params: {
     returns,
     returnThresholdMultiplier: effectiveReturnThresholdMultiplier,
     assetProfile,
-    transitionDecayOverride,
+    // Meta-regime conditional matrices are not refitted per slice, and crypto forecasts with the default matrix;
+    // those gates keep the decayed estimate.
+    estimateTrainMatrix: noBreakUsesForecastEstimate
+      ? estimateForecastTransitionMatrix
+      : (states) => estimateTransitionMatrix(states, undefined, 30, effectiveTransitionDecay),
   });
   const r2os = validation.r2os;
 

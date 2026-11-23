@@ -8,6 +8,7 @@ Mirrors TS logic:
 from __future__ import annotations
 
 import math
+from typing import Callable
 
 import numpy as np
 
@@ -45,13 +46,19 @@ def compute_validation_r2_os(
     max_daily_drift: float | None = None,
     transition_decay_override: float | None = None,
     return_threshold_multiplier: float = 0.5,
+    estimate_train_matrix: Callable[[list[RegimeState]], np.ndarray] | None = None,
 ) -> dict:
     """Walk-forward excess R²: Markov R² minus historical-mean baseline R².
 
     The horizon validator classifies each training slice with thresholds from that slice alone
     (``return_threshold_multiplier``), so the held-out days do not leak into the training regimes.
+    ``estimate_train_matrix`` is the estimator behind the forecast's matrix (default: the decayed estimate),
+    so the gate validates the model that forecasts.
     """
     effective_decay = transition_decay_override if transition_decay_override is not None else 0.97
+    if estimate_train_matrix is None:
+        def estimate_train_matrix(states: list[RegimeState]) -> np.ndarray:
+            return estimate_transition_matrix(states, None, 30, effective_decay)
     returns = np.asarray(log_returns, dtype=float)
 
     use_horizon_validator = asset_type == "crypto" and 7 <= horizon <= 14
@@ -70,7 +77,7 @@ def compute_validation_r2_os(
                 if len(train_states) < 20 or len(train_returns) < 20:
                     continue
 
-                train_P = estimate_transition_matrix(train_states, None, 30, effective_decay)
+                train_P = estimate_train_matrix(train_states)
                 train_stats = estimate_regime_stats(train_returns, train_states, max_daily_drift)
                 last_state = train_states[-1]
                 train_mean = float(np.mean(train_returns))
@@ -95,7 +102,7 @@ def compute_validation_r2_os(
         train_returns = returns[:-min_held_out]
         test_returns = returns[-min_held_out:]
 
-        train_P = estimate_transition_matrix(train_states, None, 30, effective_decay)
+        train_P = estimate_train_matrix(train_states)
         train_stats = estimate_regime_stats(train_returns, train_states, max_daily_drift)
         train_mean = float(np.mean(train_returns))
         last_train_state = train_states[-1]

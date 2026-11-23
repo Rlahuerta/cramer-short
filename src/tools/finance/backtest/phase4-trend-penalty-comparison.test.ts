@@ -13,7 +13,8 @@ describe('phase4-trend-penalty-comparison', () => {
   // cases in ordinary test files joined test:integration.
   // Refreshed 2026-11-23: the 400-iteration return-HMM budget lets the HMM converge, so its +0.10 confidence bonus
   // lifts most steps over the 0.2 threshold (coverage 0.911 -> 0.995, accuracy 0.6505 -> 0.6484); with the HMM on
-  // log returns, coverage 0.994 and accuracy 0.6475.
+  // log returns, coverage 0.994 and accuracy 0.6475; with the estimated non-crypto transition matrix
+  // (2026-11-23), coverage 0.995 and accuracy 0.6499.
   integrationIt('reproduces the verified Phase 4 headline metrics on the fixture universe', async () => {
     const artifact = await runComparison();
 
@@ -23,10 +24,10 @@ describe('phase4-trend-penalty-comparison', () => {
     expect(artifact.delta.changedBreakChopCount).toBe(0);
     expect(artifact.delta.changedBreakTrendingCount).toBe(0);
 
-    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6475155279503105, 6);
-    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.9939393939393939, 6);
-    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6475155279503105, 6);
-    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.9939393939393939, 6);
+    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6498838109992254, 6);
+    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.9954545454545455, 6);
+    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6498838109992254, 6);
+    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.9954545454545455, 6);
 
     expect(artifact.baseline.breakContextRC.find(point => point.threshold === 0.3)?.accuracy).toBeCloseTo(0.6666666666666666, 6);
     expect(artifact.baseline.breakContextRC.find(point => point.threshold === 0.3)?.coverage).toBeCloseTo(0.25, 6);

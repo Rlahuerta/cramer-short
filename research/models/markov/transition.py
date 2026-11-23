@@ -21,6 +21,7 @@ def estimate_transition_matrix(
     min_observations: int | None = None,
     decay_rate: float | None = None,
     stickiness_shrinkage: bool = False,
+    prior_strength: float | None = None,
 ) -> np.ndarray:
     """Estimate transition matrix with Dirichlet smoothing and exponential decay.
 
@@ -36,6 +37,8 @@ def estimate_transition_matrix(
         Exponential decay: recent transitions weighted more.
     stickiness_shrinkage : bool
         If True, apply the xiphos continuous stickiness penalty and row-wise Bayesian shrinkage.
+    prior_strength : float | None
+        Pseudo-transitions per row of a Dirichlet prior centred on the default matrix; replaces ``alpha``.
 
     Returns
     -------
@@ -57,7 +60,11 @@ def estimate_transition_matrix(
 
     effective_alpha = alpha if alpha is not None else max(0.01, 5.0 / len(states))
 
-    counts = np.full((NUM_STATES, NUM_STATES), effective_alpha, dtype=float)
+    if prior_strength is None:
+        counts = np.full((NUM_STATES, NUM_STATES), effective_alpha, dtype=float)
+    else:
+        counts = prior_strength * _default_matrix()
+    prior_mass_per_row = prior_strength if prior_strength is not None else NUM_STATES * effective_alpha
 
     n = len(states) - 1
     for i in range(n):
@@ -82,7 +89,7 @@ def estimate_transition_matrix(
         max_diag = float(np.max(np.diag(result)))
         d_start = 0.8
         s = float(np.square(max(0.0, (max_diag - d_start) / (1.0 - d_start))))
-        raw_row_sums = counts.sum(axis=1) - NUM_STATES * effective_alpha
+        raw_row_sums = counts.sum(axis=1) - prior_mass_per_row
         raw_row_sums = np.maximum(0.0, raw_row_sums)
         prior_strength = 10.0 * (1.0 + 9.0 * s)
         default = _default_matrix()
@@ -96,6 +103,21 @@ def estimate_transition_matrix(
             raise ValueError("Transition matrix entries must be nonnegative")
 
     return result
+
+
+# Mirrors transition.ts FORECAST_TRANSITION_PRIOR_STRENGTH.
+FORECAST_TRANSITION_PRIOR_STRENGTH = 100
+
+
+def estimate_forecast_transition_matrix(states: list[RegimeState]) -> np.ndarray:
+    """The no-break forecast matrix (mirrors transition.ts ``estimateForecastTransitionMatrix``).
+
+    Undecayed transition counts under a Dirichlet prior centred on the default matrix with
+    ``FORECAST_TRANSITION_PRIOR_STRENGTH`` pseudo-transitions per row.
+    """
+    return estimate_transition_matrix(
+        states, None, 30, 1.0, False, prior_strength=FORECAST_TRANSITION_PRIOR_STRENGTH,
+    )
 
 
 def estimate_conditional_transition_matrices(
