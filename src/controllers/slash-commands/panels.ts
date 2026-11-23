@@ -1,6 +1,7 @@
 import { Container, Spacer, Text, type Component, type SlashCommand } from '@mariozechner/pi-tui';
 import { discoverSkills } from '../../skills/registry.js';
 import { theme } from '../../theme.js';
+import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../../tools/finance/markov-distribution/core.js';
 import type { WatchlistEntry } from '../watchlist-controller.js';
 import {
   buildAsciiBar,
@@ -164,7 +165,7 @@ export function buildWatchlistPanel(
   for (const row of rows) {
     const ticker = theme.primary(row.ticker.padEnd(8));
     const confStr = row.predictionConfidence !== undefined
-      ? row.predictionConfidence >= 0.25
+      ? row.predictionConfidence >= RECOMMENDED_CONFIDENCE_THRESHOLD
         ? theme.success('✓'.padStart(5))
         : theme.warning('⚠'.padStart(5))
       : '—'.padStart(5);
@@ -320,7 +321,7 @@ export function buildSnapshotPanel(
       const bar = buildAsciiBar(pct, BAR_WIDTH);
       const pctStr = `${pct.toFixed(0)}%`.padStart(4);
       const confIcon = e.predictionConfidence !== undefined
-        ? e.predictionConfidence >= 0.25
+        ? e.predictionConfidence >= RECOMMENDED_CONFIDENCE_THRESHOLD
           ? theme.success(' ✓')
           : theme.warning(' ⚠')
         : ' —';
@@ -342,8 +343,8 @@ export function buildSnapshotPanel(
     .map((e) => e.predictionConfidence!);
   if (confidenceValues.length > 0) {
     const high = confidenceValues.filter((c) => c >= 0.40).length;
-    const medium = confidenceValues.filter((c) => c >= 0.25 && c < 0.40).length;
-    const low = confidenceValues.filter((c) => c < 0.25).length;
+    const medium = confidenceValues.filter((c) => c >= RECOMMENDED_CONFIDENCE_THRESHOLD && c < 0.40).length;
+    const low = confidenceValues.filter((c) => c < RECOMMENDED_CONFIDENCE_THRESHOLD).length;
     const total = confidenceValues.length;
     const highPct = Math.round((high / total) * 100);
     const medPct = Math.round((medium / total) * 100);
@@ -354,9 +355,10 @@ export function buildSnapshotPanel(
     const medBar = buildAsciiBar(medPct, 20);
     const lowBar = buildAsciiBar(lowPct, 20);
     container.addChild(new Text(`  High (≥0.40):   ${theme.success(highBar)} ${highPct}% (${high})`, 0, 0));
-    container.addChild(new Text(`  Medium (0.25–0.40): ${theme.warning(medBar)} ${medPct}% (${medium})`, 0, 0));
-    container.addChild(new Text(`  Low (<0.25):    ${theme.error(lowBar)} ${lowPct}% (${low})`, 0, 0));
-    const avgIcon = avgConf >= 0.40 ? theme.success('✓') : avgConf >= 0.25 ? theme.warning('⚠') : theme.error('✗');
+    const threshold = RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2);
+    container.addChild(new Text(`  Medium (${threshold}–0.40): ${theme.warning(medBar)} ${medPct}% (${medium})`, 0, 0));
+    container.addChild(new Text(`  Low (<${threshold}):    ${theme.error(lowBar)} ${lowPct}% (${low})`, 0, 0));
+    const avgIcon = avgConf >= 0.40 ? theme.success('✓') : avgConf >= RECOMMENDED_CONFIDENCE_THRESHOLD ? theme.warning('⚠') : theme.error('✗');
     container.addChild(new Text(`  Average: ${avgConf.toFixed(2)} ${avgIcon}`, 0, 0));
     container.addChild(new Text('', 0, 0));
   }
