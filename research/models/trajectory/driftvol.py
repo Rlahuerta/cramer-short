@@ -57,6 +57,7 @@ def compute_horizon_drift_vol(
     regime_specific_sigma_threshold: float | None = None,
     garch_scales: list[float] | None = None,
     terminal_state_weights: list[float] | np.ndarray | None = None,
+    drift_scale: float = 1.0,
 ) -> dict[str, float]:
     Pn = _mat_pow(P, horizon)
     if start_mixture:
@@ -134,6 +135,6 @@ def compute_horizon_drift_vol(
         sigma_n *= math.sqrt(variance_scale / horizon) if horizon > 0 else 1.0
 
     return {
-        "mu_n": mu_n,
+        "mu_n": mu_n * drift_scale,
         "sigma_n": sigma_n,
     }

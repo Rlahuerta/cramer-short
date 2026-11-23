@@ -40,14 +40,15 @@ const BTC_14D_ABSTAIN_REASON =
 // Refreshed 2026-11-23: the return-HMM fit budget went from 50 to 400 iterations, so the HMM overlay now applies on
 // these steps; Brier improves at every horizon (pooled live-config benchmark: -0.0021, 95% CI [-0.0029, -0.0013]).
 // Refreshed again 2026-11-23 for the return HMM on log returns (pooled benchmark: no-harm, +0.00004).
+// Refreshed again 2026-11-23 for the 0.5 forecast drift shrink: Brier improves at every horizon.
 const BTC_FIXTURE_BASELINE = {
   '1d': {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 42,
-      directionalAccuracy: 0.5185185185185185,
-      brierScore: 0.2561278464473905,
+      abstainCount: 51,
+      directionalAccuracy: 0.4888888888888889,
+      brierScore: 0.2530920131208579,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -77,9 +78,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 40,
-      directionalAccuracy: 0.5357142857142857,
-      brierScore: 0.2551547905103559,
+      abstainCount: 36,
+      directionalAccuracy: 0.5333333333333333,
+      brierScore: 0.25234617940544696,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -109,9 +110,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 31,
-      directionalAccuracy: 0.49230769230769234,
-      brierScore: 0.25776093006437284,
+      abstainCount: 29,
+      directionalAccuracy: 0.5074626865671642,
+      brierScore: 0.2540749438367688,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -141,9 +142,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 95,
       tradedCount: null,
-      abstainCount: 15,
-      directionalAccuracy: 0.5375,
-      brierScore: 0.25366490203665915,
+      abstainCount: 11,
+      directionalAccuracy: 0.5357142857142857,
+      brierScore: 0.25163144016311195,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -173,9 +174,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 93,
       tradedCount: null,
-      abstainCount: 11,
-      directionalAccuracy: 0.5121951219512195,
-      brierScore: 0.25500178024926645,
+      abstainCount: 12,
+      directionalAccuracy: 0.5061728395061729,
+      brierScore: 0.2522858469194534,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -536,11 +537,11 @@ describe('combined short-horizon benchmark', () => {
     ).length;
 
     expect(naiveOneDay.steps.length).toBe(122);
-    expect(naiveHoldCount).toBe(50);
+    expect(naiveHoldCount).toBe(58);
     expect(naiveBreakCount).toBe(8);
     expect(report.horizons['1d'].markovOnly.observationCount).toBeLessThan(naiveOneDay.steps.length);
-    // Since the 400-iteration HMM budget (2026-11-23) the live policy lowers 1d abstentions again (42 vs 50 with
-    // the HMM on log returns); it also detects fewer breaks than the naive config (0 vs 8).
+    // Since the 400-iteration HMM budget (2026-11-23) the live policy lowers 1d abstentions again (51 vs 58 with
+    // the 0.5 drift shrink); it also detects fewer breaks than the naive config (0 vs 8).
     expect(report.horizons['1d'].markovOnly.abstainCount).toBeLessThan(naiveHoldCount);
     expect(report.horizons['1d'].markovOnly.structuralBreakCount).toBeLessThan(naiveBreakCount);
     expect(report.horizons['7d'].combinedArbitrated.pendingReasons).toEqual([BTC_7D_ABSTAIN_REASON]);

@@ -2142,7 +2142,9 @@ describe('Markov distribution walk-forward backtest', () => {
       
       expect(base.brier).toBeGreaterThan(0);
       expect(exp.brier).toBeGreaterThan(0);
-      expect(exp.calibrationsActive).toBeGreaterThan(0);
+      // 2026-11-23: the 0.5 forecast drift shrink removed the overconfident BTC 14d bull forecasts this experiment
+      // targets, so it no longer activates on the fixture; a change that brings that overconfidence back shows here.
+      expect(exp.calibrationsActive).toBe(0);
     }, 60000);
   });
 

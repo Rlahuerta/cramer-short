@@ -43,6 +43,7 @@ from research.models.markov.transition import (
     estimate_conditional_transition_matrices,
     estimate_forecast_transition_matrix,
 )
+from research.models.markov.core import FORECAST_DRIFT_SHRINK
 from research.models.meta_regime import MetaRegimeDetector
 from research.models.transition_entropy import compute_transition_entropy
 from research.models.trajectory import RegimeStats, compute_trajectory
@@ -493,6 +494,7 @@ def compute_window_forecast(
         garch_scales=garch_scales,
         uncertainty_ci_scale=uncertainty_ci_scale,
         random_state=random_state,
+        drift_scale=FORECAST_DRIFT_SHRINK,
     )
     horizon_point = traj[-1]
 

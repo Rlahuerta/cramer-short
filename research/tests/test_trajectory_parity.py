@@ -722,3 +722,39 @@ def test_compute_trajectory_sigma_n_reproduces_p_up():
         assert student_t_survival(current, current, mu_n, pt.sigma_n) == pytest.approx(
             pt.p_up, abs=2e-3
         )
+
+
+# --- Forecast drift scale (mirrors confidence-intervals.ts / FORECAST_DRIFT_SHRINK) ---
+
+_DRIFT_P = np.full((3, 3), 0.2) + np.eye(3) * 0.4
+_DRIFT_STATS = {
+    "bull": RegimeStats(mean_return=0.004, std_return=0.010),
+    "bear": RegimeStats(mean_return=-0.002, std_return=0.012),
+    "sideways": RegimeStats(mean_return=0.001, std_return=0.006),
+}
+_DRIFT_HMM = {"drift": 0.002, "vol": 0.011, "weight": 0.3}
+
+
+def test_horizon_drift_scale_scales_drift_only():
+    full = compute_horizon_drift_vol(10, _DRIFT_P, _DRIFT_STATS, "bull", 0.001, None, _DRIFT_HMM)
+    half = compute_horizon_drift_vol(10, _DRIFT_P, _DRIFT_STATS, "bull", 0.001, None, _DRIFT_HMM, drift_scale=0.5)
+    assert half["mu_n"] == pytest.approx(0.5 * full["mu_n"], abs=1e-12)
+    assert half["sigma_n"] == full["sigma_n"]
+
+
+def test_trajectory_drift_scale_scales_expected_log_price():
+    def run(scale):
+        return compute_trajectory(1e6, 10, _DRIFT_P, _DRIFT_STATS, "bull", 0.001, n_samples=200,
+                                  hmm_override=_DRIFT_HMM, random_state=3, drift_scale=scale)
+    full, half = run(1.0), run(0.5)
+    assert math.log(half[-1].expected_price / 1e6) == pytest.approx(0.5 * math.log(full[-1].expected_price / 1e6), abs=1e-7)
+
+
+def test_distribution_drift_scale_centres_on_scaled_drift():
+    stats = compute_horizon_drift_vol(10, _DRIFT_P, _DRIFT_STATS, "bull", 0.001)
+    dist = interpolate_distribution(100.0, 10, _DRIFT_P, _DRIFT_STATS, "bull", [], second_eigenvalue=0.4,
+                                    monte_carlo_samples=20, momentum_adjustment=0.001, daily_vol=0.01, nu=5,
+                                    random_state=3, forecast_drift_scale=0.5)
+    spot = next(p for p in dist if p["price"] == 100.0)
+    assert spot["probability"] == pytest.approx(
+        student_t_survival(100.0, 100.0, 0.5 * stats["mu_n"], stats["sigma_n"], 5), abs=1e-12)

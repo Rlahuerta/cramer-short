@@ -98,6 +98,7 @@ import type {
 import { hasEnv } from '../../utils/env.js';
 
 import {
+  FORECAST_DRIFT_SHRINK,
   FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
   NUM_STATES,
   PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS,
@@ -2018,6 +2019,8 @@ function computeValidationR2OS(params: {
         const lastTrainState = trainStates[trainStates.length - 1];
         const trainMean = trainLogReturns.reduce((s, v) => s + v, 0) / trainLogReturns.length;
         const realizedHorizonReturn = logReturns.slice(start, start + horizon).reduce((s, v) => s + v, 0);
+        // Unshrunk on purpose: the gate asks whether the regime structure beats the mean, and its thresholds were
+        // set on unshrunk predictions (a uniform shrink would lift R² toward 0 mechanically).
         const { mu_n } = computeHorizonDriftVol(
           horizon,
           trainP,
@@ -2734,6 +2737,8 @@ export function computeActionSignal(
   recentVol?: number,
   scenarios?: ScenarioProbabilities,
   assetType?: AssetProfile['type'],
+  /** Factor on the BUY/SELL expected-return thresholds; matches the forecast's drift scale so HOLD stays stable. */
+  actionThresholdScale = 1,
 ): ActionSignal {
   const pAboveBuy  = interpolateSurvival(distribution, currentPrice * (1 + buyThreshold));
   const pAboveSell = interpolateSurvival(distribution, currentPrice * (1 - sellThreshold));
@@ -2786,11 +2791,11 @@ export function computeActionSignal(
     // In bullish markets, HOLD is usually wrong (actual returns are +3-10%),
     // so converting uncertain HOLDs to BUYs improves directional accuracy.
     const volScaled = recentVol * Math.sqrt(horizon);
-    actionBuyThr  = Math.max(0.001, 0.08 * volScaled);
-    actionSellThr = Math.max(0.001, 0.06 * volScaled);
+    actionBuyThr  = Math.max(0.001, 0.08 * volScaled * actionThresholdScale);
+    actionSellThr = Math.max(0.001, 0.06 * volScaled * actionThresholdScale);
   } else {
-    actionBuyThr  = horizon <= 7 ? 0.003 : horizon <= 30 ? 0.005 : 0.008;
-    actionSellThr = horizon <= 7 ? 0.002 : horizon <= 30 ? 0.003 : 0.005;
+    actionBuyThr  = (horizon <= 7 ? 0.003 : horizon <= 30 ? 0.005 : 0.008) * actionThresholdScale;
+    actionSellThr = (horizon <= 7 ? 0.002 : horizon <= 30 ? 0.003 : 0.005) * actionThresholdScale;
   }
 
   // Recommendation derived from expectedReturn (not zone argmax)
@@ -4189,13 +4194,14 @@ export async function computeMarkovDistribution(params: {
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     horizonStudentTNu(assetProfile.studentTNu, horizon), regimeSpecificSigma, regimeSpecificSigmaThreshold,
-    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, randomState,
+    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, randomState, FORECAST_DRIFT_SHRINK,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
     horizon, effectiveP, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, effectiveMixture,
     regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScalesForDistribution, forecastAdjustedStateWeights,
+    FORECAST_DRIFT_SHRINK,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -4305,7 +4311,7 @@ export async function computeMarkovDistribution(params: {
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
     20, 0, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
-    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights,
+    logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, undefined, FORECAST_DRIFT_SHRINK,
   ).map((pt, i) => ({ ...pt, lowerBound: rawDistribution[i].lowerBound, upperBound: rawDistribution[i].upperBound }));
   const legacyDistribution = calibrateProbabilities(legacyRawDistribution, {
     ...calibrationOptions,
@@ -4488,6 +4494,7 @@ export async function computeMarkovDistribution(params: {
       garchScalesForTraj,
       uncertaintyTrajectoryScale,
       randomState,
+      FORECAST_DRIFT_SHRINK,
     );
 
     // Align trajectory P(Up) with the calibrated CDF at the horizon day.
@@ -4626,6 +4633,7 @@ export async function computeMarkovDistribution(params: {
       recentDailyVol,
       computeScenarioProbabilities(legacyRawDistribution, currentPrice),
       assetProfile.type,
+      FORECAST_DRIFT_SHRINK,
     );
   }
 
@@ -4639,12 +4647,13 @@ export async function computeMarkovDistribution(params: {
       recentDailyVol,
       computeScenarioProbabilities(legacyRawDistribution, currentPrice),
       assetProfile.type,
+      FORECAST_DRIFT_SHRINK,
     );
   }
 
   const actionSignal = computeActionSignal(
     decisionDistribution, currentPrice, undefined, undefined, horizon,
-    recentDailyVol, decisionScenarios, assetProfile.type,
+    recentDailyVol, decisionScenarios, assetProfile.type, FORECAST_DRIFT_SHRINK,
   );
 
   actionSignal.confidence = capBtcShortHorizonConfidence({

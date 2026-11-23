@@ -379,11 +379,11 @@ describe('hybrid break fallback', () => {
     // so the hybrid barely differs from the control (break+trending delta 0, Brier delta ~-2e-6); this case had
     // not run in any tier until integrationIt cases in ordinary test files joined test:integration.
     // Refreshed 2026-11-23: the 400-iteration return-HMM budget, then the HMM on log returns, move the Brier delta
-    // to ~-2.8e-7.
+    // to ~-2.8e-7; the 0.5 forecast drift shrink moves it to ~+6.4e-6.
     const bestHybrid = artifact.candidates.find(candidate => candidate.candidateId === 'HYB_L025_M050_H075_lambda025');
     expect(bestHybrid).toBeDefined();
     expect(bestHybrid!.deltaVsBaseline.breakTrendingDirectionalAccuracy).toBeCloseTo(0, 10);
-    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeCloseTo(-2.8157184212007635e-7, 10);
+    expect(bestHybrid!.deltaVsBaseline.overallBrier).toBeCloseTo(0.000006442978795373477, 10);
     expect(bestHybrid!.passesThresholds).toBe(false);
     expect(bestHybrid!.failureReasons.some(reason => reason.includes('break+trending gain'))).toBe(true);
 

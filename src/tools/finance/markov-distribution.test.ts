@@ -852,7 +852,8 @@ describe('base-rate floor decision surface', () => {
     const closes: number[] = JSON.parse(
       readFileSync(new URL('./fixtures/backtest-prices.json', import.meta.url), 'utf-8'),
     ).tickers['BTC-USD'].closes;
-    const t = 422; // floored 2d forecast: calibrated P(up) ~0.46
+    // Floored 2d forecast, calibrated P(up) ~0.48 (t=422 until the forecast drift was shrunk by 0.5, 2026-11-23).
+    const t = 401;
     const result = await computeMarkovDistribution({
       ticker: 'BTC-USD',
       horizon: 2,
@@ -1420,6 +1421,15 @@ function makeLinearDist(lo: number, hi: number, n = 21): MarkovDistributionPoint
   });
 }
 
+describe('computeActionSignal action-threshold scale', () => {
+  it('scales the BUY/SELL thresholds with the forecast drift scale', () => {
+    // Uniform on [99.12, 101.12]: expected return +0.12%. Vol 1%, horizon 4: the BUY threshold is 0.08 x 2% = 0.16%.
+    const dist = makeLinearDist(99.12, 101.12);
+    expect(computeActionSignal(dist, 100, 0.05, 0.03, 4, 0.01).recommendation).toBe('HOLD');
+    expect(computeActionSignal(dist, 100, 0.05, 0.03, 4, 0.01, undefined, undefined, 0.5).recommendation).toBe('BUY');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // computeScenarioProbabilities — derived from calibrated CDF
 // ---------------------------------------------------------------------------
@@ -1677,10 +1687,11 @@ describe('sensitivity analysis', () => {
     // saturates (~0.99995) under any sentiment and calibration pins all three to the
     // same P(up). Pinned P(up) fixes drift / sigma, so E[return] follows sigma, and
     // bearish sentiment adds sigma via the unobserved bear/sideways default stats.
-    // The base-rate floor pins P(up) the same way, so this series also keeps clear of it.
+    // The base-rate floor pins P(up) the same way, so this series also keeps clear of it: with no trend P(up)
+    // stays near 0.5 (a 0.002 trend put all three on the floor once the drift was shrunk by 0.5, 2026-11-23).
     const prices = [100];
     for (let i = 1; i < 40; i++) {
-      prices.push(prices[i - 1] * (1 + 0.002 + 0.01 * Math.sin(i * 2.3) + 0.004 * Math.cos(i * 0.7)));
+      prices.push(prices[i - 1] * (1 + 0.01 * Math.sin(i * 2.3) + 0.004 * Math.cos(i * 0.7)));
     }
     const run = (sentiment: { bullish: number; bearish: number }) => computeMarkovDistribution({
       ticker: 'SENT_MONO',
@@ -2218,10 +2229,10 @@ describe('computeMarkovDistribution trajectory mode', () => {
 
 describe('trajectory P(up) alignment follows the horizon, not the last trajectory day', () => {
   // Seeded GBM (mulberry32 + Box-Muller): raw trajectory P(up) is analytic, so this is deterministic. The seed
-  // must put the raw day-7 P(up) more than 2pp from the calibrated value, or no override happens (16 since the
-  // no-break matrix became the estimate, 2026-11-23).
+  // must put the raw day-7 P(up) more than 2pp from the calibrated value, or no override happens (17 since the
+  // forecast drift was shrunk by 0.5, 2026-11-23).
   const prices = (() => {
-    let seed = 16;
+    let seed = 17;
     const u = () => {
       seed = (seed + 0x6D2B79F5) >>> 0;
       let t = seed;
@@ -3133,11 +3144,11 @@ describe('PR3 Post-Experiment: matureBullCalibration', () => {
   it('applies extra shrinkage for overconfident BTC bull runs with stalling acceleration at 14d horizon', async () => {
     const prices = [];
     let p = 60000;
-    // Late drift 0.002 keeps raw P(up) (~0.94) above the 0.80 calibration center, so the
-    // run really is overconfident. At 0.001 raw P(up) is ~0.74, below the center, and
+    // Late drift 0.004 keeps raw P(up) (~0.86 with the 0.5 forecast drift shrink) above the 0.80 calibration
+    // center, so the run really is overconfident. At 0.002 raw P(up) is ~0.74, below the center, and
     // extra shrinkage toward the center would raise P(up) instead.
     for (let i = 0; i < 140; i++) {
-      const drift = i < 70 ? 0.012 : 0.002;
+      const drift = i < 70 ? 0.012 : 0.004;
       const wobble = Math.sin(i / 2) * 0.003;
       p *= (1 + drift + wobble);
       prices.push(p);
@@ -3176,7 +3187,7 @@ describe('PR3 Post-Experiment: matureBullCalibration', () => {
   });
 
   it('stays off when raw P(up) is below the calibration center, where extra shrinkage would raise it', async () => {
-    // Late drift 0.001: raw P(up) ~0.74, below the 0.80 center, so the run is not overconfident.
+    // Late drift 0.001: raw P(up) well below the 0.80 center, so the run is not overconfident.
     const prices: number[] = [];
     let p = 60000;
     for (let i = 0; i < 140; i++) {

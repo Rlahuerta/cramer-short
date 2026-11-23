@@ -1174,3 +1174,38 @@ describe('computeHorizonDriftVol — path-integrated drift', () => {
     expect(fullOverride.mu_n).toBeCloseTo(10 * 0.001, 12);
   });
 });
+
+describe('forecast drift scale', () => {
+  const P = buildDefaultMatrix();
+  const stats = {
+    bull: { meanReturn: 0.004, stdReturn: 0.010 },
+    bear: { meanReturn: -0.002, stdReturn: 0.012 },
+    sideways: { meanReturn: 0.001, stdReturn: 0.006 },
+  };
+  const hmm = { drift: 0.002, vol: 0.011, weight: 0.3 };
+
+  it('scales the horizon drift and leaves the volatility alone', () => {
+    const full = computeHorizonDriftVol(10, P, stats, 'bull', 0.001, hmm);
+    const half = computeHorizonDriftVol(10, P, stats, 'bull', 0.001, hmm, undefined, undefined, undefined, undefined, undefined, 0.5);
+    expect(half.mu_n).toBeCloseTo(0.5 * full.mu_n, 12);
+    expect(half.sigma_n).toBe(full.sigma_n);
+  });
+
+  it('centres the distribution on the scaled drift', () => {
+    const { mu_n, sigma_n } = computeHorizonDriftVol(10, P, stats, 'bull', 0.001);
+    const dist = interpolateDistribution(
+      100, 10, P, stats, 'bull', [], 0.4, 20, 20, 1, 0.001, undefined, 0.01, undefined, 5,
+      undefined, undefined, undefined, undefined, undefined, 3, 0.5,
+    );
+    expect(dist.find(pt => pt.price === 100)!.probability).toBeCloseTo(studentTSurvival(100, 100, 0.5 * mu_n, sigma_n, 5), 12);
+  });
+
+  it('scales the trajectory drift too', () => {
+    // A large price keeps the cent rounding of expectedPrice negligible.
+    const run = (scale?: number) => computeTrajectory(
+      1e6, 10, P, stats, 'bull', 0.001, hmm, 200, 5, undefined, undefined, undefined, undefined, 1, 3, scale,
+    );
+    const full = run(), half = run(0.5);
+    expect(Math.log(half[9].expectedPrice / 1e6)).toBeCloseTo(0.5 * Math.log(full[9].expectedPrice / 1e6), 7);
+  });
+});
