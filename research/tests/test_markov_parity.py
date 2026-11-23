@@ -788,6 +788,25 @@ class TestComputeValidationR2OS:
         )
         assert fitted == [130]
 
+    def test_daily_validator_classifies_the_training_slice_without_held_out_days(self):
+        # Mirrors markov-distribution.ts: 130 calm days then 20 volatile held-out ones; the training regimes
+        # come from the training slice's own thresholds.
+        from research.models.markov import compute_validation_r2_os, classify_regime_series
+        from research.models.markov.transition import estimate_forecast_transition_matrix
+        import numpy as np
+        i = np.arange(150)
+        simple = np.where(i < 130, 0.004, 0.03) * np.sin(0.9 * i + 0.3)
+        fitted: list[list[str]] = []
+
+        def spy(states):
+            fitted.append(list(states))
+            return estimate_forecast_transition_matrix(states)
+
+        compute_validation_r2_os(
+            "equity", 7, classify_regime_series(simple), np.log1p(simple), estimate_train_matrix=spy,
+        )
+        assert fitted == [classify_regime_series(np.expm1(np.log1p(simple[:130])))]
+
     def test_horizon_return_path_for_crypto(self):
         from research.models.markov import (
             compute_validation_r2_os, classify_regime_series,

@@ -48,12 +48,12 @@ Shows all positions with live market data when `FINANCIAL_DATASETS_API_KEY` is s
 | P&L | Unrealised gain/loss in dollars | cost + shares |
 | RETURN | Percentage return vs. cost basis | cost basis |
 | ALLOC | This position as % of total portfolio value | cost + shares |
-| CONF | Markov prediction confidence (✓ ≥0.25, ⚠️ <0.25) | API key |
+| CONF | Markov prediction confidence (✓ ≥0.22, ⚠️ <0.22) | API key |
 
 - **Green** = positive P&L / gain
 - **Red** = negative P&L / loss
-- **✓ (green check)** = High/medium Markov confidence (≥0.25) — ~66% accuracy
-- **⚠️ (yellow warning)** = Low Markov confidence (<0.25) — ~55% accuracy; consider reducing size
+- **✓ (green check)** = High/medium Markov confidence (≥0.22)
+- **⚠️ (yellow warning)** = Low Markov confidence (<0.22); consider reducing size
 - A **TOTAL** row at the bottom summarises portfolio value and overall return
 - Without an API key, the table falls back to showing stored cost basis and shares
 
@@ -69,8 +69,8 @@ Shows all positions with live market data when `FINANCIAL_DATASETS_API_KEY` is s
 ```
 
 **CONF column interpretation:**
-- **✓** = Markov confidence ≥ 0.25 — reliable signal (~66% accuracy)
-- **⚠️** = Markov confidence < 0.25 — weak signal (~55% accuracy); consider reducing position size
+- **✓** = Markov confidence ≥ 0.22
+- **⚠️** = Markov confidence < 0.22; consider reducing position size
 - **—** = No Markov data available (ticker not in canonical coverage)
 
 ---
@@ -112,13 +112,13 @@ Shows portfolio-level aggregates and an allocation bar chart with Markov confide
 
 The **CONF** column (list view) and allocation bar icons (snapshot view) show the Markov Chain prediction confidence for each ticker:
 
-| Icon | Confidence | Accuracy | Action |
-|------|------------|----------|--------|
-| **✓** (green) | ≥ 0.25 | ~66% | Reliable signal — use standard position size |
-| **⚠️** (yellow) | < 0.25 | ~55% | Weak signal — reduce position size or skip |
-| **—** (dash) | N/A | N/A | No Markov data (ticker not in canonical coverage) |
+| Icon | Confidence | Action |
+|------|------------|--------|
+| **✓** (green) | ≥ 0.22 | Above the recommended threshold — standard position size |
+| **⚠️** (yellow) | < 0.22 | Below the recommended threshold — reduce position size or skip |
+| **—** (dash) | N/A | No Markov data (ticker not in canonical coverage) |
 
-**Why this matters:** The 0.25 threshold separates high/low-confidence regimes. Acting only on signals ≥ 0.25 raises aggregate accuracy from ~60% to ~66% (at 44% coverage).
+**Why this matters:** 0.22 is the `markov_distribution` recommended threshold (`RECOMMENDED_CONFIDENCE_THRESHOLD`). A 2026-04-04 analysis measured ~66% accuracy at 44% coverage for confidence ≥ 0.25 against ~60% unfiltered. A 2026-11-23 re-measurement on live-length windows found accuracy flat (~59–60%) across thresholds, so treat the mark as a soft sizing hint, not an accuracy guarantee.
 
 **See also:** [`markov-when-to-use.md`](markov-when-to-use.md) for supported assets and confidence thresholds.
 
@@ -142,8 +142,8 @@ The **CONF** column (list view) and allocation bar icons (snapshot view) show th
 ```
 
 **Allocation bar icons:**
-- **✓** = High/medium Markov confidence (≥0.25)
-- **⚠️** = Low Markov confidence (<0.25)
+- **✓** = High/medium Markov confidence (≥0.22)
+- **⚠️** = Low Markov confidence (<0.22)
 
 - **Allocation** only includes tickers with both `shares` and `costBasis`
 - **Watching** section shows price + day % for watch-only tickers
@@ -159,15 +159,15 @@ The watchlist now displays **Markov Chain prediction confidence** alongside pric
 
 | Scenario | Markov CONF | Recommended Action |
 |----------|-------------|-------------------|
-| **High-conviction trade** | ✓ (≥ 0.25) | Use standard position size; confidence supports the setup |
-| **Speculative trade** | ⚠️ (< 0.25) | Reduce position size by 30–50%, or skip and wait for higher confidence |
+| **High-conviction trade** | ✓ (≥ 0.22) | Use standard position size; confidence supports the setup |
+| **Speculative trade** | ⚠️ (< 0.22) | Reduce position size by 30–50%, or skip and wait for higher confidence |
 | **No data** | — | Use technical/fundamental analysis only; no Markov signal |
 
 **How confidence is calculated:**
 - Fetched automatically when you run `/watchlist list` or `/watchlist show`
 - Based on 14-day Markov distribution forecast
 - Combines regime detection, HMM convergence, and ensemble signal agreement
-- Threshold 0.25 separates reliable (~66% accuracy) from weak (~55% accuracy) signals
+- The ✓/⚠️ split uses the tool's recommended threshold, 0.22 (see **Why this matters** above)
 
 **Example workflow:**
 1. Run `/watchlist list` — see all positions with confidence indicators

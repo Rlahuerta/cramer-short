@@ -2043,7 +2043,10 @@ function computeValidationR2OS(params: {
 
   const minHeldOut = 20;
   if (regimeSeq.length >= minHeldOut + 30) {
-    const trainStates  = regimeSeq.slice(0, -minHeldOut);
+    // As in the horizon validator: thresholds from the training slice only, so the held-out days do not leak.
+    const trainSimpleReturns = returns.slice(0, -minHeldOut);
+    const { returnThreshold } = computeAdaptiveThresholds(trainSimpleReturns, returnThresholdMultiplier);
+    const trainStates  = trainSimpleReturns.map(r => classifyRegimeState(r, Math.abs(r), returnThreshold));
     const trainReturns = logReturns.slice(0, -minHeldOut);
     const testReturns  = logReturns.slice(-minHeldOut);
 

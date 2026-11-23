@@ -98,7 +98,8 @@ def compute_validation_r2_os(
     # Daily-return validator (default)
     min_held_out = 20
     if len(regime_seq) >= min_held_out + 30:
-        train_states = regime_seq[:-min_held_out]
+        # Thresholds from the training slice only (mirrors markov-distribution.ts).
+        train_states = classify_regime_series(np.expm1(returns[:-min_held_out]), return_threshold_multiplier)
         train_returns = returns[:-min_held_out]
         test_returns = returns[-min_held_out:]
 
