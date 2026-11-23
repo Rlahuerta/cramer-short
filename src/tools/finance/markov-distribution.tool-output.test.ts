@@ -2021,6 +2021,31 @@ describe('markov_distribution tool output envelope', () => {
     expect(fittedLengths).toContain(130);
   });
 
+  it('classifies the daily validator training slice without its held-out days', async () => {
+    const fitted: RegimeState[][] = [];
+    mock.module('./markov-distribution/transition.js', () => ({
+      ...realTransitionModule,
+      estimateForecastTransitionMatrix: (...args: Parameters<typeof realTransitionModule.estimateForecastTransitionMatrix>) => {
+        fitted.push([...args[0]]);
+        return realTransitionModule.estimateForecastTransitionMatrix(...args);
+      },
+    }));
+    // 130 calm days, then 20 volatile held-out ones: the whole window's median |return| sits above the training
+    // slice's, so whole-window thresholds would classify the training days differently.
+    const returns = Array.from({ length: 150 }, (_, i) => (i < 130 ? 0.004 : 0.03) * Math.sin(0.9 * i + 0.3));
+    const prices = [100];
+    returns.forEach((r, i) => prices.push(prices[i] * (1 + r)));
+
+    await computeMarkovDistribution({
+      ticker: 'SPY', horizon: 7, currentPrice: prices[150], historicalPrices: prices, polymarketMarkets: [],
+    });
+
+    const train = prices.slice(1, 131).map((p, i) => (p - prices[i]) / prices[i]);
+    const { returnThreshold } = computeAdaptiveThresholds(train, 0.5);
+    expect(fitted.find(states => states.length === 130))
+      .toEqual(train.map(r => classifyRegimeState(r, Math.abs(r), returnThreshold)));
+  });
+
   it('fits and reads the return HMM on log returns, like the log drift it feeds', async () => {
     const seen: { fit?: number[]; studentT?: number[]; predict?: number[] } = {};
     mock.module('./hmm.js', () => ({
