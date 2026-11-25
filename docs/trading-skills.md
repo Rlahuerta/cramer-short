@@ -335,15 +335,10 @@ Use the position-sizing skill for each ticker in my watchlist
 
 ## Supported Assets
 
-Both skills work best where the Markov tool has **confirmed canonical coverage**:
-
-| Asset | Coverage |
-|-------|----------|
-| **SPY, QQQ, VOO, VTI** | High — confirmed at 14–30d horizons |
-| **GLD, IAU** | High — confirmed at 7–30d horizons |
-| **DIA** | Medium — confirmed at 30d only |
-| **MSFT, NVDA, GOOGL, AMZN** | Medium — selective horizon confirmation |
-| **AAPL, TSLA, BTC-USD** | Low — never clear confirmation bar |
+Both skills take their stop-loss and target levels from the Markov distribution, which any ticker with enough price
+history gets. No asset or horizon has a measured directional edge: over 2021–2025 the model's BUY/SELL calls did not
+beat always calling "up" for any of the 14 backtest tickers at 5–30 days (see
+[`markov-when-to-use.md`](markov-when-to-use.md#measured-accuracy)). Judge setups by risk/reward, regime and volume.
 
 ---
 
