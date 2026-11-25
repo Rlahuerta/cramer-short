@@ -192,3 +192,38 @@ describe('walk-forward rolling history window', () => {
     expect(probs(b.steps)).not.toEqual(probs(a.steps));
   });
 });
+
+describe('walk-forward anchored replay hook', () => {
+  it('forecasts each origin with the markets anchorsAt returns, observed at its reference time', async () => {
+    const prices = syntheticTrajectoryPrices();
+    const start = Date.parse('2025-01-01T23:59:59Z');
+    const day = 86_400_000;
+    const horizon = 5;
+    const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    // One mature, horizon-matched, liquid market struck at each origin's price: a trusted anchor.
+    const anchorsAt = (t: number) => {
+      const referenceTimeMs = start + t * day;
+      const strike = (Math.round(prices[t] * 100) / 100).toFixed(2);
+      const endDate = isoDate(referenceTimeMs + horizon * day);
+      return {
+        referenceTimeMs,
+        markets: [{
+          question: 'Will SYN be above $' + strike + ' on ' + endDate + '?',
+          probability: 0.8,
+          volume: 50_000,
+          createdAt: referenceTimeMs - 10 * day,
+          endDate,
+        }],
+      };
+    };
+    const base = { ticker: 'SYN', prices, horizon, warmup: 120, stride: 20, randomState: 42 };
+
+    const plain = await walkForward(base);
+    const anchored = await walkForward({ ...base, anchorsAt });
+
+    expect(plain.steps.every(s => s.trustedAnchors === 0)).toBe(true);
+    expect(anchored.steps.length).toBe(plain.steps.length);
+    expect(anchored.steps.every(s => s.trustedAnchors === 1)).toBe(true);
+    expect(anchored.steps.some((s, i) => Math.abs(s.predictedProb - plain.steps[i].predictedProb) > 0.01)).toBe(true);
+  });
+});

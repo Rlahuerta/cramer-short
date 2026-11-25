@@ -47,6 +47,14 @@ export interface WalkForwardConfig {
    * Unset (default) uses the whole expanding history up to the origin.
    */
   maxHistoryPrices?: number;
+  /**
+   * Polymarket markets visible at origin t and when they were observed (an anchored replay). The observation time is
+   * the forecast's reference time for market age and resolution checks. Unset forecasts without markets.
+   */
+  anchorsAt?: (t: number) => {
+    markets: Array<{ question: string; probability: number; volume?: number; createdAt?: string | number; endDate?: string | null }>;
+    referenceTimeMs: number;
+  };
   /** Optional override for crypto short-horizon conditional weight (PR3B ablation) */
   cryptoShortHorizonConditionalWeight?: number;
   /** Optional override for crypto short-horizon kappa multiplier (PR3B ablation) */
@@ -293,9 +301,11 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     const currentPrice = prices[t];
     const realizedPrice = prices[t + horizon];
     const actualReturn = (realizedPrice - currentPrice) / currentPrice;
+    const anchors = config.anchorsAt?.(t);
     const originDistributionConfig = {
       ...baseDistributionConfig,
       crossAssetReturns: sliceCrossAssetReturnsToOrigin(config.crossAssetReturns, t),
+      ...(anchors ? { polymarketMarkets: anchors.markets, referenceTimeMs: anchors.referenceTimeMs } : {}),
     };
 
     try {
