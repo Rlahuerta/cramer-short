@@ -55,21 +55,25 @@ export function liveBenchmarkCells(): BenchmarkCellSpec[] {
     }
     // The gold live policy's break threshold is applied inside computeMarkovDistribution.
     cells.push({ ticker: 'GLD', horizon, maxHistoryPrices: GLD_HISTORY_PRICES, config: {} });
-    // Live BTC spreads the xiphos profile, then the per-horizon live policy's break threshold and rerun.
-    const policy = getBtcShortHorizonLivePolicy('BTC-USD', horizon);
-    cells.push({
-      ticker: 'BTC-USD',
-      horizon,
-      maxHistoryPrices: BTC_HISTORY_PRICES,
-      config: {
-        ...xiphosBtcWalkForwardConfig(),
-        btcBreakDivergenceThreshold: policy?.breakDivergenceThreshold,
-        postBreakShortWindow: policy?.rerunOnBreak,
-        postBreakWindowSize: policy?.rerunWindowDays,
-      },
-    });
+    cells.push(btcLiveCell(horizon));
   }
   return cells;
+}
+
+/** A BTC cell configured like the live tool: the xiphos profile, then the horizon's live break threshold and rerun. */
+export function btcLiveCell(horizon: number): BenchmarkCellSpec {
+  const policy = getBtcShortHorizonLivePolicy('BTC-USD', horizon);
+  return {
+    ticker: 'BTC-USD',
+    horizon,
+    maxHistoryPrices: BTC_HISTORY_PRICES,
+    config: {
+      ...xiphosBtcWalkForwardConfig(),
+      btcBreakDivergenceThreshold: policy?.breakDivergenceThreshold,
+      postBreakShortWindow: policy?.rerunOnBreak,
+      postBreakWindowSize: policy?.rerunWindowDays,
+    },
+  };
 }
 
 /** Run the benchmark cells over the price fixture. Each origin starts with a full live-length window. */
