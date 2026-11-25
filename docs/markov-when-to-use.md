@@ -73,7 +73,7 @@ The model outputs a **confidence score** (0–1) for each prediction. Use this t
 The accuracy and coverage figures were measured on 2026-04-04 (14 tickers × 6 horizons) at the thresholds shown. The default moved from 0.25 to 0.22 on 2026-05-04 and has not been re-measured since.
 
 **What the warnings mean:**
-- `⚠️ Low confidence (0.18 < 0.22)` — This prediction is below the recommended threshold; accuracy drops to ~55% in this range. Consider waiting for a higher-confidence signal.
+- `⚠️ Low confidence (0.18 < 0.22)` — This prediction is below the recommended threshold; treat it as a weak signal or wait for a higher-confidence one. (The old "accuracy drops to ~55%" figure did not hold on the 2026-11-23 re-measurement, where accuracy was flat across thresholds.)
 - **Abstain or no calibrated distribution** — The model declined to produce a calibrated result (typically because trusted anchors are missing or the regime signal is too weak). This is not an edge. Skip the trade rather than interpreting fallback text as a signal.
 
 ---
