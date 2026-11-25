@@ -12,7 +12,8 @@ import {
 
 const TICKERS = ['SPY', 'QQQ', 'GLD', 'VOO', 'NVDA', 'MSFT'] as const;
 const HORIZONS = [7, 14, 30] as const;
-const TIMEOUT = 480_000;
+// Runs ~400s on a normal day and ~560s on a slow one (2026-11-25); 900s leaves headroom.
+const TIMEOUT = 900_000;
 
 interface FixtureData {
   tickers: Record<string, {
