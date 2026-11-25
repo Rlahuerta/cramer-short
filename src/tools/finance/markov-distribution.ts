@@ -55,8 +55,8 @@ import {
 } from './api.js';
 import { fetchBinanceDailyCloses } from './binance.js';
 import { fetchBitmexDailyCloses } from './bitmex.js';
-import { fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
-import { extractSignals, normalizeForPolymarket } from './signal-extractor.js';
+import { extractCanonicalNames, fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
+import { TICKER_TO_COMPANY_NAME, extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
 import { transformQToP, transformQToPWithShift, fitLognormalFromStrikes, lognormalToRegimeProbabilities, nudgeTransitionMatrix, DEFAULT_MPR_CAP, applyLongshotShrinkage } from './rnd-integration.js';
 import { recalibratePolymarketPrice, type Domain } from './calibration-offsets.js';
@@ -855,6 +855,8 @@ export interface AnchorInspectionDiagnostic {
   excludedBarrierMarkets: number;
   excludedNonTerminalMarkets: number;
   invalidThresholdMarkets: number;
+  /** Markets about another asset, or whose threshold is not a price (revenue, market cap, ...). */
+  excludedOffSubjectMarkets: number;
   lowTrustReasonCounts: {
     youngMarket: number;
     resolutionMismatch: number;
@@ -986,7 +988,7 @@ type AnchorCandidateInspection =
       question: string;
       endDate: string | null;
       volume: number;
-      exclusionReason: 'barrier_pattern' | 'no_terminal_threshold_match' | 'invalid_threshold';
+      exclusionReason: 'barrier_pattern' | 'no_terminal_threshold_match' | 'invalid_threshold' | 'off_subject';
       matchedPrice?: number;
     }
   | {
@@ -1006,6 +1008,26 @@ type AnchorCandidateInspection =
       correctedProbability: number;
       threshold: PriceThreshold;
     };
+
+const NON_PRICE_THRESHOLD_PATTERN =
+  /\b(?:revenue|sales|earnings|eps|income|profit|guidance|market\s*cap(?:italization)?|valuation|deliveries|shipments|subscribers)\b/i;
+
+/**
+ * Whether a market is about the ticker's own price: the question names the asset (ticker, crypto name or company
+ * name) and its threshold is a price. Live SPY anchors otherwise included Bitcoin price markets, and NVDA anchors
+ * included Marvell revenue markets whose "$2.5B" parsed as a $2.5 strike.
+ */
+function isAnchorQuestionOnSubject(question: string, ticker: string): boolean {
+  if (NON_PRICE_THRESHOLD_PATTERN.test(question)) return false;
+  const identity = resolveTickerSearchIdentity(ticker);
+  const company = TICKER_TO_COMPANY_NAME[identity.canonicalTicker];
+  const names = [...extractCanonicalNames(ticker), identity.canonicalTicker, ...(company ? [company] : [])];
+  const lower = question.toLowerCase();
+  return names.some((name) => {
+    const escaped = name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`).test(lower);
+  });
+}
 
 function inspectAnchorCandidate(
   market: {
@@ -1029,6 +1051,16 @@ function inspectAnchorCandidate(
       endDate,
       volume,
       exclusionReason: 'barrier_pattern',
+    };
+  }
+
+  if (options?.ticker && !isAnchorQuestionOnSubject(market.question, options.ticker)) {
+    return {
+      status: 'excluded',
+      question: market.question,
+      endDate,
+      volume,
+      exclusionReason: 'off_subject',
     };
   }
 
@@ -1175,6 +1207,7 @@ function summarizeAnchorInspection(
     excludedBarrierMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'barrier_pattern').length,
     excludedNonTerminalMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'no_terminal_threshold_match').length,
     invalidThresholdMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'invalid_threshold').length,
+    excludedOffSubjectMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'off_subject').length,
     lowTrustReasonCounts: {
       youngMarket: lowTrustRaw.filter((inspection) => inspection.lowTrustReasons.includes('young_market')).length,
       resolutionMismatch: lowTrustRaw.filter((inspection) => inspection.lowTrustReasons.includes('resolution_mismatch')).length,
@@ -3651,12 +3684,17 @@ export async function computeMarkovDistribution(params: {
   // 1. Trivially-true anchors: price well below current with P≈1 (e.g., "gold stays above $3,000")
   // 2. Trivially-false anchors: price well above current with P≈0
   // These carry no predictive signal — they just confirm what the current price already implies.
-  polymarketAnchors = polymarketAnchors.filter(a => {
-    const dist = (a.price - currentPrice) / currentPrice;
+  // 3. Strikes more than 2x from the current price: another scale or underlying, such as an S&P 500 index level
+  //    read as a SPY price (commodity ETFs were rescaled above).
+  const isInformativeAnchor = (a: PriceThreshold): boolean => {
+    const ratio = a.price / currentPrice;
+    if (ratio > 2 || ratio < 0.5) return false;
+    const dist = ratio - 1;
     if (dist < -0.05 && a.probability > 0.90) return false;
     if (dist > 0.50 && a.probability < 0.05) return false;
     return true;
-  });
+  };
+  polymarketAnchors = polymarketAnchors.filter(isInformativeAnchor);
 
   // Crypto fallback: when strict-horizon markets are all barrier-style and yield
   // zero terminal anchors, re-extract from the full unfiltered market list with
@@ -3666,12 +3704,7 @@ export async function computeMarkovDistribution(params: {
   );
   // Re-apply triviality filter on fallback anchors (e.g., off-horizon anchors may
   // now be trivially true/false relative to current price)
-  polymarketAnchors = polymarketAnchors.filter(a => {
-    const dist = (a.price - currentPrice) / currentPrice;
-    if (dist < -0.05 && a.probability > 0.90) return false;
-    if (dist > 0.50 && a.probability < 0.05) return false;
-    return true;
-  });
+  polymarketAnchors = polymarketAnchors.filter(isInformativeAnchor);
 
   if (params.kalshiAnchors && params.kalshiAnchors.length > 0) {
     const merged = mergeAnchorsWithCrossPlatformValidation(polymarketAnchors, params.kalshiAnchors);
@@ -5331,6 +5364,9 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
         : null,
       m.anchorInspection.invalidThresholdMarkets > 0
         ? `${m.anchorInspection.invalidThresholdMarkets} invalid-threshold`
+        : null,
+      m.anchorInspection.excludedOffSubjectMarkets > 0
+        ? `${m.anchorInspection.excludedOffSubjectMarkets} about another asset or not a price`
         : null,
     ].filter((part): part is string => part !== null);
     const abstainAnchorDiagnostics = canEmitCanonical

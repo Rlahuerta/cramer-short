@@ -2510,6 +2510,24 @@ describe('return-HMM iteration budget', () => {
   });
 });
 
+describe('anchor strike plausibility', () => {
+  it('drops strikes on another scale, such as an S&P 500 index level for SPY', async () => {
+    const REF = Date.parse('2026-11-25T12:00:00Z');
+    const prices = Array.from({ length: 90 }, (_, i) => 700 + i * 0.27 + Math.sin(i) * 3);
+    const market = (question: string) => ({
+      question, probability: 0.5, volume: 50000, createdAt: REF - 5 * MS_PER_DAY, endDate: '2026-12-02',
+    });
+    const result = await computeMarkovDistribution({
+      ticker: 'SPY', horizon: 7, currentPrice: prices[89], historicalPrices: prices, referenceTimeMs: REF,
+      polymarketMarkets: [
+        market('Will the S&P 500 close above $7,000 on December 2?'),
+        market('Will SPY close above $730 on December 2?'),
+      ],
+    });
+    expect(result.metadata.anchorCoverage.totalAnchors).toBe(1);
+  });
+});
+
 describe('price input validation', () => {
   const prices = Array.from({ length: 90 }, (_, i) => 100 + i * 0.2 + Math.sin(i) * 2);
   const run = (overrides: { currentPrice?: number; historicalPrices?: number[] }) =>
