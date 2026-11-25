@@ -1,7 +1,6 @@
 import { Container, Spacer, Text, type Component, type SlashCommand } from '@mariozechner/pi-tui';
 import { discoverSkills } from '../../skills/registry.js';
 import { theme } from '../../theme.js';
-import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../../tools/finance/markov-distribution/core.js';
 import type { WatchlistEntry } from '../watchlist-controller.js';
 import {
   buildAsciiBar,
@@ -164,11 +163,7 @@ export function buildWatchlistPanel(
 
   for (const row of rows) {
     const ticker = theme.primary(row.ticker.padEnd(8));
-    const confStr = row.predictionConfidence !== undefined
-      ? row.predictionConfidence >= RECOMMENDED_CONFIDENCE_THRESHOLD
-        ? theme.success('✓'.padStart(5))
-        : theme.warning('⚠'.padStart(5))
-      : '—'.padStart(5);
+    const confStr = (row.predictionConfidence !== undefined ? row.predictionConfidence.toFixed(2) : '—').padStart(5);
 
     if (hasPrices && hasPositions) {
       const price   = row.price !== undefined ? `$${row.price.toFixed(2)}`.padStart(9) : '         ';
@@ -312,7 +307,7 @@ export function buildSnapshotPanel(
     container.addChild(new Text('', 0, 0));
   }
 
-  // ASCII bar chart for allocation with Markov confidence
+  // ASCII bar chart for allocation with the Markov confidence score
   if (positionEntries.length > 0) {
     container.addChild(new Text(theme.bold('  Allocation:'), 0, 0));
     const BAR_WIDTH = 22;
@@ -320,12 +315,8 @@ export function buildSnapshotPanel(
       const pct = e.allocPct!;
       const bar = buildAsciiBar(pct, BAR_WIDTH);
       const pctStr = `${pct.toFixed(0)}%`.padStart(4);
-      const confIcon = e.predictionConfidence !== undefined
-        ? e.predictionConfidence >= RECOMMENDED_CONFIDENCE_THRESHOLD
-          ? theme.success(' ✓')
-          : theme.warning(' ⚠')
-        : ' —';
-      container.addChild(new Text(`  ${e.ticker.padEnd(6)} ${theme.primary(bar)} ${pctStr}${confIcon}`, 0, 0));
+      const conf = e.predictionConfidence !== undefined ? ` ${e.predictionConfidence.toFixed(2)}` : ' —';
+      container.addChild(new Text(`  ${e.ticker.padEnd(6)} ${theme.primary(bar)} ${pctStr}${conf}`, 0, 0));
     }
     container.addChild(new Text('', 0, 0));
   }
@@ -334,32 +325,6 @@ export function buildSnapshotPanel(
   if (best && worst) {
     container.addChild(new Text(`  Best:  ${theme.primary(best.ticker.padEnd(6))} ${colorPct(best.returnPct!, fmtPct(best.returnPct!))}`, 0, 0));
     container.addChild(new Text(`  Worst: ${theme.primary(worst.ticker.padEnd(6))} ${colorPct(worst.returnPct!, fmtPct(worst.returnPct!))}`, 0, 0));
-    container.addChild(new Text('', 0, 0));
-  }
-
-  // Markov confidence histogram (only when we have confidence data)
-  const confidenceValues = positionEntries
-    .filter((e) => e.predictionConfidence !== undefined)
-    .map((e) => e.predictionConfidence!);
-  if (confidenceValues.length > 0) {
-    const high = confidenceValues.filter((c) => c >= 0.40).length;
-    const medium = confidenceValues.filter((c) => c >= RECOMMENDED_CONFIDENCE_THRESHOLD && c < 0.40).length;
-    const low = confidenceValues.filter((c) => c < RECOMMENDED_CONFIDENCE_THRESHOLD).length;
-    const total = confidenceValues.length;
-    const highPct = Math.round((high / total) * 100);
-    const medPct = Math.round((medium / total) * 100);
-    const lowPct = Math.round((low / total) * 100);
-    const avgConf = confidenceValues.reduce((a, b) => a + b, 0) / total;
-    container.addChild(new Text(theme.bold('  Markov Confidence Distribution:'), 0, 0));
-    const highBar = buildAsciiBar(highPct, 20);
-    const medBar = buildAsciiBar(medPct, 20);
-    const lowBar = buildAsciiBar(lowPct, 20);
-    container.addChild(new Text(`  High (≥0.40):   ${theme.success(highBar)} ${highPct}% (${high})`, 0, 0));
-    const threshold = RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2);
-    container.addChild(new Text(`  Medium (${threshold}–0.40): ${theme.warning(medBar)} ${medPct}% (${medium})`, 0, 0));
-    container.addChild(new Text(`  Low (<${threshold}):    ${theme.error(lowBar)} ${lowPct}% (${low})`, 0, 0));
-    const avgIcon = avgConf >= 0.40 ? theme.success('✓') : avgConf >= RECOMMENDED_CONFIDENCE_THRESHOLD ? theme.warning('⚠') : theme.error('✗');
-    container.addChild(new Text(`  Average: ${avgConf.toFixed(2)} ${avgIcon}`, 0, 0));
     container.addChild(new Text('', 0, 0));
   }
 

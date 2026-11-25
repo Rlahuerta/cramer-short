@@ -1,23 +1,21 @@
 # Trading Skills — Practitioner's Guide
 
-**Last Updated:** 2026-04-04  
-**New Skills:** `swing-trade-setup`, `position-sizing`  
-**Integration:** Markov Chain prediction confidence (threshold: 0.25)
+**Last Updated:** 2026-11-25  
+**Skills:** `swing-trade-setup`, `position-sizing`  
+**Integration:** Markov stop-loss, targets and regime from `markov_distribution`
 
 ---
 
 ## Overview
 
-Cramer-Short includes two new trading workflow skills that integrate **Markov Chain prediction confidence** into entry signals and position sizing decisions. These skills use the `markov_distribution` tool to produce confidence-weighted recommendations.
+Cramer-Short includes two trading workflow skills that use the `markov_distribution` tool for stop-loss levels, price targets and the current regime, and size positions by risk: a fixed share of the portfolio divided by the distance to the stop.
 
 | Skill | Use When | Key Output |
 |-------|----------|------------|
-| **`swing-trade-setup`** | You want to identify high-probability swing trade entries | Entry price, stop-loss, targets, risk/reward, confidence-weighted size |
-| **`position-sizing`** | You want to calculate optimal position size for a ticker | Shares to buy, portfolio %, confidence-adjusted risk, concentration checks |
+| **`swing-trade-setup`** | You want to identify high-probability swing trade entries | Entry price, stop-loss, targets, risk/reward, risk-based size |
+| **`position-sizing`** | You want to calculate optimal position size for a ticker | Shares to buy, portfolio %, risk per trade, concentration checks |
 
-Both skills use the **Markov confidence threshold of 0.25** to separate high/low-confidence regimes:
-- **≥ 0.25**: Recommended threshold — ~66% accuracy at ~44% coverage
-- **< 0.25**: Low confidence — accuracy drops to ~55%; reduce size or skip
+**Neither skill uses the Markov `predictionConfidence` score.** On the live-config benchmark and 8 held-out tickers (2026-11-25), the score did not predict whether a BUY/SELL call was right: the highest-scored fifth of calls was the least accurate, and no threshold separated better calls from worse ones. Earlier versions of these skills scaled position size by the score and cited accuracy figures for its threshold; those figures did not hold up.
 
 ---
 
@@ -29,7 +27,7 @@ Identifies high-probability swing trade setups with:
 - Entry signals (pullback, breakout, breakdown)
 - Stop-loss and price targets from Markov distribution
 - Risk/reward calculation
-- Confidence-weighted position sizing recommendation
+- Risk-based position sizing recommendation
 - Volume and momentum confirmation checks
 
 ### How to Invoke
@@ -48,13 +46,12 @@ Use the swing-trade-setup skill for NVDA
 
 **With parameters (CLI syntax):**
 ```
-/skills swing-trade-setup NVDA --horizon 20 --confidenceThreshold 0.30
+/skills swing-trade-setup NVDA --horizon 20
 ```
 
 **With parameters (natural language):**
 ```
 Use the swing-trade-setup skill for AAPL with a 20-day horizon
-Use the swing-trade-setup skill for TSLA with confidence threshold 0.35
 ```
 
 ### Available Parameters
@@ -62,12 +59,9 @@ Use the swing-trade-setup skill for TSLA with confidence threshold 0.35
 | Parameter | Type | Default | Range | Description |
 |-----------|------|---------|-------|-------------|
 | `horizon` | number | 14 | 5–30 | Markov forecast horizon in trading days |
-| `confidenceThreshold` | number | 0.25 | 0.15–0.50 | Minimum confidence to act on signal |
 
 **When to override defaults:**
-- **Longer horizon (20–30d):** For swing trades with wider targets, or when 14d confidence is low
-- **Higher threshold (0.30–0.40):** When you want only high-conviction signals; reduces coverage but increases accuracy
-- **Lower threshold (0.15–0.20):** For exploratory analysis; not recommended for actual trades
+- **Longer horizon (20–30d):** For swing trades with wider targets
 
 ### Example Prompts
 
@@ -82,7 +76,6 @@ Use the swing-trade-setup skill for SPY
 
 **Setup Type:** Pullback to SMA50 support
 **Direction:** Long
-**Confidence:** High (predictionConfidence: 0.42)
 
 **Entry:**
 - Current price: $520.50
@@ -96,7 +89,7 @@ Use the swing-trade-setup skill for SPY
 
 **Risk/Reward:** 3.1:1
 
-**Position Size:** 1.8% portfolio risk (high confidence → 1.2× standard size)
+**Position Size:** 1% portfolio risk (standard size)
 
 **Flags:**
 - ✓ Regime confluence (bull regime + bullish pullback)
@@ -109,21 +102,20 @@ Use the swing-trade-setup skill for SPY
 Use the swing-trade-setup skill for QQQ with a 14-day horizon
 ```
 
-**Why specify horizon:** Different horizons may have different confidence levels. QQQ 14d is confirmed (strong), but QQQ 5d is exploratory (weaker).
+**Why specify horizon:** Markov coverage differs by horizon. QQQ 14d is confirmed (strong), but QQQ 5d is exploratory (weaker).
 
 #### Setup Comparison
 ```
-Compare swing trade setups for SPY vs QQQ vs IAU — which has the highest Markov confidence?
+Compare swing trade setups for SPY vs QQQ vs IAU — which has the best risk/reward?
 ```
 
-**Use case:** You have limited capital and want to allocate to the highest-conviction setup.
+**Use case:** You have limited capital and want to allocate to the best setup.
 
 ### When to Use This Skill
 
 ✅ **Good use cases:**
 - You're considering a swing trade (5–30 day hold)
 - You want objective entry/exit levels
-- You want to know if Markov confidence supports the trade
 - You're reviewing your watchlist for new opportunities
 
 ❌ **Bad use cases:**
@@ -136,26 +128,20 @@ Compare swing trade setups for SPY vs QQQ vs IAU — which has the highest Marko
 
 | Field | What to Look For |
 |-------|-----------------|
-| **Confidence** | ≥ 0.25 is recommended threshold; < 0.25 = reduce size or skip |
-| **Risk/Reward** | ≥ 2:1 for standard setups; ≥ 3:1 for low-confidence setups |
+| **Risk/Reward** | ≥ 2:1 |
 | **Regime confluence** | Bull regime + bullish setup = stronger signal |
 | **Volume confirmation** | Breakout volume > 1.5× average = strong; Pullback volume < average = healthy |
 | **Markov buyProbability** | > 0.55 for long setups; < 0.45 for short setups |
 
-### Confidence-Weighted Sizing
+### Risk-Based Sizing
 
-The skill automatically adjusts position size based on Markov confidence:
+The skill risks a fixed share of the portfolio per trade (1% by default); the stop distance sets the size:
 
-| Confidence | Size Adjustment | When to Use |
-|------------|----------------|-------------|
-| ≥ 0.40 (High) | 1.2–1.5× standard | High-conviction setups |
-| 0.25–0.40 (Medium) | 1.0× standard | Standard setups |
-| < 0.25 (Low) | 0.5–0.8× standard | Speculative; reduce exposure |
+```
+positionSize = risk / downside
+```
 
-**Example:** If your standard risk is 1% per trade:
-- High confidence (0.42): Risk 1.5%
-- Medium confidence (0.32): Risk 1.0%
-- Low confidence (0.18): Risk 0.5% or skip
+**Example:** With 1% risk and a stop 2.4% below entry, the position is 1% / 2.4% ≈ 42% of the portfolio in notional value, above the 25% single-position cap, so cap it (see the concentration rules in `position-sizing`).
 
 ---
 
@@ -165,7 +151,7 @@ The skill automatically adjusts position size based on Markov confidence:
 
 Calculates optimal position size based on:
 - Portfolio risk metrics (VaR, Sharpe, correlation)
-- Markov prediction confidence
+- The Markov stop-loss and regime
 - Individual position risk (downside from stop-loss)
 - Concentration risk checks
 - Kelly-based and risk-based sizing methods
@@ -191,13 +177,13 @@ Use the position-sizing skill for AAPL using my watchlist
 
 **With parameters (CLI syntax):**
 ```
-/skills position-sizing NVDA --horizon 20 --confidenceThreshold 0.30 --portfolioValue 75000 --riskPerTrade 0.015
+/skills position-sizing NVDA --horizon 20 --portfolioValue 75000 --riskPerTrade 0.015
 ```
 
 **With parameters (natural language):**
 ```
 Use the position-sizing skill for MSFT with a $75,000 portfolio and 1.5% risk per trade
-Use the position-sizing skill for GLD with horizon 30 days and confidence threshold 0.35
+Use the position-sizing skill for GLD with horizon 30 days
 ```
 
 ### Available Parameters
@@ -205,15 +191,13 @@ Use the position-sizing skill for GLD with horizon 30 days and confidence thresh
 | Parameter | Type | Default | Range | Description |
 |-----------|------|---------|-------|-------------|
 | `horizon` | number | 14 | 5–30 | Markov forecast horizon in trading days |
-| `confidenceThreshold` | number | 0.25 | 0.15–0.50 | Minimum confidence for sizing decisions |
 | `portfolioValue` | number | 100000 | 10k–10M | Total portfolio value in USD |
 | `riskPerTrade` | number | 0.01 | 0.005–0.03 | Base risk per trade (1% = 0.01) |
 
 **When to override defaults:**
 - **`portfolioValue`:** Always set to your actual portfolio value for accurate sizing
-- **`riskPerTrade`:** Increase to 0.015–0.02 for high-conviction setups; decrease to 0.005 for conservative approach
+- **`riskPerTrade`:** Increase to 0.015–0.02 for an aggressive approach; decrease to 0.005 for a conservative one
 - **`horizon`:** Match to your intended hold period (14d standard, 20–30d for wider targets)
-- **`confidenceThreshold`:** Increase to 0.30–0.40 for selective trading; never go below 0.20
 
 #### Basic Position Sizing
 ```
@@ -230,8 +214,7 @@ Use the position-sizing skill for MSFT with a $50,000 portfolio
 - Portfolio VaR (95%): 2.4%
 - Portfolio Sharpe: 1.1
 
-**Markov Confidence:**
-- Prediction confidence: 0.38 (Medium)
+**Markov Forecast:**
 - Regime state: bull
 - Buy probability: 61%
 - Expected return: +5.2%
@@ -240,8 +223,8 @@ Use the position-sizing skill for MSFT with a $50,000 portfolio
 - Entry price: $420.50
 - Stop-loss: $395.00 (−6.1% downside)
 - Risk per trade: 1.0% (standard size)
-- **Recommended position: 80 shares ($33,640)**
-- **Position size: 13.4% of portfolio**
+- **Recommended position: 19 shares ($7,990)**
+- **Position size: 16.0% of portfolio**
 
 **Concentration Check:**
 - Correlation with existing holdings: medium (0.52 avg with tech)
@@ -249,7 +232,7 @@ Use the position-sizing skill for MSFT with a $50,000 portfolio
 - Flags: none
 
 **Risk Management:**
-- Maximum loss at stop: $2,040 (4.1% of portfolio)
+- Maximum loss at stop: $485 (1.0% of portfolio)
 - Position beta: 1.15 (vs. S&P 500)
 - Contribution to portfolio VaR: +0.4%
 ```
@@ -272,7 +255,6 @@ Use the position-sizing skill for GLD and show both Kelly and risk-based methods
 
 ✅ **Good use cases:**
 - You're sizing a new swing trade position
-- You want to rebalance based on conviction levels
 - You're unsure how much to allocate to a ticker
 - You want to check concentration risk before adding
 
@@ -285,7 +267,6 @@ Use the position-sizing skill for GLD and show both Kelly and risk-based methods
 
 | Field | What to Look For |
 |-------|-----------------|
-| **Markov Confidence** | ≥ 0.25 recommended; < 0.25 = reduce size |
 | **Position size %** | 10–20% typical for swing trades; > 25% = concentration risk |
 | **Sector exposure** | > 30% in one sector = concentration flag |
 | **Correlation** | > 0.7 with existing holdings = reduce size by 30% |
@@ -297,9 +278,9 @@ The skill provides three scenarios:
 
 | Scenario | When to Use |
 |----------|-------------|
-| **Conservative** | Portfolio VaR > 15%, or predictionConfidence < 0.25, or high correlation |
-| **Base (recommended)** | Standard swing trade with medium confidence (0.25–0.40) |
-| **Aggressive** | High conviction (confidence ≥ 0.40) and low correlation |
+| **Conservative** | Portfolio VaR > 15%, or the position adds concentration |
+| **Base (recommended)** | Standard swing trade |
+| **Aggressive** | 1.5× base risk, only with low correlation to existing holdings |
 
 **Example:**
 ```
@@ -307,9 +288,9 @@ The skill provides three scenarios:
 
 | Scenario | Shares | Position Value | % Portfolio | Max Loss |
 |----------|--------|----------------|-------------|----------|
-| Conservative | 60 | $25,230 | 12.6% | $1,530 |
-| Base (recommended) | 90 | $37,845 | 18.9% | $2,295 |
-| Aggressive | 120 | $50,460 | 25.2% | $3,060 |
+| Conservative | 12 | $5,046 | 10.1% | $306 |
+| Base (recommended) | 19 | $7,990 | 16.0% | $485 |
+| Aggressive | 29 | $12,195 | 24.4% | $740 |
 ```
 
 ---
@@ -338,7 +319,7 @@ Use the swing-trade-setup skill for SPY
 Use the swing-trade-setup skill for QQQ
 Use the swing-trade-setup skill for IAU
 
-# Compare confidence scores and allocate to highest
+# Compare risk/reward and regime confluence
 ```
 
 ### Workflow: Portfolio Rebalancing
@@ -347,42 +328,17 @@ Use the swing-trade-setup skill for IAU
 # Get sizing for all watchlist positions
 Use the position-sizing skill for each ticker in my watchlist
 
-# Identify over/under-weight positions
-# Rebalance toward higher Markov confidence names
+# Identify over/under-weight positions against the concentration rules
 ```
 
 ---
 
-## Markov Confidence Threshold Guide
+## Supported Assets
 
-Both skills use the **0.25 confidence threshold** as a key decision point:
+Both skills work best where the Markov tool has **confirmed canonical coverage**:
 
-### What the Threshold Means
-
-| Confidence | Accuracy | Coverage | Action |
-|------------|----------|----------|--------|
-| ≥ 0.40 | ~75% | ~15% | High-conviction; increase size |
-| 0.25–0.40 | ~66% | ~44% | Standard; use base size |
-| < 0.25 | ~55% | ~56% | Low-conviction; reduce size or skip |
-
-### How Skills Use the Threshold
-
-**`swing-trade-setup`:**
-- Adjusts position size multiplier (0.5× to 1.5×)
-- Adds warning flag if < 0.25
-- Recommends tighter stop-loss for low-confidence setups
-
-**`position-sizing`:**
-- Applies confidence factor to risk-per-trade calculation
-- Caps max position size at 5% for confidence < 0.25
-- Shows explicit warning: "⚠️ Low Markov confidence — accuracy drops to ~55%"
-
-### Supported Assets
-
-Both skills work best with **confirmed canonical coverage**:
-
-| Asset | Confidence Reliability |
-|-------|----------------------|
+| Asset | Coverage |
+|-------|----------|
 | **SPY, QQQ, VOO, VTI** | High — confirmed at 14–30d horizons |
 | **GLD, IAU** | High — confirmed at 7–30d horizons |
 | **DIA** | Medium — confirmed at 30d only |
@@ -393,102 +349,62 @@ Both skills work best with **confirmed canonical coverage**:
 
 ## Advanced Examples
 
-### Example 1: High-Conviction Setup
+### Example 1: Setup Then Sizing
 ```
-# Basic usage
 Use the swing-trade-setup skill for SPY with a 20-day horizon
 
 # Output shows:
-# - predictionConfidence: 0.45 (High)
 # - Risk/Reward: 3.5:1
 # - Regime: bull, confluence: yes
 
 # Follow up with:
 Use the position-sizing skill for SPY with a $100,000 portfolio
 
-# Output shows:
-# - Recommended: 2.0% risk (1.5× standard due to high confidence)
-# - Position: 38 shares ($19,760)
-
 # Parameterized usage (CLI)
-/skills swing-trade-setup SPY --horizon 20 --confidenceThreshold 0.35
+/skills swing-trade-setup SPY --horizon 20
 /skills position-sizing SPY --portfolioValue 100000 --riskPerTrade 0.02
 ```
 
-### Example 2: Low-Confidence Setup (Skip or Reduce)
-```
-Use the swing-trade-setup skill for BTC-USD with a 14-day horizon
-
-# Output shows:
-# - predictionConfidence: 0.15 (Low)
-# - Warning: "⚠️ Low Markov confidence — accuracy drops to ~55%"
-# - Recommendation: Reduce size to 0.5× or skip
-
-# Decision: Skip the trade or use minimum size
-```
-
-### Example 3: Concentration Risk Flag
+### Example 2: Concentration Risk Flag
 ```
 Use the position-sizing skill for NVDA with a $50,000 portfolio
 
 # Output shows:
 # - Current tech exposure: 35%
 # - Post-trade exposure: 48%
-# - Flag: "⚠️ Sector concentration > 30% — consider reducing to 18% position size"
+# - Flag: "⚠️ Sector concentration > 30% — consider the Conservative size"
 
-# Decision: Use Conservative scenario (11% position) instead of Base (22%)
+# Decision: Use the Conservative scenario instead of Base
 ```
 
-### Example 4: Multi-Ticker Allocation
+### Example 3: Multi-Ticker Allocation
 ```
-# Identify best setups
+# Identify setups
 Use the swing-trade-setup skill for SPY
 Use the swing-trade-setup skill for QQQ
 Use the swing-trade-setup skill for GLD
 
-# Allocate capital to highest confidence
-# SPY: 0.42, QQQ: 0.38, GLD: 0.35
-# Split capital: 40% SPY, 35% QQQ, 25% GLD
-
-# Size each position
+# Size each position with the same risk per trade; the stops set the sizes
 Use the position-sizing skill for SPY with $40,000 allocation
 Use the position-sizing skill for QQQ with $35,000 allocation
 Use the position-sizing skill for GLD with $25,000 allocation
 ```
 
-### Example 5: Parameterized High-Conviction Trade
+### Example 4: Conservative Exploration
 ```
-# Use higher confidence threshold for concentrated position
-/skills swing-trade-setup NVDA --horizon 14 --confidenceThreshold 0.40
+/skills swing-trade-setup TSLA --horizon 7
+/skills position-sizing TSLA --portfolioValue 50000 --riskPerTrade 0.005
 
-# If confidence ≥ 0.40, proceed with aggressive sizing
-/skills position-sizing NVDA --portfolioValue 75000 --riskPerTrade 0.02 --horizon 14
-
-# Output will use 2% base risk (instead of 1%) and 14-day Markov forecast
-```
-
-### Example 6: Conservative Exploration
-```
-# Lower confidence threshold to see more signals (for analysis only)
-/skills swing-trade-setup TSLA --horizon 7 --confidenceThreshold 0.20
-
-# Review signals, but use conservative sizing due to low confidence
-/skills position-sizing TSLA --portfolioValue 50000 --riskPerTrade 0.005 --confidenceThreshold 0.20
-
-# Uses 0.5% base risk (half of standard) due to speculative nature
+# Uses 0.5% base risk (half of standard) for a speculative name
 ```
 
 ---
 
 ## Troubleshooting
 
-### "Markov confidence is low (< 0.25) — what should I do?"
+### "Should I skip trades when Markov `predictionConfidence` is low?"
 
-**Options:**
-1. **Skip the trade** — wait for higher-confidence signal
-2. **Reduce size** — use 0.5× standard position size
-3. **Tighten stop-loss** — reduce downside risk to compensate
-4. **Shorten horizon** — try 7d or 14d instead of 30d (or vice versa)
+No: the score did not predict whether calls were right (see the Overview). Judge the setup by risk/reward, regime confluence and volume, and size it by risk.
 
 ### "The skill recommends 25% position size — is that too much?"
 
@@ -499,7 +415,7 @@ Use the position-sizing skill for GLD with $25,000 allocation
 
 **Rule of thumb:** Cap single positions at 20–25% for swing trades.
 
-### "My ticker isn't showing Markov confidence — why?"
+### "My ticker isn't showing a Markov forecast — why?"
 
 **Possible reasons:**
 - Ticker not in canonical coverage (e.g., small-cap, international)
@@ -520,11 +436,5 @@ Use the position-sizing skill for GLD with $25,000 allocation
 
 ## Skill Files
 
-- **`swing-trade-setup`:** `/data/Repositories/dexter/src/skills/swing-trade-setup/SKILL.md`
-- **`position-sizing`:** `/data/Repositories/dexter/src/skills/position-sizing/SKILL.md`
-
-**Commits:**
-- `b35d6da` — "Integrate Markov confidence into watchlist and add trading skills"
-- `98c901d` — "Add skill parameterization, confidence histogram, and swing-trade backtest"
-
-**Last Updated:** 2026-04-04 (parameters added)
+- **`swing-trade-setup`:** `src/skills/swing-trade-setup/SKILL.md`
+- **`position-sizing`:** `src/skills/position-sizing/SKILL.md`

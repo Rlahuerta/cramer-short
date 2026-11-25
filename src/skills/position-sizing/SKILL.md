@@ -1,6 +1,6 @@
 ---
 name: position-sizing
-description: Calculate optimal position size based on portfolio risk, Markov prediction confidence, and individual position risk characteristics.
+description: Calculate optimal position size based on portfolio risk, the Markov stop-loss and regime, and individual position risk characteristics.
 parameters:
   horizon:
     type: number
@@ -8,12 +8,6 @@ parameters:
     default: 14
     min: 5
     max: 30
-  confidenceThreshold:
-    type: number
-    description: "Minimum Markov confidence for sizing (0.25 recommended)"
-    default: 0.25
-    min: 0.15
-    max: 0.50
   portfolioValue:
     type: number
     description: "Total portfolio value in USD (e.g. 100000 for $100k)"
@@ -61,7 +55,7 @@ For the target ticker, gather risk metrics:
 - Beta (vs. S&P 500)
 - Average volume, market cap
 
-**Call `markov_distribution` for confidence-weighted sizing:**
+**Call `markov_distribution` for the stop-loss level and regime:**
 
 ```
 markov_distribution({
@@ -72,14 +66,15 @@ markov_distribution({
 })
 ```
 
-**Active parameters:** `horizon = {{horizon}}`, `confidenceThreshold = {{confidenceThreshold}}`, `portfolioValue = {{portfolioValue}}`, `riskPerTrade = {{riskPerTrade}}`
+**Active parameters:** `horizon = {{horizon}}`, `portfolioValue = {{portfolioValue}}`, `riskPerTrade = {{riskPerTrade}}`
 
 **Extract:**
-- `predictionConfidence` — model decisiveness (0–1)
 - `actionSignal.actionLevels.stopLoss` — downside risk level
 - `actionSignal.sellProbability` — probability of downside
 - `metadata.regimeState` — current regime (bull/bear/sideways)
 - `scenarios.expectedReturn` — expected return over horizon
+
+Do not scale the size by `predictionConfidence`: in backtests (2026-11-25) the score did not predict whether a forecast was right, and the highest-scored fifth was the least accurate.
 
 ### Step 3 — Calculate Position Risk Parameters
 
@@ -87,19 +82,6 @@ markov_distribution({
 ```
 downsideRisk = (currentPrice - stopLoss) / currentPrice
 ```
-
-**Confidence-weighted risk adjustment:**
-```
-baseConfidence = {{confidenceThreshold}}  // active parameter baseline
-confidenceFactor = predictionConfidence / baseConfidence
-// Clamp to 0.5× – 2.0× range
-confidenceFactor = max(0.5, min(2.0, confidenceFactor))
-```
-
-**Interpretation:**
-- `predictionConfidence ≥ 0.40` → confidenceFactor ≈ 1.3× (increase size)
-- `predictionConfidence {{confidenceThreshold}}–0.40` → confidenceFactor ≈ 0.8–1.3× (standard size)
-- `predictionConfidence < {{confidenceThreshold}}` → confidenceFactor ≈ 0.5–0.8× (reduce size)
 
 **Regime adjustment:**
 - Bear regime → reduce max position size by 20% (defensive stance)
@@ -117,7 +99,7 @@ portfolioValue = {{portfolioValue}}  // active parameter
 riskPerTrade = {{riskPerTrade}}  // active parameter (e.g. 0.01 for 1%)
 downsideRisk = (entryPrice - stopLoss) / entryPrice
 
-positionValue = (portfolioValue × riskPerTrade × confidenceFactor) / downsideRisk
+positionValue = (portfolioValue × riskPerTrade) / downsideRisk
 shares = positionValue / entryPrice
 positionSizePct = positionValue / portfolioValue × 100
 ```
@@ -125,10 +107,9 @@ positionSizePct = positionValue / portfolioValue × 100
 **Example:**
 - Portfolio: ${{portfolioValue}}
 - Entry: $100, Stop: $92 (8% downside)
-- predictionConfidence: 0.42 → confidenceFactor: 1.4
-- Position value = (${{portfolioValue}} × {{riskPerTrade}} × 1.4) / 0.08 = $17,500
-- Shares: 175
-- Position size: 17.5% of portfolio
+- Position value = (${{portfolioValue}} × {{riskPerTrade}}) / 0.08 = $12,500 at the default parameters
+- Shares: 125
+- Position size: 12.5% of portfolio
 
 **Method B: Kelly criterion (aggressive, for experienced traders)**
 
@@ -141,7 +122,7 @@ kellyFraction = winProbability - (lossProbability / winLossRatio)
 fractionalKelly = kellyFraction × 0.5  // half-Kelly for safety
 fractionalKelly = max(0, min(0.25, fractionalKelly))  // cap at 25% portfolio
 
-positionValue = portfolioValue × fractionalKelly × confidenceFactor
+positionValue = portfolioValue × fractionalKelly
 ```
 
 **Recommendation:** Use Method A for most users. Method B can produce aggressive sizes during high-conviction setups — only for experienced traders with strong risk tolerance.
@@ -160,22 +141,7 @@ Before finalizing recommendation, check for concentration risk:
 - Sector concentration (> 20%) → reduce size by 20%
 - Single position > 25% → cap at 25% maximum
 
-### Step 6 — Apply Confidence Threshold Rules
-
-**Hard rules based on Markov predictionConfidence and active parameter `confidenceThreshold = {{confidenceThreshold}}`:**
-
-| Confidence | Max Position Size | Risk Per Trade | Notes |
-|------------|------------------|----------------|-------|
-| ≥ 0.40 (High) | 20% portfolio | 1.5% | High-conviction setups |
-| {{confidenceThreshold}}–0.40 (Medium) | 15% portfolio | 1.0% | Standard setups |
-| < {{confidenceThreshold}} (Low) | 5% portfolio | 0.5% | Speculative, reduce exposure |
-
-**If predictionConfidence < {{confidenceThreshold}}:**
-- Explicitly warn: "⚠️ Low Markov confidence — accuracy drops to ~55% below {{confidenceThreshold}} threshold"
-- Recommend waiting for higher-confidence signal OR using minimum position size
-- Suggest tighter stop-loss to limit downside
-
-### Step 7 — Build Position Sizing Recommendation
+### Step 6 — Build Position Sizing Recommendation
 
 Present in this format:
 
@@ -188,8 +154,7 @@ Present in this format:
 - Portfolio VaR (95%): X.X%
 - Portfolio Sharpe: X.XX
 
-**Markov Confidence:**
-- Prediction confidence: 0.XX ([High/Medium/Low])
+**Markov Forecast:**
 - Regime state: [bull/bear/sideways]
 - Buy probability: XX%
 - Expected return: +X.X%
@@ -197,7 +162,7 @@ Present in this format:
 **Position Sizing (Risk-Based Method):**
 - Entry price: $X.XX
 - Stop-loss: $X.XX (−X.X% downside)
-- Risk per trade: X% (adjusted for confidence)
+- Risk per trade: X%
 - **Recommended position: X shares ($X,XXX)**
 - **Position size: X.X% of portfolio**
 
@@ -217,7 +182,7 @@ Present in this format:
 - Contribution to portfolio VaR: +X.X%
 ```
 
-### Step 8 — Provide Sizing Scenarios
+### Step 7 — Provide Sizing Scenarios
 
 Show conservative/base/aggressive options:
 
@@ -230,7 +195,7 @@ Show conservative/base/aggressive options:
 | Base (recommended) | XXX | $X,XXX | X% | $XXX |
 | Aggressive | XXX | $X,XXX | X% | $XXX |
 
-**Recommendation:** Use Base scenario for standard swing trade. Conservative if portfolio VaR > 15% or predictionConfidence < 0.25. Aggressive only if high conviction (confidence ≥ 0.40) and low correlation with existing holdings.
+**Recommendation:** Use Base scenario for standard swing trade. Conservative if portfolio VaR > 15% or the position adds concentration. Aggressive (1.5× base risk) only with low correlation to existing holdings.
 ```
 
 ---
@@ -246,8 +211,7 @@ Show conservative/base/aggressive options:
 - Portfolio VaR (95%): 2.8%
 - Portfolio Sharpe: 1.2
 
-**Markov Confidence:**
-- Prediction confidence: 0.42 (High)
+**Markov Forecast:**
 - Regime state: bull
 - Buy probability: 64%
 - Expected return: +8.2%
@@ -255,14 +219,14 @@ Show conservative/base/aggressive options:
 **Position Sizing (Risk-Based Method):**
 - Entry price: $118.50
 - Stop-loss: $109.00 (−8.0% downside)
-- Risk per trade: 1.5% (high confidence → 1.5× standard)
-- **Recommended position: 190 shares ($22,515)**
-- **Position size: 22.5% of portfolio**
+- Risk per trade: 1.0%
+- **Recommended position: 105 shares ($12,443)**
+- **Position size: 12.4% of portfolio**
 
 **Concentration Check:**
 - Correlation with existing holdings: medium (0.55 avg with tech positions)
 - Sector exposure: 35% post-trade (technology)
-- Flags: ⚠️ Sector concentration > 30% — consider reducing to 18% position size
+- Flags: ⚠️ Sector concentration > 30% — consider the Conservative size
 
 **Alternative (Kelly Method):**
 - Kelly fraction: 18%
@@ -270,7 +234,7 @@ Show conservative/base/aggressive options:
 - **Kelly-based position: 95 shares ($11,258)**
 
 **Risk Management:**
-- Maximum loss at stop: $1,805 (1.8% of portfolio)
+- Maximum loss at stop: $998 (1.0% of portfolio)
 - Position beta: 1.65 (vs. S&P 500)
 - Contribution to portfolio VaR: +0.6%
 
@@ -279,10 +243,10 @@ Show conservative/base/aggressive options:
 | Scenario | Shares | Position Value | % Portfolio | Max Loss |
 |----------|--------|----------------|-------------|----------|
 | Conservative | 95 | $11,258 | 11.3% | $901 |
-| Base (recommended) | 140 | $16,590 | 16.6% | $1,327 |
-| Aggressive | 190 | $22,515 | 22.5% | $1,805 |
+| Base (recommended) | 105 | $12,443 | 12.4% | $998 |
+| Aggressive | 158 | $18,723 | 18.7% | $1,501 |
 
-**Recommendation:** Use Conservative scenario due to sector concentration. Technology sector already at 35% — adding full position would bring to 48%, creating single-sector risk. If comfortable with concentration, Base scenario is acceptable given high Markov confidence (0.42) and bull regime.
+**Recommendation:** Use Conservative scenario due to sector concentration. Technology sector already at 35% — adding full position would bring to 48%, creating single-sector risk. If comfortable with concentration, Base scenario is acceptable in the bull regime.
 ```
 
 ---

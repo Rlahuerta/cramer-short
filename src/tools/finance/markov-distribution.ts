@@ -5294,11 +5294,6 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       warnings.push(`⚠️ Markov fit test failed (χ²=${m.goodnessOfFit.chiSquared.toFixed(1)}, p=${m.goodnessOfFit.pValue.toFixed(3)}) — transitions may not follow Markov property`);
     if (m.goodnessOfFit?.passes)
       warnings.push(`✓ Markov fit test passed (p=${m.goodnessOfFit.pValue.toFixed(3)})`);
-    const recommendedConfidenceThreshold = resolveForecastLabMarkovParameterDefaults(
-      resolveForecastLabRuntimeAssetScopeForTicker(result.ticker),
-    ).recommendedConfidenceThreshold;
-    if (result.predictionConfidence < recommendedConfidenceThreshold)
-      warnings.push(`⚠️ Low confidence (${result.predictionConfidence.toFixed(2)} < ${recommendedConfidenceThreshold.toFixed(2)}): below the recommended threshold; treat it as a weak signal or wait for a higher-confidence one`);
 
     // --- Section 5: Full distribution table ---
     const table = [

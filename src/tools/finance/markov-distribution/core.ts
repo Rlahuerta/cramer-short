@@ -92,15 +92,10 @@ setForecastLabMarkovRuntimeDefaults('sol', PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS)
 setForecastLabMarkovRuntimeDefaults('hype', PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULTS);
 
 /**
- * Recommended confidence threshold for selective prediction.
- * Based on coverage-milestone analysis (2026-04-04, 14 tickers × 6 horizons):
- * - conf ≥ 0.25: ~66% accuracy at ~44% coverage (aggregate)
- * - conf ≥ 0.30: ~71% accuracy at ~30% coverage
- * - conf ≥ 0.40: ~75% accuracy at ~15% coverage
- * The shipped value is 0.22 (lowered from 0.25 on 2026-05-04); 0.22 itself has not been re-measured.
- *
- * Use this threshold to filter low-confidence predictions when accuracy matters more than coverage.
- * For full coverage (no filtering), ignore this threshold.
+ * Confidence threshold kept for the Forecast Lab parameter and the gates that still read it. It does not select more
+ * accurate forecasts: on the live-config benchmark and 8 held-out tickers (2026-11-25) the confidence score did not
+ * rank traded accuracy (AUROC 0.47-0.49) and the highest-scored fifth was the least accurate, so the 2026-04-04
+ * figures (~66% accuracy at conf >= 0.25) did not hold.
  */
 export const RECOMMENDED_CONFIDENCE_THRESHOLD = FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS.recommendedConfidenceThreshold;
 

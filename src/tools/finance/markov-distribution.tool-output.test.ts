@@ -3047,8 +3047,9 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
     });
 
-    it('warns about low confidence without claiming an accuracy figure', async () => {
-      // Re-measured 2026-11-23: accuracy was flat (~59-60%) across confidence thresholds, so "~55% below" is unsupported.
+    it('does not warn about a low confidence score', async () => {
+      // The score does not rank forecast accuracy (live-config benchmark and 8 held-out tickers, 2026-11-25): the
+      // top fifth by score was the least accurate, so a low score is no reason to distrust a forecast.
       mock.module('./polymarket.js', () => ({
         ...realPolymarketModule,
         fetchPolymarketMarkets: async () => [],
@@ -3068,9 +3069,9 @@ describe('markov_distribution tool output envelope', () => {
         polymarketMarkets: [], trajectory: false,
       });
 
-      const report = String(JSON.parse(result).data.report);
-      expect(report).toContain('Low confidence');
-      expect(report).not.toMatch(/accuracy drops|~55%/);
+      const parsed = JSON.parse(result);
+      expect(parsed.data.canonical.diagnostics.predictionConfidence).toBeLessThan(0.22);
+      expect(String(parsed.data.report)).not.toMatch(/Low confidence|accuracy drops|~55%/);
     });
 
     it('emits commodity model-only distribution despite structural break', async () => {

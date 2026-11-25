@@ -1,19 +1,13 @@
 ---
 name: swing-trade-setup
-description: Identify high-probability swing trade setups with entry signals, stop-loss levels, and confidence-weighted position sizing.
+description: Identify high-probability swing trade setups with entry signals, stop-loss levels, and risk-based position sizing.
 parameters:
   horizon:
     type: number
-    description: "Forecast horizon in trading days (affects Markov confidence)"
+    description: "Forecast horizon in trading days"
     default: 14
     min: 5
     max: 30
-  confidenceThreshold:
-    type: number
-    description: "Minimum Markov confidence to act on signal (0.25 recommended)"
-    default: 0.25
-    min: 0.15
-    max: 0.50
 ---
 
 # Swing Trade Setup Skill
@@ -65,14 +59,13 @@ markov_distribution({
 ```
 
 **Extract from result:**
-- `predictionConfidence` — model decisiveness (0–1)
 - `regimeState` — current regime (bull/bear/sideways)
 - `actionSignal.recommendation` — BUY/HOLD/SELL
 - `actionSignal.buyProbability` / `sellProbability`
 - `actionSignal.actionLevels.targetPrice` — upside target
 - `actionSignal.actionLevels.stopLoss` — downside stop
 
-**Confidence threshold:** Active parameter `confidenceThreshold = {{confidenceThreshold}}`. If `predictionConfidence < {{confidenceThreshold}}`, flag as **low-confidence setup** — accuracy drops to ~55% below this threshold. Consider waiting for higher-confidence signal or reducing position size.
+Do not grade the setup or the size by `predictionConfidence`: in backtests (2026-11-25) the score did not predict whether a forecast was right, and the highest-scored fifth was the least accurate.
 
 ### Step 4 — Entry Signal Confirmation
 
@@ -105,23 +98,15 @@ downside = (entryPrice - stopLoss) / entryPrice
 riskReward = upside / downside
 ```
 
-**Minimum acceptable:** Risk/reward ≥ 2:1 for standard setups, ≥ 3:1 for low-confidence setups (predictionConfidence < 0.25)
+**Minimum acceptable:** Risk/reward ≥ 2:1
 
 ### Step 6 — Position Sizing Recommendation
 
-Use Markov confidence to weight position size:
+Risk a fixed share of the portfolio per trade; the stop distance sets the size:
 
-**High confidence (≥ 0.40):** Full position size (e.g., 2% portfolio risk)
-**Medium confidence (0.25–0.40):** Standard position size (e.g., 1.5% portfolio risk)
-**Low confidence (< 0.25):** Reduced position (e.g., 0.5–1% portfolio risk) or skip trade
-
-**Formula:**
 ```
-baseRisk = 1% of portfolio (standard swing trade risk)
-confidenceMultiplier = predictionConfidence / 0.30  (normalize to 0.30 baseline)
-adjustedRisk = baseRisk × confidenceMultiplier  (cap at 0.5× to 2.0×)
-
-positionSize = adjustedRisk / downside
+risk = 1% of portfolio (standard swing trade risk)
+positionSize = risk / downside
 ```
 
 ### Step 7 — Build Setup Summary
@@ -133,7 +118,6 @@ Present in this format:
 
 **Setup Type:** [pullback/breakout/breakdown/etc.]
 **Direction:** Long / Short
-**Confidence:** [High/Medium/Low] (predictionConfidence: X.XX)
 
 **Entry:**
 - Current price: $X.XX
@@ -147,12 +131,11 @@ Present in this format:
 
 **Risk/Reward:** X:1
 
-**Position Size:** X% portfolio risk (adjusted for [confidence level])
+**Position Size:** X% portfolio risk
 
 **Catalysts:** [earnings date, sector tailwinds, etc.]
 
 **Flags:**
-- ⚠️ Low Markov confidence — consider reducing size
 - ✓ Regime confluence (bull regime + bullish setup)
 - ✓ Volume confirmation (breakout on 2.1× average volume)
 ```
@@ -182,7 +165,6 @@ Define exit rules:
 
 **Setup Type:** Pullback to SMA50 support
 **Direction:** Long
-**Confidence:** High (predictionConfidence: 0.42)
 
 **Entry:**
 - Current price: $118.50
@@ -196,7 +178,7 @@ Define exit rules:
 
 **Risk/Reward:** 3.2:1
 
-**Position Size:** 1.8% portfolio risk (high confidence → 1.2× standard size)
+**Position Size:** 1% portfolio risk (standard size)
 
 **Catalysts:** Earnings in 12 days, AI sector momentum
 

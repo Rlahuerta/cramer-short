@@ -282,6 +282,15 @@ describe('Skills contract: SKILL.md vs runtime', () => {
     expect(failures, `Stale .dexter/ references found:\n${failures.join('\n')}`).toEqual([]);
   });
 
+  // ── 4b. No reliability claims for the Markov confidence score ──────────
+
+  it('no SKILL.md sizes positions by the Markov confidence score or claims an accuracy figure for it', () => {
+    // The score did not predict forecast accuracy (live-config benchmark and 8 held-out tickers, 2026-11-25).
+    const claim = /accuracy drops|confidenceFactor|confidenceMultiplier|confidence-weighted|Low Markov confidence/i;
+    const failures = skills.filter(s => claim.test(s.instructions) || claim.test(s.description)).map(s => s.name);
+    expect(failures).toEqual([]);
+  });
+
   // ── 5. Parameter placeholder drift ──────────────────────────────────────
 
   it('all {{param}} placeholders in parameterized skills match declared parameters', () => {

@@ -65,6 +65,13 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('mock tool descriptions');
   });
 
+  it('does not treat a low Markov confidence score as a reason to downgrade conviction', () => {
+    // The score does not rank forecast accuracy (live-config benchmark and 8 held-out tickers, 2026-11-25).
+    const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
+    expect(prompt).toContain('downgrade conviction when model disagreement');
+    expect(prompt).not.toContain('low Markov confidence');
+  });
+
   it('contains the current date', () => {
     const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     const currentYear = new Date(FIXED_TEST_NOW_MS).getFullYear().toString();

@@ -13,7 +13,7 @@
 - ✅ Your horizon is **14–30 days** (the model's sweet spot)
 - ✅ You accept **~60–75% directional accuracy** with explicit confidence intervals
 - ✅ You want probability-weighted scenarios, not point forecasts
-- ✅ The run returns a **calibrated Markov distribution** (check for `predictionConfidence ≥ 0.22` and a non-abstain action signal)
+- ✅ The run returns a **calibrated Markov distribution** (a non-abstain action signal)
 
 **Do NOT use this model when:**
 - ❌ You trade **crypto** (BTC-USD is negative at all horizons; any broader commentary the agent provides is fallback, not Markov output)
@@ -57,23 +57,13 @@
 
 ---
 
-## Confidence Thresholds
+## The Confidence Score
 
-The model outputs a **confidence score** (0–1) for each prediction. Use this to trade coverage for accuracy:
+The model outputs a **`predictionConfidence` score** (0–1) for each prediction. **Do not filter or size trades by it.** On the live-config benchmark and 8 held-out tickers (2026-11-25) the score did not predict whether a BUY/SELL call was right: the highest-scored fifth of calls was the least accurate, and no threshold separated better calls from worse ones. The model's calls were also right slightly less often than always calling "up" on the same days (59.6% vs 61.2%), so the overall accuracy mostly reflects the 2024–25 bull market. The tool no longer warns below a confidence threshold.
 
-| Threshold | Accuracy | Coverage | When to Use |
-|-----------|----------|----------|-------------|
-| **≥ 0.22** (Recommended) | not re-measured | not re-measured | Default — the threshold the tool warns below |
-| **≥ 0.25** | ~66% | ~44% | Balances accuracy and coverage (the default until 2026-05-04) |
-| **≥ 0.30** | ~71% | ~30% | When you need higher confidence and can skip more predictions |
-| **≥ 0.40** | ~75% | ~15% | Only for high-conviction trades; most predictions filtered out |
-| **Abstain / no calibrated distribution** | N/A | N/A | **Skip.** Not a signal — treat the absence of a calibrated result as a pass. |
-| **No threshold** | ~60% | 100% | Full coverage, but includes weak signals |
-
-The accuracy and coverage figures were measured on 2026-04-04 (14 tickers × 6 horizons) at the thresholds shown. The default moved from 0.25 to 0.22 on 2026-05-04 and has not been re-measured since.
+Earlier versions of this guide listed accuracy and coverage figures per threshold (measured 2026-04-04); they did not hold up on live-length windows.
 
 **What the warnings mean:**
-- `⚠️ Low confidence (0.18 < 0.22)` — This prediction is below the recommended threshold; treat it as a weak signal or wait for a higher-confidence one. (The old "accuracy drops to ~55%" figure did not hold on the 2026-11-23 re-measurement, where accuracy was flat across thresholds.)
 - **Abstain or no calibrated distribution** — The model declined to produce a calibrated result (typically because trusted anchors are missing or the regime signal is too weak). This is not an edge. Skip the trade rather than interpreting fallback text as a signal.
 
 ---
@@ -86,7 +76,7 @@ The accuracy and coverage figures were measured on 2026-04-04 (14 tickers × 6 h
 |--------|------------|------------------|
 | **P(up)** | Probability price goes up | >55% = bullish lean, <45% = bearish lean |
 | **90% CI** | 90% confidence interval for horizon price | Honest uncertainty measure; wider = more uncertain |
-| **Confidence** | Model's certainty in this prediction | ≥0.22 = recommended threshold |
+| **Confidence** | Model-agreement score (0–1) | Not a reliability signal: it did not predict accuracy (2026-11-25) |
 | **Brier Score** | Calibration quality (lower is better) | <0.35 = well-calibrated |
 | **Directional Accuracy** | % of correct direction calls | 60–75% for confirmed assets |
 
@@ -101,14 +91,13 @@ Mixing: 85% Markov / 15% Anchors
 🎯 Recommendation: BUY
   P(up): 68% | Expected: $535.20 (+2.8%)
   90% CI: $510.30 – $560.10
-  Confidence: 0.32 ✓ (above 0.22 threshold)
+  Confidence: 0.32
 ```
 
 **Interpretation:**
 - **BUY** signal with 68% probability of upside
 - **Expected return** +2.8% over 14 days
 - **90% CI** shows the honest range of outcomes ($510–$560)
-- **Confidence 0.32** is above the 0.22 threshold — this is a reliable signal
 
 ---
 
@@ -121,7 +110,6 @@ The model fails predictably in these scenarios:
 | **Earnings week** | No fundamental data; can't capture earnings surprises | Check earnings calendar; reduce position size |
 | **Macro shocks** (Fed, CPI) | Trained on 2022–2025 data; may miss regime shifts | Wait 1–2 days post-announcement for regime to stabilize |
 | **Crypto volatility** | BTC regime model is anti-informative | Do not use for crypto; any commentary is fallback, not Markov |
-| **Low confidence (<0.20)** | Model is uncertain; accuracy drops to ~50% | Skip these predictions; wait for ≥0.22 |
 | **Abstain / no calibrated distribution** | Trusted anchors missing or regime signal too weak | Skip. Do not treat absence of output or fallback text as a signal |
 | **45–60d horizons** | `markovWeight` near zero; no Markov signal | Do not use beyond 30d |
 
@@ -133,13 +121,13 @@ The model fails predictably in these scenarios:
 
 > "I want to know if SPY is likely to be higher in 20 days for a swing trade."
 
-**Verdict:** ✅ Use it — SPY 20d is confirmed (70%+ accuracy), horizon is in sweet spot. If the run returns a calibrated distribution with confidence ≥ 0.22, act on it. If it abstains or returns no calibrated output, skip.
+**Verdict:** ✅ Use it — SPY 20d is confirmed (70%+ accuracy), horizon is in sweet spot. If the run returns a calibrated distribution, act on it. If it abstains or returns no calibrated output, skip.
 
 ### ⚠️ Marginal Use Case
 
 > "I want a GOOGL 30d forecast for earnings next month."
 
-**Verdict:** ⚠️ Use with caution — GOOGL only has confirmed coverage at 7d; 30d is exploratory, and earnings week adds fundamental risk. Check the confidence score; if < 0.22 or the model abstains, treat it as a skip rather than a signal.
+**Verdict:** ⚠️ Use with caution — GOOGL only has confirmed coverage at 7d; 30d is exploratory, and earnings week adds fundamental risk. If the model abstains, treat it as a skip rather than a signal.
 
 ### ❌ Bad Use Case
 
@@ -151,11 +139,10 @@ The model fails predictably in these scenarios:
 
 ## How to Improve Your Results
 
-1. **Filter by confidence ≥ 0.22** — the shipped threshold; at 0.25 (measured 2026-04-04) filtering skipped the weakest ~56% of predictions and raised accuracy from ~60% to ~66%
-2. **Stick to confirmed assets** — SPY, QQQ, GLD, IAU, VOO, VTI have the most reliable signals
-3. **Use 14–30d horizons** — the model's sweet spot; avoid 5–10d (noisy) and 45–60d (no signal)
-4. **Combine with fundamentals** — use Cramer-Short's other tools (SEC filings, financial metrics) for earnings/macro context
-5. **Respect the CI** — the 90% confidence interval is the honest measure of uncertainty; don't over-interpret point estimates
+1. **Stick to confirmed assets** — SPY, QQQ, GLD, IAU, VOO, VTI have the most reliable signals
+2. **Use 14–30d horizons** — the model's sweet spot; avoid 5–10d (noisy) and 45–60d (no signal)
+3. **Combine with fundamentals** — use Cramer-Short's other tools (SEC filings, financial metrics) for earnings/macro context
+4. **Respect the CI** — the 90% confidence interval is the honest measure of uncertainty; don't over-interpret point estimates
 
 ---
 
