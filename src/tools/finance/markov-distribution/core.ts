@@ -107,10 +107,9 @@ export const RECOMMENDED_CONFIDENCE_THRESHOLD = FORECAST_LAB_MARKOV_PARAMETER_DE
 /**
  * Factor on the forecast's horizon drift (the distribution, its calibration and the trajectory), with the BUY/SELL
  * thresholds scaled to match so HOLD stays stable. The R²_OS validator stays unshrunk: its thresholds were set on
- * unshrunk predictions. The unshrunk drift was
- * overconfident: forecasts with P(up) >= 0.65 averaged 0.72 but came true 43-66% of the time, while 90% intervals
- * already covered 97-98%, so the centre, not the width, was off. The strongest shrink on the grid (0.25/0.5/0.75)
- * that passed the live-config benchmark; on 8 held-out tickers it improved Brier by 0.0067 (2026-11-23).
+ * unshrunk predictions. The unshrunk drift was overconfident: forecasts with P(up) >= 0.65 averaged 0.72 but came
+ * true 43-66% of the time. The strongest shrink on the grid (0.25/0.5/0.75) that passed the live-config benchmark; on
+ * 8 held-out tickers it improved Brier by 0.0067 (2026-11-23). With it, the central 90% interval covers ~88%.
  */
 export const FORECAST_DRIFT_SHRINK = 0.5;
 export interface SentimentSignal {

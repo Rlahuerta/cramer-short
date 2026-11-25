@@ -3047,6 +3047,32 @@ describe('markov_distribution tool output envelope', () => {
       expect(parsed.data.canonical.diagnostics.canEmitCanonical).toBe(false);
     });
 
+    it('warns about low confidence without claiming an accuracy figure', async () => {
+      // Re-measured 2026-11-23: accuracy was flat (~59-60%) across confidence thresholds, so "~55% below" is unsupported.
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+      // 60 prices: confidence ~0.19, under the 0.22 threshold but over the commodity floor, so it is emitted.
+      const prices: number[] = [];
+      let p = 200;
+      for (let i = 0; i < 60; i++) {
+        p *= 1 + Math.sin(i * 0.3) * 0.005;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({
+        ticker: 'GLD', horizon: 7, currentPrice: prices[prices.length - 1], historicalPrices: prices,
+        polymarketMarkets: [], trajectory: false,
+      });
+
+      const report = String(JSON.parse(result).data.report);
+      expect(report).toContain('Low confidence');
+      expect(report).not.toMatch(/accuracy drops|~55%/);
+    });
+
     it('emits commodity model-only distribution despite structural break', async () => {
       mock.module('./polymarket.js', () => ({
         ...realPolymarketModule,

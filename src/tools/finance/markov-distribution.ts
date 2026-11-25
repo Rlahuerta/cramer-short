@@ -5298,7 +5298,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       resolveForecastLabRuntimeAssetScopeForTicker(result.ticker),
     ).recommendedConfidenceThreshold;
     if (result.predictionConfidence < recommendedConfidenceThreshold)
-      warnings.push(`⚠️ Low confidence (${result.predictionConfidence.toFixed(2)} < ${recommendedConfidenceThreshold.toFixed(2)}): accuracy drops to ~55% below this threshold; consider waiting for higher-confidence signal`);
+      warnings.push(`⚠️ Low confidence (${result.predictionConfidence.toFixed(2)} < ${recommendedConfidenceThreshold.toFixed(2)}): below the recommended threshold; treat it as a weak signal or wait for a higher-confidence one`);
 
     // --- Section 5: Full distribution table ---
     const table = [
