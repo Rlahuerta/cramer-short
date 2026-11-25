@@ -49,6 +49,7 @@ def compute_trajectory(
     garch_scales: list[float] | None = None,
     uncertainty_ci_scale: float = 1.0,
     random_state: int | None = None,
+    drift_scale: float = 1.0,
 ) -> list[TrajectoryPoint]:
     initial_idx = STATE_INDEX[initial_state]
     trajectory: list[TrajectoryPoint] = []
@@ -98,7 +99,7 @@ def compute_trajectory(
         if empirical_daily_vol:
             sigma_obs = max(sigma_obs, empirical_daily_vol)
 
-        daily_drifts[d] = mu_obs
+        daily_drifts[d] = mu_obs * drift_scale
         daily_vols[d] = sigma_obs
 
     if garch_scales:

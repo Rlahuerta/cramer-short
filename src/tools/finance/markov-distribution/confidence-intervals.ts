@@ -392,6 +392,8 @@ export function computeHorizonDriftVol(
   regimeSpecificSigmaThreshold?: number,
   garchScales?: readonly number[],
   terminalStateWeights?: readonly number[],
+  /** Factor on the horizon drift (FORECAST_DRIFT_SHRINK for forecasts); volatility is unchanged. */
+  driftScale = 1,
 ): { mu_n: number; sigma_n: number } {
   const stateWeights = terminalStateWeights
     ? normalizeStateWeightVector(terminalStateWeights)
@@ -452,7 +454,7 @@ export function computeHorizonDriftVol(
     sigma_n = sigma_eff * Math.sqrt(varianceScale);
   }
 
-  return { mu_n, sigma_n };
+  return { mu_n: mu_n * driftScale, sigma_n };
 }
 
 /**
@@ -516,6 +518,8 @@ export function computeTrajectory(
    */
   uncertaintyCiScale = 1.0,
   randomState?: number,
+  /** Factor on each day's drift (FORECAST_DRIFT_SHRINK for forecasts). */
+  driftScale = 1,
 ): TrajectoryPoint[] {
   const initialIdx = STATE_INDEX[initialState];
   const trajectory: TrajectoryPoint[] = [];
@@ -572,7 +576,7 @@ export function computeTrajectory(
       sigmaObs = Math.max(sigmaObs, empiricalDailyVol);
     }
 
-    dailyDrifts[d] = muDay;
+    dailyDrifts[d] = muDay * driftScale;
     dailyVols[d] = sigmaObs;
   }
 
@@ -784,6 +788,8 @@ export function interpolateDistribution(
   terminalStateWeights?: readonly number[],
   /** Optional seed for the confidence-band Monte Carlo. Default keeps Math.random. */
   randomState?: number,
+  /** Factor on the horizon drift (FORECAST_DRIFT_SHRINK for forecasts). */
+  forecastDriftScale = 1,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -791,7 +797,7 @@ export function interpolateDistribution(
   // Compute regime-weighted drift and vol via shared helper
   const { mu_n, sigma_n } = computeHorizonDriftVol(
     horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
-    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales, terminalStateWeights,
+    regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales, terminalStateWeights, forecastDriftScale,
   );
   // The grid must span the distribution it carries: a calm 20-day vol under a wider
   // regime sigma left mass beyond the grid top and pinned the upper central bound there.

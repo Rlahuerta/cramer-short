@@ -88,6 +88,7 @@ const realPolymarketModule = { ...(await import('./polymarket.js')) };
 const realHmmModule = { ...(await import('./hmm.js')) };
 const realApiModule = { ...(await import('./api.js')) };
 const realTransitionModule = { ...(await import('./markov-distribution/transition.js')) };
+const realConfidenceModule = { ...(await import('./markov-distribution/confidence-intervals.js')) };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -168,6 +169,7 @@ afterEach(() => {
   mock.module('./hmm.js', () => realHmmModule);
   mock.module('./api.js', () => realApiModule);
   mock.module('./markov-distribution/transition.js', () => realTransitionModule);
+  mock.module('./markov-distribution/confidence-intervals.js', () => realConfidenceModule);
 });
 
 function rowSums(m: number[][]): number[] {
@@ -2019,6 +2021,41 @@ describe('markov_distribution tool output envelope', () => {
     expect(result.metadata.validationMetric).toBe('daily_return');
     expect(fittedLengths).toContain(150);
     expect(fittedLengths).toContain(130);
+  });
+
+  it('forecasts with the shrunk drift everywhere the drift is used', async () => {
+    const { FORECAST_DRIFT_SHRINK } = await import('./markov-distribution/core.js');
+    const scales: Record<string, unknown[]> = { distribution: [], trajectory: [], driftVol: [] };
+    // The drift scale is the last parameter of each: index 21, 15 and 11.
+    mock.module('./markov-distribution/confidence-intervals.js', () => ({
+      ...realConfidenceModule,
+      interpolateDistribution: (...args: Parameters<typeof realConfidenceModule.interpolateDistribution>) => {
+        scales.distribution.push(args[21]);
+        return realConfidenceModule.interpolateDistribution(...args);
+      },
+      computeTrajectory: (...args: Parameters<typeof realConfidenceModule.computeTrajectory>) => {
+        scales.trajectory.push(args[15]);
+        return realConfidenceModule.computeTrajectory(...args);
+      },
+      computeHorizonDriftVol: (...args: Parameters<typeof realConfidenceModule.computeHorizonDriftVol>) => {
+        scales.driftVol.push(args[11]);
+        return realConfidenceModule.computeHorizonDriftVol(...args);
+      },
+    }));
+    const returns = Array.from({ length: 150 }, (_, i) => 0.012 * Math.sin(0.9 * i) + 0.004 * Math.cos(2.1 * i));
+    const prices = [100];
+    returns.forEach((r, i) => prices.push(prices[i] * (1 + r)));
+
+    await computeMarkovDistribution({
+      ticker: 'SPY', horizon: 7, currentPrice: prices[150], historicalPrices: prices, polymarketMarkets: [],
+      trajectory: true, trajectoryDays: 7,
+    });
+
+    expect(FORECAST_DRIFT_SHRINK).toBeLessThan(1);
+    for (const [name, seen] of Object.entries(scales)) {
+      expect(seen.length, name).toBeGreaterThan(0);
+      expect(new Set(seen), name).toEqual(new Set([FORECAST_DRIFT_SHRINK]));
+    }
   });
 
   it('classifies the daily validator training slice without its held-out days', async () => {

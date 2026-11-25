@@ -640,3 +640,31 @@ def test_window_forecast_uses_forecast_estimate_without_break_for_non_crypto(
     np.testing.assert_allclose(captured["P"], sentinel if uses_estimate else _default_matrix())
     # The patched decayed estimate is the identity, whose rows carry zero entropy.
     assert result["entropy"].entropy_norm == pytest.approx(0.0)
+
+
+def test_window_forecast_shrinks_the_trajectory_drift(monkeypatch: pytest.MonkeyPatch):
+    # Mirrors markov-distribution.ts: the forecast drift is scaled by FORECAST_DRIFT_SHRINK.
+    from research.models.markov.core import FORECAST_DRIFT_SHRINK
+    _patch_base_markov(monkeypatch, ["bull", "bull", "bear", "sideways", "bull", "bear"])
+    captured: dict[str, object] = {}
+
+    def fake_compute_trajectory(current_price, *_args, drift_scale=1.0, **_kwargs):
+        captured["drift_scale"] = drift_scale
+        return [_point(current_price * 1.01)]
+
+    monkeypatch.setattr(wf, "compute_trajectory", fake_compute_trajectory)
+    wf.compute_window_forecast(
+        _prices_from_returns([0.02, 0.01, -0.03, 0.01, 0.02, -0.01]),
+        horizon=1,
+        return_threshold_multiplier=0.5,
+        decay_rate=0.95,
+        break_divergence_threshold=0.2,
+        use_hmm=False,
+        asset_profile="equity",
+        enable_garch_vol=False,
+        garch_horizon=None,
+        garch_ceiling=None,
+        use_empirical_up_rates=False,
+    )
+    assert FORECAST_DRIFT_SHRINK < 1
+    assert captured["drift_scale"] == FORECAST_DRIFT_SHRINK

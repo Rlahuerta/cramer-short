@@ -85,6 +85,7 @@ def interpolate_distribution(
     garch_scales: list[float] | None = None,
     terminal_state_weights: list[float] | None = None,
     random_state: int | None = None,
+    forecast_drift_scale: float = 1.0,
 ) -> list[dict]:
     import math
 
@@ -105,6 +106,7 @@ def interpolate_distribution(
         regime_specific_sigma_threshold,
         garch_scales,
         terminal_state_weights,
+        forecast_drift_scale,
     )
     mu_n = float(horizon_stats["mu_n"])
     sigma_n = float(horizon_stats["sigma_n"])

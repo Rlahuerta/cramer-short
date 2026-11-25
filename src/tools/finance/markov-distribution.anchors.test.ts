@@ -881,12 +881,43 @@ describe('Polymarket anchor influence', () => {
       currentPrice: 100,
       historicalPrices: basePrices,
       polymarketMarkets: [
-        { question: 'Will it exceed $95?', probability: 0.85, volume: 50000, createdAt: '2024-01-01' },
-        { question: 'Will it exceed $100?', probability: 0.50, volume: 50000, createdAt: '2024-01-01' },
-        { question: 'Will it exceed $105?', probability: 0.25, volume: 50000, createdAt: '2024-01-01' },
+        // Questions name the ticker: markets that do not are dropped as off-subject.
+        { question: 'Will COV_AB exceed $95?', probability: 0.85, volume: 50000, createdAt: '2024-01-01' },
+        { question: 'Will COV_AB exceed $100?', probability: 0.50, volume: 50000, createdAt: '2024-01-01' },
+        { question: 'Will COV_AB exceed $105?', probability: 0.25, volume: 50000, createdAt: '2024-01-01' },
       ],
     });
     expect(withAnchors.metadata.anchorCoverage.quality).toBe('good');
     expect(withAnchors.metadata.anchorCoverage.trustedAnchors).toBe(3);
+  });
+});
+
+describe('anchor subject filter', () => {
+  const REF = Date.parse('2026-11-25T12:00:00Z');
+  const market = (question: string) => ({
+    question, probability: 0.5, volume: 50000, createdAt: REF - 5 * MS_PER_DAY, endDate: '2026-12-02',
+  });
+  const options = (ticker: string) => ({ ticker, horizonDays: 7, referenceTimeMs: REF });
+
+  it('drops markets about another asset', () => {
+    // Live SPY anchors included Bitcoin and Ethereum price markets with strikes ~68x the SPY price.
+    expect(extractPriceThresholds([
+      market('Will the price of Bitcoin be above $95,000 on December 2?'),
+      market('Will SPY close above $730 on December 2?'),
+    ], options('SPY')).map(a => a.price)).toEqual([730]);
+    expect(extractPriceThresholds([
+      market('Will the price of Ethereum be above $2,500 on December 2?'),
+      market('Will the price of Bitcoin be above $95,000 on December 2?'),
+    ], options('BTC-USD')).map(a => a.price)).toEqual([95000]);
+  });
+
+  it('accepts the company name and drops thresholds that are not a price', () => {
+    // Live NVDA anchors included Marvell revenue markets, and "$2.5B" parsed as a $2.5 strike.
+    expect(extractPriceThresholds([
+      market('Will NVIDIA close above $180 on December 2?'),
+      market('Will Marvell Q3 Data Center revenue be above $2.5B?'),
+      market('Will NVIDIA Q3 revenue be above $55B?'),
+      market('Will NVIDIA market cap be above $5T on December 2?'),
+    ], options('NVDA')).map(a => a.price)).toEqual([180]);
   });
 });
