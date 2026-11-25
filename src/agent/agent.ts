@@ -50,7 +50,6 @@ import {
   buildDistributionWarningPrefix,
   buildExplicitGoldCombinedForecastAnswer,
   buildForecastDisagreementPrefix,
-  buildLowConfidenceBtcShortHorizonForecastPrefix,
   buildSourcesFooter,
   ensureStructuredDensityTable,
   stripThinkingTags,
@@ -75,12 +74,10 @@ import {
   extractMarkovPredictionConfidenceForQuery,
   extractMarkovReturnFromToolCalls,
   extractSentimentScoreFromToolCalls,
-  getBtcSelectiveMarkovConfidenceThreshold,
   hasAbstainingMarkovDistributionForQuery,
   hasCompletedMarkovDistributionForQuery,
   hasCryptoPolymarketForecastCoverage,
   hasForecastArbitratorForQuery,
-  hasLowConfidenceBtcShortHorizonMarkov,
   hasMarketDataQuery,
   hasPolymarketForecastCoverage,
   hasUsableFixedIncomeResult,
@@ -105,7 +102,6 @@ import {
   shouldForceGoldCombinedForecastTools,
   shouldForceMarkovDistribution,
   shouldForceNonCryptoForecastFallback,
-  shouldInjectBtcShortHorizonLowConfidencePrompt,
   shouldInjectBtcShortHorizonMixedEvidencePrompt,
   shouldRerunPolymarketForecastWithMarkov,
 } from './query-router.js';
@@ -125,7 +121,6 @@ export {
   buildDistributionWarningPrefix,
   buildExplicitGoldCombinedForecastAnswer,
   buildForecastDisagreementPrefix,
-  buildLowConfidenceBtcShortHorizonForecastPrefix,
   buildSourcesFooter,
   buildUnavailableDistributionAnswer,
   ensureStructuredDensityTable,
@@ -172,7 +167,6 @@ export {
   shouldForceGoldCombinedForecastTools,
   shouldForceMarkovDistribution,
   shouldForceNonCryptoForecastFallback,
-  shouldInjectBtcShortHorizonLowConfidencePrompt,
   shouldInjectBtcShortHorizonMixedEvidencePrompt,
   shouldRerunPolymarketForecastWithMarkov,
 } from './query-router.js';
@@ -1281,10 +1275,9 @@ export class Agent {
 
     const toolCalls = ctx.scratchpad.getToolCallRecords();
     const warningPrefix = buildDistributionWarningPrefix(ctx.query, toolCalls);
-    const lowConfidencePrefix = buildLowConfidenceBtcShortHorizonForecastPrefix(ctx.query, toolCalls);
     const disagreementPrefix = buildForecastDisagreementPrefix(ctx.query, toolCalls);
     const baseText = stripThinkingTags(fallbackText);
-    const prefixText = `${warningPrefix ?? ''}${lowConfidencePrefix ?? ''}${disagreementPrefix ?? ''}`;
+    const prefixText = `${warningPrefix ?? ''}${disagreementPrefix ?? ''}`;
     const text = baseText
       ? ensureStructuredDensityTable(`${prefixText}${baseText}`, ctx.query, toolCalls)
       : prefixText;

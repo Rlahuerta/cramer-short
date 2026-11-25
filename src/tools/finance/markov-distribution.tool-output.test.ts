@@ -25,7 +25,6 @@ import {
   computePredictionConfidence,
   getAssetProfile,
   computeRegimeUpRates,
-  shouldApplyBtc14dBearishBreakSellGate,
   logNormalSurvival,
   estimateRegimeStats,
   matPow,
@@ -56,7 +55,6 @@ import {
   buildPolymarketAnchorQueryVariants,
   normalizeSentiment,
   buildForecastHint,
-  RECOMMENDED_CONFIDENCE_THRESHOLD,
   buildRecommendationProvenanceNote,
   buildBtcShortHorizonThinAnchorWarning,
   capBtcShortHorizonConfidence,
@@ -780,7 +778,7 @@ describe('markov_distribution tool output envelope', () => {
     expect(relaxed.metadata.structuralBreakDetected).toBe(false);
   });
 
-  it('suppresses forecastHint when BTC short-horizon abstain confidence is too low', () => {
+  it('neither suppresses nor scales the BTC abstain forecastHint by the confidence score', () => {
     const forecastHint = buildForecastHint({
       canEmitCanonical: false,
       ticker: 'BTC-USD',
@@ -790,7 +788,9 @@ describe('markov_distribution tool output envelope', () => {
       predictionConfidence: 0.08,
     });
 
-    expect(forecastHint).toBeNull();
+    expect(forecastHint).not.toBeNull();
+    expect(forecastHint!.markovReturn).toBeCloseTo(0.04 * 0.6 * 0.5, 10);
+    expect(forecastHint!.confidenceScore).toBe(0.08);
   });
 
   it('returns the promoted BTC short-horizon live policy by horizon', () => {
@@ -889,35 +889,26 @@ describe('markov_distribution tool output envelope', () => {
     expect(hint!.usage).toBe('forecast_only');
     expect(hint!.calibratedDistribution).toBe(false);
     expect(hint!.confidenceScore).toBe(0.20);
-    expect(hint!.markovReturn).toBeCloseTo(
-      0.04 * 0.6 * 0.5 * Math.min(1, 0.20 / RECOMMENDED_CONFIDENCE_THRESHOLD),
-      10,
-    );
-
-    const highConf = buildForecastHint({ ...base, predictionConfidence: 0.30 });
-    expect(highConf).not.toBeNull();
-    expect(highConf!.markovReturn).toBeCloseTo(0.012, 10);
+    expect(hint!.markovReturn).toBeCloseTo(0.04 * 0.6 * 0.5, 10);
   });
 
   describe('BTC short-horizon confidence cap', () => {
-    it('caps HIGH confidence to MEDIUM for BTC short-horizon outputs with structural break and weak diagnostics', () => {
+    it('caps HIGH confidence to MEDIUM for BTC short-horizon outputs with structural break and weak validation', () => {
       expect(capBtcShortHorizonConfidence({
         ticker: 'BTC-USD',
         horizon: 7,
         structuralBreakDetected: true,
         outOfSampleR2: 0.02,
-        predictionConfidence: 0.35,
         confidence: 'HIGH',
       })).toBe('MEDIUM');
     });
 
-    it('does not change LOW confidence even when BTC short-horizon diagnostics are weak', () => {
+    it('does not change LOW confidence even when BTC short-horizon validation is weak', () => {
       expect(capBtcShortHorizonConfidence({
         ticker: 'BTC-USD',
         horizon: 7,
         structuralBreakDetected: true,
         outOfSampleR2: 0.02,
-        predictionConfidence: 0.35,
         confidence: 'LOW',
       })).toBe('LOW');
     });
@@ -928,7 +919,6 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 7,
         structuralBreakDetected: false,
         outOfSampleR2: 0.02,
-        predictionConfidence: 0.35,
         confidence: 'HIGH',
       })).toBe('HIGH');
     });
@@ -939,7 +929,6 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 30,
         structuralBreakDetected: true,
         outOfSampleR2: 0.02,
-        predictionConfidence: 0.35,
         confidence: 'HIGH',
       })).toBe('HIGH');
     });
@@ -950,7 +939,6 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 14,
         structuralBreakDetected: true,
         outOfSampleR2: 0.03,
-        predictionConfidence: 0.50,
         confidence: 'HIGH',
       })).toBe('MEDIUM');
     });
@@ -961,7 +949,6 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 7,
         structuralBreakDetected: true,
         outOfSampleR2: 0.02,
-        predictionConfidence: 0.35,
         confidence: 'HIGH',
       })).toBe('HIGH');
     });
@@ -972,29 +959,26 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 14,
         structuralBreakDetected: true,
         outOfSampleR2: null,
-        predictionConfidence: 0.50,
         confidence: 'HIGH',
       })).toBe('HIGH');
     });
 
-    it('does not cap when both diagnostics are above threshold', () => {
+    it('does not cap when validation is good, whatever the confidence score', () => {
       expect(capBtcShortHorizonConfidence({
         ticker: 'BTC-USD',
         horizon: 14,
         structuralBreakDetected: true,
         outOfSampleR2: 0.10,
-        predictionConfidence: 0.50,
         confidence: 'HIGH',
       })).toBe('HIGH');
     });
 
-    it('does not cap at the exact R² and prediction-confidence boundaries', () => {
+    it('does not cap at the exact R² boundary', () => {
       expect(capBtcShortHorizonConfidence({
         ticker: 'BTC-USD',
         horizon: 14,
         structuralBreakDetected: true,
         outOfSampleR2: 0.05,
-        predictionConfidence: 0.40,
         confidence: 'HIGH',
       })).toBe('HIGH');
     });
@@ -1005,7 +989,6 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 14,
         structuralBreakDetected: true,
         outOfSampleR2: 0.03,
-        predictionConfidence: 0.50,
         confidence: 'HIGH',
       })).toBe('MEDIUM');
 
@@ -1014,20 +997,8 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 15,
         structuralBreakDetected: true,
         outOfSampleR2: 0.03,
-        predictionConfidence: 0.50,
         confidence: 'HIGH',
       })).toBe('HIGH');
-    });
-
-    it('caps when prediction confidence alone is weak', () => {
-      expect(capBtcShortHorizonConfidence({
-        ticker: 'BTC-USD',
-        horizon: 14,
-        structuralBreakDetected: true,
-        outOfSampleR2: 0.10,
-        predictionConfidence: 0.38,
-        confidence: 'HIGH',
-      })).toBe('MEDIUM');
     });
 
     it('caps when validation alone is weak', () => {
@@ -1036,7 +1007,6 @@ describe('markov_distribution tool output envelope', () => {
         horizon: 14,
         structuralBreakDetected: true,
         outOfSampleR2: 0.03,
-        predictionConfidence: 0.50,
         confidence: 'HIGH',
       })).toBe('MEDIUM');
     });
@@ -1213,6 +1183,36 @@ describe('markov_distribution tool output envelope', () => {
       }
       return prices;
     }
+
+    it('emits via crypto model-only path whatever the confidence score', async () => {
+      // The score did not rank forecast accuracy (2026-11-25), so it no longer gates the crypto model-only lane.
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+      // A seeded random walk whose volatility jumps after day 70: the score lands at 0.179, under the old 0.18 floor,
+      // with R² -0.024, inside the -0.03 model-only bound.
+      let x = 45 * 2654435761 % 4294967296;
+      const rnd = () => { x = (1664525 * x + 1013904223) % 4294967296; return x / 4294967296; };
+      const vol = 0.02 + 0.04 * rnd();
+      const prices: number[] = [];
+      let p = 65000;
+      for (let i = 0; i < 120; i++) {
+        p *= 1 + vol * (rnd() + rnd() + rnd() - 1.5) * 2 * (i > 70 ? 1.8 : 1);
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const result = await freshTool.func({ ticker: 'BTC-USD', horizon: 3, currentPrice: prices[prices.length - 1], historicalPrices: prices, trajectory: false });
+
+      const { diagnostics } = JSON.parse(result).data.canonical;
+      expect(diagnostics.predictionConfidence).toBeLessThan(0.18);
+      expect(diagnostics.trustedAnchors).toBe(0);
+      expect(diagnostics.outOfSampleR2).toBeGreaterThanOrEqual(-0.03);
+      expect(diagnostics.outOfSampleR2).toBeLessThan(-0.01);
+      expect(JSON.parse(result).data.status).toBe('ok');
+    });
 
     it('emits via crypto model-only path when BTC 3d has zero anchors, acceptable R^2, and structural break', async () => {
       mock.module('./polymarket.js', () => ({

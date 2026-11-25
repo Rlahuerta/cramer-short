@@ -5,11 +5,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getChannelProfile } from './channels.js';
 import {
-  getBtcSelectiveMarkovConfidenceThreshold,
   isExplicitCombinedMarkovPolymarketRequest,
   isExplicitGoldCombinedMarkovPolymarketRequest,
   isExplicitPolymarketForecastRequest,
-  shouldInjectBtcShortHorizonLowConfidencePrompt,
   shouldInjectBtcShortHorizonMixedEvidencePrompt,
 } from './query-router.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
@@ -586,12 +584,6 @@ IMPORTANT: The user explicitly requested the probability range be divided into $
     prompt += `
 
 IMPORTANT: BTC short-horizon signals are mixed. markov_distribution is bullish, but polymarket_forecast is flat or bearish. You MUST explicitly describe this as mixed evidence, and you MUST downgrade the narrative confidence rather than presenting the bullish Markov result as a high-conviction standalone signal.`;
-  }
-
-  if (shouldInjectBtcShortHorizonLowConfidencePrompt(originalQuery, fullToolResults)) {
-    prompt += `
-
-IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, but its predictionConfidence is below the ${getBtcSelectiveMarkovConfidenceThreshold().toFixed(2)} selective threshold. You MUST NOT present that Markov direction as part of the selective Markov accuracy slice or as a validated BTC directional edge. If you mention it at all, frame it as low-confidence fallback context and make clear that the selective gate did not clear.`;
   }
 
   const hasMarkovTrajectoryOutput =

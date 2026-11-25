@@ -484,37 +484,6 @@ describe('computeActionSignal', () => {
     expect(note).toContain('P(up) is 44.0%');
   });
 
-  it('builds a provenance note for the BTC bearish-break SELL gate', () => {
-    const note = buildRecommendationProvenanceNote({
-      ticker: 'BTC-USD',
-      horizon: 14,
-      actionSignal: {
-        buyProbability: 0.32,
-        holdProbability: 0.41,
-        sellProbability: 0.27,
-        recommendation: 'SELL',
-        confidence: 'LOW',
-        expectedReturn: 0.012,
-        riskRewardRatio: 1.21,
-        buyThreshold: 0.05,
-        sellThreshold: 0.03,
-        actionLevels: {
-          targetPrice: 110,
-          stopLoss: 95,
-          medianPrice: 102,
-          bullCase: 114,
-          bearCase: 93,
-        },
-        baseRecommendation: 'BUY',
-        recommendationSource: 'expected_return',
-      },
-      bearishBreakRecommendationGateActive: true,
-    });
-
-    expect(note).toContain('bearish-break gate fired');
-    expect(note).toContain('final SELL overrides the base BUY');
-  });
-
   it('builds a provenance note when the latent regime and final trade side differ', () => {
     const note = buildRecommendationProvenanceNote({
       ticker: 'BTC-USD',

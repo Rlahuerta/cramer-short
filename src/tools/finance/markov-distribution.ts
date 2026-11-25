@@ -544,20 +544,15 @@ export function buildForecastHint(params: {
   predictionConfidence: number;
 }): ForecastHint | null {
   const FORECAST_HINT_ABSTAIN_ATTENUATION = 0.5;
-  const FORECAST_HINT_MIN_CONFIDENCE = 0.10;
 
   if (params.canEmitCanonical) return null;
   if (params.ticker !== 'BTC-USD' || params.horizon > 14) return null;
   if (!Number.isFinite(params.expectedReturn) || !Number.isFinite(params.mixingTimeWeight)) return null;
-  if (params.predictionConfidence < FORECAST_HINT_MIN_CONFIDENCE) return null;
 
-  const forecastHintConfidenceScale = Math.min(
-    1,
-    params.predictionConfidence / resolveForecastLabMarkovParameterDefaults().recommendedConfidenceThreshold,
-  );
+  // Not gated or scaled by the confidence score: it did not rank forecast accuracy (2026-11-25).
   return {
     usage: 'forecast_only',
-    markovReturn: params.expectedReturn * params.mixingTimeWeight * FORECAST_HINT_ABSTAIN_ATTENUATION * forecastHintConfidenceScale,
+    markovReturn: params.expectedReturn * params.mixingTimeWeight * FORECAST_HINT_ABSTAIN_ATTENUATION,
     confidenceScore: params.predictionConfidence,
     calibratedDistribution: false,
   };
@@ -569,13 +564,8 @@ export function buildRecommendationProvenanceNote(params: {
   actionSignal: ActionSignal;
   regimeState?: RegimeState;
   scenarios?: ScenarioProbabilities;
-  bearishBreakRecommendationGateActive?: boolean;
 }): string | null {
   const baseRecommendation = params.actionSignal.baseRecommendation ?? params.actionSignal.recommendation;
-
-  if (params.bearishBreakRecommendationGateActive) {
-    return `ℹ️ Recommendation provenance: final ${params.actionSignal.recommendation} overrides the base ${baseRecommendation} because the BTC 14d bearish-break gate fired under structural-break / low-confidence conditions.`;
-  }
 
   if (params.actionSignal.recommendationSource === 'short_horizon_scenario' && params.scenarios) {
     return `ℹ️ Recommendation provenance: short-horizon crypto converted a ${baseRecommendation} into ${params.actionSignal.recommendation} because scenario P(up) is ${(params.scenarios.pUp * 100).toFixed(1)}%.`;
@@ -719,8 +709,6 @@ export interface MarkovDistributionResult {
     trendPenaltyOnlyBreakConfidenceActive?: boolean;
     /** Phase 6 provenance: whether divergence-weighted break confidence was active (backtest-only) */
     divergenceWeightedBreakConfidenceActive?: boolean;
-    /** Phase 6 provenance: whether the BTC 14d bearish-break selective SELL gate fired. */
-    bearishBreakRecommendationGateActive?: boolean;
     /** Phase 7 provenance: whether regime-specific sigma was active (backtest-only) */
     regimeSpecificSigmaActive?: boolean;
     /** Phase 5 provenance: which fallback candidate was used (backtest-only) */
@@ -2113,7 +2101,6 @@ export function isCompositeValidationAcceptable(options: {
   outOfSampleR2: number | null;
   validationMetric: 'daily_return' | 'horizon_return';
   anchorCoverage: Pick<AnchorCoverageDiagnostic, 'quality' | 'trustedAnchors'>;
-  predictionConfidence: number;
   goodnessOfFit: Pick<GoodnessOfFitResult, 'passes'> | null;
 }): boolean {
   // Outside crypto, R² alone does not reject a forecast: on the live-config benchmark and 8 held-out tickers,
@@ -2154,7 +2141,6 @@ export function isCompositeValidationAcceptable(options: {
     && typeof options.outOfSampleR2 === 'number'
     && Number.isFinite(options.outOfSampleR2)
     && options.outOfSampleR2 >= -0.06
-    && options.predictionConfidence >= 0.16
     && (options.goodnessOfFit?.passes ?? true);
 
   return compositeCryptoValidation;
@@ -2164,7 +2150,6 @@ export function shouldEmitContextOnlyCanonical(options: {
   ticker: string;
   assetType: AssetProfile['type'];
   horizon: number;
-  predictionConfidence: number;
   outOfSampleR2: number | null;
   anchorCoverage: Pick<AnchorCoverageDiagnostic, 'quality' | 'trustedAnchors'>;
   goodnessOfFit: Pick<GoodnessOfFitResult, 'passes'> | null;
@@ -2175,15 +2160,11 @@ export function shouldEmitContextOnlyCanonical(options: {
   const supportiveAnchors =
     options.anchorCoverage.quality === 'good' && options.anchorCoverage.trustedAnchors >= 2;
   const fitSupportive = options.goodnessOfFit?.passes ?? true;
-  const recommendedConfidenceThreshold = resolveForecastLabMarkovParameterDefaults(
-    resolveForecastLabRuntimeAssetScopeForTicker(options.ticker),
-  ).recommendedConfidenceThreshold;
 
   return cryptoShortHorizon
     && validationUnavailable
     && supportiveAnchors
-    && fitSupportive
-    && options.predictionConfidence >= recommendedConfidenceThreshold;
+    && fitSupportive;
 }
 
 // ---------------------------------------------------------------------------
@@ -3013,16 +2994,13 @@ export function capBtcShortHorizonConfidence(options: {
   horizon: number;
   structuralBreakDetected: boolean;
   outOfSampleR2: number | null;
-  predictionConfidence: number;
   confidence: 'HIGH' | 'MEDIUM' | 'LOW';
 }): 'HIGH' | 'MEDIUM' | 'LOW' {
   const isBtcShortHorizon = (options.ticker === 'BTC' || options.ticker === 'BTC-USD')
     && options.horizon <= 14;
-  const weakValidation = (
-    typeof options.outOfSampleR2 === 'number'
+  const weakValidation = typeof options.outOfSampleR2 === 'number'
     && Number.isFinite(options.outOfSampleR2)
-    && options.outOfSampleR2 < 0.05
-  ) || options.predictionConfidence < 0.40;
+    && options.outOfSampleR2 < 0.05;
 
   if (
     isBtcShortHorizon
@@ -3087,32 +3065,6 @@ export function formatMarkovMixingLine(options: {
   }
 
   return `Mixing: ${pct(options.markovWeight)}% Markov / ${pct(options.anchorWeight)}% Anchors`;
-}
-
-export function shouldApplyBtc14dBearishBreakSellGate(options: {
-  ticker: string;
-  horizon: number;
-  recommendation: 'BUY' | 'HOLD' | 'SELL';
-  rawRecommendation: 'BUY' | 'HOLD' | 'SELL' | null;
-  structuralBreakDetected: boolean;
-  regimeState: RegimeState;
-  predictionConfidence: number;
-  rawPredictedProb: number;
-  predictedProb: number;
-  expectedReturn: number;
-}): boolean {
-  const isTargetSlice = (options.ticker === 'BTC' || options.ticker === 'BTC-USD')
-    && options.horizon === 14;
-
-  return isTargetSlice
-    && options.recommendation === 'BUY'
-    && options.rawRecommendation === 'SELL'
-    && options.structuralBreakDetected
-    && options.regimeState !== 'bull'
-    && options.predictionConfidence <= 0.09
-    && options.rawPredictedProb <= 0.50
-    && options.predictedProb <= 0.54
-    && options.expectedReturn <= 0.025;
 }
 
 /**
@@ -4642,7 +4594,6 @@ export async function computeMarkovDistribution(params: {
   let decisionDistribution = legacyDistribution;
   let decisionScenarios = computeScenarioProbabilities(legacyDistribution, currentPrice);
   let rawActionSignal: ActionSignal | null = null;
-  let bearishBreakRecommendationGateActive = false;
 
   if (usePr3fBlend) {
     decisionDistribution = legacyDistribution.map((d, i) => ({
@@ -4694,25 +4645,8 @@ export async function computeMarkovDistribution(params: {
     horizon,
     structuralBreakDetected: breakResult.detected,
     outOfSampleR2: r2os,
-    predictionConfidence,
     confidence: actionSignal.confidence,
   });
-
-  if (rawActionSignal && shouldApplyBtc14dBearishBreakSellGate({
-    ticker,
-    horizon,
-    recommendation: actionSignal.recommendation,
-    rawRecommendation: rawActionSignal.recommendation,
-    structuralBreakDetected: breakResult.detected,
-    regimeState: currentRegime,
-    predictionConfidence,
-    rawPredictedProb: rawPUpForBlend,
-    predictedProb: calPUpForBlend,
-    expectedReturn: actionSignal.expectedReturn,
-  })) {
-    actionSignal.recommendation = 'SELL';
-    bearishBreakRecommendationGateActive = true;
-  }
 
   if (useRawDirectionHybrid && rawActionSignal) {
     actionSignal.recommendation = rawActionSignal.recommendation;
@@ -4721,7 +4655,6 @@ export async function computeMarkovDistribution(params: {
       horizon,
       structuralBreakDetected: breakResult.detected,
       outOfSampleR2: r2os,
-      predictionConfidence,
       confidence: rawActionSignal.confidence,
     });
   }
@@ -4777,7 +4710,6 @@ export async function computeMarkovDistribution(params: {
       matureBullCalibrationActive,
       trendPenaltyOnlyBreakConfidenceActive: effectiveTrendPenaltyOnlyBreakConfidence ? true : undefined,
       divergenceWeightedBreakConfidenceActive: effectiveDivergenceWeightedBreakConfidence ? true : undefined,
-      bearishBreakRecommendationGateActive: bearishBreakRecommendationGateActive || undefined,
       regimeSpecificSigmaActive: regimeSpecificSigma === true &&
         Math.max(...stateWeightsForUp) > (regimeSpecificSigmaThreshold ?? 0.60),
       breakFallbackCandidateId: breakFallbackCandidate?.id ?? undefined,
@@ -5078,7 +5010,6 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       outOfSampleR2: m.outOfSampleR2,
       validationMetric: m.validationMetric,
       anchorCoverage: m.anchorCoverage,
-      predictionConfidence: result.predictionConfidence,
       goodnessOfFit: m.goodnessOfFit,
     });
 
@@ -5093,21 +5024,20 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       result.predictionConfidence >= COMMODITY_WRAPPER_MIN_CONFIDENCE;
 
     const CRYPTO_MODEL_ONLY_MIN_R2 = -0.03;
-    const CRYPTO_MODEL_ONLY_MIN_CONFIDENCE = 0.18;
+    // No confidence floor: the score did not rank forecast accuracy (2026-11-25), and the 0.18 floor never bound on
+    // 3,783 benchmark BTC forecasts (all scored >= 0.32).
     const cryptoModelOnly =
       assetProfile.type === 'crypto' &&
       result.horizon <= 14 &&
       m.anchorCoverage.trustedAnchors === 0 &&
       typeof m.outOfSampleR2 === 'number' &&
       Number.isFinite(m.outOfSampleR2) &&
-      m.outOfSampleR2 >= CRYPTO_MODEL_ONLY_MIN_R2 &&
-      result.predictionConfidence >= CRYPTO_MODEL_ONLY_MIN_CONFIDENCE;
+      m.outOfSampleR2 >= CRYPTO_MODEL_ONLY_MIN_R2;
 
     const contextOnlyCanonical = shouldEmitContextOnlyCanonical({
       ticker: result.ticker,
       assetType: assetProfile.type,
       horizon: result.horizon,
-      predictionConfidence: result.predictionConfidence,
       outOfSampleR2: m.outOfSampleR2,
       anchorCoverage: m.anchorCoverage,
       goodnessOfFit: m.goodnessOfFit,
@@ -5186,7 +5116,6 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       actionSignal: sig,
       regimeState: m.regimeState,
       scenarios: result.decisionScenarios,
-      bearishBreakRecommendationGateActive: m.bearishBreakRecommendationGateActive,
     });
     if (recommendationProvenanceNote) {
       decisionCard.push('', recommendationProvenanceNote);

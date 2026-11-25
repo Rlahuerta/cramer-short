@@ -353,9 +353,7 @@ const {
    buildForcedPolymarketForecastArgs,
      extractMarkovReturnFromToolCalls,
      buildForecastDisagreementPrefix,
-     buildLowConfidenceBtcShortHorizonForecastPrefix,
      shouldInjectBtcShortHorizonMixedEvidencePrompt,
-     shouldInjectBtcShortHorizonLowConfidencePrompt,
     shouldRerunPolymarketForecastWithMarkov,
     buildForcedForecastArbiterArgs,
     shouldForceForecastArbitrator,
@@ -383,10 +381,6 @@ const {
   } = await import('../experiments/forecast-lab/query-router.js');
 const { createForecastArbitratorTool } = await import('../tools/finance/forecast-arbitrator.js');
 const { InMemoryChatHistory } = await import('../utils/in-memory-chat-history.js');
-const {
-  getForecastLabMarkovRuntimeDefaults,
-  setForecastLabMarkovRuntimeDefaults,
-} = await import('../tools/finance/markov-distribution.js');
 type AgentInstance = Awaited<ReturnType<typeof Agent.create>>;
 type RequestToolApproval = NonNullable<AgentConfig['requestToolApproval']>;
 
@@ -1728,7 +1722,8 @@ describe('Agent', () => {
         expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 7 days', results)).toBe(false);
       });
 
-      it('uses the BTC runtime confidence threshold for selective gating', () => {
+      it('keeps a low-confidence BTC Markov return in the forecast comparison', () => {
+        // The score did not rank forecast accuracy (2026-11-25), so a low score no longer drops the Markov side.
         const query = 'Provide a BTC forecast for the next 14 days';
         const toolCalls = [
           {
@@ -1761,21 +1756,7 @@ describe('Agent', () => {
           },
         ];
 
-        const originalBtcRuntimeDefaults = getForecastLabMarkovRuntimeDefaults('btc');
-        try {
-          expect(buildLowConfidenceBtcShortHorizonForecastPrefix(query, toolCalls)).not.toBeNull();
-          expect(buildForecastDisagreementPrefix(query, toolCalls)).toBeNull();
-
-          setForecastLabMarkovRuntimeDefaults('btc', {
-            ...originalBtcRuntimeDefaults,
-            recommendedConfidenceThreshold: 0.15,
-          });
-
-          expect(buildLowConfidenceBtcShortHorizonForecastPrefix(query, toolCalls)).toBeNull();
-          expect(buildForecastDisagreementPrefix(query, toolCalls)).not.toBeNull();
-        } finally {
-          setForecastLabMarkovRuntimeDefaults('btc', originalBtcRuntimeDefaults);
-        }
+        expect(buildForecastDisagreementPrefix(query, toolCalls)).not.toBeNull();
       });
     });
 
@@ -2446,7 +2427,8 @@ describe('Agent', () => {
       });
     });
 
-    it('does not reuse low-confidence BTC Markov return in forced crypto polymarket args', () => {
+    it('reuses a low-confidence BTC Markov return in forced crypto polymarket args', () => {
+      // The score did not rank forecast accuracy (2026-11-25), so a low score no longer drops the Markov return.
       const toolCalls = [
         {
           tool: 'get_market_data',
@@ -2493,6 +2475,7 @@ describe('Agent', () => {
         horizon_days: 7,
         current_price: 73300,
         sentiment_score: 0.42,
+        markov_return: 0.04 * 0.6,
       });
     });
 
@@ -3009,7 +2992,7 @@ describe('Agent', () => {
             },
           }),
         },
-      ])).toBe(false);
+      ])).toBe(true); // a low confidence score still counts as a Markov signal
     });
 
     it('forces crypto forecast tools only when required enrichment is missing', () => {

@@ -92,7 +92,7 @@ setForecastLabMarkovRuntimeDefaults('sol', PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS)
 setForecastLabMarkovRuntimeDefaults('hype', PROMOTED_HYPE_MARKOV_RUNTIME_DEFAULTS);
 
 /**
- * Confidence threshold kept for the Forecast Lab parameter and the gates that still read it. It does not select more
+ * Confidence threshold kept only as a Forecast Lab parameter: no production path reads it. It does not select more
  * accurate forecasts: on the live-config benchmark and 8 held-out tickers (2026-11-25) the confidence score did not
  * rank traded accuracy (AUROC 0.47-0.49) and the highest-scored fifth was the least accurate, so the 2026-04-04
  * figures (~66% accuracy at conf >= 0.25) did not hold.
