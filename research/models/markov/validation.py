@@ -169,7 +169,6 @@ def is_composite_validation_acceptable(
     validation_metric: str,
     anchor_quality: str,
     trusted_anchors: int,
-    prediction_confidence: float,
     goodness_of_fit_passes: bool | None = None,
 ) -> bool:
     """Full composite validation gate."""
@@ -211,7 +210,6 @@ def is_composite_validation_acceptable(
         and trusted_anchors >= 1
         and has_r2
         and out_of_sample_r2 >= -0.06  # type: ignore[operator]
-        and prediction_confidence >= 0.16
         and (goodness_of_fit_passes if goodness_of_fit_passes is not None else True)
     )
     return composite_crypto_validation
@@ -228,7 +226,6 @@ def evaluate_model_only_bypass(
     from research.models.markov.core import (
         COMMODITY_MODEL_ONLY_MIN_CONFIDENCE,
         CRYPTO_MODEL_ONLY_MIN_R2,
-        CRYPTO_MODEL_ONLY_MIN_CONFIDENCE,
     )
 
     has_r2 = out_of_sample_r2 is not None and math.isfinite(out_of_sample_r2)
@@ -246,7 +243,6 @@ def evaluate_model_only_bypass(
         and trusted_anchors == 0
         and has_r2
         and out_of_sample_r2 >= CRYPTO_MODEL_ONLY_MIN_R2  # type: ignore[operator]
-        and prediction_confidence >= CRYPTO_MODEL_ONLY_MIN_CONFIDENCE
-    )
+    )  # no confidence floor: the score did not rank forecast accuracy (mirrors markov-distribution.ts)
 
     return {"commodity_model_only": commodity_model_only, "crypto_model_only": crypto_model_only}

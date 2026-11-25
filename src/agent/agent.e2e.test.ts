@@ -493,11 +493,6 @@ describe('Agent E2E — basic financial query flows', () => {
       const markovPayload = JSON.parse(markovEnd!.result) as {
         data?: {
           status?: string;
-          canonical?: {
-            diagnostics?: {
-              predictionConfidence?: number;
-            };
-          };
         };
       };
       expect(['ok', 'abstain']).toContain(markovPayload?.data?.status ?? '');
@@ -510,13 +505,9 @@ describe('Agent E2E — basic financial query flows', () => {
           : [];
       });
 
-      const diagnostics = markovPayload?.data?.canonical?.diagnostics as Record<string, unknown> | undefined;
-      const predictionConfidence = typeof diagnostics?.predictionConfidence === 'number'
-        ? diagnostics.predictionConfidence
-        : null;
-      const hasHighConfidence = predictionConfidence !== null && predictionConfidence >= 0.25;
-
-      if (markovPayload?.data?.status === 'ok' && hasHighConfidence) {
+      // A successful Markov run feeds its return to polymarket_forecast whatever its confidence score (the score
+      // did not rank forecast accuracy, 2026-11-25); an abstained run does not.
+      if (markovPayload?.data?.status === 'ok') {
         expect(polymarketStarts.length).toBeGreaterThanOrEqual(1);
         const markovEnrichedForecast = polymarketStarts.find((start) =>
           typeof start.event.args['markov_return'] === 'number'

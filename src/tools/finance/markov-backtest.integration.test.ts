@@ -1954,39 +1954,6 @@ describe('Markov distribution walk-forward backtest', () => {
     );
   });
 
-  describe('BTC 14d bearish-break SELL gate', () => {
-    integrationIt(
-      'BTC-USD 14d: bearish-break SELL gate runs cleanly on fixture (post log-return up-rate fix)',
-      async () => {
-        // Fixture refreshed after commit 0332b33 corrected `computeRegimeUpRates`
-        // to sum log returns instead of simple returns. The corrected up-rate no
-        // longer pushes the BTC 14d walk-forward into the bearish-break recommendation
-        // gate condition, so the gate stays inactive on this fixture (gatedCount=0,
-        // reportGate=false). The gate logic itself is exercised by other unit tests;
-        // this assertion now pins the steady-state behavior on this data slice.
-        const prices = fixture.tickers['BTC-USD'].closes;
-
-        const baseline = await walkForward({
-          ticker: 'BTC-USD',
-          prices,
-          horizon: 14,
-          warmup: WARMUP,
-          stride: STRIDE,
-        });
-
-        expect(baseline.errors).toHaveLength(0);
-        expect(baseline.steps.length).toBeGreaterThan(0);
-
-        const gatedCount = baseline.steps.filter(step => step.bearishBreakRecommendationGateActive === true).length;
-        expect(gatedCount).toBe(0);
-
-        const report = generateReport('BTC-USD', 14, baseline.steps);
-        expect(report.bearishBreakRecommendationGateActive).toBe(false);
-      },
-      TIMEOUT,
-    );
-  });
-
   describe('PR3H: deterministic historical replay', () => {
     integrationIt(
       'BTC-USD 14d default vs replay (empty & active)',

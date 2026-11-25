@@ -28,7 +28,6 @@ import { tmpdir } from 'node:os';
 import type { StructuredToolInterface } from '@langchain/core/tools';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
 import { Scratchpad } from './scratchpad.js';
-import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../tools/finance/markov-distribution.js';
 import { _setModelFactory } from '../model/llm.js';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { AIMessage, AIMessageChunk, type BaseMessage } from '@langchain/core/messages';
@@ -166,7 +165,6 @@ const {
   buildAbstainingBtcShortHorizonForecastAnswer,
   buildDistributionWarningPrefix,
   buildForecastDisagreementPrefix,
-  buildLowConfidenceBtcShortHorizonForecastPrefix,
   ensureStructuredDensityTable,
 } = await import('./agent.js');
 const { createForecastArbitratorTool } = await import('../tools/finance/forecast-arbitrator.js');
@@ -363,62 +361,6 @@ describe('Agent — streamCallLlm used for max-iterations synthesis', () => {
     expect(done?.answer).toContain('Model Abstained');
     expect(done?.answer).toContain('Decision guidance');
     expect(done?.answer).not.toContain('this synthesis output should be bypassed');
-  });
-
-  it('prefixes the full answer with BTC low-confidence selective-gate wording', () => {
-    const scratchpad = new Scratchpad('btc low confidence full answer test');
-    scratchpad.addToolResult(
-      'markov_distribution',
-      { ticker: 'BTC-USD', horizon: 7 },
-      JSON.stringify({
-        data: {
-          _tool: 'markov_distribution',
-          status: 'ok',
-          canonical: {
-            actionSignal: { recommendation: 'BUY', expectedReturn: 0.025 },
-            diagnostics: { markovWeight: 0.6, predictionConfidence: 0.18 },
-          },
-        },
-      }),
-    );
-
-    const prefix = buildLowConfidenceBtcShortHorizonForecastPrefix(
-      'Provide a BTC forecast for the next 7 days',
-      scratchpad.getToolCallRecords(),
-    );
-    const fullAnswer = `${prefix ?? ''}Base forecast text.`;
-
-    expect(fullAnswer).toContain('BTC short-horizon selective Markov gate did not clear');
-    expect(fullAnswer).toContain('fallback context');
-    expect(fullAnswer).toContain('Base forecast text.');
-  });
-
-  it('does not prefix the full answer when BTC short-horizon markov confidence clears the selective gate', () => {
-    const scratchpad = new Scratchpad('btc high confidence full answer test');
-    scratchpad.addToolResult(
-      'markov_distribution',
-      { ticker: 'BTC-USD', horizon: 7 },
-      JSON.stringify({
-        data: {
-          _tool: 'markov_distribution',
-          status: 'ok',
-          canonical: {
-            actionSignal: { recommendation: 'BUY', expectedReturn: 0.025 },
-            diagnostics: { markovWeight: 0.6, predictionConfidence: 0.32 },
-          },
-        },
-      }),
-    );
-
-    const prefix = buildLowConfidenceBtcShortHorizonForecastPrefix(
-      'Provide a BTC forecast for the next 7 days',
-      scratchpad.getToolCallRecords(),
-    );
-    const fullAnswer = `${prefix ?? ''}Base forecast text.`;
-
-    expect(fullAnswer).not.toContain('BTC short-horizon selective Markov gate did not clear');
-    expect(fullAnswer).not.toContain('fallback context');
-    expect(fullAnswer).toContain('Base forecast text.');
   });
 });
 
@@ -764,60 +706,6 @@ describe('buildForecastDisagreementPrefix', () => {
 
     expect(
       buildForecastDisagreementPrefix(
-        'Provide a BTC forecast for the next 7 days',
-        scratchpad.getToolCallRecords(),
-      ),
-    ).toBeNull();
-  });
-});
-
-describe('buildLowConfidenceBtcShortHorizonForecastPrefix', () => {
-  it('returns a selective-gate warning for low-confidence BTC short-horizon markov results', () => {
-    const scratchpad = new Scratchpad('btc low confidence test');
-    scratchpad.addToolResult(
-      'markov_distribution',
-      { ticker: 'BTC-USD', horizon: 7 },
-      JSON.stringify({
-        data: {
-          _tool: 'markov_distribution',
-          status: 'ok',
-          canonical: {
-            actionSignal: { recommendation: 'BUY', expectedReturn: 0.025 },
-            diagnostics: { markovWeight: 0.6, predictionConfidence: 0.18 },
-          },
-        },
-      }),
-    );
-
-    const prefix = buildLowConfidenceBtcShortHorizonForecastPrefix(
-      'Provide a BTC forecast for the next 7 days',
-      scratchpad.getToolCallRecords(),
-    );
-
-    expect(prefix).toContain('BTC short-horizon selective Markov gate did not clear');
-    expect(prefix).toContain(`${RECOMMENDED_CONFIDENCE_THRESHOLD.toFixed(2)} selective threshold`);
-    expect(prefix).toContain('fallback context');
-  });
-
-  it('returns null when BTC short-horizon markov confidence clears the threshold', () => {
-    const scratchpad = new Scratchpad('btc high confidence test');
-    scratchpad.addToolResult(
-      'markov_distribution',
-      { ticker: 'BTC-USD', horizon: 7 },
-      JSON.stringify({
-        data: {
-          _tool: 'markov_distribution',
-          status: 'ok',
-          canonical: {
-            actionSignal: { recommendation: 'BUY', expectedReturn: 0.025 },
-            diagnostics: { markovWeight: 0.6, predictionConfidence: 0.32 },
-          },
-        },
-      }),
-    );
-
-    expect(
-      buildLowConfidenceBtcShortHorizonForecastPrefix(
         'Provide a BTC forecast for the next 7 days',
         scratchpad.getToolCallRecords(),
       ),

@@ -1,9 +1,6 @@
 import type { ToolCallRecord } from '../scratchpad.js';
 import {
   detectBtcShortHorizonDisagreement,
-  extractMarkovPredictionConfidenceForQuery,
-  getBtcSelectiveMarkovConfidenceThreshold,
-  hasLowConfidenceBtcShortHorizonMarkov,
   hasSuccessfulMarkovDistributionForQuery,
   isDistributionQuery,
 } from '../query-router.js';
@@ -57,25 +54,6 @@ export function buildForecastDisagreementPrefix(query: string, toolCalls: ToolCa
     '## Warning: BTC short-horizon signals are mixed',
     '',
     'Markov and Polymarket are pointing in different directions for this BTC short-horizon forecast. Read any directional takeaway below as mixed evidence with moderated confidence, not a high-conviction signal.',
-    '',
-    '---',
-    '',
-  ].join('\n');
-}
-
-export function buildLowConfidenceBtcShortHorizonForecastPrefix(query: string, toolCalls: ToolCallRecord[]): string | null {
-  if (!hasLowConfidenceBtcShortHorizonMarkov(query, toolCalls)) return null;
-
-  const predictionConfidence = extractMarkovPredictionConfidenceForQuery(query, toolCalls);
-  const selectiveBtcThreshold = getBtcSelectiveMarkovConfidenceThreshold();
-  const confidenceText = predictionConfidence !== null
-    ? predictionConfidence.toFixed(2)
-    : 'N/A';
-
-  return [
-    '## Warning: BTC short-horizon selective Markov gate did not clear',
-    '',
-    `The Markov run completed, but prediction confidence ${confidenceText} is below the ${selectiveBtcThreshold.toFixed(2)} selective threshold. Do not treat the Markov direction here as part of the aggregate selective-accuracy slice or as a validated BTC edge. Read any forecast below as fallback context, not a selective Markov signal.`,
     '',
     '---',
     '',

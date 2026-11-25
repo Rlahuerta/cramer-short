@@ -48,12 +48,10 @@ Shows all positions with live market data when `FINANCIAL_DATASETS_API_KEY` is s
 | P&L | Unrealised gain/loss in dollars | cost + shares |
 | RETURN | Percentage return vs. cost basis | cost basis |
 | ALLOC | This position as % of total portfolio value | cost + shares |
-| CONF | Markov prediction confidence (✓ ≥0.22, ⚠️ <0.22) | API key |
+| CONF | Markov prediction confidence score (not a reliability signal) | API key |
 
 - **Green** = positive P&L / gain
 - **Red** = negative P&L / loss
-- **✓ (green check)** = High/medium Markov confidence (≥0.22)
-- **⚠️ (yellow warning)** = Low Markov confidence (<0.22); consider reducing size
 - A **TOTAL** row at the bottom summarises portfolio value and overall return
 - Without an API key, the table falls back to showing stored cost basis and shares
 
@@ -61,17 +59,14 @@ Shows all positions with live market data when `FINANCIAL_DATASETS_API_KEY` is s
 ```
   TICKER    CURRENT    DAY%         P&L    RETURN   ALLOC   CONF
   ──────────────────────────────────────────────────────────────
-  AMD      $156.20   +1.2%      +$1,910    +32.4%     38%     ✓
-  IAU       $41.80   -0.3%        +$720    +11.5%     22%     ✓
-  NVDA     $872.50   +2.1%      +$4,725    +18.9%     40%     ⚠️
+  AMD      $156.20   +1.2%      +$1,910    +32.4%     38%   0.31
+  IAU       $41.80   -0.3%        +$720    +11.5%     22%   0.27
+  NVDA     $872.50   +2.1%      +$4,725    +18.9%     40%   0.19
   ──────────────────────────────────────────────────────────────
   TOTAL     $9,870              +$7,355    +28.8%
 ```
 
-**CONF column interpretation:**
-- **✓** = Markov confidence ≥ 0.22
-- **⚠️** = Markov confidence < 0.22; consider reducing position size
-- **—** = No Markov data available (ticker not in canonical coverage)
+**CONF column:** the Markov `predictionConfidence` score, or **—** when there is no Markov data (ticker not in canonical coverage). It is not a reliability signal; see below.
 
 ---
 
@@ -106,21 +101,15 @@ A compact single-ticker panel fetched directly from the API (no agent call):
 
 ## `/watchlist snapshot` — Portfolio Dashboard
 
-Shows portfolio-level aggregates and an allocation bar chart with Markov confidence indicators.
+Shows portfolio-level aggregates and an allocation bar chart with each ticker's Markov confidence score.
 
-### Markov Confidence Indicators
+### Markov Confidence Score
 
-The **CONF** column (list view) and allocation bar icons (snapshot view) show the Markov Chain prediction confidence for each ticker:
+The **CONF** column (list view) and the number after each allocation bar (snapshot view) show the Markov `predictionConfidence` score, or **—** when there is no Markov data.
 
-| Icon | Confidence | Action |
-|------|------------|--------|
-| **✓** (green) | ≥ 0.22 | Above the recommended threshold — standard position size |
-| **⚠️** (yellow) | < 0.22 | Below the recommended threshold — reduce position size or skip |
-| **—** (dash) | N/A | No Markov data (ticker not in canonical coverage) |
+**It is not a reliability signal.** On the live-config benchmark and 8 held-out tickers (2026-11-25) the score did not predict whether a BUY/SELL call was right: the highest-scored fifth of calls was the least accurate, and no threshold separated better calls from worse ones. The panels used to mark scores below 0.22 with a warning icon and suggest reducing size; they now show the bare number.
 
-**Why this matters:** 0.22 is the `markov_distribution` recommended threshold (`RECOMMENDED_CONFIDENCE_THRESHOLD`). A 2026-04-04 analysis measured ~66% accuracy at 44% coverage for confidence ≥ 0.25 against ~60% unfiltered. A 2026-11-23 re-measurement on live-length windows found accuracy flat (~59–60%) across thresholds, so treat the mark as a soft sizing hint, not an accuracy guarantee.
-
-**See also:** [`markov-when-to-use.md`](markov-when-to-use.md) for supported assets and confidence thresholds.
+**See also:** [`markov-when-to-use.md`](markov-when-to-use.md) for supported assets.
 
 ```
   Portfolio Snapshot — 2026-03-27
@@ -130,9 +119,9 @@ The **CONF** column (list view) and allocation bar icons (snapshot view) show th
   Total P&L:       +$7,355  (+26.5%)
 
   Allocation:
-  AMD    ████████████████████░░  38% ✓
-  NVDA   ████████████████░░░░░░  40% ⚠️
-  IAU    ████████░░░░░░░░░░░░░░  22% ✓
+  AMD    ████████████████████░░  38% 0.31
+  NVDA   ████████████████░░░░░░  40% 0.19
+  IAU    ████████░░░░░░░░░░░░░░  22% 0.27
 
   Best:  NVDA   +32.4%
   Worst: IAU    +11.5%
@@ -140,10 +129,6 @@ The **CONF** column (list view) and allocation bar icons (snapshot view) show th
   Watching (no position):
   VALE       $11.40   -0.5%
 ```
-
-**Allocation bar icons:**
-- **✓** = High/medium Markov confidence (≥0.22)
-- **⚠️** = Low Markov confidence (<0.22)
 
 - **Allocation** only includes tickers with both `shares` and `costBasis`
 - **Watching** section shows price + day % for watch-only tickers
@@ -153,27 +138,14 @@ The **CONF** column (list view) and allocation bar icons (snapshot view) show th
 
 ## Decision-Making Guide
 
-### Markov Confidence Integration
+### Markov Confidence Score
 
-The watchlist now displays **Markov Chain prediction confidence** alongside price and P&L data. This helps you make confidence-weighted decisions:
+The watchlist shows the Markov `predictionConfidence` score next to price and P&L. Do not size or skip trades by it: it did not predict whether forecasts were right (see **Markov Confidence Score** above). Use `swing-trade-setup` and `position-sizing`, which judge a setup by risk/reward, regime and volume, and size it by risk.
 
-| Scenario | Markov CONF | Recommended Action |
-|----------|-------------|-------------------|
-| **High-conviction trade** | ✓ (≥ 0.22) | Use standard position size; confidence supports the setup |
-| **Speculative trade** | ⚠️ (< 0.22) | Reduce position size by 30–50%, or skip and wait for higher confidence |
-| **No data** | — | Use technical/fundamental analysis only; no Markov signal |
-
-**How confidence is calculated:**
+**How the score is calculated:**
 - Fetched automatically when you run `/watchlist list` or `/watchlist show`
 - Based on 14-day Markov distribution forecast
 - Combines regime detection, HMM convergence, and ensemble signal agreement
-- The ✓/⚠️ split uses the tool's recommended threshold, 0.22 (see **Why this matters** above)
-
-**Example workflow:**
-1. Run `/watchlist list` — see all positions with confidence indicators
-2. Identify tickers with ✓ — these have reliable Markov signals
-3. For ⚠️ tickers: either reduce size or run `swing-trade-setup` skill to check if technical setup compensates for low confidence
-4. Use `position-sizing` skill to calculate confidence-adjusted position size
 
 ### What each metric tells you
 

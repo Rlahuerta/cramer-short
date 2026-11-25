@@ -9,10 +9,6 @@ afterEach(() => {
   setSystemTime();
 });
 
-const {
-  getForecastLabMarkovRuntimeDefaults,
-  setForecastLabMarkovRuntimeDefaults,
-} = await import('../tools/finance/markov-distribution.js');
 const { getCurrentDate } = await import('../utils/date.js');
 const {
   buildSystemPrompt,
@@ -63,6 +59,13 @@ describe('buildSystemPrompt', () => {
   it('contains tool descriptions', () => {
     const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     expect(prompt).toContain('mock tool descriptions');
+  });
+
+  it('does not treat a low Markov confidence score as a reason to downgrade conviction', () => {
+    // The score does not rank forecast accuracy (live-config benchmark and 8 held-out tickers, 2026-11-25).
+    const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
+    expect(prompt).toContain('downgrade conviction when model disagreement');
+    expect(prompt).not.toContain('low Markov confidence');
   });
 
   it('contains the current date', () => {
@@ -263,48 +266,25 @@ describe('buildIterationPrompt', () => {
     expect(prompt).toContain('downgrade the narrative confidence');
   });
 
-  it('injects low-confidence selective-gate guard using the BTC runtime threshold', () => {
-    const originalBtcRuntimeDefaults = getForecastLabMarkovRuntimeDefaults('btc');
-
-    try {
-      setForecastLabMarkovRuntimeDefaults('btc', {
-        ...originalBtcRuntimeDefaults,
-        recommendedConfidenceThreshold: 0.2,
-      });
-
-      const results = [
-        '### markov_distribution(ticker=BTC-USD)',
-        '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.18}}}}',
-      ].join('\n');
-      const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
-      expect(prompt).toContain('predictionConfidence is below the 0.20 selective threshold');
-      expect(prompt).toContain('fallback context');
-    } finally {
-      setForecastLabMarkovRuntimeDefaults('btc', originalBtcRuntimeDefaults);
-    }
+  it('does not add a selective-gate guard for a low BTC confidence score', () => {
+    // The score did not rank forecast accuracy (2026-11-25).
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.10}}}}',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
+    expect(prompt).not.toContain('selective threshold');
   });
 
-  it('does not inject mixed-evidence guard when BTC short-horizon markov confidence is below the BTC runtime threshold', () => {
-    const originalBtcRuntimeDefaults = getForecastLabMarkovRuntimeDefaults('btc');
-
-    try {
-      setForecastLabMarkovRuntimeDefaults('btc', {
-        ...originalBtcRuntimeDefaults,
-        recommendedConfidenceThreshold: 0.2,
-      });
-
-      const results = [
-        '### markov_distribution(ticker=BTC-USD)',
-        '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.18}}}}',
-        '### polymarket_forecast(ticker=BTC-USD)',
-        'Forecast return: -0.4%\nGrade: B',
-      ].join('\n');
-      const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
-      expect(prompt).not.toContain('BTC short-horizon signals are mixed');
-      expect(prompt).toContain('predictionConfidence is below the 0.20 selective threshold');
-    } finally {
-      setForecastLabMarkovRuntimeDefaults('btc', originalBtcRuntimeDefaults);
-    }
+  it('injects the mixed-evidence guard whatever the BTC confidence score', () => {
+    const results = [
+      '### markov_distribution(ticker=BTC-USD)',
+      '{"data":{"_tool":"markov_distribution","status":"ok","canonical":{"actionSignal":{"recommendation":"BUY","expectedReturn":0.032},"diagnostics":{"predictionConfidence":0.10}}}}',
+      '### polymarket_forecast(ticker=BTC-USD)',
+      'Forecast return: -0.4%\nGrade: B',
+    ].join('\n');
+    const prompt = buildIterationPrompt('Provide a BTC forecast for the next 14 days', results);
+    expect(prompt).toContain('BTC short-horizon signals are mixed');
   });
 
   it('injects trajectory-semantics guard when markov_distribution includes a trajectory payload', () => {

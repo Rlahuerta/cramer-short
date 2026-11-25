@@ -836,9 +836,9 @@ class TestEvaluateValidationAcceptability:
         assert evaluate_validation_acceptability(-0.5, "equity", 7, "daily_return", "good", 3) is True
         assert evaluate_validation_acceptability(-0.5, "commodity", 7, "daily_return", "good", 3) is True
         assert evaluate_validation_acceptability(-0.02, "crypto", 7, "daily_return", "good", 3) is False
-        assert is_composite_validation_acceptable(-0.5, "equity", 7, "daily_return", "good", 2, 0.3, True) is True
-        assert is_composite_validation_acceptable(None, "equity", 7, "daily_return", "good", 2, 0.3, True) is False
-        assert is_composite_validation_acceptable(-0.5, "crypto", 7, "daily_return", "good", 2, 0.3, True) is False
+        assert is_composite_validation_acceptable(-0.5, "equity", 7, "daily_return", "good", 2, True) is True
+        assert is_composite_validation_acceptable(None, "equity", 7, "daily_return", "good", 2, True) is False
+        assert is_composite_validation_acceptable(-0.5, "crypto", 7, "daily_return", "good", 2, True) is False
 
     def test_crypto_good_anchors_r2_neutral(self):
         from research.models.markov import evaluate_validation_acceptability
@@ -893,10 +893,11 @@ class TestEvaluateModelOnlyBypass:
         result = evaluate_model_only_bypass("commodity", 7, 0, -0.01, 0.10)
         assert result["commodity_model_only"] is False
 
-    def test_crypto_below_confidence_rejected(self):
+    def test_crypto_model_only_ignores_the_confidence_score(self):
+        # Mirrors markov-distribution.ts: the score did not rank forecast accuracy (2026-11-25).
         from research.models.markov import evaluate_model_only_bypass
         result = evaluate_model_only_bypass("crypto", 7, 0, -0.02, 0.15)
-        assert result["crypto_model_only"] is False
+        assert result["crypto_model_only"] is True
 
     def test_has_anchors_disables_bypass(self):
         from research.models.markov import evaluate_model_only_bypass
@@ -962,7 +963,6 @@ class TestContextOnlyCanonical:
             "BTC-USD",
             "crypto",
             7,
-            0.30,
             None,
             "good",
             2,
@@ -976,7 +976,6 @@ class TestContextOnlyCanonical:
             "BTC-USD",
             "crypto",
             7,
-            0.30,
             -0.01,
             "good",
             2,
@@ -1126,25 +1125,20 @@ class TestBtcShortHorizonGuards:
             7,
             True,
             0.01,
-            0.35,
             "HIGH",
         ) == "MEDIUM"
 
-    def test_btc14d_bearish_break_sell_gate_matches_ts_slice(self):
-        from research.models.markov import should_apply_btc14d_bearish_break_sell_gate
+    def test_confidence_cap_keeps_high_when_validation_is_good(self):
+        # The confidence score is not consulted (mirrors markov-distribution.ts).
+        from research.models.markov import cap_btc_short_horizon_confidence
 
-        assert should_apply_btc14d_bearish_break_sell_gate(
-            "BTC-USD",
-            14,
-            "BUY",
-            "SELL",
-            True,
-            "bear",
-            0.09,
-            0.50,
-            0.54,
-            0.02,
-        ) is True
+        assert cap_btc_short_horizon_confidence("BTC-USD", 7, True, 0.10, "HIGH") == "HIGH"
+
+    def test_composite_crypto_validation_accepts_sparse_anchor_with_fit_support(self):
+        # The confidence score is not consulted (mirrors markov-distribution.ts).
+        from research.models.markov import is_composite_validation_acceptable
+
+        assert is_composite_validation_acceptable(-0.055, "crypto", 14, "horizon_return", "sparse", 1, True) is True
 
 
 # ---------------------------------------------------------------------------

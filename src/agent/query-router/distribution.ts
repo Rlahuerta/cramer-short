@@ -1,7 +1,6 @@
 import { extractTickers as extractTickersFn } from '../../memory/ticker-extractor.js';
 import { extractCryptoQuotePairTickers, resolveAssetIntent } from '../../tools/finance/asset-resolver.js';
 import { detectAssetType } from '../../tools/finance/signal-extractor.js';
-import { resolveForecastLabMarkovParameterDefaults } from '../../tools/finance/markov-distribution.js';
 import {
   isCryptoForecastQuery,
   isDistributionQuery,
@@ -22,10 +21,6 @@ const QUARTER_END_MONTHS: Record<1 | 2 | 3 | 4, number> = {
   3: 9,
   4: 12,
 };
-
-export function getBtcSelectiveMarkovConfidenceThreshold(): number {
-  return resolveForecastLabMarkovParameterDefaults('btc').recommendedConfidenceThreshold;
-}
 
 export function inferDistributionTicker(query: string): string | null {
   const cryptoQuotePairs = extractCryptoQuotePairTickers(query);
@@ -230,8 +225,6 @@ export function shouldInjectBtcShortHorizonMixedEvidencePrompt(
   query: string,
   fullToolResults: string,
 ): boolean {
-  if (shouldInjectBtcShortHorizonLowConfidencePrompt(query, fullToolResults)) return false;
-
   const ticker = inferDistributionTicker(query);
   const horizon = inferDistributionHorizon(query);
   if ((ticker !== 'BTC' && ticker !== 'BTC-USD') || horizon === null || horizon > 14) return false;
@@ -243,15 +236,3 @@ export function shouldInjectBtcShortHorizonMixedEvidencePrompt(
   return markovBullish && polymarketFlatOrBearish;
 }
 
-export function shouldInjectBtcShortHorizonLowConfidencePrompt(
-  query: string,
-  fullToolResults: string,
-): boolean {
-  if (!isBtcShortHorizonForecastQuery(query)) return false;
-
-  const match = fullToolResults.match(/"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"predictionConfidence"\s*:\s*([0-9]+(?:\.[0-9]+)?)/);
-  if (!match) return false;
-
-  const predictionConfidence = Number.parseFloat(match[1]!);
-  return Number.isFinite(predictionConfidence) && predictionConfidence < getBtcSelectiveMarkovConfidenceThreshold();
-}

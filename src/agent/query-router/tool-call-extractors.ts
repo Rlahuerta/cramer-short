@@ -20,8 +20,6 @@ import {
   inferDistributionTicker,
   inferDistributionHorizon,
   inferMarkovQueryHorizon,
-  getBtcSelectiveMarkovConfidenceThreshold,
-  isBtcShortHorizonForecastQuery,
 } from './distribution.js';
 import {
   buildForcedMarketDataArgs,
@@ -204,10 +202,6 @@ export function extractMarkovReturnFromToolCalls(toolCalls: ToolCallRecord[]): n
 export function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
   const desiredTicker = inferDistributionTicker(query);
   const desiredHorizon = inferMarkovQueryHorizon(query);
-  const requiresSelectiveBtcGate = isBtcShortHorizonForecastQuery(query);
-  const selectiveBtcThreshold = requiresSelectiveBtcGate
-    ? getBtcSelectiveMarkovConfidenceThreshold()
-    : null;
 
   for (let i = toolCalls.length - 1; i >= 0; i--) {
     const call = toolCalls[i];
@@ -224,15 +218,6 @@ export function extractMarkovReturnForQuery(query: string, toolCalls: ToolCallRe
       const actionSignal = narrowObj<ParsedMarkovActionSignal>(canonical.actionSignal);
       const diagnostics = narrowObj<ParsedMarkovDiagnostics>(canonical.diagnostics);
       if (!actionSignal || !diagnostics) continue;
-
-      const { predictionConfidence } = diagnostics;
-      if (
-        requiresSelectiveBtcGate
-        && isFiniteNumber(predictionConfidence)
-        && predictionConfidence < selectiveBtcThreshold!
-      ) {
-        return null;
-      }
 
       const { expectedReturn } = actionSignal;
       const { markovWeight } = diagnostics;
@@ -395,11 +380,6 @@ export function extractMarkovArbiterEvidence(query: string, toolCalls: ToolCallR
   return null;
 }
 
-export function hasLowConfidenceBtcShortHorizonMarkov(query: string, toolCalls: ToolCallRecord[]): boolean {
-  if (!isBtcShortHorizonForecastQuery(query)) return false;
-  const predictionConfidence = extractMarkovPredictionConfidenceForQuery(query, toolCalls);
-  return predictionConfidence !== null && predictionConfidence < getBtcSelectiveMarkovConfidenceThreshold();
-}
 
 export function extractPolymarketForecastReturnForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
   const desiredTicker = inferDistributionTicker(query);

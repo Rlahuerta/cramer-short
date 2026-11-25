@@ -13,5 +13,4 @@ export { buildExplicitGoldCombinedForecastAnswer } from './gold-combined-forecas
 export {
   buildDistributionWarningPrefix,
   buildForecastDisagreementPrefix,
-  buildLowConfidenceBtcShortHorizonForecastPrefix,
 } from './warning-prefixes.js';

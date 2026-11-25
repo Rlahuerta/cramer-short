@@ -212,8 +212,6 @@ export interface BacktestStep {
   trendPenaltyOnlyBreakConfidenceActive?: boolean;
   /** Run-level provenance: the divergence-weighted break-confidence experiment was enabled for this prediction run. */
   divergenceWeightedBreakConfidenceActive?: boolean;
-  /** Run-level provenance: the BTC 14d bearish-break selective SELL gate fired for this step. */
-  bearishBreakRecommendationGateActive?: boolean;
   /** Phase 5 provenance: which fallback candidate was used for this step (backtest-only). */
   breakFallbackCandidateId?: string;
   /** Phase 5 provenance: which fallback mode was applied for this step (backtest-only). */
@@ -340,8 +338,6 @@ export interface BacktestReport {
   provenanceSummary?: ProvenanceSummary;
   /** Whether any step in this report came from a run with the trend-only break-confidence experiment enabled. */
   trendPenaltyOnlyBreakConfidenceActive?: boolean;
-  /** Whether any step in this report came from a run where the BTC 14d bearish-break SELL gate fired. */
-  bearishBreakRecommendationGateActive?: boolean;
 }
 
 export interface MultiHorizonBacktestSeries {
@@ -1457,9 +1453,6 @@ export function generateReport(
     provenanceSummary,
     trendPenaltyOnlyBreakConfidenceActive: steps.some(
       step => step.trendPenaltyOnlyBreakConfidenceActive === true,
-    ),
-    bearishBreakRecommendationGateActive: steps.some(
-      step => step.bearishBreakRecommendationGateActive === true,
     ),
   };
 }

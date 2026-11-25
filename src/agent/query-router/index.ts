@@ -18,7 +18,6 @@ export {
 
 // Distribution
 export {
-  getBtcSelectiveMarkovConfidenceThreshold,
   inferDistributionTicker,
   inferDistributionHorizon,
   inferBtcShortHorizonForecastHorizon,
@@ -29,7 +28,6 @@ export {
   buildNextForcedMarkovArgs,
   shouldForceMarkovDistribution,
   shouldInjectBtcShortHorizonMixedEvidencePrompt,
-  shouldInjectBtcShortHorizonLowConfidencePrompt,
 } from './distribution.js';
 
 // Forced tool args
@@ -52,7 +50,6 @@ export {
   extractSentimentScoreFromToolCalls,
   extractMarkovReturnFromToolCalls,
   extractMarkovPredictionConfidenceForQuery,
-  hasLowConfidenceBtcShortHorizonMarkov,
 } from './tool-call-extractors.js';
 
 // Coverage

@@ -5,11 +5,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getChannelProfile } from './channels.js';
 import {
-  getBtcSelectiveMarkovConfidenceThreshold,
   isExplicitCombinedMarkovPolymarketRequest,
   isExplicitGoldCombinedMarkovPolymarketRequest,
   isExplicitPolymarketForecastRequest,
-  shouldInjectBtcShortHorizonLowConfidencePrompt,
   shouldInjectBtcShortHorizonMixedEvidencePrompt,
 } from './query-router.js';
 import { resolveAssetIntent } from '../tools/finance/asset-resolver.js';
@@ -115,7 +113,7 @@ When the user asks for trade direction, entry, target, stop, leverage, or positi
 1. Preserve the raw model outputs first: Markov, Polymarket/prediction markets, on-chain/whale, macro, and sentiment should remain visible enough for the user to judge independently.
 2. If Markov and Polymarket disagree, or if Polymarket evidence is a touch/barrier question while Markov is a terminal horizon forecast, call \`forecast_arbitrator\` before giving a final trade direction.
 3. Do not force LONG or SHORT solely because one model has a higher point forecast. The arbiter may return \`NO_TRADE\`, \`CONDITIONAL_LONG\`, or \`CONDITIONAL_SHORT\`; treat that as the primary recommendation.
-4. For leveraged setups, explicitly translate asset move into position P&L and downgrade conviction when model disagreement, low Markov confidence, structural breaks, flat-dominant scenarios, or neutral whale data are present.
+4. For leveraged setups, explicitly translate asset move into position P&L and downgrade conviction when model disagreement, structural breaks, flat-dominant scenarios, or neutral whale data are present.
 5. If the arbiter returns a conditional setup, present the trigger and invalidation as the actionable answer, while still showing the underlying Markov and Polymarket numbers.
 
 ### Peer & Comparable Analysis
@@ -586,12 +584,6 @@ IMPORTANT: The user explicitly requested the probability range be divided into $
     prompt += `
 
 IMPORTANT: BTC short-horizon signals are mixed. markov_distribution is bullish, but polymarket_forecast is flat or bearish. You MUST explicitly describe this as mixed evidence, and you MUST downgrade the narrative confidence rather than presenting the bullish Markov result as a high-conviction standalone signal.`;
-  }
-
-  if (shouldInjectBtcShortHorizonLowConfidencePrompt(originalQuery, fullToolResults)) {
-    prompt += `
-
-IMPORTANT: BTC short-horizon markov_distribution returned a successful payload, but its predictionConfidence is below the ${getBtcSelectiveMarkovConfidenceThreshold().toFixed(2)} selective threshold. You MUST NOT present that Markov direction as part of the selective Markov accuracy slice or as a validated BTC directional edge. If you mention it at all, frame it as low-confidence fallback context and make clear that the selective gate did not clear.`;
   }
 
   const hasMarkovTrajectoryOutput =

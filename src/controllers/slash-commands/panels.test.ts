@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'bun:test';
 import type { Container } from '@mariozechner/pi-tui';
-import { RECOMMENDED_CONFIDENCE_THRESHOLD } from '../../tools/finance/markov-distribution/core.js';
 import type { WatchlistEntry } from '../watchlist-controller.js';
 import type { PriceSnapshot } from '../watchlist-display.js';
 import { buildSnapshotPanel, buildWatchlistPanel } from './panels.js';
@@ -15,24 +14,23 @@ function texts(node: Container): string[] {
   return out;
 }
 
-describe('watchlist Markov confidence marks', () => {
-  // Between the markov_distribution recommended threshold (0.22) and the 0.25 the panel used to hard-code.
-  const confidence = 0.23;
+describe('watchlist Markov confidence', () => {
+  // The score does not rank forecast accuracy (live-config benchmark and 8 held-out tickers, 2026-11-25), so the
+  // panels show the number without a quality mark or a high/medium/low breakdown.
   const entries: WatchlistEntry[] = [{ ticker: 'SPY', costBasis: 100, shares: 1, addedAt: '2026-01-01' }];
   const prices = new Map<string, PriceSnapshot>([
-    ['SPY', { ticker: 'SPY', price: 110, changePercent: 1, predictionConfidence: confidence }],
+    ['SPY', { ticker: 'SPY', price: 110, changePercent: 1, predictionConfidence: 0.23 }],
   ]);
 
-  it('marks confidence at or above the recommended threshold as usable', () => {
-    expect(confidence).toBeGreaterThanOrEqual(RECOMMENDED_CONFIDENCE_THRESHOLD);
+  it('shows the score as a number in the watchlist row', () => {
     const row = texts(buildWatchlistPanel(entries, prices)).find(t => t.includes('SPY'));
-    expect(row).toContain('✓');
-    expect(row).not.toContain('⚠');
+    expect(row).toContain('0.23');
+    expect(row).not.toMatch(/[✓⚠✗]/);
   });
 
-  it('counts it as medium, not low, in the snapshot distribution', () => {
+  it('shows the score as a number in the snapshot, without a quality breakdown', () => {
     const lines = texts(buildSnapshotPanel(entries, prices));
-    expect(lines.find(t => t.startsWith('  Medium'))).toMatch(/\(1\)$/);
-    expect(lines.find(t => t.startsWith('  Low'))).toMatch(/\(0\)$/);
+    expect(lines.find(t => t.includes('SPY') && t.includes('%'))).toContain('0.23');
+    expect(lines.join('\n')).not.toMatch(/[✓⚠✗]|Confidence Distribution|^\s*(High|Medium|Low) \(/m);
   });
 });

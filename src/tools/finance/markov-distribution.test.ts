@@ -41,7 +41,6 @@ import {
   computePredictionConfidence,
   getAssetProfile,
   computeRegimeUpRates,
-  shouldApplyBtc14dBearishBreakSellGate,
   logNormalSurvival,
   estimateRegimeStats,
   matPow,
@@ -931,7 +930,6 @@ describe('R²_OS validation threshold', () => {
       horizon: 7,
       validationMetric: 'daily_return' as const,
       anchorCoverage: { quality: 'good' as const, trustedAnchors: 2 },
-      predictionConfidence: 0.3,
       goodnessOfFit: { passes: true },
     };
     expect(isCompositeValidationAcceptable({ ...base, assetType: 'equity', outOfSampleR2: -0.5 })).toBe(true);
@@ -959,28 +957,15 @@ describe('R²_OS validation threshold', () => {
     expect(validationAcceptable).toBe(true);
   });
 
-  it('Phase 3: composite crypto validation accepts mildly negative R² when sparse anchors, confidence, and fit support it', () => {
+  it('Phase 3: composite crypto validation accepts mildly negative R² when sparse anchors and fit support it (the confidence score is not consulted)', () => {
     expect(isCompositeValidationAcceptable({
       assetType: 'crypto',
       horizon: 14,
       outOfSampleR2: -0.055,
       validationMetric: 'horizon_return',
       anchorCoverage: { quality: 'sparse', trustedAnchors: 1 },
-      predictionConfidence: 0.18,
       goodnessOfFit: { passes: true },
     })).toBe(true);
-  });
-
-  it('Phase 3: composite crypto validation still rejects mildly negative R² when confidence is too low', () => {
-    expect(isCompositeValidationAcceptable({
-      assetType: 'crypto',
-      horizon: 14,
-      outOfSampleR2: -0.055,
-      validationMetric: 'horizon_return',
-      anchorCoverage: { quality: 'sparse', trustedAnchors: 1 },
-      predictionConfidence: 0.14,
-      goodnessOfFit: { passes: true },
-    })).toBe(false);
   });
 
   it('Phase 3: composite crypto validation still rejects mildly negative R² when fit support fails', () => {
@@ -990,7 +975,6 @@ describe('R²_OS validation threshold', () => {
       outOfSampleR2: -0.055,
       validationMetric: 'horizon_return',
       anchorCoverage: { quality: 'good', trustedAnchors: 2 },
-      predictionConfidence: 0.18,
       goodnessOfFit: { passes: false },
     })).toBe(false);
   });
@@ -1041,12 +1025,11 @@ describe('Phase 4: degraded confidence policy', () => {
     expect(breakdown.multipliers.assetType).toBeCloseTo(0.82);
   });
 
-  it('permits a context-only lane for short-horizon crypto with good anchors but unavailable validation', () => {
+  it('permits a context-only lane for short-horizon crypto with good anchors but unavailable validation (the confidence score is not consulted)', () => {
     expect(shouldEmitContextOnlyCanonical({
       ticker: 'BTC-USD',
       assetType: 'crypto',
       horizon: 3,
-      predictionConfidence: 0.24,
       outOfSampleR2: null,
       anchorCoverage: { quality: 'good', trustedAnchors: 3 },
       goodnessOfFit: { passes: true },
@@ -1058,7 +1041,6 @@ describe('Phase 4: degraded confidence policy', () => {
       ticker: 'BTC-USD',
       assetType: 'crypto',
       horizon: 3,
-      predictionConfidence: 0.24,
       outOfSampleR2: null,
       anchorCoverage: { quality: 'good', trustedAnchors: 3 },
       goodnessOfFit: { passes: false },
@@ -2983,113 +2965,6 @@ describe('PR3G Lever: Recency-Weighted Regime Up-Rates', () => {
     expect(aggressiveResult.metadata.pr3gRecencyWeightingActive).toBe(true);
     expect(milderResult.metadata.pr3gRecencyWeightingActive).toBe(true);
     expect(aggressiveResult.actionSignal.expectedReturn).not.toBe(milderResult.actionSignal.expectedReturn);
-  });
-});
-
-describe('BTC 14d bearish-break SELL gate', () => {
-  it('fires for the measured low-confidence bearish structural-break slice', () => {
-    expect(shouldApplyBtc14dBearishBreakSellGate({
-      ticker: 'BTC-USD',
-      horizon: 14,
-      recommendation: 'BUY',
-      rawRecommendation: 'SELL',
-      structuralBreakDetected: true,
-      regimeState: 'sideways',
-      predictionConfidence: 0.09,
-      rawPredictedProb: 0.50,
-      predictedProb: 0.54,
-      expectedReturn: 0.025,
-    })).toBe(true);
-  });
-
-  it('does not fire outside BTC 14d', () => {
-    expect(shouldApplyBtc14dBearishBreakSellGate({
-      ticker: 'BTC-USD',
-      horizon: 7,
-      recommendation: 'BUY',
-      rawRecommendation: 'SELL',
-      structuralBreakDetected: true,
-      regimeState: 'sideways',
-      predictionConfidence: 0.09,
-      rawPredictedProb: 0.50,
-      predictedProb: 0.54,
-      expectedReturn: 0.025,
-    })).toBe(false);
-  });
-
-  it('does not fire in bull regime', () => {
-    expect(shouldApplyBtc14dBearishBreakSellGate({
-      ticker: 'BTC-USD',
-      horizon: 14,
-      recommendation: 'BUY',
-      rawRecommendation: 'SELL',
-      structuralBreakDetected: true,
-      regimeState: 'bull',
-      predictionConfidence: 0.09,
-      rawPredictedProb: 0.50,
-      predictedProb: 0.54,
-      expectedReturn: 0.025,
-    })).toBe(false);
-  });
-
-  it('does not fire above the low-confidence cap', () => {
-    expect(shouldApplyBtc14dBearishBreakSellGate({
-      ticker: 'BTC-USD',
-      horizon: 14,
-      recommendation: 'BUY',
-      rawRecommendation: 'SELL',
-      structuralBreakDetected: true,
-      regimeState: 'bear',
-      predictionConfidence: 0.091,
-      rawPredictedProb: 0.50,
-      predictedProb: 0.54,
-      expectedReturn: 0.025,
-    })).toBe(false);
-  });
-
-  it('does not fire without a structural break', () => {
-    expect(shouldApplyBtc14dBearishBreakSellGate({
-      ticker: 'BTC-USD',
-      horizon: 14,
-      recommendation: 'BUY',
-      rawRecommendation: 'SELL',
-      structuralBreakDetected: false,
-      regimeState: 'bear',
-      predictionConfidence: 0.09,
-      rawPredictedProb: 0.50,
-      predictedProb: 0.54,
-      expectedReturn: 0.025,
-    })).toBe(false);
-  });
-
-  it('does not fire when the raw side is not SELL', () => {
-    expect(shouldApplyBtc14dBearishBreakSellGate({
-      ticker: 'BTC-USD',
-      horizon: 14,
-      recommendation: 'BUY',
-      rawRecommendation: 'BUY',
-      structuralBreakDetected: true,
-      regimeState: 'bear',
-      predictionConfidence: 0.09,
-      rawPredictedProb: 0.50,
-      predictedProb: 0.54,
-      expectedReturn: 0.025,
-    })).toBe(false);
-  });
-
-  it('does not fire for non-BTC tickers', () => {
-    expect(shouldApplyBtc14dBearishBreakSellGate({
-      ticker: 'ETH-USD',
-      horizon: 14,
-      recommendation: 'BUY',
-      rawRecommendation: 'SELL',
-      structuralBreakDetected: true,
-      regimeState: 'sideways',
-      predictionConfidence: 0.09,
-      rawPredictedProb: 0.50,
-      predictedProb: 0.54,
-      expectedReturn: 0.025,
-    })).toBe(false);
   });
 });
 

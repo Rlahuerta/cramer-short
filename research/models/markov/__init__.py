@@ -21,7 +21,6 @@ from research.models.markov.core import (
     BTC_SHORT_HORIZON_LIVE_RERUN_WINDOW_DAYS,
     COMMODITY_MODEL_ONLY_MIN_CONFIDENCE,
     COMMODITY_MODEL_ONLY_MIN_R2,
-    CRYPTO_MODEL_ONLY_MIN_CONFIDENCE,
     CRYPTO_MODEL_ONLY_MIN_R2,
     DEFAULT_DIVERGENCE_PENALTY_SCHEDULE,
     FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
@@ -47,7 +46,6 @@ from research.models.markov.gates import (
     cap_btc_short_horizon_confidence,
     compute_divergence_penalty,
     evaluate_can_emit_canonical,
-    should_apply_btc14d_bearish_break_sell_gate,
     should_emit_context_only_canonical,
 )
 from research.models.markov.validation import (
@@ -110,7 +108,6 @@ __all__ = [
     "COMMODITY_MODEL_ONLY_MIN_R2",
     "COMMODITY_MODEL_ONLY_MIN_CONFIDENCE",
     "CRYPTO_MODEL_ONLY_MIN_R2",
-    "CRYPTO_MODEL_ONLY_MIN_CONFIDENCE",
     # policies
     "BtcShortHorizonLivePolicy",
     "GoldShortHorizonLivePolicy",
@@ -160,5 +157,4 @@ __all__ = [
     "evaluate_can_emit_canonical",
     "should_emit_context_only_canonical",
     "cap_btc_short_horizon_confidence",
-    "should_apply_btc14d_bearish_break_sell_gate",
 ]
