@@ -68,6 +68,12 @@ describe('buildSystemPrompt', () => {
     expect(prompt).not.toContain('low Markov confidence');
   });
 
+  it('asks for the Markov BUY/SELL to be quoted with its measured track record', () => {
+    const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
+    expect(prompt).toContain('diagnostics.callTrackRecord');
+    expect(prompt).toContain('has not beaten simply following the market');
+  });
+
   it('contains the current date', () => {
     const prompt = buildSystemPrompt('gpt-5.4', undefined, undefined, undefined, undefined, undefined, MOCK_TOOL_DESCRIPTIONS);
     const currentYear = new Date(FIXED_TEST_NOW_MS).getFullYear().toString();

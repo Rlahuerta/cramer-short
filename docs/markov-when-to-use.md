@@ -89,6 +89,7 @@ a signal.
 | **Confidence** | Model-agreement score (0–1) | Not a reliability signal: it did not predict accuracy (2026-11-25) |
 | **Brier Score** | Mean squared error of P(up) | 0.25 = a coin flip; lower is better |
 | **Directional Accuracy** | % of correct BUY/SELL calls | 56.5% over 2021–2025, below always calling "up" (59.5%) |
+| **Track record** | How often this call (BUY or SELL) was right for the asset type at this horizon, next to the share of all days that moved its way | Shown under every BUY/SELL; a hit rate no higher than the base rate means the call has not beaten simply following the market |
 
 ### How to Read the Decision Card
 
@@ -102,10 +103,15 @@ Mixing: 85% Markov / 15% Anchors
   P(up): 68% | Expected: $535.20 (+2.8%)
   90% CI: $510.30 – $560.10
   Confidence: 0.32
+
+📏 Track record (etf at 14d, measured on DIA, QQQ, SPY, VOO, VTI, 2021-2025): BUY calls were right 65% of 4,671 daily calls; the price rose on 64% of all days.
 ```
 
 **Interpretation:**
 - **BUY** with a 68% modelled chance of upside — the model's lean, not a measured edge
+- **Track record**: ETF BUY calls at 14 days were right 65% of the time, while the price rose on 64% of all days, so
+  the call has done about as well as simply following the market. SELL calls show the same comparison against the
+  share of days the price fell. The record covers 5–30 day horizons; for other horizons, and for HOLD, none is shown.
 - **Expected return** +2.8% over 14 days
 - **90% CI**: the range of outcomes ($510–$560), the most useful part of the output
 

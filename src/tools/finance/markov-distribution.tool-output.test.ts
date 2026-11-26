@@ -3128,6 +3128,35 @@ describe('markov_distribution tool output envelope', () => {
       expect(String(parsed.data.report)).not.toMatch(/Low confidence|accuracy drops|~55%/);
     });
 
+    it('quotes the measured track record of its BUY/SELL call', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+      const { formatCallTrackRecord, lookupCallTrackRecord } = await import('./markov-distribution/call-track-record.js');
+      // 60 GLD prices: emitted through the commodity model-only lane with a BUY at 7d.
+      const prices: number[] = [];
+      let p = 200;
+      for (let i = 0; i < 60; i++) {
+        p *= 1 + Math.sin(i * 0.3) * 0.005;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const parsed = JSON.parse(await freshTool.func({
+        ticker: 'GLD', horizon: 7, currentPrice: prices[prices.length - 1], historicalPrices: prices,
+        polymarketMarkets: [], trajectory: false,
+      }));
+
+      const record = lookupCallTrackRecord('commodity', 7, 'BUY');
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.actionSignal.recommendation).toBe('BUY');
+      expect(record).not.toBeNull();
+      expect(parsed.data.canonical.diagnostics.callTrackRecord).toEqual(record);
+      expect(String(parsed.data.report)).toContain(formatCallTrackRecord(record!));
+    });
+
     it('emits commodity model-only distribution despite structural break', async () => {
       mock.module('./polymarket.js', () => ({
         ...realPolymarketModule,
