@@ -59,6 +59,9 @@ const HORIZONS = [14, 30] as const;
 const WARMUP   = 120;
 const STRIDE   = 10;  // every 10 days — keeps test under 5s
 const TIMEOUT  = 120_000;
+// The PR3B and PR3 Stage 2 grid harnesses each run 18 full BTC walk-forwards (3x3 grid x 2 horizons): 115-135s on a
+// loaded machine against the 120s limit (2026-11-25), so they get 3x headroom.
+const GRID_ABLATION_TIMEOUT = 360_000;
 
 // Regression thresholds — these catch model degradation, not aspirational targets
 const BRIER_MAX = 0.42; // directional improvements trade some calibration; 0.42 catches severe regression
@@ -916,7 +919,7 @@ describe('Markov distribution walk-forward backtest', () => {
         console.log(lines.join('\n'));
         expect(true).toBe(true);
       },
-      TIMEOUT,
+      GRID_ABLATION_TIMEOUT,
     );
 
     integrationIt(
@@ -1022,7 +1025,7 @@ describe('Markov distribution walk-forward backtest', () => {
         console.log(lines.join('\n'));
         expect(true).toBe(true);
       },
-      TIMEOUT,
+      GRID_ABLATION_TIMEOUT,
     );
 
     integrationIt(
