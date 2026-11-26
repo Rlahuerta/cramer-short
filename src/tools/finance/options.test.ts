@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { _clearCrumbCache } from './yahoo-client.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -49,11 +50,22 @@ let originalFetch: typeof fetch;
 
 beforeEach(() => {
   originalFetch = globalThis.fetch;
+  _clearCrumbCache();
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
+
+/** Answers the crumb preflight (fc.yahoo.com, getcrumb) and returns `data()` for the options call. */
+function mockYahooFetch(data: () => Response) {
+  globalThis.fetch = mock(async (input: string | URL | Request) => {
+    const url = input.toString();
+    if (url.includes('fc.yahoo.com')) return new Response('', { headers: { 'set-cookie': 'A3=sess' } });
+    if (url.includes('getcrumb')) return new Response('crumb');
+    return data();
+  }) as unknown as typeof fetch;
+}
 
 // ── Yahoo Finance response parsing ────────────────────────────────────────────
 
@@ -166,6 +178,35 @@ describe('Unusual volume detection', () => {
 // ── get_options_chain tool integration ────────────────────────────────────────
 
 describe('get_options_chain tool', () => {
+  it('sends the Yahoo crumb and session cookie, and refreshes the crumb once after a 401', async () => {
+    const optionRequests: { crumb: string | null; cookie: string | null }[] = [];
+    let crumbsIssued = 0;
+    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes('fc.yahoo.com')) {
+        return new Response('', { headers: { 'set-cookie': 'A3=sess; Path=/' } });
+      }
+      if (url.includes('getcrumb')) return new Response(`crumb-${++crumbsIssued}`);
+      optionRequests.push({
+        crumb: new URL(url).searchParams.get('crumb'),
+        cookie: new Headers(init?.headers).get('cookie'),
+      });
+      return optionRequests.length === 1
+        ? new Response('{"finance":{"error":{"code":"Unauthorized","description":"Invalid Crumb"}}}', { status: 401 })
+        : new Response(JSON.stringify(makeYahooOptionsResponse([makeContract()], [])));
+    }) as unknown as typeof fetch;
+
+    const { getOptionsChainTool } = await import('./options.js');
+    const raw = await getOptionsChainTool.invoke({ ticker: 'SPY', type: 'all' });
+    const parsed = JSON.parse(raw) as { data: { markdown: string } };
+
+    expect(optionRequests).toEqual([
+      { crumb: 'crumb-1', cookie: 'A3=sess' },
+      { crumb: 'crumb-2', cookie: 'A3=sess' },
+    ]);
+    expect(parsed.data.markdown).toContain('Options Chain: SPY');
+  });
+
   it('returns parsed markdown output with PCR and expiry dates', async () => {
     const calls = [
       makeContract({ strike: 145, openInterest: 8000, volume: 500 }),
@@ -176,12 +217,12 @@ describe('get_options_chain tool', () => {
       makeContract({ strike: 150, openInterest: 3000, volume: 150 }),
     ];
 
-    globalThis.fetch = mock(async () =>
+    mockYahooFetch(() =>
       new Response(JSON.stringify(makeYahooOptionsResponse(calls, puts)), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
-    ) as unknown as typeof fetch;
+    );
 
     const { getOptionsChainTool } = await import('./options.js');
     const raw = await getOptionsChainTool.invoke({ ticker: 'AAPL', type: 'all' });
@@ -199,12 +240,12 @@ describe('get_options_chain tool', () => {
   });
 
   it('returns error when ticker has no options', async () => {
-    globalThis.fetch = mock(async () =>
+    mockYahooFetch(() =>
       new Response(JSON.stringify({ optionChain: { result: [], error: null } }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
-    ) as unknown as typeof fetch;
+    );
 
     const { getOptionsChainTool } = await import('./options.js');
     const raw = await getOptionsChainTool.invoke({ ticker: 'FAKEXYZ', type: 'all' });
@@ -228,9 +269,7 @@ describe('get_options_chain tool', () => {
   });
 
   it('returns error on HTTP failure', async () => {
-    globalThis.fetch = mock(async () =>
-      new Response('Not Found', { status: 404 }),
-    ) as unknown as typeof fetch;
+    mockYahooFetch(() => new Response('Not Found', { status: 404 }));
 
     const { getOptionsChainTool } = await import('./options.js');
     const raw = await getOptionsChainTool.invoke({ ticker: 'AAPL', type: 'calls' });
@@ -243,12 +282,12 @@ describe('get_options_chain tool', () => {
     const calls = [makeContract({ strike: 155, openInterest: 5000 })];
     const puts = [makeContract({ strike: 145, openInterest: 3000 })];
 
-    globalThis.fetch = mock(async () =>
+    mockYahooFetch(() =>
       new Response(JSON.stringify(makeYahooOptionsResponse(calls, puts)), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }),
-    ) as unknown as typeof fetch;
+    );
 
     const { getOptionsChainTool } = await import('./options.js');
     const raw = await getOptionsChainTool.invoke({ ticker: 'AAPL', type: 'calls' });

@@ -64,6 +64,23 @@ async function getCrumb(): Promise<CrumbCache> {
   return crumbCache;
 }
 
+/**
+ * GETs a Yahoo Finance JSON URL with the cached crumb (appended as `crumb=`) and
+ * session cookie. On 401/403 it forces a fresh crumb and retries once.
+ */
+export async function fetchWithCrumb(url: string): Promise<Response> {
+  const doFetch = (session: CrumbCache): Promise<Response> =>
+    fetch(`${url}${url.includes('?') ? '&' : '?'}crumb=${encodeURIComponent(session.crumb)}`, {
+      headers: { 'User-Agent': UA, Accept: 'application/json', Cookie: session.cookie },
+      signal: AbortSignal.timeout(15_000),
+    });
+
+  const res = await doFetch(await getCrumb());
+  if (res.status !== 401 && res.status !== 403) return res;
+  crumbCache = null;
+  return doFetch(await getCrumb());
+}
+
 const YahooNullableNumberSchema = z.number().nullable();
 const YahooNullableStringSchema = z.string().nullable();
 
@@ -164,27 +181,11 @@ export async function quoteSummary(
 ): Promise<QuoteSummaryResult> {
   const modules = opts.modules.join(',');
 
-  const doFetch = async (session: CrumbCache): Promise<Response> => {
-    const url =
-      `${QUERY_HOST}/v10/finance/quoteSummary/${encodeURIComponent(ticker)}` +
+  const res = await fetchWithCrumb(
+    `${QUERY_HOST}/v10/finance/quoteSummary/${encodeURIComponent(ticker)}` +
       `?modules=${encodeURIComponent(modules)}` +
-      `&crumb=${encodeURIComponent(session.crumb)}` +
-      `&formatted=false&lang=en-US&region=US`;
-    return fetch(url, {
-      headers: { 'User-Agent': UA, Accept: 'application/json', Cookie: session.cookie },
-      signal: AbortSignal.timeout(15_000),
-    });
-  };
-
-  let session = await getCrumb();
-  let res = await doFetch(session);
-
-  // On auth failure, force a fresh crumb and retry once
-  if (res.status === 401 || res.status === 403) {
-    crumbCache = null;
-    session = await getCrumb();
-    res = await doFetch(session);
-  }
+      `&formatted=false&lang=en-US&region=US`,
+  );
 
   if (!res.ok) {
     throw new Error(`Yahoo Finance quoteSummary failed for ${ticker}: ${res.status}`);

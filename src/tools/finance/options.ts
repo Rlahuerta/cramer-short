@@ -1,6 +1,7 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
+import { fetchWithCrumb } from './yahoo-client.js';
 
 export const OPTIONS_CHAIN_DESCRIPTION = `
 Fetches options chain data for a stock: available expiry dates, call/put contracts with strikes, bid/ask, implied volatility (IV), open interest (OI), and Greeks. Computes the put/call ratio (PCR) and flags unusual volume. Use for hedging analysis, directional sentiment, volatility assessment, and tail risk pricing.
@@ -19,9 +20,6 @@ Fetches options chain data for a stock: available expiry dates, call/put contrac
 `.trim();
 
 const YAHOO_OPTIONS_BASE = 'https://query1.finance.yahoo.com/v7/finance/options';
-const UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 interface YahooContract {
   strike?: number;
@@ -108,10 +106,7 @@ export const getOptionsChainTool = new DynamicStructuredTool({
 
     let json: unknown;
     try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': UA, Accept: 'application/json' },
-        signal: AbortSignal.timeout(15_000),
-      });
+      const res = await fetchWithCrumb(url);
       if (!res.ok) {
         return formatToolResult(
           {
