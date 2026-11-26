@@ -230,7 +230,9 @@ export function shouldInjectBtcShortHorizonMixedEvidencePrompt(
   if ((ticker !== 'BTC' && ticker !== 'BTC-USD') || horizon === null || horizon > 14) return false;
 
   const markovBullish = /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"expectedReturn"\s*:\s*(0\.0*[1-9]\d*|0\.[1-9]\d*|[1-9]\d*(?:\.\d+)?)/.test(fullToolResults);
-  const polymarketFlatOrBearish = /forecast return\s*:\s*-\d+(?:\.\d+)?%/i.test(fullToolResults)
+  const rawPolymarketReturn = fullToolResults.match(/"rawForecastReturn"\s*:\s*(-?\d+(?:\.\d+)?(?:e-?\d+)?)/i);
+  const polymarketFlatOrBearish = (rawPolymarketReturn !== null && Number.parseFloat(rawPolymarketReturn[1]!) <= 0)
+    || /forecast return\s*:\s*-\d+(?:\.\d+)?%/i.test(fullToolResults)
     || /forecast return\s*:\s*[+]?(?:0|0\.0+)%/i.test(fullToolResults);
 
   return markovBullish && polymarketFlatOrBearish;

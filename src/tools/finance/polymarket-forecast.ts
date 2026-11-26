@@ -1947,6 +1947,11 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           crossPlatformAdjustment,
           qualityScore: adjustedQualityScore,
           qualityGrade: adjustedQualityGrade,
+          // Full questions for the arbitrator: the printed theme table truncates them. Most liquid first.
+          markets: [...rawMarkets]
+            .sort((a, b) => b.volume24h - a.volume24h)
+            .slice(0, 5)
+            .map((market) => ({ question: market.question, probability: market.probability })),
           ...(liveCalibrationApplied ? { forecastReturn: result.forecastReturn } : {}),
         });
       } catch (error) {

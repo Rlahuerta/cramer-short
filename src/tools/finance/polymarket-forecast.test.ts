@@ -815,6 +815,17 @@ describe('polymarketForecastTool', () => {
     expect(parseFloat(rawMatch![1]!)).not.toBeCloseTo(parseFloat(blendedMatch![1]!), 6);
   });
 
+  it('lists the selected markets with their full questions in the structured payload', async () => {
+    // The printed theme table truncates questions (and their "% YES"), so the arbitrator reads these instead.
+    const question = 'Will the price of Bitcoin be above $70,000 on May 9, 2026 at 12:00 ET?';
+    const raw = await makeHermeticTool(async () => [
+      { question, probability: 0.58, volume24h: 240_000, ageDays: 1, endDate: futureIso(7) },
+    ]).func({ ticker: 'BTC', horizon_days: 7, current_price: 68_000 }, undefined);
+
+    const markets = (JSON.parse(raw as string) as { data: { markets?: Array<{ question: string; probability: number }> } }).data.markets;
+    expect(markets).toEqual([{ question, probability: 0.58 }]);
+  });
+
   it('returns separate raw and blended forecast values in the structured payload', async () => {
     const raw = await makeHermeticTool(async () => [
       {
