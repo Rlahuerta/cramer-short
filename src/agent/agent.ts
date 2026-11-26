@@ -1298,26 +1298,33 @@ export class Agent {
       const combinedSignal = this.signal
         ? AbortSignal.any([this.signal, timeoutSignal])
         : timeoutSignal;
+      let failure: string | null = null;
       try {
-        for await (const chunk of streamCallLlm(currentPrompt, {
-          model: this.model,
-          systemPrompt: this.systemPrompt,
-          signal: combinedSignal,
-        })) {
-          streamedAnswer += chunk;
-          yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
+        // A thinking model can end with no visible text; ask once more before giving up.
+        for (let attempt = 0; attempt < 2 && !streamedAnswer; attempt++) {
+          for await (const chunk of streamCallLlm(currentPrompt, {
+            model: this.model,
+            systemPrompt: this.systemPrompt,
+            signal: combinedSignal,
+          })) {
+            streamedAnswer += chunk;
+            yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
+          }
         }
+        if (!streamedAnswer && !prefixText) failure = 'model returned an empty answer';
       } catch (error) {
         logger.warn('[Agent] final synthesis failed', error);
-        // Synthesis was cancelled, timed out or failed — surface the raw tool
+        failure = this.signal?.aborted
+          ? 'synthesis cancelled'
+          : timeoutSignal.aborted ? 'synthesis timed out' : 'synthesis failed';
+      }
+      if (failure) {
+        // Synthesis was cancelled, timed out, failed or came back empty — surface the raw tool
         // results so the user has something to work with rather than a blank answer.
         const toolSummary = ctx.scratchpad.getToolResults().trim();
         if (toolSummary) {
-          const reason = this.signal?.aborted
-            ? 'synthesis cancelled'
-            : timeoutSignal.aborted ? 'synthesis timed out' : 'synthesis failed';
           const fallback =
-            `**[Research interrupted — ${reason}]**\n\n` +
+            `**[Research interrupted — ${failure}]**\n\n` +
             'Raw research data gathered:\n\n' +
             toolSummary.slice(0, 3000);
           yield { type: 'answer_chunk', chunk: fallback } as AnswerChunkEvent;
