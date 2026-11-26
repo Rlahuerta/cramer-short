@@ -1,9 +1,10 @@
 /**
  * Build fixtures/polymarket-btc-anchor-history.json: resolved "Bitcoin above/below $X on <date>" Polymarket markets
  * inside the price fixture's window, each with one closing YES probability per UTC day from the public CLOB price
- * history. Public, keyless endpoints only.
+ * history. Public, keyless endpoints only. `asset` is the Gamma tag and the word the questions must contain
+ * (bitcoin, ethereum).
  *
- *   bun run scripts/build-polymarket-btc-anchor-history.ts [from=2024-01] [to=2025-12] [out]
+ *   bun run scripts/build-polymarket-btc-anchor-history.ts [from=2024-01] [to=2025-12] [out] [asset=bitcoin]
  */
 import { join } from 'node:path';
 import { sampleDailyCloses, type AnchorHistoryFixture, type AnchorHistoryMarket } from '../src/tools/finance/backtest/polymarket-anchor-history.js';
@@ -20,23 +21,29 @@ interface GammaMarket {
   clobTokenIds?: string;
 }
 
-function monthWindows(from: string, to: string): Array<[string, string]> {
+// Gamma returns at most 100 events per page and stops paging near offset 2,000; the bitcoin tag carries ~100
+// short-term markets a day, so a month-wide window lost most of its markets. One day per window stays under the cap.
+const PAGE = 100;
+
+export function dayWindows(from: string, to: string): Array<[string, string]> {
   const windows: Array<[string, string]> = [];
-  for (let d = new Date(`${from}-01T00:00:00Z`); d <= new Date(`${to}-01T00:00:00Z`); d.setUTCMonth(d.getUTCMonth() + 1)) {
-    const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
-    windows.push([d.toISOString().slice(0, 10), end.toISOString().slice(0, 10)]);
+  const last = new Date(`${to}-01T00:00:00Z`);
+  last.setUTCMonth(last.getUTCMonth() + 1);
+  for (let d = new Date(`${from}-01T00:00:00Z`); d < last; d.setUTCDate(d.getUTCDate() + 1)) {
+    const next = new Date(d.getTime() + 86_400_000);
+    windows.push([d.toISOString().slice(0, 10), next.toISOString().slice(0, 10)]);
   }
   return windows;
 }
 
-async function closedBitcoinMarkets(start: string, end: string): Promise<GammaMarket[]> {
+export async function closedMarkets(tag: string, start: string, end: string, fetchFn: typeof fetch = fetch): Promise<GammaMarket[]> {
   const markets: GammaMarket[] = [];
-  for (let offset = 0; ; offset += 500) {
-    const res = await fetch(`${GAMMA}/events?closed=true&tag_slug=bitcoin&end_date_min=${start}&end_date_max=${end}&limit=500&offset=${offset}`);
+  for (let offset = 0; ; offset += PAGE) {
+    const res = await fetchFn(`${GAMMA}/events?closed=true&tag_slug=${tag}&end_date_min=${start}&end_date_max=${end}&limit=${PAGE}&offset=${offset}`);
     if (!res.ok) throw new Error(`gamma ${res.status} for ${start}..${end} offset ${offset}`);
     const events = await res.json() as Array<{ markets?: GammaMarket[] }>;
     for (const event of events) markets.push(...(event.markets ?? []));
-    if (events.length < 500) return markets;
+    if (events.length < PAGE) return markets;
   }
 }
 
@@ -56,12 +63,13 @@ async function history(token: string, createdAt: string, endDate: string): Promi
 }
 
 if (import.meta.main) {
-  const [from = '2024-01', to = '2025-12', out = join(import.meta.dir, '..', 'src/tools/finance/fixtures/polymarket-btc-anchor-history.json')] = process.argv.slice(2);
+  const [from = '2024-01', to = '2025-12', out = join(import.meta.dir, '..', 'src/tools/finance/fixtures/polymarket-btc-anchor-history.json'), asset = 'bitcoin'] = process.argv.slice(2);
+  const assetPattern = new RegExp(asset, 'i');
   const seen = new Set<string>();
   const markets: AnchorHistoryMarket[] = [];
-  for (const [start, end] of monthWindows(from, to)) {
-    const candidates = (await closedBitcoinMarkets(start, end)).filter(m =>
-      m.question && /bitcoin/i.test(m.question) && /\b(?:above|below)\b/i.test(m.question) && m.createdAt && m.endDate);
+  for (const [start, end] of dayWindows(from, to)) {
+    const candidates = (await closedMarkets(asset, start, end)).filter(m =>
+      m.question && assetPattern.test(m.question) && /\b(?:above|below)\b/i.test(m.question) && m.createdAt && m.endDate);
     for (const m of candidates) {
       const key = `${m.question}|${m.endDate}`;
       const token = yesToken(m);
@@ -72,11 +80,11 @@ if (import.meta.main) {
         markets.push({ question: m.question!, createdAt: m.createdAt!, endDate: m.endDate!, volume: Number(m.volume ?? 0), daily });
       }
     }
-    console.log(`${start}..${end}: ${candidates.length} candidates, ${markets.length} markets so far`);
+    if (end.endsWith('-01')) console.log(`through ${start}: ${markets.length} markets`);
   }
   markets.sort((a, b) => a.endDate.localeCompare(b.endDate));
   const fixture: AnchorHistoryFixture = {
-    source: 'Polymarket Gamma closed events (tag bitcoin) + CLOB prices-history, YES token, daily close at 23:59:59Z',
+    source: `Polymarket Gamma closed events (tag ${asset}) + CLOB prices-history, YES token, daily close at 23:59:59Z`,
     builtAt: new Date().toISOString(),
     markets,
   };
