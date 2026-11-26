@@ -754,6 +754,12 @@ export function getArbiterReplayCachePaths(
   };
 }
 
+// Tools under `bun test` (which sets NODE_ENV=test) capture to the default cache unless told otherwise, which mixed
+// test artefacts into the replay data the benchmarks score. Tests that exercise these writers pass their own paths.
+function isTestRunDefaultCacheWrite(paths: Partial<ArbiterReplayCachePaths>): boolean {
+  return process.env.NODE_ENV === 'test' && Object.keys(paths).length === 0;
+}
+
 export function appendReplayCachePolymarketCapture(
   capture: {
     rawRow: RawPolymarketReplayRow;
@@ -761,6 +767,7 @@ export function appendReplayCachePolymarketCapture(
   },
   paths: Partial<ArbiterReplayCachePaths> = {},
 ): void {
+  if (isTestRunDefaultCacheWrite(paths)) return;
   const resolved = getArbiterReplayCachePaths(paths);
   appendRawPolymarketReplayRow(capture.rawRow, resolved.polymarketRawPath);
   appendArbiterReplayBundle({
@@ -777,6 +784,7 @@ export function appendReplayCacheWhaleCapture(
   row: RawWhaleReplayRow,
   paths: Partial<ArbiterReplayCachePaths> = {},
 ): void {
+  if (isTestRunDefaultCacheWrite(paths)) return;
   const resolved = getArbiterReplayCachePaths(paths);
   appendRawWhaleReplayRow(row, resolved.whaleRawPath);
 }
@@ -785,6 +793,7 @@ export function appendReplayCacheBundle(
   bundle: ArbiterReplayBundle,
   paths: Partial<ArbiterReplayCachePaths> = {},
 ): void {
+  if (isTestRunDefaultCacheWrite(paths)) return;
   const resolved = getArbiterReplayCachePaths(paths);
   appendArbiterReplayBundle(bundle, resolved.bundlePath);
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -402,6 +402,27 @@ describe('ArbiterReplayBundle persistence', () => {
     expect(readRawPolymarketReplayRows(paths.polymarketRawPath)).toHaveLength(1);
     expect(readRawWhaleReplayRows(paths.whaleRawPath)).toHaveLength(1);
     expect(readArbiterReplayBundles(paths.bundlePath)).toHaveLength(2);
+  });
+
+  it('does not write into the default runtime cache from a test run', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'arbiter-replay-cwd-'));
+    tempDirs.push(dir);
+    const cwd = process.cwd();
+    process.chdir(dir); // the default cache paths are relative to the working directory
+    try {
+      appendReplayCacheBundle(validBundle);
+      appendReplayCachePolymarketCapture({
+        rawRow: { capturedAt: '2026-04-30T12:00:00.000Z', ticker: 'BTC', horizonDays: 7, currentPrice: 68000, querySet: [], selectedMarketIds: [], candidates: [] },
+        polymarket: validBundle.polymarket!,
+      });
+      appendReplayCacheWhaleCapture({
+        capturedAt: '2026-04-30T12:00:00.000Z', ticker: 'BTC', source: 'whale-alert',
+        observationWindowStart: '2026-04-30T10:00:00.000Z', observationWindowEnd: '2026-04-30T12:00:00.000Z', transactions: [],
+      });
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(existsSync(join(dir, '.cramer-short'))).toBe(false);
   });
 });
 
