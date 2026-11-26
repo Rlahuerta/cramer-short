@@ -1348,7 +1348,9 @@ Several thresholds are chosen empirically without statistical justification:
 | Backtest | 10 | ~75% |
 | **Total** | **141** | **~85%** |
 
-### 10.2 Empirical Performance (BTC, 180 days)
+### 10.2 Illustrative Performance (not measured)
+
+Measured results are in [`markov-prediction-guide.md`](markov-prediction-guide.md#measured-accuracy): over 2021–2025 BTC-USD calls did not beat always calling "up" and its probabilities were worse than a coin flip at 5d and 10d.
 
 | Model | Brier Score | Directional Accuracy | 90% CI Coverage |
 |-------|-------------|---------------------|-----------------|

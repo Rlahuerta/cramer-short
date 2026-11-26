@@ -3,8 +3,9 @@
 Cramer-Short includes a Markov chain probability distribution model for asset price
 forecasting. Instead of returning a single price target, it produces a full
 probability distribution — P(price > X) at many price levels — along with
-confidence intervals, action signals, and a confidence score you can use to
-filter predictions.
+confidence intervals, action signals, and a model-agreement score. Measured
+over 2021–2025, its BUY/SELL calls do not beat always calling "up" and its
+probabilities do not beat a coin flip (see [Measured Accuracy](#measured-accuracy)).
 
 **Source:** `src/tools/finance/markov-distribution.ts`
 
@@ -15,8 +16,8 @@ filter predictions.
 1. [Overview](#overview)
 2. [How the Model Works](#how-the-model-works)
 3. [Interpreting Results](#interpreting-results)
-4. [Selective Prediction Strategy](#selective-prediction-strategy)
-5. [Per-Asset Reliability Profiles](#per-asset-reliability-profiles)
+4. [Measured Accuracy](#measured-accuracy)
+5. [Per-Asset Results](#per-asset-results)
 6. [Known Limitations](#known-limitations)
 7. [Backtest Methodology](#backtest-methodology)
 8. [Code Examples](#code-examples)
@@ -44,7 +45,6 @@ and packaged into actionable outputs.
 - Probability assessment for a specific price target and horizon
 - Understanding the range of likely outcomes (confidence intervals)
 - Generating BUY / HOLD / SELL signals grounded in a full distribution
-- Filtering predictions by confidence score (selective prediction)
 
 ### Key outputs
 
@@ -52,7 +52,7 @@ and packaged into actionable outputs.
 |--------|-------------|
 | `distribution` | Array of `{price, probability}` points — a survival curve |
 | `actionSignal` | BUY / HOLD / SELL recommendation with expected return |
-| `predictionConfidence` | 0–1 score for selective prediction filtering |
+| `predictionConfidence` | 0–1 model-agreement score; not a reliability signal (it does not rank accuracy) |
 | `metadata` | Regime state, HMM info, ensemble consensus, structural-break diagnostics, experimental flags |
 
 ---
@@ -166,7 +166,9 @@ bullish markets without strong evidence.
 ### Confidence Scoring
 
 The prediction confidence score (0–1) combines five base factors plus a
-base-rate alignment adjustment:
+base-rate alignment adjustment. It does not predict whether a forecast is right
+(see [Prediction Confidence](#prediction-confidence-01)); it is kept as a
+description of how much the model's signals agree.
 
 | Factor | Weight | How it works |
 |--------|--------|--------------|
@@ -239,8 +241,8 @@ Monte Carlo simulation).
 - CIs are widened by 50% when a structural break is detected in the training
   window.
 
-**Walk-forward backtest CI coverage:** 93% at the 90% level (well-calibrated —
-slightly conservative).
+**Walk-forward interval coverage (live-config benchmark, 2024–25):** the central
+90% interval covered ~88% of outcomes (95%: ~94%, 99%: ~99%), close to nominal.
 
 ### Action Signals
 
@@ -272,185 +274,77 @@ recommendation:
 
 ### Prediction Confidence (0–1)
 
-| Range | Interpretation |
-|-------|---------------|
-| > 0.5 | **High confidence** — signals strongly agree, decisive probability |
-| 0.3–0.5 | **Medium confidence** — most signals agree, reasonable to act on |
-| < 0.3 | **Low confidence** — signals disagree or model is near random |
-| Abstain / no calibrated distribution | **Skip** — the model declined to produce a calibrated result. Do not treat this as an edge or interpret any fallback text as a signal. |
-
-⚠️ **Recommendation:** Only act on predictions with confidence ≥ 0.3 for
-directional bets. Use confidence ≥ 0.4 for high-conviction trades. If the
-model abstains or returns no calibrated distribution, skip the trade entirely.
+A model-agreement score, **not a reliability signal**. On the live-config
+benchmark (7,302 forecasts) and 8 held-out tickers (10,998), the score ranked
+traded accuracy backwards (AUROC 0.47–0.49): the highest-scored fifth of calls
+was the least accurate, and no threshold separated better calls from worse ones
+(2026-11-25). Do not filter or size trades by it. If the model abstains or
+returns no calibrated distribution, skip the trade.
 
 ---
 
-## Selective Prediction Strategy
+## Measured Accuracy
 
-The aggregate directional accuracy of 63% includes many uncertain predictions
-that dilute overall performance. By filtering on the confidence score, you
-trade coverage (fewer predictions) for accuracy (higher hit rate).
+All 14 backtest tickers at 5/7/10/14/20/30 days, daily walk-forward over
+2021–2025 with the live settings. Traded calls (BUY/SELL) are scored against
+always calling "up" on the same days; P(up) against a coin flip (Brier 0.25).
 
-### Risk-Coverage (RC) Curve
+| Period | Up-moves | Model hit rate | Always "up" | Gap [95% CI] | Brier − 0.25 [95% CI] |
+|--------|----------|----------------|-------------|--------------|-----------------------|
+| 2021 | 63% | 61.5% | 63.5% | −2.0pp [−2.7, −1.4] | −0.0047 [−0.0101, +0.0022] |
+| 2022 (decline) | 43% | 39.7% | 41.8% | −2.1pp [−4.5, +0.1] | +0.0138 [+0.0117, +0.0163] |
+| 2023 | 63% | 58.2% | 62.7% | −4.4pp [−5.1, −3.7] | +0.0026 [−0.0017, +0.0072] |
+| 2024–25 | 64% | 61.5% | 64.3% | −2.9pp [−3.4, −2.4] | −0.0095 [−0.0125, −0.0060] |
+| **All** | 59% | **56.5%** | **59.5%** | **−3.0pp** [−3.5, −2.5] | −0.0011 [−0.0031, +0.0012] |
 
-| Confidence ≥ | Accuracy | Coverage | Predictions |
-|--------------|----------|----------|-------------|
-| 0.0 | 63% | 100% | 484 |
-| 0.2 | 65% | 54% | 262 |
-| 0.3 | 65% | 26% | 124 |
-| 0.4 | 80% | 5% | 25 |
-| 0.5 | 93% | 3% | 15 |
+The model calls "up" most of the time, so its hit rate tracks the share of
+up-moves and stays below it in every period. Its probabilities beat a coin flip
+in the 2024–25 rise and lose to one in the 2022 decline.
 
-### Recommended Strategies
-
-- **Baseline filter (conf ≥ 0.3):** Use as the minimum threshold for any
-  directional bet. Cuts out 74% of uncertain predictions while maintaining 65%
-  accuracy on the remainder.
-- **High-conviction only (conf ≥ 0.4):** 80% accuracy on 25 predictions.
-  Suitable for concentrated positions where being wrong is costly.
-- **Very selective (conf ≥ 0.5):** 93% accuracy but only 15 predictions over
-  the full backtest period. Statistically limited (see
-  [Known Limitations](#known-limitations)).
-
-The intuition: when the model's regime detection, HMM, and momentum signals
-all agree *and* the probability is far from 0.5, the prediction is
-substantially more reliable than the 63% baseline.
+Reproduce with `src/tools/finance/backtest/long-history-skill.ts` (`run <ticker>`
+for each ticker, then `report`). Earlier versions of this guide reported 63%
+aggregate accuracy and 80–93% above confidence 0.4–0.5 from 484 predictions on
+2024–25; scored against always calling "up" over 2021–2025, none of that holds.
 
 ---
 
-## Per-Asset Reliability Profiles
+## Per-Asset Results
 
-The current horizon audit for the live reporting surface tested
-`{5, 7, 10, 14, 20, 30, 45, 60}` using `walkForward`, `WARMUP=120`, and
-`STRIDE=10`. Use the tables below to separate **confirmed canonical coverage**
-from **exploratory candidates that are not yet canonical**.
+No ticker and no horizon from 5 to 30 days beat always calling "up" (0 of 84
+ticker × horizon cells with a CI above zero; 5 significantly below) or a coin
+flip on Brier (0 of 84; 3 significantly worse: TSLA 10d, BTC-USD 5d and 10d).
+The per-asset table is in
+[`markov-when-to-use.md`](markov-when-to-use.md#per-asset-all-periods-530d).
 
-### Confirmed canonical coverage
-
-These rows are backed by the committed fixture audit and are safe for
-reviewer-visible summaries.
-
-| Asset | Good tested horizon(s) | Weak / unsupported horizon(s) | Notes |
-|-------|-------------------------|-------------------------------|-------|
-| **SPY** | **5d, 10d, 14d, 20d, 30d** | 45–60d not Markov-specific | Confirmed positive from the short to mid horizon band. |
-| **QQQ** | **14d, 20d, 30d** | 5–10d limited; 45–60d not Markov-specific | Strongest confirmed tech/index case. |
-| **GLD** | **20d, 30d** | 5–14d weaker; 45–60d not Markov-specific | Clearly strong from 20d onward. |
-| **VOO** | **14d, 20d, 30d** | 5–10d still exploratory; 45–60d not Markov-specific | First-wave canonical validation confirms the mid-horizon SPY-like pattern. |
-| **DIA** | **30d** | 5–20d still exploratory; 45–60d not Markov-specific | First-wave canonical validation only clears the confirmation bar at 30d. |
-| **VTI** | **14d, 20d, 30d** | 5–10d still exploratory; 45–60d not Markov-specific | First-wave canonical validation confirms a broad-market mid-horizon signal. |
-| **IAU** | **7d, 10d, 14d, 20d, 30d** | 5d still exploratory; 45–60d not Markov-specific | Strongest first-wave addition; especially strong at 20d and 30d. |
-| **MSFT** | **5d, 14d** | 7d, 10d, 20d, 30d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation only supports selective short / mid-horizon confirmation. |
-| **NVDA** | **5d, 14d, 20d** | 7d, 10d, 30d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation supports selective short / mid-horizon coverage. |
-| **GOOGL** | **7d** | 5d, 10d, 14d, 20d, 30d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation confirms only a narrow short-horizon case. |
-| **AMZN** | **20d, 30d** | 5d, 7d, 10d, 14d still exploratory; 45–60d not Markov-specific | Second-wave canonical validation supports the mid-horizon band only. |
-| **BTC-USD** | **None** in `{5, 7, 10, 14, 20, 30, 45, 60}` | All tested horizons | Best observed directional accuracy was **49.2% at 30d**, still too weak for a “good horizon” claim. |
-| **AAPL** | **None in canonical coverage** | All tested canonical horizons | Not good enough for a canonical positive claim. |
-| **TSLA** | **None in canonical coverage** | All tested canonical horizons | Not good enough for a canonical positive claim. |
-
-### Exploratory candidates (not yet canonical)
-
-The broader liquid-asset sweep found additional promising names, but these do
-**not** yet have committed fixture coverage. They must not be cited as already
-confirmed.
-
-| Tier | Assets | Why they matter | Next step |
-|------|--------|-----------------|-----------|
-| **Residual first-wave exploratory horizons** | **VOO 5d/7d/10d; DIA 5d/7d/10d/14d/20d; VTI 5d/7d/10d; IAU 5d** | First-wave canonical validation improved confidence, but these specific shorter or weaker horizons remain below the confirmed-docs bar. | Keep as exploratory unless a later canonical rerun clears them decisively. |
-| **Residual second-wave exploratory horizons** | **MSFT 7d/10d/20d/30d; NVDA 7d/10d/30d; GOOGL 5d/10d/14d/20d/30d; AMZN 5d/7d/10d/14d** | Second-wave canonical validation improved confidence, but these specific single-name horizons remain below the confirmed-docs bar. | Keep as exploratory unless a later canonical rerun clears them decisively. |
-
-⚠️ Exploratory sweeps are useful for ranking what to validate next, not for
-claiming confirmed Markov coverage. Keep the distinction explicit.
-
-First-wave canonical validation confirms **VOO at 14d/20d/30d, DIA at 30d,
-VTI at 14d/20d/30d, and IAU at 7d/10d/14d/20d/30d**. Shorter or weaker
-first-wave results remain exploratory rather than confirmed.
-
-Second-wave canonical validation confirms **horizon-specific single-name coverage
-for MSFT (5d, 14d), NVDA (5d, 14d, 20d), GOOGL (7d), and AMZN (20d, 30d)**.
-Other tested single-name horizons remain exploratory, and `45–60d` horizons
-remain out of scope.
-
-The current canonical multi-horizon backtest (`swing-trade-backtest.test.ts`) covers
-6 horizons × 3 tickers with 36 signals per ticker-horizon. Key results:
-
-### Canonical multi-horizon results (confidence ≥ 0.25)
-
-| Ticker | Best Horizon | Sharpe | Win Rate | Directional Accuracy |
-|--------|-------------|--------|----------|---------------------|
-| SPY | 14d | 1.60 | 72.2% | 68.8% |
-| QQQ | 20d | 1.57 | 76.5% | 73.3% |
-| GLD | 30d | 2.61 | 88.9% | 88.9% |
-
-**Aggregate (all tickers, all horizons):** Sharpe 1.34 vs 1.09 unfiltered, 71.4% win rate.
-
-The older "Historical 14d / 30d snapshot" table (below) comes from a different
-backtest run with a narrower dataset. It remains as historical context only.
-
-### Historical 14d / 30d backtest snapshot (legacy)
-
-| Ticker | Directional Accuracy | CI Coverage (90%) |
-|--------|---------------------|--------------------|
-| SPY | 76% / 72% | 81% / 83% |
-| GLD | 73% / 89% | 97% / 86% |
-| QQQ | 73% / 69% | 89% / 89% |
-| AAPL | 54% / 67% | 92% / 94% |
-| TSLA | 51% / 58% | 97% / 97% |
-| BTC | 42% / 54%* | 100% / 100% |
-
-⚠️ **BTC and TSLA show near-random or anti-correlated directional accuracy.**
-The regime model can be actively misleading for highly volatile assets. Use the
-confidence score to filter, or rely only on CI coverage for these tickers.
-
-\* Historical 14d / 30d snapshot from the narrower backtest documented in this
-guide. The later full horizon audit still found **BTC-USD weak at every tested
-horizon**, with a best observed directional accuracy of **49.2% at 30d**.
+Earlier versions of this section listed "confirmed canonical coverage" per
+asset and horizon, and win rates of 72–89% for confidence ≥ 0.25. Those came
+from 2024–25 audits scored against a coin flip; they do not hold over 2021–2025
+against always calling "up".
 
 ---
 
 ## Known Limitations
 
-⚠️ **Bullish bias.** The model was trained on 2022–2025 data, which was
-predominantly bullish. The base-rate floor and calibration center both reflect
-this. Performance may degrade in a sustained bear market not represented in the
-training window.
+⚠️ **No directional edge.** Over 2021–2025 no asset or horizon beat always
+calling "up" (see [Measured Accuracy](#measured-accuracy)).
+
+⚠️ **Declining markets.** The model calls "up" most of the time. In 2022
+(43% up-moves) its calls were right 39.7% of the time and its probabilities
+were worse than a coin flip (Brier +0.014).
 
 ⚠️ **No fundamental data.** The model uses only price history — it cannot
 capture earnings surprises, news events, macro announcements, or sector
 rotation. Combine with Cramer-Short's other tools (SEC filings, financial metrics,
 web search) for a complete picture.
 
-⚠️ **Sample size.** The walk-forward backtest has n = 36–60 per
-ticker-horizon combination. The 95% confidence interval on the aggregate 63%
-accuracy (n = 484) is approximately [59%, 67%]. Individual ticker results have
-wider statistical uncertainty.
+⚠️ **Worse than a coin flip.** DIA, AMZN, TSLA and BTC-USD score above a coin
+flip's Brier at every horizon from 5 to 30 days (significantly only at TSLA 10d
+and BTC-USD 5d/10d).
 
-⚠️ **BTC/TSLA anti-correlation.** The model shows negative directional skill
-on these assets. The regime model can be anti-informative when volatility
-overwhelms regime persistence.
-
-⚠️ **Small n at high confidence.** The 93% accuracy at confidence ≥ 0.5 is
-based on only 15 predictions. This is not statistically significant — the 95%
-CI on that 93% spans roughly [68%, 100%]. Treat as encouraging but
-unvalidated.
-
-⚠️ **Non-stationary markets.** Performance is expected to degrade during
-regime changes not seen in training data (e.g., a sustained deflationary
-crash, a market structure change, or a new asset class entering the training
-universe).
-
-⚠️ **Horizon limits.** The current canonical evidence supports the **14–30d**
-band broadly for non-crypto assets, with **SPY / QQQ already strong by 14d**,
-**GLD clearly strong from 20d onward**, and **IAU now confirmed from 7d
-through 30d**. Short horizons are still mixed overall: **SPY**, **MSFT**, and
-**NVDA** have selective 5d confirmation, **IAU** is confirmed from 7d onward,
-and **GOOGL** is only confirmed at 7d. **VOO** and **VTI** become review-safe
-from 14d onward, **AMZN** from 20d onward, and **DIA** only clears the
-confirmation bar at 30d. **BTC-USD has no good tested horizon** in
-`{5, 7, 10, 14, 20, 30, 45, 60}`; its best observed directional accuracy was
-**49.2% at 30d**. At **45–60d**, average `markovWeight` is near zero, so those
-outcomes should not be attributed to the Markov chain signal itself. Beyond
-60d, the chain mixes toward its stationary distribution and loses directional
-information.
+⚠️ **Horizon limits.** At **45–60d**, average `markovWeight` is near zero, so
+those outcomes should not be attributed to the Markov chain signal itself.
+Beyond 60d, the chain mixes toward its stationary distribution and loses
+directional information.
 
 ---
 
@@ -463,27 +357,24 @@ used in production, with no look-ahead.
 
 | Parameter | Value |
 |-----------|-------|
-| Warmup window | 120 trading days |
-| Stride | 10 trading days (non-overlapping prediction windows) |
-| Tickers | SPY, QQQ, GLD, AAPL, TSLA, BTC |
-| Horizons | 14 days, 30 days |
-| Configurations | 6 tickers × 2 horizons = 12 |
-| Predictions per config | ~36–60 |
-| Total predictions | 484 |
+| Data | `fixtures/backtest-prices-2021-2025.json` (Yahoo Finance daily closes) |
+| History window | Live settings: 83 trading days for equities, 174 for gold, 252 for BTC-USD (with its live break policy) |
+| Stride | 1 day (overlapping horizons; CIs use a block bootstrap with block = horizon) |
+| Tickers | SPY, QQQ, VOO, VTI, DIA, GLD, IAU, MSFT, NVDA, GOOGL, AMZN, AAPL, TSLA, BTC-USD |
+| Horizons | 5, 7, 10, 14, 20, 30 days |
+| Forecast steps | ~102,000 |
 
-At each step, the model sees only the trailing 120 days of price history,
-makes a prediction, then walks forward 10 days. No future data is used at any
-point.
+At each step, the model sees only the trailing history window, makes a
+prediction, then walks forward one day. No future data is used at any point.
 
 ### Metrics
 
-| Metric | Value | Description |
-|--------|-------|-------------|
-| Aggregate Directional Accuracy | 63% | % of predictions where predicted direction matches actual |
-| 90% CI Coverage | 93% | % of actual prices falling within the predicted 90% CI |
-| Brier Score | 0.247 | Mean squared error of P(up) vs. actual binary outcome (lower = better) |
-| Selective conf ≥ 0.4 | 80% accuracy, 5% coverage | High-confidence subset |
-| Selective conf ≥ 0.5 | 93% accuracy, 3% coverage | Very-high-confidence subset |
+| Metric | Value (2021–2025) | Description |
+|--------|-------------------|-------------|
+| Traded hit rate | 56.5% | % of BUY/SELL calls whose direction matched |
+| Always "up" on the same days | 59.5% | The baseline the hit rate must beat |
+| Brier − 0.25 | −0.0011 [−0.0031, +0.0012] | Mean squared error of P(up) minus a coin flip's |
+| Central 90% interval coverage | ~88% (2024–25 live-config benchmark) | % of outcomes inside the interval |
 
 ### Stressed Backtests
 
@@ -521,7 +412,7 @@ console.log(result.actionSignal.recommendation); // 'BUY' | 'HOLD' | 'SELL'
 console.log(result.actionSignal.expectedReturn);  // e.g., 0.023 (2.3%)
 console.log(result.actionSignal.riskRewardRatio); // e.g., 1.4
 
-// Prediction confidence (use for selective filtering)
+// Model-agreement score (not a reliability signal; do not filter on it)
 console.log(result.predictionConfidence); // 0.0 – 1.0
 
 // Full probability distribution (survival curve)
@@ -532,21 +423,6 @@ for (const point of result.distribution) {
 // Key price levels
 const { targetPrice, stopLoss, medianPrice } = result.actionSignal.actionLevels;
 console.log(`Target: $${targetPrice}, Stop: $${stopLoss}, Median: $${medianPrice}`);
-```
-
-### Selective Prediction (Confidence Filtering)
-
-```typescript
-const result = await computeMarkovDistribution({ /* ... */ });
-
-// Only act when confidence is high enough
-if (result.predictionConfidence >= 0.3) {
-  console.log(`Signal: ${result.actionSignal.recommendation}`);
-  console.log(`Expected return: ${(result.actionSignal.expectedReturn * 100).toFixed(2)}%`);
-  console.log(`Confidence: ${result.predictionConfidence.toFixed(2)}`);
-} else {
-  console.log('Low confidence — abstaining from prediction.');
-}
 ```
 
 ### Reading the Probability at a Specific Price
@@ -611,14 +487,11 @@ applies throughout.
 
 ### Horizon Guidance
 
-| Horizon | Backtest Coverage | Notes |
-|---------|-------------------|-------|
-| 5–10 days | Mixed | Confirmed for **SPY**, **MSFT 5d**, **NVDA 5d**, **GOOGL 7d**, and much of **IAU**; still noisy or exploratory for many other assets |
-| **14 days** | **Well-tested** | Earliest broad defensible horizon for **SPY / QQQ / VOO / VTI**; **IAU**, **MSFT**, and **NVDA** are also confirmed here; BTC remains weak |
-| **20 days** | **Well-tested** | Start of defensible good territory for non-crypto; **GLD**, **IAU**, **VTI**, **VOO**, **NVDA**, and **AMZN** all have confirmed coverage here |
-| **30 days** | **Well-tested** | Practical sweet spot for non-crypto; **DIA** only clears the confirmed bar here, **AMZN** also joins here, and BTC is still weak at **49.2%** |
-| 45–60 days | Limited | Average `markovWeight` is near zero; do not market wins as Markov-specific |
-| 90+ days | Not recommended | Model loses directional information |
+| Horizon | Notes |
+|---------|-------|
+| 5–30 days | Measured for all 14 tickers over 2021–2025: no horizon beats always calling "up" (see [Per-Asset Results](#per-asset-results)) |
+| 45–60 days | Average `markovWeight` is near zero; do not attribute outcomes to the Markov signal |
+| 90+ days | Not recommended; the chain loses directional information |
 
 ### Default Parameters
 
@@ -1055,8 +928,7 @@ When a calibrated distribution is available, the `trajectory` option generates a
 90% confidence intervals, and directional probability for each day up to the horizon.
 
 A trajectory table is produced **only when the model can return a calibrated
-distribution for the requested asset and horizon**. If the asset/horizon
-combination is outside the model's confirmed coverage, or the model abstains
+distribution for the requested asset and horizon**. If the model abstains
 (because trusted anchors are missing or the signal is too weak), the tool
 returns a summary instead of a trajectory table. See
 [Trajectory Limitations](#trajectory-limitations) below.
@@ -1071,10 +943,10 @@ Set `trajectory: true` when calling the tool. Optionally specify `trajectoryDays
 "Show me day-by-day IAU forecast for the next 20 days"
 ```
 
-For assets with confirmed Markov coverage (SPY, QQQ, IAU, GLD, etc. at appropriate
-horizons), the tool returns a full day-by-day table. For assets outside confirmed
-coverage (e.g. BTC, AAPL), the tool may return a qualitative summary or abstain
-rather than a trajectory table.
+When the run emits a calibrated distribution, the tool returns a full day-by-day
+table; when it abstains, it returns a qualitative summary instead. Either way the
+direction carries no measured edge (see [Measured Accuracy](#measured-accuracy));
+read the interval.
 
 ### Output Format (illustrative example)
 
@@ -1148,10 +1020,8 @@ Day │ Expected │     90% CI Range    │ P(up) │ Return
 ### Trajectory Limitations
 
 - **Unsupported assets or horizons** may return an abstain or a qualitative summary
-  instead of a trajectory table. For example, requesting a trajectory for BTC at
-  any horizon, or for AAPL, will typically not produce a calibrated day-by-day
-  table because the model does not have a confirmed signal for those assets.
-  When this happens, do not treat the summary as a Markov edge.
+  instead of a trajectory table. When this happens, do not treat the summary as a
+  Markov edge.
 - **Trajectory availability is conditional**: a trajectory table is only produced
   when the model has sufficient data, a calibrated distribution, and trusted
   anchors for the requested asset/horizon. If any of these are missing, the tool
