@@ -18,6 +18,22 @@ describe('Polymarket anchor history builder', () => {
     expect(new URL(urls[0]!).searchParams.get('limit')).toBe('100');
   });
 
+  it('waits out a rate limit instead of failing or losing the page', async () => {
+    const statuses = [429, 429, 200];
+    let calls = 0;
+    const fakeFetch = (async () => {
+      const status = statuses[calls++]!;
+      return status === 200
+        ? new Response(JSON.stringify([{ markets: [{ question: 'q' }] }]))
+        : new Response('Too Many Requests', { status });
+    }) as unknown as typeof fetch;
+
+    const markets = await closedMarkets('bitcoin', '2026-01-03', '2026-01-04', fakeFetch, 0);
+
+    expect(calls).toBe(3);
+    expect(markets).toHaveLength(1);
+  });
+
   it('queries one day per window, so no window reaches the offset cap', () => {
     expect(dayWindows('2026-02', '2026-02')).toHaveLength(28);
     expect(dayWindows('2026-02', '2026-03')[0]).toEqual(['2026-02-01', '2026-02-02']);
