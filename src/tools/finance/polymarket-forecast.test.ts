@@ -334,6 +334,29 @@ describe('polymarketForecastTool', () => {
     expect(enabled.result).not.toBe(baseline.result);
   });
 
+  it('fits the live calibrator from the labeled replay cache, the file the label pipeline writes', async () => {
+    process.env[LIVE_BRIER_REPLAY_FLAG] = '1';
+    const paths: Array<string | undefined> = [];
+    const readSpy = spyOn(arbiterReplay, 'readArbiterReplayBundles').mockImplementation((filePath?: string) => {
+      paths.push(filePath);
+      return [];
+    });
+    try {
+      const tool = createPolymarketForecastTool({
+        fetchMarkets: async () => [
+          { question: 'Will Bitcoin be above $70,000 in 2 days?', probability: 0.58, volume24h: 240_000, ageDays: 1, endDate: futureIso(2) },
+        ],
+        fetchAnchorMarketsWithQueries: async () => [],
+        readRecords: () => [],
+        recordReplayPolymarketCapture: () => {},
+      });
+      await tool.func({ ticker: 'BTC', horizon_days: 2, current_price: 68_000 }, undefined);
+      expect(paths).toEqual([arbiterReplay.DEFAULT_ARBITER_REPLAY_LABELED_CACHE_BUNDLES_PATH]);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
   it('applies horizon-aware BTC calibration only when labeled short-horizon replay evidence exists', async () => {
     process.env[LIVE_BRIER_REPLAY_FLAG] = '1';
     const tool = makeHermeticTool(
