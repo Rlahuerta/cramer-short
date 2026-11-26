@@ -2809,7 +2809,7 @@ describe('Agent', () => {
 
       expect(buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls)).toEqual({
         ticker: 'GLD',
-        horizon_days: 21,
+        horizon_days: 30,
         current_price: 312.45,
       });
     });
@@ -2847,7 +2847,7 @@ describe('Agent', () => {
 
       expect(buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls)).toEqual({
         ticker: 'GLD',
-        horizon_days: 21,
+        horizon_days: 30,
         current_price: 295,
       });
     });
@@ -2881,7 +2881,7 @@ describe('Agent', () => {
 
       expect(buildForcedNonCryptoPolymarketForecastArgs(query, toolCalls)).toEqual({
         ticker: 'GLD',
-        horizon_days: 21,
+        horizon_days: 30,
         current_price: 294.87,
       });
     });
@@ -3637,7 +3637,7 @@ describe('Agent', () => {
               }),
             },
             { tool: 'get_market_data', args: { query: 'GLD current price' }, result: JSON.stringify({ data: {} }) },
-            { tool: 'polymarket_forecast', args: { ticker: 'GLD', horizon_days: 21, current_price: 294.87, markov_return: 0.012 }, result: '{"data":{}}' },
+            { tool: 'polymarket_forecast', args: { ticker: 'GLD', horizon_days: 30, current_price: 294.87, markov_return: 0.012 }, result: '{"data":{}}' },
           ],
         )).toBe(false);
       });
@@ -3668,7 +3668,7 @@ describe('Agent', () => {
                 },
               }),
             },
-            { tool: 'polymarket_forecast', args: { ticker: 'GLD', horizon_days: 21, current_price: 295 }, result: '{"data":{}}' },
+            { tool: 'polymarket_forecast', args: { ticker: 'GLD', horizon_days: 30, current_price: 295 }, result: '{"data":{}}' },
           ],
         )).toBe(false);
       });

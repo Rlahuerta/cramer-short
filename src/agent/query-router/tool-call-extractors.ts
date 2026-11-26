@@ -20,6 +20,7 @@ import {
   inferDistributionTicker,
   inferDistributionHorizon,
   inferMarkovQueryHorizon,
+  inferPolymarketQueryHorizon,
 } from './distribution.js';
 import {
   buildForcedMarketDataArgs,
@@ -383,7 +384,7 @@ export function extractMarkovArbiterEvidence(query: string, toolCalls: ToolCallR
 
 export function extractPolymarketForecastReturnForQuery(query: string, toolCalls: ToolCallRecord[]): number | null {
   const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferDistributionHorizon(query);
+  const desiredHorizon = inferPolymarketQueryHorizon(query);
 
   for (let i = toolCalls.length - 1; i >= 0; i--) {
     const call = toolCalls[i];
@@ -424,7 +425,7 @@ export function extractPolymarketForecastReturnForQuery(query: string, toolCalls
 
 export function extractPolymarketArbiterEvidence(query: string, toolCalls: ToolCallRecord[]): ForcedForecastArbiterArgs['polymarket'] | null {
   const desiredTicker = inferDistributionTicker(query);
-  const desiredHorizon = inferDistributionHorizon(query);
+  const desiredHorizon = inferPolymarketQueryHorizon(query);
 
   for (let i = toolCalls.length - 1; i >= 0; i--) {
     const call = toolCalls[i];

@@ -2,8 +2,8 @@ import type { ToolCallRecord } from '../scratchpad.js';
 import { detectAssetType } from '../../tools/finance/signal-extractor.js';
 import {
   inferDistributionTicker,
-  inferDistributionHorizon,
   inferMarkovQueryHorizon,
+  inferPolymarketQueryHorizon,
 } from './distribution.js';
 import {
   isCryptoForecastPipelineQuery,
@@ -73,7 +73,7 @@ export function buildForcedNonCryptoPolymarketForecastArgs(
 
   const args: ForcedNonCryptoPolymarketForecastArgs = {
     ticker,
-    horizon_days: inferDistributionHorizon(query) ?? 7,
+    horizon_days: inferPolymarketQueryHorizon(query) ?? 7,
   };
 
   const currentPrice = extractCurrentPriceForNonCryptoQuery(query, toolCalls);

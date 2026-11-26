@@ -101,9 +101,12 @@ function inferQuarterEndTradingDays(query: string, referenceDate: Date, countWee
   return countWeekdaysUntil(targetDate, referenceDate, countWeekends);
 }
 
-export function inferDistributionHorizon(query: string, referenceDate: Date = new Date()): number | null {
+export function inferDistributionHorizon(
+  query: string,
+  referenceDate: Date = new Date(),
+  calendar: boolean = detectAssetType(query).type === 'crypto',
+): number | null {
   const lower = query.toLowerCase();
-  const calendar = detectAssetType(query).type === 'crypto';
   const perWeek = calendar ? CALENDAR_DAYS_PER_WEEK : TRADING_DAYS_PER_WEEK;
   const perMonth = calendar ? CALENDAR_DAYS_PER_MONTH : TRADING_DAYS_PER_MONTH;
   const perQuarter = calendar ? CALENDAR_DAYS_PER_QUARTER : TRADING_DAYS_PER_QUARTER;
@@ -153,6 +156,11 @@ export function inferBtcShortHorizonForecastHorizon(query: string): number | nul
 
 export function inferMarkovQueryHorizon(query: string): number | null {
   return inferDistributionHorizon(query) ?? inferBtcShortHorizonForecastHorizon(query);
+}
+
+/** Polymarket matches markets by calendar days to resolution, so it reads the query in calendar days for any asset. */
+export function inferPolymarketQueryHorizon(query: string): number | null {
+  return inferDistributionHorizon(query, new Date(), true);
 }
 
 export function isBtcShortHorizonForecastQuery(query: string): boolean {
