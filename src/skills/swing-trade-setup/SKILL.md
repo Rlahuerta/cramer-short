@@ -60,8 +60,8 @@ markov_distribution({
 
 **Extract from result:**
 - `regimeState` — current regime (bull/bear/sideways)
-- `actionSignal.recommendation` — BUY/HOLD/SELL
-- `actionSignal.buyProbability` / `sellProbability`
+- `actionSignal.recommendation` — BUY/HOLD/SELL, the model's lean
+- `diagnostics.callTrackRecord` — how often that call was right for this asset type and horizon over 2021–2025, next to the share of all days that moved its way
 - `actionSignal.actionLevels.targetPrice` — upside target
 - `actionSignal.actionLevels.stopLoss` — downside stop
 
@@ -80,9 +80,8 @@ Check for confluence signals:
 - RSI > 70 = overbought (caution on long entries)
 - RSI < 30 = oversold (caution on short entries)
 
-**Markov confirmation:**
-- Regime state matches setup direction (bull regime + bullish setup = confluence)
-- `buyProbability > 0.55` for long setups, `sellProbability > 0.45` for short setups
+**Markov context (not confirmation):**
+- Quote the Markov BUY/SELL with its `callTrackRecord` (hit rate vs base rate). Over 2021–2025 the calls were right about as often as the market moved their way, and the regime label did not rank outcomes either, so do not count the Markov call, its probability or a matching regime as confluence.
 
 ### Step 5 — Risk/Reward Calculation
 
@@ -136,8 +135,8 @@ Present in this format:
 **Catalysts:** [earnings date, sector tailwinds, etc.]
 
 **Flags:**
-- ✓ Regime confluence (bull regime + bullish setup)
 - ✓ Volume confirmation (breakout on 2.1× average volume)
+- Markov: [BUY/SELL] with its track record ([hit rate] vs [base rate]); context, not confirmation
 ```
 
 ### Step 8 — Exit Strategy
@@ -183,9 +182,8 @@ Define exit rules:
 **Catalysts:** Earnings in 12 days, AI sector momentum
 
 **Flags:**
-- ✓ Regime confluence (bull regime + bullish pullback)
 - ✓ Volume drying up on pullback (healthy, no distribution)
-- ✓ Markov buyProbability: 0.64
+- Markov: BUY (P(up) 0.64); track record for equities at 14d: BUY calls right 59% of the time, the price rose on 58% of all days (no edge over the market)
 
 **Exit Strategy:**
 - Scale 50% at $128, trail to $122
