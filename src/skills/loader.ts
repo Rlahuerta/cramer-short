@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import matter from 'gray-matter';
-import type { Skill, SkillSource } from './types.js';
+import type { Skill, SkillMetadata, SkillSource } from './types.js';
 
 const rejectJsFrontmatter = (): never => {
   throw new Error('JavaScript frontmatter is not allowed in skill files');
@@ -60,7 +60,7 @@ export function loadSkillFromPath(path: string, source: SkillSource): Skill {
  * @param source - Where this skill came from
  * @returns Skill metadata (name, description, path, source)
  */
-export function extractSkillMetadata(path: string, source: SkillSource): { name: string; description: string; path: string; source: SkillSource } {
+export function extractSkillMetadata(path: string, source: SkillSource): SkillMetadata {
   const content = readFileSync(path, 'utf-8');
   const { data } = matter(content, MATTER_OPTIONS);
 
@@ -76,5 +76,6 @@ export function extractSkillMetadata(path: string, source: SkillSource): { name:
     description: data.description,
     path,
     source,
+    ...(data.parameters !== undefined ? { parameters: data.parameters } : {}),
   };
 }

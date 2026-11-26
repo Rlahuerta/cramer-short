@@ -148,6 +148,9 @@ export function createSkillTool(
           const source = paramSources[key] === 'override' ? '(override)' : '(default)';
           result += `- ${key}: ${String(value)} ${source}\n`;
         }
+        if (Object.values(paramSources).includes('default')) {
+          result += "Defaults apply only where the user gave no value; if the request states a different value, use the user's value.\n";
+        }
         result += '\n';
       }
 
