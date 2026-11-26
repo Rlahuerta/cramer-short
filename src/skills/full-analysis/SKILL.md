@@ -15,6 +15,21 @@ description: >
 Orchestrate four sub-skills into a single, well-structured investment report.
 Each sub-skill is invoked in sequence, and its findings feed the next stage.
 
+## Required first step: load the four sub-skills
+
+This skill only says how to combine the sub-skills; each sub-skill says how to do its own analysis and
+which data tools to use. Before any other tool call, call the `skill` tool once per sub-skill, all four
+in the same turn:
+
+- `skill({ "skill": "dcf-valuation", "args": "<TICKER>" })`
+- `skill({ "skill": "peer-comparison", "args": "<TICKER>" })`
+- `skill({ "skill": "short-thesis", "args": "<TICKER>" })`
+- `skill({ "skill": "probability_assessment", "args": "<TICKER>" })`
+
+Do not write any section from your own judgment instead. Skipping a sub-skill skips its data tools; for
+example, the probability section must come from probability_assessment's Polymarket and Markov signals,
+not from weights you choose.
+
 ---
 
 ## Workflow
@@ -24,7 +39,7 @@ Extract the ticker symbol (and company name if given). If multiple tickers are
 mentioned, prompt for clarification unless the request is clearly comparative.
 
 ### Step 2 — DCF Valuation
-Invoke skill `dcf-valuation` with the ticker.
+Follow the `dcf-valuation` skill loaded above, for the ticker.
 
 Follow every step in that skill exactly. Key outputs to capture:
 - Intrinsic value per share (base case)
@@ -51,7 +66,7 @@ This step adds no extra tool calls — the RIM cross-check is part of the
 `dcf-valuation` skill's own Step 5.
 
 ### Step 3 — Peer Comparison
-Invoke skill `peer-comparison` with the ticker.
+Follow the `peer-comparison` skill loaded above, for the ticker.
 
 Follow every step in that skill exactly. Key outputs to capture:
 - Valuation multiples vs. median peer (P/E, EV/EBITDA, P/S)
@@ -60,7 +75,7 @@ Follow every step in that skill exactly. Key outputs to capture:
 - Overall relative attractiveness (cheap / fair / expensive vs. peers)
 
 ### Step 4 — Short Thesis (Bear Case)
-Invoke skill `short-thesis` with the ticker.
+Follow the `short-thesis` skill loaded above, for the ticker.
 
 Follow every step in that skill exactly. Key outputs to capture:
 - Top 3 bear-case catalysts
@@ -68,7 +83,7 @@ Follow every step in that skill exactly. Key outputs to capture:
 - Key risk timeline (when the risks could materialise)
 
 ### Step 5 — Probability Assessment
-Invoke skill `probability_assessment` with the ticker (or the central investment
+Follow the `probability_assessment` skill loaded above, for the ticker (or the central investment
 question, e.g., "Will AAPL trade above its DCF fair value in 12 months?").
 
 Follow every step in that skill exactly. Key outputs to capture:
@@ -176,7 +191,7 @@ reason to avoid]
   the next. Do not summarise or shortcut the sub-skill instructions.
 - **Carry forward numbers.** Use the DCF bear-case price target as an input to
   the probability assessment ("probability of staying above bear target").
-- **One LLM call per skill.** Invoke each via the `skill` tool, then do the
-  required research, then proceed to the next skill.
+- **Load all four first.** Call the `skill` tool for all four sub-skills at the
+  start (see "Required first step"), then do each one's research in order.
 - **Time box.** If token budget is running low, complete the current sub-skill
   first, then summarise remaining steps rather than starting them.
