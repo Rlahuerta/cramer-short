@@ -38,11 +38,14 @@ export function dayWindows(from: string, to: string): Array<[string, string]> {
 
 /**
  * Retries rate limits (429), server errors and dropped or stalled connections with backoff. Without it a 429 killed a
- * build, and a 429 on a market's price history dropped that market silently.
+ * build, and a 429 on a market's price history dropped that market silently. The body is read inside the retry,
+ * because the timeout also fires on a body that stalls after the headers arrive.
  */
 async function fetchRetrying(url: string, fetchFn: typeof fetch, delayMs: number): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetchFn(url, { signal: AbortSignal.timeout(30_000) }).catch((err: unknown) => err as Error);
+    const res = await fetchFn(url, { signal: AbortSignal.timeout(30_000) })
+      .then(async r => new Response(await r.text(), { status: r.status }))
+      .catch((err: unknown) => err as Error);
     const retryable = res instanceof Error || res.status === 429 || res.status >= 500;
     if (!retryable || attempt >= 6) {
       if (res instanceof Error) throw res;

@@ -34,6 +34,21 @@ describe('Polymarket anchor history builder', () => {
     expect(markets).toHaveLength(1);
   });
 
+  it('retries a page whose body stalls past the timeout', async () => {
+    let calls = 0;
+    const fakeFetch = (async () => {
+      calls++;
+      return calls === 1
+        ? new Response(new ReadableStream({ pull(c) { c.error(new DOMException('The operation timed out.', 'TimeoutError')); } }))
+        : new Response(JSON.stringify([{ markets: [{ question: 'q' }] }]));
+    }) as unknown as typeof fetch;
+
+    const markets = await closedMarkets('bitcoin', '2026-01-03', '2026-01-04', fakeFetch, 0);
+
+    expect(calls).toBe(2);
+    expect(markets).toHaveLength(1);
+  });
+
   it('queries one day per window, so no window reaches the offset cap', () => {
     expect(dayWindows('2026-02', '2026-02')).toHaveLength(28);
     expect(dayWindows('2026-02', '2026-03')[0]).toEqual(['2026-02-01', '2026-02-02']);
