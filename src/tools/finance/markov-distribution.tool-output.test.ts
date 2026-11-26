@@ -32,6 +32,8 @@ import {
   normalCDF,
   transitionGoodnessOfFit,
   markovDistributionTool,
+  getForecastLabMarkovRuntimeDefaults,
+  setForecastLabMarkovRuntimeDefaults,
   computeEnsembleSignal,
   NUM_STATES,
   STATE_INDEX,
@@ -220,6 +222,58 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data._tool).toBe('markov_distribution');
     expect(parsed.data.canonical?.diagnostics?.totalAnchors).toBeGreaterThan(0);
     expect(parsed.data.canonical?.diagnostics?.trustedAnchors).toBeGreaterThan(0);
+  });
+
+  it('ignores the recommended confidence threshold: no production path reads it', async () => {
+    // Forecast Lab can still tune recommendedConfidenceThreshold, but since 2026-11-25 nothing in the tool reads it:
+    // the score did not rank forecast accuracy. An extreme threshold must leave the output byte-identical.
+    mock.module('./polymarket.js', () => ({
+      ...realPolymarketModule,
+      fetchPolymarketMarkets: async () => [],
+      fetchPolymarketAnchorMarkets: async () => [],
+      fetchPolymarketAnchorMarketsWithQueries: async () => [],
+    }));
+    const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+    // SPY's 83 closes to 2025-03-24 (score 0.17, which used to trigger the low-confidence warning) and a seeded BTC
+    // walk that emits through the crypto model-only lane (score 0.18, which used to gate it).
+    const fixture = await Bun.file(new URL('./fixtures/backtest-prices.json', import.meta.url)).json() as {
+      tickers: Record<string, { closes: number[]; dates: string[] }>;
+    };
+    const t = fixture.tickers.SPY.dates.indexOf('2025-03-24');
+    const spy = fixture.tickers.SPY.closes.slice(t + 1 - 83, t + 1);
+    let x = 45 * 2654435761 % 4294967296;
+    const rnd = () => { x = (1664525 * x + 1013904223) % 4294967296; return x / 4294967296; };
+    const vol = 0.02 + 0.04 * rnd();
+    const btc: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + vol * (rnd() + rnd() + rnd() - 1.5) * 2 * (i > 70 ? 1.8 : 1);
+      btc.push(Math.round(p * 100) / 100);
+    }
+    // The live tool samples its intervals with Math.random: replay the same draws for both configurations.
+    const runs = async () => {
+      let seed = 7;
+      const random = spyOn(Math, 'random').mockImplementation(() => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+      try {
+        return [
+          await freshTool.func({ ticker: 'SPY', horizon: 7, currentPrice: spy[spy.length - 1], historicalPrices: spy, trajectory: false }),
+          await freshTool.func({ ticker: 'BTC-USD', horizon: 3, currentPrice: btc[btc.length - 1], historicalPrices: btc, trajectory: false }),
+        ];
+      } finally {
+        random.mockRestore();
+      }
+    };
+
+    const shipped = await runs();
+    const original = { shared: getForecastLabMarkovRuntimeDefaults('shared'), btc: getForecastLabMarkovRuntimeDefaults('btc') };
+    try {
+      setForecastLabMarkovRuntimeDefaults('shared', { ...original.shared, recommendedConfidenceThreshold: 0.99 });
+      setForecastLabMarkovRuntimeDefaults('btc', { ...original.btc, recommendedConfidenceThreshold: 0.99 });
+      expect(await runs()).toEqual(shipped);
+    } finally {
+      setForecastLabMarkovRuntimeDefaults('shared', original.shared);
+      setForecastLabMarkovRuntimeDefaults('btc', original.btc);
+    }
   });
 
   it('recovers earlier BTC terminal anchors when strict 14-day auto-fetch results are barrier-only', async () => {
@@ -3072,6 +3126,35 @@ describe('markov_distribution tool output envelope', () => {
       const parsed = JSON.parse(result);
       expect(parsed.data.canonical.diagnostics.predictionConfidence).toBeLessThan(0.22);
       expect(String(parsed.data.report)).not.toMatch(/Low confidence|accuracy drops|~55%/);
+    });
+
+    it('quotes the measured track record of its BUY/SELL call', async () => {
+      mock.module('./polymarket.js', () => ({
+        ...realPolymarketModule,
+        fetchPolymarketMarkets: async () => [],
+        fetchPolymarketAnchorMarkets: async () => [],
+      }));
+      const { markovDistributionTool: freshTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+      const { formatCallTrackRecord, lookupCallTrackRecord } = await import('./markov-distribution/call-track-record.js');
+      // 60 GLD prices: emitted through the commodity model-only lane with a BUY at 7d.
+      const prices: number[] = [];
+      let p = 200;
+      for (let i = 0; i < 60; i++) {
+        p *= 1 + Math.sin(i * 0.3) * 0.005;
+        prices.push(Math.round(p * 100) / 100);
+      }
+
+      const parsed = JSON.parse(await freshTool.func({
+        ticker: 'GLD', horizon: 7, currentPrice: prices[prices.length - 1], historicalPrices: prices,
+        polymarketMarkets: [], trajectory: false,
+      }));
+
+      const record = lookupCallTrackRecord('commodity', 7, 'BUY');
+      expect(parsed.data.status).toBe('ok');
+      expect(parsed.data.canonical.actionSignal.recommendation).toBe('BUY');
+      expect(record).not.toBeNull();
+      expect(parsed.data.canonical.diagnostics.callTrackRecord).toEqual(record);
+      expect(String(parsed.data.report)).toContain(formatCallTrackRecord(record!));
     });
 
     it('emits commodity model-only distribution despite structural break', async () => {

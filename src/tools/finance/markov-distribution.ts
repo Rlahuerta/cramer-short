@@ -119,6 +119,7 @@ import type {
   TransitionMatrix,
 } from './markov-distribution/core.js';
 import { getAssetProfile } from './markov-distribution/asset-profile.js';
+import { formatCallTrackRecord, lookupCallTrackRecord } from './markov-distribution/call-track-record.js';
 import type { AssetProfile } from './markov-distribution/asset-profile.js';
 import {
   DEFAULT_DIVERGENCE_PENALTY_SCHEDULE,
@@ -5120,6 +5121,11 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
     if (recommendationProvenanceNote) {
       decisionCard.push('', recommendationProvenanceNote);
     }
+    // The call's measured record, so its probability reads against what such calls actually did.
+    const callTrackRecord = lookupCallTrackRecord(getAssetProfile(result.ticker).type, result.horizon, sig.recommendation);
+    if (callTrackRecord) {
+      decisionCard.push('', formatCallTrackRecord(callTrackRecord));
+    }
 
     // --- Section 2: Action Plan with price levels ---
     const actionPlan = [
@@ -5393,6 +5399,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           originalStructuralBreakDivergence: m.originalStructuralBreakDivergence ?? null,
           predictionConfidence: result.predictionConfidence,
           recommendationProvenance: fullCanonical ? recommendationProvenanceNote ?? null : null,
+          callTrackRecord: fullCanonical ? callTrackRecord : null,
           decisionSurface: result.decisionSurface,
           trajectoryInterpretation: result.trajectory ? 'path_context' : null,
           calibrationMode,

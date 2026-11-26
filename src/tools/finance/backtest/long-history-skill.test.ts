@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { periodOf, skillGaps, type SkillRow } from './long-history-skill.js';
+import { buildCallTrackRecord, intervalCoverage, periodOf, skillGaps, type SkillRow } from './long-history-skill.js';
 
 const row = (rec: SkillRow['rec'], p: number, y: 0 | 1): SkillRow => ({ ticker: 'SPY', horizon: 7, t: 0, date: '2022-06-01', p, y, rec });
 
@@ -19,5 +19,36 @@ describe('periodOf', () => {
   it('splits 2021, the 2022 decline, 2023 and 2024-25', () => {
     expect(['2021-12-31', '2022-01-03', '2023-06-30', '2024-01-02', '2025-12-30'].map(periodOf))
       .toEqual(['2021', '2022', '2023', '2024-25', '2024-25']);
+  });
+});
+
+describe('buildCallTrackRecord', () => {
+  it('records, per asset type, horizon and call, how often the call was right against the share of all days that went its way', () => {
+    const at = (ticker: string, horizon: number, rec: SkillRow['rec'], y: 0 | 1): SkillRow => ({ ticker, horizon, t: 0, date: '2023-01-02', p: 0.5, y, rec });
+    const rows = [
+      // BUY right 2 of 3, SELL right 0 of 1. QQQ shares the etf type and its HOLD step only enters the base rate:
+      // 5 etf steps at 7d, 3 up and 2 down.
+      at('SPY', 7, 'BUY', 1), at('SPY', 7, 'BUY', 1), at('SPY', 7, 'BUY', 0), at('SPY', 7, 'SELL', 1),
+      at('QQQ', 7, 'HOLD', 0),
+    ];
+    const data = buildCallTrackRecord(rows, () => 'etf');
+
+    expect(data.horizons).toEqual([7]);
+    expect(data.measuredOn).toEqual({ etf: ['QQQ', 'SPY'] });
+    expect(data.records['etf|7|BUY']).toEqual({ calls: 3, hitRate: 2 / 3, baseRate: 3 / 5 });
+    expect(data.records['etf|7|SELL']).toEqual({ calls: 1, hitRate: 0, baseRate: 2 / 5 });
+  });
+});
+
+describe('intervalCoverage', () => {
+  it('is the share of realized prices inside each central interval, over rows that carry intervals', () => {
+    const base = { ticker: 'SPY', horizon: 7, t: 0, date: '2022-06-01', p: 0.5, y: 1 as const, rec: 'HOLD' as const };
+    const rows: SkillRow[] = [
+      { ...base, realized: 100, lo90: 95, hi90: 105, lo95: 94, hi95: 106, lo99: 90, hi99: 110 },  // inside all
+      { ...base, realized: 107, lo90: 95, hi90: 105, lo95: 94, hi95: 106, lo99: 90, hi99: 110 },  // inside 99 only
+      { ...base, realized: 95, lo90: 95, hi90: 105, lo95: 94, hi95: 106, lo99: 90, hi99: 110 },   // on the 90 edge: inside
+      base,                                                                                       // no interval: ignored
+    ];
+    expect(intervalCoverage(rows)).toEqual({ n: 3, c90: 2 / 3, c95: 2 / 3, c99: 1 });
   });
 });
