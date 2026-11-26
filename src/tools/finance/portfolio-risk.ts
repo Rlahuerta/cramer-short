@@ -4,6 +4,7 @@ import { api } from './api.js';
 import { formatToolResult } from '../types.js';
 import { hasEnv } from '../../utils/env.js';
 import { buildPortfolioRiskReport } from '../../utils/finance/portfolio-stats.js';
+import { fetchHistoricalPrices } from './markov-distribution.js';
 
 export const PORTFOLIO_RISK_DESCRIPTION = `
 Computes portfolio risk metrics — VaR, CVaR (Expected Shortfall), Sharpe ratio,
@@ -156,6 +157,14 @@ export function createPortfolioRiskTool(options: PortfolioRiskToolOptions = {}):
             }
             pricesByTicker[ticker] = prices;
           } catch (err) {
+            // Free Financial Datasets plans refuse price history; fall back the way the Markov tool does
+            // (Binance, BitMEX, then Yahoo). ponytail: Yahoo's fallback range tops out at 1y.
+            const fallback = await fetchHistoricalPrices(ticker, Math.ceil(effectiveInput.lookback_days * 1.45))
+              .catch(() => [] as number[]);
+            if (fallback.length >= 20) {
+              pricesByTicker[ticker] = fallback;
+              return;
+            }
             errors.push(
               `${ticker}: price fetch failed — ${err instanceof Error ? err.message : String(err)}`,
             );

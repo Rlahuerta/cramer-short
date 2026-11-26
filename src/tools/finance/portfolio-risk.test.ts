@@ -103,6 +103,36 @@ describe('portfolioRiskTool', () => {
     expect(parsed.data.error).toBeDefined();
   });
 
+  test('falls back to Yahoo closes when the Financial Datasets plan has no price history', async () => {
+    apiSpy.mockRejectedValue(new Error(
+      'FINANCIAL_DATASETS_PREMIUM_REQUIRED: This endpoint requires a paid Financial Datasets plan.',
+    ));
+    const yahooUrls: string[] = [];
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0]) => {
+        const url = input.toString();
+        if (!url.includes('query1.finance.yahoo.com')) return new Response('unavailable', { status: 500 });
+        yahooUrls.push(url);
+        const close = makePrices(250, url.includes('/MSFT') ? 300 : 100).map((p, i) => p + (i % 3));
+        return new Response(JSON.stringify({ chart: { result: [{ indicators: { quote: [{ close }] } }] } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+    try {
+      const parsed = JSON.parse(await portfolioRiskTool.invoke({ tickers: ['AAPL', 'MSFT'] }));
+      expect(parsed.data.error).toBeUndefined();
+      expect(parsed.data.warnings).toBeUndefined();
+      expect(yahooUrls.some((u) => u.includes('/AAPL'))).toBe(true);
+      expect(yahooUrls.some((u) => u.includes('/MSFT'))).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   test('includes source URLs from price API calls', async () => {
     apiSpy.mockResolvedValue({
       data: { prices: makePrices(30).map((c) => ({ close: c })) },
