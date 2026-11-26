@@ -94,6 +94,12 @@ describe('orientationWeights (+1 = YES means a higher rate, hotter inflation, a 
       'Will the US add between 50-100k jobs in March?',
       'Will the US add more than 250k jobs in March?',
     ])).toEqual([-1, -1, 1, 1, -1, 1]);
+    expect(orientationWeights('jobs', [
+      'Will the US add between 0 and 25k jobs in September?',
+      'Will the US loose jobs in September?',
+      'Will the US add more than 125k jobs in September?',
+      'Will the US add between 100k and 125k jobs in September?',
+    ])).toEqual([-1, -1, 1, 1]);
   });
 
   it('reverses unemployment, where a higher value is a weaker labour market', () => {
@@ -108,6 +114,7 @@ describe('orientationWeights (+1 = YES means a higher rate, hotter inflation, a 
   it('counts an ETF approval as +1 and a delay as -1', () => {
     expect(orientationWeights('crypto_etf', ['Bitcoin ETF approved by Jan 15?'])).toEqual([1]);
     expect(orientationWeights('crypto_etf', ['Will SEC delay Bitcoin ETF decision?'])).toEqual([-1]);
+    expect(orientationWeights('crypto_etf', ['SEC approves first spot Bitcoin ETF on Jan 8?', 'SEC to NOT approve spot Bitcoin ETF by Jan 10?'])).toEqual([1, -1]);
   });
 });
 

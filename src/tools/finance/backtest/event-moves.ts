@@ -37,8 +37,12 @@ const THRESHOLD_DOWN = /less than|\bunder\b|\bbelow\b|</i;
 const BAND = /or less|or more|[≤≥]|between|\d\s*k?\s*-\s*\d/i;
 const isThreshold = (q: string) => (THRESHOLD_UP.test(q) || THRESHOLD_DOWN.test(q)) && !BAND.test(q);
 
-/** Mean of the numbers in a question, years left out ("between 100-150k" -> 125, "the March 2026 rate be 4.0%" -> 4). */
+/**
+ * Mean of the numbers in a question, years left out ("between 100-150k" -> 125, "the March 2026 rate be 4.0%" -> 4);
+ * "lose jobs" (spelled "loose" on Polymarket) is the band below zero.
+ */
 function questionValue(q: string): number {
+  if (/\blo+se jobs\b/i.test(q)) return 0;
   const nums = [...q.matchAll(/\d+(?:\.\d+)?/g)].map(m => Number(m[0])).filter(n => !(Number.isInteger(n) && n >= 1900 && n <= 2100));
   return nums.reduce((s, n) => s + n, 0) / nums.length;
 }
@@ -57,7 +61,7 @@ function fedWeight(q: string): number {
  * learns what each direction means for each asset.
  */
 export function orientationWeights(group: EventGroup, questions: readonly string[]): number[] {
-  if (group === 'crypto_etf') return questions.map(q => (/delay|reject|den(?:y|ies|ied)/i.test(q) ? -1 : 1));
+  if (group === 'crypto_etf') return questions.map(q => (/delay|reject|den(?:y|ies|ied)|\bnot\b/i.test(q) ? -1 : 1));
   if (group === 'fed') return questions.map(fedWeight);
   const labour = (q: string) => (group === 'jobs' && /unemployment/i.test(q) ? -1 : 1);
   if (questions.every(isThreshold)) return questions.map(q => (THRESHOLD_UP.test(q) ? 1 : -1) * labour(q));
