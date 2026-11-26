@@ -111,9 +111,8 @@ export const getOptionsChainTool = new DynamicStructuredTool({
         return formatToolResult(
           {
             error: res.status === 401 || res.status === 403
-              ? `Yahoo Finance refused the options request for ${ticker} (HTTP ${res.status}); its options endpoint ` +
-                'needs a signed-in session, so no ticker has options data right now. This says nothing about ' +
-                `whether ${ticker} has listed options.`
+              ? `Yahoo Finance refused the options request for ${ticker} (HTTP ${res.status}) even with a fresh ` +
+                `session. This says nothing about whether ${ticker} has listed options.`
               : `Options data unavailable for ${ticker} (HTTP ${res.status}). The ticker may not have listed options, or Yahoo Finance may be temporarily unavailable.`,
           },
           [],
@@ -123,7 +122,8 @@ export const getOptionsChainTool = new DynamicStructuredTool({
     } catch (err) {
       return formatToolResult(
         {
-          error: `Failed to fetch options for ${ticker}: ${err instanceof Error ? err.message : String(err)}. The ticker may not have listed options.`,
+          // A thrown request (network, timeout, refused session) says nothing about whether the ticker lists options.
+          error: `Failed to fetch options for ${ticker}: ${err instanceof Error ? err.message : String(err)}.`,
         },
         [],
       );

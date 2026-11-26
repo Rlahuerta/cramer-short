@@ -48,7 +48,7 @@ async function acquireCrumb(): Promise<CrumbCache> {
     headers: { 'User-Agent': UA, Accept: '*/*', Cookie: cookie },
   });
   if (!crumbRes.ok) {
-    throw new Error(`Yahoo Finance crumb fetch failed: ${crumbRes.status}`);
+    throw new Error(`Yahoo Finance refused the session (crumb) request (HTTP ${crumbRes.status})`);
   }
   const crumb = (await crumbRes.text()).trim();
   if (!crumb) throw new Error('Yahoo Finance returned empty crumb');
