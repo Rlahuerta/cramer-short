@@ -382,6 +382,36 @@ describe('schedule command', () => {
     expect(seenConfigs).toEqual([{ model: 'ollama:deepseek-v4.1-flash:cloud' }]);
   });
 
+  it('lets a job choose its own model over the settings model', async () => {
+    writeSchedules([
+      {
+        id: 'btc-capture',
+        description: 'BTC capture',
+        query: 'BTC forecast for the next 7 days: arbitrator verdict and direction',
+        model: 'ollama:deepseek-v4.1-flash:cloud',
+        outputFile: '~/.cramer-short/reports/{date}-btc.md',
+      },
+    ]);
+    const seenConfigs: Array<{ model: string }> = [];
+    const { options } = makeOptions({
+      createAgent: async (config) => {
+        seenConfigs.push(config as { model: string });
+        return { run: (query) => fakeAgentRun(query, []) };
+      },
+    });
+    const getSettingSpy = spyOn(configModule, 'getSetting').mockImplementation(
+      <T>(key: string, defaultValue: T): T =>
+        (key === 'modelId' ? 'ollama:glm-5.2:cloud' : defaultValue) as T,
+    );
+    try {
+      await runScheduleCommand(['run', 'btc-capture'], options);
+    } finally {
+      getSettingSpy.mockRestore();
+    }
+
+    expect(seenConfigs).toEqual([{ model: 'ollama:deepseek-v4.1-flash:cloud' }]);
+  });
+
   it('dispatches forecast_lab jobs to runForecastLab in dry-run mode by default', async () => {
     writeSchedules([
       {

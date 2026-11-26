@@ -42,6 +42,8 @@ export interface AgentScheduleJob {
   description: string;
   /** Natural-language research query / skill invocation sent to the agent */
   query: string;
+  /** Model for this job; defaults to the settings model. */
+  model?: string;
   /**
    * Output file path. Supports `{date}` which is replaced with today's ISO date
    * (YYYY-MM-DD). Paths starting with `~` are expanded to the home directory.
@@ -261,7 +263,7 @@ async function runAgentJob(job: AgentScheduleJob, options: ScheduleCommandOption
   if (outDir) await mkdir(outDir, { recursive: true });
 
   const provider = getSetting('provider', DEFAULT_PROVIDER);
-  const model = getSetting('modelId', null) ?? getDefaultModelForProvider(provider) ?? DEFAULT_MODEL;
+  const model = job.model ?? getSetting('modelId', null) ?? getDefaultModelForProvider(provider) ?? DEFAULT_MODEL;
   const agent = await createAgent({ model });
   let answer = '';
 
