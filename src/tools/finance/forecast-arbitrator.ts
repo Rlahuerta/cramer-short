@@ -807,6 +807,7 @@ export function createForecastArbitratorTool(
       recordReplayBundleCapture(createArbiterReplayBundleFromArbitratorInput({
         capturedAt,
         input,
+        result,
       }));
       return formatToolResult({ result });
     },

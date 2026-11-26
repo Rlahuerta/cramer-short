@@ -23,6 +23,7 @@ import { describe, it, expect, mock, afterEach, beforeEach, setSystemTime, spyOn
 import { useNoNetwork } from '../../utils/test-no-network.js';
 import { integrationIt } from '../../utils/test-guards.js';
 import { MS_PER_DAY } from '../../utils/time.js';
+import * as rndIntegration from './rnd-integration.js';
 import {
   classifyRegimeState,
   computeAdaptiveThresholds,
@@ -1104,6 +1105,30 @@ describe('computeMarkovDistribution (integration)', () => {
       ],
     });
     expect(result.metadata.polymarketAnchors).toBe(2); // both anchors are non-crypto with volume — trusted
+  });
+
+  it('reports the mixing weight of the transition matrix the blend used, after the Polymarket nudge', async () => {
+    // A rank-one matrix has second eigenvalue 0, so if the blend used it the Markov mixing weight is ~0.
+    const third = 1 / 3;
+    const nudge = spyOn(rndIntegration, 'nudgeTransitionMatrix').mockReturnValue([[third, third, third], [third, third, third], [third, third, third]]);
+    try {
+      const oldTime = FIXED_NOW_MS - 10 * MS_PER_DAY;
+      const result = await computeMarkovDistribution({
+        ticker: 'TEST',
+        horizon: 10,
+        currentPrice: 118,
+        historicalPrices: prices,
+        polymarketMarkets: [
+          { question: 'Will TEST exceed $120?', probability: 0.6, createdAt: oldTime, volume: 5000 },
+          { question: 'Will TEST exceed $130?', probability: 0.4, createdAt: oldTime, volume: 5000 },
+        ],
+      });
+      expect(nudge).toHaveBeenCalled();
+      expect(result.metadata.secondEigenvalue).toBeCloseTo(0, 6);
+      expect(result.metadata.mixingTimeWeight).toBeLessThan(1e-6);
+    } finally {
+      nudge.mockRestore();
+    }
   });
 
   it('distribution is monotonically non-increasing in price', async () => {

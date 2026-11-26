@@ -15,6 +15,10 @@ import { matchesTickerAndOptionalHorizon, parseToolCallData } from './types.js';
 const TRADING_DAYS_PER_WEEK = 5;
 const TRADING_DAYS_PER_MONTH = 21;
 const TRADING_DAYS_PER_QUARTER = TRADING_DAYS_PER_MONTH * 3;
+// Crypto trades every day: its daily bars, like Polymarket's resolution dates, count calendar days.
+const CALENDAR_DAYS_PER_WEEK = 7;
+const CALENDAR_DAYS_PER_MONTH = 30;
+const CALENDAR_DAYS_PER_QUARTER = 91;
 const QUARTER_END_MONTHS: Record<1 | 2 | 3 | 4, number> = {
   1: 3,
   2: 6,
@@ -54,7 +58,7 @@ function startOfUtcDay(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
 
-function countWeekdaysUntil(targetDate: Date, referenceDate: Date): number | null {
+function countWeekdaysUntil(targetDate: Date, referenceDate: Date, countWeekends = false): number | null {
   const start = startOfUtcDay(referenceDate);
   const target = startOfUtcDay(targetDate);
   if (target <= start) return null;
@@ -64,13 +68,13 @@ function countWeekdaysUntil(targetDate: Date, referenceDate: Date): number | nul
   while (cursor < target) {
     cursor.setUTCDate(cursor.getUTCDate() + 1);
     const weekday = cursor.getUTCDay();
-    if (weekday !== 0 && weekday !== 6) count++;
+    if (countWeekends || (weekday !== 0 && weekday !== 6)) count++;
   }
 
   return count > 0 ? count : null;
 }
 
-function inferQuarterEndTradingDays(query: string, referenceDate: Date): number | null {
+function inferQuarterEndTradingDays(query: string, referenceDate: Date, countWeekends: boolean): number | null {
   const quarterEndMatch = query.match(/\b(?:by\s+)?end\s+of\s+q([1-4])(?:\s+(\d{4}))?\b/i)
     ?? query.match(/\bthrough\s+q([1-4])(?:\s+(\d{4}))?\b/i);
   if (!quarterEndMatch) return null;
@@ -94,11 +98,15 @@ function inferQuarterEndTradingDays(query: string, referenceDate: Date): number 
   if (targetDate.getTime() === start.getTime()) return 1;
   if (targetDate < start) return null;
 
-  return countWeekdaysUntil(targetDate, referenceDate);
+  return countWeekdaysUntil(targetDate, referenceDate, countWeekends);
 }
 
 export function inferDistributionHorizon(query: string, referenceDate: Date = new Date()): number | null {
   const lower = query.toLowerCase();
+  const calendar = detectAssetType(query).type === 'crypto';
+  const perWeek = calendar ? CALENDAR_DAYS_PER_WEEK : TRADING_DAYS_PER_WEEK;
+  const perMonth = calendar ? CALENDAR_DAYS_PER_MONTH : TRADING_DAYS_PER_MONTH;
+  const perQuarter = calendar ? CALENDAR_DAYS_PER_QUARTER : TRADING_DAYS_PER_QUARTER;
 
   const tradingDaysMatch = lower.match(/(\d+)\s+trading\s+days?/i);
   if (tradingDaysMatch) return parseInt(tradingDaysMatch[1]!, 10);
@@ -115,18 +123,18 @@ export function inferDistributionHorizon(query: string, referenceDate: Date = ne
   }
 
   const weekMatch = lower.match(/(\d+)[-\s]weeks?\b/i);
-  if (weekMatch) return parseInt(weekMatch[1]!, 10) * TRADING_DAYS_PER_WEEK;
+  if (weekMatch) return parseInt(weekMatch[1]!, 10) * perWeek;
 
   const monthMatch = lower.match(/(\d+)[-\s]months?\b/i);
-  if (monthMatch) return parseInt(monthMatch[1]!, 10) * TRADING_DAYS_PER_MONTH;
+  if (monthMatch) return parseInt(monthMatch[1]!, 10) * perMonth;
 
   const quarterMatch = lower.match(/(\d+)[-\s]quarters?\b/i);
-  if (quarterMatch) return parseInt(quarterMatch[1]!, 10) * TRADING_DAYS_PER_QUARTER;
+  if (quarterMatch) return parseInt(quarterMatch[1]!, 10) * perQuarter;
 
-  if (/\bnext\s+month\b/i.test(lower)) return TRADING_DAYS_PER_MONTH;
-  if (/\bnext\s+quarter\b/i.test(lower)) return TRADING_DAYS_PER_QUARTER;
+  if (/\bnext\s+month\b/i.test(lower)) return perMonth;
+  if (/\bnext\s+quarter\b/i.test(lower)) return perQuarter;
 
-  const quarterEndTradingDays = inferQuarterEndTradingDays(query, referenceDate);
+  const quarterEndTradingDays = inferQuarterEndTradingDays(query, referenceDate, calendar);
   if (quarterEndTradingDays !== null) return quarterEndTradingDays;
 
   return null;
@@ -138,7 +146,7 @@ export function inferBtcShortHorizonForecastHorizon(query: string): number | nul
 
   const horizon = inferDistributionHorizon(query);
   if (horizon !== null) return horizon;
-  if (/\bnext\s+week\b/i.test(query)) return TRADING_DAYS_PER_WEEK;
+  if (/\bnext\s+week\b/i.test(query)) return CALENDAR_DAYS_PER_WEEK;
 
   return null;
 }
@@ -230,7 +238,9 @@ export function shouldInjectBtcShortHorizonMixedEvidencePrompt(
   if ((ticker !== 'BTC' && ticker !== 'BTC-USD') || horizon === null || horizon > 14) return false;
 
   const markovBullish = /"_tool"\s*:\s*"markov_distribution"[\s\S]*?"status"\s*:\s*"ok"[\s\S]*?"expectedReturn"\s*:\s*(0\.0*[1-9]\d*|0\.[1-9]\d*|[1-9]\d*(?:\.\d+)?)/.test(fullToolResults);
-  const polymarketFlatOrBearish = /forecast return\s*:\s*-\d+(?:\.\d+)?%/i.test(fullToolResults)
+  const rawPolymarketReturn = fullToolResults.match(/"rawForecastReturn"\s*:\s*(-?\d+(?:\.\d+)?(?:e-?\d+)?)/i);
+  const polymarketFlatOrBearish = (rawPolymarketReturn !== null && Number.parseFloat(rawPolymarketReturn[1]!) <= 0)
+    || /forecast return\s*:\s*-\d+(?:\.\d+)?%/i.test(fullToolResults)
     || /forecast return\s*:\s*[+]?(?:0|0\.0+)%/i.test(fullToolResults);
 
   return markovBullish && polymarketFlatOrBearish;

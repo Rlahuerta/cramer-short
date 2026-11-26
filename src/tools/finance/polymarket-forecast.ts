@@ -54,6 +54,7 @@ import {
 import {
   appendReplayCachePolymarketCapture,
   createRawPolymarketReplayRow,
+  DEFAULT_ARBITER_REPLAY_LABELED_CACHE_BUNDLES_PATH,
   freezePolymarketReplayBlock,
   readArbiterReplayBundles,
   type ArbiterReplayBundle,
@@ -1345,7 +1346,9 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
   const kalshiSignalFetcher = dependencies.fetchKalshiVolSignals
     ?? (hasEnv('KALSHI_API_KEY') ? fetchKalshiVolSignals : undefined);
   const readRecords = dependencies.readRecords ?? readSnapshotRecords;
-  const readReplayBundles = dependencies.readReplayBundles ?? readArbiterReplayBundles;
+  // Labeled bundles (outcomes attached) are what the calibrator fits on; the label pipeline promotes them here.
+  const readReplayBundles = dependencies.readReplayBundles
+    ?? (() => readArbiterReplayBundles(DEFAULT_ARBITER_REPLAY_LABELED_CACHE_BUNDLES_PATH));
   const recordReplayPolymarketCapture = dependencies.recordReplayPolymarketCapture
     ?? ((capture: {
       rawRow: RawPolymarketReplayRow;
@@ -1947,6 +1950,11 @@ export function createPolymarketForecastTool(dependencies: ForecastToolDependenc
           crossPlatformAdjustment,
           qualityScore: adjustedQualityScore,
           qualityGrade: adjustedQualityGrade,
+          // Full questions for the arbitrator: the printed theme table truncates them. Most liquid first.
+          markets: [...rawMarkets]
+            .sort((a, b) => b.volume24h - a.volume24h)
+            .slice(0, 5)
+            .map((market) => ({ question: market.question, probability: market.probability })),
           ...(liveCalibrationApplied ? { forecastReturn: result.forecastReturn } : {}),
         });
       } catch (error) {

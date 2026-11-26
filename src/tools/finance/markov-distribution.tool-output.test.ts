@@ -808,6 +808,48 @@ describe('markov_distribution tool output envelope', () => {
     expect(parsed.data.report).not.toContain('commodity bypass');
   });
 
+  it('reports the half weight of the low-trust anchors a crypto bypass run still blends, and only those that blend', async () => {
+    const { markovDistributionTool: emitTool } = await import(`./markov-distribution.js?t=${nextTestId('module')}`);
+
+    const prices: number[] = [];
+    let p = 65000;
+    for (let i = 0; i < 120; i++) {
+      p *= 1 + Math.sin(i * 0.12) * 0.004;
+      prices.push(Math.round(p * 100) / 100);
+    }
+    const currentPrice = prices[prices.length - 1];
+    // Young markets resolving 20 days out (not near the 7-day target) are low trust; the zero-volume one has trust
+    // weight 0 and does not blend.
+    const endDate = new Date(FIXED_TEST_NOW_MS + 20 * 86_400_000);
+    const onDate = endDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
+    const market = (strike: number, probability: number, volume: number) => ({
+      question: `Will the price of Bitcoin be above $${strike.toLocaleString('en-US')} on ${onDate}?`,
+      probability, volume, createdAt: FIXED_TEST_NOW_MS - 60 * 60 * 1000, endDate: endDate.toISOString(),
+    });
+
+    const result = await emitTool.func({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets: [
+        market(Math.round(currentPrice * 0.98 / 1000) * 1000, 0.7, 50_000),
+        market(Math.round(currentPrice * 1.02 / 1000) * 1000, 0.3, 0),
+      ],
+      trajectory: false,
+    });
+
+    const parsed = JSON.parse(result);
+    const diagnostics = parsed.data.canonical.diagnostics;
+    expect(parsed.data.status).toBe('ok');
+    expect(diagnostics.anchorBypassApplied).toBe(true);
+    expect(diagnostics.anchorInspection.lowTrustAnchors).toBe(2);
+    expect(diagnostics.anchorInspection.blendedLowTrustAnchors).toBe(1);
+    expect(diagnostics.anchorWeight).toBeCloseTo(0.5 * (1 - diagnostics.mixingTimeWeight), 10);
+    expect(diagnostics.markovWeight).toBeCloseTo(1 - diagnostics.anchorWeight, 10);
+    expect(parsed.data.report).toContain('Calibration: model-only (crypto bypass, no trusted anchors; 1 low-trust anchor blended at its strike)');
+  });
+
   it('BTC break-threshold override can suppress a detected structural break', async () => {
     const prices = transitionBreakPrices(65000, 0.04);
 

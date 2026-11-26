@@ -111,7 +111,12 @@ export interface ParsedPricePayload {
 }
 
 export interface ParsedPolymarketForecastPayload {
+  /** Polymarket-only forecast return (no Markov input); what the arbitrator should weigh against Markov. */
+  rawForecastReturn?: unknown;
+  /** Emitted only when the live calibrator ran; equals the Markov-blended return. */
   forecastReturn?: unknown;
+  /** Selected markets with their full questions (the printed theme table truncates them). */
+  markets?: unknown;
   result?: unknown;
 }
 

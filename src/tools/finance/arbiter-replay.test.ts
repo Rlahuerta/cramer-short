@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -26,6 +26,7 @@ import {
   type RawPolymarketReplayRow,
   type RawWhaleReplayRow,
 } from './arbiter-replay.js';
+import { arbitrateForecast } from './forecast-arbitrator.js';
 
 const tempDirs: string[] = [];
 
@@ -402,6 +403,27 @@ describe('ArbiterReplayBundle persistence', () => {
     expect(readRawWhaleReplayRows(paths.whaleRawPath)).toHaveLength(1);
     expect(readArbiterReplayBundles(paths.bundlePath)).toHaveLength(2);
   });
+
+  it('does not write into the default runtime cache from a test run', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'arbiter-replay-cwd-'));
+    tempDirs.push(dir);
+    const cwd = process.cwd();
+    process.chdir(dir); // the default cache paths are relative to the working directory
+    try {
+      appendReplayCacheBundle(validBundle);
+      appendReplayCachePolymarketCapture({
+        rawRow: { capturedAt: '2026-04-30T12:00:00.000Z', ticker: 'BTC', horizonDays: 7, currentPrice: 68000, querySet: [], selectedMarketIds: [], candidates: [] },
+        polymarket: validBundle.polymarket!,
+      });
+      appendReplayCacheWhaleCapture({
+        capturedAt: '2026-04-30T12:00:00.000Z', ticker: 'BTC', source: 'whale-alert',
+        observationWindowStart: '2026-04-30T10:00:00.000Z', observationWindowEnd: '2026-04-30T12:00:00.000Z', transactions: [],
+      });
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(existsSync(join(dir, '.cramer-short'))).toBe(false);
+  });
 });
 
 describe('Phase 2 Polymarket replay helpers', () => {
@@ -657,6 +679,31 @@ describe('Phase 3 whale replay normalization', () => {
         },
       ],
     });
+  });
+});
+
+describe('arbiter verdict capture', () => {
+  it('records the verdict and scores with the inputs, and keeps them through a JSON round trip', () => {
+    const input = {
+      ticker: 'BTC',
+      horizon_days: 7,
+      current_price: 68000,
+      markov: { forecast_return: 0.02, confidence: 0.6 },
+      polymarket: { forecast_return: -0.012, quality_score: 70, markets: [{ question: 'Will Bitcoin be above $70,000 on May 7?', probability: 0.4 }] },
+    };
+    const result = arbitrateForecast(input);
+    const bundle = createArbiterReplayBundleFromArbitratorInput({ capturedAt: '2026-04-30T12:00:00.000Z', input, result });
+
+    expect(bundle.arbitration).toEqual({
+      verdict: result.verdict,
+      preferredDirection: result.preferredDirection,
+      confidence: result.confidence,
+      shouldEnterNow: result.shouldEnterNow,
+      policyLevel: result.policy.level,
+      longScore: result.leverageAssessment.long.riskAdjustedScore,
+      shortScore: result.leverageAssessment.short.riskAdjustedScore,
+    });
+    expect(parseArbiterReplayBundleLine(JSON.stringify(bundle))?.arbitration).toEqual(bundle.arbitration);
   });
 });
 

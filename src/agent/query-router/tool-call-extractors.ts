@@ -404,14 +404,16 @@ export function extractPolymarketForecastReturnForQuery(query: string, toolCalls
     const payload = narrowObj<ParsedPolymarketForecastPayload>(data);
     if (!payload) continue;
 
-    const directForecastReturn = payload.forecastReturn;
-    if (typeof directForecastReturn === 'number' && Number.isFinite(directForecastReturn)) {
-      return directForecastReturn;
+    // The Polymarket-only return: the blended one already contains the Markov return, so comparing it with Markov
+    // would count Markov twice.
+    for (const value of [payload.rawForecastReturn, payload.forecastReturn]) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
     }
 
     const resultText = payload.result;
     if (typeof resultText !== 'string') continue;
-    const match = resultText.match(/(?:forecast return|expected return)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)%/i);
+    const match = resultText.match(/Raw Polymarket forecast:[^(\n]*\(\s*([+-]?\d+(?:\.\d+)?)%\)/i)
+      ?? resultText.match(/(?:forecast return|expected return)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)%/i);
     if (!match) continue;
     const parsedPct = Number.parseFloat(match[1]!);
     if (Number.isFinite(parsedPct)) return parsedPct / 100;
@@ -436,6 +438,18 @@ export function extractPolymarketArbiterEvidence(query: string, toolCalls: ToolC
     const forecastReturn = extractPolymarketForecastReturnForQuery(query, toolCalls);
     if (forecastReturn !== null) evidence.forecast_return = forecastReturn;
 
+    const structuredMarkets = Array.isArray(data['markets'])
+      ? (data['markets'] as unknown[]).flatMap((m) => {
+        const market = narrowObj<{ question?: unknown; probability?: unknown }>(m);
+        if (!market || typeof market.question !== 'string') return [];
+        return [{
+          question: market.question,
+          ...(typeof market.probability === 'number' && Number.isFinite(market.probability) ? { probability: market.probability } : {}),
+        }];
+      }).slice(0, 5)
+      : [];
+    if (structuredMarkets.length > 0) evidence.markets = structuredMarkets;
+
     const resultText = data['result'];
     if (typeof resultText === 'string') {
       const scoreMatch = resultText.match(/Grade:\s*[A-Z][^(]*\((\d+)\/100\)/i);
@@ -452,7 +466,7 @@ export function extractPolymarketArbiterEvidence(query: string, toolCalls: ToolC
         const probability = Number.parseInt(marketMatch[2]!, 10) / 100;
         if (question) markets.push({ question, probability });
       }
-      if (markets.length > 0) evidence.markets = markets;
+      if (markets.length > 0 && !evidence.markets) evidence.markets = markets;
       evidence.summary = resultText.slice(0, 600);
     }
 
