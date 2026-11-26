@@ -841,6 +841,8 @@ export interface AnchorInspectionDiagnostic {
   terminalThresholdMatches: number;
   trustedAnchors: number;
   lowTrustAnchors: number;
+  /** Low-trust anchors that blend at their strikes; one graded to trust weight 0 (zero volume) does not. */
+  blendedLowTrustAnchors: number;
   excludedBarrierMarkets: number;
   excludedNonTerminalMarkets: number;
   invalidThresholdMarkets: number;
@@ -1193,6 +1195,7 @@ function summarizeAnchorInspection(
     terminalThresholdMatches: accepted.length,
     trustedAnchors: finalAnchors.filter((anchor) => anchor.trustScore === 'high').length,
     lowTrustAnchors: finalAnchors.filter((anchor) => anchor.trustScore === 'low').length,
+    blendedLowTrustAnchors: finalAnchors.filter((anchor) => anchor.trustScore === 'low' && anchor.trustWeight !== 0).length,
     excludedBarrierMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'barrier_pattern').length,
     excludedNonTerminalMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'no_terminal_threshold_match').length,
     invalidThresholdMarkets: excluded.filter((inspection) => inspection.exclusionReason === 'invalid_threshold').length,
@@ -3670,10 +3673,6 @@ export async function computeMarkovDistribution(params: {
     { ticker, horizonDays: horizon, referenceTimeMs: params.referenceTimeMs },
   );
 
-  // --- Spectral gap ---
-  const rho = secondLargestEigenvalue(P);
-  const mixWeight = computeMixingWeight(rho, horizon);
-
   // --- Tier 1b: Widen CI when structural break detected ---
   const ciWidthMultiplier = breakResult.detected ? 1.5 : 1.0;
 
@@ -4110,6 +4109,9 @@ export async function computeMarkovDistribution(params: {
     : undefined;
   const effectiveMixture = rndMixture ?? softBlendedMixture ?? mixture;
   const effectiveP = nudgedP ?? P;
+  // Spectral gap of the matrix the anchor blend uses (after any Polymarket nudge), so the reported mix is the applied one.
+  const rho = secondLargestEigenvalue(effectiveP);
+  const mixWeight = computeMixingWeight(rho, horizon);
   const baseForecastStateWeights = computeTerminalStateWeights(
     horizon,
     effectiveP,
@@ -4177,7 +4179,7 @@ export async function computeMarkovDistribution(params: {
     ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
     : undefined;
   const rawDistribution = interpolateDistribution(
-    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
+    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, rho,
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     horizonStudentTNu(assetProfile.studentTNu, horizon), regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, randomState, FORECAST_DRIFT_SHRINK,
@@ -4294,7 +4296,7 @@ export async function computeMarkovDistribution(params: {
   // stays on that surface; intervals and P(up) read `distribution`. Same grid as
   // rawDistribution, so it borrows that Monte Carlo CI band instead of sampling its own.
   const legacyRawDistribution = interpolateDistribution(
-    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, secondLargestEigenvalue(effectiveP),
+    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, rho,
     20, 0, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, undefined, FORECAST_DRIFT_SHRINK,
@@ -5100,6 +5102,10 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       ? 'context_only'
       : commodityModelOnly || cryptoModelOnly ? 'model_only' : 'anchored';
     const anchorBypassApplied = commodityModelOnly || cryptoModelOnly;
+    // The weights the blend applied: a bypass has no trusted anchors, but low-trust ones still blend at half weight.
+    const anchorWeight = !anchorBypassApplied
+      ? 1 - m.mixingTimeWeight
+      : m.anchorInspection.blendedLowTrustAnchors > 0 ? 0.5 * (1 - m.mixingTimeWeight) : 0;
 
     // --- Section 1: Decision Card (FIRST — most important) ---
     const decisionCard = [
@@ -5199,7 +5205,7 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       markovWeight: m.mixingTimeWeight,
       anchorWeight: 1 - m.mixingTimeWeight,
       trustedAnchors: m.polymarketAnchors,
-      lowTrustAnchors: m.anchorInspection.lowTrustAnchors,
+      lowTrustAnchors: m.anchorInspection.blendedLowTrustAnchors,
     });
     const header = [
       '',
@@ -5385,8 +5391,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
           regimeState: m.regimeState,
           historicalDays: m.historicalDays,
           mixingTimeWeight: m.mixingTimeWeight,
-          markovWeight: anchorBypassApplied ? 1 : m.mixingTimeWeight,
-          anchorWeight: anchorBypassApplied ? 0 : 1 - m.mixingTimeWeight,
+          markovWeight: anchorBypassApplied ? 1 - anchorWeight : m.mixingTimeWeight,
+          anchorWeight,
           outOfSampleR2: m.outOfSampleR2,
           structuralBreakDetected: m.structuralBreakDetected,
           structuralBreakDivergence: m.structuralBreakDivergence,
