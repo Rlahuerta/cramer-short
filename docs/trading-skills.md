@@ -93,7 +93,7 @@ Use the swing-trade-setup skill for SPY
 
 **Flags:**
 - ✓ Volume drying up on pullback (healthy, no distribution)
-- Markov: BUY (P(up) 0.64); track record for ETFs at 14d: BUY calls right 65% of the time, the price rose on 64% of all days (no edge over the market)
+- Markov: BUY (P(up) 0.64); track record for ETFs at 14d: BUY calls right 64% of the time, the price rose on 64% of all days (no edge over the market)
 ```
 
 #### Setup with Horizon Specification

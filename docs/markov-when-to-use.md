@@ -9,7 +9,7 @@
 ## Quick Answer
 
 **The model has no measured directional edge.** Over 2021–2025 its BUY/SELL calls were right **56.5%** of the time,
-**3.0pp less** than always calling "up" on the same days (59.5%, 95% CI of the gap [−3.5, −2.5]pp). No ticker and no
+**3.0pp less** than always calling "up" on the same days (59.5%, 95% CI of the gap [−3.6, −2.5]pp). No ticker and no
 horizon from 5 to 30 days beat always calling "up", and none beat a coin flip on Brier score. Because the model calls
 "up" most of the time, its hit rate tracks the market: about 60% in rising years, about 40% in the 2022 decline.
 
@@ -32,11 +32,11 @@ All tickers and horizons pooled, by period (traded = BUY/SELL calls; Brier again
 
 | Period | Up-moves | Model hit rate | Always "up" | Gap [95% CI] | Brier − 0.25 [95% CI] |
 |--------|----------|----------------|-------------|--------------|-----------------------|
-| 2021 | 63% | 61.5% | 63.5% | −2.0pp [−2.7, −1.4] | −0.0047 [−0.0101, +0.0022] |
-| 2022 (decline) | 43% | 39.7% | 41.8% | −2.1pp [−4.5, +0.1] | **+0.0138** [+0.0117, +0.0163] |
-| 2023 | 63% | 58.2% | 62.7% | −4.4pp [−5.1, −3.7] | +0.0026 [−0.0017, +0.0072] |
-| 2024–25 | 64% | 61.5% | 64.3% | −2.9pp [−3.4, −2.4] | **−0.0095** [−0.0125, −0.0060] |
-| **All** | 59% | **56.5%** | **59.5%** | **−3.0pp** [−3.5, −2.5] | −0.0011 [−0.0031, +0.0012] |
+| 2021 | 63% | 61.5% | 63.4% | −1.9pp [−2.6, −1.3] | −0.0047 [−0.0102, +0.0021] |
+| 2022 (decline) | 43% | 39.6% | 41.7% | −2.0pp [−4.4, +0.1] | **+0.0133** [+0.0113, +0.0159] |
+| 2023 | 63% | 58.1% | 62.7% | −4.6pp [−5.4, −3.9] | +0.0026 [−0.0018, +0.0070] |
+| 2024–25 | 64% | 61.4% | 64.4% | −2.9pp [−3.5, −2.4] | **−0.0097** [−0.0127, −0.0063] |
+| **All** | 59% | **56.5%** | **59.5%** | **−3.0pp** [−3.6, −2.5] | −0.0013 [−0.0034, +0.0010] |
 
 The probabilities beat a coin flip only in the 2024–25 rise and were worse than one in the 2022 decline.
 
@@ -45,19 +45,19 @@ The probabilities beat a coin flip only in the 2024–25 rise and were worse tha
 | Asset | Gap vs always "up", across horizons | Brier − 0.25, across horizons | Cells significantly worse |
 |-------|-------------------------------------|-------------------------------|---------------------------|
 | SPY | −4.5 to −1.8pp | −0.019 to −0.004 | — |
-| QQQ | −5.2 to −1.8pp | −0.013 to +0.000 | — |
-| VOO | −4.8 to −1.4pp | −0.019 to −0.004 | — |
-| VTI | −4.5 to −1.1pp | −0.016 to −0.001 | — |
-| DIA | −5.5 to −1.2pp | +0.001 to +0.006 | — |
-| GLD | −5.1 to −1.0pp | −0.011 to −0.002 | — |
-| IAU | −5.0 to −0.5pp | −0.010 to −0.002 | 14d, 30d (vs always "up") |
-| MSFT | −4.0 to −2.3pp | −0.000 to +0.008 | 5d (vs always "up") |
+| QQQ | −5.6 to −1.8pp | −0.013 to +0.000 | — |
+| VOO | −4.8 to −1.6pp | −0.019 to −0.004 | — |
+| VTI | −4.8 to −1.2pp | −0.016 to −0.002 | — |
+| DIA | −5.6 to −1.4pp | +0.001 to +0.005 | — |
+| GLD | −5.3 to −0.8pp | −0.011 to −0.002 | 30d (vs always "up") |
+| IAU | −4.9 to −0.3pp | −0.010 to −0.002 | 14d, 30d (vs always "up") |
+| MSFT | −3.9 to −2.2pp | −0.000 to +0.008 | — |
 | NVDA | −3.3 to −0.2pp | −0.017 to −0.005 | 5d (vs always "up") |
-| GOOGL | −5.0 to −1.6pp | −0.011 to +0.002 | — |
-| AMZN | −7.5 to −1.2pp | +0.002 to +0.019 | 30d (vs always "up") |
-| AAPL | −6.7 to −2.0pp | −0.002 to +0.016 | — |
-| TSLA | −7.5 to −1.6pp | +0.002 to +0.023 | 10d (vs a coin flip) |
-| BTC-USD | −3.7 to +0.5pp | +0.005 to +0.010 | 5d, 10d (vs a coin flip) |
+| GOOGL | −5.0 to −1.5pp | −0.011 to +0.002 | — |
+| AMZN | −8.1 to −1.1pp | +0.002 to +0.018 | 30d (vs always "up") |
+| AAPL | −6.8 to −2.1pp | −0.003 to +0.015 | 30d (vs always "up") |
+| TSLA | −7.3 to −1.4pp | +0.002 to +0.022 | 10d (vs a coin flip) |
+| BTC-USD | −3.9 to +0.0pp | +0.005 to +0.010 | 5d (vs always "up"); 5d, 10d (vs a coin flip) |
 
 No cell's CI cleared zero in the model's favour. Earlier versions of this guide listed "confirmed" assets and horizons
 with 65–89% accuracy; those came from a 2024–25 audit scored against a coin flip, and they do not hold over 2021–2025
@@ -85,7 +85,7 @@ a signal.
 | Metric | What It Is | What to Look For |
 |--------|------------|------------------|
 | **P(up)** | Probability price goes up | A lean, not an edge: it did not beat a coin flip over 2021–2025 |
-| **Central 90% interval** | Range the horizon price should fall in 90% of the time | Covered 88.8% of outcomes over 2021–2025 and 88.3% in the 2022 decline (95%: 94.0%, 99%: 98.6%) |
+| **Central 90% interval** | Range the horizon price should fall in 90% of the time | Covered 90.1% of outcomes over 2021–2025 and 89.9% in the 2022 decline (95%: 94.9%, 99%: 98.9%) |
 | **Confidence** | Model-agreement score (0–1) | Not a reliability signal: it did not predict accuracy (2026-11-25) |
 | **Brier Score** | Mean squared error of P(up) | 0.25 = a coin flip; lower is better |
 | **Directional Accuracy** | % of correct BUY/SELL calls | 56.5% over 2021–2025, below always calling "up" (59.5%) |
@@ -104,12 +104,12 @@ Mixing: 85% Markov / 15% Anchors
   90% CI: $510.30 – $560.10
   Confidence: 0.32
 
-📏 Track record (etf at 14d, measured on DIA, QQQ, SPY, VOO, VTI, 2021-2025): BUY calls were right 65% of 4,671 daily calls; the price rose on 64% of all days.
+📏 Track record (etf at 14d, measured on DIA, QQQ, SPY, VOO, VTI, 2021-2025): BUY calls were right 64% of 4,663 daily calls; the price rose on 64% of all days.
 ```
 
 **Interpretation:**
 - **BUY** with a 68% modelled chance of upside — the model's lean, not a measured edge
-- **Track record**: ETF BUY calls at 14 days were right 65% of the time, while the price rose on 64% of all days, so
+- **Track record**: ETF BUY calls at 14 days were right 64% of the time, and the price rose on 64% of all days, so
   the call has done about as well as simply following the market. SELL calls show the same comparison against the
   share of days the price fell. The record covers 1–30 day horizons; for other horizons, for HOLD, and where fewer than
   30 such calls were measured, none is shown.
@@ -122,7 +122,7 @@ Mixing: 85% Markov / 15% Anchors
 
 | Scenario | Why | What to Do |
 |----------|-----|------------|
-| **Declining markets** | The model calls "up" most of the time; in 2022 its calls were right 39.7% of the time and its probabilities were worse than a coin flip | Do not read a BUY as protection against a downturn |
+| **Declining markets** | The model calls "up" most of the time; in 2022 its calls were right 39.6% of the time and its probabilities were worse than a coin flip | Do not read a BUY as protection against a downturn |
 | **Earnings week** | No fundamental data; can't capture earnings surprises | Check the earnings calendar |
 | **Macro shocks** (Fed, CPI) | Price history only; may miss regime shifts | Wait 1–2 days post-announcement for the regime to stabilize |
 | **Abstain / no calibrated distribution** | Trusted anchors missing or regime signal too weak | Skip. Do not treat absence of output or fallback text as a signal |
@@ -135,7 +135,7 @@ Mixing: 85% Markov / 15% Anchors
 > "I want to know if SPY is likely to be higher in 20 days for a swing trade."
 
 **Verdict:** Use it for the range, not the direction. SPY 20d calls were 4.5pp below always calling "up" over 2021–2025
-(CI [−10.7, +0.7]pp); the distribution and its interval tell you how wide the outcomes are. If the model abstains,
+(CI [−11.0, +0.7]pp); the distribution and its interval tell you how wide the outcomes are. If the model abstains,
 skip.
 
 > "I want BTC 14d direction for a crypto trade."
@@ -148,8 +148,8 @@ BTC is fallback reasoning, not validated Markov output.
 
 ## How to Use It Well
 
-1. **Read the distribution and interval, not the BUY/SELL** — the central 90% interval caught 88–90% of outcomes in
-   every period from 2021 to 2025, the 2022 decline included; the direction has no measured edge
+1. **Read the distribution and interval, not the BUY/SELL** — the central 90% interval caught 89.9–90.9% of outcomes
+   in every period from 2021 to 2025, the 2022 decline included; the direction has no measured edge
 2. **Stay within 30 days** — beyond that the Markov signal mixes away
 3. **Combine with fundamentals** — use Cramer-Short's other tools (SEC filings, financial metrics) for earnings and
    macro context

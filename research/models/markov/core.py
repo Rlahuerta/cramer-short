@@ -63,5 +63,7 @@ COMMODITY_MODEL_ONLY_MIN_R2 = -0.02
 
 # Mirrors markov-distribution/core.ts FORECAST_DRIFT_SHRINK: factor on the forecast drift.
 FORECAST_DRIFT_SHRINK = 0.5
+# Mirrors markov-distribution/core.ts FORECAST_VOL_SCALE: factor on the forecast volatility.
+FORECAST_VOL_SCALE = 1.05
 COMMODITY_MODEL_ONLY_MIN_CONFIDENCE = 0.15
 CRYPTO_MODEL_ONLY_MIN_R2 = -0.03

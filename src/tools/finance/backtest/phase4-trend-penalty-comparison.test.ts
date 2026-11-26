@@ -15,7 +15,8 @@ describe('phase4-trend-penalty-comparison', () => {
   // lifts most steps over the 0.2 threshold (coverage 0.911 -> 0.995, accuracy 0.6505 -> 0.6484); with the HMM on
   // log returns, coverage 0.994 and accuracy 0.6475; with the estimated non-crypto transition matrix
   // (2026-11-23), coverage 0.995 and accuracy 0.6499; with the 0.5 forecast drift shrink, coverage 0.990 and
-  // accuracy 0.6472, and the break-context RC point rests on 2 steps (was 3).
+  // accuracy 0.6472, and the break-context RC point rests on 2 steps (was 3); with the 1.05 forecast volatility scale
+  // (2026-11-26), accuracy 0.6460 at the same coverage.
   integrationIt('reproduces the verified Phase 4 headline metrics on the fixture universe', async () => {
     const artifact = await runComparison();
 
@@ -25,9 +26,9 @@ describe('phase4-trend-penalty-comparison', () => {
     expect(artifact.delta.changedBreakChopCount).toBe(0);
     expect(artifact.delta.changedBreakTrendingCount).toBe(0);
 
-    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6472416472416472, 6);
+    expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6459627329192547, 6);
     expect(artifact.baseline.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.9901515151515151, 6);
-    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6472416472416472, 6);
+    expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.accuracy).toBeCloseTo(0.6459627329192547, 6);
     expect(artifact.experiment.overallRC.find(point => point.threshold === 0.2)?.coverage).toBeCloseTo(0.9901515151515151, 6);
 
     expect(artifact.baseline.breakContextRC.find(point => point.threshold === 0.3)?.accuracy).toBeCloseTo(0.5, 6);

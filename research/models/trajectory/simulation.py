@@ -13,6 +13,7 @@ import math
 import numpy as np
 
 from research.models.markov import NUM_STATES, RegimeState, REGIME_STATES, STATE_INDEX
+from research.models.markov.core import FORECAST_VOL_SCALE
 from research.models.jump_diffusion import JumpEventSpec, jump_drift_compensator
 from research.models.trajectory.distributions import student_t_ppf, student_t_survival
 from research.models.trajectory.driftvol import _mat_pow
@@ -100,7 +101,7 @@ def compute_trajectory(
             sigma_obs = max(sigma_obs, empirical_daily_vol)
 
         daily_drifts[d] = mu_obs * drift_scale
-        daily_vols[d] = sigma_obs
+        daily_vols[d] = sigma_obs * FORECAST_VOL_SCALE
 
     if garch_scales:
         for d in range(min(days, len(garch_scales))):

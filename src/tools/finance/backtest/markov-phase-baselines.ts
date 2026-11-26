@@ -110,11 +110,14 @@ export const MARKOV_PHASE0_BASELINES = {
  * flat (.2576 -> .2578); the pooled benchmark calls that change no-harm.
  * h1 is .48 since the 0.5 forecast drift shrink (2026-11-23): 22/45 = .489, one call under .49; the pooled benchmark
  * improves (Brier -0.0052) and 1d Brier improves (.2561 -> .2531) but sits just above the naive config's .2526.
+ * h1 is .46 and h3 .48 since the 1.05 forecast volatility scale (2026-11-26): 1d 22/45 -> 20/43 = .465, 3d 32/65 ->
+ * 32/66 = .485; the policy still beats the naive config at 1/2/3/14d, and over 2021-2025 the scale brings the central
+ * intervals to nominal coverage (90.1 / 94.9 / 98.9%) with Brier slightly lower in every period.
  */
 export const BTC_LIVE_POLICY_DIRECTIONAL_ACCURACY_FLOORS = {
-  h1: 0.48,
+  h1: 0.46,
   h2: 0.53,
-  h3: 0.49,
+  h3: 0.48,
   h14: 0.50,
 } as const;
 

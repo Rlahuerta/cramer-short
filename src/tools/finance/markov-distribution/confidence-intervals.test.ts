@@ -715,19 +715,19 @@ describe('computeTrajectory', () => {
     });
 
     it('widens a narrowed day symmetrically about its own midpoint without pinning either bound', () => {
-      // Seed 76 raw samples: day 11 [84.02, 120.09], day 12 [83.97, 119.35] (narrower), day 13 [84.14, 120.43].
+      // Seed 76 raw samples: day 11 [83.29, 121.19], day 12 [83.24, 120.41] (narrower), day 13 [83.41, 121.56].
       const traj = seeded(76);
       const [day11, day12, day13] = [traj[10], traj[11], traj[12]];
 
-      expect([day11.lowerBound, day11.upperBound]).toEqual([84.02, 120.09]); // unaffected day
-      expect([day13.lowerBound, day13.upperBound]).toEqual([84.14, 120.43]); // already wide enough
+      expect([day11.lowerBound, day11.upperBound]).toEqual([83.29, 121.19]); // unaffected day
+      expect([day13.lowerBound, day13.upperBound]).toEqual([83.41, 121.56]); // already wide enough
 
       // Widened to exactly the previous day's width (no extra cent to compound the next day), about
       // its own midpoint to within the half cent that an odd gap cannot split evenly.
       expect(day12.upperBound - day12.lowerBound).toBeCloseTo(day11.upperBound - day11.lowerBound, 9);
-      expect(Math.abs((day12.lowerBound + day12.upperBound) / 2 - (83.97 + 119.35) / 2)).toBeLessThanOrEqual(0.005 + 1e-9);
-      expect(day12.lowerBound).toBeLessThan(83.97);
-      expect(day12.upperBound).toBeGreaterThan(119.35);
+      expect(Math.abs((day12.lowerBound + day12.upperBound) / 2 - (83.24 + 120.41) / 2)).toBeLessThanOrEqual(0.005 + 1e-9);
+      expect(day12.lowerBound).toBeLessThan(83.24);
+      expect(day12.upperBound).toBeGreaterThan(120.41);
       // Not the old per-bound "never retreat" clamp: the upper bound may sit below the previous day's.
       expect(day12.upperBound).toBeLessThan(day11.upperBound);
     });
@@ -1047,11 +1047,11 @@ describe('computeHorizonDriftVol — regime-specific sigma', () => {
     const regimeMode = computeHorizonDriftVol(1, P, bullDominantStats, 'bull', 0, undefined, undefined, true, 0.55);
 
     // With regime-specific sigma at threshold 0.55, bull dominates (weight ~0.6 > 0.55)
-    // so sigma should be the bull regime's own stdReturn * sqrt(1) = 0.008
+    // so sigma should be the bull regime's own stdReturn * sqrt(1) = 0.008, times the forecast vol scale (1.05)
     // The mixture sigma includes Var(μ) from bear's different mean, so it's larger
     expect(regimeMode.sigma_n).toBeLessThan(mixture.sigma_n);
-    // Should equal bull's daily vol scaled by sqrt(horizon)
-    expect(regimeMode.sigma_n).toBeCloseTo(0.008, 5);
+    // Should equal bull's daily vol scaled by sqrt(horizon) and FORECAST_VOL_SCALE
+    expect(regimeMode.sigma_n).toBeCloseTo(0.008 * 1.05, 5);
   });
 
   it('falls back to mixture sigma when max weight does not exceed threshold', () => {
@@ -1207,5 +1207,25 @@ describe('forecast drift scale', () => {
     );
     const full = run(), half = run(0.5);
     expect(Math.log(half[9].expectedPrice / 1e6)).toBeCloseTo(0.5 * Math.log(full[9].expectedPrice / 1e6), 7);
+  });
+});
+
+describe('forecast volatility scale', () => {
+  // Equal regime statistics make the horizon volatility exactly 0.02 * sqrt(h) before the scale.
+  const flat = {
+    bull: { meanReturn: 0.003, stdReturn: 0.02 },
+    bear: { meanReturn: 0.003, stdReturn: 0.02 },
+    sideways: { meanReturn: 0.003, stdReturn: 0.02 },
+  };
+  const P = [[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]];
+
+  it('widens the horizon volatility by 1.05, which brought the central intervals to nominal coverage (2021-2025)', () => {
+    expect(computeHorizonDriftVol(9, P, flat, 'bull').sigma_n).toBeCloseTo(0.02 * 3 * 1.05, 12);
+  });
+
+  it('widens the trajectory by the same factor, so its day-h P(up) matches the distribution', () => {
+    const traj = computeTrajectory(100, 9, P, flat, 'bull', 0, undefined, 200, 5);
+    // The trajectory rounds P(up) to 3 decimals; unscaled it would be about 0.007 higher.
+    expect(traj[8].pUp).toBeCloseTo(studentTSurvival(100, 100, 9 * 0.003, 0.02 * 3 * 1.05, 5), 3);
   });
 });

@@ -429,8 +429,8 @@ def test_widen_band_to_width_ends_exactly_at_the_requested_width():
 
 
 def test_compute_trajectory_ci_widens_a_narrowed_day_about_its_own_midpoint():
-    """Sampled percentiles can narrow day-over-day (seed 35, day 13: raw [83.82, 117.89]
-    after [84.23, 118.68]). The band is widened symmetrically to the previous day's final
+    """Sampled percentiles can narrow day-over-day (seed 35, day 13: raw [83.09, 118.86]
+    after [83.51, 119.70]). The band is widened symmetrically to the previous day's final
     width: the midpoint is kept and no single bound is pinned to the previous day's."""
     P = np.array([[0.5, 0.2, 0.3], [0.2, 0.5, 0.3], [0.3, 0.3, 0.4]])
     regime_stats = {
@@ -445,9 +445,9 @@ def test_compute_trajectory_ci_widens_a_narrowed_day_about_its_own_midpoint():
     widths = _widths(traj)
     assert all(b >= a - 1e-9 for a, b in zip(widths, widths[1:]))
     day12, day13 = traj[11], traj[12]
-    assert (day12.lower_bound, day12.upper_bound) == (84.23, 118.68)  # unaffected day
-    assert (day13.lower_bound + day13.upper_bound) / 2 == pytest.approx((83.82 + 117.89) / 2, abs=1e-9)
-    assert day13.lower_bound < 83.82 and day13.upper_bound > 117.89
+    assert (day12.lower_bound, day12.upper_bound) == (83.51, 119.7)  # unaffected day
+    assert (day13.lower_bound + day13.upper_bound) / 2 == pytest.approx((83.09 + 118.86) / 2, abs=1e-9)
+    assert day13.lower_bound < 83.09 and day13.upper_bound > 118.86
     assert day13.upper_bound < day12.upper_bound  # not the old per-bound "never retreat" clamp
 
 
@@ -502,7 +502,7 @@ def test_compute_horizon_drift_vol_supports_regime_specific_sigma_and_garch():
         garch_scales=[2.0, 2.0],
     )
     assert result["mu_n"] == pytest.approx(0.02, abs=1e-10)
-    assert result["sigma_n"] == pytest.approx(0.02 * math.sqrt(8), abs=1e-10)
+    assert result["sigma_n"] == pytest.approx(0.02 * math.sqrt(8) * 1.05, abs=1e-10)  # times FORECAST_VOL_SCALE
 
 
 def test_interpolate_distribution_returns_ts_style_distribution_points():
@@ -758,3 +758,28 @@ def test_distribution_drift_scale_centres_on_scaled_drift():
     spot = next(p for p in dist if p["price"] == 100.0)
     assert spot["probability"] == pytest.approx(
         student_t_survival(100.0, 100.0, 0.5 * stats["mu_n"], stats["sigma_n"], 5), abs=1e-12)
+
+
+class TestForecastVolScale:
+    """Mirrors markov-distribution/core.ts FORECAST_VOL_SCALE (1.05): it brought the central intervals to nominal coverage over 2021-2025."""
+
+    FLAT = {
+        "bull": RegimeStats(mean_return=0.003, std_return=0.02),
+        "bear": RegimeStats(mean_return=0.003, std_return=0.02),
+        "sideways": RegimeStats(mean_return=0.003, std_return=0.02),
+    }
+    P = np.array([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]])
+
+    def test_horizon_volatility_is_widened(self):
+        assert compute_horizon_drift_vol(9, self.P, self.FLAT, "bull")["sigma_n"] == pytest.approx(0.02 * 3 * 1.05, abs=1e-12)
+
+    def test_markov_forecast_horizon_volatility_is_widened(self):
+        from research.models.markov.forecast import _compute_horizon_drift_vol
+        flat = {s: {"meanReturn": 0.003, "stdReturn": 0.02} for s in ("bull", "bear", "sideways")}
+        assert _compute_horizon_drift_vol(9, self.P, flat, "bull")["sigma_n"] == pytest.approx(0.02 * 3 * 1.05, abs=1e-12)
+
+    def test_trajectory_is_widened_by_the_same_factor(self):
+        from research.models.trajectory.distributions import student_t_survival
+        traj = compute_trajectory(100.0, 9, self.P, self.FLAT, "bull", n_samples=200, nu=5, random_state=1)
+        expected = student_t_survival(100.0, 100.0, 9 * 0.003, 0.02 * 3 * 1.05, 5)
+        assert traj[8].p_up == pytest.approx(expected, abs=5e-4)

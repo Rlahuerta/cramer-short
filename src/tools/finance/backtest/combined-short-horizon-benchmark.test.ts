@@ -46,9 +46,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 51,
-      directionalAccuracy: 0.4888888888888889,
-      brierScore: 0.2530920131208579,
+      abstainCount: 53,
+      directionalAccuracy: 0.46511627906976744,
+      brierScore: 0.252923495283106,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -78,9 +78,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 36,
-      directionalAccuracy: 0.5333333333333333,
-      brierScore: 0.25234617940544696,
+      abstainCount: 34,
+      directionalAccuracy: 0.532258064516129,
+      brierScore: 0.252191617773533,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -110,9 +110,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 96,
       tradedCount: null,
-      abstainCount: 29,
-      directionalAccuracy: 0.5074626865671642,
-      brierScore: 0.2540749438367688,
+      abstainCount: 30,
+      directionalAccuracy: 0.48484848484848486,
+      brierScore: 0.25388973881446103,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -142,9 +142,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 95,
       tradedCount: null,
-      abstainCount: 11,
-      directionalAccuracy: 0.5357142857142857,
-      brierScore: 0.25163144016311195,
+      abstainCount: 14,
+      directionalAccuracy: 0.5432098765432098,
+      brierScore: 0.2515787744832853,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -174,9 +174,9 @@ const BTC_FIXTURE_BASELINE = {
     markovOnly: {
       observationCount: 93,
       tradedCount: null,
-      abstainCount: 12,
-      directionalAccuracy: 0.5061728395061729,
-      brierScore: 0.2522858469194534,
+      abstainCount: 13,
+      directionalAccuracy: 0.5125,
+      brierScore: 0.2522807605541478,
       structuralBreakCount: 0,
       ready: true,
       pendingReasons: [],
@@ -537,11 +537,11 @@ describe('combined short-horizon benchmark', () => {
     ).length;
 
     expect(naiveOneDay.steps.length).toBe(122);
-    expect(naiveHoldCount).toBe(58);
+    expect(naiveHoldCount).toBe(59);
     expect(naiveBreakCount).toBe(8);
     expect(report.horizons['1d'].markovOnly.observationCount).toBeLessThan(naiveOneDay.steps.length);
-    // Since the 400-iteration HMM budget (2026-11-23) the live policy lowers 1d abstentions again (51 vs 58 with
-    // the 0.5 drift shrink); it also detects fewer breaks than the naive config (0 vs 8).
+    // Since the 400-iteration HMM budget (2026-11-23) the live policy lowers 1d abstentions again (53 vs 59 with
+    // the 0.5 drift shrink and the 1.05 volatility scale); it also detects fewer breaks than the naive config (0 vs 8).
     expect(report.horizons['1d'].markovOnly.abstainCount).toBeLessThan(naiveHoldCount);
     expect(report.horizons['1d'].markovOnly.structuralBreakCount).toBeLessThan(naiveBreakCount);
     expect(report.horizons['7d'].combinedArbitrated.pendingReasons).toEqual([BTC_7D_ABSTAIN_REASON]);

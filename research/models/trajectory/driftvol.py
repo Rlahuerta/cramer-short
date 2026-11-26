@@ -13,6 +13,7 @@ import math
 import numpy as np
 
 from research.models.markov import NUM_STATES, RegimeState, REGIME_STATES, STATE_INDEX
+from research.models.markov.core import FORECAST_VOL_SCALE
 from research.models.trajectory.types import RegimeStats
 
 
@@ -136,5 +137,5 @@ def compute_horizon_drift_vol(
 
     return {
         "mu_n": mu_n * drift_scale,
-        "sigma_n": sigma_n,
+        "sigma_n": sigma_n * FORECAST_VOL_SCALE,
     }
