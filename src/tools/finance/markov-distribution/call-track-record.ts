@@ -28,7 +28,13 @@ export interface CallTrackRecord {
   measuredOn: string[];
 }
 
-/** The record for a call, from the nearest measured horizon; null for HOLD, outside the measured horizons, or an unmeasured asset type. */
+/** Fewer calls than this read as noise ("right 71% of 7 calls"), so they get no record. */
+const MIN_CALLS = 30;
+
+/**
+ * The record for a call, from the nearest measured horizon; null for HOLD, outside the measured horizons, for an
+ * unmeasured asset type, or when fewer than MIN_CALLS such calls were measured.
+ */
 export function lookupCallTrackRecord(
   assetType: AssetProfile['type'],
   horizon: number,
@@ -40,7 +46,7 @@ export function lookupCallTrackRecord(
   if (horizon < horizons[0] || horizon > horizons[horizons.length - 1]) return null;
   const measuredHorizon = horizons.reduce((best, h) => Math.abs(h - horizon) < Math.abs(best - horizon) ? h : best);
   const record = data.records[`${assetType}|${measuredHorizon}|${call}`];
-  if (!record) return null;
+  if (!record || record.calls < MIN_CALLS) return null;
   return {
     assetType, horizon, measuredHorizon, call, ...record,
     period: data.period, measuredOn: data.measuredOn[assetType] ?? [],

@@ -2,6 +2,9 @@
 export const CALL_TRACK_RECORD_DATA = {
   "period": "2021-2025",
   "horizons": [
+    1,
+    2,
+    3,
     5,
     7,
     10,
@@ -34,6 +37,36 @@ export const CALL_TRACK_RECORD_DATA = {
     ]
   },
   "records": {
+    "etf|1|BUY": {
+      "calls": 3304,
+      "hitRate": 0.5472154963680388,
+      "baseRate": 0.5409052092228864
+    },
+    "etf|1|SELL": {
+      "calls": 374,
+      "hitRate": 0.5267379679144385,
+      "baseRate": 0.45909479077711357
+    },
+    "etf|2|BUY": {
+      "calls": 4308,
+      "hitRate": 0.5598885793871866,
+      "baseRate": 0.5632478632478632
+    },
+    "etf|2|SELL": {
+      "calls": 403,
+      "hitRate": 0.4094292803970223,
+      "baseRate": 0.43675213675213675
+    },
+    "etf|3|BUY": {
+      "calls": 4402,
+      "hitRate": 0.5754202635165834,
+      "baseRate": 0.5721129170230966
+    },
+    "etf|3|SELL": {
+      "calls": 507,
+      "hitRate": 0.4378698224852071,
+      "baseRate": 0.42788708297690337
+    },
     "etf|5|BUY": {
       "calls": 4555,
       "hitRate": 0.5973655323819979,
@@ -93,6 +126,36 @@ export const CALL_TRACK_RECORD_DATA = {
       "calls": 657,
       "hitRate": 0.3242009132420091,
       "baseRate": 0.3506129597197899
+    },
+    "commodity|1|BUY": {
+      "calls": 1088,
+      "hitRate": 0.5459558823529411,
+      "baseRate": 0.5398148148148149
+    },
+    "commodity|1|SELL": {
+      "calls": 7,
+      "hitRate": 0.7142857142857143,
+      "baseRate": 0.46018518518518514
+    },
+    "commodity|2|BUY": {
+      "calls": 1289,
+      "hitRate": 0.5384018619084562,
+      "baseRate": 0.540778498609824
+    },
+    "commodity|2|SELL": {
+      "calls": 61,
+      "hitRate": 0.3442622950819672,
+      "baseRate": 0.45922150139017603
+    },
+    "commodity|3|BUY": {
+      "calls": 1401,
+      "hitRate": 0.5624553890078515,
+      "baseRate": 0.5435992578849722
+    },
+    "commodity|3|SELL": {
+      "calls": 136,
+      "hitRate": 0.49264705882352944,
+      "baseRate": 0.4564007421150278
     },
     "commodity|5|BUY": {
       "calls": 1593,
@@ -154,6 +217,36 @@ export const CALL_TRACK_RECORD_DATA = {
       "hitRate": 0.27014218009478674,
       "baseRate": 0.34015223596574695
     },
+    "equity|1|BUY": {
+      "calls": 3810,
+      "hitRate": 0.5330708661417323,
+      "baseRate": 0.5260461144321094
+    },
+    "equity|1|SELL": {
+      "calls": 817,
+      "hitRate": 0.4675642594859241,
+      "baseRate": 0.47395388556789064
+    },
+    "equity|2|BUY": {
+      "calls": 4306,
+      "hitRate": 0.5380863910822109,
+      "baseRate": 0.5317663817663818
+    },
+    "equity|2|SELL": {
+      "calls": 941,
+      "hitRate": 0.4665249734325186,
+      "baseRate": 0.4682336182336182
+    },
+    "equity|3|BUY": {
+      "calls": 4540,
+      "hitRate": 0.5475770925110132,
+      "baseRate": 0.5429141716566867
+    },
+    "equity|3|SELL": {
+      "calls": 972,
+      "hitRate": 0.4434156378600823,
+      "baseRate": 0.45708582834331335
+    },
     "equity|5|BUY": {
       "calls": 4663,
       "hitRate": 0.5584387733218957,
@@ -213,6 +306,36 @@ export const CALL_TRACK_RECORD_DATA = {
       "calls": 1049,
       "hitRate": 0.3593898951382269,
       "baseRate": 0.4044074722708698
+    },
+    "crypto|1|BUY": {
+      "calls": 562,
+      "hitRate": 0.4893238434163701,
+      "baseRate": 0.4965034965034965
+    },
+    "crypto|1|SELL": {
+      "calls": 186,
+      "hitRate": 0.44623655913978494,
+      "baseRate": 0.5034965034965035
+    },
+    "crypto|2|BUY": {
+      "calls": 764,
+      "hitRate": 0.5026178010471204,
+      "baseRate": 0.5108142493638677
+    },
+    "crypto|2|SELL": {
+      "calls": 271,
+      "hitRate": 0.3948339483394834,
+      "baseRate": 0.48918575063613234
+    },
+    "crypto|3|BUY": {
+      "calls": 829,
+      "hitRate": 0.4969843184559711,
+      "baseRate": 0.5264162953532782
+    },
+    "crypto|3|SELL": {
+      "calls": 278,
+      "hitRate": 0.35611510791366907,
+      "baseRate": 0.47358370464672184
     },
     "crypto|5|BUY": {
       "calls": 958,

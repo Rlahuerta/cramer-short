@@ -8,6 +8,7 @@ const data = {
   records: {
     'etf|7|BUY': { calls: 1200, hitRate: 0.61, baseRate: 0.63 },
     'etf|14|SELL': { calls: 300, hitRate: 0.34, baseRate: 0.37 },
+    'etf|5|SELL': { calls: 7, hitRate: 0.71, baseRate: 0.46 },
   },
 };
 
@@ -25,6 +26,10 @@ describe('lookupCallTrackRecord', () => {
     expect(lookupCallTrackRecord('etf', 3, 'BUY', data)).toBeNull();
     expect(lookupCallTrackRecord('etf', 45, 'BUY', data)).toBeNull();
     expect(lookupCallTrackRecord('crypto', 7, 'BUY', data)).toBeNull();
+  });
+
+  it('has nothing when fewer than 30 calls were measured', () => {
+    expect(lookupCallTrackRecord('etf', 5, 'SELL', data)).toBeNull();
   });
 });
 

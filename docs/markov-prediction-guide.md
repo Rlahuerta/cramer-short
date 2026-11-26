@@ -241,8 +241,18 @@ Monte Carlo simulation).
 - CIs are widened by 50% when a structural break is detected in the training
   window.
 
-**Walk-forward interval coverage (live-config benchmark, 2024–25):** the central
-90% interval covered ~88% of outcomes (95%: ~94%, 99%: ~99%), close to nominal.
+**Walk-forward interval coverage (14 tickers, 5–30 days, 2021–2025):** close to
+nominal in every period, the 2022 decline included.
+
+| Period | 90% interval | 95% interval | 99% interval |
+|--------|--------------|--------------|--------------|
+| 2021 | 88.7% | 93.8% | 98.6% |
+| 2022 (decline) | 88.3% | 94.5% | 99.1% |
+| 2023 | 89.8% | 94.4% | 98.6% |
+| 2024–25 | 88.6% | 93.6% | 98.4% |
+| **All** | **88.8%** | **94.0%** | **98.6%** |
+
+By asset type the 90% interval covered 88.0% (gold) to 90.1% (BTC-USD).
 
 ### Action Signals
 
@@ -273,7 +283,8 @@ recommendation:
 - `HOLD` otherwise.
 
 **Track record:** every BUY/SELL comes with the measured record of that call for
-the asset type at the nearest measured horizon (5–30 days), in the decision card
+the asset type at the nearest measured horizon (1–30 days; none below 30 measured
+calls), in the decision card
 and in `diagnostics.callTrackRecord`: how often such calls were right over
 2021–2025, next to the share of all days that moved the call's way. For example,
 ETF BUY calls at 14 days were right 65% of the time while the price rose on 64%
@@ -382,7 +393,7 @@ prediction, then walks forward one day. No future data is used at any point.
 | Traded hit rate | 56.5% | % of BUY/SELL calls whose direction matched |
 | Always "up" on the same days | 59.5% | The baseline the hit rate must beat |
 | Brier − 0.25 | −0.0011 [−0.0031, +0.0012] | Mean squared error of P(up) minus a coin flip's |
-| Central 90% interval coverage | ~88% (2024–25 live-config benchmark) | % of outcomes inside the interval |
+| Central 90% interval coverage | 88.8% (2022: 88.3%) | % of outcomes inside the interval |
 
 ### Stressed Backtests
 

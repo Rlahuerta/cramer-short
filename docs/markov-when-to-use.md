@@ -85,7 +85,7 @@ a signal.
 | Metric | What It Is | What to Look For |
 |--------|------------|------------------|
 | **P(up)** | Probability price goes up | A lean, not an edge: it did not beat a coin flip over 2021–2025 |
-| **Central 90% interval** | Range the horizon price should fall in 90% of the time | Covered ~88% of outcomes on the 2024–25 live-config benchmark (95%: ~94%, 99%: ~99%) |
+| **Central 90% interval** | Range the horizon price should fall in 90% of the time | Covered 88.8% of outcomes over 2021–2025 and 88.3% in the 2022 decline (95%: 94.0%, 99%: 98.6%) |
 | **Confidence** | Model-agreement score (0–1) | Not a reliability signal: it did not predict accuracy (2026-11-25) |
 | **Brier Score** | Mean squared error of P(up) | 0.25 = a coin flip; lower is better |
 | **Directional Accuracy** | % of correct BUY/SELL calls | 56.5% over 2021–2025, below always calling "up" (59.5%) |
@@ -111,7 +111,8 @@ Mixing: 85% Markov / 15% Anchors
 - **BUY** with a 68% modelled chance of upside — the model's lean, not a measured edge
 - **Track record**: ETF BUY calls at 14 days were right 65% of the time, while the price rose on 64% of all days, so
   the call has done about as well as simply following the market. SELL calls show the same comparison against the
-  share of days the price fell. The record covers 5–30 day horizons; for other horizons, and for HOLD, none is shown.
+  share of days the price fell. The record covers 1–30 day horizons; for other horizons, for HOLD, and where fewer than
+  30 such calls were measured, none is shown.
 - **Expected return** +2.8% over 14 days
 - **90% CI**: the range of outcomes ($510–$560), the most useful part of the output
 
@@ -147,8 +148,8 @@ BTC is fallback reasoning, not validated Markov output.
 
 ## How to Use It Well
 
-1. **Read the distribution and interval, not the BUY/SELL** — the interval is close to its nominal coverage; the
-   direction has no measured edge
+1. **Read the distribution and interval, not the BUY/SELL** — the central 90% interval caught 88–90% of outcomes in
+   every period from 2021 to 2025, the 2022 decline included; the direction has no measured edge
 2. **Stay within 30 days** — beyond that the Markov signal mixes away
 3. **Combine with fundamentals** — use Cramer-Short's other tools (SEC filings, financial metrics) for earnings and
    macro context

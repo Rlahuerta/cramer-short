@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { buildCallTrackRecord, periodOf, skillGaps, type SkillRow } from './long-history-skill.js';
+import { buildCallTrackRecord, intervalCoverage, periodOf, skillGaps, type SkillRow } from './long-history-skill.js';
 
 const row = (rec: SkillRow['rec'], p: number, y: 0 | 1): SkillRow => ({ ticker: 'SPY', horizon: 7, t: 0, date: '2022-06-01', p, y, rec });
 
@@ -37,5 +37,18 @@ describe('buildCallTrackRecord', () => {
     expect(data.measuredOn).toEqual({ etf: ['QQQ', 'SPY'] });
     expect(data.records['etf|7|BUY']).toEqual({ calls: 3, hitRate: 2 / 3, baseRate: 3 / 5 });
     expect(data.records['etf|7|SELL']).toEqual({ calls: 1, hitRate: 0, baseRate: 2 / 5 });
+  });
+});
+
+describe('intervalCoverage', () => {
+  it('is the share of realized prices inside each central interval, over rows that carry intervals', () => {
+    const base = { ticker: 'SPY', horizon: 7, t: 0, date: '2022-06-01', p: 0.5, y: 1 as const, rec: 'HOLD' as const };
+    const rows: SkillRow[] = [
+      { ...base, realized: 100, lo90: 95, hi90: 105, lo95: 94, hi95: 106, lo99: 90, hi99: 110 },  // inside all
+      { ...base, realized: 107, lo90: 95, hi90: 105, lo95: 94, hi95: 106, lo99: 90, hi99: 110 },  // inside 99 only
+      { ...base, realized: 95, lo90: 95, hi90: 105, lo95: 94, hi95: 106, lo99: 90, hi99: 110 },   // on the 90 edge: inside
+      base,                                                                                       // no interval: ignored
+    ];
+    expect(intervalCoverage(rows)).toEqual({ n: 3, c90: 2 / 3, c95: 2 / 3, c99: 1 });
   });
 });
