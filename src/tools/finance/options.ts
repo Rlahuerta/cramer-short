@@ -115,7 +115,11 @@ export const getOptionsChainTool = new DynamicStructuredTool({
       if (!res.ok) {
         return formatToolResult(
           {
-            error: `Options data unavailable for ${ticker} (HTTP ${res.status}). The ticker may not have listed options, or Yahoo Finance may be temporarily unavailable.`,
+            error: res.status === 401 || res.status === 403
+              ? `Yahoo Finance refused the options request for ${ticker} (HTTP ${res.status}); its options endpoint ` +
+                'needs a signed-in session, so no ticker has options data right now. This says nothing about ' +
+                `whether ${ticker} has listed options.`
+              : `Options data unavailable for ${ticker} (HTTP ${res.status}). The ticker may not have listed options, or Yahoo Finance may be temporarily unavailable.`,
           },
           [],
         );

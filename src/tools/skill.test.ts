@@ -191,6 +191,18 @@ describe('skillTool — parameter resolution', () => {
     expect(result).toContain('(override)');
   });
 
+  test("tells the model the user's stated values beat the defaults", async () => {
+    mockGetSkillFn = () =>
+      makeSkill({
+        parameters: {
+          wacc: { type: 'number', description: 'WACC', default: 0.1 },
+        },
+        instructions: 'WACC: {{wacc}}.',
+      });
+    const result = await skillTool.invoke({ skill: 'dcf', args: 'AAPL at a 12% WACC' });
+    expect(result).toContain("use the user's value");
+  });
+
   test('marks param source as (default) when default is used', async () => {
     mockGetSkillFn = () =>
       makeSkill({

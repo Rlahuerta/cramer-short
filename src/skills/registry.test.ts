@@ -59,3 +59,12 @@ describe('discoverSkills with invalid project skill overrides (PI-56)', () => {
     expect(messages.some((m) => m.includes(broken))).toBe(true);
   });
 });
+
+describe('buildSkillMetadataSection', () => {
+  test('lists each skill parameter with its default so the model can pass params', async () => {
+    const { buildSkillMetadataSection } = (await import(`./registry.js?params=${Date.now()}`)) as typeof import('./registry.js');
+    const line = buildSkillMetadataSection().split('\n').find((l) => l.startsWith('- **position-sizing**'));
+    expect(line).toContain('portfolioValue=100000');
+    expect(line).toContain('riskPerTrade=0.01');
+  });
+});

@@ -65,6 +65,8 @@ export interface GeopoliticsResult {
   watchlistHits: string[];
   confidence: 'high' | 'medium' | 'low';
   sources: SourceSummary[];
+  /** Sources that failed, with the reason, so an outage is not read as a quiet news period */
+  sourceFailures: string[];
   /** ISO timestamp of when the search was run */
   fetchedAt: string;
 }
@@ -185,6 +187,7 @@ async function runGeopoliticsSearch(input: GeopoliticsInput): Promise<string> {
 
   const events: GeopoliticsEvent[] = [];
   const sourceSummaries: SourceSummary[] = [];
+  const sourceFailures: string[] = [];
 
   // Auto-detect categories from topic if not provided
   const autoCategories = detectCategories(topic);
@@ -235,6 +238,7 @@ async function runGeopoliticsSearch(input: GeopoliticsInput): Promise<string> {
     logger.debug('geopolitics_search GDELT source failed; continuing with other sources', {
       error: formatUnknownError(error),
     });
+    sourceFailures.push(`GDELT News Index: ${formatUnknownError(error)}`);
   }
 
   // ── 2. Bluesky ──────────────────────────────────────────────────────────
@@ -271,6 +275,7 @@ async function runGeopoliticsSearch(input: GeopoliticsInput): Promise<string> {
     logger.debug('geopolitics_search Bluesky source failed; continuing with other sources', {
       error: formatUnknownError(error),
     });
+    sourceFailures.push(`Bluesky: ${formatUnknownError(error)}`);
   }
 
   // ── Classify + deduplicate events ─────────────────────────────────────────
@@ -297,6 +302,7 @@ async function runGeopoliticsSearch(input: GeopoliticsInput): Promise<string> {
     watchlistHits,
     confidence,
     sources: sourceSummaries,
+    sourceFailures,
     fetchedAt: new Date().toISOString(),
   };
 
@@ -317,7 +323,9 @@ function formatResult(r: GeopoliticsResult): string {
 
   // Events summary
   if (r.events.length === 0) {
-    lines.push('*No events found for this topic in the selected time window.*');
+    lines.push(r.sourceFailures.length > 0
+      ? '*No events retrieved, and at least one source failed (see Source problems). Treat this as missing data, not as a quiet news period.*'
+      : '*No events found for this topic in the selected time window.*');
   } else {
     lines.push(`### Events (${r.events.length} found)`);
     const top = r.events
@@ -360,6 +368,12 @@ function formatResult(r: GeopoliticsResult): string {
     for (const s of r.sources) {
       lines.push(`- **${s.name}**: ${s.articleCount} articles (${s.topDomains.slice(0, 3).join(', ')})`);
     }
+    lines.push('');
+  }
+
+  if (r.sourceFailures.length > 0) {
+    lines.push('### Source problems');
+    for (const failure of r.sourceFailures) lines.push(`- ${failure}`);
     lines.push('');
   }
 

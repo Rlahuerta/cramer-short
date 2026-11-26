@@ -21,10 +21,13 @@ Perform a comprehensive analysis of political/market pressure on Trump and estim
    - S&P 500 decline (his "favorite report card")
    - Rising Treasury yields (government borrowing pain)
    - Inflation expectations surging (unhappy voters)
-   - Falling approval ratings
+   - Falling consumer sentiment (UMCSENT, the approval proxy; not a polled approval rating)
    - Gas price spikes (consumer pain amplifier)
-   - Polymarket policy-reversal markets (real-money bets)
    - Negative social sentiment
+
+   State how many of the 7 inputs were live (the "Data: N/7 components available" line). Inputs shown as N/A had
+   their weight moved to the others, so the score rests on fewer signals. The Polymarket policy-reversal input is a
+   single reading with no history, so it never moves the pressure score; it feeds the TACO probability (step 5).
 
 4. **Compare with historical TACO events** — Reference the nearest landmark:
    - Liberation Day (Apr 2025): 2.8σ → 90-day tariff pause, S&P +9.5% single day

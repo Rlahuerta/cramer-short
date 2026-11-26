@@ -138,8 +138,14 @@ export function aggregateStats(posts: SentimentPost[]): SentimentStats {
 // Reddit
 // ---------------------------------------------------------------------------
 
-async function fetchReddit(query: string, subreddits: string[], limit = 25): Promise<SentimentPost[]> {
+async function fetchReddit(
+  query: string,
+  subreddits: string[],
+  limit: number,
+  sourceIssues: string[],
+): Promise<SentimentPost[]> {
   const posts: SentimentPost[] = [];
+  const failures = new Set<string>();
 
   await Promise.allSettled(
     subreddits.map(async (sub) => {
@@ -150,7 +156,10 @@ async function fetchReddit(query: string, subreddits: string[], limit = 25): Pro
         const res = await fetch(url, {
           headers: { 'User-Agent': REDDIT_UA },
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          failures.add(`HTTP ${res.status}`);
+          return;
+        }
         const data = await res.json() as { data?: { children?: { data: Record<string, unknown> }[] } };
         const children = data?.data?.children ?? [];
         for (const c of children) {
@@ -170,11 +179,14 @@ async function fetchReddit(query: string, subreddits: string[], limit = 25): Pro
             sentimentScore,
           });
         }
-      } catch {
-        // Silently skip failed subreddits
+      } catch (error) {
+        failures.add(error instanceof Error ? error.message : String(error));
       }
     }),
   );
+  if (posts.length === 0 && failures.size > 0) {
+    sourceIssues.push(`Reddit unavailable (${[...failures].join(', ')})`);
+  }
 
   // Deduplicate by post id
   const seen = new Set<string>();
@@ -189,11 +201,14 @@ async function fetchReddit(query: string, subreddits: string[], limit = 25): Pro
 // X / Twitter
 // ---------------------------------------------------------------------------
 
-async function fetchXTweets(query: string, limit: number): Promise<SentimentPost[]> {
+async function fetchXTweets(query: string, limit: number, sourceIssues: string[]): Promise<SentimentPost[]> {
   const token = getEnv('X_BEARER_TOKEN');
   if (!token) return [];
 
-  if (xApiBreaker.isOpen()) return [];
+  if (xApiBreaker.isOpen()) {
+    sourceIssues.push('X/Twitter paused after repeated failures');
+    return [];
+  }
 
   const TWEET_FIELDS =
     'tweet.fields=created_at,public_metrics,author_id' +
@@ -212,6 +227,7 @@ async function fetchXTweets(query: string, limit: number): Promise<SentimentPost
     });
     if (!res.ok) {
       xApiBreaker.onFailure();
+      sourceIssues.push(`X/Twitter unavailable (HTTP ${res.status})`);
       return [];
     }
     xApiBreaker.onSuccess();
@@ -241,8 +257,9 @@ async function fetchXTweets(query: string, limit: number): Promise<SentimentPost
         sentimentScore,
       };
     });
-  } catch {
+  } catch (error) {
     xApiBreaker.onFailure();
+    sourceIssues.push(`X/Twitter unavailable (${error instanceof Error ? error.message : String(error)})`);
     return [];
   }
 }
@@ -287,6 +304,7 @@ function formatSentimentReport(
   redditPosts: SentimentPost[],
   xTweets: SentimentPost[],
   fearGreed: { value: number; classification: string } | null,
+  sourceIssues: string[],
 ): string {
   const all = [...redditPosts, ...xTweets];
   const stats = aggregateStats(all);
@@ -295,13 +313,18 @@ function formatSentimentReport(
 
   if (stats.total === 0) {
     if (!fearGreed) {
-      return `No social media posts found for "${query}". Try a broader search term or check if the ticker is correct.`;
+      return sourceIssues.length > 0
+        ? `No social media posts found for "${query}". Source problems: ${sourceIssues.join('; ')}. ` +
+          'Treat this as missing data, not as an absence of discussion.'
+        : `No social media posts found for "${query}". Try a broader search term or check if the ticker is correct.`;
     }
 
     const fgBar = `${'█'.repeat(Math.round(fearGreed.value / 10))}${'░'.repeat(10 - Math.round(fearGreed.value / 10))}`;
     return [
       `📊 **Social Sentiment: ${ticker || query}**`,
-      '_No Reddit/X posts found in the past 7 days._',
+      sourceIssues.length > 0
+        ? `_No Reddit/X posts retrieved. Source problems: ${sourceIssues.join('; ')}._`
+        : '_No Reddit/X posts found in the past 7 days._',
       '',
       '## Crypto Fear & Greed Index',
       `${fgBar} **${fearGreed.value}/100** — ${fearGreed.classification}`,
@@ -449,13 +472,17 @@ export const socialSentimentTool = new DynamicStructuredTool({
       const limit = input.limit ?? 25;
 
       // Fetch all sources in parallel
+      const sourceIssues: string[] = [];
       const [redditPosts, xTweets, fearGreed] = await Promise.all([
-        fetchReddit(searchText, subreddits, limit),
-        fetchXTweets(query, limit),
+        fetchReddit(searchText, subreddits, limit, sourceIssues),
+        fetchXTweets(query, limit, sourceIssues),
         (input.include_fear_greed || isCrypto) ? fetchFearGreed() : Promise.resolve(null),
       ]);
+      if (sourceIssues.length > 0 && !getEnv('X_BEARER_TOKEN')) {
+        sourceIssues.push('X/Twitter not configured (no X_BEARER_TOKEN)');
+      }
 
-      const report = formatSentimentReport(searchText, ticker || input.query || '', redditPosts, xTweets, fearGreed);
+      const report = formatSentimentReport(searchText, ticker || input.query || '', redditPosts, xTweets, fearGreed, sourceIssues);
       const urls = [...redditPosts, ...xTweets].map((p) => p.url);
       return formatToolResult({ result: report }, urls);
     } catch (error) {

@@ -115,7 +115,11 @@ export function buildSkillMetadataSection(): string {
   }
 
   return skills
-    .map((s) => `- **${s.name}**: ${s.description}`)
+    .map((s) => {
+      const params = Object.entries(s.parameters ?? {})
+        .map(([name, def]) => (def.default === undefined ? name : `${name}=${String(def.default)}`));
+      return `- **${s.name}**: ${s.description}${params.length > 0 ? ` (override defaults with the \`params\` object: ${params.join(', ')})` : ''}`;
+    })
     .join('\n');
 }
 

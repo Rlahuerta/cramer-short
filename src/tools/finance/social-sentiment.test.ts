@@ -353,6 +353,33 @@ describe('socialSentimentTool — integration (mocked fetch)', () => {
     expect(text).toContain('No social media posts found');
   });
 
+  it('names the failed sources instead of blaming the ticker when Reddit refuses every request', async () => {
+    const savedToken = process.env.X_BEARER_TOKEN;
+    delete process.env.X_BEARER_TOKEN;
+    globalThis.fetch = (async () => ({ ok: false, status: 403, json: async () => ({}) }) as Response) as unknown as typeof fetch;
+    try {
+      const text = getResultText(await socialSentimentTool.invoke({ ticker: 'NVDA', limit: 5 }));
+      expect(text).toContain('Reddit unavailable (HTTP 403)');
+      expect(text).toContain('X/Twitter not configured');
+      expect(text).not.toContain('check if the ticker is correct');
+    } finally {
+      if (savedToken !== undefined) process.env.X_BEARER_TOKEN = savedToken;
+    }
+  });
+
+  it('says the crypto posts are unavailable, not absent, when Reddit refuses every request', async () => {
+    globalThis.fetch = (async (url: string | URL) => {
+      if (String(url).includes('alternative.me')) {
+        return { ok: true, status: 200, json: async () => ({ data: [{ value: '11', value_classification: 'Extreme Fear' }] }) } as Response;
+      }
+      return { ok: false, status: 403, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+    const text = getResultText(await socialSentimentTool.invoke({ ticker: 'BTC', limit: 5 }));
+    expect(text).toContain('Reddit unavailable (HTTP 403)');
+    expect(text).not.toContain('No Reddit/X posts found');
+    expect(text).toContain('Extreme Fear');
+  });
+
   it('deduplicates repeated posts from multiple subreddits', async () => {
     // Same post id appearing in multiple subreddit responses
     globalThis.fetch = mockFetchReddit(3, 1) as unknown as typeof fetch;

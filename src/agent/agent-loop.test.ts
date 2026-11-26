@@ -239,6 +239,32 @@ describe('exit messages', () => {
     expect(done.answer).toContain('cancelled');
   });
 
+  it('asks once more when the model ends with an empty answer', async () => {
+    script.responses = [[ST_CALL], ''];
+    let streams = 0;
+    script.onStream = () => {
+      streams++;
+      script.streamChunks = streams === 1 ? [] : ['recovered answer'];
+    };
+    const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
+
+    const done = doneOf(await collect(agent.run('look up ZZZ')));
+
+    expect(streams).toBe(2);
+    expect(done.answer).toContain('recovered answer');
+  });
+
+  it('returns the gathered research instead of a blank answer when the model stays empty', async () => {
+    script.responses = [[ST_CALL], ''];
+    script.streamChunks = [];
+    const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
+
+    const done = doneOf(await collect(agent.run('look up ZZZ')));
+
+    expect(done.answer).toContain('Research interrupted');
+    expect(done.answer).toContain('empty answer');
+  });
+
   it('still reports a synthesis timeout as a timeout', async () => {
     script.fallback = [ST_CALL];
     script.streamError = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
