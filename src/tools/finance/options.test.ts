@@ -213,6 +213,20 @@ describe('get_options_chain tool', () => {
     expect(parsed.data.error).toContain('No options data');
   });
 
+  it('says Yahoo refused the request, not that the ticker lacks options, on HTTP 401', async () => {
+    globalThis.fetch = mock(async () =>
+      new Response('Unauthorized', { status: 401 }),
+    ) as unknown as typeof fetch;
+
+    const { getOptionsChainTool } = await import('./options.js');
+    const raw = await getOptionsChainTool.invoke({ ticker: 'NVDA', type: 'all' });
+    const parsed = JSON.parse(raw) as { data: { error: string } };
+
+    expect(parsed.data.error).toContain('HTTP 401');
+    expect(parsed.data.error).toContain('refused');
+    expect(parsed.data.error).not.toContain('may not have listed options');
+  });
+
   it('returns error on HTTP failure', async () => {
     globalThis.fetch = mock(async () =>
       new Response('Not Found', { status: 404 }),
