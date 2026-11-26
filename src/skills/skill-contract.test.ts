@@ -143,7 +143,7 @@ const KNOWN_DATA_FIELDS = new Set([
   'sentiment', 'price', 'sector', 'note', 'costBasis',
   'betaSource', 'deRatio', 'equityWeight', 'debtWeight', 'waccPct',
   'LogOddsSignal',
-  'polymarketMarkets', 'historicalPrices', 'predictionConfidence',
+  'polymarketMarkets', 'historicalPrices', 'predictionConfidence', 'callTrackRecord',
   'regimeState', 'actionSignal', 'buyProbability', 'sellProbability',
   'targetPrice', 'stopLoss', 'actionLevels',
   'eps_estimated', 'eps_actual', 'estimated_eps', 'estimated_revenue',
@@ -285,8 +285,10 @@ describe('Skills contract: SKILL.md vs runtime', () => {
   // ── 4b. No reliability claims for the Markov confidence score ──────────
 
   it('no SKILL.md sizes positions by the Markov confidence score or claims an accuracy figure for it', () => {
-    // The score did not predict forecast accuracy (live-config benchmark and 8 held-out tickers, 2026-11-25).
-    const claim = /accuracy drops|confidenceFactor|confidenceMultiplier|confidence-weighted|Low Markov confidence/i;
+    // The score did not predict forecast accuracy (live-config benchmark and 8 held-out tickers, 2026-11-25), and
+    // the Markov BUY/SELL probabilities did not beat the market's own up/down share (2021-2025): skills quote the
+    // call's track record instead of treating buyProbability as confirmation or as a Kelly win probability.
+    const claim = /accuracy drops|confidenceFactor|confidenceMultiplier|confidence-weighted|Low Markov confidence|buyProbability\s*>\s*0\.\d|winProbability\s*=\s*markov/i;
     const failures = skills.filter(s => claim.test(s.instructions) || claim.test(s.description)).map(s => s.name);
     expect(failures).toEqual([]);
   });

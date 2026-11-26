@@ -38,48 +38,48 @@ export const CALL_TRACK_RECORD_DATA = {
   },
   "records": {
     "etf|1|BUY": {
-      "calls": 3304,
-      "hitRate": 0.5472154963680388,
+      "calls": 3317,
+      "hitRate": 0.5465782333433826,
       "baseRate": 0.5409052092228864
     },
     "etf|1|SELL": {
-      "calls": 374,
-      "hitRate": 0.5267379679144385,
+      "calls": 384,
+      "hitRate": 0.5286458333333334,
       "baseRate": 0.45909479077711357
     },
     "etf|2|BUY": {
-      "calls": 4308,
-      "hitRate": 0.5598885793871866,
+      "calls": 4303,
+      "hitRate": 0.5621659307459912,
       "baseRate": 0.5632478632478632
     },
     "etf|2|SELL": {
-      "calls": 403,
-      "hitRate": 0.4094292803970223,
+      "calls": 412,
+      "hitRate": 0.41262135922330095,
       "baseRate": 0.43675213675213675
     },
     "etf|3|BUY": {
-      "calls": 4402,
-      "hitRate": 0.5754202635165834,
+      "calls": 4389,
+      "hitRate": 0.5748462064251538,
       "baseRate": 0.5721129170230966
     },
     "etf|3|SELL": {
-      "calls": 507,
-      "hitRate": 0.4378698224852071,
+      "calls": 518,
+      "hitRate": 0.4343629343629344,
       "baseRate": 0.42788708297690337
     },
     "etf|5|BUY": {
-      "calls": 4555,
-      "hitRate": 0.5973655323819979,
+      "calls": 4551,
+      "hitRate": 0.5978905735003296,
       "baseRate": 0.5883461868037704
     },
     "etf|5|SELL": {
-      "calls": 582,
-      "hitRate": 0.4175257731958763,
+      "calls": 592,
+      "hitRate": 0.41385135135135137,
       "baseRate": 0.4116538131962296
     },
     "etf|7|BUY": {
-      "calls": 4574,
-      "hitRate": 0.5942282466112812,
+      "calls": 4565,
+      "hitRate": 0.5940854326396495,
       "baseRate": 0.5883261802575107
     },
     "etf|7|SELL": {
@@ -89,312 +89,312 @@ export const CALL_TRACK_RECORD_DATA = {
     },
     "etf|10|BUY": {
       "calls": 4682,
-      "hitRate": 0.6129859034600598,
+      "hitRate": 0.6140538231524989,
       "baseRate": 0.6118760757314974
     },
     "etf|10|SELL": {
-      "calls": 691,
-      "hitRate": 0.37626628075253254,
+      "calls": 693,
+      "hitRate": 0.38095238095238093,
       "baseRate": 0.3881239242685026
     },
     "etf|14|BUY": {
-      "calls": 4671,
-      "hitRate": 0.6452579747377435,
+      "calls": 4663,
+      "hitRate": 0.6448638215740939,
       "baseRate": 0.6416234887737479
     },
     "etf|14|SELL": {
-      "calls": 701,
-      "hitRate": 0.369472182596291,
+      "calls": 707,
+      "hitRate": 0.3649222065063649,
       "baseRate": 0.35837651122625214
     },
     "etf|20|BUY": {
-      "calls": 4590,
-      "hitRate": 0.6437908496732027,
+      "calls": 4586,
+      "hitRate": 0.6439162668992586,
       "baseRate": 0.6456597222222222
     },
     "etf|20|SELL": {
-      "calls": 766,
-      "hitRate": 0.3289817232375979,
+      "calls": 775,
+      "hitRate": 0.3251612903225806,
       "baseRate": 0.35434027777777777
     },
     "etf|30|BUY": {
-      "calls": 4665,
-      "hitRate": 0.6445873526259378,
+      "calls": 4657,
+      "hitRate": 0.6439768091045738,
       "baseRate": 0.6493870402802101
     },
     "etf|30|SELL": {
-      "calls": 657,
-      "hitRate": 0.3242009132420091,
+      "calls": 682,
+      "hitRate": 0.32111436950146627,
       "baseRate": 0.3506129597197899
     },
     "commodity|1|BUY": {
-      "calls": 1088,
-      "hitRate": 0.5459558823529411,
+      "calls": 1090,
+      "hitRate": 0.5458715596330275,
       "baseRate": 0.5398148148148149
     },
     "commodity|1|SELL": {
-      "calls": 7,
-      "hitRate": 0.7142857142857143,
+      "calls": 10,
+      "hitRate": 0.5,
       "baseRate": 0.46018518518518514
     },
     "commodity|2|BUY": {
-      "calls": 1289,
-      "hitRate": 0.5384018619084562,
+      "calls": 1281,
+      "hitRate": 0.5417642466822795,
       "baseRate": 0.540778498609824
     },
     "commodity|2|SELL": {
-      "calls": 61,
-      "hitRate": 0.3442622950819672,
+      "calls": 63,
+      "hitRate": 0.3333333333333333,
       "baseRate": 0.45922150139017603
     },
     "commodity|3|BUY": {
-      "calls": 1401,
-      "hitRate": 0.5624553890078515,
+      "calls": 1389,
+      "hitRate": 0.5622750179985602,
       "baseRate": 0.5435992578849722
     },
     "commodity|3|SELL": {
-      "calls": 136,
-      "hitRate": 0.49264705882352944,
+      "calls": 143,
+      "hitRate": 0.5104895104895105,
       "baseRate": 0.4564007421150278
     },
     "commodity|5|BUY": {
-      "calls": 1593,
-      "hitRate": 0.5731324544883867,
+      "calls": 1581,
+      "hitRate": 0.5724225173940544,
       "baseRate": 0.5692379182156134
     },
     "commodity|5|SELL": {
-      "calls": 153,
-      "hitRate": 0.45751633986928103,
+      "calls": 166,
+      "hitRate": 0.46987951807228917,
       "baseRate": 0.4307620817843866
     },
     "commodity|7|BUY": {
-      "calls": 1682,
-      "hitRate": 0.5832342449464922,
+      "calls": 1677,
+      "hitRate": 0.5825879546809779,
       "baseRate": 0.590316573556797
     },
     "commodity|7|SELL": {
-      "calls": 131,
-      "hitRate": 0.40458015267175573,
+      "calls": 138,
+      "hitRate": 0.39855072463768115,
       "baseRate": 0.409683426443203
     },
     "commodity|10|BUY": {
-      "calls": 1749,
-      "hitRate": 0.6003430531732419,
+      "calls": 1746,
+      "hitRate": 0.5996563573883161,
       "baseRate": 0.6003734827264239
     },
     "commodity|10|SELL": {
-      "calls": 132,
-      "hitRate": 0.42424242424242425,
+      "calls": 141,
+      "hitRate": 0.44680851063829785,
       "baseRate": 0.3996265172735761
     },
     "commodity|14|BUY": {
-      "calls": 1757,
-      "hitRate": 0.6095617529880478,
+      "calls": 1755,
+      "hitRate": 0.6091168091168091,
       "baseRate": 0.6166822867853796
     },
     "commodity|14|SELL": {
-      "calls": 142,
-      "hitRate": 0.29577464788732394,
+      "calls": 148,
+      "hitRate": 0.2972972972972973,
       "baseRate": 0.3833177132146204
     },
     "commodity|20|BUY": {
-      "calls": 1822,
-      "hitRate": 0.6421514818880352,
+      "calls": 1820,
+      "hitRate": 0.6423076923076924,
       "baseRate": 0.647502356267672
     },
     "commodity|20|SELL": {
-      "calls": 110,
-      "hitRate": 0.2636363636363636,
+      "calls": 114,
+      "hitRate": 0.30701754385964913,
       "baseRate": 0.35249764373232795
     },
     "commodity|30|BUY": {
-      "calls": 1703,
-      "hitRate": 0.642982971227246,
+      "calls": 1697,
+      "hitRate": 0.6411314083677078,
       "baseRate": 0.659847764034253
     },
     "commodity|30|SELL": {
-      "calls": 211,
-      "hitRate": 0.27014218009478674,
+      "calls": 215,
+      "hitRate": 0.2744186046511628,
       "baseRate": 0.34015223596574695
     },
     "equity|1|BUY": {
-      "calls": 3810,
-      "hitRate": 0.5330708661417323,
+      "calls": 3825,
+      "hitRate": 0.5328104575163398,
       "baseRate": 0.5260461144321094
     },
     "equity|1|SELL": {
-      "calls": 817,
-      "hitRate": 0.4675642594859241,
+      "calls": 816,
+      "hitRate": 0.4644607843137255,
       "baseRate": 0.47395388556789064
     },
     "equity|2|BUY": {
-      "calls": 4306,
-      "hitRate": 0.5380863910822109,
+      "calls": 4334,
+      "hitRate": 0.5399169358560222,
       "baseRate": 0.5317663817663818
     },
     "equity|2|SELL": {
-      "calls": 941,
-      "hitRate": 0.4665249734325186,
+      "calls": 946,
+      "hitRate": 0.4630021141649049,
       "baseRate": 0.4682336182336182
     },
     "equity|3|BUY": {
-      "calls": 4540,
-      "hitRate": 0.5475770925110132,
+      "calls": 4557,
+      "hitRate": 0.5481676541584376,
       "baseRate": 0.5429141716566867
     },
     "equity|3|SELL": {
-      "calls": 972,
-      "hitRate": 0.4434156378600823,
+      "calls": 973,
+      "hitRate": 0.4398766700924974,
       "baseRate": 0.45708582834331335
     },
     "equity|5|BUY": {
-      "calls": 4663,
-      "hitRate": 0.5584387733218957,
+      "calls": 4695,
+      "hitRate": 0.5588924387646432,
       "baseRate": 0.5511282490716938
     },
     "equity|5|SELL": {
-      "calls": 1121,
-      "hitRate": 0.4335414808206958,
+      "calls": 1124,
+      "hitRate": 0.43505338078291816,
       "baseRate": 0.4488717509283062
     },
     "equity|7|BUY": {
-      "calls": 4891,
-      "hitRate": 0.5716622367613985,
+      "calls": 4904,
+      "hitRate": 0.5705546492659054,
       "baseRate": 0.5630901287553648
     },
     "equity|7|SELL": {
-      "calls": 1094,
-      "hitRate": 0.43418647166361973,
+      "calls": 1095,
+      "hitRate": 0.434703196347032,
       "baseRate": 0.4369098712446352
     },
     "equity|10|BUY": {
-      "calls": 5005,
-      "hitRate": 0.5732267732267732,
+      "calls": 5021,
+      "hitRate": 0.5729934276040629,
       "baseRate": 0.5695639701663798
     },
     "equity|10|SELL": {
-      "calls": 1122,
-      "hitRate": 0.44563279857397503,
+      "calls": 1121,
+      "hitRate": 0.44603033006244425,
       "baseRate": 0.43043602983362017
     },
     "equity|14|BUY": {
-      "calls": 5092,
-      "hitRate": 0.5856245090337785,
+      "calls": 5116,
+      "hitRate": 0.5854182955433933,
       "baseRate": 0.5782959124928037
     },
     "equity|14|SELL": {
-      "calls": 1117,
-      "hitRate": 0.4341987466427932,
+      "calls": 1114,
+      "hitRate": 0.43447037701974867,
       "baseRate": 0.42170408750719635
     },
     "equity|20|BUY": {
-      "calls": 5181,
-      "hitRate": 0.5952518818760857,
+      "calls": 5187,
+      "hitRate": 0.5949489107383844,
       "baseRate": 0.5951967592592593
     },
     "equity|20|SELL": {
-      "calls": 1066,
-      "hitRate": 0.3649155722326454,
+      "calls": 1064,
+      "hitRate": 0.3674812030075188,
       "baseRate": 0.4048032407407407
     },
     "equity|30|BUY": {
       "calls": 5054,
-      "hitRate": 0.5922041946972695,
+      "hitRate": 0.5929956470122675,
       "baseRate": 0.5955925277291302
     },
     "equity|30|SELL": {
-      "calls": 1049,
-      "hitRate": 0.3593898951382269,
+      "calls": 1071,
+      "hitRate": 0.35947712418300654,
       "baseRate": 0.4044074722708698
     },
     "crypto|1|BUY": {
-      "calls": 562,
-      "hitRate": 0.4893238434163701,
+      "calls": 574,
+      "hitRate": 0.48606271777003485,
       "baseRate": 0.4965034965034965
     },
     "crypto|1|SELL": {
-      "calls": 186,
-      "hitRate": 0.44623655913978494,
+      "calls": 187,
+      "hitRate": 0.4385026737967914,
       "baseRate": 0.5034965034965035
     },
     "crypto|2|BUY": {
-      "calls": 764,
-      "hitRate": 0.5026178010471204,
+      "calls": 776,
+      "hitRate": 0.49871134020618557,
       "baseRate": 0.5108142493638677
     },
     "crypto|2|SELL": {
-      "calls": 271,
-      "hitRate": 0.3948339483394834,
+      "calls": 267,
+      "hitRate": 0.3895131086142322,
       "baseRate": 0.48918575063613234
     },
     "crypto|3|BUY": {
-      "calls": 829,
-      "hitRate": 0.4969843184559711,
+      "calls": 841,
+      "hitRate": 0.4958382877526754,
       "baseRate": 0.5264162953532782
     },
     "crypto|3|SELL": {
-      "calls": 278,
-      "hitRate": 0.35611510791366907,
+      "calls": 281,
+      "hitRate": 0.34519572953736655,
       "baseRate": 0.47358370464672184
     },
     "crypto|5|BUY": {
-      "calls": 958,
-      "hitRate": 0.5052192066805845,
+      "calls": 962,
+      "hitRate": 0.5041580041580042,
       "baseRate": 0.5181644359464627
     },
     "crypto|5|SELL": {
-      "calls": 230,
-      "hitRate": 0.40869565217391307,
+      "calls": 229,
+      "hitRate": 0.39737991266375544,
       "baseRate": 0.48183556405353734
     },
     "crypto|7|BUY": {
-      "calls": 942,
-      "hitRate": 0.5138004246284501,
+      "calls": 946,
+      "hitRate": 0.514799154334038,
       "baseRate": 0.5162731333758774
     },
     "crypto|7|SELL": {
-      "calls": 306,
-      "hitRate": 0.4803921568627451,
+      "calls": 312,
+      "hitRate": 0.46794871794871795,
       "baseRate": 0.48372686662412256
     },
     "crypto|10|BUY": {
-      "calls": 1080,
-      "hitRate": 0.5194444444444445,
+      "calls": 1090,
+      "hitRate": 0.5155963302752293,
       "baseRate": 0.5223785166240409
     },
     "crypto|10|SELL": {
-      "calls": 180,
-      "hitRate": 0.4666666666666667,
+      "calls": 179,
+      "hitRate": 0.46368715083798884,
       "baseRate": 0.4776214833759591
     },
     "crypto|14|BUY": {
-      "calls": 1044,
-      "hitRate": 0.5134099616858238,
+      "calls": 1050,
+      "hitRate": 0.5133333333333333,
       "baseRate": 0.5230769230769231
     },
     "crypto|14|SELL": {
-      "calls": 271,
-      "hitRate": 0.4095940959409594,
+      "calls": 270,
+      "hitRate": 0.4111111111111111,
       "baseRate": 0.4769230769230769
     },
     "crypto|20|BUY": {
-      "calls": 1123,
-      "hitRate": 0.4986642920747996,
+      "calls": 1124,
+      "hitRate": 0.49644128113879005,
       "baseRate": 0.5154440154440154
     },
     "crypto|20|SELL": {
-      "calls": 150,
-      "hitRate": 0.44666666666666666,
+      "calls": 147,
+      "hitRate": 0.43537414965986393,
       "baseRate": 0.4845559845559846
     },
     "crypto|30|BUY": {
-      "calls": 1173,
-      "hitRate": 0.5046888320545609,
+      "calls": 1177,
+      "hitRate": 0.5038232795242141,
       "baseRate": 0.5194300518134715
     },
     "crypto|30|SELL": {
-      "calls": 138,
-      "hitRate": 0.5217391304347826,
+      "calls": 142,
+      "hitRate": 0.5,
       "baseRate": 0.48056994818652854
     }
   }

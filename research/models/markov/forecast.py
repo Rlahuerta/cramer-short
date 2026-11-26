@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import numpy as np
-from research.models.markov.core import NUM_STATES, RegimeState, REGIME_STATES, STATE_INDEX
+from research.models.markov.core import FORECAST_VOL_SCALE, NUM_STATES, RegimeState, REGIME_STATES, STATE_INDEX
 from research.models.soft_regime import blend_regime_mixtures
 
 
@@ -127,4 +127,4 @@ def _compute_horizon_drift_vol(
     sigma_n = sigma_obs * math.sqrt(horizon)
     mu_n = compute_path_integrated_drift(horizon, P, regime_stats, initial_state, start_mixture)
 
-    return {"mu_n": mu_n, "sigma_n": sigma_n}
+    return {"mu_n": mu_n, "sigma_n": sigma_n * FORECAST_VOL_SCALE}

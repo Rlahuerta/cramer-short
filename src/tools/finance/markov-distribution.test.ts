@@ -2911,8 +2911,18 @@ describe('PR3F Lever: short-horizon crypto disagreement prior', () => {
       btcReturnThresholdMultiplier: 0.5,
     });
 
-    const rawPUp = interpolateSurvival(defaultResult.rawDistribution, currentPrice);
-    const calibratedPUp = interpolateSurvival(defaultResult.distribution, currentPrice);
+    // The blend compares the legacy decision surfaces, raw against calibrated: read them the same way.
+    const rawDecisionResult = await computeMarkovDistribution({
+      ticker: 'BTC-USD',
+      horizon: 7,
+      currentPrice,
+      historicalPrices: prices,
+      polymarketMarkets,
+      cryptoShortHorizonRawDecisionAblation: true,
+      btcReturnThresholdMultiplier: 0.5,
+    });
+    const rawPUp = interpolateSurvival(rawDecisionResult.decisionDistribution, currentPrice);
+    const calibratedPUp = interpolateSurvival(defaultResult.decisionDistribution, currentPrice);
     const disagreement = Math.abs(calibratedPUp - rawPUp);
 
     // Canonical surfaces untouched (excluding MC-derived CI bounds which jitter)

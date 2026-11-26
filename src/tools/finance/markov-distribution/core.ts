@@ -104,9 +104,17 @@ export const RECOMMENDED_CONFIDENCE_THRESHOLD = FORECAST_LAB_MARKOV_PARAMETER_DE
  * thresholds scaled to match so HOLD stays stable. The R²_OS validator stays unshrunk: its thresholds were set on
  * unshrunk predictions. The unshrunk drift was overconfident: forecasts with P(up) >= 0.65 averaged 0.72 but came
  * true 43-66% of the time. The strongest shrink on the grid (0.25/0.5/0.75) that passed the live-config benchmark; on
- * 8 held-out tickers it improved Brier by 0.0067 (2026-11-23). With it, the central 90% interval covers ~88%.
+ * 8 held-out tickers it improved Brier by 0.0067 (2026-11-23). FORECAST_VOL_SCALE then sets the interval width.
  */
 export const FORECAST_DRIFT_SHRINK = 0.5;
+
+/**
+ * Factor on the forecast's horizon volatility (the distribution, its calibration and the trajectory). Over
+ * 2021-2025 (14 tickers, 5-30d) the unscaled central intervals covered 88.8% / 94.0% / 98.6% at 90 / 95 / 99%,
+ * short by a similar margin in every period; 1.05 brings them to 90.1% / 94.9% / 98.9% (the 90% interval at
+ * 90.0 / 89.9 / 90.9 / 89.9 for 2021 / 2022 / 2023 / 2024-25) and lowers Brier slightly in every period (2026-11-26).
+ */
+export const FORECAST_VOL_SCALE = 1.05;
 export interface SentimentSignal {
   bullish: number;  // 0–1
   bearish: number;  // 0–1

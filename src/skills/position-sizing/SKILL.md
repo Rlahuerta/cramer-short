@@ -114,7 +114,7 @@ positionSizePct = positionValue / portfolioValue × 100
 **Method B: Kelly criterion (aggressive, for experienced traders)**
 
 ```
-winProbability = markov actionSignal.buyProbability (for long) or sellProbability (for short)
+winProbability = diagnostics.callTrackRecord.hitRate   // the measured hit rate of this call; skip Method B if it is null
 lossProbability = 1 - winProbability
 winLossRatio = upside / downside  // from risk/reward calculation
 
@@ -125,7 +125,9 @@ fractionalKelly = max(0, min(0.25, fractionalKelly))  // cap at 25% portfolio
 positionValue = portfolioValue × fractionalKelly
 ```
 
-**Recommendation:** Use Method A for most users. Method B can produce aggressive sizes during high-conviction setups — only for experienced traders with strong risk tolerance.
+Do not plug in `buyProbability`/`sellProbability`: they are the model's estimates and did not beat the market's own up/down share over 2021–2025. The track record's hit rate sits close to its base rate, so Kelly here sizes a bet on the market's drift, not on a model edge; say so when you show it.
+
+**Recommendation:** Use Method A for most users. Method B can produce aggressive sizes — only for experienced traders with strong risk tolerance.
 
 ### Step 5 — Check Portfolio Concentration
 

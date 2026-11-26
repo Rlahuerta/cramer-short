@@ -12,6 +12,7 @@ import {
   type RegimeState,
   type TrajectoryPoint,
   type TransitionMatrix,
+  FORECAST_VOL_SCALE,
 } from './core.js';
 import { matPow } from './transition.js';
 import {
@@ -392,7 +393,7 @@ export function computeHorizonDriftVol(
   regimeSpecificSigmaThreshold?: number,
   garchScales?: readonly number[],
   terminalStateWeights?: readonly number[],
-  /** Factor on the horizon drift (FORECAST_DRIFT_SHRINK for forecasts); volatility is unchanged. */
+  /** Factor on the horizon drift (FORECAST_DRIFT_SHRINK for forecasts). The volatility always carries FORECAST_VOL_SCALE. */
   driftScale = 1,
 ): { mu_n: number; sigma_n: number } {
   const stateWeights = terminalStateWeights
@@ -454,7 +455,7 @@ export function computeHorizonDriftVol(
     sigma_n = sigma_eff * Math.sqrt(varianceScale);
   }
 
-  return { mu_n: mu_n * driftScale, sigma_n };
+  return { mu_n: mu_n * driftScale, sigma_n: sigma_n * FORECAST_VOL_SCALE };
 }
 
 /**
@@ -577,7 +578,7 @@ export function computeTrajectory(
     }
 
     dailyDrifts[d] = muDay * driftScale;
-    dailyVols[d] = sigmaObs;
+    dailyVols[d] = sigmaObs * FORECAST_VOL_SCALE;
   }
 
   // R4 Phase B — multiplicatively apply GARCH per-day vol scalars when

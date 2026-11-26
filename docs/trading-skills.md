@@ -92,9 +92,8 @@ Use the swing-trade-setup skill for SPY
 **Position Size:** 1% portfolio risk (standard size)
 
 **Flags:**
-- ✓ Regime confluence (bull regime + bullish pullback)
 - ✓ Volume drying up on pullback (healthy, no distribution)
-- ✓ Markov buyProbability: 0.64
+- Markov: BUY (P(up) 0.64); track record for ETFs at 14d: BUY calls right 64% of the time, the price rose on 64% of all days (no edge over the market)
 ```
 
 #### Setup with Horizon Specification
@@ -129,9 +128,8 @@ Compare swing trade setups for SPY vs QQQ vs IAU — which has the best risk/rew
 | Field | What to Look For |
 |-------|-----------------|
 | **Risk/Reward** | ≥ 2:1 |
-| **Regime confluence** | Bull regime + bullish setup = stronger signal |
 | **Volume confirmation** | Breakout volume > 1.5× average = strong; Pullback volume < average = healthy |
-| **Markov buyProbability** | > 0.55 for long setups; < 0.45 for short setups |
+| **Markov call** | Context, not confirmation: quote the BUY/SELL with its track record (hit rate vs the share of days that moved its way); over 2021–2025 neither the call nor the regime label beat the market's own up/down share |
 
 ### Risk-Based Sizing
 
@@ -319,7 +317,7 @@ Use the swing-trade-setup skill for SPY
 Use the swing-trade-setup skill for QQQ
 Use the swing-trade-setup skill for IAU
 
-# Compare risk/reward and regime confluence
+# Compare risk/reward and volume confirmation
 ```
 
 ### Workflow: Portfolio Rebalancing
@@ -338,7 +336,7 @@ Use the position-sizing skill for each ticker in my watchlist
 Both skills take their stop-loss and target levels from the Markov distribution, which any ticker with enough price
 history gets. No asset or horizon has a measured directional edge: over 2021–2025 the model's BUY/SELL calls did not
 beat always calling "up" for any of the 14 backtest tickers at 5–30 days (see
-[`markov-when-to-use.md`](markov-when-to-use.md#measured-accuracy)). Judge setups by risk/reward, regime and volume.
+[`markov-when-to-use.md`](markov-when-to-use.md#measured-accuracy)). Judge setups by risk/reward and volume.
 
 ---
 
@@ -350,7 +348,7 @@ Use the swing-trade-setup skill for SPY with a 20-day horizon
 
 # Output shows:
 # - Risk/Reward: 3.5:1
-# - Regime: bull, confluence: yes
+# - Markov: BUY with its track record (context only)
 
 # Follow up with:
 Use the position-sizing skill for SPY with a $100,000 portfolio
@@ -399,7 +397,7 @@ Use the position-sizing skill for GLD with $25,000 allocation
 
 ### "Should I skip trades when Markov `predictionConfidence` is low?"
 
-No: the score did not predict whether calls were right (see the Overview). Judge the setup by risk/reward, regime confluence and volume, and size it by risk.
+No: the score did not predict whether calls were right (see the Overview). Judge the setup by risk/reward and volume, and size it by risk.
 
 ### "The skill recommends 25% position size — is that too much?"
 
