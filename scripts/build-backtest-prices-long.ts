@@ -4,7 +4,7 @@
  * Same source and format as backtest-prices.json (Yahoo Finance daily chart, raw close: split-adjusted, not
  * dividend-adjusted, rounded to cents), kept as a separate file so tests pinned to the 2024-25 fixture do not move.
  *
- *   bun run scripts/build-backtest-prices-long.ts [out]
+ *   bun run scripts/build-backtest-prices-long.ts [out] [start=2021-01-01] [end=2025-12-31] [tickers=all, comma-separated]
  */
 import { join } from 'node:path';
 
@@ -35,9 +35,9 @@ export function chartToDailyCloses(result: ChartResult): { dates: string[]; clos
   return { dates, closes };
 }
 
-async function fetchDailyCloses(ticker: string): Promise<{ dates: string[]; closes: number[] }> {
-  const period1 = Date.parse(`${START}T00:00:00Z`) / 1000;
-  const period2 = Date.parse(`${END}T23:59:59Z`) / 1000;
+async function fetchDailyCloses(ticker: string, start: string, end: string): Promise<{ dates: string[]; closes: number[] }> {
+  const period1 = Date.parse(`${start}T00:00:00Z`) / 1000;
+  const period2 = Date.parse(`${end}T23:59:59Z`) / 1000;
   const res = await fetch(
     `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?period1=${period1}&period2=${period2}&interval=1d`,
     { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) },
@@ -48,17 +48,18 @@ async function fetchDailyCloses(ticker: string): Promise<{ dates: string[]; clos
 }
 
 if (import.meta.main) {
-  const [out = join(import.meta.dir, '..', 'src/tools/finance/fixtures/backtest-prices-2021-2025.json')] = process.argv.slice(2);
+  const [out = join(import.meta.dir, '..', 'src/tools/finance/fixtures/backtest-prices-2021-2025.json'), start = START, end = END, tickerList] = process.argv.slice(2);
   const tickers: Record<string, { type: string; closes: number[]; dates: string[]; count: number }> = {};
-  for (const [ticker, type] of Object.entries(TICKERS)) {
-    const { dates, closes } = await fetchDailyCloses(ticker);
+  for (const ticker of tickerList ? tickerList.split(',') : Object.keys(TICKERS)) {
+    const type = TICKERS[ticker] ?? 'crypto'; // tickers outside the list are crypto pairs such as ETH-USD
+    const { dates, closes } = await fetchDailyCloses(ticker, start, end);
     tickers[ticker] = { type, closes, dates, count: closes.length };
     console.log(`${ticker}: ${closes.length} closes, ${dates[0]}..${dates[dates.length - 1]}`);
   }
   await Bun.write(out, JSON.stringify({
     generatedAt: new Date().toISOString(),
-    startDate: START,
-    endDate: END,
+    startDate: start,
+    endDate: end,
     source: 'Yahoo Finance daily chart, raw close (split-adjusted, not dividend-adjusted), rounded to cents',
     tickers,
   }));
