@@ -5,6 +5,7 @@ import {
   classifyPolymarketQuestion,
   extractPriceLevels,
   type ForecastArbiterInput,
+  type ForecastArbiterResult,
   type ForecastMarketSemantics,
 } from './forecast-arbitrator.js';
 
@@ -172,6 +173,29 @@ export interface ArbiterReplayBundle {
     forecast?: ArbiterReplayForecastLabel;
     semantic?: ArbiterReplaySemanticLabel[];
   };
+  /** The arbitrator's verdict for these inputs, so verdicts can be scored once labeled. */
+  arbitration?: ArbiterReplayArbitration;
+}
+
+export interface ArbiterReplayArbitration {
+  verdict: string;
+  preferredDirection: 'long' | 'short' | 'neutral';
+  confidence: 'low' | 'medium' | 'high';
+  shouldEnterNow: boolean;
+  policyLevel: string;
+  longScore: number;
+  shortScore: number;
+}
+
+function isReplayArbitration(value: unknown): value is ArbiterReplayArbitration {
+  if (!isRecord(value)) return false;
+  return typeof value.verdict === 'string'
+    && (value.preferredDirection === 'long' || value.preferredDirection === 'short' || value.preferredDirection === 'neutral')
+    && (value.confidence === 'low' || value.confidence === 'medium' || value.confidence === 'high')
+    && typeof value.shouldEnterNow === 'boolean'
+    && typeof value.policyLevel === 'string'
+    && isFiniteNumber(value.longScore)
+    && isFiniteNumber(value.shortScore);
 }
 
 export const DEFAULT_ARBITER_REPLAY_BUNDLES_PATH = cramerShortPath('arbiter-replay-bundles.jsonl');
@@ -578,6 +602,8 @@ export function parseArbiterReplayBundleLine(rawLine: string): ArbiterReplayBund
       if (parsed.whale.txHashes !== undefined && !isStringArray(parsed.whale.txHashes)) return null;
     }
 
+    if (parsed.arbitration !== undefined && !isReplayArbitration(parsed.arbitration)) return null;
+
     if (parsed.labels !== undefined) {
       if (!isRecord(parsed.labels)) return null;
       if (parsed.labels.forecast !== undefined) {
@@ -685,6 +711,7 @@ export function parseArbiterReplayBundleLine(rawLine: string): ArbiterReplayBund
       ...(parsed.onchainContext !== undefined ? { onchainContext: parsed.onchainContext as ArbiterReplayBundle['onchainContext'] } : {}),
       warnings: [...warnings],
       ...(labels ? { labels } : {}),
+      ...(parsed.arbitration !== undefined ? { arbitration: { ...(parsed.arbitration as ArbiterReplayArbitration) } } : {}),
     };
   } catch {
     return null;
@@ -877,6 +904,8 @@ export function createArbiterReplayBundleFromArbitratorInput(params: {
   capturedAt: string;
   input: ForecastArbiterInput;
   warnings?: string[];
+  /** The verdict produced from `input`, logged so it can be scored. */
+  result?: ForecastArbiterResult;
 }): ArbiterReplayBundle {
   const input = params.input;
   const warnings = [...(params.warnings ?? [])];
@@ -930,6 +959,19 @@ export function createArbiterReplayBundleFromArbitratorInput(params: {
     ...(polymarket !== undefined ? { polymarket } : {}),
     ...(whale !== undefined ? { whale } : {}),
     warnings,
+    ...(params.result
+      ? {
+          arbitration: {
+            verdict: params.result.verdict,
+            preferredDirection: params.result.preferredDirection,
+            confidence: params.result.confidence,
+            shouldEnterNow: params.result.shouldEnterNow,
+            policyLevel: params.result.policy.level,
+            longScore: params.result.leverageAssessment.long.riskAdjustedScore,
+            shortScore: params.result.leverageAssessment.short.riskAdjustedScore,
+          },
+        }
+      : {}),
   };
 }
 

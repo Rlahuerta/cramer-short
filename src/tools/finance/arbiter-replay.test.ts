@@ -26,6 +26,7 @@ import {
   type RawPolymarketReplayRow,
   type RawWhaleReplayRow,
 } from './arbiter-replay.js';
+import { arbitrateForecast } from './forecast-arbitrator.js';
 
 const tempDirs: string[] = [];
 
@@ -657,6 +658,31 @@ describe('Phase 3 whale replay normalization', () => {
         },
       ],
     });
+  });
+});
+
+describe('arbiter verdict capture', () => {
+  it('records the verdict and scores with the inputs, and keeps them through a JSON round trip', () => {
+    const input = {
+      ticker: 'BTC',
+      horizon_days: 7,
+      current_price: 68000,
+      markov: { forecast_return: 0.02, confidence: 0.6 },
+      polymarket: { forecast_return: -0.012, quality_score: 70, markets: [{ question: 'Will Bitcoin be above $70,000 on May 7?', probability: 0.4 }] },
+    };
+    const result = arbitrateForecast(input);
+    const bundle = createArbiterReplayBundleFromArbitratorInput({ capturedAt: '2026-04-30T12:00:00.000Z', input, result });
+
+    expect(bundle.arbitration).toEqual({
+      verdict: result.verdict,
+      preferredDirection: result.preferredDirection,
+      confidence: result.confidence,
+      shouldEnterNow: result.shouldEnterNow,
+      policyLevel: result.policy.level,
+      longScore: result.leverageAssessment.long.riskAdjustedScore,
+      shortScore: result.leverageAssessment.short.riskAdjustedScore,
+    });
+    expect(parseArbiterReplayBundleLine(JSON.stringify(bundle))?.arbitration).toEqual(bundle.arbitration);
   });
 });
 
