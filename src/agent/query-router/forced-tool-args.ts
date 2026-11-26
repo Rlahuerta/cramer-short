@@ -3,7 +3,7 @@ import { detectAssetType } from '../../tools/finance/signal-extractor.js';
 import {
   inferDistributionTicker,
   inferDistributionHorizon,
-  inferBtcShortHorizonForecastHorizon,
+  inferMarkovQueryHorizon,
 } from './distribution.js';
 import {
   isCryptoForecastPipelineQuery,
@@ -46,7 +46,8 @@ export function buildForcedPolymarketForecastArgs(query: string, toolCalls: Tool
     ticker: detected.ticker,
   };
 
-  const horizon = inferDistributionHorizon(query);
+  // The same resolver as the Markov call, so both forecasts answer the same horizon.
+  const horizon = inferMarkovQueryHorizon(query);
   if (horizon) args.horizon_days = horizon;
 
   const currentPrice = extractCurrentPriceForCryptoQuery(query, toolCalls);
@@ -109,11 +110,7 @@ export function buildForcedCryptoForecastMarkovArgs(query: string): {
   if (!isCryptoForecastPipelineQuery(query)) return null;
 
   const ticker = inferDistributionTicker(query);
-  let horizon = inferDistributionHorizon(query);
-
-  if (!horizon && ticker === 'BTC-USD') {
-    horizon = inferBtcShortHorizonForecastHorizon(query);
-  }
+  const horizon = inferMarkovQueryHorizon(query);
 
   if (!ticker || !horizon || horizon > 14) return null;
 

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import type { ToolCallRecord } from './scratchpad.js';
 import {
+  buildForcedCryptoForecastMarkovArgs,
   buildForcedForecastArbiterArgs,
+  buildForcedPolymarketForecastArgs,
   detectBtcShortHorizonDisagreement,
   shouldInjectBtcShortHorizonMixedEvidencePrompt,
 } from './query-router.js';
@@ -66,4 +68,17 @@ describe('Polymarket evidence from the real polymarket_forecast payload', () => 
     ].join('\n');
     expect(shouldInjectBtcShortHorizonMixedEvidencePrompt('Provide a BTC forecast for the next 7 days', fullToolResults)).toBe(true);
   });
+});
+
+describe('one horizon for Markov and Polymarket on a crypto query', () => {
+  // Crypto trades every day, so its daily bars and Polymarket's resolution dates both count calendar days.
+  for (const [query, days] of [
+    ['Provide a BTC forecast for next week', 7],
+    ['Provide a BTC forecast for the next 2 weeks', 14],
+  ] as const) {
+    it(`${query} -> ${days} days for both tools`, () => {
+      expect(buildForcedCryptoForecastMarkovArgs(query)?.horizon).toBe(days);
+      expect(buildForcedPolymarketForecastArgs(query, [])?.horizon_days).toBe(days);
+    });
+  }
 });

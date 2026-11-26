@@ -1907,7 +1907,7 @@ describe('Agent', () => {
 
       expect(buildForcedMarkovArgs('Show me a day-by-day trajectory for BTC-USD over 8 weeks')).toEqual({
         ticker: 'BTC-USD',
-        horizon: 40,
+        horizon: 56,
         trajectory: true,
         trajectoryDays: 30,
       });
@@ -2217,19 +2217,19 @@ describe('Agent', () => {
       ).toBeNull();
     });
 
-    it('buildForcedCryptoForecastMarkovArgs uses BTC-only next week fallback of 5 trading days', () => {
+    it('buildForcedCryptoForecastMarkovArgs uses a BTC-only next week fallback of 7 days (crypto trades daily)', () => {
       expect(buildForcedCryptoForecastMarkovArgs('Provide a BTC forecast for next week')).toEqual({
         ticker: 'BTC-USD',
-        horizon: 5,
+        horizon: 7,
         trajectory: true,
-        trajectoryDays: 5,
+        trajectoryDays: 7,
       });
 
       expect(buildForcedCryptoForecastMarkovArgs('Give me a BTC prediction over the next week')).toEqual({
         ticker: 'BTC-USD',
-        horizon: 5,
+        horizon: 7,
         trajectory: true,
-        trajectoryDays: 5,
+        trajectoryDays: 7,
       });
 
       // ETH "next week" must not get the BTC-only fallback
@@ -3236,7 +3236,7 @@ describe('Agent', () => {
       const toolCalls = [
         {
           tool: 'markov_distribution',
-          args: { ticker: 'BTC-USD', horizon: 5, trajectory: true, trajectoryDays: 5 },
+          args: { ticker: 'BTC-USD', horizon: 7, trajectory: true, trajectoryDays: 7 },
           result: JSON.stringify({
             data: {
               _tool: 'markov_distribution',
@@ -3244,7 +3244,7 @@ describe('Agent', () => {
               abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
               canonical: {
                 ticker: 'BTC-USD',
-                horizon: 5,
+                horizon: 7,
                 diagnostics: {
                   trustedAnchors: 0,
                   totalAnchors: 3,
@@ -3302,7 +3302,7 @@ describe('Agent', () => {
       )).toBe(false);
     });
 
-    it('does not treat a non-5-day BTC abstain as matching a next-week query', () => {
+    it('does not treat a non-7-day BTC abstain as matching a next-week query', () => {
       const toolCalls = [
         {
           tool: 'markov_distribution',

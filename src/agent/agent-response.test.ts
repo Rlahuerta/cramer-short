@@ -528,7 +528,7 @@ describe('buildAbstainingBtcShortHorizonForecastAnswer', () => {
     const scratchpad = new Scratchpad('btc next week abstain test');
     scratchpad.addToolResult(
       'markov_distribution',
-      { ticker: 'BTC-USD', horizon: 5 },
+      { ticker: 'BTC-USD', horizon: 7 },
       JSON.stringify({
         data: {
           _tool: 'markov_distribution',
@@ -536,7 +536,7 @@ describe('buildAbstainingBtcShortHorizonForecastAnswer', () => {
           abstainReasons: ['No trusted terminal prediction-market anchors are available for this horizon.'],
           canonical: {
             ticker: 'BTC-USD',
-            horizon: 5,
+            horizon: 7,
             diagnostics: {
               trustedAnchors: 0,
               totalAnchors: 3,
