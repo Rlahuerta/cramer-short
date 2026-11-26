@@ -9,8 +9,8 @@
  *   1. S&P 500 1-month change  (w=0.20)
  *   2. 10Y Treasury yield 1-month change  (w=0.15)
  *   3. Inflation expectations 1-month change  (w=0.15)
- *   4. Approval proxy  (w=0.10) — Polymarket approval-market probability, else
- *      UMCSENT consumer sentiment; not a polled approval rating
+ *   4. Approval proxy  (w=0.10) — UMCSENT consumer sentiment against its last 3 years;
+ *      not a polled approval rating
  *
  * Cramer-Short extensions (40% weight):
  *   5. Gas prices (UGA ETF) 1-month change  (w=0.12)
@@ -461,7 +461,7 @@ async function fetchStockHistory(ticker: string, days = 120): Promise<number[]> 
   // Fallback: FRED series for known tickers
   const fredFallback: Record<string, string> = {
     SPY: 'SP500',      // S&P 500 index (close proxy for SPY)
-    UGA: 'GASDESW',    // US regular gas price (weekly, proxy for UGA)
+    UGA: 'DGASNYH',    // NY Harbor gasoline spot (daily, proxy for UGA)
   };
   const fredId = fredFallback[ticker.toUpperCase()];
   if (fredId) {
@@ -511,38 +511,10 @@ async function fetchPolicyReversalProb(): Promise<{ prob: number | null; count: 
   }
 }
 
-/** Search Polymarket for Trump approval markets.
- *  Fallback: FRED consumer sentiment (UMCSENT) as proxy. */
-async function fetchApprovalData(): Promise<number | null> {
-  // Primary: Polymarket approval markets
-  try {
-    const { fetchPolymarketMarkets } = await import('./polymarket.js');
-    const results = await fetchPolymarketMarkets('Trump approval rating', 5);
-
-    // Look for markets about approval percentage
-    for (const market of results) {
-      const q = market.question.toLowerCase();
-      if (q.includes('approval') && market.probability > 0) {
-        // Probability that approval is above X% — use as proxy
-        return market.probability * 100;
-      }
-    }
-  } catch {
-    // fall through to FRED fallback
-  }
-  // Fallback: FRED consumer sentiment index as proxy (UMCSENT, monthly)
-  // Higher sentiment ≈ higher approval. Normalize to 0-100 scale.
-  try {
-    const vals = await fetchFredHistory('UMCSENT', 90);
-    if (vals.length > 0) {
-      // UMCSENT ranges roughly 50-110; normalize to 0-100
-      const latest = vals[vals.length - 1];
-      return Math.max(0, Math.min(100, latest));
-    }
-  } catch {
-    // FRED also failed
-  }
-  return null;
+/** Approval proxy: monthly UMCSENT consumer sentiment over 3 years, so the latest reading can be z-scored.
+ *  (A single Polymarket approval probability has no history to standardize against.) */
+async function fetchApprovalData(): Promise<number[]> {
+  return fetchFredHistory('UMCSENT', 3 * 365);
 }
 
 export function parseSentimentScore(report: string): number | null {
@@ -736,7 +708,7 @@ export async function computeTrumpPressureIndex(): Promise<TrumpPressureResult> 
     fetchStockHistory('UGA', 120).catch(warnAndFallback('UGA history', [] as number[])),
     fetchFredHistory('DGS10', 120).catch(warnAndFallback('DGS10 history', [] as number[])),
     fetchFredHistory('T5YIE', 120).catch(warnAndFallback('T5YIE history', [] as number[])),
-    fetchApprovalData().catch(warnAndFallback('approval data', null)),
+    fetchApprovalData().catch(warnAndFallback('approval data', [] as number[])),
     fetchPolicyReversalProb().catch(warnAndFallback('policy reversal probability', { prob: null as number | null, count: 0 })),
     fetchPolicySentiment().catch(warnAndFallback('policy sentiment', null)),
   ]);
@@ -779,9 +751,9 @@ export async function computeTrumpPressureIndex(): Promise<TrumpPressureResult> 
     warnings.push('Inflation expectations data unavailable (FRED T5YIE) — weight redistributed');
   }
 
-  // 4. Approval proxy (Polymarket approval-market probability or UMCSENT)
-  if (approvalData !== null) {
-    componentResults.set('approval', { values: [approvalData], quality: 'stale' });
+  // 4. Approval proxy (UMCSENT consumer sentiment, monthly)
+  if (approvalData.length >= 2) {
+    componentResults.set('approval', { values: approvalData, quality: 'stale' });
   } else {
     componentResults.set('approval', { values: [], quality: 'unavailable' });
     warnings.push('Approval proxy data unavailable — weight redistributed');
@@ -977,7 +949,7 @@ Inspired by Deutsche Bank's methodology (Maximilian Uleer), extended with Polyma
 1. S&P 500 monthly change (DB core)
 2. 10Y Treasury yield change (DB core)
 3. Inflation expectations change (DB core)
-4. Approval proxy — Polymarket approval market or UMCSENT consumer sentiment (DB core)
+4. Approval proxy — UMCSENT consumer sentiment against its last 3 years (DB core)
 5. Gas prices monthly change (extension)
 6. Polymarket policy-reversal probability (extension)
 7. Social sentiment score (extension)

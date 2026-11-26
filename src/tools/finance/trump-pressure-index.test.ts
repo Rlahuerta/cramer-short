@@ -6,8 +6,10 @@
  *         alert detection, and historical landmark matching.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, spyOn } from 'bun:test';
+import { api } from './api.js';
 import {
+  computeTrumpPressureIndex,
   computeZScore,
   computeMonthlyChange,
   classifyPressureRegime,
@@ -680,5 +682,45 @@ describe('parseSentimentScore', () => {
     expect(parseSentimentScore('## Overall: 🔴 Bearish (score -17/100)')).toBe(-17);
     expect(parseSentimentScore('## Overall: ⚪ Neutral (score 0/100)')).toBe(0);
     expect(parseSentimentScore('no headline')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeTrumpPressureIndex — data fallbacks (no network)
+// ---------------------------------------------------------------------------
+
+describe('computeTrumpPressureIndex data fallbacks', () => {
+  // FRED publishes each series at its own frequency; the stub answers the requested window at that frequency.
+  const STEP_DAYS: Record<string, number> = { GASDESW: 7, UMCSENT: 30 };
+  function fredCsv(url: URL): string {
+    const id = url.searchParams.get('id') ?? '';
+    const step = (STEP_DAYS[id] ?? 1) * 86_400_000;
+    const rows = ['DATE,VALUE'];
+    for (let t = Date.parse(url.searchParams.get('cosd') ?? ''), i = 0; t <= Date.now(); t += step, i++) {
+      rows.push(`${new Date(t).toISOString().slice(0, 10)},${(100 + 5 * Math.sin(i / 3)).toFixed(3)}`);
+    }
+    return rows.join('\n');
+  }
+
+  it('scores gas and the approval proxy from FRED when Financial Datasets refuses prices', async () => {
+    const apiSpy = spyOn(api, 'get').mockRejectedValue(new Error('FINANCIAL_DATASETS_PREMIUM_REQUIRED'));
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(Object.assign(
+      async (input: Parameters<typeof fetch>[0]) => {
+        const url = new URL(input.toString());
+        return url.hostname === 'fred.stlouisfed.org'
+          ? new Response(fredCsv(url), { status: 200 })
+          : new Response('not found', { status: 404 });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    ));
+    try {
+      const result = await computeTrumpPressureIndex();
+      const quality = Object.fromEntries(result.components.map((c) => [c.name, c.dataQuality]));
+      expect(quality['Gas Prices']).not.toBe('unavailable');
+      expect(quality['Approval Proxy']).not.toBe('unavailable');
+    } finally {
+      apiSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
   });
 });
