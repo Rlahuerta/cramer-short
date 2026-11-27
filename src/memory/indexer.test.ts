@@ -123,3 +123,29 @@ describe('MemoryIndexer.sync — session transcripts', () => {
     expect(contents.some((c) => c.includes('AAPL'))).toBe(true);
   });
 });
+
+describe('MemoryIndexer.sync — unchanged files on a new start', () => {
+  it('does no per-chunk lookups or writes when nothing changed', async () => {
+    const { spyOn } = await import('bun:test');
+    const store = new MemoryStore(baseDir);
+    const options = { chunkTokens: 8, overlapTokens: 0, watchDebounceMs: 1000, indexSessions: false };
+    const embeddingClient = {
+      provider: 'ollama' as const, model: 'test',
+      embed: async (texts: string[]) => texts.map((_, i) => [1, i, 0, 0]),
+    };
+    await store.writeMemoryFile('MEMORY.md', 'Alpha paragraph about AAPL.\n\nBeta paragraph about MSFT.\n');
+    await new MemoryIndexer(store, db, { ...options, embeddingClient }).sync();
+    const chunksBefore = db.listAllChunks().length;
+
+    // A new process: a fresh indexer starts dirty and syncs the same, unchanged files.
+    const upserts = spyOn(db, 'upsertChunk');
+    const cacheReads = spyOn(db, 'getCachedEmbedding');
+    const embed = spyOn(embeddingClient, 'embed');
+    await new MemoryIndexer(store, db, { ...options, embeddingClient }).sync();
+
+    expect(upserts).not.toHaveBeenCalled();
+    expect(cacheReads).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(db.listAllChunks()).toHaveLength(chunksBefore);
+  });
+});

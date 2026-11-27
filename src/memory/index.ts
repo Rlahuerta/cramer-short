@@ -101,8 +101,9 @@ export class MemoryManager {
       model: this.config.embeddingModel,
     });
 
-    try {
-      this.db = await MemoryDatabase.create(`${this.store.getMemoryDir()}/index.sqlite`);
+    const dbPath = `${this.store.getMemoryDir()}/index.sqlite`;
+    const open = async (): Promise<void> => {
+      this.db = await MemoryDatabase.create(dbPath);
       const fingerprint = client ? `${client.provider}:${client.model}` : 'none:none';
       if (this.db.getProviderFingerprint() !== fingerprint) {
         this.db.clearEmbeddings();
@@ -119,10 +120,27 @@ export class MemoryManager {
       this.indexer.startWatching();
       await this.indexer.sync({ force: false });
       this.financialStore = new FinancialMemoryStore(this.db);
-    } catch (error) {
-      this.initError = error instanceof Error ? error.message : String(error);
+    };
+    const close = (): void => {
+      this.indexer?.stopWatching();
+      this.db?.close();
       this.db = null;
       this.indexer = null;
+    };
+
+    try {
+      try {
+        await open();
+      } catch (error) {
+        // A damaged index ("database disk image is malformed") left memory off for good; rebuild the indexes and retry once.
+        if (!/malformed|SQLITE_CORRUPT/i.test(error instanceof Error ? `${error.message} ${(error as { code?: string }).code ?? ''}` : String(error))) throw error;
+        close();
+        await MemoryDatabase.repair(dbPath);
+        await open();
+      }
+    } catch (error) {
+      this.initError = error instanceof Error ? error.message : String(error);
+      close();
     }
   }
 
