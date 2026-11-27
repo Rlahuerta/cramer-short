@@ -60,12 +60,27 @@ const ASSET_CONSISTENCY_GUARDED_TOOLS = new Set([
 export const REQUEST_CACHE_MAX_SIZE = 256;
 /** Max tracked entries in the in-flight request registry. */
 export const PENDING_REQUESTS_MAX_SIZE = 64;
+/** Backstop for a tool call that never settles, so one stalled tool can't hang a run. */
+export const TOOL_CALL_TIMEOUT_MS = 120_000;
+/** Forecast-lab runs experiment commands with their own per-command timeouts of up to 8 minutes. */
+const UNTIMED_TOOLS = new Set(['forecast_lab_run']);
 
 export interface AgentToolExecutorLimits {
   requestCacheMaxSize?: number;
   pendingRequestsMaxSize?: number;
   /** Max tool calls from one batch running at once; 0 or unset = unlimited. */
   parallelToolLimit?: number;
+  /** Per-call timeout; defaults to TOOL_CALL_TIMEOUT_MS. */
+  toolTimeoutMs?: number;
+}
+
+/** Rejects when `promise` has not settled within `ms`. The tool itself keeps running; this only stops the wait. */
+function withToolTimeout<T>(promise: Promise<T>, ms: number, toolName: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Tool '${toolName}' timed out after ${ms / 1000}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function setBoundedLru<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number): void {
@@ -108,6 +123,7 @@ export class AgentToolExecutor {
   private readonly requestCacheMaxSize: number;
   private readonly pendingRequestsMaxSize: number;
   private readonly parallelToolLimit: number;
+  private readonly toolTimeoutMs: number;
 
   /**
    * In-session request cache keyed on `toolName:stableJsonArgs`.
@@ -151,6 +167,7 @@ export class AgentToolExecutor {
     this.requestCacheMaxSize = limits.requestCacheMaxSize ?? REQUEST_CACHE_MAX_SIZE;
     this.pendingRequestsMaxSize = limits.pendingRequestsMaxSize ?? PENDING_REQUESTS_MAX_SIZE;
     this.parallelToolLimit = limits.parallelToolLimit ?? 0;
+    this.toolTimeoutMs = limits.toolTimeoutMs ?? TOOL_CALL_TIMEOUT_MS;
 
     // Pre-populate in-session cache from disk (fire-and-forget)
     loadCacheFromDisk().then((diskCache) => {
@@ -382,7 +399,10 @@ export class AgentToolExecutor {
       // Launch tool invocation -- closes the channel when it settles and
       // converts the raw result to string immediately so the shared Promise
       // stored in pendingRequests is always Promise<string>.
-      const resultPromise: Promise<string> = tool.invoke(toolArgs, config).then(
+      const invocation = tool.invoke(toolArgs, config);
+      const resultPromise: Promise<string> = (
+        UNTIMED_TOOLS.has(toolName) ? invocation : withToolTimeout(invocation, this.toolTimeoutMs, toolName)
+      ).then(
         (raw) => {
           channel.close();
           return typeof raw === 'string' ? raw : JSON.stringify(raw);

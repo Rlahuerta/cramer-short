@@ -24,7 +24,7 @@ afterAll(() => {
   for (const spy of crossSessionCacheSpies) spy.mockRestore();
 });
 
-const { AgentToolExecutor } = await import('./tool-executor.js');
+const { AgentToolExecutor, TOOL_CALL_TIMEOUT_MS } = await import('./tool-executor.js');
 const { createRunContext } = await import('./run-context.js');
 import type { ApprovalDecision, ToolEndEvent, ToolStartEvent } from './types.js';
 import type { RunContext } from './run-context.js';
@@ -1033,5 +1033,48 @@ describe('AgentToolExecutor — a lane that throws in a parallel batch', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+});
+
+describe('AgentToolExecutor — per-tool timeout', () => {
+  it('ends a stalled tool with a tool_error instead of hanging the run', async () => {
+    const stalled = {
+      name: 'stalled_tool',
+      invoke: () => new Promise<string>(() => {}),
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+    const executor = new AgentToolExecutor(new Map([['stalled_tool', stalled]]), undefined, undefined, undefined, {
+      toolTimeoutMs: 100,
+    });
+    const ctx = makeCtx();
+
+    const guard = new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 3_000));
+    const events = await Promise.race([drainEvents(executor.executeTool('stalled_tool', {}, ctx)), guard]);
+
+    expect(events).not.toBe('pending');
+    const error = (events as Array<{ type: string; error?: string }>).find((e) => e.type === 'tool_error');
+    expect(error?.error).toMatch(/stalled_tool.*timed out/);
+    expect(ctx.scratchpad.getToolCallRecords()[0]?.result).toMatch(/^Error: .*timed out/);
+  });
+
+  it('defaults to 120 s', () => {
+    expect(TOOL_CALL_TIMEOUT_MS).toBe(120_000);
+  });
+
+  it('leaves forecast_lab_run alone: its experiment commands carry their own, longer timeouts', async () => {
+    const slow = {
+      name: 'forecast_lab_run',
+      invoke: () => new Promise<string>((resolve) => setTimeout(() => resolve('{"ok":true}'), 300)),
+      lc_namespace: [],
+      schema: {},
+    } as unknown as import('@langchain/core/tools').StructuredToolInterface;
+    const executor = new AgentToolExecutor(new Map([['forecast_lab_run', slow]]), undefined, undefined, undefined, {
+      toolTimeoutMs: 100,
+    });
+
+    const events = await drainEvents(executor.executeTool('forecast_lab_run', { action: 'list-mutators' }, makeCtx()));
+
+    expect(events.some((e) => e.type === 'tool_end')).toBe(true);
   });
 });
