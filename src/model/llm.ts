@@ -139,15 +139,32 @@ export function getLlmCallTimeoutMs(): number {
   return resolveLlmCallTimeoutMs().value;
 }
 
+/**
+ * Settles with `promise`, or rejects as soon as `signal` aborts. ChatOllama only checks its signal
+ * when a chunk arrives, so without this a stalled server keeps the caller waiting forever.
+ */
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
 async function withTimeout<T>(
   fn: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   timeoutLabel = 'LLM call',
+  callerSignal?: AbortSignal,
 ): Promise<T> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
+  // Either source cancels the call: the caller's abort or our hard timeout.
+  const signal = callerSignal ? AbortSignal.any([callerSignal, ac.signal]) : ac.signal;
   try {
-    return await fn(ac.signal);
+    return await raceAbort(fn(signal), signal);
   } catch (e) {
     if (ac.signal.aborted) {
       throw new Error(`${timeoutLabel} timed out after ${timeoutMs / 1000}s. The model may be slow or unavailable.`);
@@ -163,7 +180,7 @@ interface ModelOpts {
   streaming: boolean;
 }
 
-type ModelFactory = (name: string, opts: ModelOpts, thinkOverride?: boolean) => BaseChatModel;
+type ModelFactory = (name: string, opts: ModelOpts, thinkOverride?: boolean, signal?: AbortSignal) => BaseChatModel;
 
 function getApiKey(envVar: string): string {
   const apiKey = getEnv(envVar);
@@ -255,7 +272,7 @@ const MODEL_FACTORIES: Record<string, ModelFactory> = {
         baseURL: 'https://api.deepseek.com',
       },
     }),
-  ollama: (name, opts, thinkOverride) => {
+  ollama: (name, opts, thinkOverride, signal) => {
     // Use explicit override when provided; fall back to model-name auto-detect.
     const useThink = thinkOverride !== undefined ? thinkOverride : isThinkingModel(name);
     const target = resolveOllamaTarget(name);
@@ -268,6 +285,14 @@ const MODEL_FACTORIES: Record<string, ModelFactory> = {
       ...(useThink ? { think: think as boolean } : {}),
       ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
       ...(target.headers ? { headers: target.headers } : {}),
+      // ChatOllama never hands the call signal to fetch; merge it in so a timeout or cancel closes the request.
+      ...(signal
+        ? {
+            fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
+              fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, signal]) : signal })
+            ) as typeof fetch,
+          }
+        : {}),
     });
   },
 };
@@ -290,12 +315,13 @@ export function getChatModel(
   modelName: string = DEFAULT_MODEL,
   streaming: boolean = false,
   thinkOverride?: boolean,
+  signal?: AbortSignal,
 ): BaseChatModel {
   const opts: ModelOpts = { streaming };
-  if (_overrideFactory) return _overrideFactory(modelName, opts, thinkOverride);
+  if (_overrideFactory) return _overrideFactory(modelName, opts, thinkOverride, signal);
   const provider = resolveProvider(modelName);
   const factory = MODEL_FACTORIES[provider.id] ?? DEFAULT_FACTORY;
-  return factory(modelName, opts, thinkOverride);
+  return factory(modelName, opts, thinkOverride, signal);
 }
 
 interface CallLlmOptions {
@@ -366,27 +392,21 @@ function buildAnthropicMessages(systemPrompt: string, userPrompt: string) {
 export async function callLlm(prompt: string, options: CallLlmOptions = {}): Promise<LlmResult> {
   const { model = DEFAULT_MODEL, systemPrompt, outputSchema, tools, signal, thinkOverride, timeoutMs } = options;
   const finalSystemPrompt = systemPrompt || getDefaultSystemPrompt();
-
-  const llm = getChatModel(model, false, thinkOverride);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let runnable: Runnable<any, any> = llm;
-
-  if (outputSchema) {
-    runnable = llm.withStructuredOutput(outputSchema, { strict: false });
-  } else if (tools && tools.length > 0 && llm.bindTools) {
-    runnable = llm.bindTools(tools);
-  }
-
   const provider = resolveProvider(model);
   let result;
 
-  result = await withTimeout(async (timeoutSignal) => {
-    // Combine the caller's abort signal with our hard timeout signal so either
-    // source can cancel the underlying HTTP request.
-    const combinedSignal = signal
-      ? AbortSignal.any([signal, timeoutSignal])
-      : timeoutSignal;
+  result = await withTimeout(async (combinedSignal) => {
+    const llm = getChatModel(model, false, thinkOverride, combinedSignal);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let runnable: Runnable<any, any> = llm;
+
+    if (outputSchema) {
+      runnable = llm.withStructuredOutput(outputSchema, { strict: false });
+    } else if (tools && tools.length > 0 && llm.bindTools) {
+      runnable = llm.bindTools(tools);
+    }
+
     const invokeOpts = { signal: combinedSignal };
 
     if (provider.id === 'anthropic') {
@@ -399,7 +419,7 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
       const messages = [new SystemMessage(finalSystemPrompt), new HumanMessage(prompt)];
       return withRetry(() => invokeRunnable(runnable, messages, invokeOpts), provider.displayName);
     }
-  }, timeoutMs ?? getLlmCallTimeoutMs(), `${provider.displayName} call (${model})`);
+  }, timeoutMs ?? getLlmCallTimeoutMs(), `${provider.displayName} call (${model})`, signal);
   const usage = extractUsage(result);
 
   // If no outputSchema and no tools, extract content from AIMessage
@@ -495,7 +515,7 @@ export async function* streamCallLlm(
 ): AsyncGenerator<string> {
   const { model = DEFAULT_MODEL, systemPrompt, signal, thinkOverride } = options;
   const finalSystemPrompt = systemPrompt ?? getDefaultSystemPrompt();
-  const llm = getChatModel(model, true, thinkOverride);
+  const llm = getChatModel(model, true, thinkOverride, signal);
   const provider = resolveProvider(model);
 
   const messages =
@@ -504,9 +524,10 @@ export async function* streamCallLlm(
       : [new SystemMessage(finalSystemPrompt), new HumanMessage(prompt)];
 
   const filter = new StreamingThinkFilter();
-  const stream = await withRetry(
-    () => llm.stream(messages, signal ? { signal } : {}),
-    provider.displayName,
+  // LangChain races later chunks against the signal itself, but not the wait for the first one.
+  const stream = await raceAbort(
+    withRetry(() => llm.stream(messages, signal ? { signal } : {}), provider.displayName),
+    signal,
   );
 
   // Buffer tokens until we reach a word boundary so the TUI receives
