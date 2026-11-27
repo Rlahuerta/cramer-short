@@ -228,6 +228,28 @@ describe('yahoo-client — quoteSummary', () => {
       .toBe(17_295_000_000);
   });
 
+  it('bounds both crumb-acquisition requests with a timeout signal', async () => {
+    const signals: Record<string, AbortSignal | null | undefined> = {};
+    fetchImpl = (url, init) => {
+      const u = url.toString();
+      if (u.includes('fc.yahoo.com')) {
+        signals.consent = init?.signal;
+        return Promise.resolve(makeTextResponse('ok', 200, 'A1=s'));
+      }
+      if (u.includes('getcrumb')) {
+        signals.crumb = init?.signal;
+        return Promise.resolve(makeTextResponse('crumb1'));
+      }
+      return Promise.resolve(makeJsonResponse({
+        quoteSummary: { result: [{ financialData: VALID_FINANCIAL_DATA }], error: null },
+      }));
+    };
+
+    await quoteSummary('AAPL', { modules: ['financialData'] });
+    expect(signals.consent).toBeInstanceOf(AbortSignal);
+    expect(signals.crumb).toBeInstanceOf(AbortSignal);
+  });
+
   it('throws when crumb endpoint returns empty string', async () => {
     fetchImpl = (url) => {
       const u = url.toString();

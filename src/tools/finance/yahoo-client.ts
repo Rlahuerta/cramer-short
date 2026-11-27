@@ -34,6 +34,7 @@ async function acquireCrumb(): Promise<CrumbCache> {
   const initRes = await fetch(CONSENT_URL, {
     headers: { 'User-Agent': UA, Accept: 'text/html' },
     redirect: 'follow',
+    signal: AbortSignal.timeout(15_000),
   });
   const rawCookie = initRes.headers.get('set-cookie') ?? '';
   // Only keep name=value pairs, strip directives, join multiple cookies
@@ -46,6 +47,7 @@ async function acquireCrumb(): Promise<CrumbCache> {
   // Step 2: exchange the session cookie for a crumb
   const crumbRes = await fetch(CRUMB_URL, {
     headers: { 'User-Agent': UA, Accept: '*/*', Cookie: cookie },
+    signal: AbortSignal.timeout(15_000),
   });
   if (!crumbRes.ok) {
     throw new Error(`Yahoo Finance refused the session (crumb) request (HTTP ${crumbRes.status})`);
