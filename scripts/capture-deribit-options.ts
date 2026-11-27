@@ -7,7 +7,7 @@
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { isTransientError, type RetryOptions, withRetry } from '../src/utils/retry.js';
+import { type RetryOptions, withRetry } from '../src/utils/retry.js';
 
 const OUTPUT_PATH = '.cramer-short/cache/options/deribit.jsonl';
 const BOOK_SUMMARY_URL = 'https://www.deribit.com/api/v2/public/get_book_summary_by_currency';
@@ -41,11 +41,14 @@ export async function captureDeribitOptions(fetchImpl: typeof fetch = fetch, ret
   const failures: string[] = [];
   for (const currency of ['BTC', 'ETH']) {
     try {
+      // Retry everything except a definite client error: Bun reports refused connections and DNS failures as a plain
+      // Error with a code (ConnectionRefused), not Node's TypeError, so a type check misses them.
+      const isClientError = (err: unknown) => /HTTP 4(?!29)\d\d/.test(err instanceof Error ? err.message : String(err));
       const result = await withRetry(async () => {
         const res = await fetchImpl(`${BOOK_SUMMARY_URL}?currency=${currency}&kind=option`);
         if (!res.ok) throw new Error(`Deribit ${currency} options: HTTP ${res.status}`);
         return ((await res.json()) as { result: DeribitSummary[] }).result;
-      }, { ...retry, shouldRetry: (err) => isTransientError(err) || err instanceof TypeError });
+      }, { ...retry, shouldRetry: (err) => !isClientError(err) });
       rows.push(toDeribitCaptureRow(currency, new Date(), result));
     } catch (err) {
       failures.push(`${currency}: ${err instanceof Error ? err.message : String(err)}`);

@@ -5166,8 +5166,8 @@ Use trajectoryDays to control the number of days (1–30, default=horizon).
       } else {
         abstainReasons.push('No trusted terminal prediction-market anchors are available for this horizon.');
       }
-    } else if (m.anchorCoverage.trustedAnchors === 0 && commodityModelOnly) {
-      // No abstain reason for anchors — commodity model-only bypass applies.
+    } else if (m.anchorCoverage.trustedAnchors === 0 && (commodityModelOnly || cryptoModelOnly)) {
+      // No abstain reason for anchors — the commodity or crypto model-only bypass applies.
     } else if (m.anchorCoverage.quality !== 'good' && !sparseCryptoAnchorAllowed) {
       abstainReasons.push(`Prediction-market anchor coverage is ${m.anchorCoverage.quality}, so calibrated scenario buckets would be overly model-driven.`);
     }

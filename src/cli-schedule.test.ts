@@ -325,6 +325,33 @@ describe('schedule command', () => {
     expect(existsSync(join(TEST_HOME, '.cramer-short', 'reports', '2026-05-02-briefing.md'))).toBe(false);
   });
 
+  it('fails the job, exits 1 and keeps an earlier report when the agent run ends in an error', async () => {
+    writeSchedules([
+      {
+        id: 'morning-briefing',
+        description: 'Daily watchlist briefing',
+        query: 'Run the watchlist-briefing skill',
+        outputFile: '~/.cramer-short/reports/{date}-briefing.md',
+      },
+    ]);
+    const report = join(TEST_HOME, '.cramer-short', 'reports', '2026-05-02-briefing.md');
+    mkdirSync(dirname(report), { recursive: true });
+    writeFileSync(report, 'a good report from an earlier run today');
+    const { options, errors, exitCodes } = makeOptions({
+      createAgent: async () => ({
+        run: async function* (): AsyncGenerator<AgentEvent> {
+          yield { type: 'done', answer: 'Error: LLM request timed out.', toolCalls: [], iterations: 3, totalTime: 5, error: true };
+        },
+      }),
+    });
+
+    await runScheduleCommand(['run', 'morning-briefing'], options);
+
+    expect(exitCodes).toEqual([1]);
+    expect(errors.join('\n')).toContain('LLM request timed out');
+    expect(readFileSync(report, 'utf-8')).toBe('a good report from an earlier run today');
+  });
+
   it('passes the configured settings model to the agent factory', async () => {
     writeSchedules([
       {
