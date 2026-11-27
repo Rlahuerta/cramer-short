@@ -862,6 +862,10 @@ export const polymarketTool = new DynamicStructuredTool({
     try {
       const markets = await searchEvents(query, limit);
       const warnings = drainSearchWarnings();
+      // No markets + fetch failures is an outage, not an empty result: report it as an error.
+      if (markets.length === 0 && warnings.length > 0) {
+        return formatToolResult({ error: `Polymarket search failed: ${warnings.join('; ')}` });
+      }
       return formatToolResult({ result: formatResults(markets, query, warnings) });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
