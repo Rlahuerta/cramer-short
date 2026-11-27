@@ -1,6 +1,9 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, test, expect, mock, type Mock, beforeEach, afterEach, setSystemTime, spyOn } from 'bun:test';
 import { ChatOllama } from '@langchain/ollama';
+import { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { AIMessageChunk } from '@langchain/core/messages';
+import type { ChatResult } from '@langchain/core/outputs';
 import { resolveProvider } from '../providers.js';
 import * as configModule from '@/utils/config.js';
 
@@ -520,6 +523,26 @@ describe('Ollama stalls honour the timeout and the caller signal', () => {
     })();
     expect(await outcome(run)).toMatch(/^rejected: /);
     expect(await waitFor(() => clientClosed)).toBe(true);
+  });
+
+  test('streamCallLlm keeps an AbortSignal.timeout alive when a stream stalls after one chunk', async () => {
+    // Bun stops an AbortSignal.timeout timer once its last abort listener is removed, and every race
+    // against the signal (ours, LangChain's per chunk) adds and removes one. No fetch is involved here.
+    class StallAfterOneChunk extends BaseChatModel {
+      _llmType(): string { return 'stall'; }
+      async _generate(): Promise<ChatResult> { throw new Error('unused'); }
+      async *_streamIterator(): AsyncGenerator<AIMessageChunk> {
+        yield new AIMessageChunk({ content: 'first ' });
+        await new Promise(() => {});
+      }
+    }
+    _setModelFactory(() => new StallAfterOneChunk({}));
+    const run = (async () => {
+      for await (const _ of streamCallLlm('hi', {
+        model: 'ollama:llama3.1:8b', systemPrompt: 'x', signal: AbortSignal.timeout(300),
+      })) { /* drain */ }
+    })();
+    expect(await outcome(run)).toMatch(/^rejected: /);
   });
 });
 

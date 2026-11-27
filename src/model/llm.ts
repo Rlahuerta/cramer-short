@@ -513,7 +513,10 @@ export async function* streamCallLlm(
   prompt: string,
   options: Omit<CallLlmOptions, 'tools' | 'outputSchema'> = {},
 ): AsyncGenerator<string> {
-  const { model = DEFAULT_MODEL, systemPrompt, signal, thinkOverride } = options;
+  const { model = DEFAULT_MODEL, systemPrompt, signal: callerSignal, thinkOverride } = options;
+  // Bun stops an AbortSignal.timeout timer once its last abort listener is removed, and every race
+  // against the signal (ours, LangChain's per chunk) adds and removes one; a derived signal keeps it alive.
+  const signal = callerSignal && AbortSignal.any([callerSignal]);
   const finalSystemPrompt = systemPrompt ?? getDefaultSystemPrompt();
   const llm = getChatModel(model, true, thinkOverride, signal);
   const provider = resolveProvider(model);
