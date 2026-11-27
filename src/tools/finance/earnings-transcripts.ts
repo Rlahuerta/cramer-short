@@ -93,6 +93,7 @@ async function findTranscriptUrl(indexUrl: string): Promise<string | null> {
   try {
     const res = await fetch(indexUrl, {
       headers: { 'User-Agent': 'CramerShort/1.0 research@cramer-short.ai' },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return null;
     const html = await res.text();
@@ -178,6 +179,7 @@ export const getEarningsTranscript = new DynamicStructuredTool({
 
       const atomRes = await fetch(atomUrl, {
         headers: { 'User-Agent': 'CramerShort/1.0 research@cramer-short.ai' },
+        signal: AbortSignal.timeout(15_000),
       });
 
       if (!atomRes.ok) {
@@ -227,6 +229,7 @@ export const getEarningsTranscript = new DynamicStructuredTool({
 
       const transcriptRes = await fetch(transcriptUrl, {
         headers: { 'User-Agent': 'CramerShort/1.0 research@cramer-short.ai' },
+        signal: AbortSignal.timeout(15_000),
       });
       if (!transcriptRes.ok) {
         throw new Error(`Failed to fetch transcript: ${transcriptRes.status}`);

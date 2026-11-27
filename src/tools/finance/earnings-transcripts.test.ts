@@ -359,6 +359,16 @@ describe('getEarningsTranscript quarter selection', () => {
     expect(requests.some((u) => u.endsWith('-index.htm'))).toBe(false);
   });
 
+  it('bounds every EDGAR request with a timeout', async () => {
+    mockEdgar(['2025-10-30']);
+    await invoke();
+    const calls = (globalThis.fetch as unknown as ReturnType<typeof mock>).mock.calls as Array<[unknown, RequestInit?]>;
+    expect(calls.length).toBe(3); // feed, filing index, exhibit
+    for (const [, init] of calls) {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
   it('returns a clear error for a quarter it cannot parse', async () => {
     mockEdgar(['2025-10-30']);
     const data = await invoke('second quarter');
