@@ -383,6 +383,8 @@ export class Agent {
     }
 
     let stoppedOnRepeatedFailures = false;
+    // A model that re-requests a skill it already has gets told so once before the loop-breaker stops the run.
+    let skillRepeatNoted = false;
     let modelFailure: string | null = null;
 
     // Main agent loop
@@ -665,13 +667,23 @@ export class Agent {
       const { executable: executableToolCalls, skipped: skippedToolCalls } =
         partitionRepeatedFailingToolCalls(response as AIMessage, ctx.scratchpad.getToolCallRecords());
       let repeatedFailureSkipped = false;
+      const skippedSkills = skippedToolCalls.filter((call) => call.name === 'skill').map((call) => String(call.args?.skill));
+      const skillNote = skippedSkills.length > 0
+        ? `\n\n[SYSTEM NOTE: The ${skippedSkills.join(', ')} skill instructions are already loaded above. Do not request them again — follow their steps and call the data tools they list.]`
+        : '';
       if (skippedToolCalls.length > 0) {
         (response as AIMessage).tool_calls = executableToolCalls;
         if (executableToolCalls.length === 0) {
+          if (skippedSkills.length === skippedToolCalls.length && !skillRepeatNoted) {
+            // Only a loaded skill was re-requested and no data has been fetched for it yet: say so once and go on.
+            skillRepeatNoted = true;
+            currentPrompt = this.iterationPrompt(ctx, query, forecastLabRoutingHint) + skillNote;
+            continue;
+          }
           stoppedOnRepeatedFailures = true;
           break;
         }
-        repeatedFailureSkipped = true;
+        repeatedFailureSkipped = skippedSkills.length < skippedToolCalls.length;
       }
 
       // Execute tools and add results to scratchpad (response is AIMessage here)
@@ -699,6 +711,7 @@ export class Agent {
       if (repeatedFailureSkipped) {
         currentPrompt += '\n\n[SYSTEM NOTE: One or more tool calls exactly repeated a call that already failed with the same arguments and were skipped. Do NOT repeat an identical failing call — change the arguments (e.g. correct the ticker or horizon) or synthesize your answer from the data already gathered.]';
       }
+      currentPrompt += skillNote;
 
       // After the cap is hit, redirect the model to stop planning and start
       // using research tools. Only inject the nudge once (at the boundary).

@@ -267,8 +267,28 @@ describe('exit messages', () => {
     const done = doneOf(await collect(agent.run('value AAPL with a DCF')));
 
     expect(skillRuns).toBe(1);
-    expect(script.prompts).toHaveLength(2);
-    expect(done.iterations).toBe(2);
+    // One turn is spent telling the model the skill is already loaded; the second repeat stops the run.
+    expect(script.prompts).toHaveLength(3);
+    expect(done.iterations).toBe(3);
+  });
+
+  it('tells the model a re-requested skill is already loaded once, then lets it fetch data', async () => {
+    const skillCall: ToolCall = { id: 'k1', name: 'skill', args: { skill: 'dcf' }, type: 'tool_call' };
+    const lookup: ToolCall = { id: 'l1', name: 'lookup_fixture', args: { ticker: 'AAPL' }, type: 'tool_call' };
+    script.responses = [[ST_CALL, skillCall], [{ ...skillCall, id: 'k2' }], [lookup], 'Final answer from the DCF'];
+    const agent = await Agent.create({ maxIterations: 10, memoryEnabled: false });
+    let lookups = 0;
+    installTools(agent, {
+      skill: () => 'Skill dcf instructions: fetch the cash flows, then value',
+      lookup_fixture: () => { lookups++; return 'AAPL free cash flow 100'; },
+    });
+
+    const done = doneOf(await collect(agent.run('value AAPL with a DCF')));
+
+    expect(lookups).toBe(1);
+    expect(script.prompts[2]).toContain('already loaded');
+    expect(script.prompts[2]).not.toContain('already failed');
+    expect(done.answer).toContain('Final answer from the DCF');
   });
 
   it('reports a user abort during final synthesis as a cancellation, not a timeout', async () => {
