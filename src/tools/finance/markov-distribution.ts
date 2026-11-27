@@ -1410,6 +1410,22 @@ export function applyCryptoTerminalAnchorFallback(
   return Array.from(merged.values()).sort((a, b) => a.price - b.price);
 }
 
+/**
+ * Whether an anchor carries information beyond the current price. Filtered out:
+ * 1. Trivially-true anchors: price well below current with P≈1 (e.g., "gold stays above $3,000")
+ * 2. Trivially-false anchors: price well above current with P≈0
+ * 3. Strikes more than 2x from the current price: another scale or underlying, such as an S&P 500 index level
+ *    read as a SPY price (commodity ETFs are rescaled before this filter).
+ */
+export function isInformativeAnchor(a: PriceThreshold, currentPrice: number): boolean {
+  const ratio = a.price / currentPrice;
+  if (ratio > 2 || ratio < 0.5) return false;
+  const dist = ratio - 1;
+  if (dist < -0.05 && a.probability > 0.90) return false;
+  if (dist > 0.50 && a.probability < 0.05) return false;
+  return true;
+}
+
 function normalizeSearchIdentityPhrase(ticker: string, phrase: string): string {
   const identity = resolveTickerSearchIdentity(ticker);
   const shouldReplaceTicker = identity.searchQuery === identity.canonicalTicker;
@@ -3371,6 +3387,12 @@ export async function computeMarkovDistribution(params: {
   forecastVolMultiplier?: number;
   /** Experiment (crypto-interval-coverage.ts): Student-t nu of the forecast distribution instead of horizonStudentTNu. */
   studentTNuOverride?: number;
+  /** Experiment (crypto-interval-coverage.ts): an anchor resolving more than this many days from the target is off-horizon. */
+  offHorizonAnchorDays?: number;
+  /** Experiment: off-horizon anchors are dropped, or blended as low-trust (half weight). Default 'drop'. */
+  offHorizonAnchorPolicy?: 'drop' | 'low-trust';
+  /** Experiment: no anchors at horizons above this many days. */
+  maxAnchorHorizonDays?: number;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
@@ -3443,6 +3465,9 @@ export async function computeMarkovDistribution(params: {
     enableStudentTEmission,
     forecastVolMultiplier = 1,
     studentTNuOverride,
+    offHorizonAnchorDays,
+    offHorizonAnchorPolicy = 'drop',
+    maxAnchorHorizonDays,
     enableKswinTrim,
     kswinAlpha,
     enableCoefficientClustering,
@@ -3643,21 +3668,7 @@ export async function computeMarkovDistribution(params: {
     polymarketAnchors, currentPrice, ticker,
   );
 
-  // Filter uninformative anchors:
-  // 1. Trivially-true anchors: price well below current with P≈1 (e.g., "gold stays above $3,000")
-  // 2. Trivially-false anchors: price well above current with P≈0
-  // These carry no predictive signal — they just confirm what the current price already implies.
-  // 3. Strikes more than 2x from the current price: another scale or underlying, such as an S&P 500 index level
-  //    read as a SPY price (commodity ETFs were rescaled above).
-  const isInformativeAnchor = (a: PriceThreshold): boolean => {
-    const ratio = a.price / currentPrice;
-    if (ratio > 2 || ratio < 0.5) return false;
-    const dist = ratio - 1;
-    if (dist < -0.05 && a.probability > 0.90) return false;
-    if (dist > 0.50 && a.probability < 0.05) return false;
-    return true;
-  };
-  polymarketAnchors = polymarketAnchors.filter(isInformativeAnchor);
+  polymarketAnchors = polymarketAnchors.filter(a => isInformativeAnchor(a, currentPrice));
 
   // Crypto fallback: when strict-horizon markets are all barrier-style and yield
   // zero terminal anchors, re-extract from the full unfiltered market list with
@@ -3667,7 +3678,18 @@ export async function computeMarkovDistribution(params: {
   );
   // Re-apply triviality filter on fallback anchors (e.g., off-horizon anchors may
   // now be trivially true/false relative to current price)
-  polymarketAnchors = polymarketAnchors.filter(isInformativeAnchor);
+  polymarketAnchors = polymarketAnchors.filter(a => isInformativeAnchor(a, currentPrice));
+  if (maxAnchorHorizonDays !== undefined && horizon > maxAnchorHorizonDays) polymarketAnchors = [];
+  if (offHorizonAnchorDays !== undefined) {
+    const referenceMs = params.referenceTimeMs ?? Date.now();
+    const isOffHorizon = (a: PriceThreshold) => a.endDate == null
+      || !(Math.abs((Date.parse(a.endDate) - referenceMs) / MS_PER_DAY - horizon) <= offHorizonAnchorDays);
+    polymarketAnchors = offHorizonAnchorPolicy === 'drop'
+      ? polymarketAnchors.filter(a => !isOffHorizon(a))
+      : polymarketAnchors.map(a => (isOffHorizon(a)
+        ? { ...a, trustScore: 'low' as const, trustWeight: Math.min(getAnchorTrustWeight(a), 0.35) }
+        : a));
+  }
 
   if (params.kalshiAnchors && params.kalshiAnchors.length > 0) {
     const merged = mergeAnchorsWithCrossPlatformValidation(polymarketAnchors, params.kalshiAnchors);
