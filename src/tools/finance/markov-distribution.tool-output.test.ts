@@ -795,6 +795,8 @@ describe('markov_distribution tool output envelope', () => {
     const parsed = JSON.parse(result);
     const diagnostics = parsed.data.canonical.diagnostics;
     expect(parsed.data.status).toBe('ok');
+    // An emitted model-only forecast must not also tell the model why it abstained.
+    expect(parsed.data.abstainReasons).toEqual([]);
     expect(diagnostics.calibrationMode).toBe('model_only');
     expect(diagnostics.anchorBypassApplied).toBe(true);
     expect(diagnostics.trustedAnchors).toBe(0);
