@@ -56,6 +56,24 @@ describe('computeGarchScales', () => {
     expect(scales[29]).toBeLessThan(scales[0]);
   });
 
+  it('keeps the burst in day 1 when the last return of the burst happens to be quiet', () => {
+    const rng = seedRng(7);
+    const calm = Array.from({ length: 150 }, () => gauss(rng) * 0.005);
+    const burst = Array.from({ length: 30 }, () => gauss(rng) * 0.04);
+    // The conditional variance is filtered through the whole window, so one quiet day
+    // cannot erase a month of large moves.
+    const scales = computeGarchScales([...calm, ...burst, 0], 5);
+    expect(scales[0]).toBeGreaterThan(1.1);
+  });
+
+  it('drops below 1 after a long calm stretch that follows an early burst', () => {
+    const rng = seedRng(11);
+    const burst = Array.from({ length: 30 }, () => gauss(rng) * 0.04);
+    const calm = Array.from({ length: 150 }, () => gauss(rng) * 0.005);
+    const scales = computeGarchScales([...burst, ...calm], 5);
+    expect(scales[0]).toBeLessThan(0.8);
+  });
+
   it('on calm-then-recent-calm series, scales near 1 (no clustering signal)', () => {
     const rng = seedRng(123);
     const r = Array.from({ length: 200 }, () => gauss(rng) * 0.01);

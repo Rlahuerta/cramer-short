@@ -106,3 +106,12 @@ class TestComputeGarchScales:
     def test_empty_returns_when_zero_variance(self):
         rets = [0.0] * 50
         assert compute_garch_scales(rets, 10) == []
+
+    def test_variance_is_filtered_through_the_window_like_typescript(self):
+        """A quiet last day after a burst keeps day 1 elevated; values from garch-scales.ts computeGarchScales."""
+        rets = [0.005 * (-1 if i % 2 else 1) for i in range(150)]
+        rets += [0.04 * (-1 if i % 2 else 1) for i in range(30)]
+        rets.append(0.0)
+        expected = [1.8656517669835666, 1.8321090824147068, 1.7996645535691191]
+        for got, want in zip(compute_garch_scales(rets, 3), expected, strict=True):
+            assert got == pytest.approx(want, abs=1e-12)

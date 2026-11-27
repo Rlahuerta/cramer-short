@@ -122,14 +122,13 @@ export function computeGarchScales(
     return [];
   }
 
-  // Drive the recursion forward from the most recent observation so the
-  // initial h_0 reflects the latest squared innovation, not the long-run
-  // average.  This is what gives GARCH its "vol clustering" lift.
-  const last = logReturns[logReturns.length - 1];
+  // Filter the conditional variance through the whole window, starting from h0, so the
+  // first forecast step carries the recent clustering, not just the last day's return.
+  // This is what gives GARCH its "vol clustering" lift.
   const persistence = params.alpha + params.beta;
   const uncondVar = params.omega / Math.max(1e-12, 1 - persistence);
-  // First step uses the actual last innovation (not E[z²] = 1).
-  const h1 = params.omega + params.alpha * last * last + params.beta * params.h0;
+  let h1 = params.h0;
+  for (const r of logReturns) h1 = params.omega + params.alpha * r * r + params.beta * h1;
 
   const sigmas: number[] = [Math.sqrt(Math.max(0, h1))];
   let h = h1;
