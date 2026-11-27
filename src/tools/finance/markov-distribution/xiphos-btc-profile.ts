@@ -117,8 +117,11 @@ export const XIPHOS_BTC_MARKOV_PROFILE: XiphosMarkovProfile = XIPHOS_BTC_MARKOV_
  * The xiphos BTC forecast levers to apply in the live Markov tool for BTC.
  *
  * Only the levers whose benefit is verified by the walk-forward backtest are
- * applied (transition decay, regime-classification threshold, GARCH vol scaling,
- * entropy CI modulation, meta-regime conditioning). Deliberately excluded:
+ * applied (transition decay, regime-classification threshold, entropy CI
+ * modulation, meta-regime conditioning). Deliberately excluded:
+ * - `enableGarchVol`: off. Once the GARCH variance was filtered through the window
+ *   (`9445cbe`), turning it off scored better on 9,488 BTC forecasts 2021-2026
+ *   (interval score -0.030 [-0.053, -0.012], Brier -0.0007; plan, "GARCH candidates").
  * - `studentTNu` / `trajectoryNSamples`: the backtest improvement was obtained
  *   WITHOUT changing these, and `nu` conflicts with cramer-short's crypto
  *   asset-class profile (nu=3, fatter tails) — so they are left as-is.
@@ -139,7 +142,7 @@ export function xiphosBtcLiveParams(profile: XiphosMarkovProfile = XIPHOS_BTC_MA
   return {
     transitionDecayOverride: profile.decayRate,
     btcReturnThresholdMultiplier: profile.returnThresholdMultiplier,
-    enableGarchVol: profile.enableGarchVol,
+    enableGarchVol: false,
     garchHorizonCap: profile.garchHorizonCap,
     garchRegimeCeiling: { calm: profile.garchCalmCeiling, turbulent: profile.garchTurbulentCeiling },
     enableEntropyCiModulation: profile.enableEntropyCiModulation,

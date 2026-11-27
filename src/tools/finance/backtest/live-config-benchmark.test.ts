@@ -103,6 +103,7 @@ describe('liveBenchmarkCells', () => {
       expect(cell.config.postBreakShortWindow).toBe(policy.rerunOnBreak);
       expect(cell.config.postBreakWindowSize).toBe(policy.rerunWindowDays);
       expect(cell.config.btcReturnThresholdMultiplier).toBe(xiphosBtcWalkForwardConfig().btcReturnThresholdMultiplier);
+      expect(cell.config.enableGarchVol).toBe(false);
     }
   });
 });

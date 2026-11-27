@@ -59,7 +59,7 @@ describe('xiphosBtcLiveParams', () => {
     expect(xiphosBtcLiveParams()).toEqual({
       transitionDecayOverride: 0.9494,
       btcReturnThresholdMultiplier: 0.6771,
-      enableGarchVol: true,
+      enableGarchVol: false,
       garchHorizonCap: 19,
       garchRegimeCeiling: { calm: 1.3603, turbulent: 3.097 },
       enableEntropyCiModulation: true,
