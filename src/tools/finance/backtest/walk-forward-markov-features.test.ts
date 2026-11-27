@@ -227,3 +227,23 @@ describe('walk-forward anchored replay hook', () => {
     expect(anchored.steps.some((s, i) => Math.abs(s.predictedProb - plain.steps[i].predictedProb) > 0.01)).toBe(true);
   });
 });
+
+describe('walk-forward interval experiments', () => {
+  it('passes the forecast volatility multiplier and the t degrees of freedom through to the forecast distribution', async () => {
+    const base = { ticker: 'BTC-USD', prices: syntheticTrajectoryPrices(), horizon: 3, warmup: 120, stride: 20, randomState: 42 };
+    const [plain, wide, fat] = await Promise.all([
+      walkForward(base),
+      walkForward({ ...base, forecastVolMultiplier: 1.2 }),
+      walkForward({ ...base, studentTNuOverride: 3 }),
+    ]);
+    const width = (s: { central90CiLower?: number; central90CiUpper?: number; central99CiLower?: number; central99CiUpper?: number }, level: 90 | 99) =>
+      Math.log(level === 90 ? s.central90CiUpper! / s.central90CiLower! : s.central99CiUpper! / s.central99CiLower!);
+    expect(plain.steps.length).toBeGreaterThan(0);
+    plain.steps.forEach((s, i) => {
+      expect(width(wide.steps[i], 90)).toBeGreaterThan(1.1 * width(s, 90));
+      // nu 3 instead of 4 + h = 7: the variance-matched fatter tail widens the 99% interval and narrows the 90%.
+      expect(width(fat.steps[i], 99)).toBeGreaterThan(width(s, 99));
+      expect(width(fat.steps[i], 90)).toBeLessThan(width(s, 90));
+    });
+  });
+});

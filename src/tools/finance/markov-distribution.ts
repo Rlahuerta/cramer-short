@@ -100,6 +100,7 @@ import { hasEnv } from '../../utils/env.js';
 import {
   FORECAST_DRIFT_SHRINK,
   FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
+  FORECAST_VOL_SCALE,
   NUM_STATES,
   PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS,
   RECOMMENDED_CONFIDENCE_THRESHOLD,
@@ -3366,6 +3367,10 @@ export async function computeMarkovDistribution(params: {
   softRegimeHmmWeightEntropyWeight?: number;
   /** Phase 2 experimental: replace Gaussian forecast emissions with NIG-derived Student-t predictive emissions. Default false. */
   enableStudentTEmission?: boolean;
+  /** Experiment (crypto-interval-coverage.ts): factor on the forecast volatility on top of FORECAST_VOL_SCALE. Default 1. */
+  forecastVolMultiplier?: number;
+  /** Experiment (crypto-interval-coverage.ts): Student-t nu of the forecast distribution instead of horizonStudentTNu. */
+  studentTNuOverride?: number;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
@@ -3436,6 +3441,8 @@ export async function computeMarkovDistribution(params: {
     conformalAlpha,
     conformalBreakSensitivity,
     enableStudentTEmission,
+    forecastVolMultiplier = 1,
+    studentTNuOverride,
     enableKswinTrim,
     kswinAlpha,
     enableCoefficientClustering,
@@ -4178,18 +4185,21 @@ export async function computeMarkovDistribution(params: {
   const gridDailyVol = returns.length >= 20
     ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
     : undefined;
+  const forecastVolScale = FORECAST_VOL_SCALE * forecastVolMultiplier;
+  const distributionNu = studentTNuOverride ?? horizonStudentTNu(assetProfile.studentTNu, horizon);
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, rho,
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
-    horizonStudentTNu(assetProfile.studentTNu, horizon), regimeSpecificSigma, regimeSpecificSigmaThreshold,
+    distributionNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, randomState, FORECAST_DRIFT_SHRINK,
+    forecastVolScale,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
     horizon, effectiveP, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, effectiveMixture,
     regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScalesForDistribution, forecastAdjustedStateWeights,
-    FORECAST_DRIFT_SHRINK,
+    FORECAST_DRIFT_SHRINK, forecastVolScale,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -4268,7 +4278,7 @@ export async function computeMarkovDistribution(params: {
   };
   const distribution = calibrateProbabilities(rawDistribution, {
     ...calibrationOptions,
-    nu: horizonStudentTNu(assetProfile.studentTNu, horizon),
+    nu: distributionNu,
   });
 
   // --- Base-rate floor (Idea S, Round 4) ---
@@ -4300,6 +4310,7 @@ export async function computeMarkovDistribution(params: {
     20, 0, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, undefined, FORECAST_DRIFT_SHRINK,
+    forecastVolScale,
   ).map((pt, i) => ({ ...pt, lowerBound: rawDistribution[i].lowerBound, upperBound: rawDistribution[i].upperBound }));
   const legacyDistribution = calibrateProbabilities(legacyRawDistribution, {
     ...calibrationOptions,
