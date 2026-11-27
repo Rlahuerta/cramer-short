@@ -99,6 +99,32 @@
  * Result: R passed and ships as the production default for crypto at <= 14 days. Every anchored run here other than R
  * and R1 therefore pins anchorHorizonRescaleDays to Infinity, to reproduce the forecast it scored.
  *
+ * Location-only anchors (candidate M; added 2026-11-27 and committed before scoring M or N1). `channels` (no outcomes)
+ * found that the strike blend carries the anchors' width changes (14d narrowing, BTC 1d widening; ETH 1d and 7d
+ * split with the density step), while the density step carries most of ETH's P(up) change and the blend most of
+ * BTC's at 7d and 14d. M: the market sets the median, the model keeps its width.
+ *   With >= 2 high-trust anchors, a lognormal is fitted to their probabilities as blended today (YES-bias corrected;
+ *   no Q->P shift, because that step uses the forecast's horizon, not the market's). Its median log return
+ *   m = muLn - ln S covers the anchors' mean days to expiry tau. The forecast's horizon log drift becomes m x h / tau
+ *   (drift scales linearly with time). It replaces the model's shrunk drift in the distribution, its calibration and
+ *   the decision surface. sigmaLn, the regime mapping and transition nudge, the strike blend and the rescale are
+ *   dropped. With fewer than 2 high-trust anchors, or a failed fit, the forecast is model-only. No fitted parameter.
+ *   The expiry mismatch is handled only by the linear h / tau scaling of the median; the markets' spread is not used.
+ * Target (approved for tests registered from now on): the paired interval score (Gneiting & Raftery 2007): the mean
+ * over 90/95/99% of (u - l) + (2/a)(l - y)+ + (2/a)(y - u)+ in log price, candidate minus reference, with a 95%
+ * day-block CI upper bound below zero. Guards:
+ *   - pooled coverage CI contains nominal at each level;
+ *   - no level's paired |coverage - nominal| change has a CI above zero;
+ *   - paired Brier upper bound <= +0.0005.
+ * Scored on window origins from 2025-07-01 (ETH from 2025-08-25), BTC+ETH, 1/2/3/7/14d. Per-horizon groups (1d, 2-3d,
+ * 7d, 14d), per-year figures and the HOLD move are description, not gates. M is scored against today's anchored
+ * forecast (rescale off) and against R. R has been production since c74f74e, so M ships only if it passes against R.
+ * If M fails the Brier guard, the anchors' Brier gain comes from their spread (sharpness), not their location, and
+ * further anchor-width tuning should stop.
+ * N1 ("no anchors at 1d", minAnchorHorizonDays = 2) is stacked on what ships (M if M passes against R, else R) and
+ * scored against that forecast by the same target; it ships only if it passes. A passing candidate ships test-first
+ * with the Python mirror; none passing, no change.
+ *
  * Outputs go to .cramer-short/crypto-interval-coverage/<baseline|A|B|C|anchored>. Each run takes a few minutes; run
  * them in parallel.
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon>   # baseline
@@ -116,6 +142,8 @@
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> <anchor-R|anchor-R1>
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts rescale-score                    # rescaling test verdict
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts channels <BTC-USD|ETH-USD> <horizon>  # which anchor channel moves it
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> <anchor-M|anchor-R-N1|anchor-M-N1>
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts location-score                   # M vs today and vs R, then N1
  */
 import { join } from 'node:path';
 import { getAssetProfile } from '../markov-distribution/asset-profile.js';
@@ -230,6 +258,17 @@ async function anchorMarkets(asset: (typeof ASSETS)[number]) {
   return (await Bun.file(join(import.meta.dir, '..', 'fixtures', ANCHOR_HISTORY[asset])).json() as AnchorHistoryFixture).markets;
 }
 
+/** Gneiting & Raftery interval score in log price, averaged over the central 90/95/99% intervals (lower is better). */
+export function intervalScore(row: CoverageRow): number {
+  const y = Math.log(row.realized!);
+  return LEVELS.reduce((sum, [level, nominal]) => {
+    const alpha = 1 - nominal;
+    const lo = Math.log(row[`lo${level}`]!);
+    const hi = Math.log(row[`hi${level}`]!);
+    return sum + (hi - lo) + (2 / alpha) * Math.max(0, lo - y) + (2 / alpha) * Math.max(0, y - hi);
+  }, 0) / LEVELS.length;
+}
+
 /** Paired change (pp) in |coverage - nominal| from model-only to anchored: negative = anchors move coverage toward nominal. */
 export function missChange(pairs: ReadonlyArray<{ plain: CoverageRow; anchored: CoverageRow }>, level: Level): number {
   const key = `c${level}` as 'c90' | 'c95' | 'c99';
@@ -245,6 +284,9 @@ function anchorVariantConfig(variant: string) {
   if (variant === 'anchor-N') return { maxAnchorHorizonDays: 7 };
   if (variant === 'anchor-R') return { anchorHorizonRescaleDays: 2 };
   if (variant === 'anchor-R1') return { anchorHorizonRescaleDays: 0 };
+  if (variant === 'anchor-M') return { anchorLocationOnly: true };
+  if (variant === 'anchor-R-N1') return { anchorHorizonRescaleDays: 2, minAnchorHorizonDays: 2 };
+  if (variant === 'anchor-M-N1') return { anchorLocationOnly: true, minAnchorHorizonDays: 2 };
   const m = /^anchor-([LD])-(0\.5|1|2)$/.exec(variant);
   return m ? { offHorizonAnchorDays: Number(m[2]), offHorizonAnchorPolicy: m[1] === 'L' ? 'low-trust' as const : 'drop' as const } : null;
 }
@@ -552,6 +594,71 @@ async function channels(asset: (typeof ASSETS)[number], horizon: number): Promis
   console.log(`${asset} ${String(horizon).padStart(2)}d n=${byT.today!.size}  vs today: ${['model', 'noDensity', 'noBlend', 'R'].map(vsToday).join('  ')}`);
 }
 
+const HORIZON_GROUPS = [['1d', [1]], ['2-3d', [2, 3]], ['7d', [7]], ['14d', [14]]] as const;
+
+/**
+ * The location test's target (header): `candDir` against `refDir` on window origins from 2025-07-01 (ETH from its
+ * window start), paired interval score with its guards. Returns whether the candidate passes.
+ */
+async function scoreByIntervalScore(name: string, candDir: string, refName: string, refDir: string): Promise<boolean> {
+  const from: Record<string, string> = {};
+  for (const asset of ASSETS) from[asset] = [ANCHOR_FIT_END, await windowStartOf(asset)].sort()[1]!;
+  const key = (r: CoverageRow) => `${r.ticker}|${r.horizon}|${r.date}`;
+  const scored = (rs: CoverageRow[]) => rs.filter(r => r.date >= from[r.ticker]!);
+  const ref = new Map(scored(await loadRows(join(ROOT, refDir))).map(r => [key(r), r]));
+  // missChange reads `plain` as the reference and `anchored` as the candidate.
+  type Pair = { date: string; horizon: number; plain: CoverageRow; anchored: CoverageRow };
+  const pairs: Pair[] = scored(await loadRows(join(ROOT, candDir))).map(r => ({ date: r.date, horizon: r.horizon, plain: ref.get(key(r))!, anchored: r }));
+  const mean = (xs: Pair[], f: (p: Pair) => number) => xs.reduce((a, p) => a + f(p), 0) / xs.length;
+  const isDiff = (xs: Pair[]) => mean(xs, p => intervalScore(p.anchored) - intervalScore(p.plain));
+  const brier = (xs: Pair[]) => mean(xs, p => (p.anchored.p - p.anchored.y) ** 2 - (p.plain.p - p.plain.y) ** 2);
+  const ci = (xs: Pair[], f: (ys: Pair[]) => number, digits: number) => {
+    const [lo, hi] = dayBlockCi(xs, f);
+    return `${f(xs).toFixed(digits)} [${lo.toFixed(digits)}, ${hi.toFixed(digits)}]`;
+  };
+  const cov = (xs: Pair[], level: Level, side: 'plain' | 'anchored') => 100 * intervalCoverage(xs.map(p => p[side]))[`c${level}` as 'c90' | 'c95' | 'c99'];
+  const covs = (xs: Pair[]) => LEVELS.map(([level]) => `${cov(xs, level, 'plain').toFixed(1)}->${cov(xs, level, 'anchored').toFixed(1)}`).join(' ');
+
+  console.log(`\n${name} vs ${refName}: ${pairs.length} pairs from ${from['BTC-USD']} (BTC) / ${from['ETH-USD']} (ETH)`);
+  const [, isHi] = dayBlockCi(pairs, isDiff);
+  console.log(`  interval score change ${ci(pairs, isDiff, 4)}  (primary: upper < 0 ${isHi < 0 ? 'pass' : 'FAIL'})`);
+  const covOk = LEVELS.every(([level, nominal]) => {
+    const [lo, hi] = dayBlockCi(pairs, xs => cov(xs, level, 'anchored') / 100);
+    console.log(`  coverage ${level}: ${cov(pairs, level, 'plain').toFixed(1)} -> ${cov(pairs, level, 'anchored').toFixed(1)} [${(100 * lo).toFixed(1)}, ${(100 * hi).toFixed(1)}]  |miss| change ${ci(pairs, xs => missChange(xs, level), 1)}`);
+    return lo <= nominal && nominal <= hi;
+  });
+  const missOk = LEVELS.every(([level]) => dayBlockCi(pairs, xs => missChange(xs, level))[0] <= 0);
+  const [, brierHi] = dayBlockCi(pairs, brier);
+  const holdShare = (rs: CoverageRow[]) => rs.filter(r => r.rec === 'HOLD').length / rs.length;
+  const dHold = holdShare(pairs.map(p => p.anchored)) - holdShare(pairs.map(p => p.plain));
+  console.log(`  paired Brier ${ci(pairs, brier, 5)}  HOLD ${dHold >= 0 ? '+' : ''}${(100 * dHold).toFixed(1)}pp`);
+  for (const [group, hs] of HORIZON_GROUPS) {
+    const xs = pairs.filter(p => (hs as readonly number[]).includes(p.horizon));
+    console.log(`    ${group.padEnd(5)} n=${String(xs.length).padStart(4)}  IS ${ci(xs, isDiff, 4)}  coverage ${covs(xs)}  Brier ${ci(xs, brier, 4)}`);
+  }
+  for (const year of [...new Set(pairs.map(p => p.date.slice(0, 4)))].sort()) {
+    const xs = pairs.filter(p => p.date.startsWith(year));
+    console.log(`    ${year}  n=${String(xs.length).padStart(4)}  IS ${ci(xs, isDiff, 4)}  coverage ${covs(xs)}  Brier ${ci(xs, brier, 4)}`);
+  }
+  const pass = isHi < 0 && covOk && missOk && brierHi <= 0.0005;
+  console.log(`  guards: coverage CI contains nominal ${covOk ? 'pass' : 'FAIL'}, no |miss| worse ${missOk ? 'pass' : 'FAIL'}, Brier ${brierHi <= 0.0005 ? 'pass' : 'FAIL'}  => ${pass ? 'PASSES' : 'fails'}`);
+  return pass;
+}
+
+/** The location test: M against today's anchored forecast and against R, then N1 on whichever ships. */
+async function locationScore(): Promise<void> {
+  await scoreByIntervalScore('M', 'anchor-M', 'today (rescale off)', 'anchored');
+  const mShips = await scoreByIntervalScore('M', 'anchor-M', 'R (production)', 'anchor-R');
+  const [parent, n1] = mShips ? ['anchor-M', 'anchor-M-N1'] : ['anchor-R', 'anchor-R-N1'];
+  console.log(`\nM ${mShips ? 'ships' : 'does not ship'}; N1 is stacked on ${parent}`);
+  if (!(await Bun.file(join(ROOT, n1, 'BTC-USD-1.json')).exists())) {
+    console.log(`  run ${n1} for the ten cells, then rerun location-score`);
+    return;
+  }
+  const n1Ships = await scoreByIntervalScore('N1', n1, parent, parent);
+  console.log(`\nVerdict: M ${mShips ? 'ships' : 'does not ship'}; N1 ${n1Ships ? 'ships' : 'does not ship'}`);
+}
+
 /** The anchored comparison in the header: anchored vs baseline rows on the same origins of each asset's market window. */
 async function anchors(): Promise<void> {
   const key = (r: CoverageRow) => `${r.ticker}|${r.horizon}|${r.date}`;
@@ -627,5 +734,6 @@ if (import.meta.main) {
   else if (mode === 'anchor-score') await anchorScore();
   else if (mode === 'rescale-score') await scoreAnchorCandidates([['R', 'anchor-R'], ['R1', 'anchor-R1']]);
   else if (mode === 'channels' && (a === 'BTC-USD' || a === 'ETH-USD') && b) await channels(a, Number(b));
+  else if (mode === 'location-score') await locationScore();
   else console.log('usage: crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> [A|B|C|anchored|anchor-<L|D>-<g>|anchor-N] | report | fit | score | anchors | anchor-gaps | anchor-fit | anchor-score');
 }
