@@ -128,6 +128,82 @@ describe('getFilings', () => {
   });
 });
 
+describe('getFilings — SEC EDGAR fallback', () => {
+  const SUBMISSIONS_URL = 'https://data.sec.gov/submissions/CIK0000320193.json';
+  let apiGetSpy: ReturnType<typeof spyOn<typeof api, 'get'>>;
+  let originalFetch: typeof globalThis.fetch;
+  let requests: Array<{ url: string; userAgent: string | null }>;
+
+  beforeEach(() => {
+    apiGetSpy = spyOn(api, 'get').mockRejectedValue(new Error('FINANCIAL_DATASETS_PREMIUM_REQUIRED: 402'));
+    originalFetch = globalThis.fetch;
+    requests = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, userAgent: new Headers(init?.headers).get('User-Agent') });
+      if (url === 'https://www.sec.gov/files/company_tickers.json') {
+        return Response.json({
+          '0': { cik_str: 789019, ticker: 'MSFT', title: 'MICROSOFT CORP' },
+          '1': { cik_str: 320193, ticker: 'AAPL', title: 'Apple Inc.' },
+        });
+      }
+      if (url === SUBMISSIONS_URL) {
+        return Response.json({
+          filings: {
+            recent: {
+              accessionNumber: ['0000320193-25-000090', '0000320193-25-000079', '0000320193-25-000073', '0000320193-24-000123'],
+              filingDate: ['2025-11-20', '2025-10-31', '2025-08-01', '2024-11-01'],
+              reportDate: ['2025-11-18', '2025-09-27', '2025-06-28', '2024-09-28'],
+              form: ['4', '10-K', '10-Q', '10-K'],
+              primaryDocument: ['form4.xml', 'aapl-20250927.htm', 'aapl-20250628.htm', 'aapl-20240928.htm'],
+            },
+          },
+        });
+      }
+      return new Response('Not Found', { status: 404 });
+    }) as typeof fetch;
+  });
+  afterEach(() => {
+    apiGetSpy.mockRestore();
+    globalThis.fetch = originalFetch;
+  });
+
+  test('lists recent filings from EDGAR when Financial Datasets fails', async () => {
+    const parsed = parseResult(await getFilings.invoke({ ticker: 'aapl', filing_type: ['10-K', '10-Q'], limit: 2 }));
+
+    expect(parsed.data).toEqual([
+      {
+        accession_number: '0000320193-25-000079',
+        filing_type: '10-K',
+        filing_date: '2025-10-31',
+        report_date: '2025-09-27',
+        url: 'https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/aapl-20250927.htm',
+      },
+      {
+        accession_number: '0000320193-25-000073',
+        filing_type: '10-Q',
+        filing_date: '2025-08-01',
+        report_date: '2025-06-28',
+        url: 'https://www.sec.gov/Archives/edgar/data/320193/000032019325000073/aapl-20250628.htm',
+      },
+    ]);
+    expect(parsed.sourceUrls).toEqual([SUBMISSIONS_URL]);
+  });
+
+  test('sends a generic User-Agent to SEC with no personal contact', async () => {
+    await getFilings.invoke({ ticker: 'AAPL', limit: 1 });
+
+    expect(requests.map((r) => r.url)).toEqual(['https://www.sec.gov/files/company_tickers.json', SUBMISSIONS_URL]);
+    for (const { userAgent } of requests) {
+      expect(userAgent).toBe('cramer-short research tool');
+    }
+  });
+
+  test('throws a clear error when the ticker is not on EDGAR', async () => {
+    await expect(getFilings.invoke({ ticker: 'NOPE', limit: 1 })).rejects.toThrow('NOPE');
+  });
+});
+
 describe('get10KFilingItems', () => {
   let apiGetSpy: ReturnType<typeof spyOn<typeof api, 'get'>>;
   afterEach(() => { apiGetSpy?.mockRestore(); });

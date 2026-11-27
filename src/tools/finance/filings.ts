@@ -65,10 +65,53 @@ export const getFilings = new DynamicStructuredTool({
       limit: input.limit,
       filing_type: input.filing_type,
     };
-    const { data, url } = await api.get('/filings/', params);
-    return formatToolResult(data.filings || [], [url]);
+    try {
+      const { data, url } = await api.get('/filings/', params);
+      return formatToolResult(data.filings || [], [url]);
+    } catch {
+      const { filings, url } = await getEdgarFilings(input.ticker.trim().toUpperCase(), input.filing_type, input.limit);
+      return formatToolResult(filings, [url]);
+    }
   },
 });
+
+// SEC asks automated clients to identify themselves; keep this generic (no personal name or email).
+const SEC_HEADERS = { 'User-Agent': 'cramer-short research tool' };
+
+async function getSecJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { headers: SEC_HEADERS, signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`[SEC EDGAR] ${res.status} for ${url}`);
+  return (await res.json()) as T;
+}
+
+/** Lists a company's recent filings from SEC EDGAR, the free fallback when Financial Datasets is unavailable. */
+async function getEdgarFilings(ticker: string, types: string[] | undefined, limit: number) {
+  // ponytail: downloads the full ticker map (~1 MB) per call; cache it if read_filings gets busy.
+  const companies = await getSecJson<Record<string, { cik_str: number; ticker: string }>>(
+    'https://www.sec.gov/files/company_tickers.json',
+  );
+  const company = Object.values(companies).find((c) => c.ticker === ticker);
+  if (!company) throw new Error(`[SEC EDGAR] Ticker ${ticker} not found in SEC company tickers`);
+
+  const url = `https://data.sec.gov/submissions/CIK${String(company.cik_str).padStart(10, '0')}.json`;
+  const { filings: { recent } } = await getSecJson<{
+    filings: { recent: Record<'accessionNumber' | 'filingDate' | 'reportDate' | 'form' | 'primaryDocument', string[]> };
+  }>(url);
+
+  const filings = [];
+  for (let i = 0; i < recent.form.length && filings.length < limit; i++) {
+    if (types && !types.includes(recent.form[i])) continue;
+    const accession = recent.accessionNumber[i];
+    filings.push({
+      accession_number: accession,
+      filing_type: recent.form[i],
+      filing_date: recent.filingDate[i],
+      report_date: recent.reportDate[i],
+      url: `https://www.sec.gov/Archives/edgar/data/${company.cik_str}/${accession.replace(/-/g, '')}/${recent.primaryDocument[i]}`,
+    });
+  }
+  return { filings, url };
+}
 
 const Filing10KItemsInputSchema = z.object({
   ticker: z.string().max(128).describe("The stock ticker symbol. For example, 'AAPL' for Apple."),
