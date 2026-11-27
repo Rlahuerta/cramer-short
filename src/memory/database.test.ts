@@ -271,3 +271,35 @@ describe('MemoryDatabase financial insights', () => {
     });
   });
 });
+
+describe('MemoryDatabase.repair', () => {
+  it('rebuilds a damaged chunk-hash index in place and keeps every row', async () => {
+    for (const hash of ['hash-aaa', 'hash-bbb', 'hash-ccc']) {
+      db.upsertChunk({ chunk: chunk({ filePath: `notes/${hash}.md`, contentHash: hash }), embedding: null, provider: 'local', model: 'none' });
+    }
+    db.close();
+
+    // Damage one key inside idx_chunks_hash only: the row keeps 'hash-bbb', its index entry now says 'hash-bbX'.
+    const { Database } = await import('bun:sqlite');
+    const raw = new Database(DB_PATH);
+    const { rootpage } = raw.query<{ rootpage: number }, []>("SELECT rootpage FROM sqlite_master WHERE name = 'idx_chunks_hash'").get()!;
+    const { page_size } = raw.query<{ page_size: number }, []>('PRAGMA page_size').get()!;
+    raw.close();
+    const { readFileSync, writeFileSync } = await import('node:fs');
+    const file = readFileSync(DB_PATH);
+    const page = file.subarray((rootpage - 1) * page_size, rootpage * page_size);
+    page.write('hash-bbX', page.indexOf(Buffer.from('hash-bbb')));
+    writeFileSync(DB_PATH, file);
+
+    db = await MemoryDatabase.create(DB_PATH);
+    expect(() => db.deleteChunksForFile('notes/hash-bbb.md')).toThrow('malformed');
+    db.close();
+
+    await MemoryDatabase.repair(DB_PATH);
+
+    db = await MemoryDatabase.create(DB_PATH);
+    expect(db.listAllChunks()).toHaveLength(3);
+    expect(db.deleteChunksForFile('notes/hash-bbb.md')).toBe(1);
+    expect(db.listAllChunks().map((c) => c.content_hash).sort()).toEqual(['hash-aaa', 'hash-ccc']);
+  });
+});

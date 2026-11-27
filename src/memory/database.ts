@@ -224,6 +224,20 @@ export class MemoryDatabase {
     return memoryDb;
   }
 
+  /**
+   * Rebuilds every index from its table. A damaged index (seen live: "row N missing from index idx_chunks_hash")
+   * makes writes fail with "database disk image is malformed" while the rows themselves are intact. The database
+   * also holds financial insights that exist nowhere else, so it is repaired in place, never recreated.
+   */
+  static async repair(path: string): Promise<void> {
+    const db = await MemoryDatabase.openSqlite(path);
+    try {
+      db.exec('REINDEX');
+    } finally {
+      db.close();
+    }
+  }
+
   private runMigrations(): void {
     const columns = this.db.query<{ name: string }>('PRAGMA table_info(chunks)').all();
     const colNames = new Set(columns.map((c) => c.name));
