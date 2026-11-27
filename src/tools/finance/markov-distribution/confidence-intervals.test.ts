@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, spyOn } from 'bun:test';
 import { classifyRegimeState } from './regime.js';
 import { buildDefaultMatrix } from './transition.js';
-import { computeHorizonDriftVol, horizonStudentTNu, computeMixingWeight, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, enforceNonIncreasing, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, widenBandToWidth, winsorize } from './confidence-intervals.js';
+import { computeHorizonDriftVol, horizonStudentTNu, computeMixingWeight, rescaleAnchorToHorizon, computePathIntegratedDrift, computeStartStateMixture, computeTrajectory, enforceNonIncreasing, estimateRegimeStats, interpolateDistribution, logNormalSurvival, normalCDF, studentTCDF, studentTSurvival, widenBandToWidth, winsorize } from './confidence-intervals.js';
 import { calibrateProbabilities, combineUncertaintyCiScale, computeMarkovDistribution, interpolateSurvival } from '../markov-distribution.js';
 import type { MarkovDistributionPoint, PriceThreshold, RegimeState } from './core.js';
 
@@ -1227,5 +1227,22 @@ describe('forecast volatility scale', () => {
     const traj = computeTrajectory(100, 9, P, flat, 'bull', 0, undefined, 200, 5);
     // The trajectory rounds P(up) to 3 decimals; unscaled it would be about 0.007 higher.
     expect(traj[8].pUp).toBeCloseTo(studentTSurvival(100, 100, 9 * 0.003, 0.02 * 3 * 1.05, 5), 3);
+  });
+});
+
+describe('rescaleAnchorToHorizon', () => {
+  it('moves a market P(>K) to the target horizon as a driftless normal whose spread grows with sqrt(time)', () => {
+    // A 7-day market on a 3%-a-day normal, struck 5% above spot, read at 14 days.
+    const pAt = (days: number) => 1 - normalCDF(Math.log(1.05) / (0.03 * Math.sqrt(days)));
+    expect(rescaleAnchorToHorizon(pAt(7), 7, 14)).toBeCloseTo(pAt(14), 6);
+    expect(rescaleAnchorToHorizon(pAt(3), 3, 1)).toBeCloseTo(pAt(1), 6);
+  });
+
+  it('keeps the implied median, an unchanged horizon, certainties and markets past expiry', () => {
+    expect(rescaleAnchorToHorizon(0.5, 7, 14)).toBeCloseTo(0.5, 8);
+    expect(rescaleAnchorToHorizon(0.3, 5, 5)).toBeCloseTo(0.3, 8);
+    expect(rescaleAnchorToHorizon(0, 2, 14)).toBe(0);
+    expect(rescaleAnchorToHorizon(1, 2, 14)).toBe(1);
+    expect(rescaleAnchorToHorizon(0.3, 0, 14)).toBe(0.3);
   });
 });

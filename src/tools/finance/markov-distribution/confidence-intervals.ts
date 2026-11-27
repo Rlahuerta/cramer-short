@@ -14,6 +14,7 @@ import {
   type TransitionMatrix,
   FORECAST_VOL_SCALE,
 } from './core.js';
+import { normCDF, normPPF } from '../../../utils/stats.js';
 import { matPow } from './transition.js';
 import {
   jumpDriftCompensator,
@@ -257,6 +258,16 @@ export function inverseStudentTCDF(p: number, nu: number): number {
  */
 export function horizonStudentTNu(nu: number, horizon: number): number {
   return Math.max(nu, 4 + horizon);
+}
+
+/**
+ * A market's P(price > strike) at its own expiry, moved to `horizonDays`: read as a driftless normal in log price, its
+ * z = PhiInv(1 - p) scales by sqrt(marketDays / horizonDays). The implied median stays put and the spread grows with
+ * sqrt(time). Certainties (0, 1) and a market at or past expiry (marketDays <= 0) are returned unchanged.
+ */
+export function rescaleAnchorToHorizon(probability: number, marketDays: number, horizonDays: number): number {
+  if (probability <= 0 || probability >= 1 || !(marketDays > 0) || !(horizonDays > 0)) return probability;
+  return 1 - normCDF(normPPF(1 - probability) * Math.sqrt(marketDays / horizonDays));
 }
 
 /**

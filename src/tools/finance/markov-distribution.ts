@@ -166,6 +166,7 @@ import {
   estimateRegimeStats,
   horizonStudentTNu,
   interpolateDistribution,
+  rescaleAnchorToHorizon,
   inverseStudentTCDF,
   logNormalSurvival,
   normalCDF,
@@ -3393,6 +3394,8 @@ export async function computeMarkovDistribution(params: {
   offHorizonAnchorPolicy?: 'drop' | 'low-trust';
   /** Experiment: no anchors at horizons above this many days. */
   maxAnchorHorizonDays?: number;
+  /** Experiment: an anchor resolving more than this many days from the target is moved to the horizon (rescaleAnchorToHorizon). */
+  anchorHorizonRescaleDays?: number;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
@@ -3468,6 +3471,7 @@ export async function computeMarkovDistribution(params: {
     offHorizonAnchorDays,
     offHorizonAnchorPolicy = 'drop',
     maxAnchorHorizonDays,
+    anchorHorizonRescaleDays,
     enableKswinTrim,
     kswinAlpha,
     enableCoefficientClustering,
@@ -3689,6 +3693,15 @@ export async function computeMarkovDistribution(params: {
       : polymarketAnchors.map(a => (isOffHorizon(a)
         ? { ...a, trustScore: 'low' as const, trustWeight: Math.min(getAnchorTrustWeight(a), 0.35) }
         : a));
+  }
+  if (anchorHorizonRescaleDays !== undefined) {
+    const referenceMs = params.referenceTimeMs ?? Date.now();
+    polymarketAnchors = polymarketAnchors.map((a) => {
+      const marketDays = a.endDate == null ? NaN : (Date.parse(a.endDate) - referenceMs) / MS_PER_DAY;
+      return Math.abs(marketDays - horizon) > anchorHorizonRescaleDays
+        ? { ...a, probability: rescaleAnchorToHorizon(a.probability, marketDays, horizon) }
+        : a;
+    });
   }
 
   if (params.kalshiAnchors && params.kalshiAnchors.length > 0) {

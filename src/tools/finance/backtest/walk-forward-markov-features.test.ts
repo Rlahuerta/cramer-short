@@ -249,23 +249,24 @@ describe('walk-forward interval experiments', () => {
 });
 
 describe('walk-forward anchor horizon experiments', () => {
-  it('drops, down-weights or ignores anchors that resolve away from the target', async () => {
-    const prices = syntheticTrajectoryPrices();
-    const start = Date.parse('2025-01-01T23:59:59Z');
-    const day = 86_400_000;
-    const horizon = 3;
-    const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-    // A mature, liquid crypto market struck at the origin's price that resolves 5 days after the target.
-    const anchorsAt = (t: number) => {
-      const referenceTimeMs = start + t * day;
-      const strike = (Math.round(prices[t] * 100) / 100).toFixed(2);
-      const endDate = isoDate(referenceTimeMs + (horizon + 5) * day);
-      return {
-        referenceTimeMs,
-        markets: [{ question: 'Will BTC be above $' + strike + ' on ' + endDate + '?', probability: 0.8, volume: 50_000, createdAt: referenceTimeMs - 10 * day, endDate }],
-      };
+  const prices = syntheticTrajectoryPrices();
+  const start = Date.parse('2025-01-01T23:59:59Z');
+  const day = 86_400_000;
+  const horizon = 3;
+  const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  // A mature, liquid crypto market struck at the origin's price that resolves 5 days after the target.
+  const anchorsAt = (t: number) => {
+    const referenceTimeMs = start + t * day;
+    const strike = (Math.round(prices[t] * 100) / 100).toFixed(2);
+    const endDate = isoDate(referenceTimeMs + (horizon + 5) * day);
+    return {
+      referenceTimeMs,
+      markets: [{ question: 'Will BTC be above $' + strike + ' on ' + endDate + '?', probability: 0.8, volume: 50_000, createdAt: referenceTimeMs - 10 * day, endDate }],
     };
-    const base = { ticker: 'BTC-USD', prices, horizon, warmup: 120, stride: 20, randomState: 42 };
+  };
+  const base = { ticker: 'BTC-USD', prices, horizon, warmup: 120, stride: 20, randomState: 42 };
+
+  it('drops, down-weights or ignores anchors that resolve away from the target', async () => {
     const [plain, anchored, dropped, lowTrust, capped] = await Promise.all([
       walkForward(base),
       walkForward({ ...base, anchorsAt }),
@@ -281,5 +282,18 @@ describe('walk-forward anchor horizon experiments', () => {
     expect(lowTrust.steps.every(s => s.trustedAnchors === 0)).toBe(true);
     expect(probs(lowTrust)).not.toEqual(probs(plain)); // still blended, at half weight
     expect(probs(lowTrust)).not.toEqual(probs(anchored));
+  });
+
+  it('rescales anchors more than the given days off the target to the horizon, still trusted', async () => {
+    const [anchored, rescaled, withinTolerance] = await Promise.all([
+      walkForward({ ...base, anchorsAt }),
+      walkForward({ ...base, anchorsAt, anchorHorizonRescaleDays: 2 }),
+      walkForward({ ...base, anchorsAt, anchorHorizonRescaleDays: 10 }),
+    ]);
+    const probs = (r: typeof anchored) => r.steps.map(s => s.predictedProb);
+    expect(rescaled.steps.every(s => s.trustedAnchors === 1)).toBe(true);
+    // The 8-day market says 0.8 above spot; read at 3 days its z grows by sqrt(8 / 3), so P(up) rises.
+    rescaled.steps.forEach((s, i) => expect(s.predictedProb).toBeGreaterThan(anchored.steps[i]!.predictedProb));
+    expect(probs(withinTolerance)).toEqual(probs(anchored));
   });
 });

@@ -167,6 +167,8 @@ export interface WalkForwardConfig {
   offHorizonAnchorPolicy?: 'drop' | 'low-trust';
   /** Experiment: no anchors at horizons above this many days. */
   maxAnchorHorizonDays?: number;
+  /** Experiment: an anchor resolving more than this many days from the target is moved to the horizon. */
+  anchorHorizonRescaleDays?: number;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -297,6 +299,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     offHorizonAnchorDays: config.offHorizonAnchorDays,
     offHorizonAnchorPolicy: config.offHorizonAnchorPolicy,
     maxAnchorHorizonDays: config.maxAnchorHorizonDays,
+    anchorHorizonRescaleDays: config.anchorHorizonRescaleDays,
     enableKswinTrim: config.enableKswinTrim,
     kswinAlpha: config.kswinAlpha,
     enableCrossAssetBias: config.enableCrossAssetBias,
