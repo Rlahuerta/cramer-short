@@ -34,25 +34,20 @@ process.on('beforeExit', () => {
 process.on('SIGINT', () => void shutdown(130));
 process.on('SIGTERM', () => void shutdown(143));
 
-// Detect headless subcommands before launching the TUI
+// Detect headless subcommands before launching the TUI. A headless command exits once its work is done: an agent
+// run can leave sockets or library timers open, which would otherwise keep the process (and a systemd job) alive.
 await routeCommand(process.argv, {
   schedule: async (args) => {
     await runScheduleCommand(args);
-    await closeBrowser().catch((err) => {
-      logError({ type: 'system_error', message: `Browser cleanup failed: ${err}`, context: 'schedule' });
-    });
+    await shutdown(0);
   },
   lab: async (args) => {
     await runForecastLabCommand(args);
-    await closeBrowser().catch((err) => {
-      logError({ type: 'system_error', message: `Browser cleanup failed: ${err}`, context: 'lab' });
-    });
+    await shutdown(0);
   },
   replayLabel: async (args) => {
     await runReplayLabelCommand(args);
-    await closeBrowser().catch((err) => {
-      logError({ type: 'system_error', message: `Browser cleanup failed: ${err}`, context: 'replayLabel' });
-    });
+    await shutdown(0);
   },
   cli: async () => { await runCli(); },
 });

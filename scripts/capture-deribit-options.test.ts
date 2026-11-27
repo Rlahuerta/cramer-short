@@ -1,5 +1,34 @@
 import { describe, expect, it } from 'bun:test';
-import { toDeribitCaptureRow } from './capture-deribit-options.js';
+import { captureDeribitOptions, toDeribitCaptureRow } from './capture-deribit-options.js';
+
+const NO_WAIT = { baseDelayMs: 0, jitter: 0, maxAttempts: 3 };
+const book = (instrument: string) => Response.json({ result: [{ instrument_name: instrument }] });
+
+describe('captureDeribitOptions', () => {
+  it('retries a transient Deribit error and captures both currencies', async () => {
+    let btcCalls = 0;
+    const fetchImpl = (async (url: string) => {
+      if (url.includes('currency=BTC') && ++btcCalls === 1) return new Response('unavailable', { status: 503 });
+      return book(url.includes('currency=BTC') ? 'BTC-X' : 'ETH-X');
+    }) as unknown as typeof fetch;
+
+    const { rows, failures } = await captureDeribitOptions(fetchImpl, NO_WAIT);
+
+    expect(failures).toEqual([]);
+    expect(rows.map((r) => r.currency)).toEqual(['BTC', 'ETH']);
+    expect(btcCalls).toBe(2);
+  });
+
+  it('still captures ETH when BTC keeps failing, and reports BTC', async () => {
+    const fetchImpl = (async (url: string) =>
+      url.includes('currency=BTC') ? new Response('unavailable', { status: 503 }) : book('ETH-X')) as unknown as typeof fetch;
+
+    const { rows, failures } = await captureDeribitOptions(fetchImpl, NO_WAIT);
+
+    expect(rows.map((r) => r.currency)).toEqual(['ETH']);
+    expect(failures).toEqual(['BTC: Deribit BTC options: HTTP 503']);
+  });
+});
 
 describe('toDeribitCaptureRow', () => {
   it('keeps the fields an implied density needs and drops the rest', () => {
