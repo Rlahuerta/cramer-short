@@ -1,8 +1,9 @@
-import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach, afterAll, setSystemTime } from 'bun:test';
 import * as apiRoutingCache from '../../utils/api-routing-cache.js';
 import { getAnalystEstimates } from './estimates.js';
 import { getKeyRatios } from './key-ratios.js';
 import { getYahooAnalystTargets } from './yahoo-finance.js';
+import { tavilySearch } from '../search/tavily.js';
 import { AIMessage } from '@langchain/core/messages';
 
 // Capture real module before mocking so afterAll can restore
@@ -253,5 +254,41 @@ describe('get-financials — routing cache provider', () => {
     await tool.invoke({ query: 'price targets for VWS.CO' });
 
     expect(setPreferredApiSpy).toHaveBeenCalledWith('VWS.CO', 'yahoo');
+  });
+});
+
+describe('get-financials — web search when every sub-tool fails', () => {
+  const tool = createGetFinancials('test-model');
+  const originalTavilyKey = process.env.TAVILY_API_KEY;
+  let tavilySpy: ReturnType<typeof spyOn<typeof tavilySearch, 'invoke'>>;
+  const queryOf = () => (tavilySpy.mock.calls[0][0] as { query: string }).query;
+
+  beforeEach(() => {
+    mockCallLlm.mockReset();
+    process.env.TAVILY_API_KEY = 'test-tavily-key';
+    tavilySpy = spyOn(tavilySearch, 'invoke').mockResolvedValue(JSON.stringify({ data: {}, sourceUrls: [] }));
+    subToolSpies[1].mockRejectedValueOnce(new Error('FINANCIAL_DATASETS_PREMIUM_REQUIRED: 402'));
+    setSystemTime(new Date('2026-11-15T12:00:00Z'));
+  });
+  afterEach(() => {
+    setSystemTime();
+    tavilySpy.mockRestore();
+    if (originalTavilyKey === undefined) delete process.env.TAVILY_API_KEY;
+    else process.env.TAVILY_API_KEY = originalTavilyKey;
+  });
+
+  test('searches the current and previous year for a ticker query', async () => {
+    mockCallLlm.mockResolvedValueOnce(withUsage(makeToolCallResponse('get_key_ratios', { ticker: 'AAPL' })));
+    await tool.invoke({ query: 'AAPL P/E' });
+    expect(queryOf()).toContain('AAPL');
+    expect(queryOf()).toContain('2025 2026');
+    expect(queryOf()).not.toContain('2024');
+  });
+
+  test('searches the current and previous year when no ticker can be extracted', async () => {
+    mockCallLlm.mockResolvedValueOnce(withUsage(makeToolCallResponse('get_key_ratios', { ticker: 'AAPL' })));
+    await tool.invoke({ query: 'valuation of the iphone maker' });
+    expect(queryOf()).toContain('2025 2026');
+    expect(queryOf()).not.toContain('2024');
   });
 });

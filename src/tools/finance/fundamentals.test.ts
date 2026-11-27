@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterEach, afterAll, spyOn, setSystemTime } from 'bun:test';
 
 // Signal that FMP is configured — fallback will only run when the key is set.
 process.env.FMP_API_KEY = 'test-fmp-key';
@@ -756,11 +756,28 @@ describe('Yahoo and Tavily fallbacks honour report_period bounds', () => {
       expect(query).not.toContain('2016');
     });
 
-    test('without bounds the default years are kept', async () => {
-      mockFdEmpty('balance_sheets');
-      mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
-      await getBalanceSheets.invoke(input);
-      expect(queryOf()).toContain('2024 2023');
+    test('without bounds the search targets the current and previous year', async () => {
+      setSystemTime(new Date('2026-11-15T12:00:00Z'));
+      try {
+        mockFdEmpty('balance_sheets');
+        mockFmpBalanceInvoke.mockResolvedValueOnce(fmpPremiumResult());
+        await getBalanceSheets.invoke(input);
+        expect(queryOf()).toContain('2025 2026');
+        expect(queryOf()).not.toContain('2024');
+      } finally {
+        setSystemTime();
+      }
+    });
+
+    test('a window that ends before it starts searches the current and previous year', async () => {
+      setSystemTime(new Date('2026-11-15T12:00:00Z'));
+      try {
+        const query = await searchFor({ report_period_gte: '2022-01-01', report_period_lte: '2020-12-31' });
+        expect(query).toContain('2025 2026');
+        expect(query).not.toContain('2024');
+      } finally {
+        setSystemTime();
+      }
     });
   });
 });
