@@ -6,6 +6,7 @@ import { tavilySearch } from '../search/tavily.js';
 import type { DynamicStructuredTool as DST } from '@langchain/core/tools';
 import type { RobinhoodQuote } from './robinhood-client.js';
 import { hasEnv } from '../../utils/env.js';
+import { fetchYahooChartCloses } from './yahoo-client.js';
 
 type RobinhoodQuoteFn = (ticker: string) => Promise<RobinhoodQuote | null>;
 
@@ -98,8 +99,27 @@ export const getStockPrices = new DynamicStructuredTool({
     const endDate = new Date(input.end_date + 'T00:00:00');
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const { data, url } = await api.get('/prices/', params, { cacheable: endDate < today });
-    return formatToolResult(data.prices || [], [url]);
+    try {
+      const { data, url } = await api.get('/prices/', params, { cacheable: endDate < today });
+      return formatToolResult(data.prices || [], [url]);
+    } catch (error) {
+      // Yahoo has no yearly bars: take monthly bars and keep each year's last close.
+      const interval = ({ day: '1d', week: '1wk', month: '1mo', year: '1mo' } as const)[input.interval];
+      const closes = await fetchYahooChartCloses(params.ticker, {
+        period1: Date.parse(`${input.start_date}T00:00:00Z`) / 1000,
+        period2: Date.parse(`${input.end_date}T00:00:00Z`) / 1000 + 86_400,
+        interval,
+      }).catch((yahooError: unknown) => {
+        const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+        throw new Error(`${message(error)}; Yahoo Finance fallback failed: ${message(yahooError)}`);
+      });
+      const rows = input.interval === 'year'
+        ? [...new Map(closes.map((row) => [row.date.slice(0, 4), row])).values()]
+        : closes;
+      return formatToolResult(rows, [
+        `https://finance.yahoo.com/quote/${encodeURIComponent(params.ticker)}/history/`,
+      ]);
+    }
   },
 });
 

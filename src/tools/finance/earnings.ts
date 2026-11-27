@@ -2,6 +2,8 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { api } from './api.js';
 import { formatToolResult } from '../types.js';
+import { tavilySearch } from '../search/tavily.js';
+import { hasEnv } from '../../utils/env.js';
 
 const EarningsInputSchema = z.object({
   ticker: z
@@ -18,7 +20,23 @@ export const getEarnings = new DynamicStructuredTool({
   schema: EarningsInputSchema,
   func: async (input) => {
     const ticker = input.ticker.trim().toUpperCase();
-    const { data, url } = await api.get('/earnings', { ticker });
-    return formatToolResult(data.earnings || {}, [url]);
+    try {
+      const { data, url } = await api.get('/earnings', { ticker });
+      return formatToolResult(data.earnings || {}, [url]);
+    } catch {
+      if (hasEnv('TAVILY_API_KEY')) {
+        try {
+          return await tavilySearch.invoke({
+            query: `${ticker} latest quarterly earnings results revenue EPS versus analyst estimates`,
+          });
+        } catch {
+          // Tavily also failed
+        }
+      }
+      return formatToolResult(
+        { error: `Earnings unavailable for ${ticker}. Use web_search to find the latest earnings release.` },
+        [],
+      );
+    }
   },
 });

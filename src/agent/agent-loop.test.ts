@@ -16,6 +16,7 @@ import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/
 import { z } from 'zod';
 import { _setModelFactory } from '../model/llm.js';
 import * as config from '../utils/config.js';
+import * as flush from '../memory/flush.js';
 import { HISTORY_CONTEXT_MARKER } from '../utils/parsing/history-context.js';
 import type { AgentEvent, DoneEvent } from './types.js';
 
@@ -28,6 +29,7 @@ const script = {
   streamPrompts: [] as string[],
   streamChunks: ['synthesized answer'] as string[],
   streamError: null as Error | null,
+  streamDelayMs: 0,
   onStream: null as (() => void) | null,
 };
 
@@ -52,6 +54,7 @@ class ScriptedChatModel extends BaseChatModel {
   async *_streamIterator(input: BaseLanguageModelInput, _options?: BaseChatModelCallOptions): AsyncGenerator<AIMessageChunk> {
     script.streamPrompts.push(Array.isArray(input) ? lastText(input as BaseMessage[]) : String(input));
     script.onStream?.();
+    if (script.streamDelayMs) await new Promise((resolve) => setTimeout(resolve, script.streamDelayMs));
     if (script.streamError) throw script.streamError;
     for (const chunk of script.streamChunks) yield new AIMessageChunk({ content: chunk });
   }
@@ -94,6 +97,7 @@ beforeEach(() => {
   script.streamPrompts = [];
   script.streamChunks = ['synthesized answer'];
   script.streamError = null;
+  script.streamDelayMs = 0;
   script.onStream = null;
 });
 
@@ -183,6 +187,32 @@ describe('failed model calls', () => {
     expect(done.answer).toStartWith('Error:');
   });
 
+  it('synthesizes from the research gathered so far instead of discarding it', async () => {
+    const research: ToolCall = { id: 'r1', name: 'research_fixture', args: {}, type: 'tool_call' };
+    script.responses = [[ST_CALL], [research], new Error('Ollama call timed out after 120s. The model may be slow or unavailable.')];
+    const agent = await Agent.create({ maxIterations: 10, memoryEnabled: false });
+    installTools(agent, { research_fixture: () => 'AAPL revenue FY2025 = $420B; gross margin 46.9%' });
+
+    const done = doneOf(await collect(agent.run('Summarize Apple fundamentals')));
+
+    expect(done.answer).not.toStartWith('Error:');
+    expect(done.answer).toContain('synthesized answer');
+    expect(script.streamPrompts[0]).toContain('$420B');
+  });
+
+  it('still ends with the error when the user aborted', async () => {
+    const controller = new AbortController();
+    const research: ToolCall = { id: 'r1', name: 'research_fixture', args: {}, type: 'tool_call' };
+    script.responses = [[ST_CALL], [research], Object.assign(new Error('aborted'), { name: 'AbortError' })];
+    const agent = await Agent.create({ maxIterations: 10, memoryEnabled: false, signal: controller.signal });
+    installTools(agent, { research_fixture: () => { controller.abort(); return 'AAPL revenue FY2025 = $420B'; } });
+
+    const done = doneOf(await collect(agent.run('Summarize Apple fundamentals')));
+
+    expect(done.error).toBe(true);
+    expect(script.streamPrompts).toHaveLength(0);
+  });
+
   it('leaves the error flag off a normal answer', async () => {
     const agent = await Agent.create({ maxIterations: 3, memoryEnabled: false });
 
@@ -226,6 +256,41 @@ describe('exit messages', () => {
     expect(script.streamPrompts[0]).toContain('repeated');
   });
 
+  it('stops when the model keeps re-requesting a skill that already ran', async () => {
+    const skillCall: ToolCall = { id: 'k1', name: 'skill', args: { skill: 'dcf' }, type: 'tool_call' };
+    script.responses = [[ST_CALL, skillCall]];
+    script.fallback = [{ ...skillCall, id: 'k2' }];
+    const agent = await Agent.create({ maxIterations: 10, memoryEnabled: false });
+    let skillRuns = 0;
+    installTools(agent, { skill: () => { skillRuns++; return 'Skill dcf instructions: step 1 ... step 9'; } });
+
+    const done = doneOf(await collect(agent.run('value AAPL with a DCF')));
+
+    expect(skillRuns).toBe(1);
+    // One turn is spent telling the model the skill is already loaded; the second repeat stops the run.
+    expect(script.prompts).toHaveLength(3);
+    expect(done.iterations).toBe(3);
+  });
+
+  it('tells the model a re-requested skill is already loaded once, then lets it fetch data', async () => {
+    const skillCall: ToolCall = { id: 'k1', name: 'skill', args: { skill: 'dcf' }, type: 'tool_call' };
+    const lookup: ToolCall = { id: 'l1', name: 'lookup_fixture', args: { ticker: 'AAPL' }, type: 'tool_call' };
+    script.responses = [[ST_CALL, skillCall], [{ ...skillCall, id: 'k2' }], [lookup], 'Final answer from the DCF'];
+    const agent = await Agent.create({ maxIterations: 10, memoryEnabled: false });
+    let lookups = 0;
+    installTools(agent, {
+      skill: () => 'Skill dcf instructions: fetch the cash flows, then value',
+      lookup_fixture: () => { lookups++; return 'AAPL free cash flow 100'; },
+    });
+
+    const done = doneOf(await collect(agent.run('value AAPL with a DCF')));
+
+    expect(lookups).toBe(1);
+    expect(script.prompts[2]).toContain('already loaded');
+    expect(script.prompts[2]).not.toContain('already failed');
+    expect(done.answer).toContain('Final answer from the DCF');
+  });
+
   it('reports a user abort during final synthesis as a cancellation, not a timeout', async () => {
     const controller = new AbortController();
     script.fallback = [ST_CALL];
@@ -254,6 +319,29 @@ describe('exit messages', () => {
     expect(done.answer).toContain('recovered answer');
   });
 
+  it('gives the retried synthesis its own timeout budget', async () => {
+    const realGetSetting = config.getSetting;
+    const spy = spyOn(config, 'getSetting').mockImplementation(((key: string, fallback: unknown) =>
+      key === 'llmCallTimeoutMs' ? 400 : realGetSetting(key, fallback)) as typeof config.getSetting);
+    try {
+      script.responses = [[ST_CALL], ''];
+      script.streamDelayMs = 300;
+      let streams = 0;
+      script.onStream = () => {
+        streams++;
+        script.streamChunks = streams === 1 ? [] : ['recovered answer'];
+      };
+      const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
+
+      const done = doneOf(await collect(agent.run('look up ZZZ')));
+
+      expect(streams).toBe(2);
+      expect(done.answer).toContain('recovered answer');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('returns the gathered research instead of a blank answer when the model stays empty', async () => {
     script.responses = [[ST_CALL], ''];
     script.streamChunks = [];
@@ -265,6 +353,17 @@ describe('exit messages', () => {
     expect(done.answer).toContain('empty answer');
   });
 
+  it('flags the interrupted fallback as an error so callers can tell it from an answer', async () => {
+    script.fallback = [ST_CALL];
+    script.streamError = new Error('provider exploded');
+    const agent = await Agent.create({ maxIterations: 1, memoryEnabled: false });
+
+    const done = doneOf(await collect(agent.run('look up ZZZ')));
+
+    expect(done.answer).toContain('Research interrupted');
+    expect(done.error).toBe(true);
+  });
+
   it('still reports a synthesis timeout as a timeout', async () => {
     script.fallback = [ST_CALL];
     script.streamError = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
@@ -273,6 +372,124 @@ describe('exit messages', () => {
     const done = doneOf(await collect(agent.run('look up ZZZ')));
 
     expect(done.answer).toContain('Research interrupted');
+  });
+});
+
+describe('distribution warning prefix', () => {
+  // Without a markov_distribution tool the Markov route fails, so the answer gets the warning prefix.
+  const DISTRIBUTION_QUERY = 'Give me the probability distribution of AAPL price in 30 days';
+  const noop = new DynamicStructuredTool({ name: 'noop', description: 'noop', schema: z.object({}), func: async () => 'ok' });
+
+  it('still synthesizes an answer after the warning when the model returns an empty answer', async () => {
+    script.fallback = '';
+    const agent = await Agent.create({ tools: [noop], memoryEnabled: false, toolDescriptionsOverride: 'noop' });
+
+    const done = doneOf(await collect(agent.run(DISTRIBUTION_QUERY)));
+
+    expect(done.answer).toStartWith('## Warning');
+    expect(done.answer).toContain('synthesized answer');
+  });
+
+  it('still synthesizes an answer after the warning at max iterations', async () => {
+    script.fallback = [ST_CALL];
+    const agent = await Agent.create({ tools: [noop], memoryEnabled: false, maxIterations: 1, toolDescriptionsOverride: 'noop' });
+
+    const done = doneOf(await collect(agent.run(DISTRIBUTION_QUERY)));
+
+    expect(done.answer).toStartWith('## Warning');
+    expect(done.answer).toContain('synthesized answer');
+  });
+});
+
+describe('forecast ticker auto-fix on follow-ups', () => {
+  it('runs the earlier asset\'s forecast as the model asked when the follow-up names another asset', async () => {
+    const history = new InMemoryChatHistory();
+    history.seedMessage({ query: 'BTC 7 day forecast', answer: 'BTC-USD forecast: ...', summary: null });
+    const markovCall: ToolCall = { id: 'm1', name: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7 }, type: 'tool_call' };
+    script.responses = [[ST_CALL, markovCall], 'Compared'];
+    const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
+    const toolMap = Object.getOwnPropertyDescriptor(agent, 'toolMap')?.value as Map<string, StructuredToolInterface>;
+    const received: unknown[] = [];
+    toolMap.set('markov_distribution', new DynamicStructuredTool({
+      name: 'markov_distribution',
+      description: 'markov fixture',
+      schema: z.object({ ticker: z.string(), horizon: z.number() }),
+      func: async ({ ticker }) => { received.push(ticker); return JSON.stringify({ data: { ran_for: ticker } }); },
+    }));
+    Object.defineProperty(agent, 'toolExecutor', { value: new AgentToolExecutor(toolMap), configurable: true });
+
+    await collect(agent.run('Compare that with gold', history));
+
+    expect(received).toEqual(['BTC-USD']);
+  });
+});
+
+describe('/think OFF', () => {
+  it('reaches the final synthesis model', async () => {
+    const streamThink: Array<boolean | undefined> = [];
+    _setModelFactory((_name, opts, thinkOverride) => {
+      if (opts.streaming) streamThink.push(thinkOverride);
+      return new ScriptedChatModel({});
+    });
+    try {
+      script.fallback = [ST_CALL];
+      const agent = await Agent.create({ maxIterations: 1, memoryEnabled: false, thinkEnabled: false });
+
+      await collect(agent.run('look up ZZZ'));
+    } finally {
+      _setModelFactory(() => new ScriptedChatModel({}));
+    }
+    expect(streamThink).toEqual([false]);
+  });
+
+  it('reaches the periodic memory flush', async () => {
+    const flushSpy = spyOn(flush, 'runMemoryFlush').mockResolvedValue({ flushed: true, written: false });
+    try {
+      script.responses = [[ST_CALL]];
+      script.fallback = [{ id: 'r', name: 'research_fixture', args: {}, type: 'tool_call' }];
+      const agent = await Agent.create({
+        maxIterations: 5,
+        thinkEnabled: false,
+        getMemoryManager: async () => ({ listFiles: async () => [], loadSessionContext: async () => ({ text: '' }), search: async () => [] }) as never,
+      });
+      installTools(agent, { research_fixture: () => 'research result' });
+
+      await collect(agent.run('look up ZZZ'));
+
+      expect(flushSpy).toHaveBeenCalledTimes(1);
+      expect(flushSpy.mock.calls[0]![0].thinkOverride).toBe(false);
+    } finally {
+      flushSpy.mockRestore();
+    }
+  });
+});
+
+describe('periodic memory flush', () => {
+  it('sends only the tool results added since the previous flush', async () => {
+    const flushSpy = spyOn(flush, 'runMemoryFlush').mockResolvedValue({ flushed: true, written: false });
+    try {
+      script.responses = [[ST_CALL]];
+      script.fallback = [{ id: 'r', name: 'research_fixture', args: {}, type: 'tool_call' }];
+      const agent = await Agent.create({
+        maxIterations: 10,
+        getMemoryManager: async () => ({ listFiles: async () => [], loadSessionContext: async () => ({ text: '' }), search: async () => [] }) as never,
+      });
+      let n = 0;
+      installTools(agent, { research_fixture: () => `research-result-${++n};` });
+
+      await collect(agent.run('look up ZZZ'));
+
+      expect(flushSpy).toHaveBeenCalledTimes(2);
+      const [first, second] = flushSpy.mock.calls.map(([params]) => params.toolResults);
+      expect(first).toContain('research-result-1;');
+      expect(first).toContain('research-result-4;');
+      expect(second).not.toContain('research-result-1;');
+      expect(second).not.toContain('research-result-4;');
+      expect(second).toContain('research-result-5;');
+      expect(second).toContain('research-result-9;');
+    } finally {
+      flushSpy.mockRestore();
+    }
   });
 });
 

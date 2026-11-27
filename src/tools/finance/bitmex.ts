@@ -89,17 +89,23 @@ export function toBitmexSymbolCandidates(ticker: string): string[] {
   return [...new Set(candidates)];
 }
 
-export async function fetchBitmexActiveInstruments(): Promise<BitmexInstrument[]> {
+/** Like fetchBitmexActiveInstruments, but says why the list is empty when the request failed. */
+async function fetchBitmexActiveInstrumentsOrError(): Promise<{ instruments: BitmexInstrument[]; error?: string }> {
   try {
     const res = await fetch(`${BITMEX_BASE}/api/v1/instrument/active`, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) return [];
-    return await res.json() as BitmexInstrument[];
-  } catch {
-    return [];
+    if (!res.ok) return { instruments: [], error: `BitMEX instrument request failed: HTTP ${res.status}` };
+    return { instruments: await res.json() as BitmexInstrument[] };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { instruments: [], error: `BitMEX instrument request failed: ${msg}` };
   }
+}
+
+export async function fetchBitmexActiveInstruments(): Promise<BitmexInstrument[]> {
+  return (await fetchBitmexActiveInstrumentsOrError()).instruments;
 }
 
 export function selectBitmexInstrument(
@@ -194,7 +200,8 @@ export const bitmexMarketTool = new DynamicStructuredTool({
     days: z.number().int().min(1).max(750).optional().default(120).describe('Number of 1d bucketed closes to fetch for each resolved BitMEX instrument.'),
   }),
   func: async (input) => {
-    const instruments = await fetchBitmexActiveInstruments();
+    const { instruments, error } = await fetchBitmexActiveInstrumentsOrError();
+    if (error) return formatToolResult({ exchange: 'bitmex', error });
     const results = await Promise.all(input.tickers.map(async (ticker) => {
       const instrument = selectBitmexInstrument(instruments, ticker);
       if (!instrument) {

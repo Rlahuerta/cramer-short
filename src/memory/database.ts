@@ -69,6 +69,15 @@ type CacheRow = {
   embedding: Uint8Array;
 };
 
+export type StoredChunk = {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  content: string;
+  source: string;
+  hasEmbedding: boolean;
+};
+
 // Lowest keyword score a real FTS match can get; keep >= the default minScore in memory/index.ts.
 const KEYWORD_SCORE_FLOOR = 0.1;
 
@@ -224,6 +233,20 @@ export class MemoryDatabase {
     return memoryDb;
   }
 
+  /**
+   * Rebuilds every index from its table. A damaged index (seen live: "row N missing from index idx_chunks_hash")
+   * makes writes fail with "database disk image is malformed" while the rows themselves are intact. The database
+   * also holds financial insights that exist nowhere else, so it is repaired in place, never recreated.
+   */
+  static async repair(path: string): Promise<void> {
+    const db = await MemoryDatabase.openSqlite(path);
+    try {
+      db.exec('REINDEX');
+    } finally {
+      db.close();
+    }
+  }
+
   private runMigrations(): void {
     const columns = this.db.query<{ name: string }>('PRAGMA table_info(chunks)').all();
     const colNames = new Set(columns.map((c) => c.name));
@@ -248,8 +271,13 @@ export class MemoryDatabase {
       if (dimRow) {
         const dim = parseInt(dimRow.value, 10);
         if (!Number.isNaN(dim) && dim > 0) {
-          const created = this.ensureVecTable(dim);
-          if (created) {
+          // Copy embeddings into vec_chunks only when some are missing: re-copying all of them on every open cost
+          // about 6 s on the live database.
+          const count = (sql: string) => this.db.query<{ n: number }>(sql).get()?.n ?? 0;
+          if (
+            this.ensureVecTable(dim)
+            && count('SELECT count(*) AS n FROM vec_chunks') < count('SELECT count(*) AS n FROM chunks WHERE embedding IS NOT NULL')
+          ) {
             this.backfillVecTable();
           }
         }
@@ -511,6 +539,26 @@ export class MemoryDatabase {
     }
     this.db.query("DELETE FROM meta WHERE key = 'embedding_dim'").run();
     this.vecTableDim = -1;
+  }
+
+  /** Every cached embedding's content hash, read once so a sync needs no per-chunk lookups. */
+  listCachedEmbeddingHashes(): Set<string> {
+    return new Set(
+      this.db.query<{ content_hash: string }>('SELECT content_hash FROM embedding_cache').all().map((r) => r.content_hash),
+    );
+  }
+
+  /** What a sync compares against, keyed by content hash and read in one query. */
+  listStoredChunks(): Map<string, StoredChunk> {
+    const rows = this.db
+      .query<{ content_hash: string; file_path: string; start_line: number; end_line: number; content: string; source: string; has_embedding: number }>(
+        'SELECT content_hash, file_path, start_line, end_line, content, source, embedding IS NOT NULL AS has_embedding FROM chunks',
+      )
+      .all();
+    return new Map(rows.map((r) => [r.content_hash, {
+      filePath: r.file_path, startLine: r.start_line, endLine: r.end_line, content: r.content, source: r.source,
+      hasEmbedding: r.has_embedding === 1,
+    }]));
   }
 
   getCachedEmbedding(contentHash: string): number[] | null {

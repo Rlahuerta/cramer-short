@@ -36,9 +36,14 @@ function sortValue(value: unknown): unknown {
 /**
  * True when a prior scratchpad record has the same tool name, equivalent
  * arguments, and an error-like result — i.e. re-running this exact call would
- * just fail the same way again.
+ * just fail the same way again. A `skill` call also counts once that skill has
+ * run at all: its instructions are already in context, and the executor
+ * would silently drop the repeat anyway.
  */
 export function isRepeatedFailingToolCall(call: ModelToolCall, records: ToolCallRecord[]): boolean {
+  if (call.name === 'skill' && records.some((r) => r.tool === 'skill' && r.args?.skill === call.args?.skill)) {
+    return true;
+  }
   const signature = stableStringifyArgs(call.args ?? {});
   return records.some((record) =>
     record.tool === call.name

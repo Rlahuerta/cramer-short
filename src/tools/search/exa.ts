@@ -3,8 +3,9 @@ import { ExaSearchResults } from '@langchain/exa';
 import Exa from 'exa-js';
 import { z } from 'zod';
 import { formatToolResult, parseSearchResults, wrapSearchResults } from '../types.js';
-import { getEnv } from '../../utils/env.js';
+import { getEnv, hasEnv } from '../../utils/env.js';
 import { logger } from '../../utils/logger.js';
+import { tavilySearch } from './tavily.js';
 
 // Lazily initialized to avoid errors when API key is not set
 let exaTool: { invoke: (query: string) => Promise<unknown> } | null = null;
@@ -49,6 +50,8 @@ export const exaSearch = new DynamicStructuredTool({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error(`[Exa API] error: ${message}`);
+      // web_search registers one provider; when Exa fails (quota, 402, timeout), try Tavily before giving up.
+      if (hasEnv('TAVILY_API_KEY')) return tavilySearch.invoke({ query: input.query });
       throw new Error(`[Exa API] ${message}`);
     }
   },

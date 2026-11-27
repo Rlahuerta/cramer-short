@@ -1,6 +1,8 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import {
   computePriceVelocityPpH,
+  fetchClobPriceHistory,
+  fetchClobSpread,
   computePriceVelocityLogitPerHour,
   computeMaxHourlyJump,
   computeMaxHourlyLogitJump,
@@ -260,5 +262,24 @@ describe('computeMaxHourlyLogitJump', () => {
       { tSec: 7200, p: 0.75 },
     ];
     expect(computeMaxHourlyLogitJump(pts)).toBe(0);
+  });
+});
+
+describe('CLOB HTTP fetchers', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  test('pass a timeout AbortSignal to fetch', async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    await fetchClobSpread('token-1');
+    await fetchClobPriceHistory('token-1', '1h');
+
+    expect(signals).toHaveLength(2);
+    for (const signal of signals) expect(signal).toBeInstanceOf(AbortSignal);
   });
 });

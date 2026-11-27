@@ -155,6 +155,7 @@ async function fetchReddit(
           `?q=${encodeURIComponent(query)}&sort=new&limit=${limit}&t=week&restrict_sr=1`;
         const res = await fetch(url, {
           headers: { 'User-Agent': REDDIT_UA },
+          signal: AbortSignal.timeout(10_000),
         });
         if (!res.ok) {
           failures.add(`HTTP ${res.status}`);
@@ -224,6 +225,7 @@ async function fetchXTweets(query: string, limit: number, sourceIssues: string[]
 
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
       xApiBreaker.onFailure();
@@ -270,7 +272,7 @@ async function fetchXTweets(query: string, limit: number, sourceIssues: string[]
 
 async function fetchFearGreed(): Promise<{ value: number; classification: string } | null> {
   try {
-    const res = await fetch(FEAR_GREED_URL);
+    const res = await fetch(FEAR_GREED_URL, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return null;
     const data = await res.json() as { data?: { value: string; value_classification: string }[] };
     const d = data?.data?.[0];

@@ -34,6 +34,7 @@ async function acquireCrumb(): Promise<CrumbCache> {
   const initRes = await fetch(CONSENT_URL, {
     headers: { 'User-Agent': UA, Accept: 'text/html' },
     redirect: 'follow',
+    signal: AbortSignal.timeout(15_000),
   });
   const rawCookie = initRes.headers.get('set-cookie') ?? '';
   // Only keep name=value pairs, strip directives, join multiple cookies
@@ -46,6 +47,7 @@ async function acquireCrumb(): Promise<CrumbCache> {
   // Step 2: exchange the session cookie for a crumb
   const crumbRes = await fetch(CRUMB_URL, {
     headers: { 'User-Agent': UA, Accept: '*/*', Cookie: cookie },
+    signal: AbortSignal.timeout(15_000),
   });
   if (!crumbRes.ok) {
     throw new Error(`Yahoo Finance refused the session (crumb) request (HTTP ${crumbRes.status})`);
@@ -79,6 +81,76 @@ export async function fetchWithCrumb(url: string): Promise<Response> {
   if (res.status !== 401 && res.status !== 403) return res;
   crumbCache = null;
   return doFetch(await getCrumb());
+}
+
+// Yahoo leaves null closes in bars that have no print yet (e.g. an index's current day).
+const YahooChartCloseSchema = z.number().nullable();
+const YahooChartPayloadSchema = z.object({
+  chart: z.object({
+    result: z.array(z.object({
+      meta: z.object({ gmtoffset: z.number().optional() }).passthrough().optional(),
+      timestamp: z.array(z.number()),
+      indicators: z.object({
+        quote: z.array(z.object({
+          close: z.array(YahooChartCloseSchema),
+        }).passthrough()).nonempty(),
+      }).passthrough(),
+    }).passthrough()).nonempty(),
+  }).passthrough(),
+}).passthrough();
+
+export interface DatedClose {
+  /** Exchange-local YYYY-MM-DD of the bar. */
+  date: string;
+  close: number;
+}
+
+export interface YahooChartOptions {
+  /** Yahoo range such as '1mo' or '1y'; used when period1 is absent. */
+  range?: string;
+  /** Window start/end in Unix seconds (Yahoo's period1/period2). */
+  period1?: number;
+  period2?: number;
+  interval?: '1d' | '1wk' | '1mo';
+}
+
+/**
+ * Fetches Yahoo Finance v8 chart closes (stocks, ETFs, indices, crypto, commodities),
+ * oldest first. Throws "Yahoo Finance chart request failed for …" when Yahoo cannot be
+ * reached and "Malformed Yahoo Finance chart payload for …" when the payload is invalid.
+ */
+export async function fetchYahooChartCloses(
+  ticker: string,
+  opts: YahooChartOptions,
+): Promise<DatedClose[]> {
+  const window = opts.period1 !== undefined
+    ? `period1=${opts.period1}&period2=${opts.period2 ?? Math.floor(Date.now() / 1000)}`
+    : `range=${opts.range ?? '1y'}`;
+  const url =
+    `${QUERY_HOST}/v8/finance/chart/${encodeURIComponent(ticker)}` +
+    `?${window}&interval=${opts.interval ?? '1d'}&includePrePost=false`;
+  const res = await fetchWithCrumb(url).catch((e: unknown) => {
+    throw new Error(`Yahoo Finance chart request failed for ${ticker}: ${e instanceof Error ? e.message : String(e)}`);
+  });
+  if (!res.ok) {
+    throw new Error(`Yahoo Finance chart request failed for ${ticker}: ${res.status} ${res.statusText}`);
+  }
+
+  const parsed = YahooChartPayloadSchema.safeParse(await res.json());
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const path = issue?.path.length ? issue.path.join('.') : 'payload';
+    const message = issue?.message ?? 'schema validation failed';
+    throw new Error(`Malformed Yahoo Finance chart payload for ${ticker}: ${path} ${message}`);
+  }
+
+  const { meta, timestamp, indicators } = parsed.data.chart.result[0];
+  const offsetSeconds = meta?.gmtoffset ?? 0;
+  return indicators.quote[0].close.flatMap((close, i) => (
+    close !== null && Number.isFinite(close)
+      ? [{ date: new Date((timestamp[i] + offsetSeconds) * 1000).toISOString().slice(0, 10), close }]
+      : []
+  ));
 }
 
 const YahooNullableNumberSchema = z.number().nullable();

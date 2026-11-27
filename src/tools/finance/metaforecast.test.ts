@@ -16,6 +16,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   computeCrossPlatformDelta,
+  fetchMetaforecastQuestions,
   findBestMetaforecastMatch,
   parseMetaforecastResponse,
   shouldFlagCrossPlatform,
@@ -127,5 +128,22 @@ describe('shouldFlagCrossPlatform', () => {
 
   it('does not take absolute value internally', () => {
     expect(shouldFlagCrossPlatform(-0.20)).toBe(false);
+  });
+});
+
+describe('fetchMetaforecastQuestions', () => {
+  it('returns [] without any network request (the v2 API is dead)', async () => {
+    const savedFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response('<html></html>', { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      expect(await fetchMetaforecastQuestions('fed rate cut', { limit: 5 })).toEqual([]);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+    expect(fetchCalls).toBe(0);
   });
 });

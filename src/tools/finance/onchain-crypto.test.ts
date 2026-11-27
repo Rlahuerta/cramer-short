@@ -102,6 +102,17 @@ describe('resolveCoinGeckoId', () => {
     expect(resolveCoinGeckoId(' BTC ')).toBe('bitcoin');
   });
 
+  it('strips -USD, -USDT and USDT quote suffixes before mapping', () => {
+    expect(resolveCoinGeckoId('BTC-USD')).toBe('bitcoin');
+    expect(resolveCoinGeckoId('eth-usdt')).toBe('ethereum');
+    expect(resolveCoinGeckoId('SOLUSDT')).toBe('solana');
+    expect(resolveCoinGeckoId('MYTOKEN-USD')).toBe('mytoken');
+  });
+
+  it('does not strip a bare USDT ticker down to nothing', () => {
+    expect(resolveCoinGeckoId('USDT')).toBe('usdt');
+  });
+
   it('covers all entries in TICKER_TO_COINGECKO_ID map', () => {
     const keys = Object.keys(TICKER_TO_COINGECKO_ID);
     expect(keys.length).toBeGreaterThan(5);
@@ -349,5 +360,57 @@ describe('unknown ticker fallback', () => {
     expect(typeof result).toBe('string');
     const parsed = JSON.parse(result);
     expect(parsed.data?.error).toBeDefined();
+  });
+});
+
+// ── request timeouts ──────────────────────────────────────────────────────────
+
+describe('request timeouts', () => {
+  it('passes a timeout AbortSignal to every fetch (coin, whale-alert, blockchain.info, global)', async () => {
+    const savedKey = process.env.WHALE_ALERT_API_KEY;
+    process.env.WHALE_ALERT_API_KEY = 'test-key';
+    const calls: Array<{ url: string; signal: AbortSignal | null | undefined }> = [];
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = url.toString();
+      calls.push({ url: urlStr, signal: init?.signal });
+      if (urlStr.includes('whale-alert')) return new Response('{}', { status: 500 });
+      if (urlStr.includes('/global')) return new Response(JSON.stringify(makeGlobalResponse()), { status: 200 });
+      if (urlStr.includes('blockchain.info')) return new Response(JSON.stringify({ txs: [] }), { status: 200 });
+      return new Response(JSON.stringify(makeCoinGeckoResponse()), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      await getOnchainCrypto.invoke({ ticker: 'BTC', metrics: ['whale', 'global'] });
+    } finally {
+      if (savedKey === undefined) delete process.env.WHALE_ALERT_API_KEY;
+      else process.env.WHALE_ALERT_API_KEY = savedKey;
+    }
+
+    expect(calls.map((c) => c.url)).toEqual([
+      expect.stringContaining('/coins/bitcoin'),
+      expect.stringContaining('whale-alert'),
+      expect.stringContaining('blockchain.info'),
+      expect.stringContaining('/global'),
+    ]);
+    for (const call of calls) expect(call.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe('whale tracking with a trading-pair ticker', () => {
+  it('tracks whales for a trading-pair ticker such as BTC-USD as the coin itself', async () => {
+    const sources: string[] = [];
+    const tool = createGetOnchainCryptoTool({ recordReplayWhaleCapture: (row) => { sources.push(row.source); } });
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      const urlStr = url.toString();
+      if (urlStr.includes('/coins/bitcoin')) return Response.json(makeCoinGeckoResponse());
+      if (urlStr.includes('blockchain.info/unconfirmed-transactions')) {
+        return Response.json({ txs: [{ hash: '0xabc', time: 1777548000, out: [{ value: 150 * 1e8 }] }] });
+      }
+      throw new Error(`Unexpected URL: ${urlStr}`);
+    }) as unknown as typeof fetch;
+
+    await tool.invoke({ ticker: 'BTC-USD', metrics: ['whale'] });
+
+    expect(sources).toEqual(['blockchain.info-mempool']);
   });
 });

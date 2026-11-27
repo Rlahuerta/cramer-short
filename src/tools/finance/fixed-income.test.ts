@@ -158,4 +158,15 @@ describe('get_fixed_income tool', () => {
     expect(ty['2Y']).toBeNull();
     expect(ty['10Y']).toBeNull();
   });
+
+  it('reports inverted: null (unknown), not false, when yields are missing', async () => {
+    globalThis.fetch = mock(async () => new Response('error', { status: 500 })) as unknown as typeof fetch;
+
+    const { getFixedIncomeTool } = await import('./fixed-income.js');
+    const raw = await getFixedIncomeTool.invoke({ series: ['yield_curve'] });
+    const parsed = JSON.parse(raw) as { data: { yield_curve: { spread_10y_2y: number | null; inverted: boolean | null } } };
+
+    expect(parsed.data.yield_curve.spread_10y_2y).toBeNull();
+    expect(parsed.data.yield_curve.inverted).toBeNull();
+  });
 });

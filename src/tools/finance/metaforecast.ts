@@ -13,7 +13,6 @@
  * unit-tested; mocks should target the pure helpers.
  */
 
-const METAFORECAST_API = 'https://metaforecast.org/api/v2/questions';
 const CROSS_PLATFORM_DELTA_THRESHOLD = 0.10;
 
 export interface MetaforecastEstimate {
@@ -127,21 +126,12 @@ export function shouldFlagCrossPlatform(delta: number): boolean {
 }
 
 /**
- * Thin HTTP wrapper around metaforecast `/api/v2/questions`.
- * Network-dependent — call only from production code paths, not tests.
+ * Former HTTP wrapper around metaforecast `/api/v2/questions`. Signature kept so callers compile.
  */
 export async function fetchMetaforecastQuestions(
-  query: string,
-  opts: { limit?: number; signal?: AbortSignal } = {},
+  _query: string,
+  _opts: { limit?: number; signal?: AbortSignal } = {},
 ): Promise<MetaforecastEstimate[]> {
-  const limit = Math.max(1, Math.min(50, opts.limit ?? 10));
-  const url = `${METAFORECAST_API}?query=${encodeURIComponent(query)}&limit=${limit}`;
-  const res = await fetch(url, { signal: opts.signal });
-  if (!res.ok) return [];
-  const json = await res.json().catch((err) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[metaforecast] failed to parse response JSON: ${msg}`);
-    return null;
-  });
-  return parseMetaforecastResponse(json);
+  // Dead source: /api/v2/questions now 308-redirects to the HTML homepage, so skip the request.
+  return [];
 }

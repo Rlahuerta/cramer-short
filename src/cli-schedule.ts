@@ -274,6 +274,8 @@ async function runAgentJob(job: AgentScheduleJob, options: ScheduleCommandOption
       write(event.chunk);
       answer += event.chunk;
     } else if (event.type === 'done') {
+      // A failed run ("Error: LLM request timed out.") is not a report: fail the job and keep any earlier file.
+      if (event.error) throw new Error(`✗ Job "${job.id}" failed: ${event.answer ?? 'the agent run ended in an error'}`);
       if (!answer) answer = event.answer ?? '';
       log(`\n✓ Job complete (${event.iterations} iterations, ${event.totalTime}ms)`);
     }

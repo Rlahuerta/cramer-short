@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getCramerShortDir } from './paths.js';
 
@@ -61,11 +61,15 @@ export async function loadCacheFromDisk(): Promise<Map<string, string>> {
 
   for (const file of files) {
     try {
-      const raw = readFileSync(join(CACHE_DIR, file), 'utf-8');
+      const filePath = join(CACHE_DIR, file);
+      const raw = readFileSync(filePath, 'utf-8');
       const entry = JSON.parse(raw) as DiskCacheEntry;
 
-      // Skip expired entries
-      if (entry.expiresAt < now) continue;
+      // Delete expired entries so they are not re-read on every start
+      if (entry.expiresAt < now) {
+        try { unlinkSync(filePath); } catch { /* best effort */ }
+        continue;
+      }
 
       // Basic shape validation
       if (

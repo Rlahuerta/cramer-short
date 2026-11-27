@@ -4,6 +4,7 @@ import { api, stripFieldsDeep } from './api.js';
 import { formatToolResult } from '../types.js';
 import { tavilySearch } from '../search/tavily.js';
 import { hasEnv } from '../../utils/env.js';
+import { searchYears } from './fundamentals.js';
 
 const REDUNDANT_FINANCIAL_FIELDS = ['accession_number', 'currency', 'period'] as const;
 
@@ -30,7 +31,7 @@ export const getKeyRatios = new DynamicStructuredTool({
       if (hasEnv('TAVILY_API_KEY')) {
         try {
           return await tavilySearch.invoke({
-            query: `${ticker} key financial ratios P/E EV/EBITDA profit margins ROE return on equity 2024 2025`,
+            query: `${ticker} key financial ratios P/E EV/EBITDA profit margins ROE return on equity ${searchYears()}`,
           });
         } catch {
           // Tavily also failed — fall through to structured error
@@ -117,10 +118,13 @@ export const getHistoricalKeyRatios = new DynamicStructuredTool({
     } catch {
       // Primary API failed — fall back to Tavily web search
       const ticker = input.ticker.trim().toUpperCase();
+      const years = searchYears(
+        input.report_period ? { report_period_gte: input.report_period, report_period_lte: input.report_period } : input,
+      );
       if (hasEnv('TAVILY_API_KEY')) {
         try {
           return await tavilySearch.invoke({
-            query: `${ticker} historical P/E ratio EV/EBITDA margins valuation trend 2022 2023 2024`,
+            query: `${ticker} historical P/E ratio EV/EBITDA margins valuation trend ${years}`,
           });
         } catch {
           // Tavily also failed

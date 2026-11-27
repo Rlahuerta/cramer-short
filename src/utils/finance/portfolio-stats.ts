@@ -83,14 +83,15 @@ export function computeVolatility(returns: number[], annualizationFactor = 252):
 /**
  * Annualised Sharpe ratio.
  *
- * @param returns        Daily arithmetic returns
- * @param riskFreeRate   Annual risk-free rate (default 5 % = 0.05)
+ * @param returns              Daily arithmetic returns
+ * @param riskFreeRate         Annual risk-free rate (default 5 % = 0.05)
+ * @param annualizationFactor  Return periods per year (252 trading days, 365 for crypto)
  */
-export function computeSharpe(returns: number[], riskFreeRate = 0.05): number {
+export function computeSharpe(returns: number[], riskFreeRate = 0.05, annualizationFactor = 252): number {
   if (returns.length === 0) return 0;
-  const vol = computeVolatility(returns);
+  const vol = computeVolatility(returns, annualizationFactor);
   if (vol === 0) return 0;
-  const annualReturn = mean(returns) * 252;
+  const annualReturn = mean(returns) * annualizationFactor;
   return (annualReturn - riskFreeRate) / vol;
 }
 
@@ -219,18 +220,40 @@ export function alignReturnSeries(
 }
 
 /**
+ * Keep only the dates every series has, so returns compare the same days
+ * (crypto trades every calendar day, stocks only on trading days).
+ * Returns the shared dates, oldest first, and each ticker's closes on them.
+ */
+export function alignPricesByDate(
+  series: Record<string, { date: string; close: number }[]>,
+): { dates: string[]; prices: Record<string, number[]> } {
+  const byDate = Object.entries(series).map(
+    ([ticker, rows]) => [ticker, new Map(rows.map((row) => [row.date, row.close]))] as const,
+  );
+  const dates = [...(byDate[0]?.[1].keys() ?? [])]
+    .filter((date) => byDate.every(([, closes]) => closes.has(date)))
+    .sort();
+  return {
+    dates,
+    prices: Object.fromEntries(byDate.map(([ticker, closes]) => [ticker, dates.map((date) => closes.get(date)!)])),
+  };
+}
+
+/**
  * Build a full PortfolioRiskReport from per-ticker price series and weights.
  *
- * @param pricesByTicker   Map of ticker → close price array (chronological order)
- * @param weights          Map of ticker → portfolio weight (e.g. market value)
- * @param confidenceLevel  VaR/CVaR confidence (default 0.95)
- * @param riskFreeRate     Annual risk-free rate for Sharpe (default 0.05)
+ * @param pricesByTicker       Map of ticker → close price array (chronological order)
+ * @param weights              Map of ticker → portfolio weight (e.g. market value)
+ * @param confidenceLevel      VaR/CVaR confidence (default 0.95)
+ * @param riskFreeRate         Annual risk-free rate for Sharpe (default 0.05)
+ * @param annualizationFactor  Return periods per year (252 trading days, 365 calendar days)
  */
 export function buildPortfolioRiskReport(
   pricesByTicker: Record<string, number[]>,
   weights: Record<string, number>,
   confidenceLevel = 0.95,
   riskFreeRate = 0.05,
+  annualizationFactor = 252,
 ): PortfolioRiskReport {
   const tickers = Object.keys(pricesByTicker);
 
@@ -252,8 +275,8 @@ export function buildPortfolioRiskReport(
 
   for (const t of tickers) {
     const r = aligned[t] ?? [];
-    volatility[t] = computeVolatility(r);
-    sharpe[t] = computeSharpe(r, riskFreeRate);
+    volatility[t] = computeVolatility(r, annualizationFactor);
+    sharpe[t] = computeSharpe(r, riskFreeRate, annualizationFactor);
     varMap[t] = computeVaR(r, confidenceLevel);
     cvarMap[t] = computeCVaR(r, confidenceLevel);
     maxDrawdownMap[t] = computeMaxDrawdown(pricesByTicker[t]);
@@ -273,8 +296,8 @@ export function buildPortfolioRiskReport(
   })];
 
   const portfolio = {
-    volatility: computeVolatility(portReturns),
-    sharpe: computeSharpe(portReturns, riskFreeRate),
+    volatility: computeVolatility(portReturns, annualizationFactor),
+    sharpe: computeSharpe(portReturns, riskFreeRate, annualizationFactor),
     var: computeVaR(portReturns, confidenceLevel),
     cvar: computeCVaR(portReturns, confidenceLevel),
     maxDrawdown: computeMaxDrawdown(portPrices),

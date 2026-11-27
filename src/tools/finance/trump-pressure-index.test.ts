@@ -6,8 +6,9 @@
  *         alert detection, and historical landmark matching.
  */
 
-import { describe, it, expect, spyOn } from 'bun:test';
+import { describe, it, expect, spyOn, beforeAll, afterAll } from 'bun:test';
 import { api } from './api.js';
+import { setGdeltMinIntervalMs, GDELT_MIN_INTERVAL_MS } from '../osint/gdelt.js';
 import {
   computeTrumpPressureIndex,
   computeZScore,
@@ -35,6 +36,10 @@ import {
   type TrumpPressureResult,
   type PressureComponent,
 } from './trump-pressure-index.js';
+
+// computeTrumpPressureIndex falls back to GDELT; don't wait out the real 5 s spacing.
+beforeAll(() => setGdeltMinIntervalMs(0));
+afterAll(() => setGdeltMinIntervalMs(GDELT_MIN_INTERVAL_MS));
 
 // ---------------------------------------------------------------------------
 // computeZScore
