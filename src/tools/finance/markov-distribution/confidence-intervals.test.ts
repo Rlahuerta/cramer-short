@@ -1246,3 +1246,18 @@ describe('rescaleAnchorToHorizon', () => {
     expect(rescaleAnchorToHorizon(0.3, 0, 14)).toBe(0.3);
   });
 });
+
+describe('computeHorizonDriftVol drift override', () => {
+  it('replaces the horizon drift and leaves the volatility alone', () => {
+    const P = buildDefaultMatrix();
+    const stats = {
+      bull: { meanReturn: 0.002, stdReturn: 0.02 },
+      bear: { meanReturn: -0.002, stdReturn: 0.03 },
+      sideways: { meanReturn: 0, stdReturn: 0.015 },
+    };
+    const base = computeHorizonDriftVol(7, P, stats, 'bull', 0);
+    const overridden = computeHorizonDriftVol(7, P, stats, 'bull', 0, undefined, undefined, undefined, undefined, undefined, undefined, 1, undefined, 0.042);
+    expect(overridden.mu_n).toBe(0.042);
+    expect(overridden.sigma_n).toBe(base.sigma_n);
+  });
+});

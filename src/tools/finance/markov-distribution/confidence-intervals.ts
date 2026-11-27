@@ -408,6 +408,8 @@ export function computeHorizonDriftVol(
   driftScale = 1,
   /** Factor on the horizon volatility. */
   volScale = FORECAST_VOL_SCALE,
+  /** Horizon log drift that replaces the model's (after driftScale); set by location-only anchors. */
+  driftOverride?: number,
 ): { mu_n: number; sigma_n: number } {
   const stateWeights = terminalStateWeights
     ? normalizeStateWeightVector(terminalStateWeights)
@@ -468,7 +470,7 @@ export function computeHorizonDriftVol(
     sigma_n = sigma_eff * Math.sqrt(varianceScale);
   }
 
-  return { mu_n: mu_n * driftScale, sigma_n: sigma_n * volScale };
+  return { mu_n: driftOverride ?? mu_n * driftScale, sigma_n: sigma_n * volScale };
 }
 
 /**
@@ -806,6 +808,8 @@ export function interpolateDistribution(
   forecastDriftScale = 1,
   /** Factor on the horizon volatility. */
   forecastVolScale = FORECAST_VOL_SCALE,
+  /** Horizon log drift that replaces the model's; set by location-only anchors. */
+  forecastDriftOverride?: number,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -814,7 +818,7 @@ export function interpolateDistribution(
   const { mu_n, sigma_n } = computeHorizonDriftVol(
     horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
     regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales, terminalStateWeights, forecastDriftScale,
-    forecastVolScale,
+    forecastVolScale, forecastDriftOverride,
   );
   // The grid must span the distribution it carries: a calm 20-day vol under a wider
   // regime sigma left mass beyond the grid top and pinned the upper central bound there.
