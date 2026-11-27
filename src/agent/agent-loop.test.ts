@@ -276,6 +276,32 @@ describe('exit messages', () => {
   });
 });
 
+describe('distribution warning prefix', () => {
+  // Without a markov_distribution tool the Markov route fails, so the answer gets the warning prefix.
+  const DISTRIBUTION_QUERY = 'Give me the probability distribution of AAPL price in 30 days';
+  const noop = new DynamicStructuredTool({ name: 'noop', description: 'noop', schema: z.object({}), func: async () => 'ok' });
+
+  it('still synthesizes an answer after the warning when the model returns an empty answer', async () => {
+    script.fallback = '';
+    const agent = await Agent.create({ tools: [noop], memoryEnabled: false, toolDescriptionsOverride: 'noop' });
+
+    const done = doneOf(await collect(agent.run(DISTRIBUTION_QUERY)));
+
+    expect(done.answer).toStartWith('## Warning');
+    expect(done.answer).toContain('synthesized answer');
+  });
+
+  it('still synthesizes an answer after the warning at max iterations', async () => {
+    script.fallback = [ST_CALL];
+    const agent = await Agent.create({ tools: [noop], memoryEnabled: false, maxIterations: 1, toolDescriptionsOverride: 'noop' });
+
+    const done = doneOf(await collect(agent.run(DISTRIBUTION_QUERY)));
+
+    expect(done.answer).toStartWith('## Warning');
+    expect(done.answer).toContain('synthesized answer');
+  });
+});
+
 describe('Agent — parallelToolLimit wiring', () => {
   function executorLimit(agent: AgentInstance): unknown {
     const executor = Object.getOwnPropertyDescriptor(agent, 'toolExecutor')?.value as object;

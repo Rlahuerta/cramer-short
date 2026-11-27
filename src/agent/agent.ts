@@ -1278,20 +1278,26 @@ export class Agent {
     const disagreementPrefix = buildForecastDisagreementPrefix(ctx.query, toolCalls);
     const baseText = stripThinkingTags(fallbackText);
     const prefixText = `${warningPrefix ?? ''}${disagreementPrefix ?? ''}`;
+    // With a prompt to synthesize from, a lone prefix is not an answer: it leads the synthesized text instead.
     const text = baseText
       ? ensureStructuredDensityTable(`${prefixText}${baseText}`, ctx.query, toolCalls)
-      : prefixText;
+      : currentPrompt ? '' : prefixText;
+    const CHUNK_SIZE = 6;
 
     if (text) {
       // We already have the answer from the non-streaming callLlm response.
       // Fake-stream it so the TUI shows the text appearing progressively.
-      const CHUNK_SIZE = 6;
       for (let i = 0; i < text.length; i += CHUNK_SIZE) {
         const chunk = text.slice(i, i + CHUNK_SIZE);
         streamedAnswer += chunk;
         yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
       }
     } else if (currentPrompt) {
+      for (let i = 0; i < prefixText.length; i += CHUNK_SIZE) {
+        const chunk = prefixText.slice(i, i + CHUNK_SIZE);
+        streamedAnswer += chunk;
+        yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
+      }
       // No pre-existing answer (e.g. max-iterations synthesis) — request a
       // fresh streaming response. Apply a hard timeout so we never hang.
       const timeoutSignal = AbortSignal.timeout(getLlmCallTimeoutMs());
@@ -1299,19 +1305,21 @@ export class Agent {
         ? AbortSignal.any([this.signal, timeoutSignal])
         : timeoutSignal;
       let failure: string | null = null;
+      let synthesized = '';
       try {
         // A thinking model can end with no visible text; ask once more before giving up.
-        for (let attempt = 0; attempt < 2 && !streamedAnswer; attempt++) {
+        for (let attempt = 0; attempt < 2 && !synthesized; attempt++) {
           for await (const chunk of streamCallLlm(currentPrompt, {
             model: this.model,
             systemPrompt: this.systemPrompt,
             signal: combinedSignal,
           })) {
+            synthesized += chunk;
             streamedAnswer += chunk;
             yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
           }
         }
-        if (!streamedAnswer && !prefixText) failure = 'model returned an empty answer';
+        if (!synthesized) failure = 'model returned an empty answer';
       } catch (error) {
         logger.warn('[Agent] final synthesis failed', error);
         failure = this.signal?.aborted
@@ -1328,16 +1336,7 @@ export class Agent {
             'Raw research data gathered:\n\n' +
             toolSummary.slice(0, 3000);
           yield { type: 'answer_chunk', chunk: fallback } as AnswerChunkEvent;
-          streamedAnswer = fallback;
-        }
-      }
-
-      if (!streamedAnswer && prefixText) {
-        const CHUNK_SIZE = 6;
-        for (let i = 0; i < prefixText.length; i += CHUNK_SIZE) {
-          const chunk = prefixText.slice(i, i + CHUNK_SIZE);
-          streamedAnswer += chunk;
-          yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
+          streamedAnswer += fallback;
         }
       }
     }
