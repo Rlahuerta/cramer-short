@@ -81,7 +81,8 @@ export async function fetchWithCrumb(url: string): Promise<Response> {
   return doFetch(await getCrumb());
 }
 
-const YahooChartCloseSchema = z.number().refine(Number.isFinite, 'Expected finite close price');
+// Yahoo leaves null closes in bars that have no print yet (e.g. an index's current day).
+const YahooChartCloseSchema = z.number().nullable();
 const YahooChartPayloadSchema = z.object({
   chart: z.object({
     result: z.array(z.object({
@@ -143,10 +144,11 @@ export async function fetchYahooChartCloses(
 
   const { meta, timestamp, indicators } = parsed.data.chart.result[0];
   const offsetSeconds = meta?.gmtoffset ?? 0;
-  return indicators.quote[0].close.map((close, i) => ({
-    date: new Date((timestamp[i] + offsetSeconds) * 1000).toISOString().slice(0, 10),
-    close,
-  }));
+  return indicators.quote[0].close.flatMap((close, i) => (
+    close !== null && Number.isFinite(close)
+      ? [{ date: new Date((timestamp[i] + offsetSeconds) * 1000).toISOString().slice(0, 10), close }]
+      : []
+  ));
 }
 
 const YahooNullableNumberSchema = z.number().nullable();

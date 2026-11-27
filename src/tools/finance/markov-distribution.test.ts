@@ -491,6 +491,39 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
     }
   });
 
+  it('drops the null closes Yahoo puts in an index\'s current-day bar', async () => {
+    const apiGetSpy = spyOn(realApiModule.api, 'get').mockRejectedValue(new Error(
+      'FINANCIAL_DATASETS_PREMIUM_REQUIRED: This endpoint requires a paid Financial Datasets plan.',
+    ));
+    const closes = Array.from({ length: 12 }, (_, i) => 4 + i / 100);
+    const yahooCloses = [...closes, null];
+    const fetchMock: typeof fetch = Object.assign(
+      async (input: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const url = input.toString();
+        if (url.includes('query1.finance.yahoo.com')) {
+          return Response.json({
+            chart: {
+              result: [{
+                timestamp: yahooTimestamps(yahooCloses.length),
+                indicators: { quote: [{ close: yahooCloses }] },
+              }],
+            },
+          });
+        }
+        return new Response('unavailable', { status: 500, statusText: 'Server Error' });
+      },
+      { preconnect: globalThis.fetch.preconnect },
+    );
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    try {
+      await expect(fetchHistoricalPrices('^TNX', 365)).resolves.toEqual(closes);
+    } finally {
+      apiGetSpy.mockRestore();
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('rejects malformed Yahoo chart close entries instead of silently dropping them', async () => {
     const apiGetSpy = spyOn(realApiModule.api, 'get').mockResolvedValue({
       data: { prices: [] },
@@ -505,7 +538,7 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
               result: [{
                 timestamp: yahooTimestamps(3),
                 indicators: {
-                  quote: [{ close: [100, null, 102] }],
+                  quote: [{ close: [100, 'n/a', 102] }],
                 },
               }],
             },
