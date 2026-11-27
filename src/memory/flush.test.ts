@@ -1,5 +1,6 @@
 import { describe, it, expect, spyOn } from 'bun:test';
-import { shouldRunMemoryFlush, MEMORY_FLUSH_TOKEN, validateFlushOutput } from './flush.js';
+import { shouldRunMemoryFlush, MEMORY_FLUSH_TOKEN, validateFlushOutput, runMemoryFlush } from './flush.js';
+import { _setModelFactory } from '../model/llm.js';
 import { CONTEXT_THRESHOLD } from '../utils/tokens.js';
 import * as tokens from '../utils/tokens.js';
 
@@ -153,5 +154,25 @@ describe('validateFlushOutput', () => {
     // The sentinel value itself would pass length check but typically has no bullets.
     // runMemoryFlush checks sentinel BEFORE validateFlushOutput, so this is informational.
     expect(typeof MEMORY_FLUSH_TOKEN).toBe('string');
+  });
+});
+
+// ============================================================================
+// runMemoryFlush — model options
+// ============================================================================
+
+describe('runMemoryFlush', () => {
+  it('forwards the think override so /think OFF also covers memory flushes', async () => {
+    const seen: Array<boolean | undefined> = [];
+    _setModelFactory(((_name: string, _opts: unknown, thinkOverride?: boolean) => {
+      seen.push(thinkOverride);
+      return { invoke: async () => ({ content: MEMORY_FLUSH_TOKEN }) };
+    }) as never);
+    try {
+      await runMemoryFlush({ model: 'ollama:x', systemPrompt: 's', query: 'q', toolResults: 'r', thinkOverride: false });
+    } finally {
+      _setModelFactory(null);
+    }
+    expect(seen).toEqual([false]);
   });
 });

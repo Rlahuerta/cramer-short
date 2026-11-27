@@ -1325,6 +1325,7 @@ export class Agent {
             model: this.model,
             systemPrompt: this.systemPrompt,
             signal: combinedSignal,
+            thinkOverride: this.thinkEnabled,
           })) {
             synthesized += chunk;
             streamedAnswer += chunk;
@@ -1404,6 +1405,7 @@ export class Agent {
           query,
           toolResults: fullToolResults,
           signal: this.signal,
+          thinkOverride: this.thinkEnabled,
         });
         memoryFlushState.alreadyFlushed = flushResult.flushed;
         yield {
@@ -1456,6 +1458,7 @@ export class Agent {
       query,
       toolResults: ctx.scratchpad.getToolResults(),
       signal: this.signal,
+      thinkOverride: this.thinkEnabled,
     });
     yield {
       type: 'memory_flush',

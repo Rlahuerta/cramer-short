@@ -282,7 +282,8 @@ const MODEL_FACTORIES: Record<string, ModelFactory> = {
       model: target.model,
       ...opts,
       // @langchain/ollama types `think` as boolean but forwards it unchanged, and Ollama accepts level names.
-      ...(useThink ? { think: think as boolean } : {}),
+      // OFF is sent explicitly: leaving `think` out lets the server default (e.g. "high") apply.
+      ...(useThink ? { think: think as boolean } : thinkOverride === false && isThinkingModel(name) ? { think: false } : {}),
       ...(target.baseUrl ? { baseUrl: target.baseUrl } : {}),
       ...(target.headers ? { headers: target.headers } : {}),
       // ChatOllama never hands the call signal to fetch; merge it in so a timeout or cancel closes the request.

@@ -116,8 +116,14 @@ describe('getChatModel — Ollama think flag', () => {
   test('thinkOverride still turns DeepSeek v4.1 Flash thinking off, and on at "max"', () => {
     const off = getChatModel('ollama:deepseek-v4.1-flash:cloud', false, false) as { think?: boolean | string };
     const on = getChatModel('ollama:deepseek-v4.1-flash:cloud', false, true) as { think?: boolean | string };
-    expect(off.think).toBeUndefined();
+    // Leaving `think` out lets the server default ("high") apply, so OFF must be sent explicitly.
+    expect(off.think).toBe(false);
     expect(on.think).toBe('max');
+  });
+
+  test('thinkOverride false leaves a non-thinking model without a think flag', () => {
+    const model = getChatModel('ollama:llama3.1:8b', false, false) as { think?: boolean };
+    expect(model.think).toBeUndefined();
   });
 
   test('strips ollama: prefix before passing model to ChatOllama', () => {

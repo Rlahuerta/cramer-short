@@ -16,6 +16,7 @@ import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/
 import { z } from 'zod';
 import { _setModelFactory } from '../model/llm.js';
 import * as config from '../utils/config.js';
+import * as flush from '../memory/flush.js';
 import { HISTORY_CONTEXT_MARKER } from '../utils/parsing/history-context.js';
 import type { AgentEvent, DoneEvent } from './types.js';
 
@@ -400,6 +401,46 @@ describe('forecast ticker auto-fix on follow-ups', () => {
     await collect(agent.run('Compare that with gold', history));
 
     expect(received).toEqual(['BTC-USD']);
+  });
+});
+
+describe('/think OFF', () => {
+  it('reaches the final synthesis model', async () => {
+    const streamThink: Array<boolean | undefined> = [];
+    _setModelFactory((_name, opts, thinkOverride) => {
+      if (opts.streaming) streamThink.push(thinkOverride);
+      return new ScriptedChatModel({});
+    });
+    try {
+      script.fallback = [ST_CALL];
+      const agent = await Agent.create({ maxIterations: 1, memoryEnabled: false, thinkEnabled: false });
+
+      await collect(agent.run('look up ZZZ'));
+    } finally {
+      _setModelFactory(() => new ScriptedChatModel({}));
+    }
+    expect(streamThink).toEqual([false]);
+  });
+
+  it('reaches the periodic memory flush', async () => {
+    const flushSpy = spyOn(flush, 'runMemoryFlush').mockResolvedValue({ flushed: true, written: false });
+    try {
+      script.responses = [[ST_CALL]];
+      script.fallback = [{ id: 'r', name: 'research_fixture', args: {}, type: 'tool_call' }];
+      const agent = await Agent.create({
+        maxIterations: 5,
+        thinkEnabled: false,
+        getMemoryManager: async () => ({ listFiles: async () => [], loadSessionContext: async () => ({ text: '' }), search: async () => [] }) as never,
+      });
+      installTools(agent, { research_fixture: () => 'research result' });
+
+      await collect(agent.run('look up ZZZ'));
+
+      expect(flushSpy).toHaveBeenCalledTimes(1);
+      expect(flushSpy.mock.calls[0]![0].thinkOverride).toBe(false);
+    } finally {
+      flushSpy.mockRestore();
+    }
   });
 });
 

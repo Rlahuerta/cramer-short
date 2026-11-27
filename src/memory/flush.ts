@@ -76,6 +76,7 @@ export async function runMemoryFlush(params: {
   toolResults: string;
   existingMemory?: string;
   signal?: AbortSignal;
+  thinkOverride?: boolean;
 }): Promise<{ flushed: boolean; written: boolean; content?: string }> {
   const existingSection = params.existingMemory
     ? `\nAlready stored in memory (do not repeat these facts):\n${params.existingMemory}\n`
@@ -95,6 +96,7 @@ ${MEMORY_FLUSH_PROMPT}
     model: params.model,
     systemPrompt: params.systemPrompt,
     signal: params.signal,
+    thinkOverride: params.thinkOverride,
   });
   const response = typeof result.response === 'string' ? result.response.trim() : '';
   if (!response || response === MEMORY_FLUSH_TOKEN) {
