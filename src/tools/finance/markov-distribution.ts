@@ -3409,6 +3409,8 @@ export async function computeMarkovDistribution(params: {
   disableAnchorRnd?: boolean;
   /** Experiment (crypto-interval-coverage.ts): keep the anchors out of the distribution (no strike blend); the density step still sees them. */
   disableAnchorStrikeBlend?: boolean;
+  /** Experiment (crypto-interval-coverage.ts grid check): anchor strikes stay on the grid but never blend. */
+  anchorGridOnly?: boolean;
   /**
    * Experiment (crypto-interval-coverage.ts, candidate M): the anchors set only the forecast's location. A lognormal
    * fitted to >= 2 high-trust anchors gives the market's median log return over their mean days to expiry, scaled
@@ -3495,6 +3497,7 @@ export async function computeMarkovDistribution(params: {
     anchorHorizonRescaleDays,
     disableAnchorRnd,
     disableAnchorStrikeBlend,
+    anchorGridOnly,
     anchorLocationOnly,
     minAnchorHorizonDays,
     enableKswinTrim,
@@ -4262,7 +4265,10 @@ export async function computeMarkovDistribution(params: {
     : undefined;
   const forecastVolScale = FORECAST_VOL_SCALE * forecastVolMultiplier;
   const distributionNu = studentTNuOverride ?? horizonStudentTNu(assetProfile.studentTNu, horizon);
-  const blendAnchors = disableAnchorStrikeBlend === true || anchorLocationOnly === true ? [] : polymarketAnchors;
+  const blendAnchors = disableAnchorStrikeBlend === true || anchorLocationOnly === true
+    ? []
+    // A low-trust anchor graded to weight 0 extends the grid and sits on it, but never blends.
+    : anchorGridOnly === true ? polymarketAnchors.map(a => ({ ...a, trustScore: 'low' as const, trustWeight: 0 })) : polymarketAnchors;
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, blendAnchors, rho,
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,

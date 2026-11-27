@@ -142,6 +142,7 @@
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> <anchor-R|anchor-R1>
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts rescale-score                    # rescaling test verdict
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts channels <BTC-USD|ETH-USD> <horizon>  # which anchor channel moves it
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts grid <BTC-USD|ETH-USD> <horizon>      # width from the grid alone
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> <anchor-M|anchor-R-N1|anchor-M-N1>
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts location-score                   # M vs today and vs R, then N1
  */
@@ -594,6 +595,31 @@ async function channels(asset: (typeof ASSETS)[number], horizon: number): Promis
   console.log(`${asset} ${String(horizon).padStart(2)}d n=${byT.today!.size}  vs today: ${['model', 'noDensity', 'noBlend', 'R'].map(vsToday).join('  ')}`);
 }
 
+/**
+ * Grid check (no outcomes): the anchors' strikes on the grid at zero blend weight, density step off, against the model
+ * alone. The model is the same in both arms, so any width change comes from the grid the bounds are read off.
+ */
+async function gridCheck(asset: (typeof ASSETS)[number], horizon: number): Promise<void> {
+  const { dates, closes } = await loadCloses(asset);
+  const anchorsAt = anchorsAtFromHistory(dates, await anchorMarkets(asset));
+  const cell = asset === 'BTC-USD' ? btcLiveCell(horizon) : { config: {}, maxHistoryPrices: ETH_HISTORY_PRICES };
+  const base = {
+    ...cell.config, ticker: asset, prices: closes, horizon, warmup: dates.indexOf(await windowStartOf(asset)), stride: 5,
+    maxHistoryPrices: cell.maxHistoryPrices, randomState: 42,
+  };
+  const widths = async (extra: object) => new Map((await walkForward({ ...base, ...extra })).steps.map(s => [s.t, [
+    Math.log(s.central90CiUpper! / s.central90CiLower!), Math.log(s.central95CiUpper! / s.central95CiLower!),
+    Math.log(s.central99CiUpper! / s.central99CiLower!), s.predictedProb,
+  ]]));
+  const model = await widths({});
+  const grid = await widths({ anchorsAt, anchorHorizonRescaleDays: Infinity, disableAnchorRnd: true, anchorGridOnly: true });
+  const pairs = [...grid].flatMap(([t, g]) => (model.has(t) ? [[g, model.get(t)!] as const] : []));
+  const avg = (f: (g: number[], m: number[]) => number) => pairs.reduce((s, [g, m]) => s + f(g, m), 0) / pairs.length;
+  console.log(`${asset} ${String(horizon).padStart(2)}d n=${pairs.length}  grid vs model width: ` +
+    LEVELS.map(([level], i) => `${level}% ${(100 * avg((g, m) => g[i]! / m[i]! - 1)).toFixed(2)}%`).join('  ') +
+    `  |dP(up)| ${(100 * avg((g, m) => Math.abs(g[3]! - m[3]!))).toFixed(3)}pp`);
+}
+
 const HORIZON_GROUPS = [['1d', [1]], ['2-3d', [2, 3]], ['7d', [7]], ['14d', [14]]] as const;
 
 /**
@@ -734,6 +760,7 @@ if (import.meta.main) {
   else if (mode === 'anchor-score') await anchorScore();
   else if (mode === 'rescale-score') await scoreAnchorCandidates([['R', 'anchor-R'], ['R1', 'anchor-R1']]);
   else if (mode === 'channels' && (a === 'BTC-USD' || a === 'ETH-USD') && b) await channels(a, Number(b));
+  else if (mode === 'grid' && (a === 'BTC-USD' || a === 'ETH-USD') && b) await gridCheck(a, Number(b));
   else if (mode === 'location-score') await locationScore();
   else console.log('usage: crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> [A|B|C|anchored|anchor-<L|D>-<g>|anchor-N] | report | fit | score | anchors | anchor-gaps | anchor-fit | anchor-score');
 }

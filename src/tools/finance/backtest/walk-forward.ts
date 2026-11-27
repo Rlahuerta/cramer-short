@@ -173,6 +173,8 @@ export interface WalkForwardConfig {
   disableAnchorRnd?: boolean;
   /** Experiment (crypto-interval-coverage.ts): keep the anchors out of the distribution (no strike blend). */
   disableAnchorStrikeBlend?: boolean;
+  /** Experiment (crypto-interval-coverage.ts grid check): anchor strikes stay on the grid but never blend. */
+  anchorGridOnly?: boolean;
   /** Experiment (crypto-interval-coverage.ts, candidate M): the anchors set only the forecast's location. */
   anchorLocationOnly?: boolean;
   /** Experiment: no anchors at horizons below this many days. */
@@ -310,6 +312,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     anchorHorizonRescaleDays: config.anchorHorizonRescaleDays,
     disableAnchorRnd: config.disableAnchorRnd,
     disableAnchorStrikeBlend: config.disableAnchorStrikeBlend,
+    anchorGridOnly: config.anchorGridOnly,
     anchorLocationOnly: config.anchorLocationOnly,
     minAnchorHorizonDays: config.minAnchorHorizonDays,
     enableKswinTrim: config.enableKswinTrim,
