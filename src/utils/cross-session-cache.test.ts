@@ -68,6 +68,20 @@ describe('loadCacheFromDisk', () => {
     expect(result.size).toBe(0);
   });
 
+  it('deletes expired entry files and keeps live ones', async () => {
+    const { loadCacheFromDisk, saveCacheToDisk, CACHE_DIR } = await getCacheModule();
+    const { readdirSync } = await import('node:fs');
+
+    saveCacheToDisk('expired_key', 'expired_value', 'some_tool', -1000);
+    saveCacheToDisk('live_key', 'live_value', 'some_tool', 900_000);
+    expect(readdirSync(CACHE_DIR)).toHaveLength(2);
+
+    const result = await loadCacheFromDisk();
+
+    expect([...result.keys()]).toEqual(['live_key']);
+    expect(readdirSync(CACHE_DIR)).toHaveLength(1);
+  });
+
   it('returns valid non-expired entries', async () => {
     const { loadCacheFromDisk, saveCacheToDisk } = await getCacheModule();
 
