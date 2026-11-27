@@ -194,7 +194,7 @@ function regularizedBeta(x: number, a: number, b: number): number {
 }
 
 /** Log-gamma via Stirling's approximation (Lanczos coefficients). */
-function lgamma(x: number): number {
+export function lgamma(x: number): number {
   const g = 7;
   const coef = [
     0.99999999999980993, 676.5203681218851, -1259.1392167224028,

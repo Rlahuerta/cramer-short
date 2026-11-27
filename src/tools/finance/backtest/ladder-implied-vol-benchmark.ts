@@ -16,12 +16,15 @@
  */
 import { join } from 'node:path';
 import { normCDF, normPPF } from '../../../utils/stats.js';
+import { inverseStudentTCDF, lgamma, studentTCDF } from '../markov-distribution/confidence-intervals.js';
 import { FORECAST_VOL_SCALE } from '../markov-distribution/core.js';
 import type { AnchorHistoryFixture, AnchorHistoryMarket } from './polymarket-anchor-history.js';
 
 const DAY_MS = 86_400_000;
 const TRAILING_DAYS = 30;
 const LEVELS = [[0.9, 1.6449], [0.95, 1.96], [0.99, 2.5758]] as const;
+const NU_GRID = [2.5, 3, 3.5, 4, 5, 6, 8, 10, 15, 20, 30, 50, Infinity];
+const HORIZONS = [['1d', 1, 1], ['2-3d', 2, 3], ['4-7d', 4, 7]] as const;
 
 export interface LadderObservation {
   day: string;
@@ -145,6 +148,79 @@ function ci(values: readonly number[], rows: readonly LadderObservation[]): [num
   return [Math.min(dLo, eLo), Math.max(dHi, eHi)];
 }
 
+/** Student-t scale for standard deviation s, matched the way studentTSurvival matches it; nu = Infinity is the normal. */
+const tScale = (s: number, nu: number) => (Number.isFinite(nu) ? s * Math.sqrt((nu - 2) / nu) : s);
+
+/** Log density of a zero-mean Student-t with standard deviation s, constants kept so different nu compare. */
+function studentTLogDensity(x: number, s: number, nu: number): number {
+  const z = x / tScale(s, nu);
+  if (!Number.isFinite(nu)) return -Math.log(s) - 0.5 * Math.log(2 * Math.PI) - 0.5 * z * z;
+  return lgamma((nu + 1) / 2) - lgamma(nu / 2) - 0.5 * Math.log(nu * Math.PI) - Math.log(tScale(s, nu))
+    - ((nu + 1) / 2) * Math.log1p(z * z / nu);
+}
+
+/** CRPS of a zero-mean Student-t with standard deviation s (closed form, Jordan, Krueger & Lerch 2019). */
+export function studentTCrps(x: number, s: number, nu: number): number {
+  if (!Number.isFinite(nu)) return crps(x, s);
+  const k = tScale(s, nu);
+  const z = x / k;
+  const lbeta = (a: number, b: number) => lgamma(a) + lgamma(b) - lgamma(a + b);
+  const density = Math.exp(studentTLogDensity(z, Math.sqrt(nu / (nu - 2)), nu)); // the standard t
+  const constant = (2 * Math.sqrt(nu) * Math.exp(lbeta(0.5, nu - 0.5) - 2 * lbeta(0.5, nu / 2))) / (nu - 1);
+  return k * (z * (2 * studentTCDF(z, nu) - 1) + (2 * density * (nu + z * z)) / (nu - 1) - constant);
+}
+
+/** Degrees of freedom from NU_GRID with the best mean log score on these rows. */
+export function fitTailDof(rows: readonly LadderObservation[], sigmaOf: (r: LadderObservation) => number): number {
+  let best = -Infinity;
+  let bestNu = Infinity;
+  for (const nu of NU_GRID) {
+    const score = mean(rows.map(r => studentTLogDensity(r.realized, sigmaOf(r), nu)));
+    if (score > best) [best, bestNu] = [score, nu];
+  }
+  return bestNu;
+}
+
+function tCoverage(rows: readonly LadderObservation[], sigmaOf: (r: LadderObservation) => number, nu: number): number[] {
+  return LEVELS.map(([level]) => {
+    const p = (1 + level) / 2;
+    const q = Number.isFinite(nu) ? inverseStudentTCDF(p, nu) : normPPF(p);
+    return mean(rows.map(r => (Math.abs(r.realized) <= q * tScale(sigmaOf(r), nu) ? 1 : 0)));
+  });
+}
+
+/**
+ * Fatter-tailed intervals: each arm's Student-t degrees of freedom is fitted on the first half of the days (as the
+ * blend weight is) and both arms are scored on the second half, overall and per horizon with the same nu.
+ */
+export function scoreStudentT(rows: readonly LadderObservation[]) {
+  const days = [...new Set(rows.map(r => r.day))];
+  const splitDay = days[Math.floor(days.length / 2)]!;
+  const fitRows = rows.filter(r => r.day < splitDay);
+  const testRows = rows.filter(r => r.day >= splitDay);
+  const nuLadder = fitTailDof(fitRows, r => r.sigmaLadder);
+  const nuTrailing = fitTailDof(fitRows, r => r.sigmaTrailing);
+  const evaluate = (rs: readonly LadderObservation[]) => {
+    const dLog = rs.map(r =>
+      studentTLogDensity(r.realized, r.sigmaTrailing, nuTrailing) - studentTLogDensity(r.realized, r.sigmaLadder, nuLadder));
+    const dCrps = rs.map(r => studentTCrps(r.realized, r.sigmaLadder, nuLadder) - studentTCrps(r.realized, r.sigmaTrailing, nuTrailing));
+    return {
+      n: rs.length,
+      days: new Set(rs.map(r => r.day)).size,
+      logScore: { mean: mean(dLog), ci: ci(dLog, rs) },
+      crps: { mean: mean(dCrps), ci: ci(dCrps, rs) },
+      coverage: { ladder: tCoverage(rs, r => r.sigmaLadder, nuLadder), trailing: tCoverage(rs, r => r.sigmaTrailing, nuTrailing) },
+    };
+  };
+  return {
+    splitDay,
+    nuLadder,
+    nuTrailing,
+    test: evaluate(testRows),
+    byHorizon: HORIZONS.map(([name, lo, hi]) => ({ name, ...evaluate(testRows.filter(r => r.h >= lo && r.h <= hi)) })),
+  };
+}
+
 export function scoreLadders(rows: readonly LadderObservation[]) {
   const days = [...new Set(rows.map(r => r.day))];
   const splitDay = days[Math.floor(days.length / 2)]!;
@@ -203,12 +279,19 @@ if (import.meta.main) {
     console.log(`  blend w=${s.blend.weight} (fitted before ${s.blend.splitDay}), on the later ${s.blend.testN}: log score ${f4(s.blend.logScore.mean)} [${f4(s.blend.logScore.ci[0])}, ${f4(s.blend.logScore.ci[1])}], coverage ${covLine(s.blend.coverage)}`);
     const passes = (m: { ci: [number, number] }, cov: number[]) => s.ladderDays >= 150 && m.ci[1] < 0 && coverageOk(cov);
     console.log(`  pass rule (>=150 days, CI < 0, coverage within 1pp): ladder ${passes(s.logScore, s.coverage.ladder) ? 'PASS' : 'fail'}, blend ${passes(s.blend.logScore, s.blend.coverage) ? 'PASS' : 'fail'}`);
-    for (const [name, lo, hi] of [['1d', 1, 1], ['2-3d', 2, 3], ['4-7d', 4, 7]] as const) {
+    for (const [name, lo, hi] of HORIZONS) {
       const part = rows.filter(r => r.h >= lo && r.h <= hi);
       if (part.length < 30) continue;
       const d = part.map(r => nll(r.realized, r.sigmaLadder) - nll(r.realized, r.sigmaTrailing));
       const [lo95, hi95] = ci(d, part);
       console.log(`    h ${name.padEnd(4)} n=${String(part.length).padStart(5)}: log score ${f4(mean(d))} [${f4(lo95)}, ${f4(hi95)}]`);
+    }
+    const t = scoreStudentT(rows);
+    console.log(`  Student-t, nu fitted before ${t.splitDay}: ladder ${t.nuLadder}, trailing ${t.nuTrailing}; scored on the later days`);
+    for (const [label, e] of [['all', t.test] as const, ...t.byHorizon.map(b => [`h ${b.name}`, b] as const)]) {
+      const gate = e.days >= 150 && e.logScore.ci[1] < 0 && coverageOk(e.coverage.ladder);
+      console.log(`    ${label.padEnd(6)} n=${String(e.n).padStart(5)} on ${e.days} days: log score ${f4(e.logScore.mean)} [${f4(e.logScore.ci[0])}, ${f4(e.logScore.ci[1])}], CRPS ${e.crps.mean.toExponential(2)} [${e.crps.ci[0].toExponential(2)}, ${e.crps.ci[1].toExponential(2)}]`);
+      console.log(`           coverage trailing ${covLine(e.coverage.trailing)}, ladder ${covLine(e.coverage.ladder)}: gate ${gate ? 'PASS' : 'fail'}`);
     }
   };
   const all: LadderObservation[] = [];
