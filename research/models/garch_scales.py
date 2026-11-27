@@ -106,9 +106,11 @@ def compute_garch_scales(
     except Exception:
         return []
 
-    last = log_returns[-1]
+    # Filter the conditional variance through the whole window from h0 (mirrors garch-scales.ts).
     persistence = params.alpha + params.beta
-    h1 = params.omega + params.alpha * last * last + params.beta * params.h0
+    h1 = params.h0
+    for r in log_returns:
+        h1 = params.omega + params.alpha * r * r + params.beta * h1
 
     sigmas: list[float] = [math.sqrt(max(0.0, h1))]
     h = h1
