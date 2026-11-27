@@ -7,6 +7,7 @@
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { isTransientError, type RetryOptions, withRetry } from '../src/utils/retry.js';
 
 const OUTPUT_PATH = '.cramer-short/cache/options/deribit.jsonl';
 const BOOK_SUMMARY_URL = 'https://www.deribit.com/api/v2/public/get_book_summary_by_currency';
@@ -31,13 +32,35 @@ export function toDeribitCaptureRow(currency: string, now: Date, summaries: Deri
   };
 }
 
-if (import.meta.main) {
-  mkdirSync(dirname(OUTPUT_PATH), { recursive: true });
+/** About 2.5 minutes of backoff: rides out a short Deribit outage (the first capture hit a one-off HTTP 503). */
+const RETRY: RetryOptions = { maxAttempts: 6, baseDelayMs: 5_000, maxDelayMs: 60_000 };
+
+/** Fetches each currency's book on its own, retrying transient errors, so one failing currency doesn't lose the other. */
+export async function captureDeribitOptions(fetchImpl: typeof fetch = fetch, retry: RetryOptions = RETRY) {
+  const rows: ReturnType<typeof toDeribitCaptureRow>[] = [];
+  const failures: string[] = [];
   for (const currency of ['BTC', 'ETH']) {
-    const res = await fetch(`${BOOK_SUMMARY_URL}?currency=${currency}&kind=option`);
-    if (!res.ok) throw new Error(`Deribit ${currency} options: HTTP ${res.status}`);
-    const { result } = (await res.json()) as { result: DeribitSummary[] };
-    appendFileSync(OUTPUT_PATH, `${JSON.stringify(toDeribitCaptureRow(currency, new Date(), result))}\n`);
-    console.log(`${currency}: ${result.length} options -> ${OUTPUT_PATH}`);
+    try {
+      const result = await withRetry(async () => {
+        const res = await fetchImpl(`${BOOK_SUMMARY_URL}?currency=${currency}&kind=option`);
+        if (!res.ok) throw new Error(`Deribit ${currency} options: HTTP ${res.status}`);
+        return ((await res.json()) as { result: DeribitSummary[] }).result;
+      }, { ...retry, shouldRetry: (err) => isTransientError(err) || err instanceof TypeError });
+      rows.push(toDeribitCaptureRow(currency, new Date(), result));
+    } catch (err) {
+      failures.push(`${currency}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
+  return { rows, failures };
+}
+
+if (import.meta.main) {
+  const { rows, failures } = await captureDeribitOptions();
+  mkdirSync(dirname(OUTPUT_PATH), { recursive: true });
+  for (const row of rows) {
+    appendFileSync(OUTPUT_PATH, `${JSON.stringify(row)}\n`);
+    console.log(`${row.currency}: ${row.options.length} options -> ${OUTPUT_PATH}`);
+  }
+  for (const failure of failures) console.error(failure);
+  if (failures.length > 0) process.exit(1);
 }
