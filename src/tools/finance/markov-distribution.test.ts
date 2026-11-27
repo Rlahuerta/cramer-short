@@ -3251,3 +3251,31 @@ describe('metadata.jumpDiffusionApplied flag', () => {
     expect(withJumpWithTraj.metadata.jumpDiffusion).toBeDefined();
   });
 });
+
+describe('off-horizon crypto anchors', () => {
+  it('moves a crypto anchor resolving more than 2 days from the target to the horizon and leaves other assets alone', async () => {
+    const { readFileSync } = await import('fs');
+    const tickers = JSON.parse(readFileSync(new URL('./fixtures/backtest-prices.json', import.meta.url), 'utf-8')).tickers;
+    const t = 401;
+    const atStrike = async (ticker: string, name: string, rescaleDays?: number) => {
+      const { closes, dates } = tickers[ticker] as { closes: number[]; dates: string[] };
+      const referenceTimeMs = Date.parse(dates[t] + 'T23:59:59Z');
+      const strike = Math.round(closes[t] * 1.05);
+      // A mature, liquid market that resolves 7 days before the 14-day target.
+      const endDate = new Date(referenceTimeMs + 7 * 86_400_000).toISOString();
+      const result = await computeMarkovDistribution({
+        ticker, horizon: 14, currentPrice: closes[t], historicalPrices: closes.slice(0, t + 1), randomState: 42, referenceTimeMs,
+        polymarketMarkets: [{ question: 'Will the price of ' + name + ' be above $' + strike + ' on the 20th?', probability: 0.2, volume: 50_000, createdAt: referenceTimeMs - 10 * 86_400_000, endDate }],
+        ...(rescaleDays === undefined ? {} : { anchorHorizonRescaleDays: rescaleDays }),
+      });
+      // The base-rate floor shifts the final grid, so read the anchor's own point rather than the strike.
+      return result.distribution.filter(pt => pt.source === 'polymarket').map(pt => pt.probability);
+    };
+
+    // Read at 14 days, the 7-day market's 0.2 above +5% becomes about 0.28 before blending: the anchor point rises.
+    const [rescaled, today] = [await atStrike('BTC-USD', 'Bitcoin'), await atStrike('BTC-USD', 'Bitcoin', Infinity)];
+    expect(rescaled).toHaveLength(1);
+    expect(rescaled[0]!).toBeGreaterThan(today[0]! + 0.02);
+    expect(await atStrike('SPY', 'SPY')).toEqual(await atStrike('SPY', 'SPY', Infinity));
+  });
+});

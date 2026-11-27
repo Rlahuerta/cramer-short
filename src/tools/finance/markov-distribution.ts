@@ -914,6 +914,12 @@ function parsePrice(raw: string): number {
 type AnchorLowTrustReason = 'young_market' | 'resolution_mismatch' | 'missing_volume';
 
 const HIGH_TRUST_ANCHOR_WEIGHT_THRESHOLD = 0.6;
+/**
+ * An anchor resolving within this many days of the target is near-target. A crypto anchor (horizon <= 14d) outside it
+ * is moved to the horizon before blending (rescaleAnchorToHorizon): the markets live about 7 days, so a 14-day forecast
+ * otherwise took a 7-day spread, and covered 83.8% at 90% (2025-07..2026-11, crypto-interval-coverage.ts).
+ */
+const ANCHOR_NEAR_TARGET_DAYS = 2;
 
 function labelAnchorTrustWeight(trustWeight: number): 'high' | 'low' {
   return trustWeight >= HIGH_TRUST_ANCHOR_WEIGHT_THRESHOLD ? 'high' : 'low';
@@ -1117,7 +1123,7 @@ function inspectAnchorCandidate(
     && options?.horizonDays != null
     && options.horizonDays > 14;
   const isNearTargetResolution = options?.horizonDays != null && endDate
-    ? Math.abs((Date.parse(endDate) - now) / MS_PER_DAY - options.horizonDays) <= 2
+    ? Math.abs((Date.parse(endDate) - now) / MS_PER_DAY - options.horizonDays) <= ANCHOR_NEAR_TARGET_DAYS
     : false;
   const { trustScore, trustWeight, lowTrustReasons } = evaluateAnchorTrust({
     hasVolume,
@@ -3394,7 +3400,10 @@ export async function computeMarkovDistribution(params: {
   offHorizonAnchorPolicy?: 'drop' | 'low-trust';
   /** Experiment: no anchors at horizons above this many days. */
   maxAnchorHorizonDays?: number;
-  /** Experiment: an anchor resolving more than this many days from the target is moved to the horizon (rescaleAnchorToHorizon). */
+  /**
+   * An anchor resolving more than this many days from the target is moved to the horizon (rescaleAnchorToHorizon).
+   * Default ANCHOR_NEAR_TARGET_DAYS for crypto at <= 14 days, none otherwise; Infinity turns it off.
+   */
   anchorHorizonRescaleDays?: number;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
@@ -3694,11 +3703,13 @@ export async function computeMarkovDistribution(params: {
         ? { ...a, trustScore: 'low' as const, trustWeight: Math.min(getAnchorTrustWeight(a), 0.35) }
         : a));
   }
-  if (anchorHorizonRescaleDays !== undefined) {
+  const rescaleDays = anchorHorizonRescaleDays
+    ?? (assetProfile.type === 'crypto' && horizon <= 14 ? ANCHOR_NEAR_TARGET_DAYS : undefined);
+  if (rescaleDays !== undefined) {
     const referenceMs = params.referenceTimeMs ?? Date.now();
     polymarketAnchors = polymarketAnchors.map((a) => {
       const marketDays = a.endDate == null ? NaN : (Date.parse(a.endDate) - referenceMs) / MS_PER_DAY;
-      return Math.abs(marketDays - horizon) > anchorHorizonRescaleDays
+      return Math.abs(marketDays - horizon) > rescaleDays
         ? { ...a, probability: rescaleAnchorToHorizon(a.probability, marketDays, horizon) }
         : a;
     });

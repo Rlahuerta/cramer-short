@@ -167,7 +167,7 @@ export interface WalkForwardConfig {
   offHorizonAnchorPolicy?: 'drop' | 'low-trust';
   /** Experiment: no anchors at horizons above this many days. */
   maxAnchorHorizonDays?: number;
-  /** Experiment: an anchor resolving more than this many days from the target is moved to the horizon. */
+  /** An anchor resolving more than this many days from the target is moved to the horizon (default: 2 for crypto <= 14d; Infinity: off). */
   anchorHorizonRescaleDays?: number;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;

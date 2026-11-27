@@ -284,16 +284,18 @@ describe('walk-forward anchor horizon experiments', () => {
     expect(probs(lowTrust)).not.toEqual(probs(anchored));
   });
 
-  it('rescales anchors more than the given days off the target to the horizon, still trusted', async () => {
-    const [anchored, rescaled, withinTolerance] = await Promise.all([
+  it('rescales crypto anchors more than 2 days off the target to the horizon by default, still trusted', async () => {
+    const [unscaled, byDefault, rescaled, withinTolerance] = await Promise.all([
+      walkForward({ ...base, anchorsAt, anchorHorizonRescaleDays: Infinity }),
       walkForward({ ...base, anchorsAt }),
       walkForward({ ...base, anchorsAt, anchorHorizonRescaleDays: 2 }),
       walkForward({ ...base, anchorsAt, anchorHorizonRescaleDays: 10 }),
     ]);
-    const probs = (r: typeof anchored) => r.steps.map(s => s.predictedProb);
+    const probs = (r: typeof unscaled) => r.steps.map(s => s.predictedProb);
     expect(rescaled.steps.every(s => s.trustedAnchors === 1)).toBe(true);
     // The 8-day market says 0.8 above spot; read at 3 days its z grows by sqrt(8 / 3), so P(up) rises.
-    rescaled.steps.forEach((s, i) => expect(s.predictedProb).toBeGreaterThan(anchored.steps[i]!.predictedProb));
-    expect(probs(withinTolerance)).toEqual(probs(anchored));
+    rescaled.steps.forEach((s, i) => expect(s.predictedProb).toBeGreaterThan(unscaled.steps[i]!.predictedProb));
+    expect(probs(byDefault)).toEqual(probs(rescaled));
+    expect(probs(withinTolerance)).toEqual(probs(unscaled));
   });
 });
