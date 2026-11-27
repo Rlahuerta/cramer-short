@@ -227,6 +227,23 @@ describe('normalizeGammaMarket', () => {
       expect(result.markets).toHaveLength(1);
       expect(calls).toBe(3);
     });
+
+    it('passes a fresh timeout AbortSignal to fetch on every retry attempt', async () => {
+      const signals: Array<AbortSignal | null | undefined> = [];
+      const fetchFn = async (_url: string | URL, init?: RequestInit) => {
+        signals.push(init?.signal);
+        return signals.length < 2
+          ? ({ ok: false, status: 503, json: async () => [] } as unknown as Response)
+          : ({ ok: true, status: 200, json: async () => [] } as unknown as Response);
+      };
+
+      await searchGammaEventsPaginated({ query: 'bitcoin', limit: 1, tagSlugs: ['bitcoin'] }, fetchFn as typeof fetch);
+
+      expect(signals).toHaveLength(2);
+      expect(signals[0]).toBeInstanceOf(AbortSignal);
+      expect(signals[1]).toBeInstanceOf(AbortSignal);
+      expect(signals[1]).not.toBe(signals[0]);
+    });
   });
 
   describe('createPolymarketGateway', () => {

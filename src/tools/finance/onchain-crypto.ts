@@ -58,7 +58,7 @@ async function fetchWhaleData(
     try {
       const res = await fetch(
         `https://api.whale-alert.io/v1/transactions?api_key=${whaleAlertKey}&min_value=500000&currency=${upper}&limit=10`,
-        { headers: { Accept: 'application/json' } },
+        { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10_000) },
       );
       if (res.ok) {
         const data = asRecord(await res.json());
@@ -79,7 +79,7 @@ async function fetchWhaleData(
     try {
       const res = await fetch(
         'https://blockchain.info/unconfirmed-transactions?format=json',
-        { headers: { Accept: 'application/json' } },
+        { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10_000) },
       );
       if (!res.ok) {
         return { error: `Blockchain.info returned ${res.status}` };
@@ -275,6 +275,7 @@ export function createGetOnchainCryptoTool(dependencies: OnchainCryptoDependenci
 
           const res = await fetch(coinUrl, {
             headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(10_000),
           });
 
           if (res.status === 429) {
@@ -331,6 +332,7 @@ export function createGetOnchainCryptoTool(dependencies: OnchainCryptoDependenci
 
           const globalRes = await fetch(globalUrl, {
             headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(10_000),
           });
 
           if (globalRes.status === 429) {

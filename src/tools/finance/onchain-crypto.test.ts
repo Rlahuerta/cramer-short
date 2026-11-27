@@ -351,3 +351,36 @@ describe('unknown ticker fallback', () => {
     expect(parsed.data?.error).toBeDefined();
   });
 });
+
+// ── request timeouts ──────────────────────────────────────────────────────────
+
+describe('request timeouts', () => {
+  it('passes a timeout AbortSignal to every fetch (coin, whale-alert, blockchain.info, global)', async () => {
+    const savedKey = process.env.WHALE_ALERT_API_KEY;
+    process.env.WHALE_ALERT_API_KEY = 'test-key';
+    const calls: Array<{ url: string; signal: AbortSignal | null | undefined }> = [];
+    globalThis.fetch = mock(async (url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = url.toString();
+      calls.push({ url: urlStr, signal: init?.signal });
+      if (urlStr.includes('whale-alert')) return new Response('{}', { status: 500 });
+      if (urlStr.includes('/global')) return new Response(JSON.stringify(makeGlobalResponse()), { status: 200 });
+      if (urlStr.includes('blockchain.info')) return new Response(JSON.stringify({ txs: [] }), { status: 200 });
+      return new Response(JSON.stringify(makeCoinGeckoResponse()), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      await getOnchainCrypto.invoke({ ticker: 'BTC', metrics: ['whale', 'global'] });
+    } finally {
+      if (savedKey === undefined) delete process.env.WHALE_ALERT_API_KEY;
+      else process.env.WHALE_ALERT_API_KEY = savedKey;
+    }
+
+    expect(calls.map((c) => c.url)).toEqual([
+      expect.stringContaining('/coins/bitcoin'),
+      expect.stringContaining('whale-alert'),
+      expect.stringContaining('blockchain.info'),
+      expect.stringContaining('/global'),
+    ]);
+    for (const call of calls) expect(call.signal).toBeInstanceOf(AbortSignal);
+  });
+});
