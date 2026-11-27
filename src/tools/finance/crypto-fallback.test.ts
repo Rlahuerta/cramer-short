@@ -90,4 +90,63 @@ describe('crypto tool Binance fallbacks', () => {
     expect(Number(params.get('startTime'))).toBe(Date.UTC(2021, 0, 1));
     expect(Number(params.get('endTime'))).toBe(Date.UTC(2021, 0, 10) + 86_399_999);
   });
+
+  /** Serves daily klines the way Binance does: oldest first from startTime, at most `limit` rows. */
+  function stubDailyKlines(): void {
+    globalThis.fetch = (mock(async (input: RequestInfo | URL) => {
+      const params = new URL(String(input)).searchParams;
+      const day = 86_400_000;
+      const endTime = Number(params.get('endTime'));
+      const rows = [];
+      for (
+        let open = Math.ceil(Number(params.get('startTime')) / day) * day;
+        open <= endTime && rows.length < Number(params.get('limit'));
+        open += day
+      ) {
+        rows.push([open, '1', '1', '1', String(open / day), '1', open + day - 1, '0', 0, '0', '0', '0']);
+      }
+      return Response.json(rows);
+    }) as unknown) as typeof fetch;
+  }
+
+  it('returns dated rows that reach the requested end of a multi-year window', async () => {
+    stubDailyKlines();
+
+    const parsed = JSON.parse(await getCryptoPrices.invoke({
+      ticker: 'BTC-USD',
+      interval: 'day',
+      interval_multiplier: 1,
+      start_date: '2022-01-01',
+      end_date: '2024-12-31',
+    }));
+
+    expect(parsed.data).toHaveLength(1096);
+    expect(parsed.data[0]).toEqual({ date: '2022-01-01', close: Date.UTC(2022, 0, 1) / 86_400_000 });
+    expect(parsed.data.at(-1)).toEqual({ date: '2024-12-31', close: Date.UTC(2024, 11, 31) / 86_400_000 });
+  });
+
+  it.each([
+    ['minute', '1m'],
+    ['day', '1d'],
+    ['week', '1w'],
+    ['month', '1M'],
+  ] as const)('requests %s bars as Binance %s klines', async (interval, binanceInterval) => {
+    let klinesUrl = '';
+    globalThis.fetch = (mock(async (input: RequestInfo | URL) => {
+      klinesUrl = String(input);
+      return Response.json([
+        [1609459200000, '42000', '42500', '41800', '42300', '10000', 1609545599999, '0', 0, '0', '0', '0'],
+      ]);
+    }) as unknown) as typeof fetch;
+
+    await getCryptoPrices.invoke({
+      ticker: 'BTC-USD',
+      interval,
+      interval_multiplier: 1,
+      start_date: '2021-01-01',
+      end_date: '2021-01-01',
+    });
+
+    expect(new URL(klinesUrl).searchParams.get('interval')).toBe(binanceInterval);
+  });
 });

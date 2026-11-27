@@ -3,8 +3,11 @@ import { z } from 'zod';
 import { api } from './api.js';
 import { formatToolResult } from '../types.js';
 import { hasEnv } from '../../utils/env.js';
-import { buildPortfolioRiskReport } from '../../utils/finance/portfolio-stats.js';
-import { fetchHistoricalPrices } from './markov-distribution.js';
+import { alignPricesByDate, buildPortfolioRiskReport } from '../../utils/finance/portfolio-stats.js';
+import { MS_PER_DAY } from '../../utils/time.js';
+import { fetchBinanceCloses } from './binance.js';
+import { normalizeHistoricalPriceTicker } from './markov-distribution/live-policies.js';
+import { fetchYahooChartCloses, type DatedClose } from './yahoo-client.js';
 
 export const PORTFOLIO_RISK_DESCRIPTION = `
 Computes portfolio risk metrics — VaR, CVaR (Expected Shortfall), Sharpe ratio,
@@ -92,6 +95,22 @@ function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * Dated closes for the last `days` calendar days when Financial Datasets refuses
+ * price history: Binance (crypto), then Yahoo.
+ */
+async function fetchDatedFallbackCloses(ticker: string, days: number): Promise<DatedClose[]> {
+  const symbol = normalizeHistoricalPriceTicker(ticker);
+  const endMs = Date.now();
+  const startMs = endMs - days * MS_PER_DAY;
+  const binance = await fetchBinanceCloses(symbol, { startMs, endMs });
+  if (binance.length >= 20) return binance;
+  return fetchYahooChartCloses(symbol, {
+    period1: Math.floor(startMs / 1000),
+    period2: Math.floor(endMs / 1000),
+  });
+}
+
 function normalizeTickers(input: { tickers?: string[]; watchlist_entries?: PortfolioRiskWatchlistEntry[] }): string[] {
   const rawTickers = input.tickers?.length
     ? input.tickers
@@ -135,7 +154,7 @@ export function createPortfolioRiskTool(options: PortfolioRiskToolOptions = {}):
       const sourceUrls: string[] = [];
 
       // Fetch close-price history for each ticker in parallel
-      const pricesByTicker: Record<string, number[]> = {};
+      const pricesByTicker: Record<string, DatedClose[]> = {};
       const errors: string[] = [];
 
       await Promise.all(
@@ -148,19 +167,20 @@ export function createPortfolioRiskTool(options: PortfolioRiskToolOptions = {}):
               end_date: endDate,
             });
             sourceUrls.push(url);
-            const prices: number[] = ((data as { prices?: unknown[] }).prices ?? [])
-              .map((p) => (p as { close: number }).close)
-              .filter((v): v is number => typeof v === 'number' && isFinite(v));
+            const prices: DatedClose[] = ((data as { prices?: unknown[] }).prices ?? [])
+              .map((p) => p as { time?: unknown; close?: unknown })
+              .filter((p): p is { time: string; close: number } =>
+                typeof p.time === 'string' && typeof p.close === 'number' && isFinite(p.close))
+              .map((p) => ({ date: p.time.slice(0, 10), close: p.close }));
             if (prices.length < 20) {
               errors.push(`${ticker}: insufficient price history (${prices.length} days)`);
               return;
             }
             pricesByTicker[ticker] = prices;
           } catch (err) {
-            // Free Financial Datasets plans refuse price history; fall back the way the Markov tool does
-            // (Binance, BitMEX, then Yahoo). ponytail: Yahoo's fallback range tops out at 1y.
-            const fallback = await fetchHistoricalPrices(ticker, Math.ceil(effectiveInput.lookback_days * 1.45))
-              .catch(() => [] as number[]);
+            // Free Financial Datasets plans refuse price history.
+            const fallback = await fetchDatedFallbackCloses(ticker, Math.ceil(effectiveInput.lookback_days * 1.45))
+              .catch(() => [] as DatedClose[]);
             if (fallback.length >= 20) {
               pricesByTicker[ticker] = fallback;
               return;
@@ -177,6 +197,18 @@ export function createPortfolioRiskTool(options: PortfolioRiskToolOptions = {}):
         return formatToolResult({ error: 'Could not fetch price data for any ticker.', errors });
       }
 
+      // Pair returns by date: crypto closes come every calendar day, stock closes only on trading days.
+      const { dates, prices } = alignPricesByDate(pricesByTicker);
+      if (dates.length < 20) {
+        return formatToolResult({
+          error: `Only ${dates.length} dates are shared by every ticker; at least 20 are needed.`,
+          errors,
+        });
+      }
+      // Crypto-only portfolios trade every calendar day; once a stock is in, the shared dates are trading days.
+      const isWeekend = (date: string) => [0, 6].includes(new Date(`${date}T00:00:00Z`).getUTCDay());
+      const annualizationFactor = dates.some(isWeekend) ? 365 : 252;
+
       // Equal weights
       const w = 1 / validTickers.length;
       const weights: Record<string, number> = Object.fromEntries(
@@ -184,10 +216,11 @@ export function createPortfolioRiskTool(options: PortfolioRiskToolOptions = {}):
       );
 
       const report = buildPortfolioRiskReport(
-        pricesByTicker,
+        prices,
         weights,
         effectiveInput.confidence_level,
         effectiveInput.risk_free_rate,
+        annualizationFactor,
       );
 
       const result = errors.length > 0 ? { ...report, warnings: errors } : report;

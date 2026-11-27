@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { fetchBinanceDailyCloses, fetchBinanceTicker24h, toBinanceSymbol } from './binance.js';
+import { fetchBinanceCloses, fetchBinanceDailyCloses, fetchBinanceTicker24h, toBinanceSymbol } from './binance.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -55,13 +55,16 @@ describe('fetchBinanceDailyCloses', () => {
     expect(result).toEqual([42300, 42650]);
   });
 
-  it('anchors the klines window to an explicit range when given', async () => {
+});
+
+describe('fetchBinanceCloses', () => {
+  it('anchors the klines window to the given range', async () => {
     let url = '';
     globalThis.fetch = (mock(async (input: RequestInfo | URL) => {
       url = String(input);
       return Response.json([]);
     }) as unknown) as typeof fetch;
-    await fetchBinanceDailyCloses('BTC-USD', 10, { startMs: 1_609_459_200_000, endMs: 1_610_323_199_999 });
+    await fetchBinanceCloses('BTC-USD', { startMs: 1_609_459_200_000, endMs: 1_610_323_199_999 });
     const params = new URL(url).searchParams;
     expect(params.get('startTime')).toBe('1609459200000');
     expect(params.get('endTime')).toBe('1610323199999');
