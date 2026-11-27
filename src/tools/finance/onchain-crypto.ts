@@ -41,8 +41,9 @@ export const TICKER_TO_COINGECKO_ID: Record<string, string> = {
 
 /** Resolve a ticker symbol to a CoinGecko ID. */
 export function resolveCoinGeckoId(ticker: string): string {
-  const upper = ticker.trim().toUpperCase();
-  return TICKER_TO_COINGECKO_ID[upper] ?? ticker.trim().toLowerCase();
+  // "BTC-USD" / "ETH-USDT" / "SOLUSDT" name a trading pair; CoinGecko ids are per coin.
+  const upper = ticker.trim().toUpperCase().replace(/(.)(?:-USDT?|USDT)$/, '$1');
+  return TICKER_TO_COINGECKO_ID[upper] ?? upper.toLowerCase();
 }
 
 /** Fetch whale movement data for a cryptocurrency. */

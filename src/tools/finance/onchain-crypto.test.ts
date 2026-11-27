@@ -102,6 +102,17 @@ describe('resolveCoinGeckoId', () => {
     expect(resolveCoinGeckoId(' BTC ')).toBe('bitcoin');
   });
 
+  it('strips -USD, -USDT and USDT quote suffixes before mapping', () => {
+    expect(resolveCoinGeckoId('BTC-USD')).toBe('bitcoin');
+    expect(resolveCoinGeckoId('eth-usdt')).toBe('ethereum');
+    expect(resolveCoinGeckoId('SOLUSDT')).toBe('solana');
+    expect(resolveCoinGeckoId('MYTOKEN-USD')).toBe('mytoken');
+  });
+
+  it('does not strip a bare USDT ticker down to nothing', () => {
+    expect(resolveCoinGeckoId('USDT')).toBe('usdt');
+  });
+
   it('covers all entries in TICKER_TO_COINGECKO_ID map', () => {
     const keys = Object.keys(TICKER_TO_COINGECKO_ID);
     expect(keys.length).toBeGreaterThan(5);
