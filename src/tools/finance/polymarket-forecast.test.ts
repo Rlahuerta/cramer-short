@@ -349,6 +349,7 @@ describe('polymarketForecastTool', () => {
         fetchAnchorMarketsWithQueries: async () => [],
         readRecords: () => [],
         recordReplayPolymarketCapture: () => {},
+        fetchMetaforecastQuestions: async () => [],
       });
       await tool.func({ ticker: 'BTC', horizon_days: 2, current_price: 68_000 }, undefined);
       expect(paths).toEqual([arbiterReplay.DEFAULT_ARBITER_REPLAY_LABELED_CACHE_BUNDLES_PATH]);
