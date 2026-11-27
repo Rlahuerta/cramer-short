@@ -36,6 +36,10 @@ Screens for stocks matching financial criteria. Takes a natural language query d
 - Supports operators: gt, gte, lt, lte, eq, between
 `.trim();
 
+// The screener has no free backend: FMP's company-screener is not on the free plan (HTTP 402).
+const SCREENER_UNAVAILABLE_HINT =
+  'The stock screener is unavailable; use web_search to find stocks matching these criteria.';
+
 // In-memory cache for screener filters (static model fields, rarely change)
 let cachedFilters: Record<string, unknown> | null = null;
 
@@ -126,7 +130,7 @@ export function createScreenStocks(model: string): DynamicStructuredTool {
       } catch (error) {
         return formatToolResult(
           {
-            error: 'Failed to fetch screener metrics',
+            error: `Failed to fetch screener metrics. ${SCREENER_UNAVAILABLE_HINT}`,
             details: error instanceof Error ? error.message : String(error),
           },
           [],
@@ -165,7 +169,7 @@ export function createScreenStocks(model: string): DynamicStructuredTool {
       } catch (error) {
         return formatToolResult(
           {
-            error: 'Screener request failed',
+            error: `Screener request failed. ${SCREENER_UNAVAILABLE_HINT}`,
             details: error instanceof Error ? error.message : String(error),
             filters: filters.filters,
           },
