@@ -444,6 +444,35 @@ describe('/think OFF', () => {
   });
 });
 
+describe('periodic memory flush', () => {
+  it('sends only the tool results added since the previous flush', async () => {
+    const flushSpy = spyOn(flush, 'runMemoryFlush').mockResolvedValue({ flushed: true, written: false });
+    try {
+      script.responses = [[ST_CALL]];
+      script.fallback = [{ id: 'r', name: 'research_fixture', args: {}, type: 'tool_call' }];
+      const agent = await Agent.create({
+        maxIterations: 10,
+        getMemoryManager: async () => ({ listFiles: async () => [], loadSessionContext: async () => ({ text: '' }), search: async () => [] }) as never,
+      });
+      let n = 0;
+      installTools(agent, { research_fixture: () => `research-result-${++n};` });
+
+      await collect(agent.run('look up ZZZ'));
+
+      expect(flushSpy).toHaveBeenCalledTimes(2);
+      const [first, second] = flushSpy.mock.calls.map(([params]) => params.toolResults);
+      expect(first).toContain('research-result-1;');
+      expect(first).toContain('research-result-4;');
+      expect(second).not.toContain('research-result-1;');
+      expect(second).not.toContain('research-result-4;');
+      expect(second).toContain('research-result-5;');
+      expect(second).toContain('research-result-9;');
+    } finally {
+      flushSpy.mockRestore();
+    }
+  });
+});
+
 describe('Agent — parallelToolLimit wiring', () => {
   function executorLimit(agent: AgentInstance): unknown {
     const executor = Object.getOwnPropertyDescriptor(agent, 'toolExecutor')?.value as object;

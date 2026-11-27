@@ -1451,12 +1451,17 @@ export class Agent {
     state: PeriodicMemoryFlushState,
   ): AsyncGenerator<AgentEvent, void> {
     state.lastFlushedIteration = ctx.iteration;
+    // Earlier flushes already appended their results to memory; send only what is new since then.
+    const records = ctx.scratchpad.getToolCallRecords();
+    const fresh = records.slice(state.flushedToolResults);
+    state.flushedToolResults = records.length;
+    if (fresh.length === 0) return;
     yield { type: 'memory_flush', phase: 'start' };
     const flushResult = await this.runMemoryFlushSafely({
       model: this.model,
       systemPrompt: this.systemPrompt,
       query,
-      toolResults: ctx.scratchpad.getToolResults(),
+      toolResults: fresh.map((r) => `### ${r.tool}(${JSON.stringify(r.args)})\n${r.result}`).join('\n\n'),
       signal: this.signal,
       thinkOverride: this.thinkEnabled,
     });
