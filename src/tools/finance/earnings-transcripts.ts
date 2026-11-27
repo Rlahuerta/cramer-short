@@ -146,6 +146,14 @@ export function extractQaHighlights(qaText: string, count = 3): Array<{ question
   return highlights;
 }
 
+/**
+ * year * 4 + (quarter - 1) of the quarter an 8-K filed on `date` (YYYY-MM-DD...) reports.
+ * Results are filed in the quarter after the one they cover: Q2 2025 in Jul–Sep 2025, Q4 2025 in Jan–Mar 2026.
+ */
+function reportedQuarterIndex(date: string): number {
+  return parseInt(date.slice(0, 4)) * 4 + Math.floor((parseInt(date.slice(5, 7)) - 1) / 3) - 1;
+}
+
 /** Fetches an earnings call transcript for a company quarter. */
 export const getEarningsTranscript = new DynamicStructuredTool({
   name: 'get_earnings_transcript',
@@ -166,7 +174,7 @@ export const getEarningsTranscript = new DynamicStructuredTool({
       // Fetch EDGAR 8-K Atom feed for company
       const atomUrl =
         `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${ticker}` +
-        `&type=8-K&dateb=&owner=include&count=5&output=atom`;
+        `&type=8-K&dateb=&owner=include&count=40&output=atom`;
 
       const atomRes = await fetch(atomUrl, {
         headers: { 'User-Agent': 'CramerShort/1.0 research@cramer-short.ai' },
@@ -183,28 +191,21 @@ export const getEarningsTranscript = new DynamicStructuredTool({
         throw new Error(`No 8-K filings found for ${ticker} on EDGAR`);
       }
 
-      // Filter by quarter if requested
+      // Filter by quarter if requested; never substitute another quarter's filing.
       let targetFiling = filings[0];
       if (input.quarter) {
         const qMatch = input.quarter.match(/Q([1-4])\s*(\d{4})/i);
-        if (qMatch) {
-          const qNum = parseInt(qMatch[1]);
-          const year = parseInt(qMatch[2]);
-          // Map quarter to approximate month range
-          const qMonths: Record<number, [number, number]> = {
-            1: [1, 3],
-            2: [4, 6],
-            3: [7, 9],
-            4: [10, 12],
-          };
-          const [startMonth, endMonth] = qMonths[qNum] || [1, 12];
-          const found = filings.find((f) => {
-            const d = new Date(f.date);
-            const m = d.getMonth() + 1;
-            return d.getFullYear() === year && m >= startMonth && m <= endMonth;
-          });
-          if (found) targetFiling = found;
+        if (!qMatch) {
+          throw new Error(`Unrecognized quarter '${input.quarter}'; use the form 'Q2 2025'`);
         }
+        const requested = parseInt(qMatch[2]) * 4 + parseInt(qMatch[1]) - 1;
+        const found = filings.find((f) => reportedQuarterIndex(f.date) === requested);
+        if (!found) {
+          throw new Error(
+            `No 8-K for ${input.quarter} results among the latest ${filings.length} 8-K filings for ${ticker} on EDGAR`,
+          );
+        }
+        targetFiling = found;
       }
 
       // Convert filing entry URL to index page URL if needed
@@ -240,10 +241,8 @@ export const getEarningsTranscript = new DynamicStructuredTool({
 
       const filingDate = targetFiling.date ? targetFiling.date.split('T')[0] : todayStr;
 
-      // Infer quarter from filing date
-      const filingDateObj = new Date(filingDate);
-      const quarterNum = Math.ceil((filingDateObj.getMonth() + 1) / 3);
-      const inferredQuarter = `Q${quarterNum} ${filingDateObj.getFullYear()}`;
+      const reported = reportedQuarterIndex(filingDate);
+      const inferredQuarter = `Q${(reported % 4) + 1} ${Math.floor(reported / 4)}`;
 
       const result = {
         ticker,

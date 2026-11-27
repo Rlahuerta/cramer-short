@@ -284,3 +284,85 @@ describe('getEarningsTranscript tool', () => {
     expect(() => JSON.parse(result)).not.toThrow();
   });
 });
+
+// ── Tool: quarter selection ──────────────────────────────────────────────────
+
+describe('getEarningsTranscript quarter selection', () => {
+  const originalTavilyKey = process.env.TAVILY_API_KEY;
+  let requests: string[];
+
+  /** Serve an EDGAR 8-K feed whose filings are dated `dates`, newest first. */
+  function mockEdgar(dates: string[]): void {
+    requests = [];
+    const dir = (date: string) =>
+      `https://www.sec.gov/Archives/edgar/data/320193/${date.replace(/-/g, '')}`;
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      const urlStr = url.toString();
+      requests.push(urlStr);
+      if (urlStr.includes('output=atom')) {
+        const xml = makeSampleAtomXml(
+          dates.map((date) => ({ url: `${dir(date)}/${date}-index.htm`, date: `${date}T16:30:00-04:00`, title: `8-K ${date}` })),
+        );
+        return new Response(xml, { status: 200 });
+      }
+      if (urlStr.endsWith('-index.htm')) {
+        const exhibit = urlStr.replace(/[^/]+-index\.htm$/, 'ex99.htm').replace('https://www.sec.gov', '');
+        return new Response(`<table><tr><td>EX-99.1</td><td><a href="${exhibit}">ex99.htm</a></td></tr></table>`, { status: 200 });
+      }
+      if (urlStr.endsWith('ex99.htm')) {
+        return new Response(makeSampleTranscriptHtml('<p>We expect revenue to grow next quarter.</p>'), { status: 200 });
+      }
+      return new Response('Not Found', { status: 404 });
+    }) as unknown as typeof fetch;
+  }
+
+  const invoke = async (quarter?: string) =>
+    JSON.parse(await getEarningsTranscript.invoke({ ticker: 'AAPL', ...(quarter ? { quarter } : {}) })).data;
+
+  beforeEach(() => {
+    delete process.env.TAVILY_API_KEY;
+  });
+  afterEach(() => {
+    if (originalTavilyKey === undefined) delete process.env.TAVILY_API_KEY;
+    else process.env.TAVILY_API_KEY = originalTavilyKey;
+  });
+
+  it('asks EDGAR for about 40 8-K filings, not just the latest 5', async () => {
+    mockEdgar(['2025-10-30']);
+    await invoke();
+    expect(requests[0]).toContain('count=40');
+  });
+
+  it('matches a quarter to the release filed in the following quarter', async () => {
+    mockEdgar(['2025-10-30', '2025-07-31', '2025-05-01']);
+    const data = await invoke('Q2 2025');
+    expect(data.filingDate).toBe('2025-07-31');
+    expect(data.inferredQuarter).toBe('Q2 2025');
+  });
+
+  it('matches Q4 to a release filed in January to March of the next year', async () => {
+    mockEdgar(['2026-04-30', '2026-01-29', '2025-10-30']);
+    const data = await invoke('Q4 2025');
+    expect(data.filingDate).toBe('2026-01-29');
+    expect(data.inferredQuarter).toBe('Q4 2025');
+  });
+
+  it('labels the latest filing with the quarter it reports, not the quarter it was filed in', async () => {
+    mockEdgar(['2025-01-30']);
+    expect((await invoke()).inferredQuarter).toBe('Q4 2024');
+  });
+
+  it('returns a clear error instead of the latest filing when the quarter is not found', async () => {
+    mockEdgar(['2025-10-30', '2025-07-31']);
+    const data = await invoke('Q2 2023');
+    expect(data.error).toContain('Q2 2023');
+    expect(requests.some((u) => u.endsWith('-index.htm'))).toBe(false);
+  });
+
+  it('returns a clear error for a quarter it cannot parse', async () => {
+    mockEdgar(['2025-10-30']);
+    const data = await invoke('second quarter');
+    expect(data.error).toContain('second quarter');
+    expect(requests.some((u) => u.endsWith('-index.htm'))).toBe(false);
+  });
+});
