@@ -112,6 +112,28 @@ describe('screen_stocks — error paths', () => {
     expect(parsed.data.error).toBeDefined();
   });
 
+  test('points the agent to web_search when the screener API fails', async () => {
+    mockCallLlm.mockResolvedValueOnce({
+      response: { filters: [], currency: 'USD', limit: 10 } as any,
+      usage: undefined,
+    });
+    apiPostSpy.mockRejectedValueOnce(new Error('FINANCIAL_DATASETS_PREMIUM_REQUIRED: 402'));
+
+    const parsed = JSON.parse(await createScreenStocks('test-model').invoke({ query: 'growth stocks' }));
+    expect(parsed.data.error).toContain('web_search');
+  });
+
+  test('points the agent to web_search when screener metrics cannot be loaded', async () => {
+    // A fresh module instance, so the metrics cache filled by earlier tests is empty.
+    const coldCache = 'cold-metrics-cache';
+    const { createScreenStocks: createCold } = (await import(`./screen-stocks.js?${coldCache}`)) as typeof import('./screen-stocks.js');
+    apiGetSpy.mockRejectedValueOnce(new Error('FINANCIAL_DATASETS_PREMIUM_REQUIRED: 402'));
+
+    const parsed = JSON.parse(await createCold('test-model').invoke({ query: 'growth stocks' }));
+    expect(parsed.data.error).toContain('web_search');
+    expect(mockCallLlm).not.toHaveBeenCalled();
+  });
+
   test('returns error when LLM returns invalid filter schema', async () => {
     mockCallLlm.mockResolvedValueOnce({
       response: null as any, // Invalid schema — Zod parse will fail

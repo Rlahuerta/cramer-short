@@ -163,20 +163,20 @@ async function tryFmp(
  * The years a web search should target: the years of the requested window, newest five at most.
  * A strict bound leaves out its own day (gt 2018-12-31 starts in 2019, lt 2024-01-01 ends in 2023),
  * an open end runs to the current year and an open start covers the two latest years. With no usable
- * window it keeps the recent default. Web results are unstructured, so the window can only steer the
- * search, not filter what comes back.
+ * window it searches the previous and current year. Web results are unstructured, so the window can
+ * only steer the search, not filter what comes back.
  */
-function searchYears(bounds?: ReportPeriodBounds): string {
+export function searchYears(bounds?: ReportPeriodBounds): string {
   const yearOf = (day: string | undefined, shiftDays: number): number | undefined => {
     const ms = day ? Date.parse(`${day.slice(0, 10)}T00:00:00Z`) : Number.NaN;
     return Number.isNaN(ms) ? undefined : new Date(ms + shiftDays * 86_400_000).getUTCFullYear();
   };
+  const thisYear = new Date().getUTCFullYear();
   const from = yearOf(bounds?.report_period_gte, 0) ?? yearOf(bounds?.report_period_gt, 1);
   const to = yearOf(bounds?.report_period_lte, 0) ?? yearOf(bounds?.report_period_lt, -1);
-  if (from === undefined && to === undefined) return '2024 2023';
-  const end = to ?? new Date().getUTCFullYear();
+  const end = to ?? thisYear;
   const start = Math.max(from ?? end - 1, end - 4);
-  if (end < start) return '2024 2023';
+  if (end < start) return `${thisYear - 1} ${thisYear}`;
   return Array.from({ length: end - start + 1 }, (_, i) => start + i).join(' ');
 }
 

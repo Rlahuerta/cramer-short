@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach, afterAll, setSystemTime } from 'bun:test';
 
 // ---------------------------------------------------------------------------
 // Mock ../search/tavily.js BEFORE importing key-ratios.js
@@ -188,5 +188,47 @@ describe('getHistoricalKeyRatios', () => {
     const result = await getHistoricalKeyRatios.invoke({ ticker: 'AAPL' });
     const parsed = parseResult(result);
     expect((parsed.data as { error: string }).error).toContain('AAPL');
+  });
+});
+
+describe('Tavily fallback queries target years from the current date', () => {
+  const queryOf = () => (mockTavilyInvoke.mock.calls[0][0] as { query: string }).query;
+
+  beforeEach(() => {
+    mockTavilyInvoke.mockClear();
+    process.env.TAVILY_API_KEY = 'test-tavily-key';
+    spyOn(api, 'get').mockRejectedValue(new Error('FINANCIAL_DATASETS_PREMIUM_REQUIRED: 402'));
+    setSystemTime(new Date('2026-11-15T12:00:00Z'));
+  });
+  afterEach(() => {
+    setSystemTime();
+    delete process.env.TAVILY_API_KEY;
+  });
+
+  test('key ratios search the current and previous year', async () => {
+    await getKeyRatios.invoke({ ticker: 'AAPL' });
+    expect(queryOf()).toContain('2025 2026');
+    expect(queryOf()).not.toContain('2024');
+  });
+
+  test('historical key ratios without a range search the current and previous year', async () => {
+    await getHistoricalKeyRatios.invoke({ ticker: 'AAPL' });
+    expect(queryOf()).toContain('2025 2026');
+    expect(queryOf()).not.toContain('2024');
+  });
+
+  test('historical key ratios search the requested range', async () => {
+    await getHistoricalKeyRatios.invoke({
+      ticker: 'AAPL',
+      report_period_gte: '2019-01-01',
+      report_period_lte: '2020-12-31',
+    });
+    expect(queryOf()).toContain('2019 2020');
+    expect(queryOf()).not.toContain('2026');
+  });
+
+  test('historical key ratios for an exact report period search that year', async () => {
+    await getHistoricalKeyRatios.invoke({ ticker: 'AAPL', report_period: '2021-09-25' });
+    expect(queryOf()).toMatch(/ 2021$/);
   });
 });

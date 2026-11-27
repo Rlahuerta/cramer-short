@@ -53,7 +53,7 @@ function formatSubToolName(name: string): string {
 }
 
 // Import all finance tools directly (avoid circular deps with index.ts)
-import { getIncomeStatements, getBalanceSheets, getCashFlowStatements, getAllFinancialStatements } from './fundamentals.js';
+import { getIncomeStatements, getBalanceSheets, getCashFlowStatements, getAllFinancialStatements, searchYears } from './fundamentals.js';
 import { getKeyRatios, getHistoricalKeyRatios } from './key-ratios.js';
 import { getAnalystEstimates } from './estimates.js';
 import { getSegmentedRevenues } from './segments.js';
@@ -323,8 +323,8 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
         try {
           const ticker = extractTicker(input.query);
           const searchQuery = ticker
-            ? `${ticker} financial data revenue earnings P/E ratio annual results 2024 2025`
-            : `${input.query} financial data annual results 2024`;
+            ? `${ticker} financial data revenue earnings P/E ratio annual results ${searchYears()}`
+            : `${input.query} financial data annual results ${searchYears()}`;
           onProgress?.('API unavailable — falling back to web search...');
           if (ticker) void setPreferredApi(ticker, 'web');
           return await tavilySearch.invoke({ query: searchQuery });
