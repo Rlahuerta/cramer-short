@@ -395,3 +395,22 @@ describe('request timeouts', () => {
     for (const call of calls) expect(call.signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+describe('whale tracking with a trading-pair ticker', () => {
+  it('tracks whales for a trading-pair ticker such as BTC-USD as the coin itself', async () => {
+    const sources: string[] = [];
+    const tool = createGetOnchainCryptoTool({ recordReplayWhaleCapture: (row) => { sources.push(row.source); } });
+    globalThis.fetch = mock(async (url: string | URL | Request) => {
+      const urlStr = url.toString();
+      if (urlStr.includes('/coins/bitcoin')) return Response.json(makeCoinGeckoResponse());
+      if (urlStr.includes('blockchain.info/unconfirmed-transactions')) {
+        return Response.json({ txs: [{ hash: '0xabc', time: 1777548000, out: [{ value: 150 * 1e8 }] }] });
+      }
+      throw new Error(`Unexpected URL: ${urlStr}`);
+    }) as unknown as typeof fetch;
+
+    await tool.invoke({ ticker: 'BTC-USD', metrics: ['whale'] });
+
+    expect(sources).toEqual(['blockchain.info-mempool']);
+  });
+});

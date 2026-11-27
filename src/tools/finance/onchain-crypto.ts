@@ -39,10 +39,14 @@ export const TICKER_TO_COINGECKO_ID: Record<string, string> = {
   LINK: 'chainlink',
 };
 
+/** "BTC-USD" / "ETH-USDT" / "SOLUSDT" name a trading pair; the on-chain sources want the coin ("BTC"). */
+function coinSymbol(ticker: string): string {
+  return ticker.trim().toUpperCase().replace(/(.)(?:-USDT?|USDT)$/, '$1');
+}
+
 /** Resolve a ticker symbol to a CoinGecko ID. */
 export function resolveCoinGeckoId(ticker: string): string {
-  // "BTC-USD" / "ETH-USDT" / "SOLUSDT" name a trading pair; CoinGecko ids are per coin.
-  const upper = ticker.trim().toUpperCase().replace(/(.)(?:-USDT?|USDT)$/, '$1');
+  const upper = coinSymbol(ticker);
   return TICKER_TO_COINGECKO_ID[upper] ?? upper.toLowerCase();
 }
 
@@ -51,7 +55,7 @@ async function fetchWhaleData(
   ticker: string,
   currentPriceUsd: number | null,
 ): Promise<Record<string, unknown>> {
-  const upper = ticker.trim().toUpperCase();
+  const upper = coinSymbol(ticker);
 
   // Prefer Whale Alert API when a key is configured (multi-chain)
   const whaleAlertKey = getEnv('WHALE_ALERT_API_KEY');
