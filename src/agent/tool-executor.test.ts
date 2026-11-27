@@ -703,7 +703,7 @@ describe('AgentToolExecutor — forecast ticker auto-correction (choke point)', 
     query: string,
     toolName: string,
     args: Record<string, unknown>,
-    opts?: { forced?: boolean },
+    opts?: { forced?: boolean; followUp?: boolean },
   ) {
     const received: unknown[] = [];
     const fakeTool = {
@@ -716,7 +716,7 @@ describe('AgentToolExecutor — forecast ticker auto-correction (choke point)', 
       schema: {},
     } as unknown as import('@langchain/core/tools').StructuredToolInterface;
     const executor = new AgentToolExecutor(new Map([[toolName, fakeTool]]));
-    const ctx = createRunContext(query);
+    const ctx = createRunContext(query, opts?.followUp);
     const msg = new AIMessage({
       content: '',
       tool_calls: [{ id: 'c1', name: toolName, args, type: 'tool_call' as const }],
@@ -779,6 +779,17 @@ describe('AgentToolExecutor — forecast ticker auto-correction (choke point)', 
     );
     await events;
     expect(received).toEqual(['ETH-USD']);
+  });
+
+  it('does not rewrite the earlier asset on a follow-up turn', async () => {
+    const { received, events } = runWith(
+      'Compare that with gold',
+      'markov_distribution',
+      { ticker: 'BTC-USD', horizon: 7 },
+      { followUp: true },
+    );
+    await events;
+    expect(received).toEqual(['BTC-USD']);
   });
 });
 

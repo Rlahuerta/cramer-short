@@ -95,11 +95,11 @@ export function normalizeExplicitGoldCombinedToolCalls(
  * BTC and ETH") are skipped so a legitimate comparison ticker is never
  * clobbered. Gold-combined requests keep their dedicated normalizer.
  */
-export function normalizeForecastToolTickers(response: AIMessage, query: string): void {
+export function normalizeForecastToolTickers(response: AIMessage, query: string, followUp = false): void {
   if (!response.tool_calls?.length) return;
 
   for (const toolCall of response.tool_calls) {
-    const canonical = resolveForecastToolTicker(query, toolCall.name);
+    const canonical = resolveForecastToolTicker(query, toolCall.name, followUp);
     if (!canonical) continue;
 
     const current = typeof toolCall.args?.['ticker'] === 'string'

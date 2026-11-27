@@ -282,7 +282,7 @@ export class Agent {
       return;
     }
 
-    const ctx = createRunContext(query);
+    const ctx = createRunContext(query, inMemoryHistory?.hasMessages() ?? false);
     const runState = createRunLoopState();
     const forecastingConfig = loadConfig().forecasting;
     const forecastLabIntent = forecastLabRouter.routeIntent(query, {
@@ -639,7 +639,7 @@ export class Agent {
       // single-asset scope (e.g. markov_distribution(ticker="PLAN") on a
       // "BTC-USD only" query) before executing, so a wrong ticker can't fail
       // and trap the agent in a re-emit loop.
-      normalizeForecastToolTickers(response as AIMessage, query);
+      normalizeForecastToolTickers(response as AIMessage, query, ctx.followUp);
 
       // Count sequential_thinking calls before executing tools (needed for nudge below).
       const toolCalls = (response as AIMessage).tool_calls ?? [];

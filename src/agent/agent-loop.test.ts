@@ -354,6 +354,29 @@ describe('distribution warning prefix', () => {
   });
 });
 
+describe('forecast ticker auto-fix on follow-ups', () => {
+  it('runs the earlier asset\'s forecast as the model asked when the follow-up names another asset', async () => {
+    const history = new InMemoryChatHistory();
+    history.seedMessage({ query: 'BTC 7 day forecast', answer: 'BTC-USD forecast: ...', summary: null });
+    const markovCall: ToolCall = { id: 'm1', name: 'markov_distribution', args: { ticker: 'BTC-USD', horizon: 7 }, type: 'tool_call' };
+    script.responses = [[ST_CALL, markovCall], 'Compared'];
+    const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
+    const toolMap = Object.getOwnPropertyDescriptor(agent, 'toolMap')?.value as Map<string, StructuredToolInterface>;
+    const received: unknown[] = [];
+    toolMap.set('markov_distribution', new DynamicStructuredTool({
+      name: 'markov_distribution',
+      description: 'markov fixture',
+      schema: z.object({ ticker: z.string(), horizon: z.number() }),
+      func: async ({ ticker }) => { received.push(ticker); return JSON.stringify({ data: { ran_for: ticker } }); },
+    }));
+    Object.defineProperty(agent, 'toolExecutor', { value: new AgentToolExecutor(toolMap), configurable: true });
+
+    await collect(agent.run('Compare that with gold', history));
+
+    expect(received).toEqual(['BTC-USD']);
+  });
+});
+
 describe('Agent — parallelToolLimit wiring', () => {
   function executorLimit(agent: AgentInstance): unknown {
     const executor = Object.getOwnPropertyDescriptor(agent, 'toolExecutor')?.value as object;

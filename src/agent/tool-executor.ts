@@ -281,7 +281,7 @@ export class AgentToolExecutor {
     // (executeTool) — so a stray ticker (e.g. "PLAN") can never reach the tool
     // and exhaust the iteration budget, regardless of which path emitted it.
     if (ASSET_CONSISTENCY_GUARDED_TOOLS.has(toolName) && ctx.query && typeof toolArgs.ticker === 'string') {
-      const canonical = resolveForecastToolTicker(ctx.query, toolName);
+      const canonical = resolveForecastToolTicker(ctx.query, toolName, ctx.followUp);
       if (canonical && toolArgs.ticker.toUpperCase() !== canonical.toUpperCase()) {
         toolArgs = { ...toolArgs, ticker: canonical };
       }
