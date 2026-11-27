@@ -291,6 +291,17 @@ describe('exit messages', () => {
     expect(done.answer).toContain('empty answer');
   });
 
+  it('flags the interrupted fallback as an error so callers can tell it from an answer', async () => {
+    script.fallback = [ST_CALL];
+    script.streamError = new Error('provider exploded');
+    const agent = await Agent.create({ maxIterations: 1, memoryEnabled: false });
+
+    const done = doneOf(await collect(agent.run('look up ZZZ')));
+
+    expect(done.answer).toContain('Research interrupted');
+    expect(done.error).toBe(true);
+  });
+
   it('still reports a synthesis timeout as a timeout', async () => {
     script.fallback = [ST_CALL];
     script.streamError = Object.assign(new Error('timed out'), { name: 'TimeoutError' });

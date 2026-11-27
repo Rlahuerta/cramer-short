@@ -1293,6 +1293,7 @@ export class Agent {
       ? ensureStructuredDensityTable(`${prefixText}${baseText}`, ctx.query, toolCalls)
       : currentPrompt ? '' : prefixText;
     const CHUNK_SIZE = 6;
+    let failure: string | null = null;
 
     if (text) {
       // We already have the answer from the non-streaming callLlm response.
@@ -1314,7 +1315,6 @@ export class Agent {
       const combinedSignal = this.signal
         ? AbortSignal.any([this.signal, timeoutSignal])
         : timeoutSignal;
-      let failure: string | null = null;
       let synthesized = '';
       try {
         // A thinking model can end with no visible text; ask once more before giving up.
@@ -1365,6 +1365,8 @@ export class Agent {
     yield {
       type: 'done',
       answer: streamedAnswer,
+      // Synthesis failed: the answer is at best the raw-data fallback, not a finished one.
+      ...(failure ? { error: true as const } : {}),
       toolCalls: ctx.scratchpad.getToolCallRecords(),
       iterations: ctx.iteration,
       totalTime,
