@@ -403,7 +403,12 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
     let runnable: Runnable<any, any> = llm;
 
     if (outputSchema) {
-      runnable = llm.withStructuredOutput(outputSchema, { strict: false });
+      // Ollama cloud models ignore the JSON-schema `format` LangChain sends by default (live, DeepSeek answered in
+      // markdown: 0/5 parseable); tool calling returns the arguments as JSON (5/5).
+      runnable = llm.withStructuredOutput(outputSchema, {
+        strict: false,
+        ...(provider.id === 'ollama' ? { method: 'functionCalling' as const } : {}),
+      });
     } else if (tools && tools.length > 0 && llm.bindTools) {
       runnable = llm.bindTools(tools);
     }

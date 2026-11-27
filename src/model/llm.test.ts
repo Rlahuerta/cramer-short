@@ -589,3 +589,23 @@ describe('callLlm — abort retry policy', () => {
     expect(attempts).toBe(3);
   });
 });
+
+describe('callLlm structured output', () => {
+  test('asks Ollama models for structured output through tool calling', async () => {
+    // Ollama cloud models ignore the JSON-schema `format` LangChain sends by default: live, DeepSeek returned a
+    // parseable plan 0/5 times with it and 5/5 with tool calling.
+    const { z } = await import('zod');
+    const methods: Array<string | undefined> = [];
+    _setModelFactory((() => ({
+      withStructuredOutput: (_schema: unknown, config?: { method?: string }) => {
+        methods.push(config?.method);
+        return { invoke: async () => ({ ticker: 'TSLA' }) };
+      },
+    })) as any);
+
+    const { response } = await callLlm('plan', { model: 'ollama:deepseek-v4.1-flash:cloud', outputSchema: z.object({ ticker: z.string() }) });
+
+    expect(response as unknown).toEqual({ ticker: 'TSLA' });
+    expect(methods).toEqual(['functionCalling']);
+  });
+});
