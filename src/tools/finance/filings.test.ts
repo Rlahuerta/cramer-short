@@ -195,7 +195,8 @@ describe('getFilings — SEC EDGAR fallback', () => {
 
     expect(requests.map((r) => r.url)).toEqual(['https://www.sec.gov/files/company_tickers.json', SUBMISSIONS_URL]);
     for (const { userAgent } of requests) {
-      expect(userAgent).toBe('cramer-short research tool');
+      // SEC refuses a User-Agent without contact details on www.sec.gov; use the project's, as earnings-transcripts.ts does.
+      expect(userAgent).toBe('CramerShort/1.0 research@cramer-short.ai');
     }
   });
 

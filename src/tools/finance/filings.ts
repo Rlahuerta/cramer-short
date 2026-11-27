@@ -76,7 +76,8 @@ export const getFilings = new DynamicStructuredTool({
 });
 
 // SEC asks automated clients to identify themselves; keep this generic (no personal name or email).
-const SEC_HEADERS = { 'User-Agent': 'cramer-short research tool' };
+// SEC refuses a User-Agent without contact details on www.sec.gov (403); same as earnings-transcripts.ts.
+const SEC_HEADERS = { 'User-Agent': 'CramerShort/1.0 research@cramer-short.ai' };
 
 async function getSecJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: SEC_HEADERS, signal: AbortSignal.timeout(15_000) });
