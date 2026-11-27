@@ -2,6 +2,8 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { api } from './api.js';
 import { formatToolResult } from '../types.js';
+import { tavilySearch } from '../search/tavily.js';
+import { hasEnv } from '../../utils/env.js';
 
 const CompanyNewsInputSchema = z.object({
   ticker: z
@@ -21,11 +23,26 @@ export const getCompanyNews = new DynamicStructuredTool({
     'Retrieves recent company news headlines for a stock ticker, including title, source, publication date, and URL. Use for company catalysts, price move explanations, press releases, and recent announcements.',
   schema: CompanyNewsInputSchema,
   func: async (input) => {
+    const ticker = input.ticker.trim().toUpperCase();
     const params: Record<string, string | number | undefined> = {
-      ticker: input.ticker.trim().toUpperCase(),
+      ticker,
       limit: Math.min(input.limit, 10),
     };
-    const { data, url } = await api.get('/news', params);
-    return formatToolResult((data.news as unknown[]) || [], [url]);
+    try {
+      const { data, url } = await api.get('/news', params);
+      return formatToolResult((data.news as unknown[]) || [], [url]);
+    } catch {
+      if (hasEnv('TAVILY_API_KEY')) {
+        try {
+          return await tavilySearch.invoke({ query: `${ticker} stock latest company news headlines` });
+        } catch {
+          // Tavily also failed
+        }
+      }
+      return formatToolResult(
+        { error: `Company news unavailable for ${ticker}. Use web_search to find recent headlines.` },
+        [],
+      );
+    }
   },
 });

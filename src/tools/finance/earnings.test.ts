@@ -1,6 +1,7 @@
-import { describe, test, expect, spyOn, beforeEach } from 'bun:test';
+import { describe, test, expect, spyOn, beforeEach, afterEach } from 'bun:test';
 import { api } from './api.js';
 import { getEarnings } from './earnings.js';
+import { tavilySearch } from '../search/tavily.js';
 
 function parseResult(raw: unknown): { data: unknown; sourceUrls?: string[] } {
   return JSON.parse(raw as string);
@@ -66,5 +67,35 @@ describe('getEarnings', () => {
     const result = await getEarnings.invoke({ ticker: 'AAPL' });
     const parsed = parseResult(result);
     expect(parsed.sourceUrls).toEqual(['https://api.financialdatasets.ai/earnings']);
+  });
+});
+
+describe('getEarnings — Financial Datasets unavailable', () => {
+  const originalTavilyKey = process.env.TAVILY_API_KEY;
+  beforeEach(() => {
+    spyOn(api, 'get').mockRejectedValue(new Error('FINANCIAL_DATASETS_PREMIUM_REQUIRED: 402'));
+  });
+  afterEach(() => {
+    if (originalTavilyKey === undefined) delete process.env.TAVILY_API_KEY;
+    else process.env.TAVILY_API_KEY = originalTavilyKey;
+  });
+
+  test('falls back to Tavily search when TAVILY_API_KEY is set', async () => {
+    process.env.TAVILY_API_KEY = 'test-tavily-key';
+    const tavilyOutput = JSON.stringify({ data: { results: [] }, sourceUrls: ['https://ir.example/aapl'] });
+    const tavilySpy = spyOn(tavilySearch, 'invoke').mockResolvedValue(tavilyOutput);
+    try {
+      const result = await getEarnings.invoke({ ticker: 'aapl' });
+      expect(result).toBe(tavilyOutput);
+      expect((tavilySpy.mock.calls[0][0] as { query: string }).query).toContain('AAPL');
+    } finally {
+      tavilySpy.mockRestore();
+    }
+  });
+
+  test('returns an error pointing to web_search when no Tavily key is set', async () => {
+    delete process.env.TAVILY_API_KEY;
+    const parsed = parseResult(await getEarnings.invoke({ ticker: 'AAPL' }));
+    expect((parsed.data as { error: string }).error).toContain('web_search');
   });
 });
