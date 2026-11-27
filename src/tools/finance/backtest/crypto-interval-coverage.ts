@@ -96,6 +96,8 @@
  * toward 0.5. Scored exactly as the anchor horizon test (against today's anchored forecast from 2025-07-01, ETH from
  * 2025-08-25, BTC+ETH, 1/2/3/7/14d, criteria (a)-(c)), with the paired Brier per horizon and the HOLD move reported.
  * If both pass, the smaller paired Brier change ships, test-first and mirrored in research/; none passing, no change.
+ * Result: R passed and ships as the production default for crypto at <= 14 days. Every anchored run here other than R
+ * and R1 therefore pins anchorHorizonRescaleDays to Infinity, to reproduce the forecast it scored.
  *
  * Outputs go to .cramer-short/crypto-interval-coverage/<baseline|A|B|C|anchored>. Each run takes a few minutes; run
  * them in parallel.
@@ -252,7 +254,10 @@ async function run(asset: (typeof ASSETS)[number], horizon: number, candidate: s
   const cell = asset === 'BTC-USD' ? btcLiveCell(horizon) : { config: {}, maxHistoryPrices: ETH_HISTORY_PRICES };
   const anchorVariant = anchorVariantConfig(candidate);
   const anchorsAt = candidate === 'anchored' || anchorVariant ? anchorsAtFromHistory(dates, await anchorMarkets(asset)) : undefined;
-  const experiment = candidate === 'baseline' ? {} : anchorsAt ? { anchorsAt, ...anchorVariant } : await candidateConfig(candidate as Candidate, horizon);
+  // Anchored runs pin the pre-R forecast (no rescaling) they were scored on; R and R1 set their own.
+  const experiment = candidate === 'baseline'
+    ? {}
+    : anchorsAt ? { anchorsAt, anchorHorizonRescaleDays: Infinity, ...anchorVariant } : await candidateConfig(candidate as Candidate, horizon);
   const result = await walkForward({
     ...cell.config, ...experiment, ticker: asset, prices: closes, horizon, warmup: cell.maxHistoryPrices, stride: 1,
     maxHistoryPrices: cell.maxHistoryPrices, randomState: 42,
