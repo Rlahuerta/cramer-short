@@ -114,7 +114,8 @@ describe('portfolioRiskTool', () => {
         if (!url.includes('query1.finance.yahoo.com')) return new Response('unavailable', { status: 500 });
         yahooUrls.push(url);
         const close = makePrices(250, url.includes('/MSFT') ? 300 : 100).map((p, i) => p + (i % 3));
-        return new Response(JSON.stringify({ chart: { result: [{ indicators: { quote: [{ close }] } }] } }), {
+        const timestamp = close.map((_, i) => Date.UTC(2025, 0, 2 + i, 14, 30) / 1000);
+        return new Response(JSON.stringify({ chart: { result: [{ timestamp, indicators: { quote: [{ close }] } }] } }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });

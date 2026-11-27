@@ -207,6 +207,11 @@ function repeatStates(pattern: ReturnType<typeof classifyRegimeState>[], n: numb
   return Array.from({ length: n }, (_, i) => pattern[i % pattern.length]);
 }
 
+/** Daily Yahoo chart bar timestamps (Unix seconds), one per close. */
+function yahooTimestamps(n: number): number[] {
+  return Array.from({ length: n }, (_, i) => Date.UTC(2025, 0, 2 + i, 14, 30) / 1000);
+}
+
 describe('fetchHistoricalPrices Financial Datasets validation', () => {
   it('returns valid Financial Datasets closes without falling through', async () => {
     const prices = Array.from({ length: 12 }, (_, i) => ({ close: 100 + i }));
@@ -293,6 +298,7 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
           return new Response(JSON.stringify({
             chart: {
               result: [{
+                timestamp: yahooTimestamps(yahooCloses.length),
                 indicators: {
                   quote: [{ close: yahooCloses }],
                 },
@@ -374,6 +380,7 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
           return new Response(JSON.stringify({
             chart: {
               result: [{
+                timestamp: yahooTimestamps(yahooCloses.length),
                 indicators: {
                   quote: [{ close: yahooCloses }],
                 },
@@ -459,6 +466,7 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
           return new Response(JSON.stringify({
             chart: {
               result: [{
+                timestamp: yahooTimestamps(yahooCloses.length),
                 indicators: {
                   quote: [{ close: yahooCloses }],
                 },
@@ -495,6 +503,7 @@ describe('fetchHistoricalPrices Financial Datasets validation', () => {
           return new Response(JSON.stringify({
             chart: {
               result: [{
+                timestamp: yahooTimestamps(3),
                 indicators: {
                   quote: [{ close: [100, null, 102] }],
                 },

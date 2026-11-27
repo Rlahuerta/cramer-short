@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach, afterAll } from 'bun:test';
 
 const mockTavilyInvoke = mock(async (_input: unknown): Promise<string> =>
   JSON.stringify({ data: { result: 'AAPL current price $185' }, sourceUrls: [] }),
@@ -44,6 +44,7 @@ mock.module('./robinhood-client.js', () => ({
 
 import { api } from './api.js';
 import { makeGetStockPrice, getStockPrices, getStockTickers } from './stock-price.js';
+import { _clearCrumbCache } from './yahoo-client.js';
 
 const getStockPrice = makeGetStockPrice(mockGetQuote);
 
@@ -201,6 +202,74 @@ describe('getStockPrices', () => {
     });
     const opts = spy.mock.calls[0][2] as { cacheable: boolean } | undefined;
     expect(opts?.cacheable).toBe(true);
+  });
+
+  describe('when Financial Datasets refuses the request', () => {
+    const premiumError = new Error('FINANCIAL_DATASETS_PREMIUM_REQUIRED: This endpoint requires a paid plan.');
+    let chartUrl = '';
+    let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, 'fetch'>>;
+
+    beforeEach(() => {
+      _clearCrumbCache();
+      chartUrl = '';
+      spyOn(api, 'get').mockRejectedValue(premiumError);
+    });
+
+    afterEach(() => fetchSpy.mockRestore());
+
+    function stubYahoo(chart: () => Response) {
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(Object.assign(
+        async (input: Parameters<typeof fetch>[0]) => {
+          const url = input.toString();
+          if (url.includes('fc.yahoo.com')) return new Response('ok', { headers: { 'set-cookie': 'A1=s' } });
+          if (url.includes('getcrumb')) return new Response('crumb-1');
+          chartUrl = url;
+          return chart();
+        },
+        { preconnect: globalThis.fetch.preconnect },
+      ));
+    }
+
+    test('falls back to Yahoo chart closes for the requested window', async () => {
+      stubYahoo(() => Response.json({
+        chart: {
+          result: [{
+            meta: { gmtoffset: -18_000 },
+            timestamp: [Date.UTC(2025, 0, 2, 14, 30) / 1000, Date.UTC(2025, 0, 3, 14, 30) / 1000],
+            indicators: { quote: [{ close: [243.85, 243.36] }] },
+          }],
+        },
+      }));
+
+      const parsed = parseResult(await getStockPrices.invoke({
+        ticker: 'aapl',
+        interval: 'day',
+        start_date: '2025-01-02',
+        end_date: '2025-01-03',
+      }));
+
+      expect(parsed.data).toEqual([
+        { date: '2025-01-02', close: 243.85 },
+        { date: '2025-01-03', close: 243.36 },
+      ]);
+      const params = new URL(chartUrl).searchParams;
+      expect(new URL(chartUrl).pathname).toBe('/v8/finance/chart/AAPL');
+      expect(params.get('period1')).toBe(String(Date.UTC(2025, 0, 2) / 1000));
+      expect(params.get('period2')).toBe(String(Date.UTC(2025, 0, 4) / 1000));
+      expect(params.get('interval')).toBe('1d');
+    });
+
+    test('reports both failures when the Yahoo fallback also fails', async () => {
+      stubYahoo(() => new Response('Too Many Requests', { status: 429, statusText: 'Too Many Requests' }));
+
+      await expect(getStockPrices.invoke({
+        ticker: 'AAPL',
+        interval: 'week',
+        start_date: '2025-01-01',
+        end_date: '2025-03-31',
+      })).rejects.toThrow(/FINANCIAL_DATASETS_PREMIUM_REQUIRED.*Yahoo Finance chart request failed for AAPL: 429/);
+      expect(new URL(chartUrl).searchParams.get('interval')).toBe('1wk');
+    });
   });
 });
 

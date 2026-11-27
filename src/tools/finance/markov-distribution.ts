@@ -55,6 +55,7 @@ import {
 } from './api.js';
 import { fetchBinanceDailyCloses } from './binance.js';
 import { fetchBitmexDailyCloses } from './bitmex.js';
+import { fetchYahooChartCloses } from './yahoo-client.js';
 import { extractCanonicalNames, fetchPolymarketAnchorMarkets, fetchPolymarketAnchorMarketsWithQueries } from './polymarket.js';
 import { TICKER_TO_COMPANY_NAME, extractSignals, normalizeForPolymarket } from './signal-extractor.js';
 import { formatToolResult } from '../types.js';
@@ -285,51 +286,14 @@ export type {
  * Yahoo Finance chart API — free, supports stocks, ETFs, crypto, commodities.
  * Returns oldest-first array of daily close prices.
  */
-const YahooChartCloseSchema = z.number().refine(Number.isFinite, 'Expected finite close price');
-const YahooChartPayloadSchema = z.object({
-  chart: z.object({
-    result: z.array(z.object({
-      indicators: z.object({
-        quote: z.array(z.object({
-          close: z.array(YahooChartCloseSchema),
-        }).passthrough()).nonempty(),
-      }).passthrough(),
-    }).passthrough()).nonempty(),
-  }).passthrough(),
-}).passthrough();
-
-function parseYahooChartClosePrices(data: unknown, ticker: string): number[] {
-  const parsed = YahooChartPayloadSchema.safeParse(data);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const path = issue?.path.length ? issue.path.join('.') : 'payload';
-    const message = issue?.message ?? 'schema validation failed';
-    throw new Error(`Malformed Yahoo Finance chart payload for ${ticker}: ${path} ${message}`);
-  }
-
-  return parsed.data.chart.result[0].indicators.quote[0].close;
-}
-
 async function fetchYahooChartPrices(
   ticker: string,
   days: number,
 ): Promise<number[]> {
   // Map days to Yahoo range parameter
   const range = days <= 30 ? '1mo' : days <= 90 ? '3mo' : days <= 180 ? '6mo' : '1y';
-  const url =
-    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}` +
-    `?range=${range}&interval=1d&includePrePost=false`;
-  const UA =
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA, Accept: 'application/json' },
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) {
-    throw new Error(`Yahoo Finance chart request failed for ${ticker}: ${res.status} ${res.statusText}`);
-  }
-  return parseYahooChartClosePrices(await res.json(), ticker);
+  const closes = await fetchYahooChartCloses(ticker, { range, interval: '1d' });
+  return closes.map((p) => p.close);
 }
 
 function getFinancialDatasetsHttpStatus(error: Error): number | null {
