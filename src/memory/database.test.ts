@@ -303,3 +303,30 @@ describe('MemoryDatabase.repair', () => {
     expect(db.listAllChunks().map((c) => c.content_hash).sort()).toEqual(['hash-aaa', 'hash-ccc']);
   });
 });
+
+describe('MemoryDatabase open', () => {
+  it('copies embeddings into vec_chunks again only when some are missing', async () => {
+    const { spyOn } = await import('bun:test');
+    db.upsertChunk({ chunk: chunk({ contentHash: 'v1' }), embedding: [1, 0, 0, 0], provider: 'p', model: 'm' });
+    db.upsertChunk({ chunk: chunk({ contentHash: 'v2', filePath: 'notes/b.md' }), embedding: [0, 1, 0, 0], provider: 'p', model: 'm' });
+    db.close();
+
+    const backfill = spyOn(MemoryDatabase.prototype as unknown as { backfillVecTable: () => void }, 'backfillVecTable');
+    db = await MemoryDatabase.create(DB_PATH);
+    expect(backfill).not.toHaveBeenCalled();
+    expect(db.searchVector([1, 0, 0, 0], 5).length).toBe(2);
+    db.close();
+
+    // A vector row lost (e.g. an interrupted write): the next open restores it.
+    const { Database } = await import('bun:sqlite');
+    const { getLoadablePath } = await import('sqlite-vec');
+    const raw = new Database(DB_PATH);
+    raw.loadExtension(getLoadablePath());
+    raw.exec('DELETE FROM vec_chunks WHERE rowid = (SELECT min(rowid) FROM vec_chunks)');
+    raw.close();
+    db = await MemoryDatabase.create(DB_PATH);
+    expect(backfill).toHaveBeenCalledTimes(1);
+    expect(db.searchVector([1, 0, 0, 0], 5).length).toBe(2);
+    backfill.mockRestore();
+  });
+});

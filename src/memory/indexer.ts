@@ -1,12 +1,15 @@
 import { watch, type FSWatcher } from 'node:fs';
 import { dirname } from 'node:path';
-import type { MemoryDatabase } from './database.js';
+import type { MemoryDatabase, StoredChunk } from './database.js';
 import { chunkMemoryText } from './chunker.js';
 import { parseSessionTranscripts } from './session-files.js';
 import type { MemoryEmbeddingClient, MemorySyncStats } from './types.js';
 import { MemoryStore } from './store.js';
 
 const SESSION_FILE_PATH = 'sessions/chat_history.json';
+
+/** What is already in the database, read once per sync pass. */
+type KnownChunks = { cached: Set<string>; stored: Map<string, StoredChunk> };
 
 export class MemoryIndexer {
   private watcher: FSWatcher | null = null;
@@ -145,6 +148,12 @@ export class MemoryIndexer {
 
     let indexedChunks = 0;
     let updatedChunks = 0;
+    // Read what is already stored once: per-chunk lookups cost ~1.5 ms each on the NAS-hosted database, ~15 s a start.
+    // A forced sync deletes chunks as it goes, so it compares against nothing.
+    const known: KnownChunks = {
+      cached: this.db.listCachedEmbeddingHashes(),
+      stored: options?.force ? new Map() : this.db.listStoredChunks(),
+    };
 
     for (const file of files) {
       const text = await this.store.readMemoryFile(file);
@@ -159,7 +168,7 @@ export class MemoryIndexer {
         removedChunks += this.db.deleteChunksForFile(file);
       }
 
-      const result = await this.embedAndUpsertChunks(chunks, 'memory');
+      const result = await this.embedAndUpsertChunks(chunks, 'memory', known);
       indexedChunks += result.indexed;
       updatedChunks += result.updated;
 
@@ -169,7 +178,7 @@ export class MemoryIndexer {
 
     // Sync session transcripts if enabled.
     if (this.options.indexSessions) {
-      const sessionResult = await this.syncSessionTranscripts(options?.force ?? false);
+      const sessionResult = await this.syncSessionTranscripts(options?.force ?? false, known);
       indexedChunks += sessionResult.indexed;
       updatedChunks += sessionResult.updated;
       removedChunks += sessionResult.removed;
@@ -188,6 +197,7 @@ export class MemoryIndexer {
 
   private async syncSessionTranscripts(
     force: boolean,
+    known: KnownChunks,
   ): Promise<{ indexed: number; updated: number; removed: number }> {
     const chatHistoryPath = this.store.getChatHistoryPath();
     const entries = await parseSessionTranscripts(chatHistoryPath);
@@ -220,7 +230,7 @@ export class MemoryIndexer {
       removed = this.db.deleteChunksForFile(SESSION_FILE_PATH);
     }
 
-    const result = await this.embedAndUpsertChunks(chunks, 'sessions');
+    const result = await this.embedAndUpsertChunks(chunks, 'sessions', known);
 
     // Drop chunks of turns that are no longer in the chat history.
     removed += this.db.deleteChunksForFile(SESSION_FILE_PATH, new Set(chunks.map((chunk) => chunk.contentHash)));
@@ -231,8 +241,9 @@ export class MemoryIndexer {
   private async embedAndUpsertChunks(
     chunks: { filePath: string; startLine: number; endLine: number; content: string; contentHash: string }[],
     source: 'memory' | 'sessions',
+    known: KnownChunks,
   ): Promise<{ indexed: number; updated: number }> {
-    const uncached = chunks.filter((chunk) => !this.db.getCachedEmbedding(chunk.contentHash));
+    const uncached = chunks.filter((chunk) => !known.cached.has(chunk.contentHash));
     let uncachedVectors: number[][] = [];
     if (uncached.length > 0 && this.options.embeddingClient) {
       try {
@@ -270,8 +281,20 @@ export class MemoryIndexer {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
       const chunk = chunks[i]!;
-      const cached = this.db.getCachedEmbedding(chunk.contentHash);
-      const embedding = cached ?? uncachedMap.get(chunk.contentHash) ?? null;
+      const hasEmbedding = known.cached.has(chunk.contentHash) || uncachedMap.has(chunk.contentHash);
+      const stored = known.stored.get(chunk.contentHash);
+      // The same no-op test upsertChunk applies (tickers derive from content), without its per-chunk queries.
+      if (
+        stored
+        && stored.filePath === chunk.filePath && stored.startLine === chunk.startLine && stored.endLine === chunk.endLine
+        && stored.content === chunk.content && stored.source === source && stored.hasEmbedding === hasEmbedding
+      ) {
+        indexed += 1;
+        updated += 1;
+        continue;
+      }
+      const embedding = (known.cached.has(chunk.contentHash) ? this.db.getCachedEmbedding(chunk.contentHash) : null)
+        ?? uncachedMap.get(chunk.contentHash) ?? null;
       const result = this.db.upsertChunk({
         chunk,
         embedding,
