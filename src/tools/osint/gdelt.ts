@@ -30,6 +30,30 @@ const GDELT_BASE = 'https://api.gdeltproject.org/api/v2/doc/doc';
 const DEFAULT_MAX_RECORDS = 25;
 const REQUEST_TIMEOUT_MS = 10_000;
 
+/** GDELT allows 1 request per 5 s. */
+export const GDELT_MIN_INTERVAL_MS = 5_000;
+let minIntervalMs = GDELT_MIN_INTERVAL_MS;
+
+/** Test seam: shrink the spacing so unit tests don't wait 5 s per call. */
+export function setGdeltMinIntervalMs(ms: number): void {
+  minIntervalMs = ms;
+}
+
+// Tool calls run in parallel, so all GDELT requests share one module-wide serial queue.
+let queue: Promise<unknown> = Promise.resolve();
+let lastStartMs = Number.NEGATIVE_INFINITY;
+
+function enqueue<T>(request: () => Promise<T>): Promise<T> {
+  const run = queue.then(async () => {
+    const waitMs = lastStartMs + minIntervalMs - performance.now();
+    if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+    lastStartMs = performance.now();
+    return request();
+  });
+  queue = run.catch(() => undefined);
+  return run;
+}
+
 /**
  * Convert our timespan string to GDELT TIMESPAN param value.
  * GDELT accepts values like "1440" (minutes), "10080" (7 days in minutes), etc.
@@ -73,24 +97,26 @@ export async function fetchGdeltArticles(query: string, options: GdeltOptions = 
 
   const url = `${GDELT_BASE}?${params.toString()}`;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  return enqueue(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-  try {
-    const resp = await fetch(url, { signal: controller.signal });
-    if (!resp.ok) {
-      throw new Error(`GDELT HTTP ${resp.status}: ${resp.statusText}`);
+    try {
+      const resp = await fetch(url, { signal: controller.signal });
+      if (!resp.ok) {
+        throw new Error(`GDELT HTTP ${resp.status}: ${resp.statusText}`);
+      }
+      const data = await resp.json() as { articles?: GdeltRawArticle[] };
+      return (data.articles ?? []).map(normalizeArticle);
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        throw new Error(`GDELT request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    const data = await resp.json() as { articles?: GdeltRawArticle[] };
-    return (data.articles ?? []).map(normalizeArticle);
-  } catch (err) {
-    if ((err as Error).name === 'AbortError') {
-      throw new Error(`GDELT request timed out after ${REQUEST_TIMEOUT_MS}ms`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
+  });
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
