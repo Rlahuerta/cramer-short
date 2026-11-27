@@ -383,9 +383,10 @@ export class Agent {
     }
 
     let stoppedOnRepeatedFailures = false;
+    let modelFailure: string | null = null;
 
     // Main agent loop
-    while (ctx.iteration < this.maxIterations) {
+    mainLoop: while (ctx.iteration < this.maxIterations) {
       ctx.iteration++;
       yield { type: 'progress', iteration: ctx.iteration, maxIterations: this.maxIterations } as ProgressEvent;
 
@@ -413,6 +414,13 @@ export class Agent {
               currentPrompt = this.iterationPrompt(ctx, query, forecastLabRoutingHint);
               continue;
             }
+          }
+
+          // Keep the research already gathered: synthesize from it rather than discard it for an error.
+          if (!this.signal?.aborted && ctx.scratchpad.getToolResults().trim()) {
+            logger.warn('[Agent] model call failed; synthesizing from gathered research', error);
+            modelFailure = errorMessage;
+            break mainLoop;
           }
 
           const totalTime = Date.now() - ctx.startTime;
@@ -699,7 +707,7 @@ export class Agent {
       }
     }
 
-    // Max iterations reached (or the loop-breaker stopped the run) — synthesize a best-effort answer from gathered research
+    // Max iterations reached (or the loop-breaker or a failed model call stopped the run) — synthesize a best-effort answer from gathered research
     // rather than yielding a bare failure message. Any data collected is still useful.
     const toolResults = ctx.scratchpad.getToolResults().trim();
     const hasMeaningfulResearch = toolResults.length > 50;
@@ -724,7 +732,9 @@ export class Agent {
 
     const synthesisPrompt = hasMeaningfulResearch
       ? this.iterationPrompt(ctx, query, forecastLabRoutingHint, toolResults) +
-          `\n\n[SYSTEM NOTE: ${stoppedOnRepeatedFailures
+          `\n\n[SYSTEM NOTE: ${modelFailure
+            ? `Research stopped because a model call failed (${modelFailure})`
+            : stoppedOnRepeatedFailures
             ? 'Research stopped because your tool calls only repeated calls that already failed with the same arguments'
             : `You have reached the maximum number of research steps (${this.maxIterations})`}. ` +
           `You MUST now write your best-effort final answer using ONLY the data gathered above. ` +

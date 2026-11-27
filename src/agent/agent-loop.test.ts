@@ -183,6 +183,32 @@ describe('failed model calls', () => {
     expect(done.answer).toStartWith('Error:');
   });
 
+  it('synthesizes from the research gathered so far instead of discarding it', async () => {
+    const research: ToolCall = { id: 'r1', name: 'research_fixture', args: {}, type: 'tool_call' };
+    script.responses = [[ST_CALL], [research], new Error('Ollama call timed out after 120s. The model may be slow or unavailable.')];
+    const agent = await Agent.create({ maxIterations: 10, memoryEnabled: false });
+    installTools(agent, { research_fixture: () => 'AAPL revenue FY2025 = $420B; gross margin 46.9%' });
+
+    const done = doneOf(await collect(agent.run('Summarize Apple fundamentals')));
+
+    expect(done.answer).not.toStartWith('Error:');
+    expect(done.answer).toContain('synthesized answer');
+    expect(script.streamPrompts[0]).toContain('$420B');
+  });
+
+  it('still ends with the error when the user aborted', async () => {
+    const controller = new AbortController();
+    const research: ToolCall = { id: 'r1', name: 'research_fixture', args: {}, type: 'tool_call' };
+    script.responses = [[ST_CALL], [research], Object.assign(new Error('aborted'), { name: 'AbortError' })];
+    const agent = await Agent.create({ maxIterations: 10, memoryEnabled: false, signal: controller.signal });
+    installTools(agent, { research_fixture: () => { controller.abort(); return 'AAPL revenue FY2025 = $420B'; } });
+
+    const done = doneOf(await collect(agent.run('Summarize Apple fundamentals')));
+
+    expect(done.error).toBe(true);
+    expect(script.streamPrompts).toHaveLength(0);
+  });
+
   it('leaves the error flag off a normal answer', async () => {
     const agent = await Agent.create({ maxIterations: 3, memoryEnabled: false });
 
