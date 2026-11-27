@@ -3310,6 +3310,20 @@ describe('anchor channel experiments', () => {
     expect(unblended.metadata.anchorCoverage.trustedAnchors).toBe(3);
   });
 
+  it('puts the anchor strikes on the grid without blending them when anchorGridOnly is set', async () => {
+    const [modelOnly, gridOnly] = [
+      await run({ polymarketMarkets: [], disableAnchorRnd: true }),
+      await run({ anchorGridOnly: true, disableAnchorRnd: true }),
+    ];
+    const strikes = gridOnly.distribution.map(pt => pt.price);
+    expect(gridOnly.distribution.every(pt => pt.source === 'markov')).toBe(true);
+    // The three strikes join the grid, so it has three more points than the model's own.
+    expect(strikes.length).toBe(modelOnly.distribution.length + 3);
+    // Same model, so P(up) does not move.
+    expect(interpolateSurvival(gridOnly.distribution, gridOnly.currentPrice))
+      .toBeCloseTo(interpolateSurvival(modelOnly.distribution, modelOnly.currentPrice), 10);
+  });
+
   it('takes only the location from the anchors when anchorLocationOnly is set', async () => {
     const upLadder = [0.97, 0.85, 0.55];
     const [modelOnly, located] = [
