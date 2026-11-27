@@ -1,5 +1,5 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
-import { mock, describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, setSystemTime } from 'bun:test';
+import { mock, spyOn, describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, setSystemTime } from 'bun:test';
 
 // exa.ts requires a key before it builds the (mocked) client; don't depend on a local .env.
 const originalExaKey = process.env.EXASEARCH_API_KEY;
@@ -68,6 +68,8 @@ mock.module('@langchain/tavily', () => ({
 const t = FIXED_TEST_NOW_MS;
 const { exaSearch } = await import(`./exa.js?t=${t}`) as typeof import('./exa.js');
 const { tavilySearch } = await import(`./tavily.js?t=${t}`) as typeof import('./tavily.js');
+// The Tavily tool instance exa.ts falls back to (its plain './tavily.js' import).
+const { tavilySearch: exaFallbackTavily } = await import('./tavily.js');
 
 // ---------------------------------------------------------------------------
 // exaSearch
@@ -105,11 +107,33 @@ describe('exaSearch', () => {
     expect(data.results[0].text).toContain('IGNORE ALL PREVIOUS INSTRUCTIONS');
   });
 
-  it('rethrows errors with [Exa API] prefix', async () => {
-    mockExaInvoke.mockRejectedValueOnce(new Error('rate limit exceeded'));
-    await expect(exaSearch.invoke({ query: 'failing query' })).rejects.toThrow(
-      '[Exa API] rate limit exceeded'
-    );
+  describe('when Exa fails', () => {
+    const originalTavilyKey = process.env.TAVILY_API_KEY;
+    afterEach(() => {
+      if (originalTavilyKey === undefined) delete process.env.TAVILY_API_KEY;
+      else process.env.TAVILY_API_KEY = originalTavilyKey;
+    });
+
+    it('rethrows errors with [Exa API] prefix when no Tavily key is set', async () => {
+      delete process.env.TAVILY_API_KEY;
+      mockExaInvoke.mockRejectedValueOnce(new Error('rate limit exceeded'));
+      await expect(exaSearch.invoke({ query: 'failing query' })).rejects.toThrow(
+        '[Exa API] rate limit exceeded'
+      );
+    });
+
+    it('falls back to Tavily when TAVILY_API_KEY is set', async () => {
+      process.env.TAVILY_API_KEY = 'test-tavily-key';
+      mockExaInvoke.mockRejectedValueOnce(new Error('402 credits exhausted'));
+      const tavilyOutput = JSON.stringify({ data: { results: [] }, sourceUrls: ['https://tavily.com/r'] });
+      const tavilySpy = spyOn(exaFallbackTavily, 'invoke').mockResolvedValue(tavilyOutput);
+      try {
+        expect(await exaSearch.invoke({ query: 'fallback query' })).toBe(tavilyOutput);
+        expect(tavilySpy).toHaveBeenCalledWith({ query: 'fallback query' });
+      } finally {
+        tavilySpy.mockRestore();
+      }
+    });
   });
 });
 
