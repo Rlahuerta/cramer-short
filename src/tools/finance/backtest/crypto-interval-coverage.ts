@@ -115,6 +115,7 @@
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts anchor-score                     # horizon test verdict
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> <anchor-R|anchor-R1>
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts rescale-score                    # rescaling test verdict
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts channels <BTC-USD|ETH-USD> <horizon>  # which anchor channel moves it
  */
 import { join } from 'node:path';
 import { getAssetProfile } from '../markov-distribution/asset-profile.js';
@@ -519,6 +520,41 @@ async function scoreAnchorCandidates(candidates: ReadonlyArray<readonly [string,
   console.log(`\nVerdict: ${ship ? `ship candidate ${ship[0]}` : 'no candidate passes; no change'}`);
 }
 
+/**
+ * Which anchor channel moves the forecast (no outcomes): on every 5th window origin of one cell, the mean 90% log-width
+ * ln(hi/lo) and the mean P(up) of model-only, today's anchored forecast (no rescale) with the risk-neutral-density
+ * step on and off, and the rescaled forecast (R) with it on and off.
+ */
+async function channels(asset: (typeof ASSETS)[number], horizon: number): Promise<void> {
+  const { dates, closes } = await loadCloses(asset);
+  const markets = await anchorMarkets(asset);
+  const anchorsAt = anchorsAtFromHistory(dates, markets);
+  const cell = asset === 'BTC-USD' ? btcLiveCell(horizon) : { config: {}, maxHistoryPrices: ETH_HISTORY_PRICES };
+  const base = {
+    ...cell.config, ticker: asset, prices: closes, horizon, warmup: dates.indexOf(await windowStartOf(asset)), stride: 5,
+    maxHistoryPrices: cell.maxHistoryPrices, randomState: 42,
+  };
+  const arms = {
+    model: {}, today: { anchorsAt, anchorHorizonRescaleDays: Infinity },
+    todayNoRnd: { anchorsAt, anchorHorizonRescaleDays: Infinity, disableAnchorRnd: true },
+    R: { anchorsAt, anchorHorizonRescaleDays: 2 }, RNoRnd: { anchorsAt, anchorHorizonRescaleDays: 2, disableAnchorRnd: true },
+  };
+  const stats: Record<string, { width: number; pUp: number }> = {};
+  for (const [name, extra] of Object.entries(arms)) {
+    const { steps } = await walkForward({ ...base, ...extra });
+    stats[name] = {
+      width: steps.reduce((a, s) => a + Math.log(s.central90CiUpper! / s.central90CiLower!), 0) / steps.length,
+      pUp: steps.reduce((a, s) => a + s.predictedProb, 0) / steps.length,
+    };
+  }
+  const d = (a: string, b: string, k: 'width' | 'pUp') => `${(100 * (stats[a]![k] / stats[b]![k] - 1)).toFixed(1)}%`;
+  const p = (a: string, b: string) => `${((stats[a]!.pUp - stats[b]!.pUp) * 100).toFixed(2)}pp`;
+  console.log(`${asset} ${String(horizon).padStart(2)}d  width: today vs model ${d('today', 'model', 'width')}, `
+    + `density step's share ${d('today', 'todayNoRnd', 'width')}; R vs today ${d('R', 'today', 'width')} (density on), `
+    + `${d('RNoRnd', 'todayNoRnd', 'width')} (off)  |  P(up): today vs model ${p('today', 'model')}, density step ${p('today', 'todayNoRnd')}; `
+    + `R vs today ${p('R', 'today')} (on), ${p('RNoRnd', 'todayNoRnd')} (off)`);
+}
+
 /** The anchored comparison in the header: anchored vs baseline rows on the same origins of each asset's market window. */
 async function anchors(): Promise<void> {
   const key = (r: CoverageRow) => `${r.ticker}|${r.horizon}|${r.date}`;
@@ -593,5 +629,6 @@ if (import.meta.main) {
   else if (mode === 'anchor-fit') await fitAnchorGap(true);
   else if (mode === 'anchor-score') await anchorScore();
   else if (mode === 'rescale-score') await scoreAnchorCandidates([['R', 'anchor-R'], ['R1', 'anchor-R1']]);
+  else if (mode === 'channels' && (a === 'BTC-USD' || a === 'ETH-USD') && b) await channels(a, Number(b));
   else console.log('usage: crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> [A|B|C|anchored|anchor-<L|D>-<g>|anchor-N] | report | fit | score | anchors | anchor-gaps | anchor-fit | anchor-score');
 }
