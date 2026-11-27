@@ -93,7 +93,7 @@ export const getFixedIncomeTool = new DynamicStructuredTool({
         const spread = y10 !== null && y2 !== null ? parseFloat((y10 - y2).toFixed(4)) : null;
         result.yield_curve = {
           spread_10y_2y: spread,
-          inverted: spread !== null ? spread < 0 : false,
+          inverted: spread !== null ? spread < 0 : null,
         };
       }
     }

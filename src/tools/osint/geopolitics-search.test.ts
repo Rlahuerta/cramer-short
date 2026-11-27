@@ -5,13 +5,17 @@
  * External fetch calls (GDELT, Bluesky) are mocked.
  */
 
-import { describe, test, expect, beforeEach, mock, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, mock, afterEach, beforeAll, afterAll } from 'bun:test';
 
 import { detectCategories, getAssetImplications, buildGdeltThemeFilter, getMappingForCategory } from './event-asset-map.js';
-import { parseGdeltDate, deduplicateArticles } from './gdelt.js';
+import { parseGdeltDate, deduplicateArticles, setGdeltMinIntervalMs, GDELT_MIN_INTERVAL_MS } from './gdelt.js';
 import { deduplicatePosts, bskyUriToWebUrl } from './bluesky.js';
 import { buildGdeltQuery, buildBskyQuery, classifyText, calculateConfidence, flagWatchlistAssets, geopoliticsSearchTool } from './geopolitics-search.js';
 import { getSourcesByCategory, getDomainsForCategory, OSINT_SOURCES } from './accounts.js';
+
+// Tool tests call GDELT back to back; don't wait out the real 5 s spacing.
+beforeAll(() => setGdeltMinIntervalMs(0));
+afterAll(() => setGdeltMinIntervalMs(GDELT_MIN_INTERVAL_MS));
 
 // ──────────────────────────────────────────────────────────────────────────────
 // event-asset-map: detectCategories

@@ -259,7 +259,8 @@ export async function searchGammaEventsPaginated(
       const offset = pageIndex * pageSize;
       const params = buildEventSearchParams(pageSize, offset, tagSlug, input.endDateFilter);
       const events = await fetchWithRetry(async () => {
-        const response = await fetchFn(`${GAMMA_BASE}/events?${params}`);
+        // Created inside the retried fn so each attempt gets a fresh 10s budget.
+        const response = await fetchFn(`${GAMMA_BASE}/events?${params}`, { signal: AbortSignal.timeout(10_000) });
         if (!response.ok) {
           throw new Error(`Gamma API ${response.status}`);
         }

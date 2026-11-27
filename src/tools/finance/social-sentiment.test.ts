@@ -388,3 +388,33 @@ describe('socialSentimentTool — integration (mocked fetch)', () => {
     expect(text).toContain('AAPL');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Request timeouts
+// ---------------------------------------------------------------------------
+
+describe('socialSentimentTool — request timeouts', () => {
+  it('passes a timeout AbortSignal to every fetch (Reddit, X, Fear & Greed)', async () => {
+    const savedToken = process.env.X_BEARER_TOKEN;
+    process.env.X_BEARER_TOKEN = 'test-token';
+    const calls: Array<{ url: string; signal: AbortSignal | null | undefined }> = [];
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), signal: init?.signal });
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+
+    try {
+      await socialSentimentTool.invoke({ ticker: 'BTC' });
+    } finally {
+      globalThis.fetch = savedFetch;
+      if (savedToken === undefined) delete process.env.X_BEARER_TOKEN;
+      else process.env.X_BEARER_TOKEN = savedToken;
+    }
+
+    expect(calls.some((c) => c.url.includes('reddit.com'))).toBe(true);
+    expect(calls.some((c) => c.url.includes('api.x.com'))).toBe(true);
+    expect(calls.some((c) => c.url.includes('alternative.me'))).toBe(true);
+    for (const call of calls) expect(call.signal).toBeInstanceOf(AbortSignal);
+  });
+});

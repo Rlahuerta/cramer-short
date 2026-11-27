@@ -176,6 +176,29 @@ describe('api.get', () => {
     await expect(api.get('/earnings', { ticker: 'AAPL' })).rejects.toThrow(/invalid JSON|invalid json/i);
   });
 
+  it('keeps the 30s timeout armed while the response body is read', async () => {
+    // Stand-in for the 30s timer so the test can fire it mid-body-read without waiting.
+    const timer = new AbortController();
+    const timeoutSpy = spyOn(AbortSignal, 'timeout').mockReturnValue(timer.signal);
+    fetchSpy.mockImplementation((async (_url: string | URL, init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      // The timer fires mid-body-read; like a real body stream, the read fails if the request signal aborted.
+      json: () => {
+        timer.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+        return init?.signal?.aborted ? Promise.reject(init.signal.reason) : Promise.resolve({ late: true });
+      },
+    })) as unknown as typeof fetch);
+
+    try {
+      await expect(api.get('/earnings', { ticker: 'AAPL' })).rejects.toThrow(/timed out/);
+      expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
   it('throws when API key is missing', async () => {
     delete process.env.FINANCIAL_DATASETS_API_KEY;
     await expect(api.get('/earnings', { ticker: 'AAPL' })).rejects.toThrow(

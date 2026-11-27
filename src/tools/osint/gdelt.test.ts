@@ -1,10 +1,16 @@
-import { describe, expect, it, afterEach } from 'bun:test';
+import { describe, expect, it, afterEach, beforeAll, afterAll } from 'bun:test';
 import {
   fetchGdeltArticles,
+  GDELT_MIN_INTERVAL_MS,
   parseGdeltDate,
   deduplicateArticles,
+  setGdeltMinIntervalMs,
   type GdeltArticle,
 } from './gdelt.js';
+
+// Unit tests call GDELT back to back; don't wait out the real 5 s spacing.
+beforeAll(() => setGdeltMinIntervalMs(0));
+afterAll(() => setGdeltMinIntervalMs(GDELT_MIN_INTERVAL_MS));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -192,5 +198,49 @@ describe('fetchGdeltArticles', () => {
       await fetchGdeltArticles('test', { timespan: ts as never });
       expect(capturedUrl).toContain(`timespan=${minutes}`);
     }
+  });
+});
+
+describe('fetchGdeltArticles throttle', () => {
+  afterEach(() => setGdeltMinIntervalMs(0));
+
+  it('defaults to GDELT\'s limit of 1 request per 5 s', () => {
+    expect(GDELT_MIN_INTERVAL_MS).toBe(5_000);
+  });
+
+  it('serializes parallel calls and spaces request starts by the minimum interval', async () => {
+    setGdeltMinIntervalMs(60);
+    const starts: number[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    globalThis.fetch = (async () => {
+      starts.push(performance.now());
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Bun.sleep(5);
+      inFlight -= 1;
+      return new Response(JSON.stringify({ articles: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await Promise.all([fetchGdeltArticles('a'), fetchGdeltArticles('b'), fetchGdeltArticles('c')]);
+
+    expect(maxInFlight).toBe(1);
+    expect(starts[1]! - starts[0]!).toBeGreaterThanOrEqual(55);
+    expect(starts[2]! - starts[1]!).toBeGreaterThanOrEqual(55);
+  });
+
+  it('keeps the queue moving after a failed request', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response('busy', { status: 429, statusText: 'Too Many Requests' })
+        : new Response(JSON.stringify({ articles: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const [first, second] = await Promise.allSettled([fetchGdeltArticles('a'), fetchGdeltArticles('b')]);
+
+    expect(first.status).toBe('rejected');
+    expect(second.status).toBe('fulfilled');
   });
 });

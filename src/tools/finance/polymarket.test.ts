@@ -784,6 +784,16 @@ describe('polymarketTool', () => {
     expect(graceful).toBe(true);
   });
 
+  it('reports an outage as an error payload, not "no markets", when tag-inferred fetches all fail', async () => {
+    globalThis.fetch = (async () => ({ ok: false, status: 503, json: async () => ({}) })) as unknown as typeof fetch;
+    // "Fed rate cut" infers tag slugs, so tag failures go to warnings and the fallback returns [].
+    const result = await polymarketTool.invoke({ query: 'Fed rate cut', limit: 3 });
+    const parsed = JSON.parse(result) as { data: { error?: string; result?: string } };
+    expect(parsed.data.result).toBeUndefined();
+    expect(parsed.data.error).toContain('503');
+    expect(result).not.toContain('No active Polymarket');
+  });
+
   it('skips closed markets', async () => {
     const closedEvent = {
       ...MOCK_EVENT,

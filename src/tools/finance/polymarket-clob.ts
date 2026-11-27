@@ -181,7 +181,9 @@ export interface ClobSpreadResponse {
 
 export async function fetchClobSpread(tokenId: string): Promise<number | null> {
   try {
-    const r = await fetch(`${CLOB_BASE}/spread/${encodeURIComponent(tokenId)}`);
+    const r = await fetch(`${CLOB_BASE}/spread/${encodeURIComponent(tokenId)}`, {
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!r.ok) return null;
     const j = (await r.json()) as Partial<ClobSpreadResponse>;
     const s = Number(j?.spread);
@@ -204,6 +206,7 @@ export async function fetchClobPriceHistory(
     const fidelity = fidelityMinutes === undefined ? '' : `&fidelity=${fidelityMinutes}`;
     const r = await fetch(
       `${CLOB_BASE}/prices-history?market=${encodeURIComponent(market)}&interval=${interval}${fidelity}`,
+      { signal: AbortSignal.timeout(10_000) },
     );
     if (!r.ok) return [];
     return parseClobPriceHistory(await r.json());

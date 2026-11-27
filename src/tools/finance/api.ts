@@ -110,6 +110,10 @@ function getApiKey(): string {
   return key;
 }
 
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+}
+
 /**
  * Shared request execution: handles API key, error handling, logging, and response parsing.
  */
@@ -124,25 +128,20 @@ async function executeRequest(
   try {
     response = await withRetry(
       async () => {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30_000);
-        try {
-          const res = await fetch(url, {
-            ...init,
-            headers: { 'x-api-key': apiKey, ...init.headers },
-            signal: controller.signal,
-          });
-          // Throw so withRetry can catch and back off on 429
-          if (res.status === 429) throw new Error(`429 rate limit`);
-          return res;
-        } finally {
-          clearTimeout(timeout);
-        }
+        // Never cleared: the same 30s limit also covers the body read below.
+        const res = await fetch(url, {
+          ...init,
+          headers: { 'x-api-key': apiKey, ...init.headers },
+          signal: AbortSignal.timeout(30_000),
+        });
+        // Throw so withRetry can catch and back off on 429
+        if (res.status === 429) throw new Error(`429 rate limit`);
+        return res;
       },
       { maxAttempts: 4, shouldRetry: isRateLimitError },
     );
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
+    if (isTimeoutError(error)) {
       logger.error(`[Financial Datasets API] timeout: ${label}`);
       throw new Error(`[Financial Datasets API] request timed out after 30s: ${label}`);
     }
@@ -166,7 +165,11 @@ async function executeRequest(
     throw new FinancialDatasetsHttpError(response.status, response.statusText, body);
   }
 
-  const data = await response.json().catch(() => {
+  const data = await response.json().catch((error: unknown) => {
+    if (isTimeoutError(error)) {
+      logger.error(`[Financial Datasets API] timeout: ${label}`);
+      throw new Error(`[Financial Datasets API] request timed out after 30s: ${label}`);
+    }
     const detail = `invalid JSON (${response.status} ${response.statusText})`;
     logger.error(`[Financial Datasets API] parse error: ${label} — ${detail}`);
     throw new Error(`[Financial Datasets API] request failed: ${detail}`);
