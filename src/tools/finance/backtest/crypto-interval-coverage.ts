@@ -521,38 +521,35 @@ async function scoreAnchorCandidates(candidates: ReadonlyArray<readonly [string,
 }
 
 /**
- * Which anchor channel moves the forecast (no outcomes): on every 5th window origin of one cell, the mean 90% log-width
- * ln(hi/lo) and the mean P(up) of model-only, today's anchored forecast (no rescale) with the risk-neutral-density
- * step on and off, and the rescaled forecast (R) with it on and off.
+ * Which anchor channel moves the forecast (no outcomes): on every 5th window origin of one cell, each arm against
+ * today's anchored forecast (no rescale), origin by origin: the mean change in the 90% log-width ln(hi/lo) and the mean
+ * |change| in P(up). Arms: model-only, the risk-neutral-density step off, the strike blend off, and the rescale (R).
  */
 async function channels(asset: (typeof ASSETS)[number], horizon: number): Promise<void> {
   const { dates, closes } = await loadCloses(asset);
-  const markets = await anchorMarkets(asset);
-  const anchorsAt = anchorsAtFromHistory(dates, markets);
+  const anchorsAt = anchorsAtFromHistory(dates, await anchorMarkets(asset));
   const cell = asset === 'BTC-USD' ? btcLiveCell(horizon) : { config: {}, maxHistoryPrices: ETH_HISTORY_PRICES };
   const base = {
     ...cell.config, ticker: asset, prices: closes, horizon, warmup: dates.indexOf(await windowStartOf(asset)), stride: 5,
     maxHistoryPrices: cell.maxHistoryPrices, randomState: 42,
   };
+  const today = { anchorsAt, anchorHorizonRescaleDays: Infinity };
   const arms = {
-    model: {}, today: { anchorsAt, anchorHorizonRescaleDays: Infinity },
-    todayNoRnd: { anchorsAt, anchorHorizonRescaleDays: Infinity, disableAnchorRnd: true },
-    R: { anchorsAt, anchorHorizonRescaleDays: 2 }, RNoRnd: { anchorsAt, anchorHorizonRescaleDays: 2, disableAnchorRnd: true },
+    today, model: {}, noDensity: { ...today, disableAnchorRnd: true }, noBlend: { ...today, disableAnchorStrikeBlend: true },
+    R: { ...today, anchorHorizonRescaleDays: 2 },
   };
-  const stats: Record<string, { width: number; pUp: number }> = {};
+  const byT: Record<string, Map<number, { w: number; p: number }>> = {};
   for (const [name, extra] of Object.entries(arms)) {
     const { steps } = await walkForward({ ...base, ...extra });
-    stats[name] = {
-      width: steps.reduce((a, s) => a + Math.log(s.central90CiUpper! / s.central90CiLower!), 0) / steps.length,
-      pUp: steps.reduce((a, s) => a + s.predictedProb, 0) / steps.length,
-    };
+    byT[name] = new Map(steps.map(s => [s.t, { w: Math.log(s.central90CiUpper! / s.central90CiLower!), p: s.predictedProb }]));
   }
-  const d = (a: string, b: string, k: 'width' | 'pUp') => `${(100 * (stats[a]![k] / stats[b]![k] - 1)).toFixed(1)}%`;
-  const p = (a: string, b: string) => `${((stats[a]!.pUp - stats[b]!.pUp) * 100).toFixed(2)}pp`;
-  console.log(`${asset} ${String(horizon).padStart(2)}d  width: today vs model ${d('today', 'model', 'width')}, `
-    + `density step's share ${d('today', 'todayNoRnd', 'width')}; R vs today ${d('R', 'today', 'width')} (density on), `
-    + `${d('RNoRnd', 'todayNoRnd', 'width')} (off)  |  P(up): today vs model ${p('today', 'model')}, density step ${p('today', 'todayNoRnd')}; `
-    + `R vs today ${p('R', 'today')} (on), ${p('RNoRnd', 'todayNoRnd')} (off)`);
+  const vsToday = (name: string) => {
+    const pairs = [...byT[name]!].flatMap(([t, x]) => (byT.today!.has(t) ? [[x, byT.today!.get(t)!] as const] : []));
+    const width = pairs.reduce((a, [x, y]) => a + x.w / y.w - 1, 0) / pairs.length;
+    const dp = pairs.reduce((a, [x, y]) => a + Math.abs(x.p - y.p), 0) / pairs.length;
+    return `${name} width ${(100 * width).toFixed(1)}% |dP(up)| ${(100 * dp).toFixed(2)}pp`;
+  };
+  console.log(`${asset} ${String(horizon).padStart(2)}d n=${byT.today!.size}  vs today: ${['model', 'noDensity', 'noBlend', 'R'].map(vsToday).join('  ')}`);
 }
 
 /** The anchored comparison in the header: anchored vs baseline rows on the same origins of each asset's market window. */
