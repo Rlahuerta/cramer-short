@@ -1,6 +1,6 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { afterEach, describe, expect, it, beforeEach, setSystemTime } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 

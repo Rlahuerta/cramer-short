@@ -7,7 +7,6 @@
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, beforeAll, setSystemTime, spyOn } from 'bun:test';
-import { useNoNetwork } from '../utils/test-no-network.js';
 import * as polymarket from '../tools/finance/polymarket.js';
 import * as embeddings from '../memory/embeddings.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -18,8 +17,6 @@ import type { BaseMessage } from '@langchain/core/messages';
 import { AIMessage, AIMessageChunk } from '@langchain/core/messages';
 import { _setModelFactory } from '../model/llm.js';
 import type { AgentEvent, DoneEvent, AnswerChunkEvent } from './types.js';
-
-useNoNetwork();
 
 // Agent.run() injects live Polymarket context, and memory search would embed
 // via OpenAI with the stub key: keep both offline.

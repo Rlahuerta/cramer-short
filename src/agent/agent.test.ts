@@ -6,7 +6,6 @@
  */
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, mock, beforeEach, afterEach, beforeAll, afterAll, setSystemTime, spyOn } from 'bun:test';
-import { useNoNetwork } from '../utils/test-no-network.js';
 import * as polymarket from '../tools/finance/polymarket.js';
 import * as embeddings from '../memory/embeddings.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -27,8 +26,6 @@ import type { ChatResult } from '@langchain/core/outputs';
 import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
 import { z } from 'zod';
 import type { ToolCallRecord } from './scratchpad.js';
-
-useNoNetwork();
 
 // Agent.run() injects live Polymarket context, and memory search would embed
 // via OpenAI with the stub key: keep both offline.

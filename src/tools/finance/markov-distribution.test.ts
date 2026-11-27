@@ -20,7 +20,6 @@
  */
 
 import { describe, it, expect, mock, afterEach, beforeEach, setSystemTime, spyOn } from 'bun:test';
-import { useNoNetwork } from '../../utils/test-no-network.js';
 import { integrationIt } from '../../utils/test-guards.js';
 import { MS_PER_DAY } from '../../utils/time.js';
 import * as rndIntegration from './rnd-integration.js';
@@ -90,8 +89,6 @@ import {
 import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProbabilities } from './markov-distribution.js';
 import { FinancialDatasetsHttpError } from './api.js';
 import * as polymarket from './polymarket.js';
-
-useNoNetwork();
 
 const realPolymarketModule = { ...(await import('./polymarket.js')) };
 const realHmmModule = { ...(await import('./hmm.js')) };

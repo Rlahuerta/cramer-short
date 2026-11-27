@@ -9,6 +9,7 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { afterEach, beforeEach, describe, expect, it, setSystemTime, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import * as os from 'node:os';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +28,8 @@ afterEach(() => {
 // Helpers
 const HOME = homedir();
 const REPORTS_DIR = join(HOME, 'reports');
+// Unique per run: fixed names collide with concurrent `bun test` runs (~/reports is shared).
+const RUN_ID = randomUUID().slice(0, 8);
 
 function cleanupReport(filename: string) {
   const p = join(REPORTS_DIR, filename);
@@ -41,7 +44,7 @@ function cleanupReport(filename: string) {
 // E2E: writing to ~/reports
 // ---------------------------------------------------------------------------
 describe('write_file E2E — ~/reports', () => {
-  const TEST_FILE = 'dexter-e2e-test-report.md';
+  const TEST_FILE = `dexter-e2e-test-report-${RUN_ID}.md`;
   const TEST_PATH = `~/reports/${TEST_FILE}`;
   const ABS_PATH = join(REPORTS_DIR, TEST_FILE);
 
@@ -80,7 +83,8 @@ describe('write_file E2E — ~/reports', () => {
   });
 
   it('creates nested subdirectory under ~/reports', async () => {
-    const nested = 'dexter-e2e-subdir/nested-report.md';
+    const subdir = `dexter-e2e-subdir-${RUN_ID}`;
+    const nested = `${subdir}/nested-report.md`;
     const absNested = join(REPORTS_DIR, nested);
     const content = '# Nested report\n';
 
@@ -93,7 +97,7 @@ describe('write_file E2E — ~/reports', () => {
       expect(parsed.data.message).toContain('Successfully wrote');
       expect(existsSync(absNested)).toBe(true);
     } finally {
-      rmSync(join(REPORTS_DIR, 'dexter-e2e-subdir'), { recursive: true, force: true });
+      rmSync(join(REPORTS_DIR, subdir), { recursive: true, force: true });
     }
   });
 });
@@ -102,7 +106,8 @@ describe('write_file E2E — ~/reports', () => {
 // Sandbox: relative paths still work (relative to cwd)
 // ---------------------------------------------------------------------------
 describe('write_file sandbox — relative path (cwd)', () => {
-  const CWD_TMP = join(process.cwd(), '.cramer-short-e2e-tmp');
+  const REL_TMP = `.cramer-short-e2e-tmp-${RUN_ID}`;
+  const CWD_TMP = join(process.cwd(), REL_TMP);
   const TMP_FILE = join(CWD_TMP, 'test.md');
 
   afterEach(() => {
@@ -112,7 +117,7 @@ describe('write_file sandbox — relative path (cwd)', () => {
   it('writes a relative path inside cwd', async () => {
     const content = '# relative test\n';
     const result = await writeFileTool.invoke({
-      path: '.cramer-short-e2e-tmp/test.md',
+      path: `${REL_TMP}/test.md`,
       content,
     });
     const parsed = JSON.parse(result);
@@ -147,7 +152,7 @@ describe('write_file sandbox — narrowed homedir scope', () => {
 
   for (const dir of ALLOWED_DIRS) {
     it(`allows writes to ~/${dir}/`, async () => {
-      const name = `cs-security-test-${nextTestId('home')}.txt`;
+      const name = `cs-security-test-${RUN_ID}.txt`;
       const testFile = `~/${dir}/${name}`;
       const absPath = join(HOME, dir, name);
       try {

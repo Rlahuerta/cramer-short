@@ -1,13 +1,10 @@
 import { afterEach, beforeEach, describe, test, expect, mock } from 'bun:test';
-import { useNoNetwork } from '../../utils/test-no-network.js';
 import { _setHttpFetchForTest, webFetchTool } from './web-fetch.js';
 import { _setDnsLookupForTest } from './url-guard.js';
 import { extractText as extractPdfText } from 'unpdf';
 // Warm the HTML extractor's dynamic imports outside individual test timers.
 import '@mozilla/readability';
 import 'linkedom';
-
-useNoNetwork();
 
 // web_fetch uses its own pinned transport (not globalThis.fetch), so block it
 // here too; tests opt into a stub, or into the real transport with stubbed DNS.

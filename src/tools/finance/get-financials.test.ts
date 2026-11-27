@@ -1,12 +1,9 @@
 import { describe, test, expect, mock, spyOn, beforeEach, afterAll } from 'bun:test';
-import { useNoNetwork } from '../../utils/test-no-network.js';
 import * as apiRoutingCache from '../../utils/api-routing-cache.js';
 import { getAnalystEstimates } from './estimates.js';
 import { getKeyRatios } from './key-ratios.js';
 import { getYahooAnalystTargets } from './yahoo-finance.js';
 import { AIMessage } from '@langchain/core/messages';
-
-useNoNetwork();
 
 // Capture real module before mocking so afterAll can restore
 const realLlm = { ...(await import('../../model/llm.js')) };

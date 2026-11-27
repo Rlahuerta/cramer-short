@@ -4,7 +4,6 @@
 
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, it, expect, mock, spyOn, afterEach, beforeEach, setSystemTime } from 'bun:test';
-import { useNoNetwork } from '../../utils/test-no-network.js';
 import { integrationIt } from '../../utils/test-guards.js';
 import {
   classifyRegimeState,
@@ -73,8 +72,6 @@ import type { RegimeState, MarkovDistributionPoint, PriceThreshold, ScenarioProb
 import { MS_PER_DAY } from '../../utils/time.js';
 import { xiphosBtcLiveParams } from './markov-distribution/xiphos-btc-profile.js';
 import * as polymarket from './polymarket.js';
-
-useNoNetwork();
 
 beforeEach(() => {
   setSystemTime(FIXED_TEST_DATE);

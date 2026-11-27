@@ -5,10 +5,9 @@
  * sandbox root without requiring a process.cwd() spy.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { randomUUID } from 'node:crypto';
-import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 import { editFileTool } from './edit-file.js';
 import { isSecretPath, readFileTool } from './read-file.js';
@@ -19,16 +18,17 @@ import { expandPath, resolveReadPath, resolveToCwd } from './utils/path-utils.js
 // Temp directory setup — kept inside cwd so sandbox checks pass without mocking
 // ---------------------------------------------------------------------------
 
-// Per-process name: concurrent `bun test` runs in one checkout would otherwise delete each other's files.
-const REL_TMP = `.cramer-short-fs-test-tmp-${randomUUID()}`; // relative to cwd
-const TMP_DIR = join(process.cwd(), REL_TMP);
+// Unique per run: a fixed name collides with concurrent `bun test` runs in the same checkout.
+let TMP_DIR: string;
+let REL_TMP: string; // relative to cwd
 
 beforeEach(async () => {
-  await mkdir(TMP_DIR, { recursive: true });
+  TMP_DIR = await mkdtemp(join(process.cwd(), '.cramer-short-fs-test-'));
+  REL_TMP = basename(TMP_DIR);
 });
 
 afterEach(async () => {
-  await rm(TMP_DIR, { recursive: true, force: true });
+  await rm(TMP_DIR, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 });
 });
 
 function tmpFile(name: string): string {
