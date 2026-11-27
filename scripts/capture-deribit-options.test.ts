@@ -50,3 +50,20 @@ describe('toDeribitCaptureRow', () => {
     });
   });
 });
+
+describe('captureDeribitOptions network errors', () => {
+  it('retries the connection errors Bun throws (plain Error with a code, not a TypeError)', async () => {
+    let btcCalls = 0;
+    const fetchImpl = (async (url: string) => {
+      if (url.includes('currency=BTC') && ++btcCalls === 1) {
+        throw Object.assign(new Error('Unable to connect. Is the computer able to access the url?'), { code: 'ConnectionRefused' });
+      }
+      return book(url.includes('currency=BTC') ? 'BTC-X' : 'ETH-X');
+    }) as unknown as typeof fetch;
+
+    const { rows, failures } = await captureDeribitOptions(fetchImpl, NO_WAIT);
+
+    expect(failures).toEqual([]);
+    expect(rows.map((r) => r.currency)).toEqual(['BTC', 'ETH']);
+  });
+});
