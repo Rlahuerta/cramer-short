@@ -69,33 +69,65 @@ export async function fetchBinanceTicker24h(ticker: string): Promise<{
   }
 }
 
-export async function fetchBinanceDailyCloses(
+export type BinanceInterval = '1m' | '1d' | '1w' | '1M';
+
+const KLINES_PAGE_LIMIT = 1000;
+const KLINES_MAX_PAGES = 5;
+// Upper bounds, so the clamped window below never holds more bars than the pages allow.
+const INTERVAL_MS: Record<BinanceInterval, number> = {
+  '1m': 60_000,
+  '1d': MS_PER_DAY,
+  '1w': 7 * MS_PER_DAY,
+  '1M': 31 * MS_PER_DAY,
+};
+
+/**
+ * Dated kline closes for [startMs, endMs], oldest first. Binance returns the oldest
+ * `limit` bars after startTime, so this pages forward until the window's end.
+ * ponytail: capped at 5 pages (5,000 bars); a longer window keeps its newest bars.
+ * Returns [] on any failure.
+ */
+export async function fetchBinanceCloses(
   ticker: string,
-  days = 120,
-  range?: { startMs: number; endMs: number },
-): Promise<number[]> {
+  { startMs, endMs, interval = '1d' }: { startMs: number; endMs: number; interval?: BinanceInterval },
+): Promise<{ date: string; close: number }[]> {
   const symbol = toBinanceSymbol(ticker);
-  const endTime = range?.endMs ?? Date.now();
-  const startTime = range?.startMs ?? endTime - days * MS_PER_DAY;
-  const params = new URLSearchParams({
-    symbol,
-    interval: '1d',
-    limit: String(Math.min(days, 1000)),
-    startTime: String(startTime),
-    endTime: String(endTime),
-  });
+  const rows: BinanceKlineRow[] = [];
+  let from = Math.max(startMs, endMs - (KLINES_PAGE_LIMIT * KLINES_MAX_PAGES - 1) * INTERVAL_MS[interval]);
 
   try {
-    const res = await fetch(`${BINANCE_BASE}/api/v3/klines?${params}`, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) return [];
-    const rows = await res.json() as BinanceKlineRow[];
-    return rows
-      .map((row) => parseFloat(row[4]))
-      .filter((price) => Number.isFinite(price));
+    for (let page = 0; page < KLINES_MAX_PAGES && from <= endMs; page++) {
+      const params = new URLSearchParams({
+        symbol,
+        interval,
+        limit: String(KLINES_PAGE_LIMIT),
+        startTime: String(from),
+        endTime: String(endMs),
+      });
+      const res = await fetch(`${BINANCE_BASE}/api/v3/klines?${params}`, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) return [];
+      const batch = await res.json() as BinanceKlineRow[];
+      rows.push(...batch);
+      if (batch.length < KLINES_PAGE_LIMIT) break;
+      from = batch[batch.length - 1][0] + 1;
+    }
   } catch {
     return [];
   }
+
+  return rows
+    .map((row) => {
+      const iso = new Date(row[0]).toISOString();
+      return { date: interval === '1m' ? iso : iso.slice(0, 10), close: parseFloat(row[4]) };
+    })
+    .filter((row) => Number.isFinite(row.close));
+}
+
+export async function fetchBinanceDailyCloses(ticker: string, days = 120): Promise<number[]> {
+  const endMs = Date.now();
+  const closes = await fetchBinanceCloses(ticker, { startMs: endMs - days * MS_PER_DAY, endMs });
+  return closes.map((row) => row.close);
 }

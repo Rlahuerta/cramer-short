@@ -2,7 +2,7 @@ import { MS_PER_DAY } from '../../utils/time.js';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { api } from './api.js';
-import { fetchBinanceDailyCloses, fetchBinanceTicker24h, toBinanceSymbol } from './binance.js';
+import { fetchBinanceCloses, fetchBinanceTicker24h, toBinanceSymbol } from './binance.js';
 import { formatToolResult } from '../types.js';
 
 const CryptoPriceSnapshotInputSchema = z.object({
@@ -80,17 +80,20 @@ export const getCryptoPrices = new DynamicStructuredTool({
       const { data, url } = await api.get('/crypto/prices/', params, { cacheable: endDate < today });
       return formatToolResult(data.prices || [], [url]);
     } catch {
-      const startDate = new Date(input.start_date + 'T00:00:00');
-      const days = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / MS_PER_DAY) + 1);
       const startMs = Date.parse(`${input.start_date}T00:00:00Z`);
       const endMs = Date.parse(`${input.end_date}T00:00:00Z`) + MS_PER_DAY - 1;
-      const closes = await fetchBinanceDailyCloses(input.ticker, days, { startMs, endMs });
+      // Binance has no yearly klines: take monthly ones and keep each year's last close.
+      const interval = ({ minute: '1m', day: '1d', week: '1w', month: '1M', year: '1M' } as const)[input.interval];
+      const closes = await fetchBinanceCloses(input.ticker, { startMs, endMs, interval });
       if (closes.length === 0) {
         return formatToolResult({ error: `No crypto price history available for ${input.ticker}` });
       }
+      const rows = input.interval === 'year'
+        ? [...new Map(closes.map((row) => [row.date.slice(0, 4), row])).values()]
+        : closes;
       return formatToolResult(
-        closes.map((close, index) => ({ close, index })),
-        [`https://api.binance.com/api/v3/klines?symbol=${toBinanceSymbol(input.ticker)}&interval=1d&limit=${Math.min(days, 1000)}&startTime=${startMs}&endTime=${endMs}`],
+        rows,
+        [`https://api.binance.com/api/v3/klines?symbol=${toBinanceSymbol(input.ticker)}&interval=${interval}&startTime=${startMs}&endTime=${endMs}`],
       );
     }
   },
