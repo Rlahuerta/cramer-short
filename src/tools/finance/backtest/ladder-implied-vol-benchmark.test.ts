@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'bun:test';
-import { normCDF } from '../../../utils/stats.js';
-import { fitLadderSigma, ladderObservations, parseStrike } from './ladder-implied-vol-benchmark.js';
+import { normCDF, normPPF } from '../../../utils/stats.js';
+import { inverseStudentTCDF } from '../markov-distribution/confidence-intervals.js';
+import {
+  fitLadderSigma, fitTailDof, ladderObservations, parseStrike, scoreStudentT, studentTCrps, type LadderObservation,
+} from './ladder-implied-vol-benchmark.js';
+
+/** Unit-variance Student-t quantile (nu = Infinity is the normal). */
+const tQuantile = (p: number, nu: number) =>
+  Number.isFinite(nu) ? inverseStudentTCDF(p, nu) * Math.sqrt((nu - 2) / nu) : normPPF(p);
+
+/** n draws spread evenly over the distribution's quantiles, shuffled so every stretch of days sees the whole range. */
+const spread = (n: number, nu: number) => Array.from({ length: n }, (_, i) => tQuantile((((i * 7919) % n) + 0.5) / n, nu));
 
 describe('ladder-implied volatility benchmark', () => {
   it('reads the strike and side of a threshold question', () => {
@@ -59,5 +69,36 @@ describe('ladder-implied volatility benchmark', () => {
 
     expect(rows.map(r => r.expiry)).toEqual(['2026-02-05', '2026-02-05']);
     expect(rows[0]!.sigmaLadder).not.toBeCloseTo(rows[1]!.sigmaLadder, 3);
+  });
+
+  it('fits heavy tails to Student-t data and none to normal data', () => {
+    const rows = (xs: number[]) => xs.map(x => ({ realized: 0.02 * x, sigmaLadder: 0.02 }) as LadderObservation);
+    const nuT = fitTailDof(rows(spread(2000, 4)), r => r.sigmaLadder);
+    expect(nuT).toBeGreaterThanOrEqual(3);
+    expect(nuT).toBeLessThanOrEqual(5);
+    expect(fitTailDof(rows(spread(2000, Infinity)), r => r.sigmaLadder)).toBeGreaterThanOrEqual(30);
+  });
+
+  it('matches the normal CRPS as the degrees of freedom grow', () => {
+    const z = 0.7;
+    const normal = z * (2 * normCDF(z) - 1) + 2 * Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI) - 1 / Math.sqrt(Math.PI);
+    expect(studentTCrps(0.014, 0.02, Infinity)).toBeCloseTo(0.02 * normal, 10);
+    expect(studentTCrps(0.014, 0.02, 1e5)).toBeCloseTo(0.02 * normal, 5);
+  });
+
+  it('fits the tail on the first half of the days and scores the interval on the second', () => {
+    const draws = spread(4000, 4);
+    const rows: LadderObservation[] = draws.map((x, i) => ({
+      day: new Date(Date.UTC(2026, 0, 1 + Math.floor(i / 10))).toISOString().slice(0, 10), expiry: 'e', h: 1 + (i % 7),
+      sigmaLadder: 0.02, sigmaTrailing: 0.03, realized: 0.02 * x,
+    }));
+    const s = scoreStudentT(rows);
+
+    expect(s.nuLadder).toBeGreaterThanOrEqual(3);
+    expect(s.nuLadder).toBeLessThanOrEqual(5);
+    expect(s.test.days).toBe(200);
+    expect(s.test.logScore.ci[1]).toBeLessThan(0);
+    s.test.coverage.ladder.forEach((c, i) => expect(Math.abs(c - [0.9, 0.95, 0.99][i]!)).toBeLessThanOrEqual(0.01));
+    expect(s.byHorizon.map(b => b.name)).toEqual(['1d', '2-3d', '4-7d']);
   });
 });
