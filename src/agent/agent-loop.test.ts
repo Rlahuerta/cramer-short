@@ -28,6 +28,7 @@ const script = {
   streamPrompts: [] as string[],
   streamChunks: ['synthesized answer'] as string[],
   streamError: null as Error | null,
+  streamDelayMs: 0,
   onStream: null as (() => void) | null,
 };
 
@@ -52,6 +53,7 @@ class ScriptedChatModel extends BaseChatModel {
   async *_streamIterator(input: BaseLanguageModelInput, _options?: BaseChatModelCallOptions): AsyncGenerator<AIMessageChunk> {
     script.streamPrompts.push(Array.isArray(input) ? lastText(input as BaseMessage[]) : String(input));
     script.onStream?.();
+    if (script.streamDelayMs) await new Promise((resolve) => setTimeout(resolve, script.streamDelayMs));
     if (script.streamError) throw script.streamError;
     for (const chunk of script.streamChunks) yield new AIMessageChunk({ content: chunk });
   }
@@ -94,6 +96,7 @@ beforeEach(() => {
   script.streamPrompts = [];
   script.streamChunks = ['synthesized answer'];
   script.streamError = null;
+  script.streamDelayMs = 0;
   script.onStream = null;
 });
 
@@ -293,6 +296,29 @@ describe('exit messages', () => {
 
     expect(streams).toBe(2);
     expect(done.answer).toContain('recovered answer');
+  });
+
+  it('gives the retried synthesis its own timeout budget', async () => {
+    const realGetSetting = config.getSetting;
+    const spy = spyOn(config, 'getSetting').mockImplementation(((key: string, fallback: unknown) =>
+      key === 'llmCallTimeoutMs' ? 400 : realGetSetting(key, fallback)) as typeof config.getSetting);
+    try {
+      script.responses = [[ST_CALL], ''];
+      script.streamDelayMs = 300;
+      let streams = 0;
+      script.onStream = () => {
+        streams++;
+        script.streamChunks = streams === 1 ? [] : ['recovered answer'];
+      };
+      const agent = await Agent.create({ maxIterations: 5, memoryEnabled: false });
+
+      const done = doneOf(await collect(agent.run('look up ZZZ')));
+
+      expect(streams).toBe(2);
+      expect(done.answer).toContain('recovered answer');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('returns the gathered research instead of a blank answer when the model stays empty', async () => {

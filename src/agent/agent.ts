@@ -1311,14 +1311,16 @@ export class Agent {
       }
       // No pre-existing answer (e.g. max-iterations synthesis) — request a
       // fresh streaming response. Apply a hard timeout so we never hang.
-      const timeoutSignal = AbortSignal.timeout(getLlmCallTimeoutMs());
-      const combinedSignal = this.signal
-        ? AbortSignal.any([this.signal, timeoutSignal])
-        : timeoutSignal;
+      let timeoutSignal: AbortSignal | undefined;
       let synthesized = '';
       try {
         // A thinking model can end with no visible text; ask once more before giving up.
         for (let attempt = 0; attempt < 2 && !synthesized; attempt++) {
+          // Each attempt gets the full budget: a slow empty first answer must not starve the retry.
+          timeoutSignal = AbortSignal.timeout(getLlmCallTimeoutMs());
+          const combinedSignal = this.signal
+            ? AbortSignal.any([this.signal, timeoutSignal])
+            : timeoutSignal;
           for await (const chunk of streamCallLlm(currentPrompt, {
             model: this.model,
             systemPrompt: this.systemPrompt,
@@ -1334,7 +1336,7 @@ export class Agent {
         logger.warn('[Agent] final synthesis failed', error);
         failure = this.signal?.aborted
           ? 'synthesis cancelled'
-          : timeoutSignal.aborted ? 'synthesis timed out' : 'synthesis failed';
+          : timeoutSignal?.aborted ? 'synthesis timed out' : 'synthesis failed';
       }
       if (failure) {
         // Synthesis was cancelled, timed out, failed or came back empty — surface the raw tool
