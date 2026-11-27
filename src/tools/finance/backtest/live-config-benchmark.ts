@@ -60,7 +60,10 @@ export function liveBenchmarkCells(): BenchmarkCellSpec[] {
   return cells;
 }
 
-/** A BTC cell configured like the live tool: the xiphos profile, then the horizon's live break threshold and rerun. */
+/**
+ * A BTC cell configured like the live tool: the xiphos profile with GARCH off (as `xiphosBtcLiveParams`), then the
+ * horizon's live break threshold and rerun.
+ */
 export function btcLiveCell(horizon: number): BenchmarkCellSpec {
   const policy = getBtcShortHorizonLivePolicy('BTC-USD', horizon);
   return {
@@ -69,6 +72,7 @@ export function btcLiveCell(horizon: number): BenchmarkCellSpec {
     maxHistoryPrices: BTC_HISTORY_PRICES,
     config: {
       ...xiphosBtcWalkForwardConfig(),
+      enableGarchVol: false,
       btcBreakDivergenceThreshold: policy?.breakDivergenceThreshold,
       postBreakShortWindow: policy?.rerunOnBreak,
       postBreakWindowSize: policy?.rerunWindowDays,
