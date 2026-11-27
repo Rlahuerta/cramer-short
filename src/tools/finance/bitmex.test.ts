@@ -150,6 +150,16 @@ describe('bitmexMarketTool', () => {
     expect(urls.some((url) => url.includes('/trade/bucketed'))).toBe(true);
   });
 
+  it('reports the HTTP status when the instrument list request fails (e.g. a 403 geo-block)', async () => {
+    globalThis.fetch = (mock(async () => new Response('Forbidden', { status: 403 })) as unknown) as typeof fetch;
+
+    const raw = await bitmexMarketTool.invoke({ tickers: ['XBTUSD'] });
+    const parsed = JSON.parse(raw);
+
+    expect(parsed.data.error).toContain('HTTP 403');
+    expect(raw).not.toContain('No active BitMEX instrument matched');
+  });
+
   it('is registered for agent use', () => {
     // Verify the tool carries the correct registry name directly rather than
     // calling getToolRegistry(), which is subject to mock.module() contamination
