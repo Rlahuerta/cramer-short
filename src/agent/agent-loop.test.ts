@@ -252,6 +252,21 @@ describe('exit messages', () => {
     expect(script.streamPrompts[0]).toContain('repeated');
   });
 
+  it('stops when the model keeps re-requesting a skill that already ran', async () => {
+    const skillCall: ToolCall = { id: 'k1', name: 'skill', args: { skill: 'dcf' }, type: 'tool_call' };
+    script.responses = [[ST_CALL, skillCall]];
+    script.fallback = [{ ...skillCall, id: 'k2' }];
+    const agent = await Agent.create({ maxIterations: 10, memoryEnabled: false });
+    let skillRuns = 0;
+    installTools(agent, { skill: () => { skillRuns++; return 'Skill dcf instructions: step 1 ... step 9'; } });
+
+    const done = doneOf(await collect(agent.run('value AAPL with a DCF')));
+
+    expect(skillRuns).toBe(1);
+    expect(script.prompts).toHaveLength(2);
+    expect(done.iterations).toBe(2);
+  });
+
   it('reports a user abort during final synthesis as a cancellation, not a timeout', async () => {
     const controller = new AbortController();
     script.fallback = [ST_CALL];

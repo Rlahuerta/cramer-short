@@ -66,6 +66,15 @@ describe('isRepeatedFailingToolCall', () => {
     expect(isRepeatedFailingToolCall(call, records)).toBe(false);
   });
 
+  it('flags a skill call whose skill already ran, even though it succeeded', () => {
+    const records = [record('skill', { skill: 'dcf' }, 'Skill dcf instructions: step 1 ... step 9')];
+    const call = { id: 'c1', name: 'skill', args: { skill: 'dcf' }, type: 'tool_call' as const };
+    const other = { id: 'c2', name: 'skill', args: { skill: 'wacc' }, type: 'tool_call' as const };
+
+    expect(isRepeatedFailingToolCall(call, records)).toBe(true);
+    expect(isRepeatedFailingToolCall(other, records)).toBe(false);
+  });
+
   it('recognizes an "Error:"-prefixed prior result as a failure', () => {
     const records = [record('get_market_data', { ticker: 'PLAN' }, 'Error: not found')];
     const call = { id: 'c1', name: 'get_market_data', args: { ticker: 'PLAN' }, type: 'tool_call' as const };
