@@ -3407,6 +3407,8 @@ export async function computeMarkovDistribution(params: {
   anchorHorizonRescaleDays?: number;
   /** Experiment (crypto-interval-coverage.ts): skip the anchors' risk-neutral-density step (lognormal fit, regime mixture, transition nudge). */
   disableAnchorRnd?: boolean;
+  /** Experiment (crypto-interval-coverage.ts): keep the anchors out of the distribution (no strike blend); the density step still sees them. */
+  disableAnchorStrikeBlend?: boolean;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
@@ -3484,6 +3486,7 @@ export async function computeMarkovDistribution(params: {
     maxAnchorHorizonDays,
     anchorHorizonRescaleDays,
     disableAnchorRnd,
+    disableAnchorStrikeBlend,
     enableKswinTrim,
     kswinAlpha,
     enableCoefficientClustering,
@@ -4236,8 +4239,9 @@ export async function computeMarkovDistribution(params: {
     : undefined;
   const forecastVolScale = FORECAST_VOL_SCALE * forecastVolMultiplier;
   const distributionNu = studentTNuOverride ?? horizonStudentTNu(assetProfile.studentTNu, horizon);
+  const blendAnchors = disableAnchorStrikeBlend === true ? [] : polymarketAnchors;
   const rawDistribution = interpolateDistribution(
-    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, rho,
+    currentPrice, horizon, effectiveP, regimeStats, currentRegime, blendAnchors, rho,
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     distributionNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, randomState, FORECAST_DRIFT_SHRINK,
@@ -4355,7 +4359,7 @@ export async function computeMarkovDistribution(params: {
   // stays on that surface; intervals and P(up) read `distribution`. Same grid as
   // rawDistribution, so it borrows that Monte Carlo CI band instead of sampling its own.
   const legacyRawDistribution = interpolateDistribution(
-    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, rho,
+    currentPrice, horizon, effectiveP, regimeStats, currentRegime, blendAnchors, rho,
     20, 0, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, undefined, FORECAST_DRIFT_SHRINK,
