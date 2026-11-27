@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { normPPF } from '../../../utils/stats.js';
-import { dayBlockCi, fitCandidate, insideRescaled, missChange, stitchCloses, tailRatio, type CoverageRow } from './crypto-interval-coverage.js';
+import { dayBlockCi, fitCandidate, insideRescaled, intervalScore, missChange, stitchCloses, tailRatio, type CoverageRow } from './crypto-interval-coverage.js';
 
 /** A row whose intervals are a zero-centred normal in log price with sd 1, realized at log return x. */
 const normalRow = (x: number, horizon = 1): CoverageRow => {
@@ -26,6 +26,15 @@ describe('tailRatio', () => {
     expect(tailRatio(0.99, 5, 5)).toBeCloseTo(1, 12);
     expect(tailRatio(0.99, 8, 3)).toBeGreaterThan(1);
     expect(tailRatio(0.9, 8, 3)).toBeLessThan(1);
+  });
+});
+
+describe('intervalScore', () => {
+  it('is the mean over 90/95/99 of the log width plus 2/alpha times the miss beyond the interval', () => {
+    const width = (2 * 1.6449 + 2 * 1.96 + 2 * 2.5758) / 3;
+    expect(intervalScore(normalRow(0))).toBeCloseTo(width, 9);
+    // 2.2 sd above spot: beyond the 90% and 95% bounds, inside the 99%.
+    expect(intervalScore(normalRow(2.2))).toBeCloseTo(width + ((2 / 0.1) * (2.2 - 1.6449) + (2 / 0.05) * (2.2 - 1.96)) / 3, 9);
   });
 });
 

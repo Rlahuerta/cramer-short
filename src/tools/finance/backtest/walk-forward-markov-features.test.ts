@@ -284,6 +284,14 @@ describe('walk-forward anchor horizon experiments', () => {
     expect(probs(lowTrust)).not.toEqual(probs(anchored));
   });
 
+  it('ignores anchors below minAnchorHorizonDays', async () => {
+    const [plain, floored] = await Promise.all([
+      walkForward(base),
+      walkForward({ ...base, anchorsAt, minAnchorHorizonDays: horizon + 1 }),
+    ]);
+    expect(floored.steps.map(s => s.predictedProb)).toEqual(plain.steps.map(s => s.predictedProb));
+  });
+
   it('rescales crypto anchors more than 2 days off the target to the horizon by default, still trusted', async () => {
     const [unscaled, byDefault, rescaled, withinTolerance] = await Promise.all([
       walkForward({ ...base, anchorsAt, anchorHorizonRescaleDays: Infinity }),

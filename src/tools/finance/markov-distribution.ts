@@ -3407,6 +3407,16 @@ export async function computeMarkovDistribution(params: {
   anchorHorizonRescaleDays?: number;
   /** Experiment (crypto-interval-coverage.ts): skip the anchors' risk-neutral-density step (lognormal fit, regime mixture, transition nudge). */
   disableAnchorRnd?: boolean;
+  /** Experiment (crypto-interval-coverage.ts): keep the anchors out of the distribution (no strike blend); the density step still sees them. */
+  disableAnchorStrikeBlend?: boolean;
+  /**
+   * Experiment (crypto-interval-coverage.ts, candidate M): the anchors set only the forecast's location. A lognormal
+   * fitted to >= 2 high-trust anchors gives the market's median log return over their mean days to expiry, scaled
+   * linearly to the horizon; it replaces the model's horizon drift. No strike blend, no density step, no rescale.
+   */
+  anchorLocationOnly?: boolean;
+  /** Experiment: no anchors at horizons below this many days. */
+  minAnchorHorizonDays?: number;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
@@ -3484,6 +3494,9 @@ export async function computeMarkovDistribution(params: {
     maxAnchorHorizonDays,
     anchorHorizonRescaleDays,
     disableAnchorRnd,
+    disableAnchorStrikeBlend,
+    anchorLocationOnly,
+    minAnchorHorizonDays,
     enableKswinTrim,
     kswinAlpha,
     enableCoefficientClustering,
@@ -3696,6 +3709,7 @@ export async function computeMarkovDistribution(params: {
   // now be trivially true/false relative to current price)
   polymarketAnchors = polymarketAnchors.filter(a => isInformativeAnchor(a, currentPrice));
   if (maxAnchorHorizonDays !== undefined && horizon > maxAnchorHorizonDays) polymarketAnchors = [];
+  if (minAnchorHorizonDays !== undefined && horizon < minAnchorHorizonDays) polymarketAnchors = [];
   if (offHorizonAnchorDays !== undefined) {
     const referenceMs = params.referenceTimeMs ?? Date.now();
     const isOffHorizon = (a: PriceThreshold) => a.endDate == null
@@ -3708,7 +3722,7 @@ export async function computeMarkovDistribution(params: {
   }
   const rescaleDays = anchorHorizonRescaleDays
     ?? (assetProfile.type === 'crypto' && horizon <= 14 ? ANCHOR_NEAR_TARGET_DAYS : undefined);
-  if (rescaleDays !== undefined) {
+  if (rescaleDays !== undefined && anchorLocationOnly !== true) {
     const referenceMs = params.referenceTimeMs ?? Date.now();
     polymarketAnchors = polymarketAnchors.map((a) => {
       const marketDays = a.endDate == null ? NaN : (Date.parse(a.endDate) - referenceMs) / MS_PER_DAY;
@@ -4105,7 +4119,19 @@ export async function computeMarkovDistribution(params: {
   } | undefined;
 
   const highTrustAnchors = polymarketAnchors.filter(a => a.trustScore === 'high');
-  if (highTrustAnchors.length >= 2 && disableAnchorRnd !== true) {
+  let anchorLocationDrift: number | undefined;
+  if (anchorLocationOnly === true) {
+    if (highTrustAnchors.length >= 2) {
+      const fit = fitLognormalFromStrikes(highTrustAnchors.map(a => a.price), highTrustAnchors.map(a => a.probability), currentPrice);
+      const referenceMs = params.referenceTimeMs ?? Date.now();
+      const daysToEnd = highTrustAnchors.flatMap((a) => {
+        const days = a.endDate == null ? NaN : (Date.parse(a.endDate) - referenceMs) / MS_PER_DAY;
+        return days > 0 ? [days] : [];
+      });
+      const tau = daysToEnd.length > 0 ? daysToEnd.reduce((x, y) => x + y, 0) / daysToEnd.length : horizon;
+      if (Number.isFinite(fit.muLn)) anchorLocationDrift = (fit.muLn - Math.log(currentPrice)) * horizon / tau;
+    }
+  } else if (highTrustAnchors.length >= 2 && disableAnchorRnd !== true) {
     const strikes = highTrustAnchors.map(a => a.price);
     const yesPrices = highTrustAnchors.map(a => a.probability);
     const domains: Domain[] = highTrustAnchors.map(a => a.domain ?? 'unknown');
@@ -4236,19 +4262,20 @@ export async function computeMarkovDistribution(params: {
     : undefined;
   const forecastVolScale = FORECAST_VOL_SCALE * forecastVolMultiplier;
   const distributionNu = studentTNuOverride ?? horizonStudentTNu(assetProfile.studentTNu, horizon);
+  const blendAnchors = disableAnchorStrikeBlend === true || anchorLocationOnly === true ? [] : polymarketAnchors;
   const rawDistribution = interpolateDistribution(
-    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, rho,
+    currentPrice, horizon, effectiveP, regimeStats, currentRegime, blendAnchors, rho,
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     distributionNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, randomState, FORECAST_DRIFT_SHRINK,
-    forecastVolScale,
+    forecastVolScale, anchorLocationDrift,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
     horizon, effectiveP, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, effectiveMixture,
     regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScalesForDistribution, forecastAdjustedStateWeights,
-    FORECAST_DRIFT_SHRINK, forecastVolScale,
+    FORECAST_DRIFT_SHRINK, forecastVolScale, anchorLocationDrift,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -4355,11 +4382,11 @@ export async function computeMarkovDistribution(params: {
   // stays on that surface; intervals and P(up) read `distribution`. Same grid as
   // rawDistribution, so it borrows that Monte Carlo CI band instead of sampling its own.
   const legacyRawDistribution = interpolateDistribution(
-    currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, rho,
+    currentPrice, horizon, effectiveP, regimeStats, currentRegime, blendAnchors, rho,
     20, 0, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, undefined, FORECAST_DRIFT_SHRINK,
-    forecastVolScale,
+    forecastVolScale, anchorLocationDrift,
   ).map((pt, i) => ({ ...pt, lowerBound: rawDistribution[i].lowerBound, upperBound: rawDistribution[i].upperBound }));
   const legacyDistribution = calibrateProbabilities(legacyRawDistribution, {
     ...calibrationOptions,

@@ -171,6 +171,12 @@ export interface WalkForwardConfig {
   anchorHorizonRescaleDays?: number;
   /** Experiment (crypto-interval-coverage.ts): skip the anchors' risk-neutral-density step. */
   disableAnchorRnd?: boolean;
+  /** Experiment (crypto-interval-coverage.ts): keep the anchors out of the distribution (no strike blend). */
+  disableAnchorStrikeBlend?: boolean;
+  /** Experiment (crypto-interval-coverage.ts, candidate M): the anchors set only the forecast's location. */
+  anchorLocationOnly?: boolean;
+  /** Experiment: no anchors at horizons below this many days. */
+  minAnchorHorizonDays?: number;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -303,6 +309,9 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     maxAnchorHorizonDays: config.maxAnchorHorizonDays,
     anchorHorizonRescaleDays: config.anchorHorizonRescaleDays,
     disableAnchorRnd: config.disableAnchorRnd,
+    disableAnchorStrikeBlend: config.disableAnchorStrikeBlend,
+    anchorLocationOnly: config.anchorLocationOnly,
+    minAnchorHorizonDays: config.minAnchorHorizonDays,
     enableKswinTrim: config.enableKswinTrim,
     kswinAlpha: config.kswinAlpha,
     enableCrossAssetBias: config.enableCrossAssetBias,

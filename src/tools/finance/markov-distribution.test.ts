@@ -3280,8 +3280,9 @@ describe('off-horizon crypto anchors', () => {
   });
 });
 
-describe('anchor risk-neutral-density experiment', () => {
-  it('skips the lognormal fit, its regime mixture and the transition nudge when disableAnchorRnd is set', async () => {
+describe('anchor channel experiments', () => {
+  // Three trusted 3-day BTC markets around spot (an up-leaning ladder when `probabilities` says so).
+  const run = async (extra: object, probabilities = [0.85, 0.5, 0.15]) => {
     const { readFileSync } = await import('fs');
     const { closes, dates } = JSON.parse(readFileSync(new URL('./fixtures/backtest-prices.json', import.meta.url), 'utf-8')).tickers['BTC-USD'];
     const t = 401;
@@ -3289,15 +3290,40 @@ describe('anchor risk-neutral-density experiment', () => {
     const endDate = new Date(referenceTimeMs + 3 * 86_400_000).toISOString();
     const markets = [0.95, 1, 1.05].map((k, i) => ({
       question: 'Will the price of Bitcoin be above $' + Math.round(closes[t] * k) + ' on the 20th?',
-      probability: [0.85, 0.5, 0.15][i]!, volume: 50_000, createdAt: referenceTimeMs - 10 * 86_400_000, endDate,
+      probability: probabilities[i]!, volume: 50_000, createdAt: referenceTimeMs - 10 * 86_400_000, endDate,
     }));
-    const run = (extra: object) => computeMarkovDistribution({
+    return computeMarkovDistribution({
       ticker: 'BTC-USD', horizon: 3, currentPrice: closes[t], historicalPrices: closes.slice(0, t + 1), randomState: 42,
       referenceTimeMs, polymarketMarkets: markets, ...extra,
     });
+  };
+
+  it('skips the lognormal fit, its regime mixture and the transition nudge when disableAnchorRnd is set', async () => {
     const [withRnd, withoutRnd] = [await run({}), await run({ disableAnchorRnd: true })];
     expect(withRnd.metadata.rndIntegration?.anchorsUsed).toBe(3);
     expect(withoutRnd.metadata.rndIntegration).toBeUndefined();
     expect(withoutRnd.metadata.anchorCoverage.trustedAnchors).toBe(3);
+  });
+
+  it('keeps the anchors out of the distribution, but not out of the density step, when disableAnchorStrikeBlend is set', async () => {
+    const [blended, unblended] = [await run({}), await run({ disableAnchorStrikeBlend: true })];
+    expect(blended.distribution.some(pt => pt.source === 'polymarket')).toBe(true);
+    expect(unblended.distribution.every(pt => pt.source === 'markov')).toBe(true);
+    expect(unblended.metadata.rndIntegration?.anchorsUsed).toBe(3);
+    expect(unblended.metadata.anchorCoverage.trustedAnchors).toBe(3);
+  });
+
+  it('takes only the location from the anchors when anchorLocationOnly is set', async () => {
+    const upLadder = [0.97, 0.85, 0.55];
+    const [modelOnly, located] = [
+      await run({ polymarketMarkets: [] }, upLadder),
+      await run({ anchorLocationOnly: true }, upLadder),
+    ];
+    const pUp = (r: typeof located) => interpolateSurvival(r.distribution, r.currentPrice);
+    expect(located.distribution.every(pt => pt.source === 'markov')).toBe(true);
+    expect(located.metadata.rndIntegration).toBeUndefined();
+    expect(located.metadata.anchorCoverage.trustedAnchors).toBe(3);
+    // The ladder's median sits above spot, so the location moves P(up) up from the model's.
+    expect(pUp(located)).toBeGreaterThan(pUp(modelOnly) + 0.02);
   });
 });
