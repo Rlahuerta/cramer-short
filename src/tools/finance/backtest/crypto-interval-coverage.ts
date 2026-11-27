@@ -40,18 +40,39 @@
  *    HOLD share moves by at most 1pp.
  * 3. Ship the passing candidate with the fewest parameters (A, then B, then C). None passing: no change.
  *
- * Outputs go to .cramer-short/crypto-interval-coverage/<baseline|A|B|C>. Each run takes a few minutes; run them in parallel.
+ * Anchored comparison (added 2026-11-27 and committed before scoring it). Do Polymarket anchors change the coverage?
+ * The same origins and live configuration, with the markets open at each origin's daily close fed through walkForward's
+ * anchorsAt hook by anchorsAtFromHistory, as in anchored-replay-benchmark.ts: BTC from
+ * fixtures/polymarket-btc-anchor-history.json, ETH from fixtures/polymarket-eth-ladder-history-2025-2026.json. The
+ * model-only arm is the baseline run. Window: origins from the first day the asset's history has a market price.
+ * Horizons 1/2/3/7d, plus 14d for an asset only if at least 30 of its 14d window origins have a trusted anchor (counts
+ * reported either way). Two populations: every origin in the window, and the origins whose anchored forecast had at
+ * least one trusted anchor. Reported: anchored and model-only coverage per asset, horizon and year; the paired coverage
+ * difference (anchored minus model-only) with day-block CIs; anchored-step counts; the paired Brier change of P(up).
+ * Verdict statistic, per level (90/95/99), pooled over BTC+ETH and per asset, in each population: the paired change in
+ * |coverage - nominal| from model-only to anchored, with its 95% day-block CI.
+ * - Production problem: the CI lies above zero (anchors push coverage away from nominal) at any level, pooled or per
+ *   asset, in either population.
+ * - Anchors help coverage: no production problem, and the pooled CI over the whole window lies below zero at one or
+ *   more levels.
+ * - Otherwise no detectable effect. No production default changes here; a problem is reported with a proposed change.
+ *
+ * Outputs go to .cramer-short/crypto-interval-coverage/<baseline|A|B|C|anchored>. Each run takes a few minutes; run
+ * them in parallel.
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon>   # baseline
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts report                           # step 1
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts fit                              # step 2 fit
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> <A|B|C>
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts score                            # step 2 score
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> anchored
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts anchors                          # anchored comparison
  */
 import { join } from 'node:path';
 import { getAssetProfile } from '../markov-distribution/asset-profile.js';
 import { horizonStudentTNu, inverseStudentTCDF } from '../markov-distribution/confidence-intervals.js';
 import { btcLiveCell } from './live-config-benchmark.js';
 import { intervalCoverage, type SkillRow } from './long-history-skill.js';
+import { anchorsAtFromHistory, type AnchorHistoryFixture } from './polymarket-anchor-history.js';
 import { walkForward } from './walk-forward.js';
 
 export const ASSETS = ['BTC-USD', 'ETH-USD'] as const;
@@ -63,7 +84,9 @@ const ROOT = join(process.cwd(), '.cramer-short', 'crypto-interval-coverage');
 const BLOCK_DAYS = 28;
 const LEVELS = [['90', 0.9], ['95', 0.95], ['99', 0.99]] as const;
 
-export type CoverageRow = SkillRow & { r2: number | null };
+/** `trusted` / `offered`: trusted anchors and markets offered at the origin (anchored runs only). */
+export type CoverageRow = SkillRow & { r2: number | null; trusted?: number; offered?: number };
+const ANCHOR_HISTORY = { 'BTC-USD': 'polymarket-btc-anchor-history.json', 'ETH-USD': 'polymarket-eth-ladder-history-2025-2026.json' };
 interface Closes { dates: string[]; closes: number[] }
 
 /** `early` before `from`, `late` from it; shared days must agree within 0.1% and the seam must have no missing day. */
@@ -152,11 +175,23 @@ async function loadCloses(asset: (typeof ASSETS)[number]): Promise<Closes> {
   return stitchCloses(early, await fixture('crypto-prices-2025-2026.json'), SEAM);
 }
 
-/** Forecast every origin with the production path, plus a candidate's settings (fitted from the baseline rows). */
-async function run(asset: (typeof ASSETS)[number], horizon: number, candidate: Candidate | 'baseline'): Promise<void> {
+async function anchorMarkets(asset: (typeof ASSETS)[number]) {
+  return (await Bun.file(join(import.meta.dir, '..', 'fixtures', ANCHOR_HISTORY[asset])).json() as AnchorHistoryFixture).markets;
+}
+
+/** Paired change (pp) in |coverage - nominal| from model-only to anchored: negative = anchors move coverage toward nominal. */
+export function missChange(pairs: ReadonlyArray<{ plain: CoverageRow; anchored: CoverageRow }>, level: Level): number {
+  const key = `c${level}` as 'c90' | 'c95' | 'c99';
+  const miss = (rs: CoverageRow[]) => Math.abs(100 * intervalCoverage(rs)[key] - Number(level));
+  return miss(pairs.map(p => p.anchored)) - miss(pairs.map(p => p.plain));
+}
+
+/** Forecast every origin with the production path, plus a candidate's settings or the Polymarket anchors. */
+async function run(asset: (typeof ASSETS)[number], horizon: number, candidate: Candidate | 'baseline' | 'anchored'): Promise<void> {
   const { dates, closes } = await loadCloses(asset);
   const cell = asset === 'BTC-USD' ? btcLiveCell(horizon) : { config: {}, maxHistoryPrices: ETH_HISTORY_PRICES };
-  const experiment = candidate === 'baseline' ? {} : await candidateConfig(candidate, horizon);
+  const anchorsAt = candidate === 'anchored' ? anchorsAtFromHistory(dates, await anchorMarkets(asset)) : undefined;
+  const experiment = candidate === 'baseline' ? {} : anchorsAt ? { anchorsAt } : await candidateConfig(candidate as Candidate, horizon);
   const result = await walkForward({
     ...cell.config, ...experiment, ticker: asset, prices: closes, horizon, warmup: cell.maxHistoryPrices, stride: 1,
     maxHistoryPrices: cell.maxHistoryPrices, randomState: 42,
@@ -167,6 +202,7 @@ async function run(asset: (typeof ASSETS)[number], horizon: number, candidate: C
     ticker: asset, horizon, t: s.t, date: dates[s.t]!, p: s.predictedProb, y: s.actualBinary as 0 | 1, rec: s.recommendation,
     r2: s.outOfSampleR2 ?? null, realized: s.realizedPrice, lo90: s.central90CiLower, hi90: s.central90CiUpper,
     lo95: s.central95CiLower, hi95: s.central95CiUpper, lo99: s.central99CiLower, hi99: s.central99CiUpper,
+    ...(anchorsAt ? { trusted: s.trustedAnchors ?? 0, offered: anchorsAt(s.t).markets.length } : {}),
   }));
   await Bun.write(join(dir, `${asset}-${horizon}.json`), JSON.stringify(rows));
   console.log(`${asset} ${horizon}d: ${rows.length} origins ${rows[0]?.date}..${rows[rows.length - 1]?.date}`);
@@ -289,13 +325,74 @@ async function score(): Promise<void> {
   }
 }
 
+/** The anchored comparison in the header: anchored vs baseline rows on the same origins of each asset's market window. */
+async function anchors(): Promise<void> {
+  const key = (r: CoverageRow) => `${r.ticker}|${r.horizon}|${r.date}`;
+  const plainByKey = new Map((await loadRows(join(ROOT, 'baseline'))).map(r => [key(r), r]));
+  const windowStart: Record<string, string> = {};
+  for (const asset of ASSETS) windowStart[asset] = (await anchorMarkets(asset)).flatMap(m => Object.keys(m.daily)).sort()[0]!;
+  const inWindow = (await loadRows(join(ROOT, 'anchored'))).filter(r => r.date >= windowStart[r.ticker]!);
+  const with14: Record<string, boolean> = {};
+  console.log('Anchored-step counts: window origins / >= 1 market offered / >= 1 trusted anchor');
+  for (const asset of ASSETS) {
+    console.log(`  ${asset}, window from ${windowStart[asset]}`);
+    for (const h of HORIZONS) {
+      const rs = inWindow.filter(r => r.ticker === asset && r.horizon === h);
+      const trusted = rs.filter(r => (r.trusted ?? 0) > 0).length;
+      if (h === 14) with14[asset] = trusted >= 30;
+      console.log(`    ${String(h).padStart(2)}d ${rs.length} / ${rs.filter(r => (r.offered ?? 0) > 0).length} / ${trusted}${h === 14 ? (with14[asset] ? '  (included)' : '  (excluded: < 30 trusted)') : ''}`);
+    }
+  }
+  type Pair = { date: string; anchored: CoverageRow; plain: CoverageRow };
+  const pairs: Pair[] = inWindow
+    .filter(r => r.horizon !== 14 || with14[r.ticker])
+    .map(r => ({ date: r.date, anchored: r, plain: plainByKey.get(key(r))! }));
+  const fmt = (ps: Pair[], stat: (xs: Pair[]) => number, digits = 1) => {
+    const [lo, hi] = dayBlockCi(ps, stat);
+    return `${stat(ps).toFixed(digits)} [${lo.toFixed(digits)}, ${hi.toFixed(digits)}]`;
+  };
+  const cov = (rs: CoverageRow[], level: Level) => 100 * intervalCoverage(rs)[`c${level}` as 'c90' | 'c95' | 'c99'];
+  const coverageDiff = (level: Level) => (xs: Pair[]) => cov(xs.map(p => p.anchored), level) - cov(xs.map(p => p.plain), level);
+  const brierDiff = (xs: Pair[]) => xs.reduce((a, p) => a + (p.anchored.p - p.anchored.y) ** 2 - (p.plain.p - p.plain.y) ** 2, 0) / xs.length;
+  let problem = false;
+  let help = false;
+  const populations: Array<[string, Pair[]]> = [['window', pairs], ['trusted', pairs.filter(p => (p.anchored.trusted ?? 0) > 0)]];
+  for (const [population, ps] of populations) {
+    console.log(`\n== ${population === 'window' ? 'Every origin in the window' : 'Origins with >= 1 trusted anchor'} (${ps.length} pairs)`);
+    for (const [set, rs] of [['pooled', ps], ...ASSETS.map(a => [a, ps.filter(p => p.anchored.ticker === a)] as const)] as Array<[string, Pair[]]>) {
+      console.log(`  ${set}: model-only -> anchored coverage, paired difference [CI], change in |miss| [CI]`);
+      for (const [level] of LEVELS) {
+        const [lo, hi] = dayBlockCi(rs, xs => missChange(xs, level));
+        const label = lo > 0 ? 'PROBLEM' : hi < 0 ? 'helps' : 'no detectable effect';
+        if (lo > 0) problem = true;
+        if (hi < 0 && population === 'window' && set === 'pooled') help = true;
+        console.log(`    ${level}: ${cov(rs.map(p => p.plain), level).toFixed(1)} -> ${cov(rs.map(p => p.anchored), level).toFixed(1)}  diff ${fmt(rs, coverageDiff(level))}  |miss| ${fmt(rs, xs => missChange(xs, level))}  ${label}`);
+      }
+      console.log(`    paired Brier ${fmt(rs, brierDiff, 5)}`);
+    }
+    console.log('  per asset, horizon and year: model-only -> anchored, paired difference [CI], at 90 / 95 / 99');
+    for (const asset of ASSETS) {
+      for (const h of HORIZONS) {
+        for (const y of [...new Set(ps.map(p => p.date.slice(0, 4)))].sort().concat('all')) {
+          const rs = ps.filter(p => p.anchored.ticker === asset && p.anchored.horizon === h && (y === 'all' || p.date.startsWith(y)));
+          if (rs.length === 0) continue;
+          const cells = LEVELS.map(([level]) => `${cov(rs.map(p => p.plain), level).toFixed(1)} -> ${cov(rs.map(p => p.anchored), level).toFixed(1)} ${fmt(rs, coverageDiff(level))}`);
+          console.log(`    ${asset} ${String(h).padStart(2)}d ${y.padEnd(4)} n=${String(rs.length).padStart(4)}  ${cells.join('  |  ')}`);
+        }
+      }
+    }
+  }
+  console.log(`\nVerdict: ${problem ? 'production problem (anchors push coverage away from nominal somewhere; see PROBLEM)' : help ? 'anchors help coverage' : 'no detectable effect of anchors on coverage'}`);
+}
+
 if (import.meta.main) {
   const [mode, a, b, c] = process.argv.slice(2);
   const candidate = c === undefined ? 'baseline' : c;
-  if (mode === 'run' && (a === 'BTC-USD' || a === 'ETH-USD') && b && ['baseline', 'A', 'B', 'C'].includes(candidate)) {
-    await run(a, Number(b), candidate as Candidate | 'baseline');
+  if (mode === 'run' && (a === 'BTC-USD' || a === 'ETH-USD') && b && ['baseline', 'A', 'B', 'C', 'anchored'].includes(candidate)) {
+    await run(a, Number(b), candidate as Candidate | 'baseline' | 'anchored');
   } else if (mode === 'report') await report(join(ROOT, 'baseline'));
   else if (mode === 'fit') await showFits();
   else if (mode === 'score') await score();
-  else console.log('usage: crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> [A|B|C] | report | fit | score');
+  else if (mode === 'anchors') await anchors();
+  else console.log('usage: crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> [A|B|C|anchored] | report | fit | score | anchors');
 }

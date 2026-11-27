@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { normPPF } from '../../../utils/stats.js';
-import { dayBlockCi, fitCandidate, insideRescaled, stitchCloses, tailRatio, type CoverageRow } from './crypto-interval-coverage.js';
+import { dayBlockCi, fitCandidate, insideRescaled, missChange, stitchCloses, tailRatio, type CoverageRow } from './crypto-interval-coverage.js';
 
 /** A row whose intervals are a zero-centred normal in log price with sd 1, realized at log return x. */
 const normalRow = (x: number, horizon = 1): CoverageRow => {
@@ -26,6 +26,19 @@ describe('tailRatio', () => {
     expect(tailRatio(0.99, 5, 5)).toBeCloseTo(1, 12);
     expect(tailRatio(0.99, 8, 3)).toBeGreaterThan(1);
     expect(tailRatio(0.9, 8, 3)).toBeLessThan(1);
+  });
+});
+
+describe('missChange', () => {
+  // A row inside every interval (x = 0) or outside all of them (x = 5 sd).
+  const pairs = (plainInside: number, anchoredInside: number, n = 10) => Array.from({ length: n }, (_, i) => ({
+    date: '2025-01-01', plain: normalRow(i < plainInside ? 0 : 5), anchored: normalRow(i < anchoredInside ? 0 : 5),
+  }));
+
+  it('is negative when anchors move coverage toward nominal and positive when they overshoot it', () => {
+    expect(missChange(pairs(8, 9), '90')).toBeCloseTo(-10, 9); // |90 - 90| - |80 - 90|
+    expect(missChange(pairs(9, 10), '90')).toBeCloseTo(10, 9); // |100 - 90| - |90 - 90|
+    expect(missChange(pairs(9, 9), '99')).toBeCloseTo(0, 9);
   });
 });
 
