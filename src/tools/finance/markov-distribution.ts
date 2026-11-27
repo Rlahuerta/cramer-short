@@ -3405,6 +3405,8 @@ export async function computeMarkovDistribution(params: {
    * Default ANCHOR_NEAR_TARGET_DAYS for crypto at <= 14 days, none otherwise; Infinity turns it off.
    */
   anchorHorizonRescaleDays?: number;
+  /** Experiment (crypto-interval-coverage.ts): skip the anchors' risk-neutral-density step (lognormal fit, regime mixture, transition nudge). */
+  disableAnchorRnd?: boolean;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
@@ -3481,6 +3483,7 @@ export async function computeMarkovDistribution(params: {
     offHorizonAnchorPolicy = 'drop',
     maxAnchorHorizonDays,
     anchorHorizonRescaleDays,
+    disableAnchorRnd,
     enableKswinTrim,
     kswinAlpha,
     enableCoefficientClustering,
@@ -4102,7 +4105,7 @@ export async function computeMarkovDistribution(params: {
   } | undefined;
 
   const highTrustAnchors = polymarketAnchors.filter(a => a.trustScore === 'high');
-  if (highTrustAnchors.length >= 2) {
+  if (highTrustAnchors.length >= 2 && disableAnchorRnd !== true) {
     const strikes = highTrustAnchors.map(a => a.price);
     const yesPrices = highTrustAnchors.map(a => a.probability);
     const domains: Domain[] = highTrustAnchors.map(a => a.domain ?? 'unknown');

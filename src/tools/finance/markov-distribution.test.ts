@@ -3279,3 +3279,25 @@ describe('off-horizon crypto anchors', () => {
     expect(await atStrike('SPY', 'SPY')).toEqual(await atStrike('SPY', 'SPY', Infinity));
   });
 });
+
+describe('anchor risk-neutral-density experiment', () => {
+  it('skips the lognormal fit, its regime mixture and the transition nudge when disableAnchorRnd is set', async () => {
+    const { readFileSync } = await import('fs');
+    const { closes, dates } = JSON.parse(readFileSync(new URL('./fixtures/backtest-prices.json', import.meta.url), 'utf-8')).tickers['BTC-USD'];
+    const t = 401;
+    const referenceTimeMs = Date.parse(dates[t] + 'T23:59:59Z');
+    const endDate = new Date(referenceTimeMs + 3 * 86_400_000).toISOString();
+    const markets = [0.95, 1, 1.05].map((k, i) => ({
+      question: 'Will the price of Bitcoin be above $' + Math.round(closes[t] * k) + ' on the 20th?',
+      probability: [0.85, 0.5, 0.15][i]!, volume: 50_000, createdAt: referenceTimeMs - 10 * 86_400_000, endDate,
+    }));
+    const run = (extra: object) => computeMarkovDistribution({
+      ticker: 'BTC-USD', horizon: 3, currentPrice: closes[t], historicalPrices: closes.slice(0, t + 1), randomState: 42,
+      referenceTimeMs, polymarketMarkets: markets, ...extra,
+    });
+    const [withRnd, withoutRnd] = [await run({}), await run({ disableAnchorRnd: true })];
+    expect(withRnd.metadata.rndIntegration?.anchorsUsed).toBe(3);
+    expect(withoutRnd.metadata.rndIntegration).toBeUndefined();
+    expect(withoutRnd.metadata.anchorCoverage.trustedAnchors).toBe(3);
+  });
+});

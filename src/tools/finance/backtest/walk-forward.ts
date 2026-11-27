@@ -169,6 +169,8 @@ export interface WalkForwardConfig {
   maxAnchorHorizonDays?: number;
   /** An anchor resolving more than this many days from the target is moved to the horizon (default: 2 for crypto <= 14d; Infinity: off). */
   anchorHorizonRescaleDays?: number;
+  /** Experiment (crypto-interval-coverage.ts): skip the anchors' risk-neutral-density step. */
+  disableAnchorRnd?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -300,6 +302,7 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     offHorizonAnchorPolicy: config.offHorizonAnchorPolicy,
     maxAnchorHorizonDays: config.maxAnchorHorizonDays,
     anchorHorizonRescaleDays: config.anchorHorizonRescaleDays,
+    disableAnchorRnd: config.disableAnchorRnd,
     enableKswinTrim: config.enableKswinTrim,
     kswinAlpha: config.kswinAlpha,
     enableCrossAssetBias: config.enableCrossAssetBias,
