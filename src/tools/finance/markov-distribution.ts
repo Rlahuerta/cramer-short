@@ -100,6 +100,7 @@ import { hasEnv } from '../../utils/env.js';
 import {
   FORECAST_DRIFT_SHRINK,
   FORECAST_LAB_MARKOV_PARAMETER_DEFAULTS,
+  FORECAST_VOL_SCALE,
   NUM_STATES,
   PROMOTED_SOL_MARKOV_RUNTIME_DEFAULTS,
   RECOMMENDED_CONFIDENCE_THRESHOLD,
@@ -165,6 +166,7 @@ import {
   estimateRegimeStats,
   horizonStudentTNu,
   interpolateDistribution,
+  rescaleAnchorToHorizon,
   inverseStudentTCDF,
   logNormalSurvival,
   normalCDF,
@@ -912,6 +914,12 @@ function parsePrice(raw: string): number {
 type AnchorLowTrustReason = 'young_market' | 'resolution_mismatch' | 'missing_volume';
 
 const HIGH_TRUST_ANCHOR_WEIGHT_THRESHOLD = 0.6;
+/**
+ * An anchor resolving within this many days of the target is near-target. A crypto anchor (horizon <= 14d) outside it
+ * is moved to the horizon before blending (rescaleAnchorToHorizon): the markets live about 7 days, so a 14-day forecast
+ * otherwise took a 7-day spread, and covered 83.8% at 90% (2025-07..2026-11, crypto-interval-coverage.ts).
+ */
+const ANCHOR_NEAR_TARGET_DAYS = 2;
 
 function labelAnchorTrustWeight(trustWeight: number): 'high' | 'low' {
   return trustWeight >= HIGH_TRUST_ANCHOR_WEIGHT_THRESHOLD ? 'high' : 'low';
@@ -1115,7 +1123,7 @@ function inspectAnchorCandidate(
     && options?.horizonDays != null
     && options.horizonDays > 14;
   const isNearTargetResolution = options?.horizonDays != null && endDate
-    ? Math.abs((Date.parse(endDate) - now) / MS_PER_DAY - options.horizonDays) <= 2
+    ? Math.abs((Date.parse(endDate) - now) / MS_PER_DAY - options.horizonDays) <= ANCHOR_NEAR_TARGET_DAYS
     : false;
   const { trustScore, trustWeight, lowTrustReasons } = evaluateAnchorTrust({
     hasVolume,
@@ -1407,6 +1415,22 @@ export function applyCryptoTerminalAnchorFallback(
   }
 
   return Array.from(merged.values()).sort((a, b) => a.price - b.price);
+}
+
+/**
+ * Whether an anchor carries information beyond the current price. Filtered out:
+ * 1. Trivially-true anchors: price well below current with P≈1 (e.g., "gold stays above $3,000")
+ * 2. Trivially-false anchors: price well above current with P≈0
+ * 3. Strikes more than 2x from the current price: another scale or underlying, such as an S&P 500 index level
+ *    read as a SPY price (commodity ETFs are rescaled before this filter).
+ */
+export function isInformativeAnchor(a: PriceThreshold, currentPrice: number): boolean {
+  const ratio = a.price / currentPrice;
+  if (ratio > 2 || ratio < 0.5) return false;
+  const dist = ratio - 1;
+  if (dist < -0.05 && a.probability > 0.90) return false;
+  if (dist > 0.50 && a.probability < 0.05) return false;
+  return true;
 }
 
 function normalizeSearchIdentityPhrase(ticker: string, phrase: string): string {
@@ -3366,6 +3390,23 @@ export async function computeMarkovDistribution(params: {
   softRegimeHmmWeightEntropyWeight?: number;
   /** Phase 2 experimental: replace Gaussian forecast emissions with NIG-derived Student-t predictive emissions. Default false. */
   enableStudentTEmission?: boolean;
+  /** Experiment (crypto-interval-coverage.ts): factor on the forecast volatility on top of FORECAST_VOL_SCALE. Default 1. */
+  forecastVolMultiplier?: number;
+  /** Experiment (crypto-interval-coverage.ts): Student-t nu of the forecast distribution instead of horizonStudentTNu. */
+  studentTNuOverride?: number;
+  /** Experiment (crypto-interval-coverage.ts): an anchor resolving more than this many days from the target is off-horizon. */
+  offHorizonAnchorDays?: number;
+  /** Experiment: off-horizon anchors are dropped, or blended as low-trust (half weight). Default 'drop'. */
+  offHorizonAnchorPolicy?: 'drop' | 'low-trust';
+  /** Experiment: no anchors at horizons above this many days. */
+  maxAnchorHorizonDays?: number;
+  /**
+   * An anchor resolving more than this many days from the target is moved to the horizon (rescaleAnchorToHorizon).
+   * Default ANCHOR_NEAR_TARGET_DAYS for crypto at <= 14 days, none otherwise; Infinity turns it off.
+   */
+  anchorHorizonRescaleDays?: number;
+  /** Experiment (crypto-interval-coverage.ts): skip the anchors' risk-neutral-density step (lognormal fit, regime mixture, transition nudge). */
+  disableAnchorRnd?: boolean;
   /** Item 5 — coefficient-clustering diagnostic prototype. Metadata-only, default false. */
   enableCoefficientClustering?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim (complements ADWIN).
@@ -3436,6 +3477,13 @@ export async function computeMarkovDistribution(params: {
     conformalAlpha,
     conformalBreakSensitivity,
     enableStudentTEmission,
+    forecastVolMultiplier = 1,
+    studentTNuOverride,
+    offHorizonAnchorDays,
+    offHorizonAnchorPolicy = 'drop',
+    maxAnchorHorizonDays,
+    anchorHorizonRescaleDays,
+    disableAnchorRnd,
     enableKswinTrim,
     kswinAlpha,
     enableCoefficientClustering,
@@ -3636,21 +3684,7 @@ export async function computeMarkovDistribution(params: {
     polymarketAnchors, currentPrice, ticker,
   );
 
-  // Filter uninformative anchors:
-  // 1. Trivially-true anchors: price well below current with P≈1 (e.g., "gold stays above $3,000")
-  // 2. Trivially-false anchors: price well above current with P≈0
-  // These carry no predictive signal — they just confirm what the current price already implies.
-  // 3. Strikes more than 2x from the current price: another scale or underlying, such as an S&P 500 index level
-  //    read as a SPY price (commodity ETFs were rescaled above).
-  const isInformativeAnchor = (a: PriceThreshold): boolean => {
-    const ratio = a.price / currentPrice;
-    if (ratio > 2 || ratio < 0.5) return false;
-    const dist = ratio - 1;
-    if (dist < -0.05 && a.probability > 0.90) return false;
-    if (dist > 0.50 && a.probability < 0.05) return false;
-    return true;
-  };
-  polymarketAnchors = polymarketAnchors.filter(isInformativeAnchor);
+  polymarketAnchors = polymarketAnchors.filter(a => isInformativeAnchor(a, currentPrice));
 
   // Crypto fallback: when strict-horizon markets are all barrier-style and yield
   // zero terminal anchors, re-extract from the full unfiltered market list with
@@ -3660,7 +3694,29 @@ export async function computeMarkovDistribution(params: {
   );
   // Re-apply triviality filter on fallback anchors (e.g., off-horizon anchors may
   // now be trivially true/false relative to current price)
-  polymarketAnchors = polymarketAnchors.filter(isInformativeAnchor);
+  polymarketAnchors = polymarketAnchors.filter(a => isInformativeAnchor(a, currentPrice));
+  if (maxAnchorHorizonDays !== undefined && horizon > maxAnchorHorizonDays) polymarketAnchors = [];
+  if (offHorizonAnchorDays !== undefined) {
+    const referenceMs = params.referenceTimeMs ?? Date.now();
+    const isOffHorizon = (a: PriceThreshold) => a.endDate == null
+      || !(Math.abs((Date.parse(a.endDate) - referenceMs) / MS_PER_DAY - horizon) <= offHorizonAnchorDays);
+    polymarketAnchors = offHorizonAnchorPolicy === 'drop'
+      ? polymarketAnchors.filter(a => !isOffHorizon(a))
+      : polymarketAnchors.map(a => (isOffHorizon(a)
+        ? { ...a, trustScore: 'low' as const, trustWeight: Math.min(getAnchorTrustWeight(a), 0.35) }
+        : a));
+  }
+  const rescaleDays = anchorHorizonRescaleDays
+    ?? (assetProfile.type === 'crypto' && horizon <= 14 ? ANCHOR_NEAR_TARGET_DAYS : undefined);
+  if (rescaleDays !== undefined) {
+    const referenceMs = params.referenceTimeMs ?? Date.now();
+    polymarketAnchors = polymarketAnchors.map((a) => {
+      const marketDays = a.endDate == null ? NaN : (Date.parse(a.endDate) - referenceMs) / MS_PER_DAY;
+      return Math.abs(marketDays - horizon) > rescaleDays
+        ? { ...a, probability: rescaleAnchorToHorizon(a.probability, marketDays, horizon) }
+        : a;
+    });
+  }
 
   if (params.kalshiAnchors && params.kalshiAnchors.length > 0) {
     const merged = mergeAnchorsWithCrossPlatformValidation(polymarketAnchors, params.kalshiAnchors);
@@ -4049,7 +4105,7 @@ export async function computeMarkovDistribution(params: {
   } | undefined;
 
   const highTrustAnchors = polymarketAnchors.filter(a => a.trustScore === 'high');
-  if (highTrustAnchors.length >= 2) {
+  if (highTrustAnchors.length >= 2 && disableAnchorRnd !== true) {
     const strikes = highTrustAnchors.map(a => a.price);
     const yesPrices = highTrustAnchors.map(a => a.probability);
     const domains: Domain[] = highTrustAnchors.map(a => a.domain ?? 'unknown');
@@ -4178,18 +4234,21 @@ export async function computeMarkovDistribution(params: {
   const gridDailyVol = returns.length >= 20
     ? Math.sqrt(returns.slice(-20).reduce((s, v) => s + v * v, 0) / 20)
     : undefined;
+  const forecastVolScale = FORECAST_VOL_SCALE * forecastVolMultiplier;
+  const distributionNu = studentTNuOverride ?? horizonStudentTNu(assetProfile.studentTNu, horizon);
   const rawDistribution = interpolateDistribution(
     currentPrice, horizon, effectiveP, regimeStats, currentRegime, polymarketAnchors, rho,
     20, 1000, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
-    horizonStudentTNu(assetProfile.studentTNu, horizon), regimeSpecificSigma, regimeSpecificSigmaThreshold,
+    distributionNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, randomState, FORECAST_DRIFT_SHRINK,
+    forecastVolScale,
   );
 
   // Compute drift/vol for drift-based calibration (same values used by interpolateDistribution)
   const { mu_n: calDriftN, sigma_n: calVolN } = computeHorizonDriftVol(
     horizon, effectiveP, regimeStats, currentRegime, combinedDriftAdj, hmmOverride, effectiveMixture,
     regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScalesForDistribution, forecastAdjustedStateWeights,
-    FORECAST_DRIFT_SHRINK,
+    FORECAST_DRIFT_SHRINK, forecastVolScale,
   );
 
   // --- Bayesian calibration (Idea I): shrink extreme probabilities toward base rate ---
@@ -4268,7 +4327,7 @@ export async function computeMarkovDistribution(params: {
   };
   const distribution = calibrateProbabilities(rawDistribution, {
     ...calibrationOptions,
-    nu: horizonStudentTNu(assetProfile.studentTNu, horizon),
+    nu: distributionNu,
   });
 
   // --- Base-rate floor (Idea S, Round 4) ---
@@ -4300,6 +4359,7 @@ export async function computeMarkovDistribution(params: {
     20, 0, effectiveCiWidthMultiplier, combinedDriftAdj, hmmOverride, gridDailyVol, effectiveMixture,
     assetProfile.studentTNu, regimeSpecificSigma, regimeSpecificSigmaThreshold,
     logReturns.length, garchScalesForDistribution, forecastAdjustedStateWeights, undefined, FORECAST_DRIFT_SHRINK,
+    forecastVolScale,
   ).map((pt, i) => ({ ...pt, lowerBound: rawDistribution[i].lowerBound, upperBound: rawDistribution[i].upperBound }));
   const legacyDistribution = calibrateProbabilities(legacyRawDistribution, {
     ...calibrationOptions,

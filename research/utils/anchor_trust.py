@@ -16,7 +16,9 @@ Mirrors ``src/tools/finance/markov-distribution.ts`` (anchor-trust section).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from statistics import NormalDist
 from typing import Literal
 
 AnchorLowTrustReason = Literal["young_market", "resolution_mismatch", "missing_volume"]
@@ -71,3 +73,17 @@ def evaluate_anchor_trust(
         reasons.append("resolution_mismatch")
 
     return AnchorTrustEvaluation("high" if trust_weight >= 0.7 else "low", trust_weight, reasons)
+
+
+def rescale_anchor_to_horizon(probability: float, market_days: float, horizon_days: float) -> float:
+    """A market's P(price > strike) at its own expiry, moved to ``horizon_days``.
+
+    Read as a driftless normal in log price, its z = PhiInv(1 - p) scales by sqrt(market_days / horizon_days): the
+    implied median stays put and the spread grows with sqrt(time). Certainties (0, 1) and a market at or past expiry
+    (market_days <= 0) are returned unchanged. Mirrors ``confidence-intervals.ts`` ``rescaleAnchorToHorizon``; the TS
+    forecast applies it to crypto anchors (horizon <= 14d) resolving more than 2 days from the target.
+    """
+    if probability <= 0 or probability >= 1 or not market_days > 0 or not horizon_days > 0:
+        return probability
+    normal = NormalDist()
+    return 1 - normal.cdf(normal.inv_cdf(1 - probability) * math.sqrt(market_days / horizon_days))

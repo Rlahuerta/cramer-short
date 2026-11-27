@@ -157,6 +157,20 @@ export interface WalkForwardConfig {
   softRegimeHmmWeightEntropyWeight?: number;
   /** Phase 2 experimental: replace Gaussian HMM forecast emissions with Student-t predictive emissions. */
   enableStudentTEmission?: boolean;
+  /** Experiment (crypto-interval-coverage.ts): factor on the forecast volatility on top of FORECAST_VOL_SCALE. */
+  forecastVolMultiplier?: number;
+  /** Experiment (crypto-interval-coverage.ts): Student-t nu of the forecast distribution instead of horizonStudentTNu. */
+  studentTNuOverride?: number;
+  /** Experiment (crypto-interval-coverage.ts): an anchor resolving more than this many days from the target is off-horizon. */
+  offHorizonAnchorDays?: number;
+  /** Experiment: off-horizon anchors are dropped, or blended as low-trust (half weight). Default 'drop'. */
+  offHorizonAnchorPolicy?: 'drop' | 'low-trust';
+  /** Experiment: no anchors at horizons above this many days. */
+  maxAnchorHorizonDays?: number;
+  /** An anchor resolving more than this many days from the target is moved to the horizon (default: 2 for crypto <= 14d; Infinity: off). */
+  anchorHorizonRescaleDays?: number;
+  /** Experiment (crypto-interval-coverage.ts): skip the anchors' risk-neutral-density step. */
+  disableAnchorRnd?: boolean;
   /** R4 Idea 1: enable KSWIN variance-aware drift trim. Default false ⇒ byte-identical. */
   enableKswinTrim?: boolean;
   /** KSWIN significance level. Default 0.005. */
@@ -282,6 +296,13 @@ export async function walkForward(config: WalkForwardConfig): Promise<WalkForwar
     softRegimeHmmWeightFloor: config.softRegimeHmmWeightFloor,
     softRegimeHmmWeightEntropyWeight: config.softRegimeHmmWeightEntropyWeight,
     enableStudentTEmission: config.enableStudentTEmission,
+    forecastVolMultiplier: config.forecastVolMultiplier,
+    studentTNuOverride: config.studentTNuOverride,
+    offHorizonAnchorDays: config.offHorizonAnchorDays,
+    offHorizonAnchorPolicy: config.offHorizonAnchorPolicy,
+    maxAnchorHorizonDays: config.maxAnchorHorizonDays,
+    anchorHorizonRescaleDays: config.anchorHorizonRescaleDays,
+    disableAnchorRnd: config.disableAnchorRnd,
     enableKswinTrim: config.enableKswinTrim,
     kswinAlpha: config.kswinAlpha,
     enableCrossAssetBias: config.enableCrossAssetBias,

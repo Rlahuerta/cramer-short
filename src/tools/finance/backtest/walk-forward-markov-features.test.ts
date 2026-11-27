@@ -227,3 +227,75 @@ describe('walk-forward anchored replay hook', () => {
     expect(anchored.steps.some((s, i) => Math.abs(s.predictedProb - plain.steps[i].predictedProb) > 0.01)).toBe(true);
   });
 });
+
+describe('walk-forward interval experiments', () => {
+  it('passes the forecast volatility multiplier and the t degrees of freedom through to the forecast distribution', async () => {
+    const base = { ticker: 'BTC-USD', prices: syntheticTrajectoryPrices(), horizon: 3, warmup: 120, stride: 20, randomState: 42 };
+    const [plain, wide, fat] = await Promise.all([
+      walkForward(base),
+      walkForward({ ...base, forecastVolMultiplier: 1.2 }),
+      walkForward({ ...base, studentTNuOverride: 3 }),
+    ]);
+    const width = (s: { central90CiLower?: number; central90CiUpper?: number; central99CiLower?: number; central99CiUpper?: number }, level: 90 | 99) =>
+      Math.log(level === 90 ? s.central90CiUpper! / s.central90CiLower! : s.central99CiUpper! / s.central99CiLower!);
+    expect(plain.steps.length).toBeGreaterThan(0);
+    plain.steps.forEach((s, i) => {
+      expect(width(wide.steps[i], 90)).toBeGreaterThan(1.1 * width(s, 90));
+      // nu 3 instead of 4 + h = 7: the variance-matched fatter tail widens the 99% interval and narrows the 90%.
+      expect(width(fat.steps[i], 99)).toBeGreaterThan(width(s, 99));
+      expect(width(fat.steps[i], 90)).toBeLessThan(width(s, 90));
+    });
+  });
+});
+
+describe('walk-forward anchor horizon experiments', () => {
+  const prices = syntheticTrajectoryPrices();
+  const start = Date.parse('2025-01-01T23:59:59Z');
+  const day = 86_400_000;
+  const horizon = 3;
+  const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  // A mature, liquid crypto market struck at the origin's price that resolves 5 days after the target.
+  const anchorsAt = (t: number) => {
+    const referenceTimeMs = start + t * day;
+    const strike = (Math.round(prices[t] * 100) / 100).toFixed(2);
+    const endDate = isoDate(referenceTimeMs + (horizon + 5) * day);
+    return {
+      referenceTimeMs,
+      markets: [{ question: 'Will BTC be above $' + strike + ' on ' + endDate + '?', probability: 0.8, volume: 50_000, createdAt: referenceTimeMs - 10 * day, endDate }],
+    };
+  };
+  const base = { ticker: 'BTC-USD', prices, horizon, warmup: 120, stride: 20, randomState: 42 };
+
+  it('drops, down-weights or ignores anchors that resolve away from the target', async () => {
+    const [plain, anchored, dropped, lowTrust, capped] = await Promise.all([
+      walkForward(base),
+      walkForward({ ...base, anchorsAt }),
+      walkForward({ ...base, anchorsAt, offHorizonAnchorDays: 2, offHorizonAnchorPolicy: 'drop' }),
+      walkForward({ ...base, anchorsAt, offHorizonAnchorDays: 2, offHorizonAnchorPolicy: 'low-trust' }),
+      walkForward({ ...base, anchorsAt, maxAnchorHorizonDays: horizon - 1 }),
+    ]);
+    const probs = (r: typeof plain) => r.steps.map(s => s.predictedProb);
+
+    expect(anchored.steps.every(s => s.trustedAnchors === 1)).toBe(true); // today: trusted although 5 days off
+    expect(probs(dropped)).toEqual(probs(plain));
+    expect(probs(capped)).toEqual(probs(plain));
+    expect(lowTrust.steps.every(s => s.trustedAnchors === 0)).toBe(true);
+    expect(probs(lowTrust)).not.toEqual(probs(plain)); // still blended, at half weight
+    expect(probs(lowTrust)).not.toEqual(probs(anchored));
+  });
+
+  it('rescales crypto anchors more than 2 days off the target to the horizon by default, still trusted', async () => {
+    const [unscaled, byDefault, rescaled, withinTolerance] = await Promise.all([
+      walkForward({ ...base, anchorsAt, anchorHorizonRescaleDays: Infinity }),
+      walkForward({ ...base, anchorsAt }),
+      walkForward({ ...base, anchorsAt, anchorHorizonRescaleDays: 2 }),
+      walkForward({ ...base, anchorsAt, anchorHorizonRescaleDays: 10 }),
+    ]);
+    const probs = (r: typeof unscaled) => r.steps.map(s => s.predictedProb);
+    expect(rescaled.steps.every(s => s.trustedAnchors === 1)).toBe(true);
+    // The 8-day market says 0.8 above spot; read at 3 days its z grows by sqrt(8 / 3), so P(up) rises.
+    rescaled.steps.forEach((s, i) => expect(s.predictedProb).toBeGreaterThan(unscaled.steps[i]!.predictedProb));
+    expect(probs(byDefault)).toEqual(probs(rescaled));
+    expect(probs(withinTolerance)).toEqual(probs(unscaled));
+  });
+});

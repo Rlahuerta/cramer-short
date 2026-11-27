@@ -14,6 +14,7 @@ import {
   type TransitionMatrix,
   FORECAST_VOL_SCALE,
 } from './core.js';
+import { normCDF, normPPF } from '../../../utils/stats.js';
 import { matPow } from './transition.js';
 import {
   jumpDriftCompensator,
@@ -260,6 +261,16 @@ export function horizonStudentTNu(nu: number, horizon: number): number {
 }
 
 /**
+ * A market's P(price > strike) at its own expiry, moved to `horizonDays`: read as a driftless normal in log price, its
+ * z = PhiInv(1 - p) scales by sqrt(marketDays / horizonDays). The implied median stays put and the spread grows with
+ * sqrt(time). Certainties (0, 1) and a market at or past expiry (marketDays <= 0) are returned unchanged.
+ */
+export function rescaleAnchorToHorizon(probability: number, marketDays: number, horizonDays: number): number {
+  if (probability <= 0 || probability >= 1 || !(marketDays > 0) || !(horizonDays > 0)) return probability;
+  return 1 - normCDF(normPPF(1 - probability) * Math.sqrt(marketDays / horizonDays));
+}
+
+/**
  * Fat-tailed survival function: P(price > X) using Student-t distribution.
  * Same interface as logNormalSurvival but uses Student-t with `nu` degrees
  * of freedom (default 5, typical for daily equity returns).
@@ -393,8 +404,10 @@ export function computeHorizonDriftVol(
   regimeSpecificSigmaThreshold?: number,
   garchScales?: readonly number[],
   terminalStateWeights?: readonly number[],
-  /** Factor on the horizon drift (FORECAST_DRIFT_SHRINK for forecasts). The volatility always carries FORECAST_VOL_SCALE. */
+  /** Factor on the horizon drift (FORECAST_DRIFT_SHRINK for forecasts). */
   driftScale = 1,
+  /** Factor on the horizon volatility. */
+  volScale = FORECAST_VOL_SCALE,
 ): { mu_n: number; sigma_n: number } {
   const stateWeights = terminalStateWeights
     ? normalizeStateWeightVector(terminalStateWeights)
@@ -455,7 +468,7 @@ export function computeHorizonDriftVol(
     sigma_n = sigma_eff * Math.sqrt(varianceScale);
   }
 
-  return { mu_n: mu_n * driftScale, sigma_n: sigma_n * FORECAST_VOL_SCALE };
+  return { mu_n: mu_n * driftScale, sigma_n: sigma_n * volScale };
 }
 
 /**
@@ -791,6 +804,8 @@ export function interpolateDistribution(
   randomState?: number,
   /** Factor on the horizon drift (FORECAST_DRIFT_SHRINK for forecasts). */
   forecastDriftScale = 1,
+  /** Factor on the horizon volatility. */
+  forecastVolScale = FORECAST_VOL_SCALE,
 ): MarkovDistributionPoint[] {
   // Adaptive grid: scale with volatility so CI covers ≥3σ for all assets.
   // Fixed 1.5%/step only covers ±14% total — fine for SPY (~1%/day) but
@@ -799,6 +814,7 @@ export function interpolateDistribution(
   const { mu_n, sigma_n } = computeHorizonDriftVol(
     horizon, P, regimeStats, initialState, momentumAdjustment, hmmOverride, startMixture,
     regimeSpecificSigma, regimeSpecificSigmaThreshold, garchScales, terminalStateWeights, forecastDriftScale,
+    forecastVolScale,
   );
   // The grid must span the distribution it carries: a calm 20-day vol under a wider
   // regime sigma left mass beyond the grid top and pinned the upper central bound there.
