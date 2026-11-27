@@ -282,7 +282,7 @@ export class Agent {
       return;
     }
 
-    const ctx = createRunContext(query);
+    const ctx = createRunContext(query, inMemoryHistory?.hasMessages() ?? false);
     const runState = createRunLoopState();
     const forecastingConfig = loadConfig().forecasting;
     const forecastLabIntent = forecastLabRouter.routeIntent(query, {
@@ -383,9 +383,10 @@ export class Agent {
     }
 
     let stoppedOnRepeatedFailures = false;
+    let modelFailure: string | null = null;
 
     // Main agent loop
-    while (ctx.iteration < this.maxIterations) {
+    mainLoop: while (ctx.iteration < this.maxIterations) {
       ctx.iteration++;
       yield { type: 'progress', iteration: ctx.iteration, maxIterations: this.maxIterations } as ProgressEvent;
 
@@ -413,6 +414,13 @@ export class Agent {
               currentPrompt = this.iterationPrompt(ctx, query, forecastLabRoutingHint);
               continue;
             }
+          }
+
+          // Keep the research already gathered: synthesize from it rather than discard it for an error.
+          if (!this.signal?.aborted && ctx.scratchpad.getToolResults().trim()) {
+            logger.warn('[Agent] model call failed; synthesizing from gathered research', error);
+            modelFailure = errorMessage;
+            break mainLoop;
           }
 
           const totalTime = Date.now() - ctx.startTime;
@@ -631,7 +639,7 @@ export class Agent {
       // single-asset scope (e.g. markov_distribution(ticker="PLAN") on a
       // "BTC-USD only" query) before executing, so a wrong ticker can't fail
       // and trap the agent in a re-emit loop.
-      normalizeForecastToolTickers(response as AIMessage, query);
+      normalizeForecastToolTickers(response as AIMessage, query, ctx.followUp);
 
       // Count sequential_thinking calls before executing tools (needed for nudge below).
       const toolCalls = (response as AIMessage).tool_calls ?? [];
@@ -699,7 +707,7 @@ export class Agent {
       }
     }
 
-    // Max iterations reached (or the loop-breaker stopped the run) — synthesize a best-effort answer from gathered research
+    // Max iterations reached (or the loop-breaker or a failed model call stopped the run) — synthesize a best-effort answer from gathered research
     // rather than yielding a bare failure message. Any data collected is still useful.
     const toolResults = ctx.scratchpad.getToolResults().trim();
     const hasMeaningfulResearch = toolResults.length > 50;
@@ -724,7 +732,9 @@ export class Agent {
 
     const synthesisPrompt = hasMeaningfulResearch
       ? this.iterationPrompt(ctx, query, forecastLabRoutingHint, toolResults) +
-          `\n\n[SYSTEM NOTE: ${stoppedOnRepeatedFailures
+          `\n\n[SYSTEM NOTE: ${modelFailure
+            ? `Research stopped because a model call failed (${modelFailure})`
+            : stoppedOnRepeatedFailures
             ? 'Research stopped because your tool calls only repeated calls that already failed with the same arguments'
             : `You have reached the maximum number of research steps (${this.maxIterations})`}. ` +
           `You MUST now write your best-effort final answer using ONLY the data gathered above. ` +
@@ -1278,45 +1288,56 @@ export class Agent {
     const disagreementPrefix = buildForecastDisagreementPrefix(ctx.query, toolCalls);
     const baseText = stripThinkingTags(fallbackText);
     const prefixText = `${warningPrefix ?? ''}${disagreementPrefix ?? ''}`;
+    // With a prompt to synthesize from, a lone prefix is not an answer: it leads the synthesized text instead.
     const text = baseText
       ? ensureStructuredDensityTable(`${prefixText}${baseText}`, ctx.query, toolCalls)
-      : prefixText;
+      : currentPrompt ? '' : prefixText;
+    const CHUNK_SIZE = 6;
+    let failure: string | null = null;
 
     if (text) {
       // We already have the answer from the non-streaming callLlm response.
       // Fake-stream it so the TUI shows the text appearing progressively.
-      const CHUNK_SIZE = 6;
       for (let i = 0; i < text.length; i += CHUNK_SIZE) {
         const chunk = text.slice(i, i + CHUNK_SIZE);
         streamedAnswer += chunk;
         yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
       }
     } else if (currentPrompt) {
+      for (let i = 0; i < prefixText.length; i += CHUNK_SIZE) {
+        const chunk = prefixText.slice(i, i + CHUNK_SIZE);
+        streamedAnswer += chunk;
+        yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
+      }
       // No pre-existing answer (e.g. max-iterations synthesis) — request a
       // fresh streaming response. Apply a hard timeout so we never hang.
-      const timeoutSignal = AbortSignal.timeout(getLlmCallTimeoutMs());
-      const combinedSignal = this.signal
-        ? AbortSignal.any([this.signal, timeoutSignal])
-        : timeoutSignal;
-      let failure: string | null = null;
+      let timeoutSignal: AbortSignal | undefined;
+      let synthesized = '';
       try {
         // A thinking model can end with no visible text; ask once more before giving up.
-        for (let attempt = 0; attempt < 2 && !streamedAnswer; attempt++) {
+        for (let attempt = 0; attempt < 2 && !synthesized; attempt++) {
+          // Each attempt gets the full budget: a slow empty first answer must not starve the retry.
+          timeoutSignal = AbortSignal.timeout(getLlmCallTimeoutMs());
+          const combinedSignal = this.signal
+            ? AbortSignal.any([this.signal, timeoutSignal])
+            : timeoutSignal;
           for await (const chunk of streamCallLlm(currentPrompt, {
             model: this.model,
             systemPrompt: this.systemPrompt,
             signal: combinedSignal,
+            thinkOverride: this.thinkEnabled,
           })) {
+            synthesized += chunk;
             streamedAnswer += chunk;
             yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
           }
         }
-        if (!streamedAnswer && !prefixText) failure = 'model returned an empty answer';
+        if (!synthesized) failure = 'model returned an empty answer';
       } catch (error) {
         logger.warn('[Agent] final synthesis failed', error);
         failure = this.signal?.aborted
           ? 'synthesis cancelled'
-          : timeoutSignal.aborted ? 'synthesis timed out' : 'synthesis failed';
+          : timeoutSignal?.aborted ? 'synthesis timed out' : 'synthesis failed';
       }
       if (failure) {
         // Synthesis was cancelled, timed out, failed or came back empty — surface the raw tool
@@ -1328,16 +1349,7 @@ export class Agent {
             'Raw research data gathered:\n\n' +
             toolSummary.slice(0, 3000);
           yield { type: 'answer_chunk', chunk: fallback } as AnswerChunkEvent;
-          streamedAnswer = fallback;
-        }
-      }
-
-      if (!streamedAnswer && prefixText) {
-        const CHUNK_SIZE = 6;
-        for (let i = 0; i < prefixText.length; i += CHUNK_SIZE) {
-          const chunk = prefixText.slice(i, i + CHUNK_SIZE);
-          streamedAnswer += chunk;
-          yield { type: 'answer_chunk', chunk } as AnswerChunkEvent;
+          streamedAnswer += fallback;
         }
       }
     }
@@ -1356,6 +1368,8 @@ export class Agent {
     yield {
       type: 'done',
       answer: streamedAnswer,
+      // Synthesis failed: the answer is at best the raw-data fallback, not a finished one.
+      ...(failure ? { error: true as const } : {}),
       toolCalls: ctx.scratchpad.getToolCallRecords(),
       iterations: ctx.iteration,
       totalTime,
@@ -1391,6 +1405,7 @@ export class Agent {
           query,
           toolResults: fullToolResults,
           signal: this.signal,
+          thinkOverride: this.thinkEnabled,
         });
         memoryFlushState.alreadyFlushed = flushResult.flushed;
         yield {
@@ -1436,13 +1451,19 @@ export class Agent {
     state: PeriodicMemoryFlushState,
   ): AsyncGenerator<AgentEvent, void> {
     state.lastFlushedIteration = ctx.iteration;
+    // Earlier flushes already appended their results to memory; send only what is new since then.
+    const records = ctx.scratchpad.getToolCallRecords();
+    const fresh = records.slice(state.flushedToolResults);
+    state.flushedToolResults = records.length;
+    if (fresh.length === 0) return;
     yield { type: 'memory_flush', phase: 'start' };
     const flushResult = await this.runMemoryFlushSafely({
       model: this.model,
       systemPrompt: this.systemPrompt,
       query,
-      toolResults: ctx.scratchpad.getToolResults(),
+      toolResults: fresh.map((r) => `### ${r.tool}(${JSON.stringify(r.args)})\n${r.result}`).join('\n\n'),
       signal: this.signal,
+      thinkOverride: this.thinkEnabled,
     });
     yield {
       type: 'memory_flush',

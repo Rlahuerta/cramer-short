@@ -1,6 +1,9 @@
 import { FIXED_TEST_DATE, FIXED_TEST_NOW_MS, deterministicRandom, nextTestId } from '@/utils/test-determinism.js';
 import { describe, test, expect, mock, type Mock, beforeEach, afterEach, setSystemTime, spyOn } from 'bun:test';
 import { ChatOllama } from '@langchain/ollama';
+import { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { AIMessageChunk } from '@langchain/core/messages';
+import type { ChatResult } from '@langchain/core/outputs';
 import { resolveProvider } from '../providers.js';
 import * as configModule from '@/utils/config.js';
 
@@ -113,8 +116,14 @@ describe('getChatModel — Ollama think flag', () => {
   test('thinkOverride still turns DeepSeek v4.1 Flash thinking off, and on at "max"', () => {
     const off = getChatModel('ollama:deepseek-v4.1-flash:cloud', false, false) as { think?: boolean | string };
     const on = getChatModel('ollama:deepseek-v4.1-flash:cloud', false, true) as { think?: boolean | string };
-    expect(off.think).toBeUndefined();
+    // Leaving `think` out lets the server default ("high") apply, so OFF must be sent explicitly.
+    expect(off.think).toBe(false);
     expect(on.think).toBe('max');
+  });
+
+  test('thinkOverride false leaves a non-thinking model without a think flag', () => {
+    const model = getChatModel('ollama:llama3.1:8b', false, false) as { think?: boolean };
+    expect(model.think).toBeUndefined();
   });
 
   test('strips ollama: prefix before passing model to ChatOllama', () => {
@@ -440,6 +449,106 @@ describe('streamCallLlm', () => {
     expect(factory).toHaveBeenCalledTimes(1);
     expect(factory.mock.calls[0]?.[1]).toMatchObject({ streaming: true });
     expect(chunks.join('')).toBe('STREAM_OK');
+  });
+});
+
+// ===========================================================================
+// Ollama stalls — the timeout and the caller's signal must end the call
+// ===========================================================================
+
+describe('Ollama stalls honour the timeout and the caller signal', () => {
+  const ENV_KEYS = ['OLLAMA_BASE_URL', 'OLLAMA_API_KEY'] as const;
+  const STALL_CHUNK = JSON.stringify({
+    model: 'm', created_at: 'x', message: { role: 'assistant', content: '', thinking: 'hmm' }, done: false,
+  }) + '\n';
+  let savedEnv: Record<string, string | undefined>;
+  let server: ReturnType<typeof Bun.serve>;
+  let mode: 'silent' | 'one-chunk';
+  let clientClosed: boolean;
+
+  beforeEach(() => {
+    savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+    clientClosed = false;
+    server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(req) {
+        req.signal.addEventListener('abort', () => { clientClosed = true; });
+        if (mode === 'silent') return new Promise<Response>(() => {});
+        const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(STALL_CHUNK)); } });
+        return new Response(body, { headers: { 'content-type': 'application/x-ndjson' } });
+      },
+    });
+    process.env.OLLAMA_BASE_URL = `http://127.0.0.1:${server.port}`;
+    delete process.env.OLLAMA_API_KEY;
+  });
+
+  afterEach(() => {
+    server.stop(true);
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  /** The call's outcome, or 'pending' when it is still running well past its deadline. */
+  function outcome(run: Promise<unknown>): Promise<string> {
+    const guard = new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 3_000));
+    return Promise.race([run.then(() => 'resolved', (e: Error) => `rejected: ${e.message}`), guard]);
+  }
+
+  async function waitFor(check: () => boolean): Promise<boolean> {
+    for (let i = 0; i < 50 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
+    return check();
+  }
+
+  test('callLlm times out when the server never answers, and closes the request', async () => {
+    mode = 'silent';
+    const result = await outcome(callLlm('hi', { model: 'ollama:llama3.1:8b', systemPrompt: 'x', timeoutMs: 300 }));
+    expect(result).toMatch(/^rejected: .*timed out/);
+    expect(await waitFor(() => clientClosed)).toBe(true);
+  });
+
+  test('callLlm stops on the caller signal when the stream stalls after one chunk', async () => {
+    mode = 'one-chunk';
+    const user = new AbortController();
+    setTimeout(() => user.abort(), 200);
+    const result = await outcome(
+      callLlm('hi', { model: 'ollama:llama3.1:8b', systemPrompt: 'x', timeoutMs: 60_000, signal: user.signal }),
+    );
+    expect(result).toMatch(/^rejected: .*abort/i);
+    expect(await waitFor(() => clientClosed)).toBe(true);
+  });
+
+  test('streamCallLlm stops on its signal when the server never answers', async () => {
+    mode = 'silent';
+    const run = (async () => {
+      for await (const _ of streamCallLlm('hi', {
+        model: 'ollama:llama3.1:8b', systemPrompt: 'x', signal: AbortSignal.timeout(300),
+      })) { /* drain */ }
+    })();
+    expect(await outcome(run)).toMatch(/^rejected: /);
+    expect(await waitFor(() => clientClosed)).toBe(true);
+  });
+
+  test('streamCallLlm keeps an AbortSignal.timeout alive when a stream stalls after one chunk', async () => {
+    // Bun stops an AbortSignal.timeout timer once its last abort listener is removed, and every race
+    // against the signal (ours, LangChain's per chunk) adds and removes one. No fetch is involved here.
+    class StallAfterOneChunk extends BaseChatModel {
+      _llmType(): string { return 'stall'; }
+      async _generate(): Promise<ChatResult> { throw new Error('unused'); }
+      async *_streamIterator(): AsyncGenerator<AIMessageChunk> {
+        yield new AIMessageChunk({ content: 'first ' });
+        await new Promise(() => {});
+      }
+    }
+    _setModelFactory(() => new StallAfterOneChunk({}));
+    const run = (async () => {
+      for await (const _ of streamCallLlm('hi', {
+        model: 'ollama:llama3.1:8b', systemPrompt: 'x', signal: AbortSignal.timeout(300),
+      })) { /* drain */ }
+    })();
+    expect(await outcome(run)).toMatch(/^rejected: /);
   });
 });
 

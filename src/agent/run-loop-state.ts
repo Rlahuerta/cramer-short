@@ -4,6 +4,8 @@ export interface MemoryFlushState {
 
 export interface PeriodicMemoryFlushState {
   lastFlushedIteration: number;
+  /** Tool results already sent by earlier periodic flushes; later flushes send only newer ones. */
+  flushedToolResults: number;
 }
 
 export interface RunLoopState {
@@ -24,6 +26,6 @@ export function createRunLoopState(): RunLoopState {
     overflowRetries: 0,
     forcedToolErrorPromptRebuilt: false,
     memoryFlush: { alreadyFlushed: false },
-    periodicFlush: { lastFlushedIteration: 0 },
+    periodicFlush: { lastFlushedIteration: 0, flushedToolResults: 0 },
   };
 }

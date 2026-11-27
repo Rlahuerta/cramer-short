@@ -40,6 +40,15 @@ describe('resolveForecastToolTicker', () => {
     expect(resolveForecastToolTicker('Compare BTC and ETH over the next 7 days.', 'markov_distribution')).toBeNull();
   });
 
+  it('leaves a follow-up turn alone: the model may still be working on the earlier asset', () => {
+    // After a BTC forecast, "compare that with gold" must not turn the BTC-USD calls into GLD.
+    expect(resolveForecastToolTicker('Compare that with gold', 'markov_distribution', true)).toBeNull();
+  });
+
+  it('still applies an explicit "X only" scope on a follow-up turn', () => {
+    expect(resolveForecastToolTicker('GOLD only. 5 day distribution.', 'markov_distribution', true)).toBe('GLD');
+  });
+
   it('returns null for explicit gold-combined requests (handled elsewhere)', () => {
     expect(resolveForecastToolTicker('Combined markov and polymarket forecast for GOLD next week', 'markov_distribution')).toBeNull();
   });

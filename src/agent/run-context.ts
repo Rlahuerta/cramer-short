@@ -10,6 +10,8 @@ export interface ForecastLabGuard {
  */
 export interface RunContext {
   readonly query: string;
+  /** True when the run continues a conversation, so `query` may refer to earlier turns. */
+  readonly followUp: boolean;
   readonly scratchpad: Scratchpad;
   readonly tokenCounter: TokenCounter;
   readonly startTime: number;
@@ -21,9 +23,10 @@ export interface RunContext {
   readonly forcedToolCalls: Set<string>;
 }
 
-export function createRunContext(query: string): RunContext {
+export function createRunContext(query: string, followUp = false): RunContext {
   return {
     query,
+    followUp,
     scratchpad: new Scratchpad(query),
     tokenCounter: new TokenCounter(),
     startTime: Date.now(),
