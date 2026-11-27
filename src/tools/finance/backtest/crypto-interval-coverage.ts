@@ -57,6 +57,30 @@
  *   more levels.
  * - Otherwise no detectable effect. No production default changes here; a problem is reported with a proposed change.
  *
+ * Anchor horizon test (added 2026-11-27 and committed before scoring any candidate). The anchored comparison found,
+ * outside its rule, that anchors widen the 1d intervals and narrow the 14d ones. Diagnosis (`anchor-gaps`, no
+ * outcomes): for crypto at <= 14 days a mature market with volume is high-trust whatever its resolution date (trust 0.9
+ * within 2 days of the target, else 0.7; both clear 0.6), and a high-trust anchor replaces the model's P(>K) at its
+ * strike with weight (1 - mixing weight) x distance weight, whatever its expiry. The date-gap discount only runs in the
+ * fallback, when no anchor is high-trust. At 14d every blended anchor resolves more than 5 days before the target; at
+ * 1d, 71% (BTC) / 77% (ETH) of the blend weight resolves within half a day of it.
+ * Candidates, crypto at <= 14 days; an anchor is off-horizon when it resolves more than g days from the target:
+ *   L. off-horizon anchors become low-trust (blended at half weight);
+ *   D. off-horizon anchors are dropped;
+ *      g for L and for D fitted from {0.5, 1, 2} on BTC origins from the window start to 2025-06-30 (ETH's window
+ *      starts later), minimizing the mean over horizons of the largest |coverage - nominal| at 90/95/99; ties keep
+ *      the larger g;
+ *   N. no anchors at horizons above 7 days.
+ * Scored against today's anchored forecast on the same window origins from 2025-07-01 (BTC and ETH, 1/2/3/7/14d). A
+ * candidate passes only if:
+ *   (a) at no horizon and level, pooled over BTC+ETH, does the paired change in |coverage - nominal| have a 95%
+ *       day-block CI above zero;
+ *   (b) at 1d and at 14d that change, averaged over the three levels, is <= 0 and is < 0 at one of them, and at 1d or
+ *       14d some level's CI lies below zero;
+ *   (c) the paired Brier change of P(up) has a 95% upper bound <= +0.0005, so the anchors' Brier gain is kept.
+ * The HOLD-share move is reported. If several pass, the smallest paired Brier change ships, test-first and mirrored in
+ * research/; none passing, no change.
+ *
  * Outputs go to .cramer-short/crypto-interval-coverage/<baseline|A|B|C|anchored>. Each run takes a few minutes; run
  * them in parallel.
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon>   # baseline
@@ -66,10 +90,16 @@
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts score                            # step 2 score
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> anchored
  *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts anchors                          # anchored comparison
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts anchor-gaps                      # horizon test diagnosis
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run BTC-USD <horizon> anchor-<L|D>-<0.5|1|2>
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts anchor-fit                       # fitted g for L and D
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> <anchor-L-g|anchor-D-g|anchor-N>
+ *   bun run src/tools/finance/backtest/crypto-interval-coverage.ts anchor-score                     # horizon test verdict
  */
 import { join } from 'node:path';
 import { getAssetProfile } from '../markov-distribution/asset-profile.js';
 import { horizonStudentTNu, inverseStudentTCDF } from '../markov-distribution/confidence-intervals.js';
+import { applyCryptoTerminalAnchorFallback, extractPriceThresholds, isInformativeAnchor } from '../markov-distribution.js';
 import { btcLiveCell } from './live-config-benchmark.js';
 import { intervalCoverage, type SkillRow } from './long-history-skill.js';
 import { anchorsAtFromHistory, type AnchorHistoryFixture } from './polymarket-anchor-history.js';
@@ -187,11 +217,19 @@ export function missChange(pairs: ReadonlyArray<{ plain: CoverageRow; anchored: 
 }
 
 /** Forecast every origin with the production path, plus a candidate's settings or the Polymarket anchors. */
-async function run(asset: (typeof ASSETS)[number], horizon: number, candidate: Candidate | 'baseline' | 'anchored'): Promise<void> {
+/** The anchor horizon test candidates: `anchor-L-<g>` / `anchor-D-<g>` (off-horizon low-trust / dropped), `anchor-N`. */
+function anchorVariantConfig(variant: string) {
+  if (variant === 'anchor-N') return { maxAnchorHorizonDays: 7 };
+  const m = /^anchor-([LD])-(0\.5|1|2)$/.exec(variant);
+  return m ? { offHorizonAnchorDays: Number(m[2]), offHorizonAnchorPolicy: m[1] === 'L' ? 'low-trust' as const : 'drop' as const } : null;
+}
+
+async function run(asset: (typeof ASSETS)[number], horizon: number, candidate: string): Promise<void> {
   const { dates, closes } = await loadCloses(asset);
   const cell = asset === 'BTC-USD' ? btcLiveCell(horizon) : { config: {}, maxHistoryPrices: ETH_HISTORY_PRICES };
-  const anchorsAt = candidate === 'anchored' ? anchorsAtFromHistory(dates, await anchorMarkets(asset)) : undefined;
-  const experiment = candidate === 'baseline' ? {} : anchorsAt ? { anchorsAt } : await candidateConfig(candidate as Candidate, horizon);
+  const anchorVariant = anchorVariantConfig(candidate);
+  const anchorsAt = candidate === 'anchored' || anchorVariant ? anchorsAtFromHistory(dates, await anchorMarkets(asset)) : undefined;
+  const experiment = candidate === 'baseline' ? {} : anchorsAt ? { anchorsAt, ...anchorVariant } : await candidateConfig(candidate as Candidate, horizon);
   const result = await walkForward({
     ...cell.config, ...experiment, ticker: asset, prices: closes, horizon, warmup: cell.maxHistoryPrices, stride: 1,
     maxHistoryPrices: cell.maxHistoryPrices, randomState: 42,
@@ -228,8 +266,8 @@ function worstGap(rows: CoverageRow[]): number {
   return Math.max(...LEVELS.map(([label, nominal]) => Math.abs(100 * (c[`c${label}` as 'c90' | 'c95' | 'c99'] - nominal))));
 }
 
-async function loadRows(dir: string): Promise<CoverageRow[]> {
-  const files = ASSETS.flatMap(a => HORIZONS.map(h => join(dir, `${a}-${h}.json`)));
+async function loadRows(dir: string, assets: readonly string[] = ASSETS): Promise<CoverageRow[]> {
+  const files = assets.flatMap(a => HORIZONS.map(h => join(dir, `${a}-${h}.json`)));
   return (await Promise.all(files.map(f => Bun.file(f).json() as Promise<CoverageRow[]>))).flat();
 }
 
@@ -325,6 +363,123 @@ async function score(): Promise<void> {
   }
 }
 
+/**
+ * Diagnosis for the anchor horizon test: at each window origin, the anchors the forecast blends (the production
+ * extraction, informativeness filter and crypto fallback), by resolution gap = days from the origin's close to the
+ * market's end minus the horizon (negative: the market resolves before the target). Shares are weighted by each
+ * anchor's blend weight before the mixing-time factor: exp(-5 d²) for distance d from spot, halved for low trust.
+ */
+async function anchorGaps(): Promise<void> {
+  const buckets = [['< -5', -Infinity, -5], ['-5..-2', -5, -2], ['-2..-0.5', -2, -0.5], ['-0.5..0.5', -0.5, 0.5], ['0.5..2', 0.5, 2], ['2..5', 2, 5], ['> 5', 5, Infinity]] as const;
+  for (const asset of ASSETS) {
+    const { dates, closes } = await loadCloses(asset);
+    const markets = await anchorMarkets(asset);
+    const anchorsAt = anchorsAtFromHistory(dates, markets);
+    const start = dates.indexOf(markets.flatMap(m => Object.keys(m.daily)).sort()[0]!);
+    console.log(`${asset} from ${dates[start]}: gap buckets (days) as shares of blend weight; trust weights of high-trust anchors`);
+    for (const h of HORIZONS) {
+      const weightByBucket = buckets.map(() => 0);
+      const trustWeights = new Map<number, number>();
+      let origins = 0, withAnchor = 0, fallback = 0, nearHigh = 0, used = 0;
+      for (let t = start; t + h < closes.length; t++) {
+        const { markets: offered, referenceTimeMs } = anchorsAt(t);
+        const price = closes[t]!;
+        const opts = { ticker: asset, horizonDays: h, referenceTimeMs };
+        const strict = extractPriceThresholds(offered, opts).filter(a => isInformativeAnchor(a, price));
+        if (offered.length > 0 && !strict.some(a => a.trustScore === 'high')) fallback++;
+        const blended = applyCryptoTerminalAnchorFallback(offered, strict, asset, h, referenceTimeMs)
+          .filter(a => isInformativeAnchor(a, price) && (a.trustScore === 'high' || a.trustWeight !== 0));
+        origins++;
+        if (blended.length > 0) withAnchor++;
+        used += blended.length;
+        const gapOf = (a: (typeof blended)[number]) => (Date.parse(a.endDate!) - referenceTimeMs) / 86_400_000 - h;
+        if (blended.some(a => a.trustScore === 'high' && Math.abs(gapOf(a)) <= 2)) nearHigh++;
+        for (const a of blended) {
+          const w = Math.exp(-5 * (a.price / price - 1) ** 2) * (a.trustScore === 'high' ? 1 : 0.5);
+          const gap = gapOf(a);
+          weightByBucket[buckets.findIndex(([, lo, hi]) => gap >= lo && gap < hi)]! += w;
+          if (a.trustScore === 'high') {
+            const tw = Math.round(100 * (a.trustWeight ?? 1)) / 100;
+            trustWeights.set(tw, (trustWeights.get(tw) ?? 0) + 1);
+          }
+        }
+      }
+      const total = weightByBucket.reduce((a, b) => a + b, 0) || 1;
+      const shares = buckets.map(([label], i) => `${label}: ${(100 * weightByBucket[i]! / total).toFixed(0)}%`).join('  ');
+      const tws = [...trustWeights].sort((a, b) => b[0] - a[0]).map(([w, n]) => `${w}×${n}`).join(' ');
+      console.log(`  ${String(h).padStart(2)}d origins ${origins}, with an anchor ${withAnchor}, fallback ${fallback}, near-target high-trust ${nearHigh}, anchors/origin ${(used / origins).toFixed(1)}`);
+      console.log(`      ${shares}   trust ${tws}`);
+    }
+  }
+}
+
+const ANCHOR_FIT_END = '2025-07-01';
+const windowStartOf = async (asset: (typeof ASSETS)[number]) => (await anchorMarkets(asset)).flatMap(m => Object.keys(m.daily)).sort()[0]!;
+/** Mean over horizons of the largest |coverage - nominal| (pp) at 90/95/99. */
+const meanWorstGap = (rows: CoverageRow[]) => HORIZONS.reduce((a, h) => a + worstGap(rows.filter(r => r.horizon === h)), 0) / HORIZONS.length;
+
+/** The anchor horizon test's fit: g for L and for D on BTC window origins before 2025-07; ties keep the larger g. */
+async function fitAnchorGap(verbose: boolean): Promise<{ L: number; D: number }> {
+  const start = await windowStartOf('BTC-USD');
+  const fitRows = async (dir: string) => (await loadRows(join(ROOT, dir), ['BTC-USD'])).filter(r => r.date >= start && r.date < ANCHOR_FIT_END);
+  if (verbose) console.log(`Fit on BTC origins ${start}..${ANCHOR_FIT_END} (exclusive): mean over horizons of the worst gap; today's anchored ${meanWorstGap(await fitRows('anchored')).toFixed(2)}pp`);
+  const fitted = { L: 2, D: 2 };
+  for (const policy of ['L', 'D'] as const) {
+    let best = Infinity;
+    for (const g of [2, 1, 0.5]) {
+      const objective = meanWorstGap(await fitRows(`anchor-${policy}-${g}`));
+      if (verbose) console.log(`  ${policy} g=${g}: ${objective.toFixed(2)}pp`);
+      if (objective < best) [best, fitted[policy]] = [objective, g];
+    }
+  }
+  if (verbose) console.log(`Fitted: L g=${fitted.L}, D g=${fitted.D}`);
+  return fitted;
+}
+
+/** The anchor horizon test's score: each candidate against today's anchored forecast, window origins from 2025-07-01. */
+async function anchorScore(): Promise<void> {
+  const fitted = await fitAnchorGap(false);
+  const from: Record<string, string> = {};
+  for (const asset of ASSETS) from[asset] = [ANCHOR_FIT_END, await windowStartOf(asset)].sort()[1]!;
+  const key = (r: CoverageRow) => `${r.ticker}|${r.horizon}|${r.date}`;
+  const scored = (rs: CoverageRow[]) => rs.filter(r => r.date >= from[r.ticker]!);
+  const current = new Map(scored(await loadRows(join(ROOT, 'anchored'))).map(r => [key(r), r]));
+  const holdShare = (rs: CoverageRow[]) => rs.filter(r => r.rec === 'HOLD').length / rs.length;
+  const passing: Array<[string, number]> = [];
+  console.log(`Scored from ${from['BTC-USD']} (BTC) and ${from['ETH-USD']} (ETH); fitted L g=${fitted.L}, D g=${fitted.D}`);
+  for (const [name, dir] of [['L', `anchor-L-${fitted.L}`], ['D', `anchor-D-${fitted.D}`], ['N', 'anchor-N']] as const) {
+    // missChange reads `plain` as before (today's anchored forecast) and `anchored` as after (the candidate).
+    const pairs = scored(await loadRows(join(ROOT, dir))).map(r => ({ date: r.date, horizon: r.horizon, plain: current.get(key(r))!, anchored: r }));
+    console.log(`\nCandidate ${name} (${dir}), ${pairs.length} pairs: today -> candidate coverage, change in |miss| [CI] by horizon`);
+    let worse = false;
+    const meanChange: Record<number, number> = {};
+    let significant = false;
+    for (const h of HORIZONS) {
+      const ps = pairs.filter(p => p.horizon === h);
+      const cells = LEVELS.map(([level]) => {
+        const [lo, hi] = dayBlockCi(ps, xs => missChange(xs, level));
+        if (lo > 0) worse = true;
+        if (hi < 0 && (h === 1 || h === 14)) significant = true;
+        const cov = (rs: CoverageRow[]) => (100 * intervalCoverage(rs)[`c${level}` as 'c90' | 'c95' | 'c99']).toFixed(1);
+        return `${level}: ${cov(ps.map(p => p.plain))} -> ${cov(ps.map(p => p.anchored))} ${missChange(ps, level).toFixed(1)} [${lo.toFixed(1)}, ${hi.toFixed(1)}]`;
+      });
+      meanChange[h] = LEVELS.reduce((a, [level]) => a + missChange(ps, level), 0) / LEVELS.length;
+      console.log(`  ${String(h).padStart(2)}d n=${ps.length}  ${cells.join('  ')}`);
+    }
+    const brier = (xs: typeof pairs) => xs.reduce((a, p) => a + (p.anchored.p - p.anchored.y) ** 2 - (p.plain.p - p.plain.y) ** 2, 0) / xs.length;
+    const [brierLo, brierHi] = dayBlockCi(pairs, brier);
+    const dHold = holdShare(pairs.map(p => p.anchored)) - holdShare(pairs.map(p => p.plain));
+    const improves = meanChange[1]! <= 0 && meanChange[14]! <= 0 && (meanChange[1]! < 0 || meanChange[14]! < 0) && significant;
+    const pass = !worse && improves && brierHi <= 0.0005;
+    console.log(`  paired Brier ${brier(pairs).toFixed(5)} [${brierLo.toFixed(5)}, ${brierHi.toFixed(5)}]  HOLD ${dHold >= 0 ? '+' : ''}${(100 * dHold).toFixed(1)}pp`);
+    console.log(`  mean |miss| change 1d ${meanChange[1]!.toFixed(2)}, 14d ${meanChange[14]!.toFixed(2)}`);
+    console.log(`  (a) no horizon worse ${worse ? 'FAIL' : 'pass'}  (b) improves at 1d/14d ${improves ? 'pass' : 'FAIL'}  (c) Brier ${brierHi <= 0.0005 ? 'pass' : 'FAIL'}  => ${pass ? 'PASSES' : 'fails'}`);
+    if (pass) passing.push([name, brier(pairs)]);
+  }
+  const ship = passing.sort((a, b) => a[1] - b[1])[0];
+  console.log(`\nVerdict: ${ship ? `ship candidate ${ship[0]}` : 'no candidate passes; no change'}`);
+}
+
 /** The anchored comparison in the header: anchored vs baseline rows on the same origins of each asset's market window. */
 async function anchors(): Promise<void> {
   const key = (r: CoverageRow) => `${r.ticker}|${r.horizon}|${r.date}`;
@@ -388,11 +543,15 @@ async function anchors(): Promise<void> {
 if (import.meta.main) {
   const [mode, a, b, c] = process.argv.slice(2);
   const candidate = c === undefined ? 'baseline' : c;
-  if (mode === 'run' && (a === 'BTC-USD' || a === 'ETH-USD') && b && ['baseline', 'A', 'B', 'C', 'anchored'].includes(candidate)) {
-    await run(a, Number(b), candidate as Candidate | 'baseline' | 'anchored');
+  if (mode === 'run' && (a === 'BTC-USD' || a === 'ETH-USD') && b
+    && (['baseline', 'A', 'B', 'C', 'anchored'].includes(candidate) || anchorVariantConfig(candidate))) {
+    await run(a, Number(b), candidate);
   } else if (mode === 'report') await report(join(ROOT, 'baseline'));
   else if (mode === 'fit') await showFits();
   else if (mode === 'score') await score();
   else if (mode === 'anchors') await anchors();
-  else console.log('usage: crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> [A|B|C|anchored] | report | fit | score | anchors');
+  else if (mode === 'anchor-gaps') await anchorGaps();
+  else if (mode === 'anchor-fit') await fitAnchorGap(true);
+  else if (mode === 'anchor-score') await anchorScore();
+  else console.log('usage: crypto-interval-coverage.ts run <BTC-USD|ETH-USD> <horizon> [A|B|C|anchored|anchor-<L|D>-<g>|anchor-N] | report | fit | score | anchors | anchor-gaps | anchor-fit | anchor-score');
 }
