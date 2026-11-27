@@ -60,8 +60,12 @@ const ASSET_CONSISTENCY_GUARDED_TOOLS = new Set([
 export const REQUEST_CACHE_MAX_SIZE = 256;
 /** Max tracked entries in the in-flight request registry. */
 export const PENDING_REQUESTS_MAX_SIZE = 64;
-/** Backstop for a tool call that never settles, so one stalled tool can't hang a run. */
-export const TOOL_CALL_TIMEOUT_MS = 120_000;
+/**
+ * Backstop for a tool call that never settles, so one stalled tool can't hang a run. Model-routed tools
+ * (get_financials, get_market_data, read_filings) make model calls with "max" thinking, so 120 s could cut a slow
+ * but healthy call; 300 s still ends a true stall well inside the capture service's 30-minute limit.
+ */
+export const TOOL_CALL_TIMEOUT_MS = 300_000;
 /** Forecast-lab runs experiment commands with their own per-command timeouts of up to 8 minutes. */
 const UNTIMED_TOOLS = new Set(['forecast_lab_run']);
 

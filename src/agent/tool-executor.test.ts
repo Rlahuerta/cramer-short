@@ -1058,8 +1058,8 @@ describe('AgentToolExecutor — per-tool timeout', () => {
     expect(ctx.scratchpad.getToolCallRecords()[0]?.result).toMatch(/^Error: .*timed out/);
   });
 
-  it('defaults to 120 s', () => {
-    expect(TOOL_CALL_TIMEOUT_MS).toBe(120_000);
+  it('defaults to 300 s, above a slow model-routed tool and well under the capture service limit', () => {
+    expect(TOOL_CALL_TIMEOUT_MS).toBe(300_000);
   });
 
   it('leaves forecast_lab_run alone: its experiment commands carry their own, longer timeouts', async () => {
